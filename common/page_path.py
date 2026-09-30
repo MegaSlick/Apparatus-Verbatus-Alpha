@@ -33,7 +33,7 @@ from common import reading_annotations as annotations
 from common.alignment import bracket_marker_view
 from common.background import validate_measured_ink_map_payload
 from common.chairs.models import ChairIdentity
-from common.contracts.canonical import is_plain_int
+from common.contracts.canonical import digest_bytes, digest_of, is_plain_int
 from common.contracts.envelope import read_verified
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import act_id as derive_act_id
@@ -41,7 +41,9 @@ from common.contracts.identities import attempt_id, perlector_attempt_id
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.serving import reading_stop_reason
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP
+from common.decoding import chair_decoding, engine_effective_sampling, recorded_sampling
 from common.page_witness_units import DAI, READ_OUTCOME, WITNESS_LETTERS, witness_reading
+from common.request_capacity import page_request_capacity
 from common.residual_ink import (
     INK_NOT_MEASURABLE,
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
@@ -206,6 +208,84 @@ def fixture_page_answer(context, ordinal: int) -> dict[str, Any]:
             "answer string with a stop reason of stop or length"
         )
     return row
+
+
+# --- the request -----------------------------------------------------------------
+#
+# What stage 4 sends for a page, built from its feed, and what the page-read
+# denominator builds again to bind a sealed reading to its page's request.
+
+
+def request_text(serving_recipe: Any, feed: Mapping[str, Any]) -> str:
+    """The page request's text: `page_prompt.build_page_prompt` over the feed."""
+    # The serving package reads `common.stage`, which reads this module.
+    from common import page_prompt
+
+    return page_prompt.build_page_prompt(serving_recipe, feed)
+
+
+def request_image_sha256s(feed: Mapping[str, Any]) -> list[str]:
+    """The digest of each image the page request sends: the render, then the overlay."""
+    digests = [feed["page_render"]["image_sha256"]] if feed["page_render"] else []
+    if feed["overlay"] is not None:
+        digests.append(feed["overlay"]["image_sha256"])
+    return digests
+
+
+def request_images(feed: Mapping[str, Any], read_bytes) -> list[bytes]:
+    """The images the page request sends, in order, read digest-checked."""
+    from common import page_overlay
+
+    images = []
+    if feed["page_render"] is not None:
+        render = feed["page_render"]
+        images.append(
+            read_verified(
+                read_bytes,
+                {"relative_path": render["image_path"], "sha256": render["image_sha256"]},
+                "the page render",
+            )
+        )
+    if feed["overlay"] is not None:
+        images.append(page_overlay.overlay_image(feed, read_bytes))
+    return images
+
+
+def request_digest(text: str, image_sha256s: list[str]) -> str:
+    """The digest a page reading records of the request its page was asked with."""
+    return digest_of({"image_sha256s": image_sha256s, "text_sha256": digest_bytes(text.encode())})
+
+
+def request_capacity(
+    row: Any, serving_recipe: Any, feed: Mapping[str, Any], text: str, page_max_tokens: int
+) -> dict[str, Any]:
+    """The page request admitted against its sealed serving row, or `RequestCapacityRefusal`."""
+    from common import page_feed, page_prompt
+
+    return page_request_capacity(
+        row,
+        image_sizes=page_feed.request_image_sizes(feed),
+        prompt_text=text,
+        prompt_parts=page_prompt.prompt_parts(serving_recipe, feed),
+        template_digest=page_prompt.BUILDER_SHA256,
+        answer_measure=feed["answer_measure"],
+        page_max_tokens=page_max_tokens,
+    )
+
+
+def page_sampling(decoding_policy: Mapping[str, Any], role: str) -> dict[str, Any]:
+    """The sealed Perlector row a live page call sends, and what the engine samples under.
+
+    `ChairClient` puts exactly this row on the wire, with the serving receipt's
+    seed. A page reading is sampled, so a second call would be a second draw:
+    a resumed pass adopts the sealed reading and never asks again.
+    """
+    values = chair_decoding(decoding_policy, role)
+    return {
+        "chair": role,
+        "sent": recorded_sampling(values),
+        "effective": recorded_sampling(engine_effective_sampling(values)),
+    }
 
 
 def retained_reply(read_bytes, engine_call: Mapping[str, Any]) -> dict[str, Any]:

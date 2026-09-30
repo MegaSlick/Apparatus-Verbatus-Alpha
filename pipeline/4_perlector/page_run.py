@@ -52,21 +52,15 @@ from throughput import planned_seconds_per_page
 import operations.serving.errors as serving_errors
 from common import (
     page_accounting,
-    page_feed,
-    page_overlay,
     page_path,
-    page_prompt,
 )
 from common.chairs.models import AbsentChair, ChairIdentity
-from common.contracts.canonical import digest_bytes, digest_of
-from common.contracts.envelope import read_verified
 from common.contracts.errors import ContractError
 from common.contracts.identities import (
     artifact_id,
     region_id,
 )
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, INK_MAP, PERLECTOR
-from common.decoding import chair_decoding, engine_effective_sampling, recorded_sampling
 from common.exemplar_boundary import cut_exemplar_crop, read_sealed_page
 from common.imaging import dimensions
 from common.page_path import (
@@ -91,7 +85,7 @@ from common.page_testimonia import (
     current_page_testimonia,
     declared_page_witness_chairs,
 )
-from common.request_capacity import RequestCapacityRefusal, page_request_capacity
+from common.request_capacity import RequestCapacityRefusal
 from common.stage import (
     SECONDARY_PROPOSER_CHAIR,
     exemplar_page_ids,
@@ -284,22 +278,18 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
     page.adopted = _existing_reading(context, page_id)
     if page.not_run or page.adopted is not None:
         return page
-    page.text = page_prompt.build_page_prompt(run.chair.serving_recipe, feed)
-    page.image_sha256s = [feed["page_render"]["image_sha256"]] if feed["page_render"] else []
-    if feed["overlay"] is not None:
-        page.image_sha256s.append(feed["overlay"]["image_sha256"])
+    page.text = page_path.request_text(run.chair.serving_recipe, feed)
+    page.image_sha256s = page_path.request_image_sha256s(feed)
     if not state.live:
         page.fixture_row = page_path.fixture_page_answer(context, ordinal)
         return page
     try:
-        page.capacity = page_request_capacity(
+        page.capacity = page_path.request_capacity(
             _serving_row(state),
-            image_sizes=page_feed.request_image_sizes(feed),
-            prompt_text=page.text,
-            prompt_parts=page_prompt.prompt_parts(run.chair.serving_recipe, feed),
-            template_digest=page_prompt.BUILDER_SHA256,
-            answer_measure=feed["answer_measure"],
-            page_max_tokens=run.page_max_tokens,
+            run.chair.serving_recipe,
+            feed,
+            page.text,
+            run.page_max_tokens,
         )
     except RequestCapacityRefusal as refusal:
         if refusal.capacity is None:
@@ -311,23 +301,6 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
 def _sends(state: _PagePass, page: _Page) -> bool:
     """Whether this pass sends the page's call: live, asked, not refused, not already read."""
     return state.live and not page.not_run and page.adopted is None and page.refusal is None
-
-
-def _request_images(context, feed: dict[str, Any]) -> list[bytes]:
-    """The images the page's request sends, in order, read digest-checked."""
-    images = []
-    if feed["page_render"] is not None:
-        render = feed["page_render"]
-        images.append(
-            read_verified(
-                context.tree.read_bytes,
-                {"relative_path": render["image_path"], "sha256": render["image_sha256"]},
-                "the page render",
-            )
-        )
-    if feed["overlay"] is not None:
-        images.append(page_overlay.overlay_image(feed, context.tree.read_bytes))
-    return images
 
 
 def _serving_row(state: _PagePass):
@@ -361,7 +334,7 @@ def _page_job(state: _PagePass, page: _Page):
     _refuse_past_page_deadline(
         state, planned_seconds_per_page(run.page_max_tokens), f"reading page {page.ordinal}"
     )
-    images = _request_images(state.context, page.feed)
+    images = page_path.request_images(page.feed, state.context.tree.read_bytes)
     if run.service.client is None:
         hooks.start_chair(run)
     hooks.publish_sent(
@@ -388,17 +361,6 @@ def _call(run, page: _Page, images: list[bytes]) -> dict[str, Any] | Exception:
         )
     except _PAGE_LOCAL_CALL_FAILURES as error:
         return error
-
-
-def _request_digest(page: _Page) -> str | None:
-    if page.text is None:
-        return None
-    return digest_of(
-        {
-            "image_sha256s": page.image_sha256s,
-            "text_sha256": digest_bytes(page.text.encode("utf-8")),
-        }
-    )
 
 
 def _finish(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | None) -> None:
@@ -480,9 +442,13 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
         "page_ordinal": page.ordinal,
         "reading_unit": READING_UNIT,
         "feed_ref": page.feed_ref,
-        "request_digest": _request_digest(page) if attempted else None,
+        "request_digest": (
+            page_path.request_digest(page.text, page.image_sha256s) if attempted else None
+        ),
         "engine_call": engine_call,
-        "sampling": _page_sampling(run) if receipt_ref is not None else None,
+        "sampling": page_path.page_sampling(run.decoding_policy, run.chair.role)
+        if receipt_ref is not None
+        else None,
         "capacity": capacity,
         "finish_reason": finish_reason,
         "stop_reason": stop_reason,
@@ -510,22 +476,6 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
     )
 
 
-def _page_sampling(run) -> dict[str, Any]:
-    """The sealed Perlector row a live page call sends, and what the engine samples under.
-
-    `ChairClient` puts exactly this row on the wire, with the serving receipt's
-    seed; the call record the reading names is held to it
-    (`engine_call_inputs`). A page reading is sampled, so a second call would be
-    a second draw: a resumed pass adopts the sealed reading and never asks again.
-    """
-    values = chair_decoding(run.decoding_policy, run.chair.role)
-    return {
-        "chair": run.chair.role,
-        "sent": recorded_sampling(values),
-        "effective": recorded_sampling(engine_effective_sampling(values)),
-    }
-
-
 def _check_adopted(state: _PagePass, page: _Page, record: dict[str, Any]) -> None:
     """Refuse a retained page reading this run could not have made from this page's feed."""
     payload = record["payload"]
@@ -543,7 +493,9 @@ def _check_adopted(state: _PagePass, page: _Page, record: dict[str, Any]) -> Non
     if payload.get("engine_call") is not None:
         # The retained call record is held to the sealed row it was sent under.
         state.hooks.engine_call_inputs(state.context, payload["engine_call"], variance_arm=None)
-        if payload.get("sampling") != _page_sampling(state.run):
+        if payload.get("sampling") != page_path.page_sampling(
+            state.run.decoding_policy, state.run.chair.role
+        ):
             raise ContractError(
                 f"page {page.page_id}'s retained page reading names sampling other than the "
                 "sealed Perlector row; it is not adopted and the page is not asked again. "

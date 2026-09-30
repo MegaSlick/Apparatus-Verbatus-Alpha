@@ -34,10 +34,10 @@ from test_live_perlector import (
 )
 
 from common import page_feed, page_path
-from common.contracts.canonical import digest_bytes, digest_of
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import act_bindings, artifact_id, region_id, verify
-from common.contracts.stages import RECENSOR
+from common.contracts.stages import PERLECTOR, RECENSOR
 from common.decoding import (
     chair_decoding,
     engine_effective_sampling,
@@ -56,6 +56,7 @@ from conftest import (
     page_models_config,
     page_serving_recipes_config,
     programs_through,
+    rewitness_stage_boundary,
 )
 from operations.serving.config import profile_preflight_digest
 from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
@@ -1090,12 +1091,12 @@ def test_a_resumed_pass_refuses_a_reading_that_names_other_sampling(
 ):
     _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
     assert exit_code == 0
-    original = page_run.chair_decoding
+    original = page_path.chair_decoding
 
     def another_row(policy, chair):
         return {**original(policy, chair), "temperature": 0.0}
 
-    monkeypatch.setattr(page_run, "chair_decoding", another_row)
+    monkeypatch.setattr(page_path, "chair_decoding", another_row)
     with pytest.raises(ContractError, match="names sampling other than the sealed Perlector row"):
         _read_pages(live_tree, tmp_path / "again", monkeypatch)
 
@@ -1396,6 +1397,83 @@ def test_the_denominator_reads_a_live_reading_again_from_its_retained_reply(
     )
     acts = reading_acts(open_context(args, RECENSOR))
     assert [act["act_key"] for act in acts] == ["p1:1", "p1:2", "p2:1"]
+
+
+def _denominator_context(tree: _Live):
+    args = stage_parser("page-read denominator").parse_args(
+        [
+            "--run-root",
+            str(tree.root),
+            "--run-id",
+            "r",
+            "--scenario",
+            tree.scenario,
+            "--serving-recipes-config",
+            str(tree.catalogue),
+            "--perlector-protocol-config",
+            str(tree.protocol),
+            "--models-config",
+            str(_page_roster(tree.protocol)),
+        ]
+    )
+    return open_context(args, RECENSOR)
+
+
+def _forge_reading(tree: _Live, ordinal: int, change) -> None:
+    """Rewrite one page reading and rewitness the Perlector's boundary, so only the
+    denominator's own recomputation is left to catch it."""
+    directory = tree.root / "r" / "4_perlector" / "artifacts" / "page-reading"
+    [path] = [
+        path
+        for path in directory.glob("*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["payload"]["page_ordinal"] == ordinal
+    ]
+    record = json.loads(path.read_text(encoding="utf-8"))
+    change(record["payload"])
+    record["self_hash"] = self_hash({k: v for k, v in record.items() if k != "self_hash"})
+    path.write_bytes(canonical_bytes(record))
+    rewitness_stage_boundary(RunTree(tree.root, "r"), PERLECTOR)
+
+
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    [
+        (
+            lambda payload: payload.update(request_digest="0" * 64),
+            "records a request digest its feed's prompt and images do not give",
+        ),
+        (
+            lambda payload: payload["capacity"].update(max_tokens=1),
+            "records a capacity its sealed serving row does not give",
+        ),
+        (
+            lambda payload: payload["sampling"]["sent"].update(seed_note="x"),
+            "engine_call is not this page's request",
+        ),
+    ],
+    ids=["request-digest", "capacity", "sampling"],
+)
+def test_the_denominator_binds_a_live_reading_to_its_pages_request(
+    live_tree, tmp_path, monkeypatch, change, refusal
+):
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
+    assert exit_code == 0
+    _forge_reading(live_tree, 1, change)
+    with pytest.raises(FatalAccounting, match=refusal):
+        reading_acts(_denominator_context(live_tree))
+
+
+def test_the_denominator_measures_a_capacity_refusal_again(tmp_path, monkeypatch):
+    tree = _live_chain(tmp_path / "small", max_model_len=400)
+    _endpoint, exit_code = _read_pages(tree, tmp_path, monkeypatch)
+    assert exit_code == 0
+    rows = reading_acts(_denominator_context(tree))
+    assert [row["act_key"] for row in rows] == ["p1:unread", "p2:unread"]
+    _forge_reading(
+        tree, 1, lambda payload: payload["capacity"]["capacity"].update(max_model_len=401)
+    )
+    with pytest.raises(FatalAccounting, match="records a capacity its sealed serving row"):
+        reading_acts(_denominator_context(tree))
 
 
 def test_a_page_sent_but_never_answered_is_sent_again_naming_the_first_send(

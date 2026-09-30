@@ -7,6 +7,7 @@ another through a side door.  The fixture is read as TOML data, not imported.
 """
 
 import argparse
+import base64
 import copy
 import hashlib
 import json
@@ -97,6 +98,7 @@ from common.decoding import (
     STRUCTURE_RECOVERY_SCHEDULE,
     chair_attempt_decoding,
     load_decoding_policy,
+    perlector_page_max_tokens,
     recorded_sampling,
     refuse_retired_call_record,
     structure_recovery_policy,
@@ -2744,6 +2746,7 @@ def _verify_page_reading(
         attempt,
     )
     _verify_reply(context, index, what, ordinal, page_id, payload, feed)
+    _verify_request(context, what, reading, payload, feed)
     _verify_disposition(what, payload)
     plans = _entry_plans(index, what, payload, feed, page_id)
     page_holds = _verify_accounting(
@@ -2914,6 +2917,167 @@ def _verify_reply(
         not mismatched,
         f"{what}'s reading is not what its reply gives ({', '.join(mismatched)}): the answer and "
         "its problems are read again, never taken from the record",
+    )
+
+
+def _verify_request(
+    context,
+    what: str,
+    reading: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    feed: Mapping[str, Any],
+) -> None:
+    """The request a reading records, and the engine call it names, built again from the feed.
+
+    A page that was asked records the digest of its request, the prompt stage
+    4's builder renders from the feed and the images the feed names. A live
+    page records its capacity, and that is exactly what the sealed serving row
+    (at the tier the record names) admits or refuses for this request under the
+    sealed page answer cap. A live answer's `engine_call` names a call record
+    and response the reading inputs, and that call is this request: its bytes
+    rebuilt from the prompt and images carry the call's own digest, its images,
+    capacity, receipt, model and sampling are the reading's, and its sampling is
+    the Perlector's sealed row with the receipt's seed.
+    """
+    state = payload["parse_state"]
+    capacity = payload.get("capacity")
+    engine_call = payload.get("engine_call")
+    if state == page_path.NOT_RUN:
+        return
+    chair = context.registry.resolve(PERLECTOR_CHAIR)
+    _require(
+        isinstance(chair, ChairIdentity),
+        f"{what}'s reading was asked, yet this run's Perlector chair is absent",
+    )
+    try:
+        text = page_path.request_text(chair.serving_recipe, feed)
+        image_sha256s = page_path.request_image_sha256s(feed)
+    except (ContractError, KeyError, TypeError) as error:
+        raise FatalAccounting(f"{what}'s request cannot be built again: {error}") from error
+    refused = state == page_path.REFUSED_CAPACITY
+    _require(
+        payload.get("request_digest")
+        == (None if refused else page_path.request_digest(text, image_sha256s)),
+        f"{what}'s reading records a request digest its feed's prompt and images do not give",
+    )
+    if capacity is None:
+        _require(
+            not refused and engine_call is None,
+            f"{what}'s reading was refused or answered live, yet records no capacity",
+        )
+        return
+    _verify_capacity(context, what, chair, payload, feed, text)
+    if engine_call is not None:
+        _verify_engine_call(context, what, chair, reading, payload, feed, text, image_sha256s)
+
+
+def _verify_capacity(context, what, chair, payload, feed, text) -> None:
+    """A live reading's capacity is what its sealed serving row gives for this request."""
+    from common.request_capacity import RequestCapacityRefusal
+    from operations.serving.assembly import bound_serving_recipes
+    from operations.serving.errors import ServingError
+
+    capacity = payload["capacity"]
+    record = capacity.get("capacity") if isinstance(capacity, Mapping) else None
+    tier = record.get("tier") if isinstance(record, Mapping) else None
+    try:
+        row = bound_serving_recipes(context, context.args.serving_recipes_config).for_identity(
+            chair, tier
+        )
+        policy, _digest = sealed_decoding_policy(context)
+        expected: Any = page_path.request_capacity(
+            row, chair.serving_recipe, feed, text, perlector_page_max_tokens(policy)
+        )
+        problems = None
+    except RequestCapacityRefusal as refusal:
+        if refusal.capacity is None:
+            raise FatalAccounting(f"{what}'s request cannot be measured: {refusal}") from refusal
+        expected = {"capacity": refusal.capacity, "answer_reserve": None, "max_tokens": None}
+        problems = [{"code": page_path.REFUSED_CAPACITY, "detail": str(refusal)}]
+    except (ContractError, ServingError, KeyError, TypeError, ValueError) as error:
+        raise FatalAccounting(f"{what}'s request cannot be measured again: {error}") from error
+    refused = payload["parse_state"] == page_path.REFUSED_CAPACITY
+    _require(
+        capacity == expected
+        and (problems is not None) == refused
+        and (not refused or payload["problems"] == problems),
+        f"{what}'s reading records a capacity its sealed serving row does not give for its "
+        "request: whether a page fitted is measured again, never taken from the record",
+    )
+
+
+def _verify_engine_call(context, what, chair, reading, payload, feed, text, image_sha256s) -> None:
+    """A live answer's call record is this page's request, answered under the sealed row."""
+    from common.contracts.envelope import read_verified
+    from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
+    from common.perlector_audit import decode_recorded_generation
+    from operations.serving.errors import ServingError
+    from operations.serving.http import request_body
+
+    engine_call = payload["engine_call"]
+    inputs = reading.get("inputs", [])
+    _require(
+        engine_call.get("raw_response_ref") in inputs
+        and engine_call.get("call_record_ref") in inputs,
+        f"{what}'s reading does not input the response and call record its engine_call names",
+    )
+    provenance = payload.get("provenance")
+    try:
+        call = json.loads(
+            read_verified(
+                context.tree.read_bytes, engine_call["call_record_ref"], "a page call record"
+            )
+        )
+        _require(isinstance(call, dict), f"{what}'s call record is not a JSON object")
+        verify_retained_call_sampling(context, call, PERLECTOR_CHAIR)
+        generation = decode_recorded_generation(call.get("generation_sent"))
+        body = request_body(
+            {
+                **generation,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            *(
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": "data:image/png;base64,"
+                                        + base64.b64encode(image).decode("ascii")
+                                    },
+                                }
+                                for image in page_path.request_images(feed, context.tree.read_bytes)
+                            ),
+                            {"type": "text", "text": text},
+                        ],
+                    }
+                ],
+            },
+            model_id=engine_call["served_model_id"],
+            seed=generation.get("seed"),
+            deterministic=False,
+        )
+        policy, _digest = sealed_decoding_policy(context)
+    except FatalAccounting:
+        raise
+    except (ContractError, ServingError, KeyError, TypeError, ValueError) as error:
+        raise FatalAccounting(f"{what}'s call record cannot be read again: {error}") from error
+    _require(
+        call.get("schema") == CHAIR_CALL_RECORD_SCHEMA
+        and call.get("chair") == PERLECTOR_CHAIR
+        and call.get("kind") == "chat-completions"
+        and call.get("request_sha256") == digest_bytes(body)
+        and call.get("image_sha256s") == image_sha256s
+        and call.get("raw_response_ref") == engine_call["raw_response_ref"]
+        and call.get("served_model_id") == engine_call["served_model_id"]
+        and call.get("response_model") == engine_call["served_model_id"]
+        and call.get("capacity") == payload["capacity"]["capacity"]
+        and generation.get("max_tokens") == payload["capacity"]["max_tokens"]
+        and isinstance(provenance, Mapping)
+        and call.get("receipt_ref") == provenance.get("receipt_ref")
+        and payload.get("sampling") == page_path.page_sampling(policy, chair.role),
+        f"{what}'s engine_call is not this page's request: its call record's request, images, "
+        "capacity, receipt, model or sampling is not what the feed and the sealed row give",
     )
 
 

@@ -771,7 +771,7 @@ def _validate_live_reproof_request(
         raise SchemaRefusal(f"an audit re-proof call's sampling is off: {error}") from error
 
 
-def _decode_recorded_generation(value: Any) -> Any:
+def decode_recorded_generation(value: Any) -> Any:
     """Restore the JSON-native generation values retained by ChairClient.
 
     Call records replace native floats with their exact shortest wire decimal
@@ -783,19 +783,19 @@ def _decode_recorded_generation(value: Any) -> Any:
         if set(value) == WIRE_DECIMAL_FIELDS and value.get("schema") == WIRE_DECIMAL_SCHEMA:
             decimal = value.get("decimal")
             if not isinstance(decimal, str):
-                raise SchemaRefusal("an audit re-proof call has a malformed wire decimal")
+                raise SchemaRefusal("a retained call record has a malformed wire decimal")
             try:
                 decoded = float(decimal)
             except ValueError as error:
                 raise SchemaRefusal(
-                    "an audit re-proof call has a malformed wire decimal"
+                    "a retained call record has a malformed wire decimal"
                 ) from error
             if not math.isfinite(decoded) or json.dumps(decoded) != decimal:
-                raise SchemaRefusal("an audit re-proof call has a non-canonical wire decimal")
+                raise SchemaRefusal("a retained call record has a non-canonical wire decimal")
             return decoded
-        return {key: _decode_recorded_generation(item) for key, item in value.items()}
+        return {key: decode_recorded_generation(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [_decode_recorded_generation(item) for item in value]
+        return [decode_recorded_generation(item) for item in value]
     return value
 
 
@@ -805,7 +805,7 @@ def _rebuild_chair_request_bytes(
     """Rebuild the exact compact, sorted JSON bytes ChairClient sent."""
     if not isinstance(recorded_generation, dict):
         raise SchemaRefusal("an audit re-proof call has no recorded generation object")
-    generation = _decode_recorded_generation(recorded_generation)
+    generation = decode_recorded_generation(recorded_generation)
     retained_seed = generation.get("seed")
     if type(retained_seed) is not int or retained_seed != seed:
         raise SchemaRefusal("an audit re-proof call retained another seed")
