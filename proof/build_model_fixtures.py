@@ -43,6 +43,7 @@ FIXTURE_CHAIRS = (
     "designator_structure",
     "designator_surya",
     "perlector",
+    "secondary_proposer",
 )
 
 

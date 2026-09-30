@@ -6,6 +6,8 @@ not contradict.
 
 from pathlib import Path
 
+import pytest
+
 from common.contracts.outcomes import OutcomeClass, classify
 from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR
 from common.runtree.store import RunTree
@@ -27,6 +29,7 @@ def _perlectio_for(tree, act_key):
     )
 
 
+@pytest.mark.act_path
 def test_engine_declared_length_produces_truncated_with_no_reading_failure_declared(tmp_path):
     """Unlike `truncated-reading`, this scenario declares no `reading_failure`
     row at all -- the outcome must come purely from the truncation detector
@@ -64,6 +67,7 @@ def test_engine_declared_length_produces_truncated_with_no_reading_failure_decla
     }
 
 
+@pytest.mark.act_path
 def test_no_readable_text_forces_empty_reading_and_a_whole_act_gap(tmp_path):
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "no-readable-text-reading")
@@ -96,6 +100,7 @@ def test_no_readable_text_forces_empty_reading_and_a_whole_act_gap(tmp_path):
     assert review["outcome"] == "held-for-review"
 
 
+@pytest.mark.act_path
 def test_the_second_act_is_unaffected_by_the_first_acts_declared_failure(tmp_path):
     """Both new scenarios declare a failure for a1 only; a2 must still read
     and establish normally, proving the declaration is scoped per-act."""
@@ -115,6 +120,7 @@ def test_the_second_act_is_unaffected_by_the_first_acts_declared_failure(tmp_pat
         assert "a2" in established
 
 
+@pytest.mark.act_path
 def test_a_declared_truncated_reading_never_carries_a_complete_truncation_record(tmp_path):
     """`truncated-reading` declares its outcome directly (`declared_reading_failure`,
     not the engine's stop-reason), over text that looks clean by every computed

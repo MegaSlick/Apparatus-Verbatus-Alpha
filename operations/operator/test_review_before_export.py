@@ -173,6 +173,7 @@ def test_opening_an_unfinished_run_changes_no_path_bytes_size_or_mtime(witnessed
     assert _census(witnessed_run / RUN_ID) == before
 
 
+@pytest.mark.act_path
 def test_the_failed_reproof_run_can_be_opened_and_understood_before_export(
     witnessed_run: Path, tmp_path: Path
 ):
@@ -1537,6 +1538,7 @@ def exported_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return run_root
 
 
+@pytest.mark.act_path
 def test_a_held_acts_reading_and_doubt_survive_the_export(exported_run: Path):
     """The screen this exists for shows a held act; the export writes it no text."""
     projection = dataclasses.asdict(_projection(exported_run))
@@ -1603,6 +1605,7 @@ def test_the_pre_export_reading_path_prints_every_state_the_same_way():
     assert refused.value.index is None
 
 
+@pytest.mark.act_path
 def test_a_stopped_runs_own_render_carries_a_doubt_line_for_every_reading(
     witnessed_run: Path, tmp_path: Path
 ):

@@ -72,6 +72,7 @@ def invoke_designator(tmp_path, scenario: str = "happy") -> subprocess.Completed
     )
 
 
+@pytest.mark.act_path
 def test_missing_exemplar_page_stops_at_the_first_downstream_boundary(tmp_path, rebind_stage_seal):
     tree = populated_run(tmp_path)
     entry = next(
@@ -91,6 +92,7 @@ def test_missing_exemplar_page_stops_at_the_first_downstream_boundary(tmp_path, 
     assert snapshot(tree.root) == before
 
 
+@pytest.mark.act_path
 def test_a_changed_sealed_pixel_blob_stops_before_designator_crops_or_rehashes_it(
     tmp_path, rebind_stage_seal
 ):
@@ -122,6 +124,7 @@ def test_a_changed_sealed_pixel_blob_stops_before_designator_crops_or_rehashes_i
     assert snapshot(tree.root) == before
 
 
+@pytest.mark.act_path
 def test_a_missing_sealed_pixel_blob_is_a_named_boundary_failure_not_a_traceback(
     tmp_path, rebind_stage_seal
 ):
@@ -146,6 +149,7 @@ def test_a_missing_sealed_pixel_blob_is_a_named_boundary_failure_not_a_traceback
     assert snapshot(tree.root) == before
 
 
+@pytest.mark.act_path
 def test_a_refused_page_keeps_its_door_alarm_evidence_at_the_downstream_boundary(tmp_path):
     tree = populated_run(tmp_path, "refused-page")
     refused = next(
@@ -167,6 +171,7 @@ def test_a_refused_page_keeps_its_door_alarm_evidence_at_the_downstream_boundary
     assert snapshot(tree.root) == before
 
 
+@pytest.mark.act_path
 def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(
     tmp_path, rebind_stage_seal, rewitness_boundary
 ):

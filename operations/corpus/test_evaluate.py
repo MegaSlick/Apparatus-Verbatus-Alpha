@@ -444,6 +444,7 @@ def sealed_run(tmp_path_factory):
     return RunTree(run_root, "r")
 
 
+@pytest.mark.act_path
 def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_counted(
     sealed_run, tmp_path, monkeypatch
 ):
@@ -546,6 +547,7 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
         write_report(report, written)
 
 
+@pytest.mark.act_path
 def test_a_missed_record_moves_only_the_aggregate_that_counts_it(sealed_run):
     """A missed act must be visible in a number, not only in a count."""
     tree = sealed_run
@@ -580,6 +582,7 @@ def test_a_missed_record_moves_only_the_aggregate_that_counts_it(sealed_run):
     assert "missed" in report["aggregate"]["including_missed_records"]["scope"]
 
 
+@pytest.mark.act_path
 def test_a_page_the_run_never_sealed_leaves_its_records_not_attempted_never_scored(sealed_run):
     tree = sealed_run
     report = evaluate_run(
@@ -598,6 +601,7 @@ def test_a_page_the_run_never_sealed_leaves_its_records_not_attempted_never_scor
     )
 
 
+@pytest.mark.act_path
 def test_a_pipeline_act_no_reference_record_covers_is_reported_and_not_scored(sealed_run):
     tree = sealed_run
     report = evaluate_run(
@@ -613,6 +617,7 @@ def test_a_pipeline_act_no_reference_record_covers_is_reported_and_not_scored(se
     assert report["denominators"]["reference_records_missed"] == 0
 
 
+@pytest.mark.act_path
 def test_every_record_row_carries_one_closed_shape_whatever_its_outcome(sealed_run):
     """A scored, a missed and a not-attempted row all answer the same questions."""
     tree = sealed_run
@@ -644,6 +649,7 @@ def test_every_record_row_carries_one_closed_shape_whatever_its_outcome(sealed_r
     assert len({frozenset(row) for row in report["records"]}) == 1
 
 
+@pytest.mark.act_path
 def test_a_comparison_refusal_travels_under_this_modules_name(sealed_run):
     """`compare_page` refuses by its own vocabulary; a caller sees this module's.
 
@@ -676,6 +682,7 @@ def test_a_comparison_refusal_travels_under_this_modules_name(sealed_run):
     assert "region-outside-page" in str(refused.value)
 
 
+@pytest.mark.act_path
 def test_two_reference_pages_over_one_page_digest_are_refused(sealed_run):
     tree = sealed_run
     reference = _fixture_reference_for_page_one(tree)
@@ -683,6 +690,7 @@ def test_two_reference_pages_over_one_page_digest_are_refused(sealed_run):
         evaluate_run(tree, [reference, reference], code_ref="test")
 
 
+@pytest.mark.act_path
 def test_naming_a_ledger_is_a_check_not_a_caption(sealed_run):
     """`reference_ledger_verified` can only be true of something that is a ledger."""
     tree = sealed_run
@@ -710,6 +718,7 @@ def test_naming_a_ledger_is_a_check_not_a_caption(sealed_run):
         )
 
 
+@pytest.mark.act_path
 def test_a_reference_page_that_does_not_validate_is_refused_under_this_modules_name(sealed_run):
     """Round 2 item 11: a delegated refusal travels under the caller's vocabulary."""
     reference = json.loads(json.dumps(_fixture_reference_for_page_one(sealed_run)))
@@ -719,6 +728,7 @@ def test_a_reference_page_that_does_not_validate_is_refused_under_this_modules_n
     assert "empty-normalized-text" in str(refused.value), "the delegate's own name is kept in view"
 
 
+@pytest.mark.act_path
 def test_the_command_line_refuses_a_missing_or_damaged_input_by_name(sealed_run, tmp_path):
     with pytest.raises(CorpusRefusal, match="^missing-input-file:"):
         load_reference_pages(tmp_path / "nowhere.jsonl")
@@ -734,12 +744,14 @@ def test_the_command_line_refuses_a_missing_or_damaged_input_by_name(sealed_run,
         load_reference_ledger(not_a_ledger)
 
 
+@pytest.mark.act_path
 def test_a_run_with_no_verified_export_is_refused_not_scored(sealed_run, tmp_path):
     reference = _fixture_reference_for_page_one(sealed_run)
     with pytest.raises(CorpusRefusal, match="^no-export:"):
         evaluate_run(RunTree(tmp_path / "nowhere", "r"), [reference], code_ref="test")
 
 
+@pytest.mark.act_path
 def test_an_evaluation_must_name_the_code_it_ran_under(sealed_run):
     reference = _fixture_reference_for_page_one(sealed_run)
     with pytest.raises(CorpusRefusal, match="^malformed-record:"):
@@ -749,6 +761,7 @@ def test_an_evaluation_must_name_the_code_it_ran_under(sealed_run):
 # --- The validator ----------------------------------------------------------------
 
 
+@pytest.mark.act_path
 def test_the_validator_refuses_a_report_edited_after_it_was_sealed(sealed_run):
     report = json.loads(
         json.dumps(
@@ -766,6 +779,7 @@ def test_the_validator_refuses_a_report_edited_after_it_was_sealed(sealed_run):
     assert "disagree with the denominators" in str(refused.value)
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("value", [[1], {"delivered": True}, {"delivered": -1}, {"delivered": "1"}])
 def test_the_validator_refuses_a_category_histogram_that_is_not_counts(sealed_run, value):
     """A list, a bool, a negative or a string is refused by name before it is summed."""
@@ -781,6 +795,7 @@ def test_the_validator_refuses_a_category_histogram_that_is_not_counts(sealed_ru
     assert "reference_records_scored_by_export_category" in str(refused.value)
 
 
+@pytest.mark.act_path
 def test_the_validator_holds_the_page_records_to_the_pages_compared_count(sealed_run):
     """A report claiming N compared pages carries N comparison records, or it is refused."""
     report = json.loads(
@@ -796,6 +811,7 @@ def test_the_validator_holds_the_page_records_to_the_pages_compared_count(sealed
     assert "run_pages_compared" in str(refused.value)
 
 
+@pytest.mark.act_path
 def test_the_validator_refuses_a_page_compared_twice_behind_a_whole_count(sealed_run):
     """Duplicating one comparison keeps the count right and loses a page's evidence."""
     report = json.loads(
@@ -832,6 +848,7 @@ def test_the_validator_refuses_a_page_compared_twice_behind_a_whole_count(sealed
         validate_evaluation(_reseal(broken))
 
 
+@pytest.mark.act_path
 def test_the_validator_refuses_a_foreign_schema_and_a_label_that_does_not_match(sealed_run):
     report = json.loads(
         json.dumps(
@@ -850,6 +867,7 @@ def test_the_validator_refuses_a_foreign_schema_and_a_label_that_does_not_match(
     assert "sealed identity" in str(refused.value)
 
 
+@pytest.mark.act_path
 def test_write_report_refuses_an_off_shape_record_before_it_reaches_disk(sealed_run, tmp_path):
     report = json.loads(
         json.dumps(
@@ -865,6 +883,7 @@ def test_write_report_refuses_an_off_shape_record_before_it_reaches_disk(sealed_
 # --- The command-line entry point ---------------------------------------------------
 
 
+@pytest.mark.act_path
 def test_the_command_line_scores_a_sealed_run_and_prints_its_summary(sealed_run, tmp_path, capsys):
     pages = tmp_path / "reference-pages.jsonl"
     pages.write_text(json.dumps(_fixture_reference_for_page_one(sealed_run)) + "\n")

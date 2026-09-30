@@ -72,6 +72,7 @@ def test_recovery_decision_accepts_an_absent_real_submission_scenario():
     assert _wants_recovery(confirmed, scenario=None)
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("real_route", [False, True])
 def test_stage_publishes_at_most_one_observation_request_per_page(
     tmp_path, monkeypatch, real_route

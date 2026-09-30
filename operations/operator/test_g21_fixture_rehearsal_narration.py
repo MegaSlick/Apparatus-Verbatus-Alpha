@@ -29,6 +29,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from .errors import OperatorError
 from .surface import OperatorSurface
 
@@ -94,6 +96,7 @@ def test_review_scenario_narration_never_names_a_page_it_never_touched(
     )
 
 
+@pytest.mark.act_path
 def test_ink_free_page_scenarios_closing_line_names_its_minted_fallback_act(
     tmp_path: Path,
 ) -> None:
@@ -111,6 +114,7 @@ def test_ink_free_page_scenarios_closing_line_names_its_minted_fallback_act(
     ), accounted
 
 
+@pytest.mark.act_path
 def test_refused_page_scenarios_closing_line_matches_its_own_total(
     tmp_path: Path,
 ) -> None:

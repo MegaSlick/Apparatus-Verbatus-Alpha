@@ -31,6 +31,7 @@ from common.runtree.store import RunTree  # noqa: E402
 from common.stage import verify_final_seal  # noqa: E402
 
 
+@pytest.mark.act_path
 def test_both_acts_are_read_accepted_and_cite_their_candidate(tmp_path):
     run = page_break_run(tmp_path)
     rows = seal_rows(run.run_root)

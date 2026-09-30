@@ -29,7 +29,11 @@ ARMARIUM_CLI = ROOT / "pipeline" / "7_armarium" / "run.py"
 
 
 def _orchestrate(
-    run_root: Path, run_id: str, *, formats_config: Path | None = None
+    run_root: Path,
+    run_id: str,
+    *,
+    formats_config: Path | None = None,
+    scenario: str = "page-unbroken",
 ) -> subprocess.CompletedProcess:
     command = [
         sys.executable,
@@ -37,7 +41,7 @@ def _orchestrate(
         "--fixture",
         "synthetic-two-page-v0",
         "--scenario",
-        "happy",
+        scenario,
         "--run-id",
         run_id,
         "--run-root",
@@ -53,7 +57,9 @@ def _orchestrate(
     )
 
 
-def _run_armarium(run_root: Path, run_id: str) -> subprocess.CompletedProcess:
+def _run_armarium(
+    run_root: Path, run_id: str, scenario: str = "page-unbroken"
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
             sys.executable,
@@ -63,7 +69,7 @@ def _run_armarium(run_root: Path, run_id: str) -> subprocess.CompletedProcess:
             "--run-id",
             run_id,
             "--scenario",
-            "happy",
+            scenario,
         ],
         cwd=ROOT,
         capture_output=True,
@@ -79,9 +85,10 @@ def _export(tree: RunTree) -> dict:
     )
 
 
+@pytest.mark.act_path
 def test_armarium_seals_a_self_verifying_product_bundle(tmp_path):
     root = tmp_path / "runs"
-    result = _orchestrate(root, "bundle")
+    result = _orchestrate(root, "bundle", scenario="happy")
     assert result.returncode == 0, result.stderr
 
     tree = RunTree(root, "bundle")
@@ -141,9 +148,10 @@ def test_run_bound_pixel_embedding_packages_page_and_crop_bytes(tmp_path):
     assert manifest["claims"]["pixels"]["resolution_claim"].startswith("embedded pixels")
 
 
+@pytest.mark.act_path
 def test_product_keeps_non_text_provenance_and_every_continuation_citation(tmp_path):
     root = tmp_path / "runs"
-    result = _orchestrate(root, "provenance")
+    result = _orchestrate(root, "provenance", scenario="happy")
     assert result.returncode == 0, result.stderr
 
     tree = RunTree(root, "provenance")
@@ -260,6 +268,7 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
     )
 
 
+@pytest.mark.act_path
 def test_a_provenance_that_fails_deeper_validation_is_also_downgraded_to_refused(tmp_path):
     """The `except SchemaRefusal` branch in run.py's main(), not just the narrower
     field-presence check `missing_export_provenance` performs before it.
@@ -277,7 +286,7 @@ def test_a_provenance_that_fails_deeper_validation_is_also_downgraded_to_refused
     provenance cannot simply carry its own falsified referrers along with it.
     """
     root = tmp_path / "runs"
-    result = _orchestrate(root, "deeper-refusal")
+    result = _orchestrate(root, "deeper-refusal", scenario="happy")
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "deeper-refusal")
     original = next(
@@ -350,7 +359,7 @@ def test_a_provenance_that_fails_deeper_validation_is_also_downgraded_to_refused
     _rebind_stage_seal(tree, RECENSOR)
     _rebind_stage_seal(tree, ARCHETYPUS)
 
-    result = _run_armarium(root, "deeper-refusal")
+    result = _run_armarium(root, "deeper-refusal", "happy")
     assert result.returncode == 3, result.stderr
     export = _export(tree)
     assert export["payload"]["aggregate"]["status"] == "partial"
@@ -366,10 +375,11 @@ def test_a_provenance_that_fails_deeper_validation_is_also_downgraded_to_refused
     ]
 
 
+@pytest.mark.act_path
 def test_a_digest_damaged_testimonium_hard_stops_instead_of_exporting_partial(tmp_path):
     """Broken witness custody is damage, not an act-level provenance refusal."""
     root = tmp_path / "runs"
-    result = _orchestrate(root, "damaged-testimonium")
+    result = _orchestrate(root, "damaged-testimonium", scenario="happy")
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "damaged-testimonium")
     first_act = next(
@@ -389,7 +399,7 @@ def test_a_digest_damaged_testimonium_hard_stops_instead_of_exporting_partial(tm
     # under the Perlectio's sealed digest reference.
     testimony_path.write_bytes(testimony_path.read_bytes() + b"\n")
 
-    result = _run_armarium(root, "damaged-testimonium")
+    result = _run_armarium(root, "damaged-testimonium", "happy")
 
     assert result.returncode == 2
     assert "bytes changed under a sealed reference" in result.stderr
@@ -402,6 +412,7 @@ def test_a_digest_damaged_testimonium_hard_stops_instead_of_exporting_partial(tm
     )
 
 
+@pytest.mark.act_path
 def test_a_damaged_witness_receipt_hard_stops_rather_than_refusing_only_its_act(tmp_path):
     """The narrowed `except SchemaRefusal` scope, driven where it is the only guard.
 
@@ -415,7 +426,7 @@ def test_a_damaged_witness_receipt_hard_stops_rather_than_refusing_only_its_act(
     damage, not one act's provenance refusal.
     """
     root = tmp_path / "runs"
-    result = _orchestrate(root, "damaged-receipt")
+    result = _orchestrate(root, "damaged-receipt", scenario="happy")
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "damaged-receipt")
     first_act = next(
@@ -427,7 +438,7 @@ def test_a_damaged_witness_receipt_hard_stops_rather_than_refusing_only_its_act(
     shutil.rmtree(tree.root / "7_armarium")
     receipt_path.write_bytes(receipt_path.read_bytes() + b"\n")
 
-    result = _run_armarium(root, "damaged-receipt")
+    result = _run_armarium(root, "damaged-receipt", "happy")
 
     assert result.returncode == 2, result.stdout
     assert "run receipt" in result.stderr
@@ -632,6 +643,7 @@ def test_an_established_reading_without_its_act_attachment_view_is_refused_at_ex
 # --- `claims.not_measured` is derived from the run, not declared by the build --
 
 
+@pytest.mark.act_path
 def test_the_export_block_matches_what_the_run_tree_itself_records(tmp_path):
     """Every row re-derived here from the run's own evidence, independently.
 
@@ -643,7 +655,7 @@ def test_the_export_block_matches_what_the_run_tree_itself_records(tmp_path):
     configurations and compares.
     """
     root = tmp_path / "runs"
-    result = _orchestrate(root, "not-measured")
+    result = _orchestrate(root, "not-measured", scenario="happy")
     assert result.returncode == 0, result.stderr
 
     tree = RunTree(root, "not-measured")

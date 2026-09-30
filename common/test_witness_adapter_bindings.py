@@ -194,8 +194,9 @@ def test_the_live_roster_pins_one_adapter_per_chair():
     """The three adapters now partition the roster one-to-one.
 
     Chandra reads page geometry natively, Churro answers whole pages with no
-    layout, and DAI crops acts. Pinning the assignment makes a moved binding a
-    loud fact rather than a silent reassignment of which ink a chair is shown.
+    layout, and DAI reads the records its detector finds on each page. Pinning
+    the assignment makes a moved binding a loud fact rather than a silent
+    reassignment of which ink a chair is shown.
     """
     models = _models()
     witness_adapters.validate_witness_adapter_bindings(models)
@@ -212,7 +213,7 @@ def test_the_live_roster_pins_one_adapter_per_chair():
         or getattr(chair, "witness_scope", None) is not None
     } == {
         "attestator_1": ("chandra.v1", "page"),
-        "attestator_2": ("dai.v1", "act"),
+        "attestator_2": ("dai.v1", "page"),
         "attestator_3": ("churro.v1", "page"),
     }
 

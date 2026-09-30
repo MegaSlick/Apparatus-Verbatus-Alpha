@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Iterator, cast
 
+import pytest
+
 from common.contracts.errors import SchemaRefusal
 from common.durability import is_temporary_name
 from common.runtree.store import RunTree
@@ -289,6 +291,7 @@ def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
     return crashed
 
 
+@pytest.mark.act_path
 def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewriting(
     tmp_path: Path,
 ) -> None:
@@ -383,6 +386,7 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
     assert _assert_every_reference_resolves(alias, "r") == matched
 
 
+@pytest.mark.act_path
 def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     tmp_path: Path,
 ) -> None:

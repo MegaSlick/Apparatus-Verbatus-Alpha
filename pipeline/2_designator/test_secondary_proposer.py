@@ -13,7 +13,6 @@ import hashlib
 import shutil
 import subprocess
 import sys
-import tomllib
 import types
 from pathlib import Path
 
@@ -95,23 +94,6 @@ def test_detector_corners_are_floored_into_the_page_before_the_hull():
 
 # --- level 2: records and rescue crops over a real run tree ---------------------
 
-_ABSENT_BLOCK = """[chairs.secondary_proposer]
-state = \"absent\"
-reason = \"no secondary proposer is configured for the offline walking skeleton\"
-"""
-
-_CONFIGURED_BLOCK = """[chairs.secondary_proposer]
-state = \"configured\"
-source = \"local-repository\"
-path = \"designator_structure\"
-digest_manifest = \"{digest_manifest}\"
-manifest = \"manifests/designator_structure.json\"
-serving_recipe = \"fake-secondary-proposer-v0\"
-license_note = \"fixture identity only; no model weights or model license apply\"
-"""
-
-TIERS = ("generic-24gb", "generic-48gb", "generic-80gb-plus")
-
 # Page 1 of the synthetic fixture holds a1 at (20, 20, 160, 80) and a2 at
 # (20, 120, 160, 100). One record lies inside a1, slightly rotated; one
 # straddles both acts; one collapses to a single pixel at the page corner.
@@ -131,42 +113,17 @@ DECLARED_DETECTIONS = (
 
 
 def _configured(tmp_path: Path) -> list[str]:
-    """Stage flags for a run whose `secondary_proposer` is a fixture detector.
+    """Stage flags for a run on the committed roster, whose `secondary_proposer` is a
+    fixture detector, with a copy of the committed catalogue a test may edit.
 
-    A copy of the shipped roster with the chair configured (reusing the
-    structure chair's fixture snapshot as its stand-in identity) and the
-    shipped catalogue with the chair's fixture rows added. The fixture detector
-    answers with the fixture's `[[detector_record]]` rows: one over each act's
-    ink, which a test that needs other records replaces on the context.
+    The fixture detector answers with the fixture's `[[detector_record]]` rows:
+    one over each act's ink, which a test that needs other records replaces on
+    the context.
     """
-    config_root = tmp_path / "chair-config"
-    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
-    live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
-    assert _ABSENT_BLOCK in live
-    digest_manifest = tomllib.loads(live)["chairs"]["designator_structure"]["digest_manifest"]
-    models = config_root / "models.toml"
-    models.write_text(
-        live.replace(_ABSENT_BLOCK, _CONFIGURED_BLOCK.format(digest_manifest=digest_manifest)),
-        encoding="utf-8",
-    )
-    catalogue = config_root / "serving_recipes.toml"
-    catalogue.write_text(
-        (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8")
-        + "".join(
-            '\n[[profiles]]\nkind = "fixture"\nrecipe = "fake-secondary-proposer-v0"\n'
-            f'chair = "secondary_proposer"\ntier = "{tier}"\n'
-            'description = "offline walking-skeleton fixture for the record detector"\n'
-            for tier in TIERS
-        ),
-        encoding="utf-8",
-    )
-    return [
-        "--models-config",
-        str(models),
-        "--serving-recipes-config",
-        str(catalogue),
-    ]
+    catalogue = tmp_path / "chair-config" / "serving_recipes.toml"
+    catalogue.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ROOT / "config" / "serving_recipes.toml", catalogue)
+    return ["--serving-recipes-config", str(catalogue)]
 
 
 def _run(program: str, root: Path, extra: list[str]) -> subprocess.CompletedProcess:
@@ -763,6 +720,7 @@ def _orchestrate(root: Path, extra: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
+@pytest.mark.act_path
 def test_configuring_the_detector_changes_no_authoritative_outcome(tmp_path):
     from common.contracts.identities import artifact_id
     from common.contracts.stages import ARMARIUM, DESIGNATOR

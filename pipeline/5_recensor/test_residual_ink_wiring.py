@@ -318,6 +318,7 @@ def test_page_coverage_for_reads_every_page_an_acts_own_regions_touch(tmp_path):
     assert flagged({}) == []
 
 
+@pytest.mark.act_path
 def test_a_flagged_page_holds_every_act_that_touches_it_through_main(tmp_path, monkeypatch):
     """The one consequence of this whole instrument -- `flagged_pages` routing an
     act to `held-for-review`, and gating `confirmed-blank` -- that no test reached
@@ -361,6 +362,7 @@ def test_a_flagged_page_holds_every_act_that_touches_it_through_main(tmp_path, m
         assert "carry ink outside every region currently cut" in review["payload"]["reason"]
 
 
+@pytest.mark.act_path
 def test_a_second_recensor_pass_that_clears_a_flag_does_not_collide_with_the_first(
     tmp_path, monkeypatch
 ):
@@ -442,6 +444,7 @@ def test_a_second_recensor_pass_that_clears_a_flag_does_not_collide_with_the_fir
     }, "a third identical pass must not mint a new review artifact"
 
 
+@pytest.mark.act_path
 def test_an_unmeasurable_page_qualifies_an_otherwise_accepted_reason_through_main(
     tmp_path, monkeypatch
 ):

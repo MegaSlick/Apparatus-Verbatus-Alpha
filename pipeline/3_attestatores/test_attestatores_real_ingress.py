@@ -541,6 +541,7 @@ def test_the_shipped_real_catalogue_serves_every_witness_chair_at_every_tier():
 # ================================ the full pass ================================
 
 
+@pytest.mark.act_path
 def test_every_witness_runs_its_full_pass_over_a_real_submission(served_run, tmp_path, capsys):
     """The pass this section exists for, offline: three served chairs, no fixture.
 
@@ -675,6 +676,7 @@ def test_page_subject_reuses_a_supplied_index_rather_than_rewalking_the_exemplar
         attestatores.page_subject(context, 9, page_ids={1: "page-one"})
 
 
+@pytest.mark.act_path
 def test_live_and_publish_passes_walk_the_exemplar_index_once_each(
     served_run, tmp_path, monkeypatch
 ):

@@ -863,6 +863,7 @@ def live_seam(designated, witnessed, tmp_path_factory) -> SimpleNamespace:
 # =============================== the live seam ================================
 
 
+@pytest.mark.act_path
 def test_every_act_reaches_a_perlectio_bound_to_the_bytes_the_engine_sent(live_seam):
     """The claim the whole seam exists for, checked from both ends.
 
@@ -905,6 +906,7 @@ def test_every_act_reaches_a_perlectio_bound_to_the_bytes_the_engine_sent(live_s
     )
 
 
+@pytest.mark.act_path
 def test_the_whole_live_roster_answered_through_its_own_scope(live_seam):
     """Three witness chairs, three adapters, three scopes — none dropped.
 
@@ -945,6 +947,7 @@ def test_the_whole_live_roster_answered_through_its_own_scope(live_seam):
         )
 
 
+@pytest.mark.act_path
 def test_every_finish_reason_travels_verbatim_from_the_wire_to_both_records(live_seam):
     """One engine word, recorded unchanged by two stages that mean it differently.
 
@@ -965,6 +968,7 @@ def test_every_finish_reason_travels_verbatim_from_the_wire_to_both_records(live
         assert record["outcome"] == "read"
 
 
+@pytest.mark.act_path
 def test_the_receipts_on_provenance_are_the_receipts_the_chairs_really_published(live_seam):
     """The record protects the past, so it names the real moment.
 
@@ -1029,6 +1033,7 @@ def _assert_the_continuation_page_is_unmeasured_by_name(reviews: list[dict[str, 
     assert "page 2's testimony content coverage is unmeasured" in row["reason"], row["reason"]
 
 
+@pytest.mark.act_path
 def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(live_seam):
     """The stages after the seam have never met a live tree before this one.
 
@@ -1097,6 +1102,7 @@ def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(liv
     assert {record["outcome"] for record in published_readings(live_seam.run_root)} == {"read"}
 
 
+@pytest.mark.act_path
 def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_seam):
     """Which chair counts live, and exactly on what evidence — no silent roster.
 
@@ -1217,6 +1223,7 @@ def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_se
         assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0}
 
 
+@pytest.mark.act_path
 def test_a_geometry_free_page_witness_attaches_is_comparable_and_meets_the_floor(live_seam):
     """The one claim U12 exists for, on a live tree, with its counterfactual.
 
@@ -1301,6 +1308,7 @@ def test_a_geometry_free_page_witness_attaches_is_comparable_and_meets_the_floor
         assert coverage["under_witnessed"] is False, coverage
 
 
+@pytest.mark.act_path
 def test_a_page_witness_whose_text_is_not_this_page_attaches_to_nothing(designated, tmp_path):
     """The counterfactual for the basis above: `anchor-line` is not free.
 
@@ -1382,6 +1390,7 @@ def test_a_page_witness_whose_text_is_not_this_page_attaches_to_nothing(designat
     assert checked == 2, checked
 
 
+@pytest.mark.act_path
 def test_an_engine_that_reported_no_stop_word_is_recorded_as_unreported_and_held(
     designated, tmp_path
 ):
@@ -1431,6 +1440,7 @@ def test_an_engine_that_reported_no_stop_word_is_recorded_as_unreported_and_held
         assert record["payload"]["engine_call"]["finish_reason"] is None
 
 
+@pytest.mark.act_path
 def test_an_engine_word_this_pipeline_never_measured_fails_each_act_with_retained_evidence(
     designated, witnessed, tmp_path
 ):
@@ -1480,6 +1490,7 @@ def test_an_engine_word_this_pipeline_never_measured_fails_each_act_with_retaine
     )
 
 
+@pytest.mark.act_path
 def test_an_engine_prompt_too_long_400_is_a_retained_failed_perlectio_held_downstream(
     designated, witnessed, tmp_path
 ):
@@ -1544,6 +1555,7 @@ class _StoppedMidPass(Exception):
     """A pass that dies the moment its first main-pass result is on record."""
 
 
+@pytest.mark.act_path
 def test_a_pass_stopped_mid_reading_resumes_without_asking_again_and_the_tail_accepts_it(
     witnessed, designated, tmp_path, monkeypatch
 ):
@@ -1605,6 +1617,7 @@ def test_a_pass_stopped_mid_reading_resumes_without_asking_again_and_the_tail_ac
     assert sorted(item["act_key"] for item in export["payload"]["delivered"]) == ["a1", "a2"]
 
 
+@pytest.mark.act_path
 def test_the_identical_driver_in_fixture_mode_reproduces_the_orchestrated_tree(tmp_path):
     """Nothing this section added moves a fixture byte.
 

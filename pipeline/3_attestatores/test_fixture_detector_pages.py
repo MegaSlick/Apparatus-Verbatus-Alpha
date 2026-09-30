@@ -1,7 +1,7 @@
 """DAI read record by record on the fixture pass, as a served DAI is read.
 
-The runs use the page-read roster (`conftest.page_models_config`): DAI
-(`attestator_2`) page-scoped and its record detector on a fixture row, which
+The runs use the committed roster: DAI (`attestator_2`) page-scoped and its
+record detector on a fixture row, which
 answers from the fixture's `[[detector_record]]` rows. DAI's answer to each
 record is the fixture's `[[dai_record_response]]` row for it; everything else
 -- the crop it is shown, the closed model view, the retained capture -- is
@@ -24,7 +24,6 @@ from common.runtree.store import RunTree
 from conftest import (
     file_bytes_snapshot,
     load_stage,
-    page_roster_options,
     programs_through,
     run_stage,
 )
@@ -54,7 +53,7 @@ def _dai_pages(tree: RunTree) -> dict[int, dict]:
 
 
 def _through_designator(base: Path) -> tuple[Path, dict]:
-    options: dict[str, object] = {**page_roster_options(base / "models")}
+    options: dict[str, object] = {}
     root = base / "runs"
     for program in programs_through("designator"):
         result = run_stage(root, RUN_ID, "happy", program, **options)

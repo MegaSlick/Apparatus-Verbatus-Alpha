@@ -1,8 +1,8 @@
 """DAI reading the records its own detector found, from the Door to its page Testimonium.
 
-The roster is the page-read roster (`conftest.page_models_config`): DAI
-(`attestator_2`) is page-scoped and `secondary_proposer`, DAI's own project's
-record detector, is configured on a fixture row. The Door, Exemplar and Ink Map
+The roster is the committed one: DAI (`attestator_2`) is page-scoped and
+`secondary_proposer`, DAI's own project's record detector, is configured on a
+fixture row. The Door, Exemplar and Ink Map
 run as real programs; the Designator runs its own `main` in process, with the
 detector's boxes declared on its stage context in place of the shipped
 fixture's; the Attestatores run live through `operations/serving/fakes.py`, as in
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import load_stage, page_models_config, programs_through
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[1]
 DESIGNATOR_DIR = ROOT / "pipeline" / "2_designator"
@@ -63,6 +63,7 @@ from operations.serving.fakes import ScriptedAnswer  # noqa: E402
 designator = load_stage("2_designator")
 
 RUN_ID = "r"
+MODELS = ROOT / "config" / "models.toml"
 DAI = "attestator_2"
 # Page 1 holds a1 at (20, 20, 160, 80) and a2 at (20, 120, 160, 100); page 2
 # holds a2's continuation at (20, 20, 160, 60). The detector finds a2's record
@@ -77,11 +78,6 @@ DETECTIONS = (
     {"page_ordinal": 2, "corners": [[25, 25], [175, 25], [175, 75], [25, 75]], "score_bp": 8800},
 )
 DAI_CONTINUATION = "zeta eta"
-
-
-def _config(work: Path) -> Path:
-    """The page-read roster: DAI page-scoped, its detector on a fixture row."""
-    return page_models_config(work / "config")
 
 
 def _catalogue(path: Path, models: Path) -> Path:
@@ -148,7 +144,7 @@ def _witness(work: Path, detections, dai_answers: list[str], *, cap_stated: bool
     `cap_stated=False` drops `max_det` from the detector's run facts, so it
     states no cap.
     """
-    models = _config(work)
+    models = MODELS
     catalogue = _catalogue(work / "serving_recipes.toml", models)
     run_root = work / "runs"
     for program in programs_through("ink-map"):
@@ -436,7 +432,7 @@ def test_each_unit_call_is_bound_and_held_to_the_sealed_sampling_on_resume(tmp_p
 
     monkeypatch.setattr(attestatores, "verify_unit_call_sampling", recording)
     resumed = WitnessWorld(world.catalogue, world.decoding_sha256, tmp_path / "resume", {})
-    argv = _argv(tmp_path / "runs", world.catalogue, tmp_path / "config" / "models.toml", TIER)
+    argv = _argv(tmp_path / "runs", world.catalogue, MODELS, TIER)
     assert _run_main(attestatores, argv, serving_factory=resumed.factory) == EXIT_COMPLETE
     assert sorted(ordinal for _context, ordinal in checked) == [1, 2]
 

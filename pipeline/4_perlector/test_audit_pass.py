@@ -446,6 +446,7 @@ def _perlector_with_capturing_reader(root: Path, scenario: str, monkeypatch, pre
     return perlector, perlector.main(), calls
 
 
+@pytest.mark.act_path
 def test_the_published_perlectio_binds_exactly_the_audited_input_composition(tmp_path, monkeypatch):
     """`test_live_perlector.py` proves `_audited_reading_inputs`' dedup scope by
     calling it; this pins that the audit publisher actually uses it."""
@@ -475,6 +476,7 @@ def test_the_published_perlectio_binds_exactly_the_audited_input_composition(tmp
     assert sorted(map(as_set, published)) == sorted(map(as_set, composed))
 
 
+@pytest.mark.act_path
 def test_the_reader_receives_exactly_the_reproof_plan_the_perlectio_seals(tmp_path, monkeypatch):
     """Sol-S2, red-proved: Pass C sealed an instrument the reader never received.
 
@@ -675,6 +677,7 @@ def test_a_directional_or_empty_audit_request_is_refused_at_the_delivery_boundar
 # the draft; the chain's own wording fires only where the record is internally
 # consistent and the frozen draft disagrees. Each forgery below names the one
 # layer that catches it.
+@pytest.mark.act_path
 def test_the_chain_refuses_a_request_digest_that_is_not_the_frozen_plans_own(tmp_path):
     """The sealed digest is re-derived from the draft, never taken on trust.
 
@@ -705,6 +708,7 @@ def test_the_chain_refuses_a_request_digest_that_is_not_the_frozen_plans_own(tmp
         audit.validate_chain(tree, undelivered, final["subject_id"])
 
 
+@pytest.mark.act_path
 def test_a_sealed_v2_chain_is_refused_by_name(tmp_path):
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr
@@ -729,6 +733,7 @@ def test_a_sealed_v2_chain_is_refused_by_name(tmp_path):
         audit.validate_chain(LegacyTree(), final, final["subject_id"])
 
 
+@pytest.mark.act_path
 def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tmp_path):
     """`reproofs` alone could not tell a plan that ran from one that never could.
 
@@ -766,6 +771,7 @@ def test_an_exhausted_cap_seals_its_plan_without_claiming_a_delivered_request(tm
             audit.validate_chain(tree, claimed, final["subject_id"])
 
 
+@pytest.mark.act_path
 def test_fixture_produces_each_audit_kind_and_records_unchanged_reproof(tmp_path):
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr
@@ -794,6 +800,7 @@ def test_fixture_produces_each_audit_kind_and_records_unchanged_reproof(tmp_path
             assert "confirmed unchanged" in prompt
 
 
+@pytest.mark.act_path
 def test_changed_reproof_with_fed_draft_recomputes_self_revision(tmp_path):
     result = _run(tmp_path / "runs", "--blind-read", "fed", scenario="audit-change")
     assert result.returncode == 0, result.stderr
@@ -840,6 +847,7 @@ def test_changed_reproof_with_fed_draft_recomputes_self_revision(tmp_path):
     ]
 
 
+@pytest.mark.act_path
 def test_changed_reproof_with_withheld_draft_has_no_self_revision(tmp_path):
     result = _run(tmp_path / "runs", scenario="audit-change")
     assert result.returncode == 0, result.stderr
@@ -856,6 +864,7 @@ def test_changed_reproof_with_withheld_draft_has_no_self_revision(tmp_path):
     assert final["payload"]["self_revision"] == []
 
 
+@pytest.mark.act_path
 def test_perlectio_schema_refuses_a_directional_reproof_prompt(tmp_path):
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr
@@ -1012,6 +1021,7 @@ def test_audit_page_ids_is_the_canonical_set_regardless_of_traversal_order():
     assert perlector.audit_page_ids(bases) == ["earlier-continuation", "primary-page"]
 
 
+@pytest.mark.act_path
 def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
     result = _run(tmp_path / "runs", scenario="review")
     assert result.returncode == 3, result.stderr
@@ -1072,6 +1082,7 @@ def test_recovery_sibling_context_is_sealed_and_never_republished(tmp_path):
         )
 
 
+@pytest.mark.act_path
 def test_recovery_selects_a_sibling_reaching_the_page_only_by_continuation(tmp_path):
     """Selection uses the sealed Perlectio page set, not its primary-page scalar.
 
@@ -1504,6 +1515,7 @@ def test_the_order_flag_fires_from_real_crop_geometry_not_the_declared_order():
     assert agreeing == {"a1": [], "a2": []}
 
 
+@pytest.mark.act_path
 def test_the_chain_refuses_an_audit_pair_belonging_to_another_act(tmp_path):
     """`act_key` is a restatement; `subject_id` is the binding that holds.
 
@@ -1527,6 +1539,7 @@ def test_the_chain_refuses_an_audit_pair_belonging_to_another_act(tmp_path):
         audit.validate_chain(tree, forged, mine["subject_id"])
 
 
+@pytest.mark.act_path
 def test_the_chain_refuses_a_second_attempt_that_reuses_the_first_attempts_audit(tmp_path):
     """One audit draft and finding per attempt, bound to that attempt's ordinal.
 
@@ -1552,6 +1565,7 @@ def test_the_chain_refuses_a_second_attempt_that_reuses_the_first_attempts_audit
         audit.validate_chain(tree, reused, reused["subject_id"])
 
 
+@pytest.mark.act_path
 def test_the_chain_refuses_perlectio_uncertainty_the_finding_did_not_establish(tmp_path):
     """The Perlectio layer projects the finding's spans; it may not add its own.
 
@@ -1573,6 +1587,7 @@ def test_the_chain_refuses_perlectio_uncertainty_the_finding_did_not_establish(t
         audit.validate_chain(tree, invented, final["subject_id"])
 
 
+@pytest.mark.act_path
 def test_the_chain_binds_an_assessed_readers_span_to_the_text_it_publishes(tmp_path):
     """Under `assessed` the tail of the layer is the reader's own; it is still bound to the text.
 
@@ -1597,6 +1612,7 @@ def test_the_chain_binds_an_assessed_readers_span_to_the_text_it_publishes(tmp_p
         audit.validate_chain(tree, overrun, final["subject_id"])
 
 
+@pytest.mark.act_path
 def test_the_chain_refuses_a_gap_an_unassessed_reader_could_not_have_reported(tmp_path):
     """The same state rule over the other layer, and the direction that loses ink.
 
@@ -1626,6 +1642,7 @@ def test_the_chain_refuses_a_gap_an_unassessed_reader_could_not_have_reported(tm
     audit.validate_chain(tree, assessed, final["subject_id"])
 
 
+@pytest.mark.act_path
 def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
     result = _run(tmp_path / "runs")
     assert result.returncode == 0, result.stderr
@@ -1660,6 +1677,7 @@ def test_shared_chain_refuses_draft_finding_restatement_drift(tmp_path):
         audit.validate_chain(DriftedTree(), final, final["subject_id"])
 
 
+@pytest.mark.act_path
 def test_an_audit_page_set_cannot_carry_traversal_order_as_durable_state(tmp_path):
     root = tmp_path / "runs"
     result = _run(root)
@@ -1697,6 +1715,7 @@ def test_an_audit_page_set_cannot_carry_traversal_order_as_durable_state(tmp_pat
 # behind it, over the fixture scenario declared for exactly this composition.
 
 
+@pytest.mark.act_path
 def test_a_completed_reading_whose_unchanged_reproof_is_cut_off_is_held_through_export(
     tmp_path,
 ):
@@ -1793,6 +1812,7 @@ def test_a_completed_reading_whose_unchanged_reproof_is_cut_off_is_held_through_
     assert "audit re-proof of this act did not complete" in non_delivered["reason"]
 
 
+@pytest.mark.act_path
 def test_resuming_the_cut_off_run_reuses_sealed_evidence_and_keeps_the_incomplete_examination(
     tmp_path,
 ):
@@ -1826,6 +1846,7 @@ def test_resuming_the_cut_off_run_reuses_sealed_evidence_and_keeps_the_incomplet
     assert _export(tree)["aggregate"]["status"] == "partial"
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize(
     (
         "scenario",
@@ -1968,6 +1989,7 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
     assert all(act["category"] == "held-for-review" for act in export["non_delivered"])
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize(
     "stop_reason",
     [
@@ -2037,6 +2059,7 @@ def test_a_wrong_location_reproof_becomes_an_act_local_failure(tmp_path, monkeyp
         assert any("audit-draft" in ref["relative_path"] for ref in failure["inputs"])
 
 
+@pytest.mark.act_path
 def test_a_malformed_reproof_reply_becomes_a_retained_failed_act(tmp_path, monkeypatch):
     root = tmp_path / "runs"
     _chain_through_attestatores(root, "audit-change")
@@ -2081,6 +2104,7 @@ def test_a_malformed_reproof_reply_becomes_a_retained_failed_act(tmp_path, monke
     assert all(record["payload"]["failure"]["kind"] == "reproof-response" for record in failures)
 
 
+@pytest.mark.act_path
 def test_a_non_json_whitespace_reproof_becomes_an_act_local_failure(tmp_path, monkeypatch):
     root = tmp_path / "runs"
     _chain_through_attestatores(root, "audit-change")
@@ -2128,6 +2152,7 @@ def test_a_non_json_whitespace_reproof_becomes_an_act_local_failure(tmp_path, mo
     assert all(record["payload"]["failure"]["phase"] == "audit-reproof" for record in failures)
 
 
+@pytest.mark.act_path
 def test_failed_reproof_flows_to_held_review_and_partial_export(tmp_path, monkeypatch):
     """The stage-level regression for the failure a real A100 produced.
 
@@ -2476,6 +2501,7 @@ def test_a_perlectio_audit_record_must_agree_with_its_own_delivery_facts():
         )
 
 
+@pytest.mark.act_path
 def test_the_chain_refuses_a_record_whose_examination_differs_from_its_finding(tmp_path):
     """Finding 7: both `cap-exhausted` and `incomplete` are unresolved, so only the
     examination comparison separates a forged record from its finding."""

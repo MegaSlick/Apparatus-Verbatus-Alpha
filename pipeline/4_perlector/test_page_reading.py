@@ -52,9 +52,8 @@ from common.runtree.store import RunTree
 from common.stage import open_context, reading_acts, stage_parser
 from conftest import (
     file_bytes_snapshot,
+    floor_models_config,
     load_stage,
-    page_models_config,
-    page_serving_recipes_config,
     programs_through,
     rewitness_stage_boundary,
 )
@@ -63,6 +62,7 @@ from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
 
 ROOT = Path(__file__).resolve().parents[2]
 PERLECTOR_PROGRAM = "pipeline/4_perlector/run.py"
+MODELS = ROOT / "config" / "models.toml"
 CHAIN = programs_through("attestatores")
 FIXTURE = tomllib.loads((ROOT / "proof" / "skeleton_fixture.toml").read_text(encoding="utf-8"))
 PAGE_ANSWERS = {
@@ -79,9 +79,8 @@ perlector = load_stage("4_perlector")
 
 
 def _page_protocol(directory: Path, **feed: Any) -> Path:
-    """The shipped protocol sealed to read whole pages, with any `[feed]` switch changed."""
+    """The shipped protocol, which reads whole pages, with any `[feed]` switch changed."""
     text = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
-    text = text.replace('reading_unit = "act"', 'reading_unit = "page"')
     for key, value in feed.items():
         head, table = text.split("[feed]\n")
         lines = [
@@ -92,14 +91,7 @@ def _page_protocol(directory: Path, **feed: Any) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "perlector_protocol.toml"
     path.write_text(text, encoding="utf-8")
-    if not _page_roster(path).exists():
-        page_models_config(_page_roster(path).parent)
     return path
-
-
-def _page_roster(protocol: Path) -> Path:
-    """The page-read roster written beside a page protocol (`conftest.page_models_config`)."""
-    return protocol.parent / "models" / "models.toml"
 
 
 def _feed_value(value: Any) -> str:
@@ -123,26 +115,12 @@ def _run(
             scenario,
             "--perlector-protocol-config",
             str(protocol),
-            *_roster_flags(protocol, extra),
             *extra,
         ],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
-
-
-def _roster_flags(protocol: Path, extra: tuple[str, ...]) -> tuple[str, ...]:
-    """The page-read roster and its catalogue, unless `extra` names its own."""
-    flags: tuple[str, ...] = ()
-    models = _page_roster(protocol)
-    if "--models-config" in extra:
-        models = Path(extra[extra.index("--models-config") + 1])
-    else:
-        flags += ("--models-config", str(models))
-    if "--serving-recipes-config" not in extra:
-        flags += ("--serving-recipes-config", str(page_serving_recipes_config(models)))
-    return flags
 
 
 def _chain(
@@ -188,8 +166,8 @@ def _union(boxes: list[dict[str, int]]) -> dict[str, int]:
 
 
 def _roster(base: Path, *replacements: tuple[str, str]) -> Path:
-    """The page-read roster with chair blocks replaced, beside its fixture snapshots."""
-    path = page_models_config(base / "chair-config")
+    """The committed roster with chair blocks replaced, beside its fixture snapshots."""
+    path = floor_models_config(base / "chair-config", 3)
     text = path.read_text(encoding="utf-8")
     for old, new in replacements:
         assert old in text
@@ -589,9 +567,8 @@ def _detector_tree(
     its page and ordinal.
     """
     protocol = _page_protocol(base / "config")
-    flags = _roster_flags(protocol, ())
     root = base / "runs"
-    _chain(root, protocol, *flags, programs=programs_through("ink-map"))
+    _chain(root, protocol, programs=programs_through("ink-map"))
     designator = load_stage("2_designator")
     original = designator.fixture_record_detector
 
@@ -617,14 +594,12 @@ def _detector_tree(
             "happy",
             "--perlector-protocol-config",
             str(protocol),
-            *flags,
         ],
     )
     assert designator.main() == 0
     _chain(
         root,
         protocol,
-        *flags,
         programs=programs_through("attestatores")[len(programs_through("designator")) :],
         through_perlector=True,
     )
@@ -924,17 +899,10 @@ def test_dissent_does_not_count_a_witness_s_own_doubt_markers_as_departure():
 # --- live serving, against the fakes ------------------------------------------------
 
 
-def _catalogue(destination: Path, models: Path, rows: str = "", **overrides: Any) -> Path:
-    """The page-read roster's fixture catalogue with its Perlector row live, and any field changed.
-
-    `models` is the page-read roster (`conftest.page_models_config`), whose
-    catalogue adds the record detector's rows to the committed one.
-    """
+def _catalogue(destination: Path, rows: str = "", **overrides: Any) -> Path:
+    """The committed fixture catalogue with its Perlector row live, and any field changed."""
     committed = (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8")
-    source = page_serving_recipes_config(models).read_text(encoding="utf-8")
-    assert source.startswith(committed)
     head = committed.split('[[profiles]]\nkind = "fixture"\nrecipe = "fake-perlector-v0"')[0]
-    rows = source[len(committed) :].lstrip("\n") + rows
     row = {**_live_row(_perlector_identity()), **overrides}
     row["preflight_digest"] = profile_preflight_digest(row)
     body = "\n".join(f"{key} = {_toml_value(value)}" for key, value in row.items())
@@ -960,7 +928,7 @@ def _live_chain(
     **row: Any,
 ) -> _Live:
     protocol = _page_protocol(base / "config", **(feed or {}))
-    catalogue = _catalogue(base / "config", _page_roster(protocol), **row)
+    catalogue = _catalogue(base / "config", **row)
     _chain(base / "runs", protocol, "--serving-recipes-config", str(catalogue), scenario=scenario)
     return _Live(base / "runs", catalogue, protocol, scenario)
 
@@ -1007,7 +975,7 @@ def _read_pages(tree: _Live, tmp_path, monkeypatch, *answers: ScriptedAnswer, ex
             "--perlector-protocol-config",
             str(tree.protocol),
             "--models-config",
-            str(_page_roster(tree.protocol)),
+            str(MODELS),
             *extra,
         ],
     )
@@ -1392,7 +1360,7 @@ def test_the_denominator_reads_a_live_reading_again_from_its_retained_reply(
             "--perlector-protocol-config",
             str(live_tree.protocol),
             "--models-config",
-            str(_page_roster(live_tree.protocol)),
+            str(MODELS),
         ]
     )
     acts = reading_acts(open_context(args, RECENSOR))
@@ -1413,7 +1381,7 @@ def _denominator_context(tree: _Live):
             "--perlector-protocol-config",
             str(tree.protocol),
             "--models-config",
-            str(_page_roster(tree.protocol)),
+            str(MODELS),
         ]
     )
     return open_context(args, RECENSOR)

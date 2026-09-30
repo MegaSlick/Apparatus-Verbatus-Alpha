@@ -140,6 +140,8 @@ markers = [
     # it -- so the test also reads back what the run selected and skips itself
     # unless this marker was named. See `common/test_vendor_parity.py`.
     "vendor_network: fetches the pinned vendor sources to re-measure the carried-bytes pins",
+    # Deselected unless a `-m` expression names it (`conftest.py`).
+    "act_path: reads acts one at a time, off the committed page-reading default",
 ]
 # Setting this key replaces pytest's built-in list, which skips dotted directories;
 # that is what lets the tests in .claude/ and .githooks/ be collected. The usual noise

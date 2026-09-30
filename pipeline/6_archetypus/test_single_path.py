@@ -80,6 +80,7 @@ def _orchestrate(
     )
 
 
+@pytest.mark.act_path
 def test_only_an_accepted_review_ever_produces_an_archetypus_record(tmp_path):
     """Every non-`accepted` current review in a run leaves its act with no
     Archetypus record at all.
@@ -115,6 +116,7 @@ def test_only_an_accepted_review_ever_produces_an_archetypus_record(tmp_path):
     assert non_accepted_subjects.isdisjoint(established_subjects)
 
 
+@pytest.mark.act_path
 def test_an_outstanding_recovery_request_is_held_not_silently_skipped(tmp_path):
     """An unresolved act must not disappear into a green exit.
 
@@ -166,6 +168,7 @@ def _archetypus_after(tmp_path: Path, mutate, *, fed: bool = False) -> subproces
     )
 
 
+@pytest.mark.act_path
 def test_an_explicitly_unprimed_lectio_kind_cannot_establish(tmp_path):
     result = _archetypus_after(tmp_path, lambda payload: payload.update(lectio_kind="nuda"))
     assert result.returncode == 2, result.stderr
@@ -173,6 +176,7 @@ def test_an_explicitly_unprimed_lectio_kind_cannot_establish(tmp_path):
     assert "Lectio nuda is an instrument record" in result.stderr
 
 
+@pytest.mark.act_path
 def test_an_unrecognised_lectio_kind_cannot_establish_either(tmp_path):
     result = _archetypus_after(tmp_path, lambda payload: payload.update(lectio_kind="unlabeled"))
     assert result.returncode == 2, result.stderr
@@ -180,6 +184,7 @@ def test_an_unrecognised_lectio_kind_cannot_establish_either(tmp_path):
     assert "only an explicitly primed" in result.stderr
 
 
+@pytest.mark.act_path
 def test_withheld_draft_cannot_establish_with_self_revisions(tmp_path):
     def invent_revision(payload):
         assert payload["lectio_kind"] == "primed-draft-withheld"
@@ -192,6 +197,7 @@ def test_withheld_draft_cannot_establish_with_self_revisions(tmp_path):
     assert "against a draft withheld" in result.stderr
 
 
+@pytest.mark.act_path
 def test_fed_kind_cannot_relabel_a_withheld_reading(tmp_path):
     result = _archetypus_after(
         tmp_path, lambda payload: payload.update(lectio_kind="primed-with-prior")
@@ -200,6 +206,7 @@ def test_fed_kind_cannot_relabel_a_withheld_reading(tmp_path):
     assert "without a fed prior-draft view" in result.stderr
 
 
+@pytest.mark.act_path
 def test_withheld_kind_cannot_contradict_its_protocol_record(tmp_path):
     result = _archetypus_after(
         tmp_path, lambda payload: payload["protocol"].update(blind_read="fed")
@@ -208,6 +215,7 @@ def test_withheld_kind_cannot_contradict_its_protocol_record(tmp_path):
     assert "contrary to its prior-draft protocol" in result.stderr
 
 
+@pytest.mark.act_path
 def test_fed_claim_without_a_prior_reference_cannot_establish(tmp_path):
     result = _archetypus_after(
         tmp_path, _reseal_dossier(lambda dossier: dossier.pop("prior_draft")), fed=True
@@ -217,6 +225,7 @@ def test_fed_claim_without_a_prior_reference_cannot_establish(tmp_path):
     assert "claims primed-with-prior but carries no prior-draft reference" in result.stderr
 
 
+@pytest.mark.act_path
 def test_withheld_claim_carrying_a_prior_reference_cannot_establish(tmp_path):
     """A withheld run makes no Pass A, so a prior beside that view is a defect."""
 
@@ -231,6 +240,7 @@ def test_withheld_claim_carrying_a_prior_reference_cannot_establish(tmp_path):
     assert "must be re-read" in result.stderr
 
 
+@pytest.mark.act_path
 def test_a_withheld_reading_listing_a_lectio_prior_among_its_inputs_cannot_establish(tmp_path):
     root = tmp_path / "runs"
     run_through_recensor(root, "r", blind_read="saved")
@@ -256,6 +266,7 @@ def test_a_withheld_reading_listing_a_lectio_prior_among_its_inputs_cannot_estab
     assert "lists a lectio-prior among its inputs" in result.stderr
 
 
+@pytest.mark.act_path
 def test_a_withheld_claim_carrying_an_empty_prior_key_cannot_establish(tmp_path):
     """Key presence decides, as in the producer, not the value under it."""
     result = _archetypus_after(
@@ -276,6 +287,7 @@ def test_a_withheld_run_establishes_with_no_lectio_prior_on_disk(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.act_path
 def test_a_saved_run_establishes_beside_its_lectio_prior_without_citing_it(tmp_path):
     root = tmp_path / "runs"
     run_through_recensor(root, "r", blind_read="saved")
@@ -295,6 +307,7 @@ def test_a_saved_run_establishes_beside_its_lectio_prior_without_citing_it(tmp_p
     assert not any("lectio-prior" in ref["relative_path"] for ref in reading["inputs"])
 
 
+@pytest.mark.act_path
 def test_a_fed_run_establishes_and_references_its_lectio_prior(tmp_path):
     root = tmp_path / "runs"
     run_through_recensor(root, "r", blind_read="fed")
@@ -309,6 +322,7 @@ def test_a_fed_run_establishes_and_references_its_lectio_prior(tmp_path):
     assert reading["payload"]["dossier"]["prior_draft"]["reference"] in reading["inputs"]
 
 
+@pytest.mark.act_path
 def test_primed_without_prior_claim_with_a_prior_reference_cannot_establish(tmp_path):
     result = _archetypus_after(
         tmp_path,
@@ -320,6 +334,7 @@ def test_primed_without_prior_claim_with_a_prior_reference_cannot_establish(tmp_
     assert "claims primed-without-prior but carries a prior-draft reference" in result.stderr
 
 
+@pytest.mark.act_path
 def test_embedded_prior_text_must_match_the_referenced_lectio_prior(tmp_path):
     def diverge_prior_text(payload):
         def forge(dossier):
@@ -333,6 +348,7 @@ def test_embedded_prior_text_must_match_the_referenced_lectio_prior(tmp_path):
     assert "disagrees with its referenced lectio-prior" in result.stderr
 
 
+@pytest.mark.act_path
 def test_embedded_page_witness_count_must_match_the_act_attachment(tmp_path):
     def forge_count(payload):
         dossier = dict(payload["dossier"])
@@ -361,6 +377,7 @@ def _reseal_dossier(mutate_dossier):
     return mutate
 
 
+@pytest.mark.act_path
 def test_a_dossier_under_an_unrecognized_witness_regime_cannot_establish(tmp_path):
     """An unknown regime has no safe chair-to-label rule or default."""
     result = _archetypus_after(
@@ -374,6 +391,7 @@ def test_a_dossier_under_an_unrecognized_witness_regime_cannot_establish(tmp_pat
     assert "embeds a dossier under witness regime" in result.stderr
 
 
+@pytest.mark.act_path
 def test_a_blinded_comparison_view_may_not_wear_a_label_the_dossier_never_carried(tmp_path):
     """A syntactically plausible pseudonym is not evidence of a dossier witness.
 
@@ -428,6 +446,7 @@ def test_a_blinded_comparison_view_may_not_wear_a_label_the_dossier_never_carrie
     assert "name no witness this dossier carries" in result.stderr
 
 
+@pytest.mark.act_path
 def test_blinded_comparison_views_cannot_exchange_valid_witness_labels(tmp_path):
     """A text multiset cannot prove attribution when valid pseudonyms are swapped."""
     root = tmp_path / "runs"
@@ -480,6 +499,7 @@ def test_blinded_comparison_views_cannot_exchange_valid_witness_labels(tmp_path)
     assert "embedded comparison views disagree with its attachment" in result.stderr
 
 
+@pytest.mark.act_path
 def test_a_reading_may_not_be_accounted_to_a_page_none_of_its_regions_cites(tmp_path):
     """The attachment subject must be among the pages the reading actually cites."""
 
@@ -496,6 +516,7 @@ def test_a_reading_may_not_be_accounted_to_a_page_none_of_its_regions_cites(tmp_
     assert "none of its basis regions cites" in result.stderr
 
 
+@pytest.mark.act_path
 def test_a_prior_draft_from_another_reading_attempt_cannot_establish(tmp_path):
     """The last unbound relation in the series above.
 
@@ -572,6 +593,7 @@ def test_a_prior_draft_from_another_reading_attempt_cannot_establish(tmp_path):
     assert "cites a prior draft from reading attempt 1, not its own 2" in result.stderr
 
 
+@pytest.mark.act_path
 def test_a_prior_draft_with_no_attempt_ordinal_cannot_bind(tmp_path):
     """Two absent ordinals comparing None == None must not pass the attempt binding.
 
@@ -675,6 +697,7 @@ def test_a_prior_draft_with_no_attempt_ordinal_cannot_bind(tmp_path):
     )
 
 
+@pytest.mark.act_path
 def test_a_primed_false_flag_cannot_establish(tmp_path):
     result = _archetypus_after(tmp_path, lambda payload: payload.update(primed=False))
     assert result.returncode == 2, result.stderr
@@ -682,6 +705,7 @@ def test_a_primed_false_flag_cannot_establish(tmp_path):
     assert "non-primed Lectio" in result.stderr
 
 
+@pytest.mark.act_path
 def test_salvage_tier_material_can_never_establish(tmp_path):
     """Invariant #31's boundary, refused by name at the last stage that could
     turn it into text. Nothing publishes a salvage tier today, so this proves the
@@ -694,6 +718,7 @@ def test_salvage_tier_material_can_never_establish(tmp_path):
         assert "salvage-tier material" in result.stderr
 
 
+@pytest.mark.act_path
 def test_a_reading_with_no_retained_witness_basis_at_all_cannot_establish(tmp_path):
     def strip_witnesses(payload):
         payload["basis"] = dict(payload["basis"], testimonia=[])
@@ -703,6 +728,7 @@ def test_a_reading_with_no_retained_witness_basis_at_all_cannot_establish(tmp_pa
     assert "Lectio nuda by any other name" in result.stderr
 
 
+@pytest.mark.act_path
 def test_a_witness_basis_reference_the_reading_never_input_cannot_establish(tmp_path):
     """A basis entry naming a Testimonium the reading does not directly bind is
     testimony nobody can prove was shown to that reader."""
@@ -720,6 +746,7 @@ def test_a_witness_basis_reference_the_reading_never_input_cannot_establish(tmp_
     assert "not a digest-checked direct input" in result.stderr
 
 
+@pytest.mark.act_path
 def test_a_region_carrying_an_extra_field_cannot_enter_the_record(tmp_path):
     """The closed field set has to reach inside `regions`, or it answers nothing.
 
@@ -744,6 +771,7 @@ def test_a_region_carrying_an_extra_field_cannot_enter_the_record(tmp_path):
     assert "consolidated_literal" in result.stderr
 
 
+@pytest.mark.act_path
 def test_a_region_missing_one_of_its_crop_facts_cannot_enter_the_record(tmp_path):
     """Closed both ways: an absent field is refused as loudly as an extra one."""
 
@@ -757,6 +785,7 @@ def test_a_region_missing_one_of_its_crop_facts_cannot_enter_the_record(tmp_path
     assert "verified_dimensions" in result.stderr
 
 
+@pytest.mark.act_path
 def test_a_region_declaring_a_digest_its_crop_does_not_have_cannot_establish(tmp_path):
     """The one stage that makes the record immutable must check both sides too.
 
@@ -778,6 +807,7 @@ def test_a_region_declaring_a_digest_its_crop_does_not_have_cannot_establish(tmp
     assert "naming ink it does not point at" in result.stderr
 
 
+@pytest.mark.act_path
 def test_one_crop_named_by_two_regions_is_refused_before_the_seal(tmp_path):
     """Two regions naming one crop path is refused here, not accommodated.
 
@@ -812,6 +842,7 @@ def test_one_crop_named_by_two_regions_is_refused_before_the_seal(tmp_path):
     assert "already named by region" in result.stderr
 
 
+@pytest.mark.act_path
 def test_one_testimonium_cannot_be_repeated_to_make_the_basis_look_larger(tmp_path):
     def repeat(payload):
         testimonia = [dict(item) for item in payload["basis"]["testimonia"]]

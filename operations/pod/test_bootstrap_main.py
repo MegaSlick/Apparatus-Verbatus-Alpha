@@ -1764,6 +1764,7 @@ def _render_recipes(rows: list[dict[str, object]]) -> str:
 
 
 SURYA_CHAIR = "designator_surya"
+DETECTOR_CHAIR = "secondary_proposer"
 
 
 def _surya_environment_answers(identity, profile, weights_root, golden_page):  # type: ignore[no-untyped-def]
@@ -1786,9 +1787,10 @@ def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspa
     """A checked-out repository whose fixture roster has launchable vLLM rows.
 
     The committed catalogue holds fixture rows only, which the manager refuses
-    by name, so every configured chair but Surya gets a vLLM row at every
-    tier here -- proven or unproven as the test asks -- and Surya the
-    subprocess row it always has; the real ``config/models.toml``, manifests
+    by name, so every configured chair but Surya and the record detector gets a
+    vLLM row at every tier here -- proven or unproven as the test asks -- Surya
+    the subprocess row it always has, and the record detector the in-process row
+    a pod runs it on; the real ``config/models.toml``, manifests
     and model fixtures are copied in so ``ChairRegistry.ensure`` verifies real
     local snapshots. Returns the served chairs' identities.
     """
@@ -1807,7 +1809,7 @@ def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspa
     identities = {
         role: chair
         for role, chair in models.chairs.items()
-        if not isinstance(chair, AbsentChair) and role != SURYA_CHAIR
+        if not isinstance(chair, AbsentChair) and role not in (SURYA_CHAIR, DETECTOR_CHAIR)
     }
     rows: list[dict[str, object]] = []
     for port, (role, chair) in enumerate(sorted(identities.items()), start=8100):
@@ -1836,6 +1838,24 @@ def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspa
             "startup_timeout_seconds": 300,
             "seconds_per_page": 60,
             "required_packages": {"surya-ocr": "0.22.1", "torch": "2.14.0"},
+        }
+        for tier in ("generic-24gb", PROVEN_TIER, "generic-80gb-plus")
+    )
+    detector = models.chairs[DETECTOR_CHAIR]
+    rows.extend(
+        {
+            "kind": "in-process",
+            "recipe": detector.serving_recipe,
+            "chair": DETECTOR_CHAIR,
+            "tier": tier,
+            "engine": "ultralytics",
+            "task": "obb",
+            "device": "cpu",
+            "imgsz": 1024,
+            "conf_bp": 2500,
+            "iou_bp": 7000,
+            "max_det": 300,
+            "required_packages": {"torch": "2.13.0", "ultralytics": "8.4.14"},
         }
         for tier in ("generic-24gb", PROVEN_TIER, "generic-80gb-plus")
     )
@@ -1938,15 +1958,19 @@ def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
 
     assert record["color"] == "green"
     assert record["placement_tier"] == PROVEN_TIER
-    # Surya's weights are verified like every chair's, and it is never smoke-read
-    # through a served engine: its own runner reads the golden page, and the
-    # versions and CPU that run measured are in the report.
+    # Surya's and the record detector's weights are verified like every chair's,
+    # and neither is smoke-read through a served engine: Surya's own runner reads
+    # the golden page, and the versions and CPU that run measured are in the
+    # report; the detector runs in its own stage and reads no page here.
     assert {receipt["chair"] for receipt in record["cache_receipts"]} == set(identities) | {
-        SURYA_CHAIR
+        SURYA_CHAIR,
+        DETECTOR_CHAIR,
     }
     assert {receipt["chair"] for receipt in record["smoke_receipts"]} == set(identities)
     (surya,) = [row for row in record["placements"] if row["chair"] == SURYA_CHAIR]
     assert surya["state"] == "subprocess"
+    (detector,) = [row for row in record["placements"] if row["chair"] == DETECTOR_CHAIR]
+    assert detector["state"] == "in-process"
     (measured,) = record["subprocess_receipts"]
     assert (measured["chair"], measured["versions"]["cpu_capability"]) == (SURYA_CHAIR, "AVX512")
     assert all(

@@ -569,7 +569,7 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-root",
             str(run_root),
             "--run-id",

@@ -48,6 +48,7 @@ def _run_through_recensor(root: Path, run_id: str, scenario: str) -> None:
         _invoke(root, run_id, scenario, program)
 
 
+@pytest.mark.act_path
 def test_the_real_recovery_request_names_fallback_recrop(tmp_path):
     """The only recovery kind this build can actually dispatch is the only kind
     the Recensor requests today -- never silently something else."""

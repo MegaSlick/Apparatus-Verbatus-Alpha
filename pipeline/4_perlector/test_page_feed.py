@@ -294,9 +294,9 @@ def feed_for(
 # --- the protocol's feed table ----------------------------------------------------
 
 
-def test_the_shipped_protocol_reads_by_act_with_every_feed_input_on():
+def test_the_shipped_protocol_reads_by_page_with_every_feed_input_on():
     sealed, _digest = protocol.load(ROOT / "config" / "perlector_protocol.toml")
-    assert sealed["reading_unit"] == "act"
+    assert sealed["reading_unit"] == "page"
     assert sealed["feed"] == {
         "page_image": "legible",
         "witnesses": "all",
@@ -320,7 +320,7 @@ def _write(tmp_path, old: str, new: str):
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        ('reading_unit = "act"', 'reading_unit = "region"', "reading_unit"),
+        ('reading_unit = "page"', 'reading_unit = "region"', "reading_unit"),
         ('crops = "off"', 'crops = "on-request"', "crops"),
         ('page_image = "legible"', 'page_image = "tiny"', "page_image"),
         ('witness_units = "own"', 'witness_units = "lines"', "witness_units"),
@@ -348,11 +348,7 @@ def test_the_feed_table_refuses_an_unknown_key_or_value(tmp_path, old, new, mess
 
 
 def test_a_page_reading_protocol_with_a_witness_subset_loads(tmp_path):
-    path = _write(tmp_path, 'reading_unit = "act"', 'reading_unit = "page"')
-    path.write_text(
-        path.read_text().replace('witnesses = "all"', 'witnesses = ["attestator_1"]'),
-        encoding="utf-8",
-    )
+    path = _write(tmp_path, 'witnesses = "all"', 'witnesses = ["attestator_1"]')
     sealed, _digest = protocol.load(path)
     assert (sealed["reading_unit"], sealed["feed"]["witnesses"]) == ("page", ["attestator_1"])
 

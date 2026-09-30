@@ -70,7 +70,7 @@ def test_the_full_skeleton_runs_over_both_chair_implementations(
         "--run-id",
         f"{implementation}-seats",
         "--scenario",
-        "happy",
+        "page-unbroken",
         "--fixture-root",
         str(FIXTURE_ROOT),
         "--models-config",

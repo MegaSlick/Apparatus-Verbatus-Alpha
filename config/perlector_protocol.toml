@@ -12,7 +12,7 @@ max_images = 32
 # establishes the acts itself from the page and the feed below
 # (`common/page_feed.py`), and every record the page path writes
 # echoes this value.
-reading_unit = "act"
+reading_unit = "page"
 
 # The truncation instrument's length signal (`common/truncation.py`).
 # A reading is length-suspicious when, scaled from its region to the whole page's

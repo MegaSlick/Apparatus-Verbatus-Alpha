@@ -40,6 +40,7 @@ def _run(program: str, root: Path, *extra: str) -> subprocess.CompletedProcess:
     )
 
 
+@pytest.mark.act_path
 def test_recovering_the_same_act_twice_refuses_rather_than_cutting_a_duplicate(tmp_path):
     root = tmp_path / "runs"
     for program in programs_through("recensor"):
@@ -299,6 +300,7 @@ def _designator_context(designator, root: Path):
     return open_context(args, DESIGNATOR)
 
 
+@pytest.mark.act_path
 def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_path):
     """A recrop must add coverage rather than manufacture another reading pass:
     `region_id` binds the act and transform, so a recovery at an already-cut
@@ -364,6 +366,7 @@ def test_a_recovery_at_existing_bounds_refuses_without_cutting_a_duplicate(tmp_p
     assert recovery_regions == []
 
 
+@pytest.mark.act_path
 def test_an_out_of_page_recovery_rectangle_refuses_with_a_contract_error(tmp_path):
     """A recovery crop skips `apply_padding`, so without its own explicit
     check an out-of-page rectangle would reach `crop_png`'s bare `ValueError`,
@@ -412,6 +415,7 @@ def test_an_out_of_page_recovery_rectangle_refuses_with_a_contract_error(tmp_pat
     assert recovery_regions == [], "a refused out-of-page recovery must cut no region"
 
 
+@pytest.mark.act_path
 def test_recovery_resolves_the_act_through_the_verified_denominator(tmp_path):
     """A mutated fixture is refused while re-verifying the seal, before any cut."""
     root = tmp_path / "runs"
@@ -442,6 +446,7 @@ def test_recovery_resolves_the_act_through_the_verified_denominator(tmp_path):
     context.finish()
 
 
+@pytest.mark.act_path
 def test_multiple_declared_recovery_bounds_refuse_instead_of_selecting_the_first(tmp_path):
     """A recovery request may not pick one of several fixture rectangles by order."""
     root = tmp_path / "runs"
@@ -472,6 +477,7 @@ def test_multiple_declared_recovery_bounds_refuse_instead_of_selecting_the_first
         designator.recovery_pass(context, review["subject_id"], request_id)
 
 
+@pytest.mark.act_path
 def test_a_recrop_strictly_inside_the_existing_crop_refuses_by_name(tmp_path):
     """A recovery must recover *coverage*, which is a fact about pixels: a
     recrop rectangle strictly inside the already-cut capture rect uncovers no
@@ -690,6 +696,7 @@ def _recovery_regions_of(root, act_id):
     ]
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize(
     "bounds",
     (
@@ -722,6 +729,7 @@ def test_a_degenerate_recovery_rectangle_is_refused_as_a_rectangle(tmp_path, bou
     )
 
 
+@pytest.mark.act_path
 def test_a_non_integer_recovery_coordinate_refuses_as_a_contract_error(tmp_path):
     """A float coordinate must not escape as a bare `TypeError`: `run_stage`
     turns a `ContractError` into `EXIT_FATAL`, but anything else exits 1 with

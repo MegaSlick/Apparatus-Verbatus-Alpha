@@ -89,7 +89,7 @@ def export_of(tree: RunTree) -> dict:
     ]
 
 
-@pytest.mark.parametrize(("scenario", "exit_code"), [("happy", 0), ("review", 3)])
+@pytest.mark.parametrize(("scenario", "exit_code"), [("page-unbroken", 0), ("page-review", 3)])
 def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, scenario, exit_code):
     root = tmp_path / "runs"
     result = orchestrate(root, "r", scenario)

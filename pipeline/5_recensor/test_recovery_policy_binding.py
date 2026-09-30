@@ -89,6 +89,7 @@ def _recensor_records(tree: RunTree) -> list[dict]:
     ]
 
 
+@pytest.mark.act_path
 def test_a_policy_swapped_after_the_binding_check_never_reaches_a_published_review(
     tmp_path, monkeypatch
 ):

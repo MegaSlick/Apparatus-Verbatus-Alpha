@@ -290,7 +290,7 @@ def test_a_record_with_no_presentation_at_all_cannot_name_an_unpresented_region(
         attestatores.validate_testimonium_payload(payload)
 
 
-def _happy_run(tmp_path, run_id):
+def _happy_run(tmp_path, run_id, scenario="page-unbroken"):
     result = subprocess.run(
         [
             sys.executable,
@@ -298,7 +298,7 @@ def _happy_run(tmp_path, run_id):
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            "happy",
+            scenario,
             "--run-root",
             str(tmp_path / "runs"),
             "--run-id",
@@ -354,6 +354,7 @@ def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tm
     assert single != continuation
 
 
+@pytest.mark.act_path
 def test_page_native_geometry_stays_with_page_witnesses_and_inside_witness_views(tmp_path):
     """Native page-space geometry may ride only records owned by a page witness.
 
@@ -362,7 +363,7 @@ def test_page_native_geometry_stays_with_page_witnesses_and_inside_witness_views
     boxes must stay inside the exact presentation the witness was shown, and
     no act-scoped chair may carry native geometry.
     """
-    tree = _happy_run(tmp_path, "native-page-scope")
+    tree = _happy_run(tmp_path, "native-page-scope", "happy")
     native = []
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] not in {"testimonium", "page-testimonium"}:
@@ -424,6 +425,7 @@ def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_
         attestatores.validate_testimonium_presentation(context, forged)
 
 
+@pytest.mark.act_path
 def test_a_page_witness_shown_pixels_carries_the_serving_moment_that_produced_them(tmp_path):
     """One record may not say both "I was shown this image" and "no serving
     happened"; attempted testimony must carry its receipt."""
@@ -506,6 +508,7 @@ def test_a_sealed_region_missing_its_presentation_fields_is_named_not_indexed(re
         attestatores.presentation_for_region(region)
 
 
+@pytest.mark.act_path
 def test_a_never_presented_page_witness_is_not_run_and_carries_no_receipt(tmp_path):
     result = subprocess.run(
         [
@@ -721,17 +724,10 @@ def test_a_chair_that_was_never_asked_cannot_carry_a_serving_receipt():
         )
 
 
-def test_an_absent_chair_cannot_carry_a_serving_receipt():
+def test_an_absent_chair_cannot_carry_a_serving_receipt(absent_third_chair_config):
     context = _ProvenanceContext()
-    absent = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).config.chairs[
-        "secondary_proposer"
-    ]
-    assert isinstance(absent, AbsentChair), (
-        "this test needs an absent roster entry; secondary_proposer is now configured "
-        "in config/models.toml, so provenance_for would fall through to the "
-        "configured-return path instead of raising -- pick a different absent entry "
-        "or re-derive this test's fixture"
-    )
+    absent = ChairRegistry.from_toml(str(absent_third_chair_config)).config.chairs["attestator_3"]
+    assert isinstance(absent, AbsentChair)
     with pytest.raises(ContractError, match="absent"):
         attestatores.provenance_for(
             context,

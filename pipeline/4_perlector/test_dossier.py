@@ -620,6 +620,7 @@ def test_build_page_render_is_reused_byte_identically_on_a_repeat_call(evidence)
     assert first == second
 
 
+@pytest.mark.act_path
 def test_published_perlectio_binds_page_context_and_its_source_as_direct_inputs(tmp_path):
     root = tmp_path / "runs"
     result = subprocess.run(

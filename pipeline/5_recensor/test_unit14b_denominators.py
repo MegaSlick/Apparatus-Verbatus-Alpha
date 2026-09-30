@@ -101,6 +101,7 @@ def run_root(tmp_path_factory) -> Path:
     return root
 
 
+@pytest.mark.act_path
 def test_moving_a_chairs_boxes_moves_no_ink_number_and_no_act(run_root, monkeypatch):
     """Witness geometry is a per-chair fact, never an input to ink or acts.
 
@@ -263,6 +264,7 @@ def _witness_moving_reader(inner):
     return read, moved
 
 
+@pytest.mark.act_path
 def test_moving_a_sealed_cut_moves_the_ink_numbers_and_nothing_upstream(run_root, monkeypatch):
     """The control in the other direction: the ink measure is not inert.
 

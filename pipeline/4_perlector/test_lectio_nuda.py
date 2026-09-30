@@ -116,6 +116,7 @@ def nuda_run(tmp_path_factory):
     return RunTree(root, "r")
 
 
+@pytest.mark.act_path
 def test_nuda_per_mille_1000_samples_every_act(nuda_run):
     """1000 per mille means every act is sampled -- proof the sampling design
     itself is real, not merely that a switch exists."""
@@ -128,6 +129,7 @@ def test_nuda_per_mille_1000_samples_every_act(nuda_run):
     assert len(subjects) == 2, "both acts in the happy fixture should be nuda-sampled at 1000/1000"
 
 
+@pytest.mark.act_path
 def test_a_nuda_reading_carries_no_testimonia_at_all(nuda_run):
     entries = [
         entry
@@ -141,6 +143,7 @@ def test_a_nuda_reading_carries_no_testimonia_at_all(nuda_run):
         assert record["payload"]["dissent"] == []
 
 
+@pytest.mark.act_path
 def test_a_nuda_attempt_uses_its_own_operation_never_perlegere(nuda_run):
     entries = [
         entry
@@ -156,6 +159,7 @@ def test_a_nuda_attempt_uses_its_own_operation_never_perlegere(nuda_run):
         assert record["attempt_id"] != attempt_id(subject, "perlegere", ordinal)
 
 
+@pytest.mark.act_path
 def test_nuda_records_are_structurally_invisible_to_the_perlectio_kind_query(nuda_run):
     """The module boundary itself: every real consumer (Recensor, Archetypus,
     Armarium, the orchestrator's own recovery dispatch) filters on
@@ -176,6 +180,7 @@ def test_nuda_records_are_structurally_invisible_to_the_perlectio_kind_query(nud
         assert readings[0]["kind"] == "perlectio"
 
 
+@pytest.mark.act_path
 def test_nuda_never_disturbs_normal_establishment(nuda_run):
     """Both acts still reach the Archetypus exactly as the happy path always
     does; the instrument reading runs alongside establishment, never inside it."""
@@ -187,6 +192,7 @@ def test_nuda_never_disturbs_normal_establishment(nuda_run):
     assert len(established) == 2
 
 
+@pytest.mark.act_path
 def test_a_sampled_nuda_records_the_design_it_was_drawn_under(nuda_run):
     """A sample of unknown design measures nothing. Each record
     names the rate, the selection rule, and the approval it was drawn under."""
@@ -210,6 +216,7 @@ def test_a_sampled_nuda_records_the_design_it_was_drawn_under(nuda_run):
     assert record["payload"]["sampling"]["approval_ref"] in record["inputs"]
 
 
+@pytest.mark.act_path
 def test_a_sampled_nuda_refuses_when_its_bound_approval_receipt_is_replaced(tmp_path):
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "happy", nuda_per_mille=1000)
@@ -370,6 +377,7 @@ def test_nuda_approval_refuses_a_corrupt_typed_record(tmp_path, corruption, refu
         )
 
 
+@pytest.mark.act_path
 def test_nuda_per_mille_zero_produces_no_nuda_records_at_all(tmp_path):
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "happy", nuda_per_mille=0)

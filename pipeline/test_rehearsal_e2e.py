@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
 
+import pytest
 from test_structure_chair_e2e import (
     RUN_ID,
     TIER,
@@ -127,6 +128,7 @@ def _register(work: Path, pages: dict[int, bytes]) -> Path:
     return register
 
 
+@pytest.mark.act_path
 def test_combined_rehearsal_accounts_for_every_act_and_verifies_export(tmp_path, monkeypatch):
     """Both re-shoot captures are held, because reading across a physical page's
     captures is not built yet; the remaining five acts are delivered and exported.

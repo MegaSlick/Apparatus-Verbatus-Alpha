@@ -9,6 +9,7 @@ from common.runtree.store import RunTree
 from conftest import programs_through, run_stage
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize(
     ("page_level_allowance", "reason"),
     [

@@ -161,6 +161,7 @@ def _reviews_by_key(tree: RunTree) -> dict[str, dict]:
     return latest
 
 
+@pytest.mark.act_path
 def test_the_non_continuation_act_carries_a_settled_false_continuation_fact(tmp_path):
     root = tmp_path / "runs"
     _run_through_recensor(root, "r", "happy")
@@ -170,6 +171,7 @@ def test_the_non_continuation_act_carries_a_settled_false_continuation_fact(tmp_
     assert reviews["a1"]["payload"]["continuation"]["page_ordinals"] == [1]
 
 
+@pytest.mark.act_path
 def test_the_continuation_act_carries_the_recensors_own_confirmed_link(tmp_path):
     root = tmp_path / "runs"
     _run_through_recensor(root, "r", "happy")
@@ -191,6 +193,7 @@ def test_the_continuation_act_carries_the_recensors_own_confirmed_link(tmp_path)
     assert sorted(region["payload"]["region_id"] for region in regions) == link["region_ids"]
 
 
+@pytest.mark.act_path
 def test_a_designator_held_act_with_a_real_region_carries_that_regions_own_facts(tmp_path):
     """A hold has two distinct shapes (`pipeline/2_designator/run.py::
     initial_pass`): the act's own page never sealed, and no region of it is cut
@@ -228,6 +231,7 @@ def test_a_designator_held_act_with_a_real_region_carries_that_regions_own_facts
     }
 
 
+@pytest.mark.act_path
 def test_a_designator_held_act_with_no_region_at_all_carries_empty_facts(tmp_path):
     """The other hold shape: the act's own page never sealed, so no region of
     it was ever cut, and the empty continuation/page_coverage the previous

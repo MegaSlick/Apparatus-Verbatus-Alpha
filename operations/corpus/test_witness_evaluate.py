@@ -167,6 +167,7 @@ def test_page_health_joins_valid_transformed_presentations_to_exact_exemplar(
         ] + counts[chair]["truncated_null"] == len(page_sha256_by_ordinal)
 
 
+@pytest.mark.act_path
 def test_page_health_refuses_self_consistent_page_relabelled_to_another_ordinal(
     sealed_run: RunTree,
 ):
@@ -184,6 +185,7 @@ def test_page_health_refuses_self_consistent_page_relabelled_to_another_ordinal(
         )
 
 
+@pytest.mark.act_path
 def test_attachment_index_refuses_self_consistent_page_relabelled_to_another_ordinal(
     sealed_run: RunTree,
 ):
@@ -209,11 +211,12 @@ def test_attachment_index_refuses_self_consistent_page_relabelled_to_another_ord
 @pytest.fixture(scope="module")
 def sealed_run(tmp_path_factory) -> RunTree:
     run_root = tmp_path_factory.mktemp("witness-runs")
-    completed = _orchestrate(run_root, "happy")
+    completed = _orchestrate(run_root, "page-unbroken")
     assert completed.returncode == 0, completed.stderr
     return RunTree(run_root, "r")
 
 
+@pytest.mark.act_path
 def test_cli_scores_all_three_chairs_from_current_sealed_attachments_without_mutating_run(
     sealed_run: RunTree, tmp_path: Path
 ):
@@ -262,6 +265,7 @@ def test_cli_scores_all_three_chairs_from_current_sealed_attachments_without_mut
     assert report["page_health"]["attestator_3"]["truncated_false"] == 1
 
 
+@pytest.mark.act_path
 def test_two_page_act_selects_primary_source_attachment_not_transformed_image_digest(
     sealed_run: RunTree,
 ):

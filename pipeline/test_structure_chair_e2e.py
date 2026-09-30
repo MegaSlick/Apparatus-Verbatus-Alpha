@@ -548,6 +548,7 @@ def whole_run(designated, marked_out) -> SimpleNamespace:
 # ============================== the marked-out tree ==============================
 
 
+@pytest.mark.act_path
 def test_every_act_is_the_rectangle_the_chair_drew(marked_out):
     """The denominator of the whole run comes back from a model, byte for byte.
 
@@ -592,6 +593,7 @@ def test_every_act_is_the_rectangle_the_chair_drew(marked_out):
     assert {row["outcome"] for row in rows.values()} == {"proposed"}
 
 
+@pytest.mark.act_path
 def test_the_retained_answer_is_what_the_downstream_verifier_reads(marked_out):
     """D3's `expected_acts` follows the seal back to the answer, on the real tree.
 
@@ -606,6 +608,7 @@ def test_the_retained_answer_is_what_the_downstream_verifier_reads(marked_out):
     assert sorted(row["act_key"] for row in acts) == sorted(ACT_KEYS)
 
 
+@pytest.mark.act_path
 def test_the_sealed_structure_sampling_is_sent_and_recorded_on_every_call(marked_out):
     """The executed sampling values, per call, from the structure chair's sealed row.
 
@@ -643,6 +646,7 @@ def test_the_sealed_structure_sampling_is_sent_and_recorded_on_every_call(marked
         )
 
 
+@pytest.mark.act_path
 def test_no_designator_artifact_carries_the_chair_s_transcription(marked_out):
     """SPEC_D §4: the custody blob is the one permitted home for the text.
 
@@ -671,6 +675,7 @@ def test_no_designator_artifact_carries_the_chair_s_transcription(marked_out):
     assert all(label in retained for label in SCRIPTED_LABELS[:2])
 
 
+@pytest.mark.act_path
 def test_no_fixture_receipt_is_written_on_the_live_path(marked_out):
     """The two receipts are the moment the chair really served and Surya's
     subprocess run; neither is a fixture's."""
@@ -687,6 +692,7 @@ def test_no_fixture_receipt_is_written_on_the_live_path(marked_out):
 # ============================ the roster over those acts =========================
 
 
+@pytest.mark.act_path
 def test_the_whole_roster_witnessed_the_acts_the_chair_proposed(whole_run):
     """Three chairs, three scopes, three proposed acts — and no declared one.
 
@@ -720,6 +726,7 @@ def test_the_whole_roster_witnessed_the_acts_the_chair_proposed(whole_run):
             assert record["payload"]["payload"] == expected_text[record["payload"]["act_key"]]
 
 
+@pytest.mark.act_path
 def test_the_page_witness_transcription_is_retained_and_anchors_the_alignment(whole_run):
     """A transcription reaches the run as testimony, from the chair that served it.
 
@@ -783,6 +790,7 @@ def test_the_page_witness_transcription_is_retained_and_anchors_the_alignment(wh
         assert by_chair["attestator_2"]["attached"]
 
 
+@pytest.mark.act_path
 def test_the_run_reaches_a_sealed_terminal_export_over_proposed_acts(whole_run):
     """Every stage after the Designator reads a tree whose acts a model drew.
 
@@ -829,6 +837,7 @@ def test_the_run_reaches_a_sealed_terminal_export_over_proposed_acts(whole_run):
 # =============================== the other answers ===============================
 
 
+@pytest.mark.act_path
 def test_a_blank_page_answer_falls_back_to_the_predetermined_tiles(designated, tmp_path):
     """The chair saw no text on a page, so the page is cut on the sealed grid.
 
@@ -872,6 +881,7 @@ def test_a_blank_page_answer_falls_back_to_the_predetermined_tiles(designated, t
     assert sorted(row["act_key"] for row in acts) == sorted(rows)
 
 
+@pytest.mark.act_path
 def test_a_cut_off_answer_holds_the_page_as_cut_off(designated, tmp_path):
     """The engine ran out of room, and the record says so rather than guessing.
 
@@ -924,6 +934,7 @@ def test_the_scripted_refusal_set_is_the_two_shapes_this_suite_documents():
     assert len(_SCRIPTABLE_STRUCTURE_REFUSALS) == 2, _SCRIPTABLE_STRUCTURE_REFUSALS
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("outcome", _SCRIPTABLE_STRUCTURE_REFUSALS)
 def test_an_answer_the_grammar_refuses_holds_the_page_by_that_name(designated, tmp_path, outcome):
     """The refusal codes `_STRUCTURE_REFUSALS` can script, held under their own code.
@@ -982,6 +993,7 @@ PAGE_ONE_REDRAWN = (
 )
 
 
+@pytest.mark.act_path
 def test_a_second_attempt_at_the_same_pages_may_answer_differently_and_seals_what_it_got(
     designated, tmp_path
 ):
@@ -1059,6 +1071,7 @@ def test_a_second_attempt_at_the_same_pages_may_answer_differently_and_seals_wha
     assert digests[0] != digests[1]
 
 
+@pytest.mark.act_path
 def test_a_structural_label_is_published_as_a_digest_and_its_absence_is_null(designated, tmp_path):
     """The label reaches the record the way the transcription does, end to end.
 
@@ -1152,6 +1165,7 @@ def status_receipts(root: Path) -> dict[int, str]:
     }
 
 
+@pytest.mark.act_path
 def test_a_resumed_live_pass_reuses_every_sealed_answer_and_starts_no_chair(designated, tmp_path):
     """Evidence never overwritten, on the stage that had no guard for it.
 
@@ -1192,6 +1206,7 @@ def test_a_resumed_live_pass_reuses_every_sealed_answer_and_starts_no_chair(desi
     assert sorted(row["act_key"] for row in acts) == sorted(ACT_KEYS)
 
 
+@pytest.mark.act_path
 def test_an_interrupted_live_pass_keeps_its_answers_and_asks_only_for_the_rest(
     designated, tmp_path
 ):
@@ -1270,6 +1285,7 @@ def blank_second_page_answers() -> list[ScriptedAnswer]:
     ]
 
 
+@pytest.mark.act_path
 def test_a_resumed_live_pass_keeps_the_page_it_fell_back_to_tiles_on(designated, tmp_path):
     """The disposition a blank or unanswerable page gets, resumed.
 
@@ -1311,6 +1327,7 @@ def test_a_resumed_live_pass_keeps_the_page_it_fell_back_to_tiles_on(designated,
     ]
 
 
+@pytest.mark.act_path
 def test_a_pass_interrupted_after_its_fallback_tiles_seals_them_on_the_resume(
     designated, tmp_path, monkeypatch
 ):
@@ -1355,6 +1372,7 @@ def test_a_pass_interrupted_after_its_fallback_tiles_seals_them_on_the_resume(
     assert sorted(row["act_key"] for row in acts) == sorted(seal_rows(run_root))
 
 
+@pytest.mark.act_path
 def test_a_resumed_live_pass_keeps_the_page_it_held(designated, tmp_path):
     """The third disposition, resumed: a held page stays held and is never re-asked.
 
@@ -1475,6 +1493,7 @@ def page_break_run(work: Path) -> SimpleNamespace:
     )
 
 
+@pytest.mark.act_path
 def test_an_act_split_across_a_page_break_is_delivered_twice_with_a_labelled_reconstruction(
     tmp_path,
 ):

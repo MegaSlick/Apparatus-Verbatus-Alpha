@@ -1,0 +1,1 @@
+fixture chair: secondary_proposer

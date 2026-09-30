@@ -23,7 +23,9 @@ ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
-def _run(tmp_path: Path, *, scenario: str = "happy", expected_exit: int = 0) -> tuple[Path, str]:
+def _run(
+    tmp_path: Path, *, scenario: str = "page-unbroken", expected_exit: int = 0
+) -> tuple[Path, str]:
     root = tmp_path / "runs"
     completed = subprocess.run(
         [
@@ -77,7 +79,7 @@ def test_semi_mode_refuses_an_intermediate_boundary_that_cannot_hold() -> None:
 
 
 def test_review_run_seals_attestatores_before_the_terminal_hold(tmp_path: Path) -> None:
-    root, run_id = _run(tmp_path, scenario="review", expected_exit=3)
+    root, run_id = _run(tmp_path, scenario="page-review", expected_exit=3)
     tree = RunTree(root, run_id)
     assert any(
         entry["kind"] == "stage-seal" for entry in tree.build_manifest("attestatores")["artifacts"]

@@ -86,7 +86,7 @@ manifest = "manifests/attestator_2.json"
 serving_recipe = "fake-attestatores-v0"
 license_note = "fixture identity only; no model weights or model license apply"
 witness_adapter = "dai.v1"
-witness_scope = "act"
+witness_scope = "page"
 
 [chairs.attestator_3]
 state = "configured"
@@ -108,9 +108,16 @@ manifest = "manifests/perlector.json"
 serving_recipe = "fake-perlector-v0"
 license_note = "fixture identity only; no model weights or model license apply"
 
+# DAI's record detector. The fixture row answers from the synthetic fixture's
+# `[[detector_record]]` rows; DAI reads the records it finds on each page.
 [chairs.secondary_proposer]
-state = "absent"
-reason = "no secondary proposer is configured for the offline walking skeleton"
+state = "configured"
+source = "local-repository"
+path = "secondary_proposer"
+digest_manifest = "2c6d06cb7a37cb40b5ef4f0bdd1c158fe026c15bace57bb4e8c7e1db9a0a2982"
+manifest = "manifests/secondary_proposer.json"
+serving_recipe = "fake-secondary-proposer-v0"
+license_note = "fixture identity only; no model weights or model license apply"
 
 # Surya's text-line and layout detector, run on every page beside the structure
 # chair. Its fixture row answers the fixture pass from the synthetic fixture's

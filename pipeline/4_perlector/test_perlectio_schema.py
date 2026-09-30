@@ -76,6 +76,7 @@ def _validate(payload, outcome="read"):
     )
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("field", ["consensus", "majority", "vote", "quorum"])
 def test_perlectio_refuses_witness_preference_vocabulary(published_payload, field):
     """A selector cannot enter a Perlectio under a voting synonym."""
@@ -117,6 +118,7 @@ def _reblinded(payload, *, run_id, config_digest):
     return blinded, protocol_config, protocol_sha256
 
 
+@pytest.mark.act_path
 def test_a_blinded_dossier_with_a_wrong_witness_label_is_refused(published_payload):
     """The blinded branch of the label guard: pseudonyms are re-derived from the
     run's own identity, so a swapped or foreign label — invisible to a reader by
@@ -151,6 +153,7 @@ def test_a_blinded_dossier_with_a_wrong_witness_label_is_refused(published_paylo
         )
 
 
+@pytest.mark.act_path
 def test_a_real_published_perlectio_satisfies_the_closed_schema(published_payload):
     """The check is not vacuous in the other direction either: what the stage
     actually writes must pass, or the schema is describing a record nobody
@@ -158,6 +161,7 @@ def test_a_real_published_perlectio_satisfies_the_closed_schema(published_payloa
     _validate(copy.deepcopy(published_payload))
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("field", sorted(perlector._PERLECTIO_FIELDS))
 def test_a_perlectio_missing_any_field_of_its_record_is_refused(published_payload, field):
     payload = copy.deepcopy(published_payload)
@@ -166,6 +170,7 @@ def test_a_perlectio_missing_any_field_of_its_record_is_refused(published_payloa
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_an_empty_dissent_record_cannot_hide_the_whole_witness_denominator(published_payload):
     """Agreement is a row with no departure spans, never an omitted row."""
     payload = copy.deepcopy(published_payload)
@@ -178,6 +183,7 @@ def test_an_empty_dissent_record_cannot_hide_the_whole_witness_denominator(publi
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_dissent_record_cannot_duplicate_one_witness_over_another(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["dissent"][1]["chair"] = payload["dissent"][0]["chair"]
@@ -185,6 +191,7 @@ def test_a_dissent_record_cannot_duplicate_one_witness_over_another(published_pa
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_dissent_reading_span_must_index_the_perlectio_text(published_payload):
     payload = copy.deepcopy(published_payload)
     row = next(row for row in payload["dissent"] if row["compared"] is True)
@@ -200,6 +207,7 @@ def test_a_dissent_reading_span_must_index_the_perlectio_text(published_payload)
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_dissent_cannot_call_a_failed_witness_compared(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["basis"]["testimonia"][0]["outcome"] = "failed"
@@ -207,6 +215,7 @@ def test_dissent_cannot_call_a_failed_witness_compared(published_payload):
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_dissent_booleans_must_reconcile_with_their_spans(published_payload):
     payload = copy.deepcopy(published_payload)
     row = next(row for row in payload["dissent"] if row["compared"] is True)
@@ -215,6 +224,7 @@ def test_dissent_booleans_must_reconcile_with_their_spans(published_payload):
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_perlectio_with_no_regime_record_is_refused(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["provenance"] = {
@@ -224,6 +234,7 @@ def test_a_perlectio_with_no_regime_record_is_refused(published_payload):
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_perlectio_claiming_an_impossible_regime_is_refused(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["provenance"]["witness_regime"] = "half-blinded"
@@ -231,6 +242,7 @@ def test_a_perlectio_claiming_an_impossible_regime_is_refused(published_payload)
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_perlectio_regime_must_match_the_dossier_it_was_shown(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["dossier"]["witness_regime"] = "blinded"
@@ -238,6 +250,7 @@ def test_a_perlectio_regime_must_match_the_dossier_it_was_shown(published_payloa
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_perlectio_refuses_a_stale_dossier_digest(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["dossier"]["act_key"] = "another-act"
@@ -246,6 +259,7 @@ def test_a_perlectio_refuses_a_stale_dossier_digest(published_payload):
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_perlectio_prompt_must_reproduce_from_its_dossier(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["prompt"]["rendered_sha256"] = "0" * 64
@@ -253,6 +267,7 @@ def test_a_perlectio_prompt_must_reproduce_from_its_dossier(published_payload):
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_perlectio_dossier_cannot_drop_one_basis_witness(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["dossier"]["testimonia"].pop()
@@ -264,6 +279,7 @@ def test_a_perlectio_dossier_cannot_drop_one_basis_witness(published_payload):
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_configured_chair_with_no_resolved_identity_is_refused(published_payload):
     payload = copy.deepcopy(published_payload)
     assert payload["provenance"]["chair_state"] == "configured"
@@ -272,6 +288,7 @@ def test_a_configured_chair_with_no_resolved_identity_is_refused(published_paylo
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_perlectio_with_no_truncation_classification_is_refused(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["truncation"] = {"signals": {}}
@@ -279,6 +296,7 @@ def test_a_perlectio_with_no_truncation_classification_is_refused(published_payl
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_truncated_classification_cannot_publish_as_a_completed_read(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["truncation"]["classification"] = "truncated"
@@ -286,6 +304,7 @@ def test_a_truncated_classification_cannot_publish_as_a_completed_read(published
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_complete_classification_cannot_publish_as_a_truncated_outcome(published_payload):
     """The reverse direction of the check above. `outcome == 'truncated'` means
     'not established complete' (CONTRACT.md, verbatim); a published record
@@ -297,6 +316,7 @@ def test_a_complete_classification_cannot_publish_as_a_truncated_outcome(publish
         _validate(payload, outcome="truncated")
 
 
+@pytest.mark.act_path
 def test_an_empty_text_cannot_publish_as_a_completed_read(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["text"] = ""
@@ -304,6 +324,7 @@ def test_an_empty_text_cannot_publish_as_a_completed_read(published_payload):
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_an_annotation_span_outside_the_text_is_refused(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["uncertain_spans"] = [
@@ -318,6 +339,7 @@ def test_an_annotation_span_outside_the_text_is_refused(published_payload):
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_perlectio_smuggling_a_none_basis_cannot_take_the_nuda_branch(published_payload):
     """The discriminator is the caller's field set, never the payload's own
     claim: a Perlectio with `basis: None` must refuse as a missing witness
@@ -328,6 +350,7 @@ def test_a_perlectio_smuggling_a_none_basis_cannot_take_the_nuda_branch(publishe
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_a_zero_width_annotation_span_is_refused(published_payload):
     payload = copy.deepcopy(published_payload)
     payload["uncertain_spans"] = [
@@ -337,6 +360,7 @@ def test_a_zero_width_annotation_span_is_refused(published_payload):
         _validate(payload)
 
 
+@pytest.mark.act_path
 def test_an_unexpected_field_is_refused_as_loudly_as_a_missing_one(published_payload):
     """A field nothing validates is a field nothing can trust -- the same
     reasoning `common/stage.py`'s provenance allowlist already gives."""
@@ -393,6 +417,7 @@ def held_not_run_payload(tmp_path_factory):
     return held[0]["payload"]
 
 
+@pytest.mark.act_path
 def test_a_real_held_not_run_perlectio_satisfies_the_closed_not_run_schema(
     held_not_run_payload,
 ):
@@ -401,6 +426,7 @@ def test_a_real_held_not_run_perlectio_satisfies_the_closed_not_run_schema(
     )
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("field", sorted(perlector._NOT_RUN_HELD_FIELDS))
 def test_a_held_not_run_perlectio_missing_any_field_is_refused(held_not_run_payload, field):
     payload = copy.deepcopy(held_not_run_payload)
@@ -409,6 +435,7 @@ def test_a_held_not_run_perlectio_missing_any_field_is_refused(held_not_run_payl
         perlector.validate_not_run_payload(payload, fields=perlector._NOT_RUN_HELD_FIELDS)
 
 
+@pytest.mark.act_path
 def test_a_held_not_run_perlectio_with_an_unexpected_field_is_refused(held_not_run_payload):
     payload = copy.deepcopy(held_not_run_payload)
     payload["basis"] = {"regions": [], "testimonia": []}
@@ -460,6 +487,7 @@ def test_an_absent_chair_not_run_perlectio_with_an_unexpected_field_is_refused()
         perlector.validate_not_run_payload(payload, fields=perlector._NOT_RUN_ABSENT_FIELDS)
 
 
+@pytest.mark.act_path
 def test_primed_without_prior_refuses_a_none_valued_prior_draft_key(published_payload):
     """The dossier field-set check admits the {prior_draft, prior_draft_view}
     key combination, so a None prior_draft beside a view key slips a
@@ -485,6 +513,7 @@ def test_primed_without_prior_refuses_a_none_valued_prior_draft_key(published_pa
         )
 
 
+@pytest.mark.act_path
 def test_an_unknown_lectio_kind_is_refused_at_publication_not_one_stage_later(
     published_payload,
 ):
@@ -509,6 +538,7 @@ def test_an_unknown_lectio_kind_is_refused_at_publication_not_one_stage_later(
         )
 
 
+@pytest.mark.act_path
 def test_a_fixture_perlectio_carries_no_engine_call(published_payload):
     """The pinned fixture path publishes exactly the closed field set, still.
 
@@ -524,6 +554,7 @@ def test_a_fixture_perlectio_carries_no_engine_call(published_payload):
     assert "engine_call" not in published_payload
 
 
+@pytest.mark.act_path
 def test_a_live_reading_records_its_engine_call_against_the_widened_set(published_payload):
     """The live half: the key is closed-set enforced, never merely tolerated.
 

@@ -406,6 +406,7 @@ def invoke_armarium(root: Path, run_id: str, scenario: str) -> subprocess.Comple
     return stage_driver.invoke(root, run_id, scenario, "pipeline/7_armarium/run.py")
 
 
+@pytest.mark.act_path
 def test_a_partial_record_is_exportable_by_the_armarium(tmp_path):
     """The record this stage writes for a damaged act must survive its consumer.
 
@@ -444,6 +445,7 @@ def test_a_partial_record_is_exportable_by_the_armarium(tmp_path):
     assert delivered["text"] == record["payload"]["text"]
 
 
+@pytest.mark.act_path
 def test_the_export_carries_a_partial_acts_damage(tmp_path):
     """A partial act must not be delivered as though it were whole: the export
     must carry `text_status` and `annotations`, not aggregate a damaged act to
@@ -535,6 +537,7 @@ def _database_rows(members: dict[str, bytes], tmp_path: Path) -> dict[str, tuple
     return {row[0]: row[1:] for row in rows}
 
 
+@pytest.mark.act_path
 def test_an_internal_gap_in_every_reading_leaves_the_run_visibly_partial(tmp_path):
     """The audit's red demonstration, kept as a test rather than as a memory.
 
@@ -598,6 +601,7 @@ def test_an_internal_gap_in_every_reading_leaves_the_run_visibly_partial(tmp_pat
         assert database[act_id][0] == "partial"
 
 
+@pytest.mark.act_path
 def test_a_sealed_annotation_is_carried_out_rather_than_replaced_by_not_produced(tmp_path):
     """The *semantic* annotation layer's not-produced claim (true: no code
     builds that layer) must never overwrite a real
@@ -651,6 +655,7 @@ def _reported_by(tree: RunTree, reference: dict) -> str:
     return record["payload"]["payload"]
 
 
+@pytest.mark.act_path
 def test_a_damaged_act_establishes_as_partial_with_gaps_carried_whole(tmp_path):
     root = tmp_path / "runs"
     _run_through_recensor(root, "r")
@@ -688,6 +693,7 @@ def test_a_damaged_act_establishes_as_partial_with_gaps_carried_whole(tmp_path):
     assert gap_starts[-1] == len(payload["text"])
 
 
+@pytest.mark.act_path
 def test_gap_evidence_never_leaks_into_established_text(tmp_path):
     """The firewall, proven end to end: a real witness quotation reaches
     `annotations` and never touches `text`."""
@@ -730,6 +736,7 @@ def test_gap_evidence_never_leaks_into_established_text(tmp_path):
     assert quoted in json.dumps(payload["annotations"])
 
 
+@pytest.mark.act_path
 def test_fifty_gaps_establish_cleanly_through_the_real_cli(tmp_path):
     root = tmp_path / "runs"
     _run_through_recensor(root, "r")
@@ -759,6 +766,7 @@ def test_fifty_gaps_establish_cleanly_through_the_real_cli(tmp_path):
     assert len(payload["annotations"]) == 50
 
 
+@pytest.mark.act_path
 def test_a_non_zero_width_gap_is_refused_through_the_real_cli(tmp_path):
     root = tmp_path / "runs"
     _run_through_recensor(root, "r")
@@ -775,6 +783,7 @@ def test_a_non_zero_width_gap_is_refused_through_the_real_cli(tmp_path):
     assert "zero-width anchor" in result.stderr
 
 
+@pytest.mark.act_path
 def test_evidence_citing_a_stranger_witness_is_refused_through_the_real_cli(tmp_path):
     root = tmp_path / "runs"
     _run_through_recensor(root, "r")
@@ -793,6 +802,7 @@ def test_evidence_citing_a_stranger_witness_is_refused_through_the_real_cli(tmp_
     assert "not one of this act's own witnesses" in result.stderr
 
 
+@pytest.mark.act_path
 def test_an_invented_variant_is_refused_through_the_real_cli(tmp_path):
     root = tmp_path / "runs"
     _run_through_recensor(root, "r")

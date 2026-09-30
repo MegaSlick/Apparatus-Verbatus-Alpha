@@ -85,11 +85,12 @@ def truncation_run(tmp_path_factory):
 @pytest.fixture(scope="module")
 def happy_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("churro-happy") / "runs"
-    result = _orchestrate(root, "happy")
+    result = _orchestrate(root, "page-unbroken")
     assert result.returncode == 0, result.stderr
     return RunTree(root, "r")
 
 
+@pytest.mark.act_path
 def test_a_captured_page_reading_parses_and_keeps_its_raw_bytes(native_run):
     record = _page_testimonia(native_run)[(1, "attestator_3")]
     payload = record["payload"]
@@ -112,6 +113,7 @@ def test_a_captured_page_reading_parses_and_keeps_its_raw_bytes(native_run):
     assert payload["content_health"]["characters"] == len(payload["payload"])
 
 
+@pytest.mark.act_path
 def test_each_act_lands_on_its_own_words_across_page_furniture(native_run):
     page_text = _page_testimonia(native_run)[(1, "attestator_3")]["payload"]["payload"]
     attachments = _attachments(native_run)
@@ -135,6 +137,7 @@ def test_each_act_lands_on_its_own_words_across_page_furniture(native_run):
     assert HEADER not in spans["a1"] and HEADER not in spans["a2"]
 
 
+@pytest.mark.act_path
 def test_page_text_no_act_accounts_for_holds_rather_than_disappearing(native_run):
     reviews = [
         native_run.read_artifact(RECENSOR, "review", entry["artifact_id"])
@@ -148,6 +151,7 @@ def test_page_text_no_act_accounts_for_holds_rather_than_disappearing(native_run
         assert "outside the ordered union" in review["payload"]["reason"]
 
 
+@pytest.mark.act_path
 def test_a_truncated_capture_is_visible_and_is_never_completed_or_retried(truncation_run):
     record = _page_testimonia(truncation_run)[(2, "attestator_3")]
     payload = record["payload"]
@@ -162,6 +166,7 @@ def test_a_truncated_capture_is_visible_and_is_never_completed_or_retried(trunca
     assert payload["attempt_ordinal"] == 1
 
 
+@pytest.mark.act_path
 def test_a_captured_response_that_cannot_be_parsed_keeps_its_bytes_and_names_the_cut(native_run):
     record = _page_testimonia(native_run)[(2, "attestator_3")]
     payload = record["payload"]
@@ -190,6 +195,7 @@ def test_a_captured_response_that_cannot_be_parsed_keeps_its_bytes_and_names_the
     assert not raw.endswith(b"</HistoricalDocument>")
 
 
+@pytest.mark.act_path
 def test_a_failed_page_capture_does_not_claim_a_missing_anchor(native_run):
     entry = next(
         item
@@ -206,14 +212,19 @@ def test_the_pinned_happy_run_captures_through_churro_without_moving_a_reading(h
     records = _page_testimonia(happy_run)
     assert set(records) == {
         (1, "attestator_1"),
+        (1, "attestator_2"),
         (1, "attestator_3"),
         (2, "attestator_1"),
+        (2, "attestator_2"),
         (2, "attestator_3"),
     }
     for (page_ordinal, chair), record in records.items():
         payload = record["payload"]
         assert record["outcome"] == "read", (page_ordinal, chair)
         assert payload["content_health"]["truncated"] is False
+        if chair == "attestator_2":
+            # DAI reads its detector's records (`test_fixture_detector_pages.py`).
+            continue
         if chair == "attestator_1":
             # The Chandra chair's page reading is the legacy join of its own
             # retained act responses; a churro capture attributed to it would
@@ -237,7 +248,7 @@ def test_the_pinned_happy_run_captures_through_churro_without_moving_a_reading(h
 
 def test_a_page_testimonium_read_verifies_its_retained_raw_response(tmp_path):
     root = tmp_path / "runs"
-    result = _orchestrate(root, "happy")
+    result = _orchestrate(root, "page-unbroken")
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
     entry, record = next(

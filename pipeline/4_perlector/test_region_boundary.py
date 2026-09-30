@@ -72,6 +72,7 @@ def real_region(tmp_path):
     return _Context(tree), tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
 
 
+@pytest.mark.act_path
 def test_a_region_bound_to_its_actual_exemplar_input_verifies(real_region):
     context, region = real_region
     verified = perlector.verify_region(context, region)
@@ -82,6 +83,7 @@ def test_a_region_bound_to_its_actual_exemplar_input_verifies(real_region):
     assert verified["structure_provenance"] == region["payload"]["provenance"]
 
 
+@pytest.mark.act_path
 def test_perlector_names_a_designator_region_with_missing_provenance(real_region, monkeypatch):
     context, region = real_region
     missing = copy.deepcopy(region)
@@ -99,6 +101,7 @@ def test_perlector_names_a_designator_region_with_missing_provenance(real_region
         perlector.regions_of(context, region["subject_id"])
 
 
+@pytest.mark.act_path
 def test_a_crop_from_page_one_cannot_claim_another_valid_page(real_region):
     context, region = real_region
     other = next(
@@ -121,6 +124,7 @@ def test_a_crop_from_page_one_cannot_claim_another_valid_page(real_region):
         perlector.verify_region(context, mismatched)
 
 
+@pytest.mark.act_path
 def test_a_same_sized_crop_from_another_page_cannot_keep_the_original_transform(real_region):
     """A crop's dimensions and digest do not prove which sealed page created it."""
     context, region = real_region
@@ -144,6 +148,7 @@ def test_a_same_sized_crop_from_another_page_cannot_keep_the_original_transform(
         perlector.verify_region(context, substituted)
 
 
+@pytest.mark.act_path
 def test_malformed_exemplar_locators_all_refuse(real_region):
     """Every case must refuse *as a locator*, not as a stale binding.
 
@@ -181,6 +186,7 @@ def test_malformed_exemplar_locators_all_refuse(real_region):
             perlector.verify_region(context, malformed)
 
 
+@pytest.mark.act_path
 def test_a_crop_transform_must_fit_inside_its_sealed_exemplar_page(real_region):
     context, region = real_region
     page = context.tree.read_artifact(
@@ -211,6 +217,7 @@ def test_a_crop_transform_must_fit_inside_its_sealed_exemplar_page(real_region):
             perlector.verify_region(context, malformed)
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("ordinal", [None, "1", True, {}])
 def test_a_region_with_no_integer_attempt_ordinal_refuses_by_name(real_region, ordinal):
     """The sort ran before `verify_region` validated anything, and indexed
@@ -229,6 +236,7 @@ def test_a_region_with_no_integer_attempt_ordinal_refuses_by_name(real_region, o
         perlector._region_ordinal(malformed)
 
 
+@pytest.mark.act_path
 def test_a_testimonium_may_not_understate_which_of_its_crops_it_speaks_for(tmp_path):
     """The reader re-derives `unpresented_regions` rather than trusting it, the
     same way it re-derives the presented region itself. A continuation act binds
@@ -289,6 +297,7 @@ def test_a_testimonium_may_not_understate_which_of_its_crops_it_speaks_for(tmp_p
         perlector.validate_testimonium_regions(context, adapter_crop, proposals)
 
 
+@pytest.mark.act_path
 def test_act_testimonium_consumer_reconciles_outcome_regions_and_inputs(real_region):
     """A resealed record cannot detach an attempted report from its presentation
     or from the exact proposal/input denominator the Attestatores retained."""
@@ -328,6 +337,7 @@ def test_act_testimonium_consumer_reconciles_outcome_regions_and_inputs(real_reg
         perlector.validate_testimonium_regions(context, extra_input, proposals)
 
 
+@pytest.mark.act_path
 def test_page_testimonium_consumer_reconciles_outcome_page_and_inputs(real_region):
     context, _ = real_region
     proposals = perlector.sealed_proposal_regions(context)
@@ -387,6 +397,7 @@ def test_page_testimonium_consumer_reconciles_outcome_page_and_inputs(real_regio
         perlector.validate_page_testimonium_record(context, extra_input, proposals)
 
 
+@pytest.mark.act_path
 def test_a_page_shown_several_times_is_read_once_and_binds_each_presentation(
     real_region, monkeypatch
 ):
@@ -417,6 +428,7 @@ def test_a_page_shown_several_times_is_read_once_and_binds_each_presentation(
         page_testimonia.validate_presented_page(context, payload, [shown, elsewhere])
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("retained", ["native_capture", "raw_response_refs"])
 def test_a_page_testimonium_binds_every_retained_response_it_derived_from(real_region, retained):
     """Both retained-response shapes are inputs, not payload-only references.
@@ -454,6 +466,7 @@ def test_a_page_testimonium_binds_every_retained_response_it_derived_from(real_r
         perlector.validate_page_testimonium_record(context, unbound, proposals)
 
 
+@pytest.mark.act_path
 def test_a_native_capture_that_repeats_a_partition_response_is_bound_once(real_region):
     """A native capture that parsed can reach the same retained response the
     partition already named (a live Chandra page: `live_witness.captured_page_attempt`
@@ -527,6 +540,7 @@ def _page_record_with(context, predicate, what: str):
     return match
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("retained", ["native_capture", "raw_response_refs"])
 def test_a_non_attempted_page_testimonium_may_not_retain_a_provider_response(real_region, retained):
     """A record cannot say the chair was not served and keep what it answered.
@@ -560,6 +574,7 @@ def test_a_non_attempted_page_testimonium_may_not_retain_a_provider_response(rea
         perlector.validate_page_testimonium_record(context, forged, proposals)
 
 
+@pytest.mark.act_path
 def test_a_non_attempted_act_testimonium_may_not_retain_a_provider_response(real_region):
     """The act-scoped sibling of the page rule above, at the same seam."""
     context, region = real_region
@@ -585,6 +600,7 @@ def test_a_non_attempted_act_testimonium_may_not_retain_a_provider_response(real
         perlector.validate_testimonium_regions(context, forged, proposals)
 
 
+@pytest.mark.act_path
 def test_page_adapter_crop_cannot_hide_proposals_outside_its_presentation(real_region):
     """The page consumer re-derives the disclosure for adapter crops too. An
     adapter may narrow its image, but it may not leave the page record looking
@@ -725,6 +741,7 @@ def test_unpresented_geometry_is_not_misreported_as_uncovered_when_another_witne
     assert perlector.witnessed_region_ids(testimonia, [region]) == {"rgn_far_side"}
 
 
+@pytest.mark.act_path
 def test_the_refusal_names_the_cause_it_used_to_swallow(real_region):
     """F3(c). Every distinct fault the shared boundary can find — a missing
     blob, a transform outside the page, a crop relabelled onto another act,
@@ -766,6 +783,7 @@ def test_the_refusal_names_the_cause_it_used_to_swallow(real_region):
     assert "the proposal seal does not name exactly once" in str(refused.value)
 
 
+@pytest.mark.act_path
 def test_a_crop_written_by_another_encoder_is_not_refused_as_untraceable(real_region):
     """The composed half of F3, at the stage that reported it. The audit's
     demonstration ended `exit=2, SchemaRefusal: a Designator region does not
@@ -798,6 +816,7 @@ def _replace_capture_projection(payload):
     payload["content_health"]["characters"] = len(forged)
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
@@ -852,6 +871,7 @@ def test_page_testimonium_consumer_closes_payload_and_provenance(
         perlector.act_attachment_view(context, act, testimonia, bases, proposal_ids)
 
 
+@pytest.mark.act_path
 def test_page_attachment_uses_the_page_attempt_outcome_not_the_compatibility_act_outcome(
     real_region, monkeypatch
 ):
@@ -910,6 +930,7 @@ def test_page_attachment_uses_the_page_attempt_outcome_not_the_compatibility_act
     assert "attestator_3" not in view["comparison_views"]
 
 
+@pytest.mark.act_path
 def test_a_recovery_crop_cannot_retroactively_attach_a_page_witness(real_region, monkeypatch):
     """Recovery geometry cannot enter the earlier testimony denominator."""
     context, _ = real_region
@@ -1021,6 +1042,7 @@ def _act_with_a_page_witness(context):
     return act, testimonia, bases, proposal_ids
 
 
+@pytest.mark.act_path
 def test_a_geometry_free_page_witness_attaches_without_entering_the_proposal_denominator(
     real_region, monkeypatch
 ):

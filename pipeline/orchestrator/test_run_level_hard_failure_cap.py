@@ -23,6 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.identities import artifact_id
@@ -119,6 +121,7 @@ def has_any_artifact(tree: RunTree, stage: str) -> bool:
     return bool(tree.build_manifest(stage)["artifacts"])
 
 
+@pytest.mark.act_path
 def test_more_than_two_hard_failures_halts_the_run_at_the_next_checkpoint(tmp_path):
     root = tmp_path / "runs"
     run_through_perlector(root, "r", "truncated-reading")
@@ -147,6 +150,7 @@ def test_more_than_two_hard_failures_halts_the_run_at_the_next_checkpoint(tmp_pa
     assert not has_any_artifact(tree, ARMARIUM)
 
 
+@pytest.mark.act_path
 def test_re_running_a_halted_orchestration_halts_again_the_same_way(tmp_path):
     """Idempotent: recomputed from disk, so a retry without a real fix repeats it."""
     root = tmp_path / "runs"
@@ -165,6 +169,7 @@ def test_re_running_a_halted_orchestration_halts_again_the_same_way(tmp_path):
     assert not has_any_artifact(tree, RECENSOR)
 
 
+@pytest.mark.act_path
 def test_exactly_two_hard_failures_is_only_a_warning_and_the_run_continues(tmp_path):
     root = tmp_path / "runs"
     run_through_perlector(root, "r", "truncated-reading")
@@ -184,12 +189,13 @@ def test_exactly_two_hard_failures_is_only_a_warning_and_the_run_continues(tmp_p
 
 def test_zero_hard_failures_never_mentions_the_cap(tmp_path):
     root = tmp_path / "runs"
-    result = orchestrate(root, "r", "happy")
+    result = orchestrate(root, "r", "page-unbroken")
     assert result.returncode == 0, result.stderr
     assert "hard failure" not in result.stdout
     assert "halted" not in result.stdout
 
 
+@pytest.mark.act_path
 def test_a_direct_stage_refuses_a_halted_run_before_it_writes(tmp_path):
     """Direct entry shares the run cap and must refuse before writes."""
     root = tmp_path / "runs"
@@ -208,6 +214,7 @@ def test_a_direct_stage_refuses_a_halted_run_before_it_writes(tmp_path):
     assert not has_any_artifact(tree, RECENSOR)
 
 
+@pytest.mark.act_path
 def test_the_direct_door_also_refuses_a_halted_run_without_replaying_bytes(tmp_path):
     """Door bypasses ``open_context``, so it must apply the same gate explicitly."""
     root = tmp_path / "runs"
@@ -242,6 +249,7 @@ def test_an_unmeasurable_direct_entry_cap_refuses_instead_of_writing(tmp_path):
     assert not has_any_artifact(tree, RECENSOR)
 
 
+@pytest.mark.act_path
 def test_a_real_truncated_reading_alone_never_mentions_the_cap(tmp_path):
     """A dense page is not a damaged one (a distinction carried over from the
     old pipeline, into `config/hard_failure.toml`'s comment). One
@@ -382,7 +390,7 @@ def test_the_run_authority_names_the_hard_failure_policy_it_was_sealed_under(tmp
     from common.hard_failure import load_hard_failure_policy
 
     root = tmp_path / "runs"
-    assert orchestrate(root, "sealed", "happy").returncode == 0
+    assert orchestrate(root, "sealed", "page-unbroken").returncode == 0
 
     run = RunTree(root, "sealed").read_run()
     assert (
@@ -410,7 +418,7 @@ def test_a_hard_failure_policy_swapped_between_orchestrations_is_refused_on_resu
             "--fixture",
             FIXTURE,
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-id",
             "swapped",
             "--run-root",
@@ -446,7 +454,7 @@ def test_a_hard_failure_policy_swapped_between_orchestrations_is_refused_on_resu
             "--fixture",
             FIXTURE,
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-id",
             "swapped",
             "--run-root",

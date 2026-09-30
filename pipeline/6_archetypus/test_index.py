@@ -32,7 +32,7 @@ from common.contracts.stages import ARCHETYPUS
 from common.runtree.store import RunTree
 from common.sealed_config import require_sealed_config
 from common.stage import load_fixture, run_sealed_config_digests
-from conftest import load_stage, run_stage
+from conftest import load_stage, page_context, run_stage
 from conftest import run_orchestrator as orchestrate
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,7 +49,9 @@ class _Context:
     fixture the run was sealed with and re-derives its region references. Both
     are reproduced here rather than mocked away, so these tests reconcile against
     the same evidence the real stage does. Both also read the run's sealed
-    reading unit, so the shim carries the sealed Perlector protocol.
+    reading unit and, on a page-read run, its page-read denominator, so the
+    shim carries the sealed Perlector protocol and page accounting policy and
+    the denominator cache a real context has.
     """
 
     def __init__(self, tree: RunTree):
@@ -57,6 +59,8 @@ class _Context:
         self.run = tree.read_run()
         self.fixture = load_fixture(str(ROOT / "proof"))
         self.perlector_protocol_config_path = ROOT / "config" / "perlector_protocol.toml"
+        self.page_accounting_config_path = ROOT / "config" / "page_accounting.toml"
+        self.page_read_denominator = None
 
     def require_sealed_config(self, name: str, observed_sha256: str) -> None:
         require_sealed_config(run_sealed_config_digests(self.run), name, observed_sha256)
@@ -77,7 +81,7 @@ def _index(tree: RunTree) -> dict:
 
 @pytest.fixture(scope="module")
 def established_run(tmp_path_factory):
-    """One happy run, shared by every test below that only reads it.
+    """One complete run, shared by every test below that only reads it.
 
     `build_index` and `validate_index` write nothing, so orchestrating once is
     the same evidence as orchestrating ten times and several minutes cheaper.
@@ -85,15 +89,15 @@ def established_run(tmp_path_factory):
     still take their own run, because they change what the next reader sees.
     """
     root = tmp_path_factory.mktemp("established") / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    return _Context(RunTree(root, "r"))
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
+    return page_context(root, "r", "page-unbroken", {}, ARCHETYPUS)
 
 
 def invoke_archetypus(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
     return run_stage(root, run_id, scenario, "pipeline/6_archetypus/run.py")
 
 
-def test_index_reconciles_1_to_1_with_both_established_acts_in_the_happy_scenario(established_run):
+def test_index_reconciles_1_to_1_with_every_established_act(established_run):
     tree = established_run.tree
     index = _index(tree)
 
@@ -103,7 +107,7 @@ def test_index_reconciles_1_to_1_with_both_established_acts_in_the_happy_scenari
         if entry["kind"] == "archetypus"
     }
     assert established == {row["act_id"] for row in index["rows"]}
-    assert index["record_count"] == len(index["rows"]) == 2
+    assert index["record_count"] == len(index["rows"]) == 3
     assert index["rows"] == sorted(index["rows"], key=lambda row: row["act_id"])
     assert index["stage"] == ARCHETYPUS
 
@@ -119,7 +123,7 @@ def test_every_index_row_carries_its_records_status_and_text_hash(established_ru
 
 def test_the_held_act_never_appears_in_the_index(tmp_path):
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "review").returncode == 3
+    assert orchestrate(root, "r", "page-review").returncode == 3
     tree = RunTree(root, "r")
     index = _index(tree)
 
@@ -128,9 +132,10 @@ def test_the_held_act_never_appears_in_the_index(tmp_path):
         for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
         if entry["kind"] == "archetypus"
     }
-    assert len(established) == 1
+    # page-review holds its page-2 entry and establishes page 1's two acts.
+    assert len(established) == 2
     assert {row["act_id"] for row in index["rows"]} == established
-    assert index["record_count"] == 1
+    assert index["record_count"] == 2
 
 
 def test_the_index_self_hash_verifies(established_run):
@@ -139,7 +144,7 @@ def test_the_index_self_hash_verifies(established_run):
 
 def test_deleting_and_rerunning_rebuilds_the_index_identically(tmp_path):
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
     tree = RunTree(root, "r")
     path = tree.resolve(tree.index_path(ARCHETYPUS))
     original = path.read_bytes()
@@ -147,7 +152,7 @@ def test_deleting_and_rerunning_rebuilds_the_index_identically(tmp_path):
     path.unlink()
     assert not path.exists()
 
-    result = invoke_archetypus(root, "r", "happy")
+    result = invoke_archetypus(root, "r", "page-unbroken")
     assert result.returncode == 0, result.stderr
     assert path.read_bytes() == original
 
@@ -227,7 +232,7 @@ def test_the_index_the_stage_actually_wrote_passes_its_own_consumer_check(establ
 
 def test_a_duplicate_record_on_disk_is_fatal_before_an_index_can_paper_over_it(tmp_path):
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
     tree = RunTree(root, "r")
 
     original_entry = next(
@@ -259,7 +264,7 @@ def test_a_record_whose_payload_names_a_different_act_than_its_envelope_is_fatal
     one place a wrong answer would look perfectly well formed.
     """
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
     tree = RunTree(root, "r")
 
     entry = next(

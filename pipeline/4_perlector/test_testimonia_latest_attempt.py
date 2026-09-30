@@ -125,6 +125,7 @@ def _proposal_regions(context, act_id):
     )
 
 
+@pytest.mark.act_path
 def test_a_superseded_attempt_does_not_still_count_as_current_evidence(
     run_with_a_superseded_attempt,
 ):
@@ -137,6 +138,7 @@ def test_a_superseded_attempt_does_not_still_count_as_current_evidence(
     assert by_chair[chair]["outcome"] == "failed"
 
 
+@pytest.mark.act_path
 def test_the_witness_read_filter_excludes_a_chair_whose_current_attempt_failed(
     run_with_a_superseded_attempt,
 ):
@@ -212,6 +214,7 @@ def happy_run(tmp_path):
     return _Context(tree), first
 
 
+@pytest.mark.act_path
 def test_an_ordinal_its_own_sealed_identity_does_not_bind_cannot_decide_what_is_current(
     happy_run,
 ):
@@ -232,6 +235,7 @@ def test_an_ordinal_its_own_sealed_identity_does_not_bind_cannot_decide_what_is_
         perlector.testimonia_of(context, act_id, _proposal_regions(context, act_id))
 
 
+@pytest.mark.act_path
 def test_a_manufactured_far_ordinal_cannot_leapfrog_the_attempt_that_happened(happy_run):
     """Deriving the identity honestly for ordinal 99 is three lines with this
     repository's own API, so the derivation check alone does not close it. Attempts
@@ -246,6 +250,7 @@ def test_a_manufactured_far_ordinal_cannot_leapfrog_the_attempt_that_happened(ha
         perlector.testimonia_of(context, act_id, _proposal_regions(context, act_id))
 
 
+@pytest.mark.act_path
 def test_perlector_names_a_testimonium_with_missing_provenance(happy_run):
     context, first = happy_run
     missing = copy.deepcopy(first)

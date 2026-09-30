@@ -259,6 +259,7 @@ def test_the_canonical_layer_refuses_a_perlectio_sealed_before_the_assessment_ex
 # --- Through the real stages ---------------------------------------------------
 
 
+@pytest.mark.act_path
 def test_a_declared_doubt_arrives_intact_beside_the_same_text_in_review_and_export(tmp_path):
     root = tmp_path / "runs"
     result = _run(root, "reader-doubt")
@@ -334,6 +335,7 @@ def test_a_declared_doubt_arrives_intact_beside_the_same_text_in_review_and_expo
     assert "gap (internal) at 23" in text
 
 
+@pytest.mark.act_path
 def test_a_chair_without_a_doubt_channel_is_disclosed_as_unproduced_not_confident(tmp_path):
     root = tmp_path / "runs"
     assert _run(root, "happy").returncode == 0
@@ -368,6 +370,7 @@ def test_a_chair_without_a_doubt_channel_is_disclosed_as_unproduced_not_confiden
     assert "doubts: assessed" not in text
 
 
+@pytest.mark.act_path
 def test_a_malformed_report_holds_the_act_with_the_problem_retained_and_no_empty_confidence(
     tmp_path,
 ):
@@ -399,6 +402,7 @@ def test_a_malformed_report_holds_the_act_with_the_problem_retained_and_no_empty
     assert "could not be anchored" in text
 
 
+@pytest.mark.act_path
 def test_a_reproof_that_changes_the_text_publishes_its_own_doubts_never_a_reanchored_copy(
     tmp_path,
 ):
@@ -420,6 +424,7 @@ def test_a_reproof_that_changes_the_text_publishes_its_own_doubts_never_a_reanch
     assert row["uncertainty"]["uncertain_spans"] == a1["uncertain_spans"]
 
 
+@pytest.mark.act_path
 def test_a_cut_off_reproof_keeps_pass_bs_doubtless_assessment_with_pass_bs_text(tmp_path):
     """The assessment travels with the call whose text is published (F1 meets F2)."""
     root = tmp_path / "runs"
@@ -442,6 +447,7 @@ _EXHAUSTED_CAP_CONFIG = (
 )
 
 
+@pytest.mark.act_path
 def test_the_cap_projection_leads_the_readers_own_doubts_and_neither_is_dropped(tmp_path):
     """The one combination the chain check's prefix rule exists for.
 
@@ -503,6 +509,7 @@ def test_the_union_keeps_every_entry_including_an_exact_repeat():
     assert perlector._union_with_projection([], [overlapping]) == [overlapping]
 
 
+@pytest.mark.act_path
 def test_a_declared_doubt_over_an_unreadable_act_is_refused_rather_than_emptied(tmp_path):
     """Pass B: the outcome empties the text, so the report is re-asked against it.
 
@@ -602,6 +609,7 @@ def test_an_emptied_reading_re_asks_the_report_instead_of_emptying_it_under_asse
     assert spans == [] and gaps == whole_act
 
 
+@pytest.mark.act_path
 def test_the_instrument_records_carry_the_doubt_report_too(tmp_path):
     """A doubt reported on an instrument call is a measurement, not a discard.
 

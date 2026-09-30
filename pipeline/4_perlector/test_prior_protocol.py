@@ -113,6 +113,7 @@ def _records(tree, kind):
     ]
 
 
+@pytest.mark.act_path
 def test_sampled_triple_has_all_three_records_and_nuda_stays_unfed(tmp_path):
     root = tmp_path / "runs"
     result = _run(
@@ -145,6 +146,7 @@ def test_sampled_triple_has_all_three_records_and_nuda_stays_unfed(tmp_path):
         assert "act_attachment" not in dossier
 
 
+@pytest.mark.act_path
 def test_nuda_and_the_pass_a_prior_are_fed_the_identical_condition(tmp_path):
     """Measured, and pinned because it matters rather than because it is tidy.
 
@@ -187,6 +189,7 @@ def test_nuda_and_the_pass_a_prior_are_fed_the_identical_condition(tmp_path):
     )
 
 
+@pytest.mark.act_path
 def test_unsampled_default_run_has_production_only_and_no_pass_a(tmp_path):
     root = tmp_path / "runs"
     result = _run(root)
@@ -197,6 +200,7 @@ def test_unsampled_default_run_has_production_only_and_no_pass_a(tmp_path):
     assert _records(tree, "primed-without-prior") == []
 
 
+@pytest.mark.act_path
 def test_unsampled_fed_run_has_prior_and_production_but_no_control(tmp_path):
     root = tmp_path / "runs"
     result = _run(root, "r", "happy", "--blind-read", "fed")
@@ -211,6 +215,7 @@ def test_unsampled_fed_run_has_prior_and_production_but_no_control(tmp_path):
         assert reference in final["inputs"]
 
 
+@pytest.mark.act_path
 def test_saved_run_keeps_the_blind_read_as_a_witness_and_withholds_it_from_production(tmp_path):
     saved_root, off_root = tmp_path / "saved", tmp_path / "off"
     saved = _run(saved_root, "r", "happy", "--blind-read", "saved")
@@ -284,6 +289,7 @@ def test_a_control_with_a_saved_blind_read_is_refused_at_run_creation():
         )
 
 
+@pytest.mark.act_path
 def test_default_withholds_prior_draft_from_prompt_text(tmp_path):
     root = tmp_path / "runs"
     result = _run(root, "r", "happy")
@@ -315,6 +321,7 @@ def test_default_withholds_prior_draft_from_prompt_text(tmp_path):
     )
 
 
+@pytest.mark.act_path
 def test_a_withheld_perlectio_carrying_a_prior_draft_is_refused(tmp_path):
     root = tmp_path / "runs"
     result = _run(root, "r", "happy")
@@ -334,6 +341,7 @@ def test_a_withheld_perlectio_carrying_a_prior_draft_is_refused(tmp_path):
         )
 
 
+@pytest.mark.act_path
 def test_fed_draft_has_the_primed_kind_and_real_self_revision(tmp_path):
     root = tmp_path / "runs"
     result = _run(root, "r", "happy", "--blind-read", "fed")
@@ -344,6 +352,7 @@ def test_fed_draft_has_the_primed_kind_and_real_self_revision(tmp_path):
     assert any(payload["self_revision"] for payload in finals)
 
 
+@pytest.mark.act_path
 def test_withheld_draft_cannot_publish_self_revisions(tmp_path):
     root = tmp_path / "runs"
     result = _run(root, "r", "happy")
@@ -426,6 +435,7 @@ def test_control_selection_has_no_run_id_input_at_all():
     assert "run_id" not in inspect.signature(protocol.is_control_sampled).parameters
 
 
+@pytest.mark.act_path
 def test_two_different_run_ids_over_the_same_corpus_facts_sample_the_control_identically(
     tmp_path,
 ):
@@ -574,6 +584,7 @@ def _sealed_protocol():
     return protocol.load(ROOT / "config" / "perlector_protocol.toml")
 
 
+@pytest.mark.act_path
 def test_a_real_published_lectio_prior_satisfies_its_closed_schema(
     published_lectio_prior_payload, _sealed_protocol
 ):
@@ -587,6 +598,7 @@ def test_a_real_published_lectio_prior_satisfies_its_closed_schema(
     )
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("key", ["prior_draft_view", "prior_draft"])
 def test_an_unprimed_record_carrying_prior_draft_data_is_refused(
     published_lectio_prior_payload, _sealed_protocol, key
@@ -606,6 +618,7 @@ def test_an_unprimed_record_carrying_prior_draft_data_is_refused(
         )
 
 
+@pytest.mark.act_path
 def test_validator_refuses_a_protocol_record_without_threaded_sealed_config(
     published_lectio_prior_payload,
 ):
@@ -622,6 +635,7 @@ def test_validator_refuses_a_protocol_record_without_threaded_sealed_config(
         )
 
 
+@pytest.mark.act_path
 def test_producer_refuses_primed_with_prior_without_prior_draft_data(
     published_perlectio_payload, _sealed_protocol
 ):
@@ -644,6 +658,7 @@ def test_producer_refuses_primed_with_prior_without_prior_draft_data(
         )
 
 
+@pytest.mark.act_path
 def test_producer_refuses_primed_without_prior_with_a_prior_reference(
     published_perlectio_payload, _sealed_protocol
 ):
@@ -661,6 +676,7 @@ def test_producer_refuses_primed_without_prior_with_a_prior_reference(
         )
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("field", sorted(perlector._LECTIO_PRIOR_FIELDS))
 def test_a_lectio_prior_missing_any_field_of_its_record_is_refused(
     published_lectio_prior_payload, _sealed_protocol, field
@@ -678,6 +694,7 @@ def test_a_lectio_prior_missing_any_field_of_its_record_is_refused(
         )
 
 
+@pytest.mark.act_path
 def test_a_real_published_control_satisfies_its_closed_schema(
     published_primed_without_prior_payload, _sealed_protocol
 ):
@@ -747,6 +764,7 @@ def test_control_sampling_design_refuses_an_approval_for_the_other_experiment():
         )
 
 
+@pytest.mark.act_path
 def test_a_published_control_names_the_approval_record_it_was_drawn_under(
     published_primed_without_prior_payload, _sealed_protocol
 ):
@@ -776,6 +794,7 @@ def test_a_published_control_names_the_approval_record_it_was_drawn_under(
     }
 
 
+@pytest.mark.act_path
 def test_a_control_refuses_when_its_bound_approval_receipt_is_replaced(tmp_path):
     root = tmp_path / "runs"
     result = _run(
@@ -805,6 +824,7 @@ def test_a_control_refuses_when_its_bound_approval_receipt_is_replaced(tmp_path)
         tree.read_artifact(PERLECTOR, "primed-without-prior", entry["artifact_id"])
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("field", sorted(perlector._PRIMED_WITHOUT_PRIOR_FIELDS))
 def test_a_control_missing_any_field_of_its_record_is_refused(
     published_primed_without_prior_payload, _sealed_protocol, field
@@ -829,6 +849,7 @@ def test_the_sealed_protocol_declaration_reproduces(_sealed_protocol):
     assert len(protocol_sha256) == 64
 
 
+@pytest.mark.act_path
 def test_a_reading_whose_view_contradicts_its_declared_blind_read_is_refused(
     published_perlectio_payload, _sealed_protocol
 ):
@@ -858,6 +879,7 @@ def test_a_reading_whose_view_contradicts_its_declared_blind_read_is_refused(
         )
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("field", ["selection_rule", "page_shared_prefix_policy"])
 def test_a_protocol_record_naming_a_rule_the_run_never_sealed_is_refused(
     published_perlectio_payload, _sealed_protocol, field
@@ -883,6 +905,7 @@ def test_a_protocol_record_naming_a_rule_the_run_never_sealed_is_refused(
         )
 
 
+@pytest.mark.act_path
 def test_a_reading_sealed_under_the_removed_draft_fed_flag_names_it(
     published_perlectio_payload, _sealed_protocol
 ):
@@ -901,6 +924,7 @@ def test_a_reading_sealed_under_the_removed_draft_fed_flag_names_it(
         )
 
 
+@pytest.mark.act_path
 def test_an_unknown_blind_read_is_not_its_closed_schema(
     published_perlectio_payload, _sealed_protocol
 ):

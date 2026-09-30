@@ -97,7 +97,7 @@ def test_store_root_reaches_a_stage_registry(tmp_path, monkeypatch) -> None:
     args = argparse.Namespace(**{name: None for name in names})
     args.run_root = tmp_path / "runs"
     args.run_id = "r"
-    args.scenario = "happy"
+    args.scenario = "page-unbroken"
     args.models_config = str(tmp_path / "models.toml")
     args.store_root = tmp_path / "store"
     args.blind_read = "off"
@@ -149,9 +149,9 @@ def test_all_and_manual_stages_write_the_identical_happy_run_tree(tmp_path):
     automatic = tmp_path / "automatic"
     manual = tmp_path / "manual"
 
-    assert drive(automatic, "r", "happy", "--all").returncode == 0
+    assert drive(automatic, "r", "page-unbroken", "--all").returncode == 0
     for stage in SEQUENCE:
-        result = drive(manual, "r", "happy", "--stage", stage)
+        result = drive(manual, "r", "page-unbroken", "--stage", stage)
         assert result.returncode == 0, result.stdout + result.stderr
 
     assert snapshot(manual) == snapshot(automatic)
@@ -161,15 +161,16 @@ def test_all_and_a_split_semi_range_write_the_identical_happy_run_tree(tmp_path)
     automatic = tmp_path / "automatic"
     split = tmp_path / "split"
 
-    assert drive(automatic, "r", "happy", "--all").returncode == 0
-    first = drive(split, "r", "happy", "--from", "door", "--to", "recensor")
+    assert drive(automatic, "r", "page-unbroken", "--all").returncode == 0
+    first = drive(split, "r", "page-unbroken", "--from", "door", "--to", "recensor")
     assert first.returncode == 0, first.stdout + first.stderr
-    second = drive(split, "r", "happy", "--from", "recovery", "--to", "armarium")
+    second = drive(split, "r", "page-unbroken", "--from", "recovery", "--to", "armarium")
     assert second.returncode == 0, second.stdout + second.stderr
 
     assert snapshot(split) == snapshot(automatic)
 
 
+@pytest.mark.act_path
 def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attempt(tmp_path):
     automatic = tmp_path / "automatic"
     manual = tmp_path / "manual"
@@ -224,9 +225,9 @@ def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attem
 
 def test_from_refuses_an_unsealed_predecessor_by_name(tmp_path):
     root = tmp_path / "runs"
-    assert drive(root, "r", "happy", "--stage", "door").returncode == 0
+    assert drive(root, "r", "page-unbroken", "--stage", "door").returncode == 0
 
-    result = drive(root, "r", "happy", "--from", "designator", "--to", "designator")
+    result = drive(root, "r", "page-unbroken", "--from", "designator", "--to", "designator")
 
     assert result.returncode == 2
     assert "predecessor ink-map has no stage-seal" in result.stderr
@@ -247,14 +248,22 @@ def test_invalid_selection_combinations_refuse_before_creating_a_tree(tmp_path):
 
     for index, selection in enumerate(cases):
         root = tmp_path / str(index)
-        result = drive(root, "r", "happy", *selection)
+        result = drive(root, "r", "page-unbroken", *selection)
         assert result.returncode == 2, (selection, result.stdout, result.stderr)
         assert not root.exists(), selection
 
 
 def test_semi_mode_stops_at_a_named_hold(tmp_path):
     result = drive(
-        tmp_path / "runs", "r", "review", "--from", "door", "--to", "recensor", "--mode", "semi"
+        tmp_path / "runs",
+        "r",
+        "page-review",
+        "--from",
+        "door",
+        "--to",
+        "recensor",
+        "--mode",
+        "semi",
     )
 
     assert result.returncode == EXIT_HELD
@@ -267,23 +276,23 @@ def test_a_held_armarium_reports_its_terminal_reasons_under_every_mode(tmp_path)
     manual = tmp_path / "manual"
     semi = tmp_path / "semi"
 
-    all_result = drive(automatic, "r", "review", "--all")
+    all_result = drive(automatic, "r", "page-review", "--all")
     assert all_result.returncode == EXIT_HELD
     assert "run r: partial" in all_result.stdout
-    assert "act a2 is held-for-review" in all_result.stdout
+    assert "act p2:1 is held-for-review" in all_result.stdout
 
     for stage in SEQUENCE[:-1]:
-        drive(manual, "r", "review", "--stage", stage)
-    manual_result = drive(manual, "r", "review", "--stage", "armarium")
+        drive(manual, "r", "page-review", "--stage", stage)
+    manual_result = drive(manual, "r", "page-review", "--stage", "armarium")
     assert manual_result.returncode == EXIT_HELD
     assert "run r: partial" in manual_result.stdout
-    assert "act a2 is held-for-review" in manual_result.stdout
+    assert "act p2:1 is held-for-review" in manual_result.stdout
 
-    drive(semi, "r", "review", "--from", "door", "--to", "recensor")
-    semi_result = drive(semi, "r", "review", "--from", "recovery", "--to", "armarium")
+    drive(semi, "r", "page-review", "--from", "door", "--to", "recensor")
+    semi_result = drive(semi, "r", "page-review", "--from", "recovery", "--to", "armarium")
     assert semi_result.returncode == EXIT_HELD
     assert "run r: partial" in semi_result.stdout
-    assert "act a2 is held-for-review" in semi_result.stdout
+    assert "act p2:1 is held-for-review" in semi_result.stdout
 
 
 def test_a_damaged_armarium_decode_environment_stops_the_run_at_its_producer(tmp_path):
@@ -295,19 +304,19 @@ def test_a_damaged_armarium_decode_environment_stops_the_run_at_its_producer(tmp
     exactly this damage, on the layer that still owns the check.
     """
     root = tmp_path / "runs"
-    assert drive(root, "r", "happy", "--all").returncode == 0
+    assert drive(root, "r", "page-unbroken", "--all").returncode == 0
     record = next((root / "r" / "7_armarium" / "artifacts" / "decode-environment").iterdir())
     kept = record.read_bytes()
     record.unlink()
 
-    refused = drive(root, "r", "happy", "--all")
+    refused = drive(root, "r", "page-unbroken", "--all")
 
     assert refused.returncode == 2, refused.stdout + refused.stderr
     assert "armarium cannot seal its boundary" in refused.stderr
     assert "decode-environment" in refused.stderr and "is unreadable" in refused.stderr
     assert "run r: complete" not in refused.stdout
     record.write_bytes(kept)
-    assert drive(root, "r", "happy", "--all").returncode == 0
+    assert drive(root, "r", "page-unbroken", "--all").returncode == 0
 
 
 def test_an_attestatores_prework_hold_leaves_a_boundary_the_next_stage_refuses(tmp_path):
@@ -316,15 +325,17 @@ def test_an_attestatores_prework_hold_leaves_a_boundary_the_next_stage_refuses(t
     Otherwise ``--from`` could advance past a hold that ``--all`` stops for.
     """
     root = tmp_path / "runs"
-    assert drive(root, "r", "happy", "--from", "door", "--to", "attestatores").returncode == 0
+    assert (
+        drive(root, "r", "page-unbroken", "--from", "door", "--to", "attestatores").returncode == 0
+    )
     testimonium = next((root / "r" / "3_attestatores" / "artifacts" / "testimonium").iterdir())
     testimonium.unlink()
 
-    held = drive(root, "r", "happy", "--stage", "attestatores")
+    held = drive(root, "r", "page-unbroken", "--stage", "attestatores")
     assert held.returncode == EXIT_HELD, held.stdout + held.stderr
     assert "attempt tally UNKNOWN" in held.stderr
 
-    advanced = drive(root, "r", "happy", "--from", "perlector", "--to", "armarium")
+    advanced = drive(root, "r", "page-unbroken", "--from", "perlector", "--to", "armarium")
 
     assert advanced.returncode == 2, advanced.stdout + advanced.stderr
     assert "perlector refuses attestatores stage-seal" in advanced.stderr

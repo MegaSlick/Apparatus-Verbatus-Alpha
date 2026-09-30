@@ -133,6 +133,7 @@ def _latest_completed_reading(tree: RunTree, act_id: str) -> dict:
 # --- 1. The vertical slice itself -----------------------------------------------
 
 
+@pytest.mark.act_path
 def test_page_scoped_testimonium_is_produced_while_act_scope_is_retained_for_attestator_2(
     run_tree, fixture
 ):
@@ -178,6 +179,7 @@ def test_page_scoped_testimonium_is_produced_while_act_scope_is_retained_for_att
     )
 
 
+@pytest.mark.act_path
 def test_derived_act_attachment_record_is_written_by_attestatores_for_every_proposed_act(
     run_tree, fixture
 ):
@@ -202,6 +204,7 @@ def test_derived_act_attachment_record_is_written_by_attestatores_for_every_prop
     )
 
 
+@pytest.mark.act_path
 def test_dissent_compares_each_page_witness_against_its_act_anchored_view(run_tree, fixture):
     """R4 restores the real roster: page rows compare their computed act slices."""
     scenario, tree = run_tree
@@ -217,6 +220,7 @@ def test_dissent_compares_each_page_witness_against_its_act_anchored_view(run_tr
         assert row.get("compared") is True, row
 
 
+@pytest.mark.act_path
 def test_a_page_witness_matching_the_ink_exactly_records_no_departure(run_tree, fixture):
     """F-X2. The act-anchored view must be THIS act's slice, not the chair's
     whole page reading.
@@ -245,6 +249,7 @@ def test_a_page_witness_matching_the_ink_exactly_records_no_departure(run_tree, 
         assert row["departures"] == [], row
 
 
+@pytest.mark.act_path
 def test_two_acts_on_one_page_never_claim_the_same_page_witness_bytes(run_tree, fixture):
     """F-X2. A span is a provenance claim about which of this chair's characters
     belong to this act. Two acts asserting the identical range of one page
@@ -307,6 +312,7 @@ def test_two_acts_on_one_page_never_claim_the_same_page_witness_bytes(run_tree, 
 # --- 2. Corpus-frame binding -----------------------------------------------------
 
 
+@pytest.mark.act_path
 def test_run_creation_records_corpus_frame_membership(run_tree):
     """R0_CONTRACT_NOTE.md: "Bound at run creation: every orchestrator run records
     corpus-frame membership (frame digest + page digest + seed)."
@@ -367,6 +373,7 @@ def test_shard_size_knob_is_sealed_with_a_point_of_use_recheck_entry():
 # first, then fix" rule.
 
 
+@pytest.mark.act_path
 def test_page_testimony_excludes_text_from_an_act_the_same_chair_failed(tmp_path, fixture):
     """F-S1: a page witness's joined page testimony must never fold in text from an
     act-scoped attempt the SAME chair recorded as `failed`.
@@ -444,6 +451,7 @@ def test_page_testimony_excludes_text_from_an_act_the_same_chair_failed(tmp_path
     )
 
 
+@pytest.mark.act_path
 def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act_key(
     run_tree,
 ):
@@ -519,6 +527,7 @@ def test_act_attachment_span_reflects_this_chairs_own_delivered_text_not_the_act
     )
 
 
+@pytest.mark.act_path
 def test_a_non_reading_page_attempt_is_an_explicit_unaligned_reason_never_an_alignment(
     run_tree, fixture
 ):
@@ -561,6 +570,7 @@ def test_a_non_reading_page_attempt_is_an_explicit_unaligned_reason_never_an_ali
         }, entry
 
 
+@pytest.mark.act_path
 def test_an_attached_page_witness_alignment_names_its_anchor_basis(run_tree):
     """Every aligned page-witness alignment states what it aligned against.
 
@@ -586,6 +596,7 @@ def test_an_attached_page_witness_alignment_names_its_anchor_basis(run_tree):
     assert checked, f"scenario {scenario!r}: no aligned page-witness alignment was checked"
 
 
+@pytest.mark.act_path
 def test_perlector_consumes_the_page_testimonium_named_by_an_act_attachment(
     tmp_path, rebind_stage_seal
 ):
@@ -718,6 +729,7 @@ def _reseal_page_and_references(
             _reseal(tree, attachment_path, attachment)
 
 
+@pytest.mark.act_path
 def test_perlector_refuses_an_attachment_for_an_unconfigured_chair(tmp_path):
     root = tmp_path / "runs"
     tree = _through_attestatores(root, "forged-chair")
@@ -737,6 +749,7 @@ def test_perlector_refuses_an_attachment_for_an_unconfigured_chair(tmp_path):
     assert "configured witnesses" in result.stderr
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("forged_ordinal", [True, [1]], ids=["boolean", "unhashable-list"])
 def test_perlector_refuses_a_non_integer_attachment_page_before_pair_accounting(
     tmp_path, forged_ordinal
@@ -783,6 +796,7 @@ def test_perlector_refuses_a_referenced_page_ordinal_outside_the_fixture(tmp_pat
     assert "Traceback" not in result.stderr
 
 
+@pytest.mark.act_path
 def test_perlector_refuses_a_page_presentation_that_disowns_its_record_subject(tmp_path):
     """The half of the stage-local check the shared page contract cannot make.
 
@@ -812,6 +826,7 @@ def test_perlector_refuses_a_page_presentation_that_disowns_its_record_subject(t
     assert "Traceback" not in result.stderr
 
 
+@pytest.mark.act_path
 def test_perlector_refuses_a_page_role_its_own_ordinal_contradicts(tmp_path):
     """An act's sealed primary ordinal must constrain its page-role label."""
     root = tmp_path / "runs"
@@ -847,6 +862,7 @@ def test_perlector_names_an_unhashable_page_role_as_a_schema_refusal(tmp_path):
     assert "Traceback" not in result.stderr
 
 
+@pytest.mark.act_path
 def test_the_recensor_refuses_a_page_role_only_the_whole_page_disproves(tmp_path):
     """Only the Recensor's whole-page view can disprove a forged `mixed` role."""
     root = tmp_path / "runs"
@@ -880,6 +896,7 @@ def test_the_recensor_refuses_a_page_role_only_the_whole_page_disproves(tmp_path
 # declaration; this one was reconciled against nothing.
 
 
+@pytest.mark.act_path
 def test_perlector_refuses_an_act_scoped_testimonium_wearing_a_page_witness_flag(tmp_path):
     """A resealed flag may not switch off a chair's dissent comparison.
 
@@ -950,6 +967,7 @@ def _latest_attachment(tree: RunTree, act_id: str) -> tuple[Path, dict]:
     )
 
 
+@pytest.mark.act_path
 def test_perlector_refuses_an_attachment_describing_a_superseded_attempt(tmp_path):
     """F-O1's guard, exercised as the structural guard it now is.
 
@@ -990,6 +1008,7 @@ def test_perlector_refuses_an_attachment_describing_a_superseded_attempt(tmp_pat
     assert "no longer this chair's current Testimonium" in result.stderr, result.stderr
 
 
+@pytest.mark.act_path
 def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path):
     """The Recensor's own copy of the check above, on the same damaged record.
 
@@ -1044,6 +1063,7 @@ def test_the_witness_floor_is_not_counted_from_a_superseded_attachment(tmp_path)
     )
 
 
+@pytest.mark.act_path
 def test_act_scoped_attachment_must_match_the_current_outcome_when_health_is_current(tmp_path):
     """F-O1's restored outcome guard carries evidence independent of health.
 

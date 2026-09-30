@@ -305,6 +305,7 @@ def test_the_designator_itself_refuses_a_real_submission_and_writes_nothing(tmp_
 # ======================= the contexts, stage by stage ========================
 
 
+@pytest.mark.act_path
 def test_every_stage_whose_predecessor_sealed_opens_a_real_context_through_the_constructor(
     real_run,
 ):
@@ -333,6 +334,7 @@ def test_every_stage_whose_predecessor_sealed_opens_a_real_context_through_the_c
             _ = context.fixture
 
 
+@pytest.mark.act_path
 def test_the_two_stages_past_the_stopping_point_still_open_before_they_refuse(real_run):
     """The Archetypus and the Armarium reach their seal refusal, not a mode fault.
 
@@ -356,6 +358,7 @@ def test_the_two_stages_past_the_stopping_point_still_open_before_they_refuse(re
         assert "bound to different" not in message
 
 
+@pytest.mark.act_path
 def test_opening_every_real_context_writes_nothing(real_run, tmp_path):
     """Evidence never overwritten, at the open: a recheck that writes before it
     decides is a recheck that has already spent the evidence it was protecting."""
@@ -372,6 +375,7 @@ def test_opening_every_real_context_writes_nothing(real_run, tmp_path):
     assert snapshot(run_root) == before
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize(
     ("flag", "value", "named"),
     [
@@ -439,6 +443,7 @@ def test_a_moved_configuration_is_refused_by_name_before_the_run_is_touched(
 # ============================ the real denominator ===========================
 
 
+@pytest.mark.act_path
 def test_the_real_denominator_is_recomputed_from_the_designators_own_evidence(real_run):
     """No declaration is counted: every row is verified against its own region.
 
@@ -464,6 +469,7 @@ def test_the_real_denominator_is_recomputed_from_the_designators_own_evidence(re
 # ============================== the whole carry ==============================
 
 
+@pytest.mark.act_path
 def test_the_witness_and_reading_passes_complete_over_a_real_submission(real_run):
     """Two whole stages, on a real submission, offline — and nothing declared.
 
@@ -477,6 +483,7 @@ def test_the_witness_and_reading_passes_complete_over_a_real_submission(real_run
     assert real_run.reader_exit == EXIT_COMPLETE
 
 
+@pytest.mark.act_path
 def test_a_real_run_stops_at_the_recensor_and_names_the_denominator_it_has_no_producer_for(
     real_run,
 ):
@@ -518,6 +525,7 @@ def test_a_real_run_stops_at_the_recensor_and_names_the_denominator_it_has_no_pr
     )
 
 
+@pytest.mark.act_path
 def test_the_last_two_stages_refuse_by_name_rather_than_carrying_an_unsealed_run(real_run):
     """Nothing downstream invents the seal the stopped stage never wrote.
 
@@ -535,6 +543,7 @@ def test_the_last_two_stages_refuse_by_name_rather_than_carrying_an_unsealed_run
         assert "Traceback" not in result.stderr, name
 
 
+@pytest.mark.act_path
 def test_every_witness_and_the_reader_really_served_this_real_submission(real_run):
     """The chairs answered; nothing replayed a declaration.
 
@@ -590,6 +599,7 @@ def test_every_witness_and_the_reader_really_served_this_real_submission(real_ru
 # ========================== the export's own identity ========================
 
 
+@pytest.mark.act_path
 def test_the_export_would_be_named_by_the_submissions_own_identity(real_run):
     """A corpus identity never travels under the word `fixture_id`.
 

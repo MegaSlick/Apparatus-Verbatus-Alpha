@@ -650,6 +650,7 @@ def attachment_entries(tree: RunTree) -> dict[str, dict[str, list[dict[str, Any]
 # ================================ the live pass ===============================
 
 
+@pytest.mark.act_path
 def test_a_live_roster_reads_each_chair_once_through_its_own_scope(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
@@ -681,6 +682,7 @@ def test_a_live_roster_reads_each_chair_once_through_its_own_scope(live_run, tmp
     assert page_records(tree)[(1, "attestator_3")]["outcome"] == "read"
 
 
+@pytest.mark.act_path
 def test_chandra_retries_retain_each_physical_request_but_publish_only_final_text(
     live_run, tmp_path
 ):
@@ -728,6 +730,7 @@ def test_chandra_retries_retain_each_physical_request_but_publish_only_final_tex
     assert len([entry for entry in native if entry["kind"] == "chandra-native-attempt"]) == 3
 
 
+@pytest.mark.act_path
 def test_chandra_trace_is_restricted_to_its_declared_chair_and_page_scope(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
@@ -745,6 +748,7 @@ def test_chandra_trace_is_restricted_to_its_declared_chair_and_page_scope(live_r
         attestatores.validate_page_testimonium_payload(page_payload)
 
 
+@pytest.mark.act_path
 def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
@@ -821,6 +825,7 @@ def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_
         )
 
 
+@pytest.mark.act_path
 def test_chandra_orphan_intent_fails_closed_without_reissuing(live_run, tmp_path, monkeypatch):
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
@@ -853,6 +858,7 @@ def test_chandra_orphan_intent_fails_closed_without_reissuing(live_run, tmp_path
     ] == native
 
 
+@pytest.mark.act_path
 def test_chandra_error_terminal_resume_waits_full_backoff_before_next_request(
     live_run, tmp_path, monkeypatch
 ):
@@ -884,6 +890,7 @@ def test_chandra_error_terminal_resume_waits_full_backoff_before_next_request(
     assert [request["temperature"] for request in resumed.requests("attestator_1")] == [0.2, 0.0]
 
 
+@pytest.mark.act_path
 def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
@@ -907,6 +914,7 @@ def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(live
     assert resumed.requests("attestator_1") == []
 
 
+@pytest.mark.act_path
 def test_chandra_retry_retains_post_response_refusal_in_earlier_terminal(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
@@ -936,6 +944,7 @@ def test_chandra_retry_retains_post_response_refusal_in_earlier_terminal(live_ru
     assert first_attempt["native_capture"]["parse"]["state"] == "parsed"
 
 
+@pytest.mark.act_path
 def test_chandra_fatal_capture_accounting_stops_before_terminal_or_retry(
     live_run, tmp_path, monkeypatch
 ):
@@ -963,6 +972,7 @@ def test_chandra_fatal_capture_accounting_stops_before_terminal_or_retry(
     assert native_kinds == ["chandra-native-attempt-intent"]
 
 
+@pytest.mark.act_path
 def test_exhausted_repeat_geometry_survives_act_record_crash_resume(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     repeated = CHANDRA_PAGE_ONE + ("<!--repeat-->" * 24)
@@ -1000,6 +1010,7 @@ def test_exhausted_repeat_geometry_survives_act_record_crash_resume(live_run, tm
     )
 
 
+@pytest.mark.act_path
 def test_unparsed_exhausted_repeat_does_not_gain_geometry_after_crash_resume(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     repeated_unrecognized = "x" * 17
@@ -1036,6 +1047,7 @@ def test_unparsed_exhausted_repeat_does_not_gain_geometry_after_crash_resume(liv
     }
 
 
+@pytest.mark.act_path
 def test_chandra_error_exhaustion_is_failed_and_records_every_backoff(
     live_run, tmp_path, monkeypatch
 ):
@@ -1062,6 +1074,7 @@ def test_chandra_error_exhaustion_is_failed_and_records_every_backoff(
     assert all(row["error"] is True for row in trace["attempts"])
 
 
+@pytest.mark.act_path
 def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(live_run, tmp_path):
     """The DAI arm of the live pass, end to end through the real adapter.
 
@@ -1135,6 +1148,7 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
     assert call["generation_declared"]["do_sample"] is True
 
 
+@pytest.mark.act_path
 def test_every_live_record_says_which_kind_of_bytes_it_retained(live_run, tmp_path):
     """`raw_response_ref` names which of two things it holds.
 
@@ -1186,6 +1200,7 @@ def test_every_live_record_says_which_kind_of_bytes_it_retained(live_run, tmp_pa
         attestatores.validate_testimonium_payload(kind_without_bytes)
 
 
+@pytest.mark.act_path
 def test_a_wire_response_the_client_cannot_parse_at_all_is_retained_as_the_transport_body(
     live_run, tmp_path
 ):
@@ -1220,6 +1235,7 @@ def test_a_wire_response_the_client_cannot_parse_at_all_is_retained_as_the_trans
     assert other["raw_response_kind"] == "model-output"
 
 
+@pytest.mark.act_path
 def test_a_request_the_sealed_row_cannot_hold_costs_that_attempt_and_not_the_pass(
     refusing_run, tmp_path
 ):
@@ -1334,6 +1350,7 @@ def test_capacity_refusal_attempt_refuses_a_malformed_adapter_declaration():
         )
 
 
+@pytest.mark.act_path
 def test_a_captured_pages_own_format_capabilities_reaches_its_testimonium(
     live_run, tmp_path, monkeypatch
 ):
@@ -1365,6 +1382,7 @@ def test_a_captured_pages_own_format_capabilities_reaches_its_testimonium(
     assert page["format_capabilities"] != attestatores.DEFAULT_FORMAT_CAPABILITIES
 
 
+@pytest.mark.act_path
 def test_a_pass_interrupted_between_two_views_of_a_refused_page_resumes_over_it(
     refusing_run, tmp_path, monkeypatch
 ):
@@ -1431,6 +1449,7 @@ def test_a_pass_interrupted_between_two_views_of_a_refused_page_resumes_over_it(
     assert page_records(RunTree(run_root, RUN_ID))[(1, "attestator_3")]["outcome"] == "failed"
 
 
+@pytest.mark.act_path
 def test_a_prompt_too_long_400_at_the_page_unit_still_stops_the_stage(live_run, tmp_path):
     """The other half of the boundary: a wire refusal is not a per-attempt hold.
 
@@ -1470,6 +1489,7 @@ def test_a_prompt_too_long_400_at_the_page_unit_still_stops_the_stage(live_run, 
     assert (1, "attestator_3") not in page_records(tree)
 
 
+@pytest.mark.act_path
 def test_every_live_act_record_names_the_serving_moment_and_the_call_that_produced_it(
     live_run, tmp_path
 ):
@@ -1505,6 +1525,7 @@ def test_every_live_act_record_names_the_serving_moment_and_the_call_that_produc
     assert call["receipt_ref"] == payload["provenance"]["receipt_ref"]
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize(
     ("finish_reason", "truncated", "basis"),
     [("stop", False, "trusted-response-boundary"), ("length", True, "trusted-response-boundary")],
@@ -1529,6 +1550,7 @@ def test_the_engine_stop_word_decides_the_truncation_a_live_record_publishes(
     assert page_health["truncated"] is truncated
 
 
+@pytest.mark.act_path
 def test_a_served_chandra_publishes_a_real_page_testimonium_with_its_own_geometry(
     live_run, tmp_path
 ):
@@ -1601,6 +1623,7 @@ def test_a_served_chandra_publishes_a_real_page_testimonium_with_its_own_geometr
         )
 
 
+@pytest.mark.act_path
 def test_a_chandra_body_in_neither_declared_shape_is_retained_and_refused_by_name(
     live_run, tmp_path
 ):
@@ -1647,6 +1670,7 @@ def test_a_chandra_body_in_neither_declared_shape_is_retained_and_refused_by_nam
     }
 
 
+@pytest.mark.act_path
 def test_a_resumed_live_pass_asks_no_chair_again(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
@@ -1659,6 +1683,7 @@ def test_a_resumed_live_pass_asks_no_chair_again(live_run, tmp_path):
     assert act_records(RunTree(run_root, RUN_ID)) == before
 
 
+@pytest.mark.act_path
 def test_a_resumed_live_pass_uses_chandra_terminal_evidence_without_reissuing(live_run, tmp_path):
     """The crash the resume rule exists for: act records sealed, page records not.
 
@@ -1701,6 +1726,7 @@ def test_a_resumed_live_pass_uses_chandra_terminal_evidence_without_reissuing(li
     assert published[(2, "attestator_3")]["outcome"] == "read"
 
 
+@pytest.mark.act_path
 def test_a_resumed_churro_page_republishes_exactly_what_the_interrupted_pass_sealed(
     live_run, tmp_path
 ):
@@ -1740,6 +1766,7 @@ def test_a_resumed_churro_page_republishes_exactly_what_the_interrupted_pass_sea
     assert [box["bounds_source"] for box in page_one["observed"]] == ["presented"]
 
 
+@pytest.mark.act_path
 def test_an_engine_stop_word_this_pipeline_cannot_read_is_refused_not_defaulted(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
@@ -1753,6 +1780,7 @@ def test_an_engine_stop_word_this_pipeline_cannot_read_is_refused_not_defaulted(
     assert ("a1", "attestator_1") not in act_records(RunTree(run_root, RUN_ID))
 
 
+@pytest.mark.act_path
 def test_a_churro_response_with_no_engine_stop_word_publishes_unknown_truncation(
     live_run, tmp_path
 ):
@@ -1794,6 +1822,7 @@ def test_a_churro_response_with_no_engine_stop_word_publishes_unknown_truncation
     assert call["finish_reason"] is None
 
 
+@pytest.mark.act_path
 def test_a_live_reread_is_refused_by_name(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)
@@ -1808,6 +1837,7 @@ def test_a_live_reread_is_refused_by_name(live_run, tmp_path):
         )
 
 
+@pytest.mark.act_path
 def test_the_pass_names_the_fixture_witness_rows_its_posture_does_not_read(
     live_run, tmp_path, capsys
 ):
@@ -1820,6 +1850,7 @@ def test_the_pass_names_the_fixture_witness_rows_its_posture_does_not_read(
     assert "testimony" in reported and "churro_page_response" in reported
 
 
+@pytest.mark.act_path
 def test_an_unresolved_attempt_stops_the_pass_rather_than_publishing_a_gap(
     live_run, tmp_path, monkeypatch
 ):
@@ -1834,6 +1865,7 @@ def test_an_unresolved_attempt_stops_the_pass_rather_than_publishing_a_gap(
 # ============================ selection and refusals ==========================
 
 
+@pytest.mark.act_path
 def test_witness_serving_modes_reads_the_sealed_row_kind_for_every_chair(live_run):
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
     context = SimpleNamespace(
@@ -1858,6 +1890,7 @@ def test_witness_serving_modes_refuses_a_roster_that_mixes_postures(tmp_path):
         attestatores.witness_serving_modes(context, load_serving_recipes(mixed), TIER)
 
 
+@pytest.mark.act_path
 def test_witness_serving_modes_refuses_a_live_chair_with_no_measured_placement_tier(live_run):
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
     context = SimpleNamespace(witness_chairs=list(CATALOGUE_CHAIRS), registry=registry)
@@ -2240,6 +2273,7 @@ def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path
     assert posted["temperature"] == declared["temperature"]
 
 
+@pytest.mark.act_path
 def test_the_production_serving_factory_binds_the_run_that_will_record_the_reading(
     live_run, tmp_path
 ):
@@ -2281,6 +2315,7 @@ def test_the_production_serving_factory_binds_the_run_that_will_record_the_readi
         client._retain(b"{}")
 
 
+@pytest.mark.act_path
 def test_the_live_preflight_refuses_to_leave_a_sealed_pair_unresolved(live_run, tmp_path):
     """The guard behind the live resolver, exercised where it can actually fire.
 
@@ -2338,6 +2373,7 @@ def test_an_unreported_stop_word_is_recorded_rather_than_refused():
 # ============================ resume: mid-page interruption ===================
 
 
+@pytest.mark.act_path
 def test_a_pass_interrupted_between_two_act_views_of_one_page_completes_on_resume(
     live_run, tmp_path, monkeypatch
 ):
@@ -2550,6 +2586,7 @@ def test_resumed_page_captures_refuses_two_sealed_acts_that_disagree():
 # ================== resumed observation-payload guard (Chandra) ===============
 
 
+@pytest.mark.act_path
 def test_a_resumed_chandra_record_that_never_parsed_carries_no_observation_payload(
     live_run, tmp_path
 ):
@@ -2600,6 +2637,7 @@ def test_a_resumed_chandra_record_that_never_parsed_carries_no_observation_paylo
     assert attempt.observation_payload is None
 
 
+@pytest.mark.act_path
 def test_a_resumed_churro_record_that_never_parsed_carries_no_observation_payload(
     live_run, tmp_path
 ):
@@ -2651,6 +2689,7 @@ def test_a_resumed_churro_record_that_never_parsed_carries_no_observation_payloa
     assert attempt.observation_payload is None
 
 
+@pytest.mark.act_path
 def test_a_resumed_parsed_but_unconfirmed_blank_act_carries_no_observation_payload(
     live_run, tmp_path
 ):
@@ -2706,6 +2745,7 @@ def test_a_resumed_parsed_but_unconfirmed_blank_act_carries_no_observation_paylo
     assert attempt.observation_payload is None
 
 
+@pytest.mark.act_path
 def test_an_unparsed_resumed_record_still_reads_and_digest_checks_its_retained_blob(
     live_run, tmp_path
 ):
@@ -2766,6 +2806,7 @@ def test_an_unparsed_resumed_record_still_reads_and_digest_checks_its_retained_b
 # ==================== the operator-facing unread-declarations line ============
 
 
+@pytest.mark.act_path
 def test_the_pass_names_chandra_anchors_among_what_it_does_not_read(live_run, tmp_path, capsys):
     """`chandra_anchor` is a declared fixture stimulus a live pass discards too.
 
@@ -2785,6 +2826,7 @@ def test_the_pass_names_chandra_anchors_among_what_it_does_not_read(live_run, tm
 # =========================== the derived anchor (R4) ==========================
 
 
+@pytest.mark.act_path
 def test_a_served_churro_reads_the_vendor_grammar_and_reports_no_geometry(live_run, tmp_path):
     """What this chair actually produces once it runs its vendor's own system.
 
@@ -2830,6 +2872,7 @@ def test_a_served_churro_reads_the_vendor_grammar_and_reports_no_geometry(live_r
     assert churro_a1["span"]["end"] > churro_a1["span"]["start"]
 
 
+@pytest.mark.act_path
 def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name(
     live_run, tmp_path
 ):
@@ -2866,6 +2909,7 @@ def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name
     )
 
 
+@pytest.mark.act_path
 def test_the_retired_envelope_reads_and_attaches_on_its_anchor_line(live_run, tmp_path):
     """Retained history reads, says on the record that it is history -- and attaches.
 
@@ -2902,6 +2946,7 @@ def test_the_retired_envelope_reads_and_attaches_on_its_anchor_line(live_run, tm
     assert churro_a1["span"]["end"] > churro_a1["span"]["start"]
 
 
+@pytest.mark.act_path
 def test_live_page_witnesses_align_against_the_anchor_derived_from_chandras_own_response(
     live_run, tmp_path
 ):
@@ -3001,6 +3046,7 @@ def test_live_page_witnesses_align_against_the_anchor_derived_from_chandras_own_
     assert dai_a1["alignment"] is None and dai_a1["attached"] is True
 
 
+@pytest.mark.act_path
 def test_live_page_blocks_touching_neighbouring_regions_keep_disjoint_act_spans(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()

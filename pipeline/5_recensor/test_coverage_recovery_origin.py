@@ -154,6 +154,7 @@ def _stage_seals(tree: RunTree, stage: str) -> list[dict]:
     )
 
 
+@pytest.mark.act_path
 def test_an_unclaimed_observation_alone_spends_nothing_without_ink_confirmation(tmp_path):
     """A witness's own unclaimed box, unconfirmed by real ink, asks for nothing.
 
@@ -243,6 +244,7 @@ def test_an_unclaimed_observation_alone_spends_nothing_without_ink_confirmation(
         assert [seal["payload"]["attempt_ordinal"] for seal in seals] == expected_ordinals
 
 
+@pytest.mark.act_path
 def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accounting(
     tmp_path, monkeypatch
 ):
@@ -373,6 +375,7 @@ def test_observation_inside_only_a_recovery_crop_stays_unattached_in_floor_accou
     assert coverage["under_witnessed"] is True
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize(
     ("policy", "run_id"),
     [

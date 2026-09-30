@@ -292,6 +292,7 @@ def test_the_unmarked_pages_ink_is_accounted_as_residual_not_as_absence(structur
     assert len(residual_keys) == len(page_one["residual_components"])
 
 
+@pytest.mark.act_path
 def test_nothing_downstream_reports_the_lost_page_as_a_success(structure_failure_run):
     """Every held unit reaches the Armarium as a review item, and the run is partial."""
     export = _artifacts(structure_failure_run, ARMARIUM, "export")[0]["payload"]

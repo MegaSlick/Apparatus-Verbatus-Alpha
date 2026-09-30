@@ -265,6 +265,7 @@ def test_neighbour_clues_are_refused_where_the_act_has_no_witnesses():
 # --- a whole run: clues reach the prompt and nothing else -----------------------
 
 
+@pytest.mark.act_path
 def test_the_first_and_last_acts_have_one_neighbour_each_with_every_witness(fed_run):
     readings = _by_act(fed_run, "perlectio")
     first = readings["a1"]["payload"]["dossier"]["neighbours"]
@@ -277,6 +278,7 @@ def test_the_first_and_last_acts_have_one_neighbour_each_with_every_witness(fed_
     assert len(labels) == 3
 
 
+@pytest.mark.act_path
 def test_a_neighbours_reading_reaches_only_the_neighbour_clues(fed_run):
     """The sentinel is a2's witness text; a1's record carries it only under `neighbours`."""
     reading = _by_act(fed_run, "perlectio")["a1"]
@@ -318,6 +320,7 @@ def test_a_neighbours_reading_reaches_only_the_neighbour_clues(fed_run):
     assert block.endswith(protocol.NEIGHBOUR_FRAGMENT)
 
 
+@pytest.mark.act_path
 def test_the_blind_pass_carries_no_neighbour_text(fed_run):
     prior = _by_act(fed_run, "lectio-prior")["a1"]
     assert "neighbours" not in prior["payload"]["dossier"]
@@ -363,6 +366,7 @@ def _dossiers_built(monkeypatch, root: Path, *args: str, refused: bool = False) 
     return built
 
 
+@pytest.mark.act_path
 def test_an_acts_dossier_does_not_depend_on_its_siblings_readings(tmp_path, monkeypatch):
     """Built alone, with no other act's Perlectio anywhere, a2's dossier and prompt are the same.
 
@@ -410,6 +414,7 @@ def _refused_with(fed_run, change, match: str) -> None:
         perlector._validate_neighbours(dossier, _CAP)
 
 
+@pytest.mark.act_path
 def test_a_neighbour_naming_this_act_is_refused(fed_run):
     own = _published(fed_run)["payload"]["dossier"]["act_id"]
     _refused_with(
@@ -417,12 +422,14 @@ def test_a_neighbour_naming_this_act_is_refused(fed_run):
     )
 
 
+@pytest.mark.act_path
 def test_a_neighbour_with_an_extra_field_is_refused(fed_run):
     _refused_with(
         fed_run, lambda neighbours: neighbours["following"].update(extra=1), "closed shape"
     )
 
 
+@pytest.mark.act_path
 def test_a_neighbour_ref_outside_the_attestatores_testimonia_is_refused(fed_run):
     def repoint(neighbours):
         neighbours["following"]["witnesses"][0]["testimonium_ref"]["relative_path"] = (
@@ -432,6 +439,7 @@ def test_a_neighbour_ref_outside_the_attestatores_testimonia_is_refused(fed_run)
     _refused_with(fed_run, repoint, "sealed Attestatores Testimonium")
 
 
+@pytest.mark.act_path
 def test_the_published_neighbours_pass_their_own_validation(fed_run):
     perlector._validate_neighbours(_published(fed_run)["payload"]["dossier"], _CAP)
 

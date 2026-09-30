@@ -9,6 +9,8 @@ import copy
 import json
 from pathlib import Path
 
+import pytest
+
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import validate_envelope
 from common.contracts.identities import artifact_id, attempt_id
@@ -38,6 +40,7 @@ def through_perlector(root: Path, run_id: str, scenario: str) -> None:
     run_through(root, run_id, scenario, "perlector")
 
 
+@pytest.mark.act_path
 def test_an_unrequested_second_perlectio_is_refused_before_recensor_publishes(tmp_path):
     root = tmp_path / "runs"
     through_perlector(root, "unrequested", "happy")
@@ -62,6 +65,7 @@ def test_an_unrequested_second_perlectio_is_refused_before_recensor_publishes(tm
     assert records(tree, RECENSOR, "review") == []
 
 
+@pytest.mark.act_path
 def test_an_orphaned_recovery_request_is_named_before_recensor_writes_again(tmp_path):
     root = tmp_path / "runs"
     through_perlector(root, "orphan", "review")
@@ -88,6 +92,7 @@ def test_an_orphaned_recovery_request_is_named_before_recensor_writes_again(tmp_
     assert [entry["artifact_id"] for entry in tree.build_manifest(RECENSOR)["artifacts"]] == before
 
 
+@pytest.mark.act_path
 def test_a_pending_recovery_request_remains_held_on_a_direct_recensor_retry(tmp_path):
     root = tmp_path / "runs"
     through_perlector(root, "pending", "review")
@@ -101,6 +106,7 @@ def test_a_pending_recovery_request_remains_held_on_a_direct_recensor_retry(tmp_
     assert [entry["artifact_id"] for entry in tree.build_manifest(RECENSOR)["artifacts"]] == before
 
 
+@pytest.mark.act_path
 def test_a_recovery_crop_without_its_reread_is_refused_before_acceptance(tmp_path):
     root = tmp_path / "runs"
     through_perlector(root, "unread-recrop", "review")
@@ -128,6 +134,7 @@ def test_a_recovery_crop_without_its_reread_is_refused_before_acceptance(tmp_pat
     assert "Perlectio attempt(s)" in result.stderr
 
 
+@pytest.mark.act_path
 def test_an_empty_completed_reading_is_held_not_accepted(tmp_path):
     root = tmp_path / "runs"
     through_perlector(root, "empty-reading", "happy")

@@ -83,6 +83,7 @@ def _expected_act_ids(root):
     return ids
 
 
+@pytest.mark.act_path
 def test_an_over_capacity_presentation_holds_its_act_without_killing_the_stage(over_capacity_run):
     result, root = over_capacity_run
     # Exit 2 is fatal; a capacity hold is a run outcome rather than a crash.
@@ -120,6 +121,7 @@ def test_no_reader_pass_is_published_for_an_act_that_never_fit(over_capacity_run
     assert not (stage / "lectio-nuda").exists()
 
 
+@pytest.mark.act_path
 def test_the_recensor_holds_every_over_capacity_act_and_loses_none_of_them(over_capacity_run):
     """The downstream half of the capacity hold, asserted here because it rests
     on this module's one run rather than on a second fixture pass.

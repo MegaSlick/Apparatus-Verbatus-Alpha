@@ -133,6 +133,7 @@ def _testimonium_for(tree: RunTree, *, act_key: str, chair: str, ordinal: int) -
     )
 
 
+@pytest.mark.act_path
 def test_reread_appends_and_current_keeps_the_new_failed_outcome(tmp_path):
     run_root, tree = run_to_designator(tmp_path, "reread-failure")
     first_result = invoke_stage(
@@ -187,6 +188,7 @@ def test_reread_appends_and_current_keeps_the_new_failed_outcome(tmp_path):
     assert attestatores.attempt_tally(tree)["count"] == 12
 
 
+@pytest.mark.act_path
 def test_an_unsealed_whole_pass_resumes_over_what_it_already_sealed(tmp_path, monkeypatch):
     """A crash mid-pass resumes at the same ordinal, and the run still completes.
 
@@ -420,6 +422,7 @@ def test_a_resume_over_a_lost_proposal_crop_refuses_by_name_not_an_indexerror(
     assert _testimonia(tree) == [sealed], "the held resume must not touch the sealed record"
 
 
+@pytest.mark.act_path
 def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair(
     tmp_path, monkeypatch
 ):
@@ -518,6 +521,7 @@ def _reread(run_root: Path, scenario: str, act_id: str, chair: str, **extra):
     )
 
 
+@pytest.mark.act_path
 def test_a_targeted_reread_moves_one_chair_and_leaves_every_other_chair_alone(tmp_path):
     run_root, tree = run_to_designator(tmp_path, "reread-failure")
     assert (
@@ -571,6 +575,7 @@ def test_a_targeted_reread_moves_one_chair_and_leaves_every_other_chair_alone(tm
     assert attestatores.attempt_tally(tree)["count"] == 7
 
 
+@pytest.mark.act_path
 def test_the_whole_pass_still_resumes_over_a_folder_one_chair_has_been_reread_in(tmp_path):
     """A reread moves one chair's ordinal and no other's, so the whole pass — which
     the orchestrator always invokes at ordinal 1 — has to stay a resume rather than
@@ -609,6 +614,7 @@ def test_the_whole_pass_still_resumes_over_a_folder_one_chair_has_been_reread_in
     assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
 
 
+@pytest.mark.act_path
 def test_a_whole_pass_at_an_ordinal_a_reread_already_sealed_differently_is_refused_before_any_write(
     tmp_path,
 ):
@@ -664,6 +670,7 @@ def test_a_whole_pass_at_an_ordinal_a_reread_already_sealed_differently_is_refus
     assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
 
 
+@pytest.mark.act_path
 def test_a_successful_reread_retains_new_testimony_and_keeps_attempt_one(tmp_path):
     """A reread that succeeds carries its own ordinal's declared response, not
     attempt 1's, and leaves attempt 1 byte-identical."""
@@ -792,6 +799,7 @@ def test_a_targeted_reread_of_an_absent_chair_is_refused(tmp_path, absent_third_
     assert len(_testimonia(tree)) == before
 
 
+@pytest.mark.act_path
 def test_a_reread_that_gets_nothing_back_is_failed_rather_than_never_attempted(tmp_path):
     """Spec 07 separates `failed` — "an attempt was made and produced no usable
     Testimonium" — from `not-run`, "configured, never attempted". A targeted reread
@@ -912,6 +920,7 @@ def test_a_pass_interrupted_before_its_manifest_was_written_can_still_be_complet
     assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
 
 
+@pytest.mark.act_path
 def test_a_wiped_attempt_layer_holds_rather_than_silently_restarting_history(tmp_path):
     """The stored inventory is evidence that attempts existed, even with none left.
 
@@ -960,6 +969,7 @@ def test_a_wiped_attempt_layer_holds_rather_than_silently_restarting_history(tmp
     )
 
 
+@pytest.mark.act_path
 def test_a_reread_holds_when_the_folder_no_longer_accounts_for_every_pair(tmp_path):
     """The closing act/chair denominator, which nothing exercised.
 
@@ -995,6 +1005,7 @@ def test_a_reread_holds_when_the_folder_no_longer_accounts_for_every_pair(tmp_pa
 # --- `witness_reported`: kept, and demoted ---------------------------------------
 
 
+@pytest.mark.act_path
 def test_a_self_report_is_retained_verbatim_whatever_its_format_can_express(tmp_path):
     """Spec 07's reason for `format_capabilities`, exercised on both sides at once.
 
@@ -2038,6 +2049,7 @@ def test_a_page_scope_claim_cannot_hide_an_act_scoped_attempt_from_the_history(t
     )
 
 
+@pytest.mark.act_path
 def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(tmp_path, monkeypatch):
     """A synthesized separator is not a raw span at the normalized offset.
 

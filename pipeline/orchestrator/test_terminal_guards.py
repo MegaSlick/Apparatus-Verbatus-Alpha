@@ -394,6 +394,7 @@ def test_exemplar_never_seals_a_corpus_with_only_refused_sources(tmp_path):
     assert not [entry for entry in artifacts if entry["kind"] == "seal"]
 
 
+@pytest.mark.act_path
 def test_archetypus_refuses_to_resurrect_a_designator_held_act(monkeypatch):
     """A synthetic accepted review cannot establish a seal-held act."""
     archetypus = load_stage("6_archetypus")
@@ -431,6 +432,7 @@ def test_archetypus_refuses_to_resurrect_a_designator_held_act(monkeypatch):
     assert not context.finished
 
 
+@pytest.mark.act_path
 def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(monkeypatch):
     """A delivered category may not override a held Designator seal entry."""
     armarium = load_stage("7_armarium")
@@ -467,6 +469,7 @@ def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(mo
     assert not context.finished
 
 
+@pytest.mark.act_path
 def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction_exists(
     monkeypatch,
 ):
@@ -524,6 +527,7 @@ def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction
     assert bundle_record["reference"]["sha256"] == expected_digest
 
 
+@pytest.mark.act_path
 def test_only_sealed_canary_acts_leave_the_bundle_and_real_canary_named_paths_stay(
     monkeypatch,
 ):
@@ -594,6 +598,7 @@ def test_only_sealed_canary_acts_leave_the_bundle_and_real_canary_named_paths_st
     ]
 
 
+@pytest.mark.act_path
 def test_an_act_touching_real_and_canary_pages_is_fatal(monkeypatch):
     armarium = load_stage("7_armarium")
     context = _RecordingContext()
@@ -624,6 +629,7 @@ def test_an_act_touching_real_and_canary_pages_is_fatal(monkeypatch):
     assert context.published == []
 
 
+@pytest.mark.act_path
 def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(monkeypatch):
     """A bundle whose own face says `partial` may not leave under an exit code of 0.
 
@@ -684,6 +690,7 @@ def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(m
     assert export["payload"]["aggregate"]["status"] == "complete"
 
 
+@pytest.mark.act_path
 def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch):
     """A delivered act with no established record is a fatal imbalance, not a run.
 

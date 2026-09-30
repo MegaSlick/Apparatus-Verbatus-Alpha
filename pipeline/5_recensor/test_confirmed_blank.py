@@ -79,6 +79,7 @@ def _review_of(tree: RunTree, act_key: str) -> dict:
     return matches[0]
 
 
+@pytest.mark.act_path
 def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     """The Perlector's own `no-readable-text`, corroborated by every one of the
     three configured witnesses independently reporting `genuinely-empty`."""
@@ -133,6 +134,7 @@ def test_unanimous_absence_seals_confirmed_blank(tmp_path):
     assert content_coverage["shortfall"] is False
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("availability_cause", ["page-audit", "geometry-conservation"])
 def test_confirmed_blank_discloses_each_unavailable_ink_instrument(
     tmp_path, monkeypatch, availability_cause
@@ -315,6 +317,7 @@ _HOLD_CAUSES = {
 }
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("cause", sorted(_HOLD_CAUSES))
 def test_every_hold_cause_holds_a_corroborated_blank(tmp_path, monkeypatch, cause):
     """`confirmed-blank` is terminal and COMPLETED-class, so every cause that holds a read
@@ -338,6 +341,7 @@ def test_every_hold_cause_holds_a_corroborated_blank(tmp_path, monkeypatch, caus
         )
 
 
+@pytest.mark.act_path
 def test_a_hold_does_not_skip_the_fatal_on_unrecorded_witness_evidence(tmp_path, monkeypatch):
     root = tmp_path / "runs"
     _run_through_perlector(root, "r", "confirmed-blank")
@@ -369,6 +373,7 @@ def test_a_recovery_hold_names_the_limit_that_refused_it(used_total, budget, nam
     assert reason.startswith(named)
 
 
+@pytest.mark.act_path
 def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):
     """Same Perlector finding (`no-readable-text`), but only two of three chairs
     agree -- the third reads real text. A single dissent is never
@@ -387,6 +392,7 @@ def test_a_dissenting_witness_holds_instead_of_confirming_blank(tmp_path):
     assert "blank_evidence" not in review["payload"]
 
 
+@pytest.mark.act_path
 def test_no_readable_text_hold_names_the_testimony_shortfall_that_blocked_its_seal(
     tmp_path, monkeypatch
 ):
@@ -422,6 +428,7 @@ def test_no_readable_text_hold_names_the_testimony_shortfall_that_blocked_its_se
     assert "testimony coverage is incomplete at the whole-page level" in reason
 
 
+@pytest.mark.act_path
 def test_confirmed_blank_is_a_completed_class_terminal_outcome(tmp_path):
     """`confirmed-blank` does not hold the run -- unlike `held-for-review`, it is
     COMPLETED-class (`common/contracts/outcomes.py`) and the run reaches EXIT_COMPLETE

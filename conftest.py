@@ -24,7 +24,14 @@ from common.stage import _stage_seal_payload, latest_attempt
 ROOT = Path(__file__).resolve().parent
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    # The act path is off the committed default; its tests run only when a `-m`
+    # expression names `act_path`.
+    if "act_path" not in (config.getoption("markexpr") or ""):
+        act_path = [item for item in items if item.get_closest_marker("act_path")]
+        if act_path:
+            config.hook.pytest_deselected(items=act_path)
+            items[:] = [item for item in items if not item.get_closest_marker("act_path")]
     if "CI" in os.environ:
         return
     skip_local = pytest.mark.skip(reason="hostile_local runs in CI only")
@@ -414,16 +421,6 @@ def _notification_sink() -> None:
     os.environ["NTFY_TOPIC"] = NOTIFY_TEST_SINK_TOPIC
 
 
-def page_protocol_config(directory: Path) -> Path:
-    """The committed Perlector protocol with `reading_unit = "page"`, written under `directory`."""
-    text = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
-    assert 'reading_unit = "act"' in text
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "perlector_protocol.toml"
-    path.write_text(text.replace('reading_unit = "act"', 'reading_unit = "page"'), "utf-8")
-    return path
-
-
 def floor_models_config(directory: Path, floor: int) -> Path:
     """The live model config with its witness floor set to `floor`, written under `directory`."""
     shutil.copytree(ROOT / "config" / "model-fixtures", directory / "model-fixtures")
@@ -436,69 +433,6 @@ def floor_models_config(directory: Path, floor: int) -> Path:
     return path
 
 
-_DAI_ACT_SCOPE = 'witness_adapter = "dai.v1"\nwitness_scope = "act"\n'
-_ABSENT_RECORD_DETECTOR = (
-    '[chairs.secondary_proposer]\nstate = "absent"\n'
-    'reason = "no secondary proposer is configured for the offline walking skeleton"\n'
-)
-
-
-def page_models_config(directory: Path, floor: int = 3) -> Path:
-    """The page-read roster, written under `directory`: every witness chair page-scoped.
-
-    The committed roster with DAI (`attestator_2`) page-scoped and its record
-    detector (`secondary_proposer`) configured on the `fake-secondary-proposer-v0`
-    fixture row, standing on the structure chair's fixture snapshot, and the
-    witness floor set to `floor`. Beside
-    it, `serving_recipes.toml` (`page_serving_recipes_config`) is the committed
-    catalogue with that fixture row at every tier: the committed catalogue
-    matches the committed roster, where the detector is absent.
-    """
-    path = floor_models_config(directory, floor)
-    text = path.read_text(encoding="utf-8")
-    structure = tomllib.loads(text)["chairs"]["designator_structure"]
-    assert text.count(_DAI_ACT_SCOPE) == 1 and _ABSENT_RECORD_DETECTOR in text
-    text = text.replace(_DAI_ACT_SCOPE, _DAI_ACT_SCOPE.replace('"act"', '"page"')).replace(
-        _ABSENT_RECORD_DETECTOR,
-        '[chairs.secondary_proposer]\nstate = "configured"\nsource = "local-repository"\n'
-        f'path = "designator_structure"\ndigest_manifest = "{structure["digest_manifest"]}"\n'
-        'manifest = "manifests/designator_structure.json"\n'
-        'serving_recipe = "fake-secondary-proposer-v0"\n'
-        'license_note = "fixture identity only; no model weights or model license apply"\n',
-    )
-    path.write_text(text, encoding="utf-8")
-    config = tomllib.loads(text)
-    assert config["chairs"]["attestator_2"].get("witness_scope", "page") == "page"
-    tiers = [
-        tier["id"]
-        for tier in tomllib.loads(
-            (ROOT / "config" / "pod_placement.toml").read_text(encoding="utf-8")
-        )["tiers"]
-    ]
-    page_serving_recipes_config(path).write_text(
-        (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8")
-        + "".join(
-            '\n[[profiles]]\nkind = "fixture"\nrecipe = "fake-secondary-proposer-v0"\n'
-            f'chair = "secondary_proposer"\ntier = "{tier}"\n'
-            'description = "offline walking-skeleton fixture for DAI\'s record detector chair"\n'
-            for tier in tiers
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
-def page_serving_recipes_config(models_config: Path) -> Path:
-    """The serving catalogue `page_models_config` writes beside the roster at `models_config`."""
-    return Path(models_config).parent / "serving_recipes.toml"
-
-
-def page_roster_options(directory: Path, floor: int = 3) -> dict[str, Path]:
-    """The stage options that run on the page-read roster: its models config and catalogue."""
-    models = page_models_config(directory, floor)
-    return {"models_config": models, "serving_recipes_config": page_serving_recipes_config(models)}
-
-
 def build_page_tree(
     base: Path,
     scenario: str,
@@ -509,15 +443,13 @@ def build_page_tree(
 ) -> tuple[Path, dict[str, object]]:
     """A fixture tree read page by page, through the Perlector; returns (root, stage options).
 
-    The options, which every later stage of the run takes too, name the page
-    protocol and the page-read roster (`page_models_config`) with witness floor
-    `floor`; `options` adds others (for example `witness_context="blinded"`).
+    The committed protocol and roster read page by page. The options, which
+    every later stage of the run takes too, set the witness floor to `floor`
+    when it is not the committed one; `options` adds others (for example
+    `witness_context="blinded"`).
     """
-    options = {
-        "perlector_protocol_config": page_protocol_config(base / "config"),
-        **page_roster_options(base / "models", floor),
-        **options,
-    }
+    if floor != 3:
+        options = {"models_config": floor_models_config(base / "models", floor), **options}
     root = base / "runs"
     for program in programs_through("perlector"):
         result = run_stage(root, run_id, scenario, program, **options)

@@ -23,6 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.stages import ATTESTATORES
 from common.runtree.store import RunTree
@@ -85,6 +87,7 @@ def _forge_attachments(tree: RunTree, rebind_stage_seal, change) -> None:
     rebind_stage_seal(tree, ATTESTATORES)
 
 
+@pytest.mark.act_path
 def test_a_failed_page_alignment_may_not_keep_its_comparable_claim(tmp_path, rebind_stage_seal):
     """An alignment that did not place this act's text supplies no comparison.
 
@@ -114,6 +117,7 @@ def test_a_failed_page_alignment_may_not_keep_its_comparable_claim(tmp_path, reb
     assert "claims a comparability its own recorded alignment does not support" in result.stderr
 
 
+@pytest.mark.act_path
 def test_an_act_scoped_chair_may_not_lose_its_comparable_claim_silently(
     tmp_path, rebind_stage_seal
 ):
@@ -142,6 +146,7 @@ def test_an_act_scoped_chair_may_not_lose_its_comparable_claim_silently(
     )
 
 
+@pytest.mark.act_path
 def test_an_unattached_row_may_never_claim_comparable_text(tmp_path, rebind_stage_seal):
     """Comparability implies attachment, and the implication is checked first.
 
@@ -178,6 +183,7 @@ def _relabel_as_anchor_line(row):
     return True
 
 
+@pytest.mark.act_path
 def test_a_geometrically_attached_witness_may_not_be_relabelled_anchor_line(
     tmp_path, rebind_stage_seal
 ):

@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from common.contracts.canonical import canonical_text
 from common.contracts.stages import PERLECTOR
 from common.runtree.store import RunTree
@@ -32,6 +34,7 @@ def orchestrate(run_root: Path, run_id: str, scenario: str, *, witness_context: 
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
+@pytest.mark.act_path
 def test_a_blinded_run_completes_and_seals_the_regime_on_every_reading(tmp_path):
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "happy", witness_context="blinded")
@@ -48,6 +51,7 @@ def test_a_blinded_run_completes_and_seals_the_regime_on_every_reading(tmp_path)
         assert reading["payload"]["dossier"]["witness_regime"] == "blinded"
 
 
+@pytest.mark.act_path
 def test_a_blinded_run_leaks_no_configured_chair_name_anywhere_in_the_dossier(tmp_path):
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "happy", witness_context="blinded")
@@ -74,13 +78,16 @@ def test_named_and_blinded_runs_of_the_same_scenario_produce_different_config_di
     like `pdf_target_dpi`."""
     named_root = tmp_path / "named"
     blinded_root = tmp_path / "blinded"
-    assert orchestrate(named_root, "r", "happy", witness_context="named").returncode == 0
-    assert orchestrate(blinded_root, "r", "happy", witness_context="blinded").returncode == 0
+    assert orchestrate(named_root, "r", "page-unbroken", witness_context="named").returncode == 0
+    assert (
+        orchestrate(blinded_root, "r", "page-unbroken", witness_context="blinded").returncode == 0
+    )
     named_digest = RunTree(named_root, "r").read_run()["config_digest"]
     blinded_digest = RunTree(blinded_root, "r").read_run()["config_digest"]
     assert named_digest != blinded_digest
 
 
+@pytest.mark.act_path
 def test_a_named_run_still_carries_the_real_chair_names(tmp_path):
     """The default regime is unaffected: named dossiers still show real chair
     identity, exactly as the walking skeleton always has."""

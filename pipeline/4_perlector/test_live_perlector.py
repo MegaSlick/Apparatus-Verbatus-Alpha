@@ -508,11 +508,11 @@ def test_a_placement_table_that_is_not_the_sealed_one_is_refused(chained_run):
         perlector.perlector_serving_mode(context, args, _perlector_identity())
 
 
-def test_an_absent_chair_resolves_to_fixture_without_consulting_the_catalogue():
+def test_an_absent_chair_resolves_to_fixture_without_consulting_the_catalogue(
+    absent_third_chair_config,
+):
     """An absence has no identity to look a row up by, so none is looked up."""
-    absent = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).resolve(
-        "secondary_proposer"
-    )
+    absent = ChairRegistry.from_toml(str(absent_third_chair_config)).resolve("attestator_3")
     context = SimpleNamespace(serving_config_inputs=None)
     args = SimpleNamespace(serving_recipes_config="/nonexistent.toml", placement_tier=None)
     assert perlector.perlector_serving_mode(context, args, absent) == "fixture"
@@ -521,6 +521,7 @@ def test_an_absent_chair_resolves_to_fixture_without_consulting_the_catalogue():
 # --- a live pass, and what its record carries ---------------------------------
 
 
+@pytest.mark.act_path
 def test_a_live_pass_reads_through_the_chair_and_binds_the_call_it_read_from(
     live_run, tmp_path, monkeypatch
 ):
@@ -554,6 +555,7 @@ def test_a_live_pass_reads_through_the_chair_and_binds_the_call_it_read_from(
         assert receipt["chair"] == "perlector"
 
 
+@pytest.mark.act_path
 def test_live_reproof_call_missing_generation_is_a_schema_refusal(live_run, tmp_path, monkeypatch):
     root, _catalogue = live_run
     _endpoint, exit_code = _run_perlector(
@@ -626,6 +628,7 @@ def _first_live_reproof(root: Path):
     return tree, reading, call_evidence, request
 
 
+@pytest.mark.act_path
 def test_the_audit_rebuild_holds_a_reproof_call_to_the_sealed_perlector_row(
     live_run, tmp_path, monkeypatch
 ):
@@ -646,6 +649,7 @@ def test_the_audit_rebuild_holds_a_reproof_call_to_the_sealed_perlector_row(
         perlector_audit._validate_live_reproof_request(tree, reading, call_evidence, request, moved)
 
 
+@pytest.mark.act_path
 def test_the_pass_asks_the_engine_exactly_once_per_reading_and_never_retries(
     live_run, tmp_path, monkeypatch
 ):
@@ -671,6 +675,7 @@ def test_the_pass_asks_the_engine_exactly_once_per_reading_and_never_retries(
         assert request["model"] == SERVED_MODEL_ID
 
 
+@pytest.mark.act_path
 def test_an_engine_length_publishes_a_held_truncation_and_never_a_reading(
     live_run, tmp_path, monkeypatch
 ):
@@ -692,6 +697,7 @@ def test_an_engine_length_publishes_a_held_truncation_and_never_a_reading(
     assert exit_code == 0
 
 
+@pytest.mark.act_path
 def test_a_reply_that_reaches_its_bound_holds_the_act_and_is_never_asked_again(
     live_run, tmp_path, monkeypatch
 ):
@@ -734,6 +740,7 @@ def test_a_reply_that_reaches_its_bound_holds_the_act_and_is_never_asked_again(
     assert retained_bounds == {reading_bound, reproof_bound}
 
 
+@pytest.mark.act_path
 def test_an_unreported_stop_reason_holds_the_reading_as_unknown(live_run, tmp_path, monkeypatch):
     """An engine that reported nothing is never `complete` (`common/truncation.py`).
 
@@ -754,6 +761,7 @@ def test_an_unreported_stop_reason_holds_the_reading_as_unknown(live_run, tmp_pa
         assert record["payload"]["engine_call"]["finish_reason"] is None
 
 
+@pytest.mark.act_path
 def test_an_unrecognized_stop_reason_publishes_one_retained_act_failure_and_continues(
     live_run, tmp_path, monkeypatch
 ):
@@ -827,6 +835,7 @@ def test_an_unrecognized_stop_reason_publishes_one_retained_act_failure_and_cont
     assert any(b'"abort"' in body for body in retained), "the refusing response was not retained"
 
 
+@pytest.mark.act_path
 def test_a_body_that_is_not_a_reading_becomes_a_retained_act_failure(
     live_run, tmp_path, monkeypatch
 ):
@@ -850,6 +859,7 @@ def test_a_body_that_is_not_a_reading_becomes_a_retained_act_failure(
         assert failure["request_sha256"] and failure["served_model_id"]
 
 
+@pytest.mark.act_path
 def test_an_invalid_failed_record_is_refused_before_immutable_publication(
     live_run, tmp_path, monkeypatch
 ):
@@ -874,6 +884,7 @@ def test_an_invalid_failed_record_is_refused_before_immutable_publication(
     ]
 
 
+@pytest.mark.act_path
 def test_a_resumed_live_pass_never_asks_the_chair_about_an_act_already_sealed(
     live_run, tmp_path, monkeypatch
 ):
@@ -946,6 +957,7 @@ def _perlectiones(root: Path) -> dict[str, dict[str, Any]]:
     return by_act
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("kind", ["lectio-prior", "audit-draft"])
 def test_a_live_pass_refuses_to_resume_an_act_it_left_half_read(
     request, tmp_path, monkeypatch, kind
@@ -1011,6 +1023,7 @@ def test_a_launch_the_reading_deadline_cannot_cover_is_refused_before_the_chair_
     assert endpoints[0].requests == []
 
 
+@pytest.mark.act_path
 def test_a_non_200_from_the_engine_becomes_a_retained_act_failure_and_continues(
     live_run, tmp_path, monkeypatch
 ):
@@ -1055,6 +1068,7 @@ def _first_pass_a_is_refused(run_kind, mode, request, tmp_path, monkeypatch):
     return root, exit_code
 
 
+@pytest.mark.act_path
 def test_a_failed_saved_blind_read_is_kept_and_costs_no_production_reading(
     request, tmp_path, monkeypatch
 ):
@@ -1080,6 +1094,7 @@ def test_a_failed_saved_blind_read_is_kept_and_costs_no_production_reading(
     )
 
 
+@pytest.mark.act_path
 def test_a_failed_fed_blind_read_still_fails_its_act(request, tmp_path, monkeypatch):
     root, exit_code = _first_pass_a_is_refused(
         "fed_chained_run", "fed", request, tmp_path, monkeypatch
@@ -1093,6 +1108,7 @@ def test_a_failed_fed_blind_read_still_fails_its_act(request, tmp_path, monkeypa
     )
 
 
+@pytest.mark.act_path
 def test_recovery_skips_only_a_validated_operational_failure_sibling(
     live_run, tmp_path, monkeypatch
 ):
@@ -1137,6 +1153,7 @@ def test_recovery_skips_only_a_validated_operational_failure_sibling(
         perlector._sealed_sibling_semi_finals(context, current, expected=expected)
 
 
+@pytest.mark.act_path
 def test_a_transport_timeout_fails_one_act_and_continues_to_the_next(
     live_run, tmp_path, monkeypatch
 ):
@@ -1209,6 +1226,7 @@ def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
     }
 
 
+@pytest.mark.act_path
 def test_a_live_pass_refuses_a_fixture_declared_reading_failure(
     declaring_run, tmp_path, monkeypatch
 ):
@@ -1320,13 +1338,13 @@ def test_an_outcome_that_attempted_no_reading_cannot_carry_a_receipt():
         )
 
 
-def test_an_absent_chair_that_attempted_a_reading_cannot_carry_a_receipt():
+def test_an_absent_chair_that_attempted_a_reading_cannot_carry_a_receipt(
+    absent_third_chair_config,
+):
     """An absent chair served nothing, so a receipt reference names a serving
     moment it never had -- the mirror of the not-attempted guard above, for
     the other reading that never happened."""
-    absent = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).resolve(
-        "secondary_proposer"
-    )
+    absent = ChairRegistry.from_toml(str(absent_third_chair_config)).resolve("attestator_3")
     with pytest.raises(SchemaRefusal, match="absent"):
         perlector.provenance_for(
             SimpleNamespace(),
@@ -2522,6 +2540,7 @@ def _widths(root: Path) -> set[int]:
     }
 
 
+@pytest.mark.act_path
 def test_concurrent_calls_publish_exactly_the_bytes_a_serial_pass_publishes(
     batching_chained_run, tmp_path, monkeypatch
 ):
@@ -2567,6 +2586,7 @@ def test_concurrent_calls_publish_exactly_the_bytes_a_serial_pass_publishes(
     assert (_widths(serial_root), _widths(batched_root)) == ({1}, {BATCH})
 
 
+@pytest.mark.act_path
 def test_one_failed_call_in_a_batch_fails_only_its_own_act(
     batching_chained_run, tmp_path, monkeypatch
 ):
@@ -2592,6 +2612,7 @@ def test_one_failed_call_in_a_batch_fails_only_its_own_act(
     assert _without_width(batched_root) == _without_width(serial_root)
 
 
+@pytest.mark.act_path
 def test_a_refusal_mid_batch_still_publishes_every_act_already_sent(
     batching_chained_run, tmp_path, monkeypatch
 ):
@@ -2804,6 +2825,7 @@ def _join_reader_threads() -> None:
             thread.join()
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("stop", ["interrupt", "deadline"])
 @pytest.mark.parametrize("width", ["1", "2"])
 def test_a_resume_adopts_every_main_pass_reply_on_record_and_asks_nothing_again(
@@ -2919,6 +2941,7 @@ def _sends(root: Path, act_id: str) -> list[dict[str, Any]]:
     )
 
 
+@pytest.mark.act_path
 def test_a_call_interrupted_in_flight_is_sent_again_and_the_second_send_names_the_first(
     batching_chained_run, tmp_path, monkeypatch
 ):
@@ -2962,6 +2985,7 @@ def test_a_call_interrupted_in_flight_is_sent_again_and_the_second_send_names_th
     assert all(names(semi_final, send) for send in reading_sends)
 
 
+@pytest.mark.act_path
 def test_a_reply_retained_but_named_by_no_record_refuses_the_resume(
     batching_chained_run, tmp_path, monkeypatch
 ):
@@ -2989,6 +3013,7 @@ def _records(root: Path, kind: str) -> dict[str, list[dict[str, Any]]]:
     return by_act
 
 
+@pytest.mark.act_path
 def test_a_reply_retained_before_its_call_record_refuses_the_resume(
     batching_chained_run, tmp_path, monkeypatch
 ):
@@ -3025,6 +3050,7 @@ def test_a_reply_retained_before_its_call_record_refuses_the_resume(
     assert _stage_bytes(root) == before
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("answer", [False, True])
 def test_a_reproof_interrupted_in_flight_is_sent_again_only_if_no_reply_came_back(
     batching_chained_run, tmp_path, monkeypatch, answer
@@ -3067,6 +3093,7 @@ def test_a_reproof_interrupted_in_flight_is_sent_again_only_if_no_reply_came_bac
     assert sorted(record["outcome"] for record in _perlectiones(root).values()) == ["read", "read"]
 
 
+@pytest.mark.act_path
 def test_a_semi_final_made_from_other_evidence_is_refused_not_adopted(
     batching_chained_run, tmp_path, monkeypatch
 ):
@@ -3101,6 +3128,7 @@ def test_a_semi_final_made_from_other_evidence_is_refused_not_adopted(
     assert _stage_bytes(root) == before
 
 
+@pytest.mark.act_path
 def test_each_record_names_the_session_that_made_it_after_a_resume(
     batching_chained_run, tmp_path, monkeypatch
 ):

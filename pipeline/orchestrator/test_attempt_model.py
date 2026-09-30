@@ -176,6 +176,7 @@ def test_the_perlector_derives_its_ordinal_from_the_shared_recovery_reader(tmp_p
 # names.
 
 
+@pytest.mark.act_path
 def test_a_reread_inside_its_window_runs_green_to_a_delivered_export(tmp_path):
     """2a's documented remedy, end to end: reread, then the rest of the run.
 
@@ -220,6 +221,7 @@ def test_a_reread_inside_its_window_runs_green_to_a_delivered_export(tmp_path):
     )
 
 
+@pytest.mark.act_path
 def test_a_reread_after_the_act_is_read_is_refused_at_entry_by_name(tmp_path):
     """2a's wedge, closed at the door rather than three stages downstream.
 
@@ -244,6 +246,7 @@ def test_a_reread_after_the_act_is_read_is_refused_at_entry_by_name(tmp_path):
     assert {record["payload"]["attempt_ordinal"] for record in testimonia} == {1}
 
 
+@pytest.mark.act_path
 def test_the_refused_reread_leaves_the_run_able_to_finish(tmp_path):
     """The refusal is a refusal, not a second wedge.
 
@@ -265,6 +268,7 @@ def test_the_refused_reread_leaves_the_run_able_to_finish(tmp_path):
     assert export["outcome"] == "delivered"
 
 
+@pytest.mark.act_path
 def test_a_reread_of_a_failed_witness_is_retained_and_the_act_still_holds(tmp_path):
     """`reread-failure` means what its name claims, driven rather than declared.
 
@@ -312,6 +316,7 @@ def test_a_reread_of_a_failed_witness_is_retained_and_the_act_still_holds(tmp_pa
 # --- F2 (2b, 2c): the whole pass is not the remedy, and says so ----------
 
 
+@pytest.mark.act_path
 def test_a_whole_pass_at_the_next_ordinal_after_a_reread_is_refused(tmp_path):
     """2b, reproduced and left refused — with the reason now naming the model.
 
@@ -335,6 +340,7 @@ def test_a_whole_pass_at_the_next_ordinal_after_a_reread_is_refused(tmp_path):
     assert snapshot(root) == before, "a refused whole pass wrote to the run tree"
 
 
+@pytest.mark.act_path
 def test_a_whole_pass_may_not_append_over_an_act_that_was_reread(tmp_path):
     """2c, closed rather than documented.
 
@@ -480,6 +486,7 @@ def _supersede_a_witness_basis(tree: RunTree, act: str, chair: str) -> None:
     tree.write_manifest(ATTESTATORES)
 
 
+@pytest.mark.act_path
 def test_the_export_refuses_to_complete_over_a_superseded_witness_basis(tmp_path):
     """2d, on a wedged tree, with stages 6 and 7 run by hand.
 
@@ -503,6 +510,7 @@ def test_the_export_refuses_to_complete_over_a_superseded_witness_basis(tmp_path
         assert "since superseded" in result.stderr, f"{program}: {result.stderr}"
 
 
+@pytest.mark.act_path
 def test_the_armarium_alone_refuses_a_superseded_basis_at_the_export_boundary(tmp_path):
     """The export boundary carries the refusal on its own.
 

@@ -134,6 +134,7 @@ def _rewrite_attachment(context, monkeypatch, act_id, chair, changes, page_ordin
     monkeypatch.setattr(context.tree, "read_artifact", rewritten)
 
 
+@pytest.mark.act_path
 def test_a_geometrically_attached_page_witness_without_page_text_stays_below_the_floor(
     context_and_act, monkeypatch
 ):
@@ -173,6 +174,7 @@ def test_a_geometrically_attached_page_witness_without_page_text_stays_below_the
     assert reading - coverage["page_granularity_only"] == 2
 
 
+@pytest.mark.act_path
 def test_a_page_attachment_may_not_claim_a_comparability_its_testimony_denies(
     context_and_act, monkeypatch
 ):
@@ -185,6 +187,7 @@ def test_a_page_attachment_may_not_claim_a_comparability_its_testimony_denies(
         recensor.act_attachment_facts(context, act["act_id"], current)
 
 
+@pytest.mark.act_path
 def test_an_act_scoped_attachment_may_not_claim_a_comparability_its_payload_denies(
     context_and_act, monkeypatch
 ):
@@ -211,6 +214,7 @@ def test_an_act_scoped_attachment_may_not_claim_a_comparability_its_payload_deni
         recensor.act_attachment_facts(context, act["act_id"], current)
 
 
+@pytest.mark.act_path
 def test_an_act_scoped_attachment_may_not_name_another_chairs_testimonium(
     context_and_act, monkeypatch
 ):

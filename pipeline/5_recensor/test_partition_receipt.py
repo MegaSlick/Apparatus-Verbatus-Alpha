@@ -41,6 +41,7 @@ def _recensor_args(root: Path, run_id: str):
     )
 
 
+@pytest.mark.act_path
 def test_happy_recensor_pass_writes_a_complete_scoped_partition_receipt(tmp_path):
     root = tmp_path / "runs"
     through_perlector(root, "happy", "happy")
@@ -59,6 +60,7 @@ def test_happy_recensor_pass_writes_a_complete_scoped_partition_receipt(tmp_path
     }
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize(
     ("drift", "message"),
     [
@@ -192,6 +194,7 @@ def test_recensor_rederives_page_attachment_over_the_sealed_proposal_both_ways(
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("drift", ["stored-false", "wrong-basis"])
 def test_recensor_rederives_act_scoped_attachment_instead_of_trusting_its_label(
     tmp_path, monkeypatch, drift
@@ -270,6 +273,7 @@ def test_page_attachment_merge_keeps_the_contributing_page_that_attached():
     assert recensor._merge_page_attachment_fact(attached, unattached) is attached
 
 
+@pytest.mark.act_path
 def test_recensor_uses_the_page_attempt_outcome_for_page_geometry(tmp_path, monkeypatch):
     """A successful compatibility act row cannot turn a failed page attempt into coverage.
 
@@ -474,6 +478,7 @@ def test_recensor_rederives_a_native_projection_from_the_retained_raw_response(
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
 
 
+@pytest.mark.act_path
 def test_recovery_replaces_the_current_partition_snapshot_without_erasing_history(tmp_path):
     root = tmp_path / "runs"
     through_perlector(root, "review", "review")
@@ -520,6 +525,7 @@ def test_recovery_replaces_the_current_partition_snapshot_without_erasing_histor
     assert tree.resolve(requested["review_ref"]["relative_path"]).exists()
 
 
+@pytest.mark.act_path
 def test_a_refused_partition_receipt_does_not_publish_a_completion_seal(tmp_path, monkeypatch):
     """Receipt reconciliation is part of closing, not work after the checkpoint."""
     root = tmp_path / "runs"
@@ -812,6 +818,7 @@ def test_a_receipt_item_refuses_a_partition_class_its_review_does_not_derive():
         )
 
 
+@pytest.mark.act_path
 def test_a_review_whose_stored_coverage_disagrees_with_disk_is_refused(tmp_path):
     """`write_partition_receipt` (`pipeline/5_recensor/run.py`) recomputes each
     act's witness coverage fresh from the testimonia on disk and refuses a
@@ -953,6 +960,7 @@ def test_an_empty_receipt_may_not_claim_to_be_complete():
 # pending host remeasurement. This test closes that gap directly.
 
 
+@pytest.mark.act_path
 def test_a_failed_act_scoped_attempt_produces_a_real_failed_and_unaligned_shortfall(tmp_path):
     """D2/D3 wired end-to-end: a chair that fails act a1 specifically (while still
     contributing to its own page-1 testimony via act a2) must show up in the real
@@ -981,6 +989,7 @@ def test_a_failed_act_scoped_attempt_produces_a_real_failed_and_unaligned_shortf
     )
 
 
+@pytest.mark.act_path
 def test_v2_receipt_refuses_zero_failed_shortfalls_for_a_failed_attempt(tmp_path):
     """A v2 label cannot turn an observed failed attempt into all-zero shortfalls."""
     root = tmp_path / "runs"
@@ -1004,6 +1013,7 @@ def test_v2_receipt_refuses_zero_failed_shortfalls_for_a_failed_attempt(tmp_path
         validate_recensor_partition_receipt(receipt)
 
 
+@pytest.mark.act_path
 def test_v2_receipt_cannot_omit_its_granularity_measurement_basis(tmp_path):
     """P1: zero is not an honest metric unless the receipt names how it was derived."""
     root = tmp_path / "runs"

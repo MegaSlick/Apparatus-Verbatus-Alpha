@@ -120,10 +120,12 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # the ink map must confirm ink under it before it may spend a recovery or hold
 # an act; here it cannot, so a2 goes straight to a hold without a
 # second recovery round.
-HAPPY_SNAPSHOT_FILES = 119
-REVIEW_SNAPSHOT_FILES = 129
-HAPPY_RUN_TREE_DIGEST = "6a886c97d142151c9efda059d39e65b4c6fca5621f44ddb8dfe4d49bbbece75a"
-REVIEW_RUN_TREE_DIGEST = "eb145ccf8b9496ce9978cf04662bd673cd42455702074865713047c921e08db1"
+#
+# The review pins are the page-read `page-review` scenario's tree.
+HAPPY_SNAPSHOT_FILES = 153
+REVIEW_SNAPSHOT_FILES = 151
+HAPPY_RUN_TREE_DIGEST = "b14fd0c66726956a4dc3ecb479e62a898425da5b2c573de222b9d294c9af39b7"
+REVIEW_RUN_TREE_DIGEST = "6b6ed5dbdcf93f687f9511a64804d6a350f0825da56c754cc0cbce970f9ce2cb"
 
 
 def orchestrate(
@@ -720,7 +722,7 @@ def test_relative_run_root_from_outside_the_repository_is_one_tree(tmp_path):
         "--fixture",
         FIXTURE,
         "--scenario",
-        "happy",
+        "page-unbroken",
         "--run-id",
         "outside",
         "--run-root",
@@ -1692,7 +1694,8 @@ def export_of(tree: RunTree) -> dict:
 def happy_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("happy")
     result = orchestrate(root, "r", "happy")
-    assert result.returncode == 0, result.stderr
+    # Partial by design: the act across the page break is a labelled reconstruction.
+    assert result.returncode == 3, result.stderr
     return root, RunTree(root, "r")
 
 
@@ -1719,6 +1722,7 @@ def review_run(tmp_path_factory):
 # --- 1. The happy path runs offline, and every reference resolves --------------
 
 
+@pytest.mark.act_path
 def test_the_happy_path_runs_and_establishes_both_acts(happy_run):
     _, tree = happy_run
     export = export_of(tree)
@@ -1729,6 +1733,7 @@ def test_the_happy_path_runs_and_establishes_both_acts(happy_run):
     assert {item["category"] for item in export["delivered"]} == {"delivered"}
 
 
+@pytest.mark.act_path
 def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happy_run):
     """Unit 12's F2 rule, on the principal fixture.
 
@@ -1817,6 +1822,7 @@ def test_every_input_reference_in_the_run_resolves_and_matches_its_digest(happy_
     assert checked >= 20, f"only {checked} references checked; the run looks too thin"
 
 
+@pytest.mark.act_path
 def test_every_expected_act_has_exactly_one_terminal_category(happy_run):
     _, tree = happy_run
     export = export_of(tree)
@@ -1829,6 +1835,7 @@ def test_every_expected_act_has_exactly_one_terminal_category(happy_run):
     assert len({entry["subject_id"] for entry in entries}) == 2
 
 
+@pytest.mark.act_path
 def test_the_final_export_keeps_each_original_filename_and_digest_link(happy_run):
     """Every exported crop names its original source file/frame, not just the pages list."""
     _, tree = happy_run
@@ -1878,6 +1885,7 @@ def test_the_final_export_keeps_each_original_filename_and_digest_link(happy_run
             assert region["structure_provenance"]["chair"] == "designator_structure"
 
 
+@pytest.mark.act_path
 def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
     root = tmp_path / "runs"
     result = orchestrate(root, "r", "genuinely-empty-witness")
@@ -1969,6 +1977,7 @@ def _fallback_testimonia(tree: RunTree) -> list[dict]:
     return records
 
 
+@pytest.mark.act_path
 def test_an_ink_free_page_fallback_is_read_but_not_retroactively_witness_covered(tmp_path):
     """A recovery crop outside every observed box remains visibly under-witnessed."""
     root = tmp_path / "runs"
@@ -2000,6 +2009,7 @@ def test_an_ink_free_page_fallback_is_read_but_not_retroactively_witness_covered
     assert all(not region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
 
 
+@pytest.mark.act_path
 def test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_blank(tmp_path):
     """Sol-S1's red demonstration, kept runnable.
 
@@ -2148,6 +2158,7 @@ def _cross_capture_held(tree: RunTree, act_key: str) -> dict:
     return entry
 
 
+@pytest.mark.act_path
 def test_a_confirmed_re_shoot_holds_its_own_act_and_the_rest_of_the_run_is_exported(tmp_path):
     """One confirmed re-shoot once refused the whole run before any act was read.
 
@@ -2168,6 +2179,7 @@ def test_a_confirmed_re_shoot_holds_its_own_act_and_the_rest_of_the_run_is_expor
     assert export["aggregate"]["status"] == "partial"
 
 
+@pytest.mark.act_path
 def test_a_held_act_on_a_re_shoot_page_is_never_sent_to_recovery(tmp_path):
     """A recovery request for a held act made the rerun Perlector repeat its hold and
     the Recensor's attempt count then halted the whole run.
@@ -2548,6 +2560,7 @@ def test_a_conservation_residual_the_seal_never_minted_is_refused(tmp_path):
     assert "accounts for no held act for" in result.stderr
 
 
+@pytest.mark.act_path
 def test_recensor_refuses_duplicate_witness_attempt_ordinals_instead_of_selecting_one(tmp_path):
     root = tmp_path / "runs"
     for program in programs_through("perlector"):
@@ -2579,6 +2592,7 @@ def test_recensor_refuses_duplicate_witness_attempt_ordinals_instead_of_selectin
     assert snapshot(root) == before
 
 
+@pytest.mark.act_path
 def test_designator_refuses_a_commandless_recovery_recrop(tmp_path):
     root = tmp_path / "runs"
     # This must be a real outstanding request.  An empty tree would fail later
@@ -2607,6 +2621,7 @@ def test_designator_refuses_a_commandless_recovery_recrop(tmp_path):
     assert snapshot(root) == before
 
 
+@pytest.mark.act_path
 def test_designator_refuses_a_standalone_next_recovery_request(tmp_path):
     """Only the latest Recensor review can authorize its exact request.
 
@@ -2690,6 +2705,7 @@ def test_designator_refuses_a_standalone_next_recovery_request(tmp_path):
     assert snapshot(root) == before
 
 
+@pytest.mark.act_path
 def test_designator_refuses_a_current_recovery_review_with_a_different_policy(tmp_path):
     """The review's policy is evidence, not a decorative copy of the request's."""
     root = tmp_path / "runs"
@@ -2731,6 +2747,7 @@ def test_designator_refuses_a_current_recovery_review_with_a_different_policy(tm
     assert snapshot(root) == before
 
 
+@pytest.mark.act_path
 def test_armarium_refuses_an_archetypus_record_orphaned_beside_a_held_act(tmp_path):
     """The mirror of "an accepted act must have an Archetypus": a held/refused act
     must NOT have one. pipeline/6_archetypus/run.py's own guard already refuses to
@@ -2815,6 +2832,7 @@ def test_the_seal_carries_an_outcome_and_a_derived_continuation_for_every_act(ha
     assert by_key["a2"]["has_continuation"] is True
 
 
+@pytest.mark.act_path
 def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happy_run):
     """Page two retains and audits the pixels a2 contributes there, and nothing picks."""
     _, tree = happy_run
@@ -2861,6 +2879,7 @@ def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happ
     assert draft["payload"]["page_ids"] == both_pages
 
 
+@pytest.mark.act_path
 def test_a_continuation_counts_page_witness_chairs_not_page_pairs(happy_run):
     """The dossier roster count cannot grow when the same chairs span two pages."""
     _, tree = happy_run
@@ -2875,6 +2894,7 @@ def test_a_continuation_counts_page_witness_chairs_not_page_pairs(happy_run):
     assert len(attachment["comparison_views"]) == 2
 
 
+@pytest.mark.act_path
 def test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence(
     continuation_recovery_run,
 ):
@@ -2937,6 +2957,7 @@ def test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence(
     } == {1, 2}
 
 
+@pytest.mark.act_path
 def test_a_continuation_act_is_flagged_once_per_witness_not_once_per_page(happy_run):
     """Act-local flags measure witness disagreements, not contributing pages."""
     _, tree = happy_run
@@ -3007,6 +3028,7 @@ def test_the_config_digest_still_binds_the_scenario_as_well_as_the_chairs(happy_
     assert run_config_bindings(config, altered, "happy")["config_digest"] != happy
 
 
+@pytest.mark.act_path
 def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(
     tmp_path, absent_third_chair_config
 ):
@@ -3052,6 +3074,7 @@ def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(
     assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]
 
 
+@pytest.mark.act_path
 def test_an_absent_witness_on_a_held_act_is_also_dead_not_not_run(
     tmp_path, absent_third_chair_config
 ):
@@ -3084,6 +3107,7 @@ def test_an_absent_witness_on_a_held_act_is_also_dead_not_not_run(
     assert by_chair["attestator_2"]["outcome"] == "not-run"
 
 
+@pytest.mark.act_path
 def test_a_structured_testimonium_is_retained_and_carried_as_an_incomparable_witness(tmp_path):
     """A structured witness ends the run honestly rather than crashing.
 
@@ -3156,6 +3180,7 @@ def test_a_structured_testimonium_is_retained_and_carried_as_an_incomparable_wit
     )
 
 
+@pytest.mark.act_path
 def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(tmp_path):
     """A damaged independent count cannot hide behind an old complete export."""
     root = tmp_path / "runs"
@@ -3173,6 +3198,7 @@ def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(tmp_path):
     assert snapshot(root) == before
 
 
+@pytest.mark.act_path
 def test_a_perlectio_retains_digest_checked_testimonia_it_used(tmp_path):
     """Changing a witness record after reading must stop the next real consumer."""
     root = tmp_path / "runs"
@@ -3199,6 +3225,7 @@ def test_a_perlectio_retains_digest_checked_testimonia_it_used(tmp_path):
     assert snapshot(root) == before
 
 
+@pytest.mark.act_path
 def test_recensor_refuses_a_completed_perlectio_without_an_object_region_basis(tmp_path):
     """A resealed malformed payload is an accounting refusal, never a traceback."""
     root = tmp_path / "runs"
@@ -3226,6 +3253,7 @@ def test_recensor_refuses_a_completed_perlectio_without_an_object_region_basis(t
     assert snapshot(root) == before
 
 
+@pytest.mark.act_path
 def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
     """A newer reading must be reviewed, never silently ignored or substituted."""
     root = tmp_path / "runs"
@@ -3259,6 +3287,7 @@ def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
     assert "newer Perlectio" in result.stderr
 
 
+@pytest.mark.act_path
 def test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proof(tmp_path):
     """An accepted reading is not itself evidence that the page was blank.
 
@@ -3340,6 +3369,7 @@ def _forge_blank_proof(tree: RunTree, act_id: str) -> dict[str, str]:
     return {"relative_path": relative, "sha256": digest_bytes(path.read_bytes())}
 
 
+@pytest.mark.act_path
 def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_blank_proof(
     tmp_path,
 ):
@@ -3422,6 +3452,7 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
     assert blank["text"] == ""
 
 
+@pytest.mark.act_path
 def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
     """A reading is never evidence of its own silence.
 
@@ -3482,6 +3513,7 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
     )
 
 
+@pytest.mark.act_path
 def test_archetypus_refuses_a_blank_proof_that_is_the_readings_own_crop(tmp_path):
     """The same circularity as the reading-itself case, one step further out.
 
@@ -3547,6 +3579,7 @@ def test_archetypus_refuses_a_blank_proof_that_is_the_readings_own_crop(tmp_path
     )
 
 
+@pytest.mark.act_path
 def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path):
     """Two upstream claims that contradict each other are never quietly one claim.
 
@@ -3591,6 +3624,7 @@ def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path)
     )
 
 
+@pytest.mark.act_path
 def test_archetypus_refuses_a_crop_the_run_tree_cannot_read(tmp_path):
     """A named crop that is not there is an accounting failure, not a traceback.
 
@@ -3641,6 +3675,7 @@ def test_archetypus_refuses_a_crop_the_run_tree_cannot_read(tmp_path):
     )
 
 
+@pytest.mark.act_path
 def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):
     """A completed Archetypus cannot hide a reading appended after its review."""
     root = tmp_path / "runs"
@@ -3669,6 +3704,7 @@ def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):
     assert "newer Perlectio" in result.stderr
 
 
+@pytest.mark.act_path
 def test_armarium_refuses_two_established_records_instead_of_selecting_one(tmp_path):
     root = tmp_path / "runs"
     assert orchestrate(root, "r", "happy").returncode == 0
@@ -3712,7 +3748,7 @@ def test_the_run_authority_names_the_commit_the_code_ran_at(tmp_path):
     """
 
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy", repository_commit=COMMIT).returncode == 0
+    assert orchestrate(root, "r", "page-unbroken", repository_commit=COMMIT).returncode == 0
 
     assert RunTree(root, "r").read_run()["repository_commit"] == COMMIT
 
@@ -3722,7 +3758,7 @@ def test_a_run_whose_caller_names_no_commit_records_none_rather_than_a_placehold
 
     root = tmp_path / "runs"
     journal = tmp_path / "timings.json"
-    assert orchestrate(root, "r", "happy", stage_timing_journal=journal).returncode == 0
+    assert orchestrate(root, "r", "page-unbroken", stage_timing_journal=journal).returncode == 0
 
     assert "repository_commit" not in RunTree(root, "r").read_run()
     entry = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
@@ -3762,7 +3798,7 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(
 
     assert (
         orchestrate(
-            root, "r", "happy", stage_timing_journal=journal, repository_commit=COMMIT
+            root, "r", "page-unbroken", stage_timing_journal=journal, repository_commit=COMMIT
         ).returncode
         == 0
     )
@@ -3849,7 +3885,10 @@ def test_a_timing_journal_inside_the_run_tree_is_refused_before_anything_runs(tm
 
 def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
+    # `happy` reads its two pages whole and ends partial: the act running across
+    # the page break is delivered as each side's literal beside a labelled,
+    # unconfirmed reconstruction.
+    assert orchestrate(root, "r", "happy").returncode == 3
     before = snapshot(root)
 
     # The count includes every retained raw witness response and, because the
@@ -3857,13 +3896,14 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     # actually shown, one per witnessed page.
     assert len(before) == HAPPY_SNAPSHOT_FILES
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
-    assert orchestrate(root, "r", "happy").returncode == 0
+    assert orchestrate(root, "r", "happy").returncode == 3
     after = snapshot(root)
 
     assert after == before
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
 
 
+@pytest.mark.act_path
 def test_repeating_the_identical_command_with_nuda_enabled_leaves_every_byte_unchanged(tmp_path):
     """The rerun invariant must also hold when deterministic sampling is active."""
     root = tmp_path / "runs"
@@ -3888,18 +3928,15 @@ def test_repeating_the_identical_command_with_nuda_enabled_leaves_every_byte_unc
 
 
 def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
-    """The scenario with a recovery loop in it is the one that can most easily
-    append on every run — which it did, until the reading attempt stopped being a
-    count of invocations."""
+    """The page-read review scenario holds an entry, so it is the one that could
+    most easily append on every run."""
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "review").returncode == 3
+    assert orchestrate(root, "r", "page-review").returncode == 3
     before = snapshot(root)
 
-    # a2's witness box has no ink under it, so it spends no recovery round (see
-    # the note above the digest pins).
     assert len(before) == REVIEW_SNAPSHOT_FILES
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
-    assert orchestrate(root, "r", "review").returncode == 3
+    assert orchestrate(root, "r", "page-review").returncode == 3
     assert snapshot(root) == before
     assert semantic_snapshot_digest(root) == REVIEW_RUN_TREE_DIGEST
 
@@ -3909,7 +3946,7 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 
 def test_reusing_a_run_id_with_a_changed_configuration_fails_before_writing(tmp_path):
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
     before = snapshot(root)
 
     # The scenario is part of the run's configuration digest, so the same run id
@@ -3917,7 +3954,7 @@ def test_reusing_a_run_id_with_a_changed_configuration_fails_before_writing(tmp_
     # scenarios declare the *same* two source pages, so the source manifest
     # cannot be what catches this — only the config digest can, and this is the
     # assertion that says so.
-    result = orchestrate(root, "r", "review")
+    result = orchestrate(root, "r", "page-review")
 
     assert result.returncode != 0
     assert "IncompatibleReuse" in result.stderr
@@ -3938,7 +3975,7 @@ def test_an_interrupted_run_resumes_without_rewriting_what_survived(tmp_path):
     """Interrupt for real: delete everything from the Perlector onward, as though
     the process died mid-run, then run the same command again."""
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
     complete = snapshot(root)
 
     for stage_directory in ("4_perlector", "5_recensor", "6_archetypus", "7_armarium"):
@@ -3947,7 +3984,7 @@ def test_an_interrupted_run_resumes_without_rewriting_what_survived(tmp_path):
     survivor_identities = file_identities(root)
     assert len(survivors) < len(complete)
 
-    assert orchestrate(root, "r", "happy").returncode == 0
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
     resumed = snapshot(root)
     resumed_identities = file_identities(root)
 
@@ -3979,7 +4016,7 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
     policy = load_hard_failure_policy(ROOT / "config" / "hard_failure.toml")
 
     reference_root = tmp_path / "reference"
-    assert orchestrate(reference_root, "r", "review").returncode == 3
+    assert orchestrate(reference_root, "r", "page-review").returncode == 3
     reference = snapshot(reference_root)
     reference_tally = tally_hard_failures(RunTree(reference_root, "r"), policy)
 
@@ -4015,7 +4052,7 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
                 "--fixture",
                 FIXTURE,
                 "--scenario",
-                "review",
+                "page-review",
                 "--run-id",
                 "r",
                 "--run-root",
@@ -4035,7 +4072,7 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
         assert survivors, f"stopping at {stop_at} wrote nothing to resume from"
         assert len(survivors) < len(reference)
 
-        assert orchestrate(root, "r", "review").returncode == 3
+        assert orchestrate(root, "r", "page-review").returncode == 3
         resumed = snapshot(root)
         resumed_identities = file_identities(root)
         assert resumed == reference, f"resuming after {stop_at} did not land on the same tree"
@@ -4065,6 +4102,7 @@ def artifacts(tree: RunTree, stage: str, kind: str) -> list[dict]:
     ]
 
 
+@pytest.mark.act_path
 def test_the_recovered_act_keeps_one_identity_across_two_regions(review_run):
     """ARCHITECTURE invariant 1, driven end to end rather than unit-tested: act
     identity survives recropping, and the region identity does not."""
@@ -4094,6 +4132,7 @@ def _pixels(bounds: dict) -> set[tuple[int, int]]:
     }
 
 
+@pytest.mark.act_path
 def test_the_recovery_recrop_actually_widened_the_crop_it_was_asked_for(review_run):
     """Recovery exists for **completeness and coverage**, never quality.
 
@@ -4150,6 +4189,7 @@ def test_the_recovery_recrop_actually_widened_the_crop_it_was_asked_for(review_r
     assert not recropped & _pixels(neighbour["payload"]["transform"]["bounds"])
 
 
+@pytest.mark.act_path
 def test_the_witness_uncovered_caveat_names_the_region_carrying_the_new_pixels(review_run):
     """The second-order half of the same finding.
 
@@ -4189,6 +4229,7 @@ def test_the_witness_uncovered_caveat_names_the_region_carrying_the_new_pixels(r
     assert uncovered == {by_origin["recovery"]["payload"]["region_id"]}
 
 
+@pytest.mark.act_path
 def test_the_recovery_request_and_both_reading_attempts_survive(review_run):
     """a2 requests no recovery of its own.
 
@@ -4210,6 +4251,7 @@ def test_the_recovery_request_and_both_reading_attempts_survive(review_run):
     assert sorted(record["payload"]["attempt_ordinal"] for record in readings) == [1, 2]
 
 
+@pytest.mark.act_path
 def test_both_recensor_outcomes_for_the_recovered_act_survive(review_run):
     """Nothing is lost inside a recovery loop: the request and the acceptance are
     both still there, in order."""
@@ -4224,6 +4266,7 @@ def test_both_recensor_outcomes_for_the_recovered_act_survive(review_run):
     assert by_ordinal == {1: "recovery-requested", 2: "accepted"}
 
 
+@pytest.mark.act_path
 def test_recovery_ink_is_recorded_as_witness_uncovered(review_run):
     """The recrop uncovered ink no witness ever saw. Saying so is the difference
     between a gap in the record and a gap nobody can see."""
@@ -4255,6 +4298,7 @@ def test_recovery_ink_is_recorded_as_witness_uncovered(review_run):
     assert sorted(dossier_coverage.values()) == [False, True]
 
 
+@pytest.mark.act_path
 def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
     """A continuation is part of the original proposal, not a later attempt.
 
@@ -4292,6 +4336,7 @@ def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
     } == {1, 2}
 
 
+@pytest.mark.act_path
 def test_recovery_stayed_inside_its_budget(review_run):
     """One request, not two -- see
     `test_the_recovery_request_and_both_reading_attempts_survive`."""
@@ -4315,6 +4360,7 @@ def test_recovery_stayed_inside_its_budget(review_run):
 # --- 6. The held act cannot look complete --------------------------------------
 
 
+@pytest.mark.act_path
 def test_the_held_act_has_no_archetypus_at_all(review_run):
     """The absence is the evidence. An export that showed a held act as delivered
     would have to invent a record that does not exist."""
@@ -4324,6 +4370,7 @@ def test_the_held_act_has_no_archetypus_at_all(review_run):
     assert established[0]["payload"]["act_key"] == "a1"
 
 
+@pytest.mark.act_path
 def test_the_held_act_appears_in_the_review_output_and_forces_partial(review_run):
     _, tree = review_run
     export = export_of(tree)
@@ -4335,6 +4382,7 @@ def test_the_held_act_appears_in_the_review_output_and_forces_partial(review_run
     assert "act a2 is held-for-review" in export["aggregate"]["reasons"]
 
 
+@pytest.mark.act_path
 def test_no_delivered_entry_carries_a_witness_reading_as_its_text(review_run):
     """A witness's reading is never itself an output. The established text
     must not equal any witness's reported words *by accident of the fixture*
@@ -4351,6 +4399,7 @@ def test_no_delivered_entry_carries_a_witness_reading_as_its_text(review_run):
     assert len(disagreeing) == 2, "the fixture must keep dissent exercisable"
 
 
+@pytest.mark.act_path
 def test_the_failed_chair_is_visible_in_the_export(review_run):
     """`failed` is a real member of the closed witness vocabulary, driven end to
     end: it reaches the export as a named shortfall rather than as a silence."""
@@ -4363,6 +4412,7 @@ def test_the_failed_chair_is_visible_in_the_export(review_run):
     assert any("under-witnessed" in reason for reason in export["aggregate"]["reasons"])
 
 
+@pytest.mark.act_path
 def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_view(
     tmp_path, happy_run
 ):
@@ -4446,6 +4496,7 @@ def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_v
     assert {row["chair"] for row in happy_dissent if row["compared"] == "unknown"} == set()
 
 
+@pytest.mark.act_path
 def test_a_delivered_act_still_links_back_to_the_exact_ink(review_run):
     _, tree = review_run
     delivered = export_of(tree)["delivered"][0]
@@ -4828,6 +4879,7 @@ def refused_page_run(tmp_path_factory):
     return root, RunTree(root, "r")
 
 
+@pytest.mark.act_path
 def test_the_orchestrator_relays_the_doors_private_refusal_report(tmp_path):
     """A successful Door can still have a named refusal report for an operator."""
     result = orchestrate(tmp_path / "runs", "r", "refused-page")
@@ -4851,6 +4903,7 @@ def proposal_seal(tree: RunTree) -> dict:
     )["payload"]
 
 
+@pytest.mark.act_path
 def test_the_door_really_refused_page_two_through_its_own_inspection(refused_page_run):
     _, tree = refused_page_run
     refusals = [
@@ -4861,6 +4914,7 @@ def test_the_door_really_refused_page_two_through_its_own_inspection(refused_pag
     assert "digest" in refusals[0]["payload"]["reason"]
 
 
+@pytest.mark.act_path
 def test_the_page_loss_is_named_and_the_run_is_partial(refused_page_run):
     _, tree = refused_page_run
     export = export_of(tree)
@@ -4909,6 +4963,7 @@ def test_no_fixture_page_holds_for_edge_ink_now_that_the_band_is_a_fraction(tmp_
     )
 
 
+@pytest.mark.act_path
 def test_the_act_with_the_lost_continuation_is_held_not_delivered(refused_page_run):
     """`has_continuation` is derived from the regions actually cut, so it may not
     claim a continuation nothing holds — and the act whose far side is on the
@@ -4927,6 +4982,7 @@ def test_the_act_with_the_lost_continuation_is_held_not_delivered(refused_page_r
     assert export["non_delivered"][0]["category"] == "held-for-review"
 
 
+@pytest.mark.act_path
 def test_the_hold_is_a_real_artifact_naming_the_lost_page(refused_page_run):
     _, tree = refused_page_run
     holds = artifacts(tree, DESIGNATOR, "hold")
@@ -4937,6 +4993,7 @@ def test_the_hold_is_a_real_artifact_naming_the_lost_page(refused_page_run):
     assert holds[0]["inputs"], "the hold must reference the refusal it rests on"
 
 
+@pytest.mark.act_path
 def test_no_witness_and_no_reading_pretends_to_have_seen_the_held_act(refused_page_run):
     """The held act is not silently skipped: every configured chair records an
     explicit not-run, and the Perlector acknowledges the act without reading it —
@@ -4963,6 +5020,7 @@ def test_no_witness_and_no_reading_pretends_to_have_seen_the_held_act(refused_pa
     assert [record["payload"]["act_key"] for record in established] == ["a1"]
 
 
+@pytest.mark.act_path
 def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_first_page_run):
     """An act whose own page was never sealed appears in the seal, held, with a
     hold artifact each, and the run is partial with the page loss named.
@@ -5017,6 +5075,7 @@ def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_firs
     assert len(entries) == 3, "conservation: every expected act still has exactly one category"
 
 
+@pytest.mark.act_path
 def test_the_recensor_refuses_a_continuation_claim_with_one_region(tmp_path):
     """Defence in depth for half two: if the seal claims a continuation and the
     tree holds only one proposal region — drift, tampering, or a future bug —
@@ -5146,6 +5205,7 @@ def truncated_reading_run(tmp_path_factory):
     return root, RunTree(root, "r")
 
 
+@pytest.mark.act_path
 def test_a_reading_that_did_not_succeed_is_held_and_says_why(truncated_reading_run):
     """Accuracy is judged against the ink, and nothing here allows a loss hidden
     behind a successful status. Text nobody successfully read is neither, so it is
@@ -5162,6 +5222,7 @@ def test_a_reading_that_did_not_succeed_is_held_and_says_why(truncated_reading_r
     assert artifacts(tree, RECENSOR, "recovery-request") == []
 
 
+@pytest.mark.act_path
 def test_the_truncated_reading_never_becomes_established_text(truncated_reading_run):
     """The whole point: the reading exists and carries text, and none of it reaches
     the one place that turns a reading into the established text."""
@@ -5187,6 +5248,7 @@ def test_the_truncated_reading_never_becomes_established_text(truncated_reading_
     assert export["aggregate"]["status"] == "partial"
 
 
+@pytest.mark.act_path
 def test_the_act_whose_reading_succeeded_is_still_delivered(truncated_reading_run):
     """Invariant #14 — the refusal must not have bought its strictness by refusing
     good readings too. a2 read cleanly in the same run and is established."""
@@ -5202,6 +5264,7 @@ def test_the_act_whose_reading_succeeded_is_still_delivered(truncated_reading_ru
     assert established[0]["outcome"] == "established"
 
 
+@pytest.mark.act_path
 def test_the_recensor_refuses_a_testimonium_from_a_chair_the_run_never_sealed(tmp_path):
     """The mirror of the vanished-chair hole, and the one that counts toward the floor.
 
@@ -5286,7 +5349,7 @@ def test_armarium_rechecks_the_filename_a_page_was_sealed_under(tmp_path):
     would catch: they carry no pixels for the pixel boundary to check.
     """
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
     tree = RunTree(root, "r")
     entry = next(
         entry for entry in tree.build_manifest(EXEMPLAR)["artifacts"] if entry["kind"] == "page"
@@ -5321,7 +5384,7 @@ def test_armarium_rechecks_the_filename_a_page_was_sealed_under(tmp_path):
             "--run-id",
             "r",
             "--scenario",
-            "happy",
+            "page-unbroken",
         ],
         cwd=ROOT,
         capture_output=True,
@@ -5336,7 +5399,7 @@ def test_armarium_rechecks_the_filename_a_page_was_sealed_under(tmp_path):
 def test_armarium_rechecks_sealed_pixels_tampered_after_designator(tmp_path):
     """The final export has its own pixel boundary, not only a census boundary."""
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
     tree = RunTree(root, "r")
     page = next(
         tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
@@ -5356,7 +5419,7 @@ def test_armarium_rechecks_sealed_pixels_tampered_after_designator(tmp_path):
             "--run-id",
             "r",
             "--scenario",
-            "happy",
+            "page-unbroken",
         ],
         cwd=ROOT,
         capture_output=True,

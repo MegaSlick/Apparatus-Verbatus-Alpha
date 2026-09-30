@@ -85,7 +85,7 @@ def test_fixture_run_retains_chandra_bytes_and_names_an_unverified_shape(tmp_pat
             "--fixture-root",
             str(ROOT / "proof"),
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-root",
             str(run_root),
             "--run-id",
@@ -1041,7 +1041,7 @@ def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp
             "--fixture-root",
             str(ROOT / "proof"),
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-root",
             str(run_root),
             "--run-id",
@@ -1080,6 +1080,7 @@ def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp
         record["payload"]
         for record in pages
         if all(item["bounds_source"] == "presented" for item in record["payload"]["observed"])
+        and record["payload"]["chair"] == "attestator_1"
     ]
     assert echoes
     for payload in echoes:
@@ -1098,7 +1099,7 @@ def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp
             "--fixture-root",
             str(ROOT / "proof"),
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-root",
             str(complete_root),
             "--run-id",
@@ -1130,7 +1131,7 @@ def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp
             "--fixture-root",
             str(ROOT / "proof"),
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-root",
             str(held_root),
             "--run-id",
@@ -1150,7 +1151,7 @@ def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp
             "--fixture-root",
             str(ROOT / "proof"),
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-root",
             str(held_root),
             "--run-id",

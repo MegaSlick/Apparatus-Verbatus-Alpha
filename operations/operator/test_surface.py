@@ -1331,7 +1331,7 @@ def test_six_words_end_to_end_and_status_is_strictly_read_only(tmp_path: Path) -
     assert launched.record is not None
     boot_receipt = surface.boot()
     upload_receipt = surface.upload(source, sealed_manifest=manifest)
-    outcome = surface.run(run_id="six-word-run")
+    outcome = surface.run(run_id="six-word-run", scenario="page-unbroken")
     bundle = surface.export(run_id="six-word-run")
     prepared_close = surface.prepare_close()
     close = surface.close(prepared_close, prepared_close.phrase)
@@ -1986,12 +1986,12 @@ def test_laptop_crash_leaves_resumable_pages_and_acts(tmp_path: Path) -> None:
     surface = _surface(tmp_path, faults=Faults(laptop_crash=True), output=messages)
 
     with pytest.raises(OperatorError) as interruption:
-        surface.run(run_id="laptop-crash-run")
+        surface.run(run_id="laptop-crash-run", scenario="page-unbroken")
 
     assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
     interrupted = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
     assert interrupted["state"] == "interrupted-recoverable"
-    resumed = surface.run(run_id="laptop-crash-run")
+    resumed = surface.run(run_id="laptop-crash-run", scenario="page-unbroken")
 
     assert resumed.state == "complete"
     assert any("Resuming run laptop-crash-run" in line for line in messages)
@@ -3531,7 +3531,7 @@ def test_re_exporting_a_run_after_the_tree_changed_does_not_overwrite_the_first_
     surface = _surface(tmp_path)
     launched = _launch(surface, _spend_policy(tmp_path))
     assert launched.record is not None
-    surface.run(run_id="re-export-run")
+    surface.run(run_id="re-export-run", scenario="page-unbroken")
 
     contents = iter([b"first export bytes", b"second export bytes; run tree since changed"])
 
@@ -4303,7 +4303,7 @@ def test_status_repeats_the_recorded_values_exactly_and_never_recomputes_them(
     assert launched.record is not None
     surface.boot()
     surface.upload(source, sealed_manifest=manifest)
-    surface.run(run_id="byte-for-byte-run")
+    surface.run(run_id="byte-for-byte-run", scenario="page-unbroken")
     surface.export(run_id="byte-for-byte-run")
     prepared_close = surface.prepare_close()
     surface.close(prepared_close, prepared_close.phrase)

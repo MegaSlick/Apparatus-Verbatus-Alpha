@@ -46,7 +46,6 @@ from common.stage import (
     stage_parser,
 )
 from conftest import (
-    page_roster_options,
     programs_through,
     rebind_stage_seal_artifact,
     rewitness_stage_boundary,
@@ -59,8 +58,8 @@ RUN_ID = "r"
 
 def _protocol(directory: Path, unit: str, lines: dict[str, str]) -> Path:
     text = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
-    assert 'reading_unit = "act"' in text
-    text = text.replace('reading_unit = "act"', f'reading_unit = "{unit}"')
+    assert 'reading_unit = "page"' in text
+    text = text.replace('reading_unit = "page"', f'reading_unit = "{unit}"')
     for line, replacement in lines.items():
         assert text.count(line) == 1
         text = text.replace(line, replacement)
@@ -73,10 +72,10 @@ def _protocol(directory: Path, unit: str, lines: dict[str, str]) -> Path:
 def _tree(
     base: Path, scenario: str, unit: str = "page", lines: dict[str, str] | None = None
 ) -> tuple[Path, dict[str, Path], str]:
-    """A tree read by `unit`; a page-read one on the page-read roster."""
-    options = {"perlector_protocol_config": _protocol(base / "config", unit, lines or {})}
-    if unit == "page":
-        options.update(page_roster_options(base / "models"))
+    """A tree read by `unit` on the committed roster."""
+    options = {}
+    if unit != "page" or lines:
+        options["perlector_protocol_config"] = _protocol(base / "config", unit, lines or {})
     root = base / "runs"
     for program in programs_through("perlector"):
         result = run_stage(root, RUN_ID, scenario, program, **options)

@@ -89,6 +89,7 @@ def _has_stage_seal(tree: RunTree) -> bool:
     )
 
 
+@pytest.mark.act_path
 def test_an_unsealed_perlector_pass_resumes_without_minting_an_unrequested_reading(
     tmp_path, monkeypatch
 ):
