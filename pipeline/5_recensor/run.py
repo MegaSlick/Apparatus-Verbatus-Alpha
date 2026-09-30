@@ -21,6 +21,9 @@ from collections.abc import Iterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import page_review  # noqa: E402
+
 from common.act_visibility_geometry import (  # noqa: E402
     MAX_POLYGON_POINTS,
     classify_capture_visibility,
@@ -102,10 +105,10 @@ from common.residual_ink import (  # noqa: E402
     residual_ink,
     resolve_coverage_audit_policy,
 )
-from common.sealed_config import read_sealed_toml  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
+    READING_UNIT_PAGE,
     RESIDUAL_ENUMERATION_AGGREGATED,
     RESIDUAL_ENUMERATION_COMPLETE,
     RESIDUAL_ENUMERATIONS,
@@ -119,6 +122,7 @@ from common.stage import (  # noqa: E402
     open_stage_context,
     page_residual_act_key,
     reading_basis_regions,
+    reading_denominator,
     recovery_region_count,
     require_current_witness_basis,
     run_stage,
@@ -1451,17 +1455,27 @@ def capture_digest_for(capture_digests: dict[int, str], page_ordinal: int, act_i
     return digest
 
 
-def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None) -> dict[int, dict]:
-    """Residual-ink findings for every sealed page with a region cut on it, once per run.
+def page_coverage_findings(
+    context,
+    sealed_pages: dict[int, dict] | None = None,
+    *,
+    regions: dict[int, list[dict]] | None = None,
+) -> dict[int, dict]:
+    """Residual-ink findings for every page in `regions`, once per run.
 
-    The input is the page image itself, never the proposal set, a witness or a reading.
+    `regions` maps a sealed page ordinal to the bounds counted as covering its
+    ink: by default every Designator region cut on it (`regions_by_source_page`);
+    the page path passes every reading region, and every sealed page, one with
+    no region included. The input is the page image itself, never the proposal
+    set, a witness or a reading.
     The paper value is the Designator's shared inference under the sealed background
     policy, never the page's own histogram mode, which on a photographed opening is the
     bezel and hides all residual ink. A page whose paper the inference refuses gets a
     finding carrying the refusal and no counts. `sealed_pages` lets `main` share one
     pixel-verification pass.
     """
-    regions = regions_by_source_page(context)
+    if regions is None:
+        regions = regions_by_source_page(context)
     if not regions:
         return {}
     background_config = load_background_config(context.args.ink_map_config)
@@ -1475,8 +1489,8 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
         page = pages.get(ordinal)
         if page is None:
             raise FatalAccounting(
-                f"a Designator region names source page {ordinal}, which the Exemplar "
-                "did not seal; a crop of unsealed pixels is invariant #10's imbalance"
+                f"a region names source page {ordinal}, which the Exemplar did not seal; "
+                "a crop of unsealed pixels is invariant #10's imbalance"
             )
         # Digest the bytes actually measured, not an earlier read.
         image_bytes = sealed_page_bytes(
@@ -1484,14 +1498,17 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
         )
         width, height, rows = grayscale_rows(image_bytes)
         try:
-            findings[ordinal] = residual_ink(
-                width,
-                height,
-                rows,
-                bounds,
-                background_policy=resolve_background_policy(background_config, width, height),
-                coverage_policy=resolve_coverage_audit_policy(coverage_config, width, height),
-            )
+            findings[ordinal] = {
+                **residual_ink(
+                    width,
+                    height,
+                    rows,
+                    bounds,
+                    background_policy=resolve_background_policy(background_config, width, height),
+                    coverage_policy=resolve_coverage_audit_policy(coverage_config, width, height),
+                ),
+                "background_config_sha256": background_config["config_sha256"],
+            }
         except BackgroundInferenceRefusal as error:
             # Without a paper value zero ink would be a false clean page.
             findings[ordinal] = {
@@ -2931,6 +2948,7 @@ def publish_review(
     prior: dict | None,
     inputs: list[dict],
     payload: dict,
+    check=None,
 ) -> dict:
     """Write a review only after rejecting witness-selection vocabulary.
 
@@ -2942,24 +2960,11 @@ def publish_review(
 
     The whole payload is screened, not only the route inputs: a review is a second
     durable record, and a future direct payload field would otherwise go unchecked.
+    `check` validates the payload's own shape; an act-read review's measurements by
+    default, a page-read review's closed shape on the page path.
     """
     refuse_capture_preference(payload, what="a Recensor review")
-    measurement_field = "testimony_content_coverage"
-    try:
-        validate_testimony_content_coverage(payload[measurement_field])
-        measurement_field = "testimony_content_coverage_continuation"
-        validate_testimony_content_coverage_continuation(payload[measurement_field])
-        measurement_field = "cross_capture_coverage"
-        coverage = payload[measurement_field]
-        if coverage is not None:
-            if not isinstance(coverage, dict):
-                raise SchemaRefusal("cross-capture coverage is neither an object nor null")
-            validate_cross_capture_coverage(coverage)
-    except (KeyError, SchemaRefusal, TypeError) as error:
-        raise FatalAccounting(
-            f"the Recensor review of {subject_id!r} has malformed measurement evidence "
-            f"in {measurement_field}: {error}"
-        ) from error
+    (check or _validate_act_review_measurements)(subject_id, payload)
 
     def publish_at(ordinal: int) -> dict:
         return context.publish(
@@ -2977,6 +2982,26 @@ def publish_review(
         return publish_at(prior["payload"]["attempt_ordinal"])
     except IncompatibleReuse:
         return publish_at(prior["payload"]["attempt_ordinal"] + 1)
+
+
+def _validate_act_review_measurements(subject_id: str, payload: dict) -> None:
+    """Refuse an act-read review whose measurement evidence is malformed."""
+    measurement_field = "testimony_content_coverage"
+    try:
+        validate_testimony_content_coverage(payload[measurement_field])
+        measurement_field = "testimony_content_coverage_continuation"
+        validate_testimony_content_coverage_continuation(payload[measurement_field])
+        measurement_field = "cross_capture_coverage"
+        coverage = payload[measurement_field]
+        if coverage is not None:
+            if not isinstance(coverage, dict):
+                raise SchemaRefusal("cross-capture coverage is neither an object nor null")
+            validate_cross_capture_coverage(coverage)
+    except (KeyError, SchemaRefusal, TypeError) as error:
+        raise FatalAccounting(
+            f"the Recensor review of {subject_id!r} has malformed measurement evidence "
+            f"in {measurement_field}: {error}"
+        ) from error
 
 
 def _reconcile_reading_regions(reading: dict, regions: list[dict], act_id: str) -> list[dict]:
@@ -3394,28 +3419,30 @@ def _verify_ink_recovery_request(
         )
 
 
-def refuse_a_page_read_tree(context) -> None:
-    """Refuse, by name, a run whose sealed Perlector protocol reads whole pages.
-
-    Such a run's Perlector publishes page readings and the acts it established
-    from them, not a reading per Designator act, and nothing here counts those.
-    """
-    protocol, digest = read_sealed_toml(
-        context.perlector_protocol_config_path, "Perlector protocol declaration"
+def review_a_page_read_run(context, denominator: dict) -> int:
+    """The page path (`page_review.py`): every counted unit reviewed, then the v3 receipt."""
+    held = page_review.review_pages(
+        context,
+        denominator,
+        page_coverage_findings=page_coverage_findings,
+        publish_review=publish_review,
+        current_review=current_review,
     )
-    context.require_sealed_config("perlector-protocol", digest)
-    if protocol.get("reading_unit") == "page":
-        raise ContractError(
-            'the sealed Perlector protocol reads whole pages (reading_unit = "page"): '
-            "page-read trees are not yet counted downstream, so the Recensor stops here"
-        )
+    # The receipt needs the current manifest and may refuse before the seal.
+    context.finish()
+    page_review.write_reading_receipt(context)
+    context.seal_boundary()
+    context.finish()
+    return EXIT_HELD if held else EXIT_COMPLETE
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(DESCRIPTION).parse_args()
     context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
-    refuse_a_page_read_tree(context)
+    denominator = reading_denominator(context)
+    if denominator["reading_unit"] == READING_UNIT_PAGE:
+        return review_a_page_read_run(context, denominator)
     # Re-reading policy could publish an allowance the run never sealed.
     budget = context.recovery_policy
     context.require_sealed_config("recovery", budget["config_sha256"])
@@ -3440,14 +3467,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     occlusions = occlusion_records_by_page(context)
     proposal_geometry: dict[str, dict] = {}
     # Counted from the tree: an in-memory counter would reset after the requested recrop.
-    funded_pages = observation_funded_pages(context, expected_acts(context))
+    acts = denominator["acts"]
+    funded_pages = observation_funded_pages(context, acts)
     candidate_refs = continuation_candidate_refs(
         context,
-        {act["act_id"] for act in expected_acts(context) if act["outcome"] == "proposed"},
+        {act["act_id"] for act in acts if act["outcome"] == "proposed"},
     )
 
     held = 0
-    for act in expected_acts(context):
+    for act in acts:
         act_id, act_key = act["act_id"], act["act_key"]
 
         coverage = validate_chair_coverage(context, act_id, floor)

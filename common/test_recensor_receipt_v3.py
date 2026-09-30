@@ -32,6 +32,7 @@ def _item(
     outcome: str = "accepted",
     reads: int = 3,
     release: str | None = None,
+    truncated: int = 0,
 ):
     by_outcome = {"read": reads, "failed": 3 - reads}
     by_class = {klass.value: 0 for klass in OutcomeClass}
@@ -49,19 +50,35 @@ def _item(
             "floor": 3,
             "by_outcome": by_outcome,
             "by_class": by_class,
-            "under_witnessed": reads < 3,
+            "under_witnessed": reads - truncated < 3,
             "unresolved_chairs": 0,
             "health_unrecorded": 0,
-            "shortfalls": {"failed": 3 - reads, "truncated": 0, "unaligned": 0},
+            "shortfalls": {"failed": 3 - reads, "truncated": truncated, "unaligned": 0},
         },
         "release_reason": release,
     }
 
 
-def _receipt(items):
+def _link(left: int, outcome: str = "accepted") -> dict:
+    subject = f"page-break:{left}:{left + 1}"
+    return {
+        "subject_id": subject,
+        "link_ref": {"relative_path": f"r/5_recensor/{subject}.json", "sha256": DIGEST},
+        "outcome": outcome,
+    }
+
+
+def _receipt(items, links=()):
     return build_recensor_reading_receipt(
-        run_id="r", config_digest=DIGEST, page_reading_refs=[_ref("p1"), _ref("p2")], items=items
+        run_id="r",
+        config_digest=DIGEST,
+        page_reading_refs=[_ref("p1"), _ref("p2")],
+        items=items,
+        continuation_links=list(links),
     )
+
+
+TWO_READ = (("act_a", "p1:1"), ("act_b", "p2:1"))
 
 
 def test_a_v3_receipt_names_its_page_readings_and_each_units_page_disposition():
@@ -73,14 +90,41 @@ def test_a_v3_receipt_names_its_page_readings_and_each_units_page_disposition():
         "p2.json",
     ]
     assert [item["act_id"] for item in receipt["items"]] == ["act_a", "act_b"]
-    assert receipt["expected_act_count"] == 2 and "proposal_seal_ref" not in receipt
+    assert receipt["expected_unit_count"] == 2 and "proposal_seal_ref" not in receipt
+    assert "expected_act_count" not in receipt and receipt["continuation_links"] == []
     assert receipt["recensor_status"] == "complete"
 
 
 def test_a_v3_receipt_judges_the_witness_floor_on_page_reads():
     receipt = _receipt([_item("act_a", "p1:1", reads=2), _item("act_b", "p2:1")])
     assert receipt["recensor_status"] == "partial"
-    assert receipt["reasons"] == ["act act_a is under-witnessed (2 page reads of a floor of 3)"]
+    assert receipt["reasons"] == ["unit act_a is under-witnessed (2 page reads of a floor of 3)"]
+
+
+def test_a_truncated_page_reading_is_not_counted_toward_the_floor():
+    receipt = _receipt([_item("act_a", "p1:1", truncated=1), _item("act_b", "p2:1")])
+    assert receipt["reasons"] == ["unit act_a is under-witnessed (2 page reads of a floor of 3)"]
+    forged = copy.deepcopy(receipt)
+    forged["items"][0]["coverage"]["under_witnessed"] = False
+    forged["reasons"] = []
+    forged["recensor_status"] = "complete"
+    forged["self_hash"] = self_hash({k: v for k, v in forged.items() if k != "self_hash"})
+    with pytest.raises(SchemaRefusal, match="under_witnessed"):
+        validate_recensor_partition_receipt(forged)
+
+
+def test_a_one_sided_page_break_keeps_the_run_partial():
+    items = [_item(*unit) for unit in TWO_READ]
+    receipt = _receipt(items, [_link(2, "held-for-review"), _link(1)])
+    assert [link["subject_id"] for link in receipt["continuation_links"]] == [
+        "page-break:1:2",
+        "page-break:2:3",
+    ]
+    assert receipt["recensor_status"] == "partial"
+    assert receipt["reasons"] == [
+        "page-break:2:3 is held-for-review: only one side says the text runs across the page break"
+    ]
+    assert _receipt(items, [_link(1)])["recensor_status"] == "complete"
 
 
 def test_a_held_unit_keeps_the_receipt_partial_even_when_its_review_released_it():
@@ -90,11 +134,11 @@ def test_a_held_unit_keeps_the_receipt_partial_even_when_its_review_released_it(
     receipt = _receipt([_item("act_b", "p1:1"), released])
     assert receipt["recensor_status"] == "partial"
     assert receipt["reasons"] == [
-        "act act_a was held by its page reading and released at review: blank paper"
+        "unit act_a was held by its page reading and released at review: blank paper"
     ]
     held = _item("act_c", "p2:1", disposition="held", outcome="held-for-review")
     reasons = _receipt([_item("act_b", "p1:1"), held])["reasons"]
-    assert reasons[0] == "act act_c was held by its page reading"
+    assert reasons[0] == "unit act_c was held by its page reading"
 
 
 @pytest.mark.parametrize(
@@ -134,6 +178,13 @@ def test_a_v3_receipt_counting_fewer_units_than_pages_is_refused():
         lambda r: r["items"][0].update(act_key="p1:refused"),
         lambda r: r.update(proposal_seal_ref=_ref("seal")),
         lambda r: r.update(scope="proposal-acts-and-configured-witnesses"),
+        lambda r: r.update(expected_act_count=r.pop("expected_unit_count")),
+        lambda r: r.update(expected_unit_count=3),
+        lambda r: r.pop("continuation_links"),
+        lambda r: r.update(continuation_links=[_link(1), _link(1)]),
+        lambda r: r.update(continuation_links=[{**_link(1), "subject_id": "page-break:1:3"}]),
+        lambda r: r.update(continuation_links=[_link(1, "joined")]),
+        lambda r: r.update(continuation_links=[_link(1, "held-for-review")]),
     ],
     ids=[
         "disposition",
@@ -149,6 +200,13 @@ def test_a_v3_receipt_counting_fewer_units_than_pages_is_refused():
         "act-key-refused-page",
         "proposal-seal",
         "scope",
+        "act-count",
+        "unit-count",
+        "no-links",
+        "link-twice",
+        "link-not-a-break",
+        "link-outcome",
+        "link-reason-unstated",
     ],
 )
 def test_a_malformed_v3_receipt_is_refused(change):

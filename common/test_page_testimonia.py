@@ -1,8 +1,8 @@
-"""Keep the independent producer and consumer scope readers in agreement.
+"""The one page-witness roster reader every stage uses, and its roster check.
 
-Neither stage may trust the other's boundary check, so the implementations stay
-separate. They must still derive identical answers and refusals from the same
-sealed authority.
+The Attestatores, the Perlector and the Recensor each call
+`declared_page_witness_chairs` on their own run authority, so what it derives
+from the sealed roster, and what it refuses, is every stage's answer.
 """
 
 from types import SimpleNamespace
@@ -10,15 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from common.chairs.models import AbsentChair, ChairIdentity
-from common.contracts.errors import SchemaRefusal
-from conftest import load_stage
-
-ATTESTATORES = load_stage("3_attestatores")
-PERLECTOR = load_stage("4_perlector")
-READERS = (
-    ATTESTATORES.declared_page_witness_chairs,
-    PERLECTOR.declared_page_witness_chairs,
-)
+from common.contracts.errors import FatalAccounting, SchemaRefusal
+from common.page_testimonia import declared_page_witness_chairs, require_page_roster
 
 
 def _identity(role: str, scope: str) -> ChairIdentity:
@@ -49,12 +42,8 @@ def _context(scopes: dict[str, str], *, roster=None, absent=(), fixture=None):
     )
 
 
-# Each case carries the set the sealed roster actually implies. Agreement alone
-# would be satisfied by two readers sharing one bug -- both returning everything,
-# or both returning nothing -- so the expected set is what makes this a
-# measurement rather than a consistency check. Case 0 is the
-# scope layout shipped in config/models.toml.
-AGREED = (
+# Case 0 is the scope layout shipped in config/models.toml.
+DERIVED = (
     (
         _context({"attestator_1": "page", "attestator_2": "act", "attestator_3": "page"}),
         {"attestator_1", "attestator_3"},
@@ -66,7 +55,7 @@ AGREED = (
     ),
     # An explicit absence parses no scope at all, so it is never page-scoped.
     (_context({"attestator_1": "page"}, absent=("attestator_2",)), {"attestator_1"}),
-    # The retired fixture key must not reach the answer from either side.
+    # The retired fixture key must not reach the answer.
     (
         _context(
             {"attestator_1": "page", "attestator_2": "act"},
@@ -77,18 +66,9 @@ AGREED = (
 )
 
 
-@pytest.mark.parametrize(("context", "expected"), AGREED, ids=range(len(AGREED)))
-def test_both_stages_derive_the_same_page_scoped_set(context, expected):
-    answers = [reader(context) for reader in READERS]
-    assert answers[0] == answers[1], (
-        "the Attestatores and the Perlector disagree about which occupants are "
-        "page-scoped; the page join and the attachment it is validated against "
-        "would then be built on two different rosters"
-    )
-    assert answers[0] == expected, (
-        "both stages agree on a set the sealed roster does not imply; agreement "
-        "between two readers is not evidence that either read the roster right"
-    )
+@pytest.mark.parametrize(("context", "expected"), DERIVED, ids=range(len(DERIVED)))
+def test_the_page_scoped_set_is_what_the_sealed_roster_implies(context, expected):
+    assert declared_page_witness_chairs(context) == expected
 
 
 REFUSED = (
@@ -100,13 +80,23 @@ REFUSED = (
 
 
 @pytest.mark.parametrize("context", REFUSED, ids=range(len(REFUSED)))
-def test_both_stages_refuse_the_same_rosters_with_the_same_words(context):
-    messages = []
-    for reader in READERS:
-        with pytest.raises(SchemaRefusal) as caught:
-            reader(context)
-        messages.append(str(caught.value))
-    assert messages[0] == messages[1], (
-        "both stages refuse, but say different things about the same sealed "
-        "roster; an operator reading one refusal would be told a different fact"
-    )
+def test_a_roster_no_scope_can_be_derived_from_is_refused(context):
+    with pytest.raises(SchemaRefusal, match="sealed witness roster"):
+        declared_page_witness_chairs(context)
+
+
+def _record(chair: str) -> dict:
+    return {"payload": {"chair": chair}}
+
+
+def test_a_page_carries_exactly_the_configured_page_witnesses():
+    chairs = {"attestator_1", "attestator_3"}
+    require_page_roster("pg_1", [_record("attestator_1"), _record("attestator_3")], chairs)
+    with pytest.raises(FatalAccounting, match=r"no current page Testimonium .*attestator_3"):
+        require_page_roster("pg_1", [_record("attestator_1")], chairs)
+    with pytest.raises(FatalAccounting, match=r"did not seal as page witnesses"):
+        require_page_roster(
+            "pg_1",
+            [_record("attestator_1"), _record("attestator_2"), _record("attestator_3")],
+            chairs,
+        )

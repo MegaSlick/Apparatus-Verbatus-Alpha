@@ -90,11 +90,15 @@ from common.page_path import (
     READING_UNIT,
     REFUSED_CAPACITY,
 )
+from common.page_testimonia import (
+    current_page_testimonia,
+    declared_page_witness_chairs,
+    require_page_roster,
+)
 from common.request_capacity import RequestCapacityRefusal, page_request_capacity
 from common.stage import (
     SECONDARY_PROPOSER_CHAIR,
     exemplar_page_ids,
-    latest_per_chair,
     stage_manifest,
 )
 from common.witness_regime import witness_label
@@ -123,9 +127,6 @@ _PAGE_LOCAL_CALL_FAILURES: Final = (
 class StageHooks:
     """The helpers of the act path's `run.py` the page path reads its evidence through."""
 
-    declared_page_witness_chairs: Callable[..., set[str]]
-    validate_page_testimonium_record: Callable[..., None]
-    verify_page_native_capture: Callable[..., None]
     provenance_for: Callable[..., dict[str, Any]]
     engine_call_inputs: Callable[..., list[dict[str, str]]]
     start_chair: Callable[..., None]
@@ -182,26 +183,6 @@ def page_key(page_ordinal: int) -> str:
     return f"page-{page_ordinal}"
 
 
-def current_page_testimonia(context, hooks: StageHooks, proposal_regions) -> dict[str, list]:
-    """Every page's current page Testimonium per chair, each validated as the act path does."""
-    by_page: dict[str, list[dict[str, Any]]] = {}
-    for entry in stage_manifest(context, ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "page-testimonium":
-            continue
-        record = context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
-        hooks.validate_page_testimonium_record(context, record, proposal_regions)
-        capture = record["payload"].get("native_capture")
-        if capture is not None:
-            hooks.verify_page_native_capture(
-                context, record["subject_id"], record["payload"]["chair"], record, capture
-            )
-        by_page.setdefault(record["subject_id"], []).append(record)
-    return {
-        page_id: latest_per_chair(records, f"page Testimonium for page {page_id}")
-        for page_id, records in by_page.items()
-    }
-
-
 def _page_witnesses(
     context, page_id: str, current: list[dict[str, Any]], page_chairs: set[str]
 ) -> list[dict[str, Any]]:
@@ -211,19 +192,8 @@ def _page_witnesses(
     as `no-witness-testimony`, but a roster chair missing beside others that
     testified is a shortened roster and refuses.
     """
+    require_page_roster(page_id, current, page_chairs)
     by_chair = {record["payload"]["chair"]: record for record in current}
-    missing = page_chairs - set(by_chair)
-    if missing:
-        raise FatalAccounting(
-            f"page {page_id} has no current page Testimonium for configured page witness(es) "
-            f"{sorted(missing)}; the page cannot be read over a shortened witness roster"
-        )
-    unsealed = set(by_chair) - page_chairs
-    if unsealed:
-        raise FatalAccounting(
-            f"page {page_id} carries page Testimonia from chair(s) {sorted(unsealed)}, which "
-            "this run did not seal as page witnesses"
-        )
     return [
         {
             "chair": chair,
@@ -1062,8 +1032,8 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         run=run,
         hooks=hooks,
         audit=audit_not_run(run.audit_policy, run.audit_sha256),
-        page_chairs=hooks.declared_page_witness_chairs(context),
-        testimonia=current_page_testimonia(context, hooks, run.all_proposal_regions),
+        page_chairs=declared_page_witness_chairs(context),
+        testimonia=current_page_testimonia(context, run.all_proposal_regions),
         surya=page_path.sealed_surya_census(
             context, stage_manifest(context, DESIGNATOR)["artifacts"]
         ),

@@ -494,6 +494,132 @@ and request evidence it was derived from stays beside it. It is inside
 `inventory_scope()` all the same — a record a reviewer recomputes denominators
 from may not be a file nothing accounts for.
 
+## Page-read review
+
+A run sealed with `reading_unit = "page"` is reviewed by `page_review.py`, chosen in
+`main` by `common.stage.reading_denominator`. Everything above describes the act
+path. The units are the denominator's `reading_acts` rows (`common/README.md`,
+"Page-read denominator"): an entry of a read page's answer (`reading` or
+`reading-unplaced`, `kind` `act` or `other`), a `page-unread` or `page-blank` page
+row. A `page-refused` row names a page the Exemplar refused and is not a counted
+unit; it gets no review. Their `hold_codes` and `disposition` are the denominator's
+verified verdict, page accounting included, and every entry of a parsed page whose
+entries are all `other` holds `no-act-on-page-unconfirmed`; this stage does not
+measure the accounting again. Every fact below is measured for every unit before the
+first review is published.
+
+**The witness floor.** The configured page witnesses are the sealed roster's
+page-scoped chairs, read by `common.page_testimonia.declared_page_witness_chairs`,
+the one reader the Attestatores and the Perlector also use. Each page's latest
+`page-testimonium` per chair is validated as the Perlector validates it
+(`common.page_testimonia.current_page_testimonia`: the record, its presentation and
+inputs, its unpresented regions, its provenance and its native capture); a page some
+chair testified to must carry every configured page witness and no other, and each
+must be one its page accounting measured, or the stage refuses. Every unit on a page
+shares the page's coverage: `witness_coverage` over each roster chair's outcome, a
+roster chair with no Testimonium for the page counted `not-run`, so `configured` is
+the sealed page roster's size. The floor counts chairs that read the page (`read` or
+`genuinely-empty`) and were not truncated, against the sealed `witness_floor`;
+`health_unrecorded` and `shortfalls` (`failed`, `truncated`, `unaligned: 0`) complete
+the shape the v3 receipt recomputes. An act-scoped witness testifies to no page-read
+unit and is not counted.
+
+**Residual ink.** `page_coverage_findings` measures every sealed page's own pixels
+against the union box of every reading region cut on it, `act` and `other` alike (a
+page with none against nothing), under the sealed `ink-map` policy, exactly as the act
+path measures Designator regions. `page_coverage` records the unit's page as checked,
+flagged or unmeasurable, and `ink` what was measured: the page's ink, page-spanning,
+audited and outside pixel counts, the paper value and the `ink-map` config digest, or
+the paper-value refusal and that digest (`null` for a page with no finding). A
+confirmed-blank page therefore records how much ink was measured on it.
+
+**Outcome.** `accepted` only when the row is `read`, the floor holds, no page witness
+is unresolved, the page's ink is checked and not flagged, and the reading's
+uncertainty assessment is not malformed. Otherwise `held-for-review`, with every
+row code and every code of this stage (`under-witnessed`, `unresolved-witness`,
+`residual-ink`, `residual-ink-not-measurable`, `residual-ink-not-measured`,
+`uncertainty-assessment-malformed`, `continuation-off-page-edge`) in `hold_codes`
+and each named in `reason`.
+
+**A page that holds no act.** A `page-blank` row (`page-blank-unconfirmed`) and an
+entry of a page whose entries are all `other` (`no-act-on-page-unconfirmed`) are
+confirmed only when the page accounting's rules (d), (e) and (f) pass. A page of
+`other` entries also needs rule (i) to pass, so no detector record lies in an
+`other` region; with no record detector (`not-applicable`) or none measured it stays
+held. A blank page needs rule (i) to pass or not apply, no detected Surya line, and
+every witness that read the page to have retained blank text, with at least one such
+witness. Blankness is measured from each witness's retained text (`payload`), never
+its `content_health`; a witness whose retained payload is not text cannot confirm a
+blank. The floor and residual ink must hold as for any unit, and nothing else may
+hold the row. A confirmed blank is `confirmed-blank`; a confirmed `other` entry is
+`accepted`. Either names the released code and why in `release`; `confirmation`
+records the rule statuses, the line count, each witness's measured blankness and
+every failure. An unconfirmed one stays held with its code and the failures in
+`reason`.
+
+The closed `kind="review"` payload (`page_review.PAGE_REVIEW_FIELDS`, plus the
+`attempt_ordinal` every review carries, minted as on the act path):
+
+```
+{act_key, unit_class, kind, page_ordinal, reason, hold_codes, coverage,
+ page_reading_ref, page_accounting_ref, act_region_ref | null, perlectio_ref | null,
+ page_coverage: {checked_pages, flagged_pages, unmeasurable_pages, ink | null},
+ continuation: {continues_from_previous_page, continues_to_next_page},
+ uncertainty_assessment: {state, problem} | null,
+ confirmation: {confirms, rules, surya_lines, witnesses, confirmed, failures} | null,
+ release: {hold_codes, reason} | null,
+ notes: [{code: "continuation-flag-on-other", flags}],
+ recoveries_used: 0, attempt_ordinal}
+```
+
+Its inputs are the page reading, the page accounting, the act-region and Perlectio
+when there are any, the sealed Exemplar page the residual ink was measured from, and
+every page Testimonium counted for the floor.
+
+**Continuation.** From the answer's flags alone, and only between `act` entries. For
+each page break, the last `act` entry of page p and the first `act` entry of page p+1
+are its sides; `other` entries around them, a catchword for one, do not move them.
+When either side's flag says the text runs across, one `kind="continuation-link"`
+(subject `page-break:<p>:<p+1>`, attempt `attempt_id(subject, "link", 1)`) records
+it:
+
+```
+{schema: "recensor-continuation-link.v1", from_page_ordinal, to_page_ordinal,
+ from_act_id | null, from_act_key | null, to_act_id | null, to_act_key | null,
+ continues_to_next_page, continues_from_previous_page, agreed}
+```
+
+`agreed` (outcome `accepted`) when both sides say so; one-sided (outcome
+`held-for-review`) otherwise, a side with no `act` entry being null. A break whose
+sides disagree is still recorded, never dropped. Its inputs are the named sides'
+Perlectios and, for a null side on a sealed page, that page's reading. A link holds
+no unit and joins nothing, but a held link counts toward the stage's held total, so
+a run with a one-sided break exits held, and the receipt names it. A continuation
+flag on an `act` entry that is not at its page's act edge is on no break: that entry
+holds `continuation-off-page-edge`. A flag on an `other` entry joins nothing and
+holds nothing; its review records it in `notes`.
+
+**No recovery.** The page path publishes no `recovery-request`; every review carries
+`recoveries_used: 0`, and the orchestrator's recovery member finds nothing to
+dispatch.
+
+**The v3 receipt.** `page_review.write_reading_receipt` rebuilds
+`recensor-partition-receipt.v3` from disk: the units re-derived through
+`reading_denominator` (`expected_unit_count` of them), `page_reading_refs` in page
+order, each item's `page_disposition`, review and coverage recomputed from the
+Testimonia, and its `release_reason`: the review's `release.reason` for a unit its
+page reading held and this stage released, `null` otherwise. A unit its page reading
+held is a receipt reason even when released, so such a receipt is never
+`complete`. Each review's outcome is recomputed too: every row hold code is kept or
+named in a release, a release names exactly the row's releasable codes on a
+confirmed page, the witness-floor and continuation codes are what disk derives, and
+the unit is held exactly when a code remains. Every `continuation-link` is matched
+one to one against the breaks the answers flag; a missing, stray or different link
+is refused. `continuation_links` names each (`subject_id`, `link_ref`, `outcome`),
+and a held one is a receipt reason, so the receipt is `partial` while any page break
+is unresolved. A review whose subject is outside `reading_acts`, or any recovery
+request, is refused.
+
 ## Consumer obligations
 
 Archetypus establishes text only for a current `accepted` review and follows its

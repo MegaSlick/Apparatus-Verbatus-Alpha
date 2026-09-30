@@ -6,13 +6,16 @@ Recensor has reviewed them.  Page-level blank proof, residual ink, and final
 Archetypus/Armarium categories require evidence this receipt does not pretend
 to own.
 
-v1 and v2 count the Designator's proposal acts (`proposal_seal_ref`). v3 counts
-a page-read run's units (`common.stage.reading_acts`, the classes in
-`COUNTED_READING_CLASSES`): it names every sealed page's `page-reading`
+v1 and v2 count the Designator's proposal acts (`proposal_seal_ref`,
+`expected_act_count`). v3 counts a page-read run's units
+(`common.stage.reading_acts`, the classes in `COUNTED_READING_CLASSES`;
+`expected_unit_count`): it names every sealed page's `page-reading`
 (`page_reading_refs`, in page order), and each item carries the unit's page
 disposition instead of a Designator outcome. A unit its page reading held is
 completed at the Recensor only with the reason its review released it
 (`release_reason`), and a receipt holding any held unit is never `complete`.
+`continuation_links` names every page break an answer flags, so a break only
+one side says the text runs across keeps the run partial.
 """
 
 from __future__ import annotations
@@ -46,7 +49,6 @@ _COMMON_FIELDS: Final = frozenset(
         "run_id",
         "config_digest",
         "scope",
-        "expected_act_count",
         "items",
         "by_partition_class",
         "recensor_status",
@@ -54,6 +56,12 @@ _COMMON_FIELDS: Final = frozenset(
         "self_hash",
     }
 )
+_ACT_FIELDS: Final = frozenset({"proposal_seal_ref", "expected_act_count"})
+_READING_FIELDS: Final = frozenset(
+    {"page_reading_refs", "expected_unit_count", "continuation_links"}
+)
+CONTINUATION_LINK_OUTCOMES: Final = frozenset({"accepted", "held-for-review"})
+_LINK_FIELDS: Final = frozenset({"subject_id", "link_ref", "outcome"})
 _SCOPE_BY_SCHEMA: Final = {
     RECENSOR_PARTITION_RECEIPT_SCHEMA: RECENSOR_PARTITION_RECEIPT_SCOPE,
     RECENSOR_PARTITION_RECEIPT_SCHEMA_V2: RECENSOR_PARTITION_RECEIPT_SCOPE,
@@ -98,6 +106,7 @@ def build_recensor_reading_receipt(
     config_digest: str,
     page_reading_refs: list[dict[str, str]],
     items: list[dict[str, Any]],
+    continuation_links: list[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     """Build a v3 receipt over a page-read run's units, its summary derived from its items.
 
@@ -106,21 +115,26 @@ def build_recensor_reading_receipt(
     `{act_id, act_key, page_disposition, review_ref, review_outcome,
     partition_class, coverage, release_reason}`, `release_reason` being the
     reason the Recensor's review record gives for completing a unit its page
-    reading held, and `None` otherwise.
+    reading held, and `None` otherwise. Each continuation link is
+    `{subject_id, link_ref, outcome}` for one flagged page break.
     """
 
     checked_items = [dict(item) for item in items]
     for item in checked_items:
         _validate_item(item, schema=RECENSOR_PARTITION_RECEIPT_SCHEMA_V3)
     checked_items.sort(key=lambda item: item["act_id"])
-    reasons = _reasons(checked_items, schema=RECENSOR_PARTITION_RECEIPT_SCHEMA_V3)
+    links = sorted((dict(link) for link in continuation_links), key=_link_order)
+    for link in links:
+        _validate_link(link)
+    reasons = _reasons(checked_items, schema=RECENSOR_PARTITION_RECEIPT_SCHEMA_V3, links=links)
     record: dict[str, Any] = {
         "schema": RECENSOR_PARTITION_RECEIPT_SCHEMA_V3,
         "run_id": run_id,
         "config_digest": config_digest,
         "scope": RECENSOR_READING_RECEIPT_SCOPE,
         "page_reading_refs": [dict(reference) for reference in page_reading_refs],
-        "expected_act_count": len(checked_items),
+        "expected_unit_count": len(checked_items),
+        "continuation_links": links,
         "items": checked_items,
         "by_partition_class": _partition_counts(checked_items),
         "recensor_status": _status(reasons),
@@ -134,23 +148,21 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
     """Validate the closed receipt schema and its derived summary."""
 
     schema = record.get("schema") if isinstance(record, dict) else None
-    denominator_field = (
-        "page_reading_refs"
-        if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
-        else "proposal_seal_ref"
-    )
-    if not isinstance(record, dict) or set(record) != _COMMON_FIELDS | {denominator_field}:
+    reading = schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
+    denominator_fields = _READING_FIELDS if reading else _ACT_FIELDS
+    if not isinstance(record, dict) or set(record) != _COMMON_FIELDS | denominator_fields:
         raise SchemaRefusal("Recensor partition receipt has the wrong closed schema")
     if schema not in _SCOPE_BY_SCHEMA or not verify_self_hash(record):
         raise SchemaRefusal("Recensor partition receipt has an invalid schema or self-hash")
+    count = expected_count(record)
     if (
         not isinstance(record["run_id"], str)
         or not record["run_id"]
         or not is_sha256(record["config_digest"])
         or record["scope"] != _SCOPE_BY_SCHEMA[schema]
-        or not _is_count(record["expected_act_count"])
+        or not _is_count(count)
         or not isinstance(record["items"], list)
-        or record["expected_act_count"] != len(record["items"])
+        or count != len(record["items"])
     ):
         raise SchemaRefusal("Recensor partition receipt has invalid run or denominator facts")
     if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3:
@@ -173,6 +185,19 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
         keys = [item.get("act_key") if isinstance(item, dict) else None for item in record["items"]]
         if len(set(map(str, keys))) != len(keys):
             raise SchemaRefusal("Recensor partition receipt v3 names one act key twice")
+        links = record["continuation_links"]
+        if not isinstance(links, list):
+            raise SchemaRefusal("Recensor partition receipt v3 continuation_links is not a list")
+        for link in links:
+            _validate_link(link)
+        subjects = [link["subject_id"] for link in links]
+        if subjects != sorted(
+            set(subjects), key=lambda subject: _link_order({"subject_id": subject})
+        ):
+            raise SchemaRefusal(
+                "Recensor partition receipt v3 continuation links are not one per page break, "
+                "in page order"
+            )
     else:
         _validate_reference(record["proposal_seal_ref"], "proposal-seal reference")
     previous_act_id = ""
@@ -186,10 +211,45 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
         previous_act_id = act_id
     if record["by_partition_class"] != _partition_counts(record["items"]):
         raise SchemaRefusal("Recensor partition receipt partition counts do not reconcile")
-    reasons = _reasons(record["items"], schema=schema)
+    reasons = _reasons(record["items"], schema=schema, links=record.get("continuation_links", []))
     if record["reasons"] != reasons or record["recensor_status"] != _status(reasons):
         raise SchemaRefusal("Recensor partition receipt status does not derive from its items")
     return record
+
+
+def expected_count(record: dict[str, Any]) -> Any:
+    """The receipt's sealed denominator count: acts for v1 and v2, units for v3."""
+    if record.get("schema") == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3:
+        return record["expected_unit_count"]
+    return record["expected_act_count"]
+
+
+def _link_order(link: dict[str, Any]) -> tuple[int, ...]:
+    subject = link["subject_id"]
+    return tuple(int(part) for part in subject.split(":")[1:])
+
+
+def _validate_link(link: Any) -> None:
+    if not isinstance(link, dict) or set(link) != _LINK_FIELDS:
+        raise SchemaRefusal("Recensor partition receipt continuation link has the wrong shape")
+    subject = link["subject_id"]
+    parts = subject.split(":") if isinstance(subject, str) else []
+    if (
+        len(parts) != 3
+        or parts[0] != "page-break"
+        or not all(part.isdigit() and str(int(part)) == part for part in parts[1:])
+        or int(parts[2]) != int(parts[1]) + 1
+    ):
+        raise SchemaRefusal(
+            f"Recensor partition receipt names continuation link {subject!r}, not "
+            "page-break:<p>:<p+1>"
+        )
+    if link["outcome"] not in CONTINUATION_LINK_OUTCOMES:
+        raise SchemaRefusal(
+            f"Recensor partition receipt continuation link {subject} is {link['outcome']!r}, "
+            f"not one of {sorted(CONTINUATION_LINK_OUTCOMES)}"
+        )
+    _validate_reference(link["link_ref"], "continuation-link reference")
 
 
 def _is_count(value: Any) -> bool:
@@ -214,14 +274,14 @@ def _witnessed_count(coverage: dict[str, Any], *, page_read: bool = False) -> in
     which must reproduce `witness_coverage`'s own count exactly. Reading
     outcomes, not the COMPLETED class, because that class also holds approval
     exclusions that never looked at the ink. On a page-read run (v3), where
-    every witness reads the whole page: the reading outcomes. Otherwise (v1):
-    the COMPLETED class.
+    every witness reads the whole page: the reading outcomes less the
+    truncated ones. Otherwise (v1): the COMPLETED class.
     """
     reading_chairs = sum(
         coverage["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
     )
     if page_read:
-        return reading_chairs
+        return reading_chairs - coverage["shortfalls"]["truncated"]
     if "page_granularity_only" in coverage:
         return reading_chairs - coverage["page_granularity_only"]
     return coverage["by_class"][OutcomeClass.COMPLETED.value]
@@ -399,6 +459,15 @@ def _validate_coverage(
         )
     # Only `page_granularity_only` decides the formula; the check always runs.
     page_read = schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
+    if page_read:
+        # Typed before `_witnessed_count` subtracts it.
+        shortfalls = coverage["shortfalls"]
+        truncated = shortfalls.get("truncated") if isinstance(shortfalls, dict) else None
+        if not _is_count(truncated) or truncated > reading_chairs:
+            raise SchemaRefusal(
+                "Recensor partition receipt v3 counts truncated readings that are not a count "
+                "of chairs that read the page"
+            )
     witnessed = _witnessed_count(coverage, page_read=page_read)
     if coverage["under_witnessed"] != (witnessed < coverage["floor"]):
         compared_label = (
@@ -471,24 +540,29 @@ EMPTY_DENOMINATOR_REASON: Final = (
 
 
 def _reasons(
-    items: list[dict[str, Any]], *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V2
+    items: list[dict[str, Any]],
+    *,
+    schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
+    links: list[dict[str, Any]] = (),
 ) -> list[str]:
     # An empty denominator is a reason, not a malformed receipt: refusing would
     # hide the silent failure this boundary exists to show.
     page_read = schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
     if not items:
         return [EMPTY_DENOMINATOR_REASON]
+    # A page-read run counts units: act entries, `other` entries and page rows.
+    counted = "unit" if page_read else "act"
     reasons: list[str] = []
     for item in items:
         act_id = item["act_id"]
         if page_read and item["page_disposition"] == "held":
             released = item["release_reason"]
             reasons.append(
-                f"act {act_id} was held by its page reading"
+                f"unit {act_id} was held by its page reading"
                 + (f" and released at review: {released}" if released else "")
             )
         if item["partition_class"] != OutcomeClass.COMPLETED.value:
-            reasons.append(f"act {act_id} is {item['partition_class']} at the Recensor")
+            reasons.append(f"{counted} {act_id} is {item['partition_class']} at the Recensor")
         coverage = item["coverage"]
         if coverage["under_witnessed"]:
             measured = (
@@ -500,11 +574,18 @@ def _reasons(
             )
             witnessed = _witnessed_count(coverage, page_read=page_read)
             reasons.append(
-                f"act {act_id} is under-witnessed "
+                f"{counted} {act_id} is under-witnessed "
                 f"({witnessed} {measured} of a floor of {coverage['floor']})"
             )
         if coverage["unresolved_chairs"]:
             reasons.append(
-                f"act {act_id} has {coverage['unresolved_chairs']} chair(s) with no outcome yet"
+                f"{counted} {act_id} has {coverage['unresolved_chairs']} chair(s) with no "
+                "outcome yet"
+            )
+    for link in links:
+        if link["outcome"] != "accepted":
+            reasons.append(
+                f"{link['subject_id']} is {link['outcome']}: only one side says the text runs "
+                "across the page break"
             )
     return reasons
