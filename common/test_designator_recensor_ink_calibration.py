@@ -113,7 +113,7 @@ def test_the_sealed_ink_bound_still_sits_at_the_level_it_was_measured_at():
 
     So the constant is pinned here, in the file that already pins
     `SECONDARY_MARGIN`, rather than the level being moved
-    into `[grouping.background]` as a fifth field. A sealed field would be a
+    into the ink map's `[background]` as a fifth field. A sealed field would be a
     second home for one number: `_derived_ink_margin` floors at
     `PRIMARY_MARGIN`, `conservation`'s sensitivity argument is stated against it,
     and `structure_pass` compares to it, so the config would carry a value whose

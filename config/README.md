@@ -271,12 +271,11 @@ resolved integers are published on its `structure-status` record, so a reader of
 finished run can say what geometry that page actually executed at rather than
 re-deriving it.
 
-An eighth threshold, `gap_tolerance_px`, sits in the file but never scales with the
-page: it is a stroke-connectivity radius rather than a page proportion, scaling it would
-change what "connected" means and make the labeller's cost grow with the cube of page
-scale, and no measurement of its true relationship to scan resolution exists — the
-file's own caveat says so at length, and it is the one number in there this build
-cannot honestly set. Three more values are bare counts rather than lengths, so
+The connectivity radius the structure scan runs at, `gap_tolerance_px`, never scales
+with the page: it is a stroke-connectivity radius rather than a page proportion, and
+scaling it would change what "connected" means. It and the page-spanning bound are the
+ink map's `[connectivity]` and `[page_spanning]` (below), which this pass reads rather
+than keeping a copy. Three more values are bare counts rather than lengths, so
 they have no dimension to be a fraction of: `max_residual_components` remains
 sealed but does not govern current residual presentation;
 `max_secondary_proposals` caps one page's secondary rescue pass; and
@@ -319,9 +318,9 @@ coverage audit takes out of its counts, and the radius it is found at), and
 its own provenance. The Ink Map, the Perlector's page accounting, the Recensor and the
 Armarium read it through `load_background_config` and `load_coverage_audit_config`,
 and every record measured under it names its digest as `background_config_sha256`.
-The Designator's structure pass reads it too, and refuses a run whose
-`designator_grouping.toml` states a different `page_spanning_area_bp` or
-`gap_tolerance_px`, so the component it withholds is the one the audit takes out.
+The Designator's structure pass reads it too, taking `page_spanning_area_bp` and
+`gap_tolerance_px` from here, so the component it withholds is the one the audit takes
+out.
 
 ## Pre-door triage instrument
 

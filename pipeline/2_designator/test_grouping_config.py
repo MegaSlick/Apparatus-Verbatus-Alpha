@@ -75,7 +75,8 @@ def test_default_config_loads_and_carries_the_seal_of_its_own_file():
     assert config["max_secondary_proposals"] == 2000
     assert config["fallback_bands"] == 4
     assert set(config["page_fraction_bp"]) == set(_RETIRED)
-    assert config["absolute"] == {"gap_tolerance_px": 3}
+    assert config["connectivity"]["gap_tolerance_px"] == 3
+    assert config["connectivity"]["provenance"]["calibrated_for_this_corpus"] is False
     assert config["provenance"]["calibrated_for_this_corpus"] is False
     assert config["background"]["band_bp"] == 500
     assert config["background"]["max_interior_dark_bp"] == 5000
@@ -84,9 +85,9 @@ def test_default_config_loads_and_carries_the_seal_of_its_own_file():
     # Pinned so a later edit cannot quietly widen the calibration claim.
     assert config["background"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["background"]["provenance"]["sample_count"] == 127
-    assert config["page_area_bp"]["page_spanning_area_bp"] == 5000
-    assert config["page_area_bp"]["provenance"]["calibrated_for_this_corpus"] is True
-    assert config["page_area_bp"]["provenance"]["sample_count"] == 17
+    assert config["page_spanning"]["page_spanning_area_bp"] == 5000
+    assert config["page_spanning"]["provenance"]["calibrated_for_this_corpus"] is True
+    assert config["page_spanning"]["provenance"]["sample_count"] == 17
     assert config["continuation"]["page_edge_reach_bp"] == 280
     assert config["continuation"]["provenance"]["calibrated_for_this_corpus"] is True
     assert config["continuation"]["provenance"]["sample_count"] == 44
@@ -165,42 +166,21 @@ def load_grouping_config(path: Path | None = None) -> dict:
     return grouping_config.load_grouping_config(path, path.with_name("ink_map.toml"))
 
 
-_INK_MAP_HEADS = ("[background", "[coverage_audit")
+_INK_MAP_HEADS = ("[background", "[coverage_audit", "[page_spanning", "[connectivity")
 
 
 def _write(tmp_path, body: str) -> Path:
     """Write a synthetic document as the two files the stage reads.
 
-    The `[background]` and `[coverage_audit]` tables go to an ink-map file,
-    with the `[page_spanning]` and `[connectivity]` tables it also carries
-    stating the grouping document's own two values, so a test that changes
-    one of those exercises the grouping loader's refusal, not the guard
-    between the files.
+    The `[background]`, `[coverage_audit]`, `[page_spanning]` and
+    `[connectivity]` tables go to an ink-map file, everything else to the
+    grouping file.
     """
     grouping, ink_map, target = [], [], None
     for line in body.split("\n"):
         if line.startswith("["):
             target = ink_map if line.startswith(_INK_MAP_HEADS) else grouping
         (target if target is not None else grouping).append(line)
-    values = {}
-    for name in ("page_spanning_area_bp", "gap_tolerance_px"):
-        found = [line for line in grouping if line.startswith(f"{name} = ")]
-        values[name] = (
-            found[0].split(" = ", 1)[1]
-            if found
-            else {"page_spanning_area_bp": "5000", "gap_tolerance_px": "3"}[name]
-        )
-    ink_map += [
-        "",
-        "[page_spanning]",
-        f"page_spanning_area_bp = {values['page_spanning_area_bp']}",
-        "[page_spanning.provenance]",
-        _VALID_PROVENANCE,
-        "[connectivity]",
-        f"gap_tolerance_px = {values['gap_tolerance_px']}",
-        "[connectivity.provenance]",
-        _VALID_PROVENANCE,
-    ]
     (tmp_path / "ink_map.toml").write_text("\n".join(ink_map))
     path = tmp_path / "grouping.toml"
     path.write_text("\n".join(grouping))
@@ -295,12 +275,26 @@ caveat = 'scv'
 """
 
 
-# [grouping.page_area_bp]'s own provenance block, a distinct spelling for the
-# reason _VALID_BACKGROUND's comment gives.
-_VALID_PAGE_AREA = """\
+# The ink map's [page_spanning] and [connectivity], each with its own
+# provenance block, distinctly spelled for the reason _VALID_BACKGROUND's
+# comment gives.
+_VALID_CONNECTIVITY = """\
+gap_tolerance_px = 3
+
+[connectivity.provenance]
+source = 'gs'
+corpus = 'gc'
+sample_unit = 'gu'
+sample_count = 0
+statistic = 'gst'
+calibrated_for_this_corpus = false
+caveat = 'gcv'
+"""
+
+_VALID_PAGE_SPANNING = """\
 page_spanning_area_bp = 5000
 
-[grouping.page_area_bp.provenance]
+[page_spanning.provenance]
 source = 'as'
 corpus = 'ac'
 sample_unit = 'au'
@@ -329,9 +323,8 @@ def _valid_toml() -> str:
         "[coverage_audit]\n" + _VALID_COVERAGE_AUDIT + "\n"
         "[grouping.page_fraction_bp]\n" + _VALID_PAGE_FRACTION + "\n"
         "[grouping.continuation]\n" + _VALID_CONTINUATION + "\n"
-        "[grouping.absolute]\n"
-        "gap_tolerance_px = 3\n\n"
-        "[grouping.page_area_bp]\n" + _VALID_PAGE_AREA + "\n"
+        "[page_spanning]\n" + _VALID_PAGE_SPANNING + "\n"
+        "[connectivity]\n" + _VALID_CONNECTIVITY + "\n"
         "[background]\n" + _VALID_BACKGROUND + "\n"
         "[grouping.provenance]\n" + _VALID_PROVENANCE
     )
@@ -341,7 +334,7 @@ def test_valid_synthetic_toml_round_trips(tmp_path):
     path = _write(tmp_path, _valid_toml())
     config = load_grouping_config(path)
     assert config["max_residual_components"] == 2000
-    assert config["absolute"] == {"gap_tolerance_px": 3}
+    assert config["connectivity"]["gap_tolerance_px"] == 3
 
 
 def test_unknown_top_level_field_refused(tmp_path):
@@ -385,16 +378,24 @@ def test_forbidden_margin_names_refused_inside_page_fraction_bp(tmp_path, forbid
         load_grouping_config(path)
 
 
-@pytest.mark.parametrize("forbidden", ["primary_margin", "secondary_margin"])
-def test_forbidden_margin_names_refused_inside_absolute(tmp_path, forbidden):
-    body = _valid_toml().replace("gap_tolerance_px = 3", f"gap_tolerance_px = 3\n{forbidden} = 20")
-    path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match=forbidden):
-        load_grouping_config(path)
+@pytest.mark.parametrize(
+    "table",
+    [
+        "[grouping.absolute]\ngap_tolerance_px = 3",
+        "[grouping.page_area_bp]\npage_spanning_area_bp = 5000",
+    ],
+)
+def test_a_grouping_copy_of_an_ink_map_bound_is_refused(tmp_path, table):
+    """The page-spanning bound and the connectivity radius live only in the ink map."""
+    body = _valid_toml().replace(
+        "[grouping.provenance]\n", table + "\n\n[grouping.provenance]\n", 1
+    )
+    with pytest.raises(ContractError, match="unknown field"):
+        load_grouping_config(_write(tmp_path, body))
 
 
 def test_value_in_wrong_sub_table_refused(tmp_path):
-    # gap_tolerance_px belongs in [grouping.absolute], not [grouping.page_fraction_bp].
+    # gap_tolerance_px is the ink map's [connectivity], never a page fraction.
     body = _valid_toml().replace(
         _VALID_PAGE_FRACTION, _VALID_PAGE_FRACTION + "gap_tolerance_px = 3\n"
     )
@@ -403,10 +404,10 @@ def test_value_in_wrong_sub_table_refused(tmp_path):
         load_grouping_config(path)
 
 
-def test_margin_bp_in_absolute_table_refused(tmp_path):
+def test_margin_bp_in_the_connectivity_table_refused(tmp_path):
     body = _valid_toml().replace("gap_tolerance_px = 3", "gap_tolerance_px = 3\nmargin_bp = 1500")
     path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match="unknown field"):
+    with pytest.raises(ContractError, match="not exactly gap_tolerance_px"):
         load_grouping_config(path)
 
 
@@ -433,17 +434,6 @@ def test_page_fraction_bp_field_present_but_not_a_table_refused(tmp_path):
         load_grouping_config(path)
 
 
-def test_absolute_field_present_but_not_a_table_refused(tmp_path):
-    body = (
-        _valid_toml()
-        .replace("[grouping.absolute]\ngap_tolerance_px = 3\n\n", "")
-        .replace("max_residual_components = 2000", "max_residual_components = 2000\nabsolute = 1")
-    )
-    path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match="no \\[grouping.absolute\\] table"):
-        load_grouping_config(path)
-
-
 def test_provenance_field_present_but_not_a_table_refused(tmp_path):
     body = (
         _valid_toml()
@@ -457,13 +447,6 @@ def test_provenance_field_present_but_not_a_table_refused(tmp_path):
 
 def test_missing_page_fraction_bp_table_refused_as_missing_field(tmp_path):
     body = _valid_toml().replace("[grouping.page_fraction_bp]\n" + _VALID_PAGE_FRACTION, "")
-    path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match="missing field"):
-        load_grouping_config(path)
-
-
-def test_missing_absolute_table_refused_as_missing_field(tmp_path):
-    body = _valid_toml().replace("[grouping.absolute]\ngap_tolerance_px = 3\n\n", "")
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="missing field"):
         load_grouping_config(path)
@@ -567,7 +550,7 @@ def test_every_string_provenance_field_is_actually_type_checked(tmp_path, field)
 # --- type/value validation ---------------------------------------------------
 
 
-def test_float_in_absolute_refused(tmp_path):
+def test_a_float_connectivity_radius_refused(tmp_path):
     body = _valid_toml().replace("gap_tolerance_px = 3", "gap_tolerance_px = 3.0")
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="non-negative integer"):
@@ -796,42 +779,27 @@ def test_a_bound_at_the_top_of_its_range_is_refused_as_the_test_switched_off(
         load_grouping_config(path)
 
 
-# --- [grouping.page_area_bp]: the closed sub-table and its bound -------------
+# --- the ink map's [page_spanning]: the closed table and its bound -------------
 #
 # The loader's refusals are policy, not plumbing: a value this file admits
 # decides which components the grouping pass may use as connective tissue.
 
 
-def test_the_page_area_table_is_required(tmp_path):
-    body = _valid_toml().replace("[grouping.page_area_bp]\n", "[grouping.bogus_area]\n", 1)
-    path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match="unknown field"):
-        load_grouping_config(path)
-
-
-def test_an_unknown_field_in_the_page_area_table_is_refused(tmp_path):
-    body = _valid_toml().replace(
-        "page_spanning_area_bp = 5000", "page_spanning_area_bp = 5000\nbogus = 1", 1
-    )
-    path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match=r"\[grouping.page_area_bp\] carries unknown field"):
-        load_grouping_config(path)
-
-
-def test_a_missing_page_spanning_bound_is_refused(tmp_path):
-    body = _valid_toml().replace("page_spanning_area_bp = 5000\n", "", 1)
-    path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match=r"\[grouping.page_area_bp\] is missing field"):
-        load_grouping_config(path)
-
-
-def test_the_page_area_table_needs_its_own_provenance(tmp_path):
-    body = _valid_toml().replace("[grouping.page_area_bp.provenance]\n", "", 1)
-    # Removing the header leaves this block's fields loose inside
-    # [grouping.page_area_bp], which the closed field set refuses by name.
-    path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match=r"\[grouping.page_area_bp\] carries unknown field"):
-        load_grouping_config(path)
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("page_spanning_area_bp = 5000", "page_spanning_area_bp = 5000\nbogus = 1"),
+        ("page_spanning_area_bp = 5000\n", ""),
+        ("page_spanning_area_bp = 5000", "page_spanning_area_bp = 5000\nprimary_margin = 20"),
+        # Its fields left loose inside [page_spanning], which the closed set refuses.
+        ("[page_spanning.provenance]\n", ""),
+    ],
+    ids=["unknown-field", "missing-bound", "forbidden-name", "no-provenance"],
+)
+def test_the_page_spanning_table_is_closed(tmp_path, old, new):
+    body = _valid_toml().replace(old, new, 1)
+    with pytest.raises(ContractError, match=r"\[page_spanning\] is not exactly"):
+        load_grouping_config(_write(tmp_path, body))
 
 
 @pytest.mark.parametrize("bad_value", ["0", "-1", "10001", "0.5", "true", "'5000'"])
@@ -844,7 +812,7 @@ def test_a_page_spanning_bound_outside_one_to_ten_thousand_is_refused(tmp_path, 
         "page_spanning_area_bp = 5000", f"page_spanning_area_bp = {bad_value}", 1
     )
     path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match="basis points"):
+    with pytest.raises(ContractError, match="basis-point integer in 1..10000"):
         load_grouping_config(path)
 
 
@@ -855,28 +823,14 @@ def test_a_bound_of_a_whole_page_is_legal_and_is_the_top_of_the_range(tmp_path):
     """
     body = _valid_toml().replace("page_spanning_area_bp = 5000", "page_spanning_area_bp = 10000", 1)
     config = load_grouping_config(_write(tmp_path, body))
-    assert config["page_area_bp"]["page_spanning_area_bp"] == 10000
+    assert config["page_spanning"]["page_spanning_area_bp"] == 10000
     assert resolve_thresholds(config, 200, 260).page_spanning_area_bp == 10000
 
 
-def test_the_page_area_provenance_is_held_to_the_same_closed_schema(tmp_path):
+def test_the_page_spanning_provenance_is_held_to_the_same_closed_schema(tmp_path):
     body = _valid_toml().replace("sample_count = 17\n", "", 1)
     path = _write(tmp_path, body)
-    with pytest.raises(
-        ContractError, match=r"\[grouping.page_area_bp.provenance\] is missing field"
-    ):
-        load_grouping_config(path)
-
-
-def test_a_forbidden_margin_name_is_refused_inside_the_page_area_table_too(tmp_path):
-    """`primary_margin`/`secondary_margin` may not appear in ANY sub-table,
-    including a new one where that claim could quietly stop being true.
-    """
-    body = _valid_toml().replace(
-        "page_spanning_area_bp = 5000", "page_spanning_area_bp = 5000\nprimary_margin = 20", 1
-    )
-    path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match="primary_margin"):
+    with pytest.raises(ContractError, match=r"page_spanning.provenance"):
         load_grouping_config(path)
 
 
@@ -900,19 +854,12 @@ def test_the_noise_floor_sub_table_must_carry_its_own_provenance(tmp_path):
         load_grouping_config(_write(tmp_path, claimed))
 
 
-@pytest.mark.parametrize(
-    ("name", "line"),
-    [
-        ("page_spanning_area_bp", "page_spanning_area_bp = 5000"),
-        ("gap_tolerance_px", "gap_tolerance_px = 3"),
-    ],
-)
-def test_a_grouping_file_disagreeing_with_the_ink_map_is_refused(tmp_path, name, line):
-    """The component this pass withholds must be the one the coverage audit takes out."""
-    path = _write(tmp_path, _valid_toml())
-    ink_map = path.with_name("ink_map.toml")
-    text = ink_map.read_text()
-    assert line in text
-    ink_map.write_text(text.replace(line, line[:-1] + "4"))
-    with pytest.raises(ContractError, match=f"grouping configuration's {name} is"):
-        load_grouping_config(path)
+def test_the_page_spanning_bound_and_radius_are_the_ink_map_s(tmp_path):
+    """The component this pass withholds is the one the coverage audit takes out."""
+    body = (
+        _valid_toml()
+        .replace("page_spanning_area_bp = 5000", "page_spanning_area_bp = 6000", 1)
+        .replace("gap_tolerance_px = 3", "gap_tolerance_px = 4", 1)
+    )
+    resolved = resolve_thresholds(load_grouping_config(_write(tmp_path, body)), 200, 260)
+    assert (resolved.page_spanning_area_bp, resolved.gap_tolerance_px) == (6000, 4)

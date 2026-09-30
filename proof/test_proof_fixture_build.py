@@ -675,7 +675,7 @@ def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleto
 
 def test_the_declared_stop_reason_is_the_length_signal_for_a_known_scenario(skeleton):
     """The one declared, fixture-only truncation signal
-    (`pipeline/4_perlector/truncation.py`): a stand-in for a real engine's own
+    (`common/truncation.py`): a stand-in for a real engine's own
     stop-reason, authoritative for `truncated` when it says `length`."""
     rows = skeleton["stop_reason"]
     assert rows == [

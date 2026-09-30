@@ -5,18 +5,18 @@ a digest of the exact bytes read so the config binds into a run's seal. This
 module only loads and resolves the policy; a caller resolves pixel thresholds
 itself via `resolve_thresholds` once it has this config and a page's dimensions.
 
-Four closed sub-tables carry four different bases for a threshold, so a field
-in the wrong one is a schema refusal rather than a misread comment:
+Closed sub-tables carry different bases for a threshold, so a field in the
+wrong one is a schema refusal rather than a misread comment:
 `page_fraction_bp` values are basis points of page WIDTH (`margin_bp`) or
-HEIGHT (everything else); `absolute` values are raw pixel counts never scaled
-by page size; `page_area_bp` is a basis point of page AREA, a fraction of both
-dimensions at once.
+HEIGHT (everything else), and `continuation` holds the one measured HEIGHT
+fraction.
 
 The pass also reads the sealed ink-map policy (`config/ink_map.toml`): its
-`[background]` inference policy and its coverage audit's noise floor. The
-page-spanning bound and connectivity radius it withholds a component under
-must be the ink map's own, so the audit takes out the same component; a
-grouping file whose copies differ is refused.
+`[background]` inference policy, its coverage audit's noise floor, and the
+page-spanning bound (`[page_spanning]`, a basis point of page AREA) and
+connectivity radius (`[connectivity]`, raw pixels never scaled by page size)
+it withholds a component under, so the component it withholds is the one the
+audit takes out. Those two live only in the ink map.
 
 `primary_margin`/`secondary_margin` are refused by name everywhere in this
 policy: they are `structure.PRIMARY_MARGIN`/`SECONDARY_MARGIN`, absolute 8-bit
@@ -77,12 +77,6 @@ _PAGE_FRACTION_BP_FIELDS: Final = (
 # A page-HEIGHT fraction like most of the table above, but its own provenance
 # block: measured on 44 real pages, unlike the mostly-unmeasured block above it.
 _CONTINUATION_BP_FIELDS: Final = ("page_edge_reach_bp",)
-_ABSOLUTE_FIELDS: Final = ("gap_tolerance_px",)
-
-# A bound on a component's own area, in basis points; `partition_page_spanning`
-# compares against it directly and it passes through `resolve_thresholds`
-# unresolved, like the bare counts below.
-_PAGE_AREA_BP_FIELDS: Final = ("page_spanning_area_bp",)
 
 # See module docstring. Checked explicitly, with a message naming why, rather
 # than left to the generic "unknown field" refusal.
@@ -104,8 +98,6 @@ _RESIDUAL_PRESENTATION_FIELDS: Final = (
 _GROUPING_TOP_FIELDS: Final = _GROUPING_COUNT_FIELDS + (
     "page_fraction_bp",
     "continuation",
-    "absolute",
-    "page_area_bp",
     "residual_presentation",
     "provenance",
 )
@@ -121,7 +113,7 @@ def _refuse_forbidden_names(fields: dict, where: str) -> None:
             "primary_margin/secondary_margin are absolute 8-bit ink-intensity offsets pinned "
             "as Python module constants in structure.py by "
             "common/test_designator_recensor_ink_calibration.py and may never become a per-run "
-            "config value. What is sealed instead is [grouping.background] ink_margin_bp, the "
+            "config value. What is sealed instead is the ink map's [background] ink_margin_bp, the "
             "fraction of a page's own two-mode distance that derives its margin: a population "
             "fraction, which scales with the page, and not an offset"
         )
@@ -134,8 +126,9 @@ def load_grouping_config(
     """Read the grouping/reconciliation policy and the ink-map policy it runs beside.
 
     Returns the grouping values with their digest (`config_sha256`), and the
-    ink map's `background` and `coverage_audit` with its digest
-    (`ink_map_config_sha256`); a caller proves each against its own seal.
+    ink map's `background`, `coverage_audit`, `page_spanning` and
+    `connectivity` with its digest (`ink_map_config_sha256`); a caller proves
+    each against its own seal.
     Every field is refused loudly rather than defaulted, matching
     `load_padding_config`.
     """
@@ -172,24 +165,10 @@ def load_grouping_config(
         _PAGE_FRACTION_BP_FIELDS,
         "[grouping.page_fraction_bp]",
     )
-    absolute = _load_closed_int_table(
-        grouping.get("absolute"), _ABSOLUTE_FIELDS, "[grouping.absolute]"
-    )
     continuation = _load_continuation(grouping.get("continuation"))
-    page_area_bp = _load_page_area_bp(grouping.get("page_area_bp"))
     residual_presentation = _load_residual_presentation(grouping.get("residual_presentation"))
     provenance = _load_provenance(grouping.get("provenance"), "[grouping.provenance]")
     ink_map = _load_ink_map(ink_map_path)
-    for name, value in (
-        ("page_spanning_area_bp", page_area_bp["page_spanning_area_bp"]),
-        ("gap_tolerance_px", absolute["gap_tolerance_px"]),
-    ):
-        if value != ink_map[name]:
-            raise ContractError(
-                f"the grouping configuration's {name} is {value}, but the sealed ink-map "
-                f"policy's is {ink_map[name]}; the component this pass withholds must be the "
-                "one the coverage audit takes out, so the two must read one number"
-            )
 
     return {
         "config_sha256": digest,
@@ -200,8 +179,8 @@ def load_grouping_config(
         "page_fraction_bp": page_fraction_bp,
         "continuation": continuation,
         "coverage_audit": ink_map["coverage_audit"],
-        "absolute": absolute,
-        "page_area_bp": page_area_bp,
+        "page_spanning": ink_map["page_spanning"],
+        "connectivity": ink_map["connectivity"],
         "background": ink_map["background"],
         "provenance": provenance,
     }
@@ -231,8 +210,18 @@ def _load_ink_map(path: str | Path) -> dict[str, Any]:
                 audit["noise_floor"].get("provenance"), "[coverage_audit.noise_floor.provenance]"
             ),
         },
-        "page_spanning_area_bp": coverage["page_spanning_area_bp"],
-        "gap_tolerance_px": coverage["gap_tolerance_px"],
+        "page_spanning": {
+            "page_spanning_area_bp": coverage["page_spanning_area_bp"],
+            "provenance": _load_provenance(
+                config["page_spanning"].get("provenance"), "[page_spanning.provenance]"
+            ),
+        },
+        "connectivity": {
+            "gap_tolerance_px": coverage["gap_tolerance_px"],
+            "provenance": _load_provenance(
+                config["connectivity"].get("provenance"), "[connectivity.provenance]"
+            ),
+        },
     }
 
 
@@ -387,46 +376,6 @@ def _load_continuation(table: Any) -> dict[str, Any]:
     return values
 
 
-def _load_page_area_bp(table: Any) -> dict[str, Any]:
-    """Read `[grouping.page_area_bp]` and its own provenance.
-
-    `page_spanning_area_bp` must be in 1..10000: at or below zero every
-    component on every page would be page-spanning and the grouping pass
-    would withhold the whole page; past 10000 no bounding box can ever reach
-    it, since it cannot exceed the page it is measured against.
-    """
-    if not isinstance(table, dict):
-        raise ContractError("the grouping configuration has no [grouping.page_area_bp] table")
-    _refuse_forbidden_names(table, "[grouping.page_area_bp]")
-    expected = set(_PAGE_AREA_BP_FIELDS) | {"provenance"}
-    unexpected = sorted(set(table) - expected)
-    if unexpected:
-        raise ContractError(
-            f"the grouping configuration's [grouping.page_area_bp] carries unknown field(s) "
-            f"{unexpected}; an unread policy field cannot be applied"
-        )
-    missing = sorted(expected - set(table))
-    if missing:
-        raise ContractError(
-            f"the grouping configuration's [grouping.page_area_bp] is missing field(s) {missing}"
-        )
-    values = {}
-    for name in _PAGE_AREA_BP_FIELDS:
-        value = table[name]
-        if not is_plain_int(value) or not (0 < value <= _BASIS_POINTS):
-            raise ContractError(
-                f"the grouping configuration's [grouping.page_area_bp] {name} is {value!r}, "
-                f"which is not an integer in 1..{_BASIS_POINTS} basis points; at or below zero "
-                "every component on every page spans it and the grouping pass would withhold the "
-                "whole page, and past a whole page nothing can ever reach it"
-            )
-        values[name] = value
-    values["provenance"] = _load_provenance(
-        table.get("provenance"), "[grouping.page_area_bp.provenance]"
-    )
-    return values
-
-
 def _load_background(table: Any) -> dict[str, Any]:
     """Read the ink map's `[background]` and its own provenance.
 
@@ -480,8 +429,9 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
     """Resolve one page's own basis-point thresholds into pixel integers.
 
     `margin_px` resolves against `width`; every other page_fraction_bp field
-    (and continuation's) resolves against `height`. `gap_tolerance_px`, the
-    three counts and `page_spanning_area_bp` pass through unresolved: the
+    (and continuation's) resolves against `height`. The ink map's
+    `gap_tolerance_px`, the three counts and `page_spanning_area_bp` pass
+    through unresolved: the
     counts aren't page-fraction quantities, and the area field's basis is both
     dimensions at once, so it stays in basis points at the one place it's
     compared (`grouping.partition_page_spanning`).
@@ -498,7 +448,7 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
             height, bp["review_priority_min_dimension_bp"]
         ),
         fallback_overlap_px=_pad_amount(height, bp["fallback_overlap_bp"]),
-        gap_tolerance_px=config["absolute"]["gap_tolerance_px"],
+        gap_tolerance_px=config["connectivity"]["gap_tolerance_px"],
         max_residual_components=config["max_residual_components"],
         max_secondary_proposals=config["max_secondary_proposals"],
         fallback_bands=config["fallback_bands"],
@@ -507,5 +457,5 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
         # Carried on the published thresholds, not just used internally by
         # `group_page`, so `run.py` can repeat the same page-spanning
         # partition later and check the withheld components it recorded.
-        page_spanning_area_bp=config["page_area_bp"]["page_spanning_area_bp"],
+        page_spanning_area_bp=config["page_spanning"]["page_spanning_area_bp"],
     )
