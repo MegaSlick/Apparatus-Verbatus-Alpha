@@ -782,6 +782,19 @@ def test_an_unrecognized_stop_reason_publishes_one_retained_act_failure_and_cont
     forged["self_hash"] = self_hash(forged)
     with pytest.raises(SchemaRefusal, match="completed engine or chair response failure"):
         perlector.validate_failed_perlectio(context, forged, forged["subject_id"])
+    call_ref = failure["payload"]["failure"]["call_record_ref"]
+    call = json.loads(RunTree(root, "r").read_bytes(call_ref["relative_path"]))
+    call["generation_sent"]["seed"] = [call["generation_sent"]["seed"]]
+    _digest, listed = RunTree(root, "r").put_blob(PERLECTOR, json.dumps(call).encode())
+    listed_ref = context.input_ref(listed.relative_path)
+    listed_seed = copy.deepcopy(failure)
+    listed_seed["payload"]["failure"]["call_record_ref"] = listed_ref
+    listed_seed["inputs"] = [
+        listed_ref if reference == call_ref else reference for reference in listed_seed["inputs"]
+    ]
+    listed_seed["self_hash"] = self_hash(listed_seed)
+    with pytest.raises(SchemaRefusal, match="sent seed \\["):
+        perlector.validate_failed_perlectio(context, listed_seed, listed_seed["subject_id"])
     evidence_free_live = copy.deepcopy(failure)
     evidence_free_live["payload"]["failure"].update(
         {
