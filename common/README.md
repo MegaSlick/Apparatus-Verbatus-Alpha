@@ -23,6 +23,7 @@ still cross.
 | `armarium_formats.py` | the sealed Armarium projection choices — the door binds them into the run, the Armarium reads them back |
 | `chandra_custody.py` | one-receipt Chandra custody: the Designator's live structure pass writes it; the read half has no served caller since the capture intake was removed and is the half that defines what the binding admits. It deliberately names the Designator's blob root and serving chair — those constants come from `contracts/`, `runtree/` and `stage.py`, never from a stage module, so the import boundary above holds |
 | `page_path.py` | the Perlector's page path as derived data: each page's feed (`page_feed_of`), an answer's problems, each entry's plan and holds, and every input the page accounting measures. Stage 4 publishes from it; the page-read denominator recomputes stage 4's records with it |
+| `dissent.py` | where a reading departs from each witness that reported, aligned under a clock or, for a reader checking a sealed record, to its end |
 | `page_feed.py`, `page_prompt.py`, `page_overlay.py`, `page_render.py` | what one whole-page reading is shown: the feed and its sealed `[feed]` switches, the prompt rendered from it, the id overlay drawn on the page render, and the page render itself. Stage 4 builds them; the page-read denominator builds a feed again to prove the sealed one |
 | `page_witness_units.py` | each witness's page broken into its own units, re-derived from the Testimonium's retained bytes: what the page feed shows and the page accounting measures |
 | `truncation.py`, `reading_annotations.py` | the truncation instrument and the doubt-mark reading of a Perlector answer: stage 4 applies them, the page-read denominator re-derives an entry's holds with them |
@@ -40,8 +41,9 @@ expected_acts(context)}` (the Designator's proposal seal) or `{"reading_unit":
 "page", "pages": ..., "acts": ...}` (the acts the Perlector established on each
 page it read whole). The two are never mixed: an act-read tree holding any
 page-path record (`page-feed`, `page-reading`, `page-accounting`, `act-region`
-or a `perlectio.v2`), or a page-read tree holding a Perlectio other than
-`perlectio.v2`, is refused. `page_readings(context)` and `reading_acts(context)`
+or a `perlectio.v2`), or a page-read tree holding any act-path record (any
+Perlector kind but the page path's, its `perlectio.v2`, a live call's
+`reader-sent` and the stage boundary records), is refused. `page_readings(context)` and `reading_acts(context)`
 give the two halves of the page form alone; each verifies the whole run, so a
 caller needing both takes `reading_denominator`, and one stage context is
 verified once however often it asks. The records they read are the Perlector's
@@ -94,16 +96,23 @@ adds no reason; a held unit with no completed review keeps the receipt
 `partial`. A run whose genuinely blank page the Recensor confirmed can
 therefore be `complete`.
 
-Nothing is trusted from the records it recomputes; each is recomputed with
-stage 4's own derivations (`page_path.py`), so the writer and the counter
-cannot read a page two ways:
+Nothing that decides what is counted or how it is held is taken from a record;
+each is recomputed with stage 4's own derivations (`page_path.py`), so the
+writer and the counter cannot read a page two ways:
 
-- the reading: a parsed answer's problems are exactly
-  `page_path.answer_problems` (its ids against the sealed `page-feed`, and
-  `no-stop-reason` when the engine gave no finish reason), its disposition
-  `read` exactly when there are none, and a parsed answer never has stop
-  reason `length` (the Perlector makes that `cut-off`); a problem without a
-  non-empty string code is refused;
+- the feed: built again by `page_path.page_feed_of` from the sealed page, the
+  protocol's `[feed]` switches, the witness roster, each chair's current page
+  Testimonium, the Surya census and the Perlector chair; its page render must
+  be the bytes stage 4 retained, and the sealed feed (`feed_digest` included)
+  and its inputs must be exactly these;
+- the reading: its parse state, answer, problems, finish and stop reason are
+  read again with `page_path.read_reply` from what the engine said -- a live
+  reading's retained response bytes (`page_path.retained_reply`), a fixture
+  run's declared page answer -- and must be the recorded ones. A page not asked
+  has exactly `page_path.not_run_problems`; a refused or failed call records
+  only that, with no call and no answer. The disposition is `read` exactly when
+  the answer parsed and nothing holds it; a problem without a non-empty string
+  code is refused;
 - the accounting: measured again by `page_accounting.page_accounting` from the
   same sealed inputs stage 4 measured it from (`page_path.accounting_inputs`:
   the feed, every current page Testimonium of the page shown or hidden, the
@@ -115,10 +124,20 @@ cannot read a page two ways:
   act id re-derived, text and doubt marks re-read, truncation re-classified,
   and its own holds recomputed. Its `act-region` and `perlectio` must match
   the entry, name this reading, accounting and feed, carry the page's holds,
-  and number the entries `1..k` with no record beyond them; the Perlectio's
-  holds, text, uncertainty, truncation, autopsia, `engine_call` and
-  `provenance` must be exactly the recomputed ones. A placed region's crop is
-  proven from the Exemplar by `exemplar_boundary.verify_reading_region_lineage`.
+  and number the entries `1..k` with no record beyond them; every field of the
+  Perlectio but its dissent must be `page_path.expected_perlectio`'s, the
+  function stage 4 publishes and adopts it by, and its dissent is computed
+  again (`page_path.dissent_holds`) with every alignment run to its end. A
+  sealed dissent row may instead be the not-compared row of an alignment that
+  ran out of time where it was sealed: it claims no comparison. Neither record
+  may carry a field beyond its schema. A placed region's crop is proven from
+  the Exemplar by `exemplar_boundary.verify_reading_region_lineage`.
+
+What stage 4 recorded about serving the call is bound, not recomputed: the
+reading's `request_digest`, `sampling`, `capacity`, `audit` and `provenance`,
+and the call record its `engine_call` names (stage 4 held it to the sealed
+sampling row), are read as recorded; the Perlectio must repeat `engine_call`
+and `provenance` exactly.
 
 The run tree binds every record read to this run's configuration. Rule (e) of
 the accounting is bounded by its sealed work budget (`max_alignment_steps`),

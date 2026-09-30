@@ -2286,10 +2286,13 @@ def expected_acts(context) -> list[dict[str, Any]]:
 # A run sealed with `reading_unit = "page"` counts the acts the Perlector
 # established on each page it read whole, not the Designator's expected acts.
 # The records are the Perlector's page path (`pipeline/4_perlector/CONTRACT.md`,
-# "Page reading"); every one is recomputed here from the sealed evidence with
-# stage 4's own derivations (`common/page_path.py`), never trusted. The run
-# tree binds every record read to this run's configuration. The contract is in
-# `common/README.md`, "Page-read denominator".
+# "Page reading"); what each says that decides the count or a hold -- the
+# feed, the reading's answer and problems, the accounting, each entry's
+# act-region and Perlectio, its dissent included -- is recomputed here from
+# the sealed evidence with stage 4's own derivations (`common/page_path.py`),
+# never trusted. The run tree binds every record read to this run's
+# configuration. The contract, including what is bound rather than
+# recomputed, is in `common/README.md`, "Page-read denominator".
 
 READING_UNIT_ACT: Final = "act"
 READING_UNIT_PAGE: Final = page_path.READING_UNIT
