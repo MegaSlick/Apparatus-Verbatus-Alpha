@@ -742,7 +742,38 @@ def test_the_bundle_fetcher_names_a_failed_prefetch_and_refuses_another_artifact
 def test_the_bundle_fetcher_names_the_sync_command_when_the_environment_is_missing(tmp_path):
     fetcher = surya_detector.SuryaBundleFetcher("operations/serving/nowhere")
     with pytest.raises(ServingConfigurationError, match="uv sync --locked --project"):
+        fetcher.check(surya_detector.BUNDLE_ARTIFACT)
+    with pytest.raises(ServingConfigurationError, match="uv sync --locked --project"):
         fetcher.fetch(surya_detector.BUNDLE_ARTIFACT, tmp_path / "out")
+
+
+def test_the_bundle_fetcher_checks_its_environment_without_running_anything(environment):
+    def never(argv, **kwargs):
+        raise AssertionError("check runs nothing")
+
+    fetcher = surya_detector.SuryaBundleFetcher("operations/serving/surya", runner=never)
+    fetcher.check(surya_detector.BUNDLE_ARTIFACT)
+    with pytest.raises(ServingConfigurationError, match="not 'churro-3B'"):
+        fetcher.check("churro-3B")
+
+
+def test_a_failed_prefetch_s_excerpt_carries_no_proxy_credential(environment):
+    def failing(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv,
+            1,
+            "",
+            "ProxyError: Unable to connect to proxy http://agent:s3cr3t@proxy.invalid:3128 "
+            "for https://huggingface.co/api",
+        )
+
+    fetcher = surya_detector.SuryaBundleFetcher("operations/serving/surya", runner=failing)
+    with pytest.raises(SuryaRunFailure) as failure:
+        fetcher.fetch(surya_detector.BUNDLE_ARTIFACT, environment / "out")
+    assert "s3cr3t" not in str(failure.value)
+    assert "agent" not in str(failure.value)
+    assert "http://<redacted>@proxy.invalid:3128" in str(failure.value)
+    assert "https://huggingface.co/api" in str(failure.value)
 
 
 def test_the_bundle_fetcher_writes_the_artifact_the_store_requires_of_it():

@@ -20,6 +20,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -641,18 +642,27 @@ class SuryaBundleFetcher:
         self.environment = environment
         self.runner = runner
 
-    def fetch(self, artifact: str, destination: Path) -> None:
+    def check(self, artifact: str) -> None:
+        """Refuse by name, before anything downloads, an artifact that is not
+        Surya's bundle or an environment that is not built."""
+        self._interpreter(artifact)
+
+    def _interpreter(self, artifact: str) -> Path:
         if artifact != BUNDLE_ARTIFACT:
             raise ServingConfigurationError(
                 f"Surya's prefetch writes {BUNDLE_ARTIFACT!r}, not {artifact!r}"
             )
-        environment = REPO_ROOT / self.environment
-        interpreter = environment / ".venv" / "bin" / "python"
+        interpreter = REPO_ROOT / self.environment / ".venv" / "bin" / "python"
         if not interpreter.is_file():
             raise ServingConfigurationError(
                 f"Surya's environment has no interpreter at {interpreter}; build it with "
                 f"`uv sync --locked --project {self.environment}`"
             )
+        return interpreter
+
+    def fetch(self, artifact: str, destination: Path) -> None:
+        interpreter = self._interpreter(artifact)
+        environment = REPO_ROOT / self.environment
         child = {key: value for key, value in os.environ.items() if key in _PREFETCH_ENVIRONMENT}
         child["HF_HOME"] = str(destination.parent / "hf-home")
         child["HF_HUB_DISABLE_TELEMETRY"] = "1"
@@ -675,8 +685,18 @@ class SuryaBundleFetcher:
         if result.returncode != 0:
             raise SuryaRunFailure(
                 f"Surya's prefetch failed (exit {result.returncode}): "
-                f"{result.stderr.strip()[-800:]}"
+                f"{_without_url_credentials(result.stderr.strip())[-800:]}"
             )
+
+
+# The user-information part of a URL, as a proxy URL carries a credential.
+_URL_CREDENTIALS = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
+
+
+def _without_url_credentials(text: str) -> str:
+    """The text with any URL's user information replaced, so an excerpt that
+    echoes a proxy URL carries no credential into a journal or report."""
+    return _URL_CREDENTIALS.sub(r"\g<scheme><redacted>@", text)
 
 
 class SuryaSubprocess:

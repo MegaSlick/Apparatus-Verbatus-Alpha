@@ -187,6 +187,9 @@ class MaterializationFetcher(Protocol):
 class BundleFetcher(Protocol):
     """Fetch one local-repository artifact, complete, to a path that does not exist yet."""
 
+    def check(self, artifact: str) -> None:
+        """Raise unless this fetcher can fetch ``artifact`` now; fetches nothing."""
+
     def fetch(self, artifact: str, destination: Path) -> None:
         """Write the artifact's whole tree at ``destination``, or raise."""
 
@@ -335,6 +338,10 @@ def _materialize_real_roster_locked(
         for item in requirements
         if record_by_artifact[item.artifact]["state"] == "present"
     }
+    # A bundle fetcher that cannot run is found before any repository downloads.
+    for requirement in requirements:
+        if requirement.source == "local-repository" and requirement.artifact not in already_present:
+            bundle_fetcher.check(requirement.artifact)
     for requirement in requirements:
         if requirement.artifact in already_present:
             continue
@@ -371,6 +378,24 @@ def _materialize_real_roster_locked(
         "real_roster_complete": inventory["complete"],
         "unattributed_staging_entries": _unattributed_staging_entries(root),
     }
+
+
+def pending_local_artifacts(store_root: str | Path) -> tuple[str, ...]:
+    """The local-repository artifacts :func:`materialize_real_roster` would fetch
+    into this store: each the roster requires that the store does not hold present.
+
+    Reads the store and writes nothing, so a step before materialization can
+    prepare what the fetch needs. A store with no record yet needs every one.
+    """
+
+    root = Path(store_root).resolve()
+    local = [item.artifact for item in _unique_requirements() if item.source == "local-repository"]
+    active = root / "download_record.json"
+    if not active.exists() and not active.is_symlink():
+        return tuple(local)
+    record = _with_new_requirements(_load_custodied(root, _validate_upgradable_record))
+    states = {item["artifact"]: item["state"] for item in record["artifacts"]}
+    return tuple(artifact for artifact in local if states[artifact] != "present")
 
 
 def _fetch_artifact(
@@ -476,6 +501,9 @@ def _fetch_bundle(
             raise DigestMismatchRefusal(
                 artifact, f"the fetched bundle has no licence text at {requirement.license_file!r}"
             )
+        # The licence file's own repository declares its licence in the model
+        # card beside it; that declaration must be the roster's.
+        _reconcile_model_card_licence(licence.parent, requirement)
         measured = build_manifest(snapshot)
         digest = digest_bytes(canonical_bytes(measured.to_record()))
         if digest != requirement.digest_manifest:
@@ -487,7 +515,7 @@ def _fetch_bundle(
             )
         required_files = [row.path for row in measured.rows]
         manifest = f"manifests/{artifact}.json"
-        promote_verified_snapshot(
+        promoted = promote_verified_snapshot(
             root,
             {
                 "artifact": artifact,
@@ -496,6 +524,12 @@ def _fetch_bundle(
                 "required_files": required_files,
             },
         )
+        if promoted != requirement.digest_manifest:
+            raise DigestMismatchRefusal(
+                artifact,
+                f"the published manifest {manifest!r} has digest {promoted}, not the pinned "
+                f"{requirement.digest_manifest}",
+            )
         _promote_materialized_snapshot(snapshot, _under(root, f"local/{artifact}"), artifact)
         return {
             "artifact": artifact,
@@ -505,7 +539,7 @@ def _fetch_bundle(
             "revision": None,
             "snapshot": f"local/{artifact}",
             "manifest": manifest,
-            "digest_manifest": digest,
+            "digest_manifest": promoted,
             "license": requirement.license_file,
             "carried": [],
             "required_files": required_files,
@@ -1104,6 +1138,17 @@ def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
                     f"{required.artifact!r} {field} diverges from roster policy: expected "
                     f"{expected!r}, the record says {item.get(field)!r}",
                 )
+        if (
+            required.digest_manifest is not None
+            and item["state"] == "present"
+            and item["digest_manifest"] != required.digest_manifest
+        ):
+            raise DigestMismatchRefusal(
+                required.artifact,
+                f"the store holds {required.artifact!r} at manifest {item['digest_manifest']}, "
+                f"not the pinned {required.digest_manifest}; a store is never re-pinned in "
+                "place, so fetch the new pin into a fresh store",
+            )
         rows.append({"chair": required.chair, **item})
     pending = sorted(
         {item["artifact"] for item in record["artifacts"] if item["state"] == "pending-fetch"}
