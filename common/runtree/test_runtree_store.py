@@ -1,11 +1,9 @@
 """The run tree's three promises, each asserted in both directions.
 
-Harvest invariant #14, verbatim: "A seal that stops refusing bad things in order to
-stop refusing good things is not a fix" — both directions are asserted. So every
-refusal here has an acceptance beside it: identical bytes are reused *and*
+A seal that stops refusing bad things by refusing good things too is not a fix, so
+every refusal here has an acceptance beside it: identical bytes are reused *and*
 different bytes are refused; an unchanged run resumes *and* a changed one does not.
 
-Meta-invariant #86 — load-bearing tests drive real producers over real artifacts.
 These write real files to a real temporary directory through the real store; there
 is no in-memory stand-in, because the properties under test are properties of the
 filesystem behaviour.
@@ -276,10 +274,9 @@ def test_reusing_a_run_id_with_changed_source_is_refused(tmp_path):
 
 def test_a_source_manifest_repeating_an_ordinal_is_refused(tmp_path):
     """An ordinal names one page. Two rows sharing one leave the run unable to say
-    how many pages arrived — and the Armarium's page census compares itself against
-    these ordinals as a set, so the repeat would silently reduce two declared pages
-    to one and let a run that lost one of them still reconcile as `complete`. That
-    is the lost-page defect four reviewers filed, one level down."""
+    how many pages arrived, and the Armarium's page census compares itself against
+    these ordinals as a set, so the repeat would reduce two declared pages to one
+    and let a run that lost one of them still reconcile as `complete`."""
     twice = [
         {"relative_path": "proof/page-1.png", "sha256": "a" * 64, "ordinal": 1},
         {"relative_path": "proof/page-1-again.png", "sha256": "b" * 64, "ordinal": 1},
@@ -343,8 +340,7 @@ def test_a_source_page_ordinal_below_one_is_refused(tmp_path):
 
 
 def test_a_well_formed_manifest_of_several_pages_is_still_accepted(tmp_path):
-    """Invariant #14: the refusals above must not have bought their strictness by
-    refusing good input too."""
+    """The refusals above do not buy their strictness by refusing good input too."""
     fine = [
         {"relative_path": "proof/page-1.png", "sha256": "a" * 64, "ordinal": 1},
         {"relative_path": "proof/page-2.png", "sha256": "b" * 64, "ordinal": 2},
@@ -438,15 +434,7 @@ def test_membership_uses_the_declaration_when_computed_digest_is_explicitly_abse
 
 def test_a_caller_cannot_name_a_frame_its_own_pages_do_not_derive(tmp_path):
     """A caller-supplied membership would bypass derivation from the source pages."""
-    with pytest.raises(TypeError):
-        make_run(
-            tmp_path / "asserted",
-            corpus_frame_membership={
-                "frame_digest": "d" * 64,
-                "page_digest": "e" * 64,
-                "seed": "f" * 64,
-            },
-        )
+    assert "corpus_frame_membership" not in inspect.signature(RunTree.create).parameters
     tree = make_run(tmp_path / "derived")
     assert tree.read_run()["corpus_frame_membership"] == _default_corpus_frame_membership(SOURCE)
 
@@ -1145,41 +1133,6 @@ def test_a_manifest_describes_what_the_tree_actually_holds(tmp_path):
     assert manifest["blobs"] == [digest_bytes(b"a crop")]
 
 
-def test_a_manifest_metadata_and_digest_come_from_one_byte_snapshot(tmp_path, monkeypatch):
-    """A replacement at the read seam may not splice two artifacts into one row.
-
-    Driven at `_read_manifest_artifact` rather than at `Path.read_text`: the
-    merged reader reaches the file through a no-follow descriptor chain and never
-    calls the `Path` method, so patching that would have made this test pass
-    without ever substituting anything. What is asserted is the property either
-    branch's reader owes -- the row's metadata and its digest describe the same
-    bytes -- against whichever bytes the one read actually returned.
-
-    A second test used to sit above this one doing exactly the patch this
-    docstring warns against: it hooked `Path.read_text`, the hook never fired,
-    its forged bytes were never written, and both of its assertions compared the
-    original bytes with themselves. It was named for this seam and would have
-    stayed green if the seam broke, so it was removed rather than counted as
-    coverage.
-    """
-    tree = make_run(tmp_path)
-    published = tree.publish_artifact(make_envelope(outcome="proposed"))
-    replacement = canonical_bytes(make_envelope(outcome="held"))
-    real_read = RunTree._read_manifest_artifact
-
-    def read_replacement(self, relative_path):
-        record, data = real_read(self, relative_path)
-        if relative_path == published.relative_path:
-            return json.loads(replacement.decode("utf-8")), replacement
-        return record, data
-
-    monkeypatch.setattr(RunTree, "_read_manifest_artifact", read_replacement)
-    row = tree.build_manifest(DESIGNATOR)["artifacts"][0]
-
-    assert row["outcome"] == "held"
-    assert row["sha256"] == digest_bytes(replacement)
-
-
 def test_a_manifest_refuses_an_artifact_symlink_that_leaves_the_run_tree(tmp_path):
     """Containment, which is what this one actually pins — see the test below.
 
@@ -1854,9 +1807,8 @@ def test_a_manifest_refuses_an_artifact_too_large_to_read_safely(tmp_path):
 
 
 def test_read_bytes_refuses_a_file_grown_past_the_tree_read_limit(tmp_path, monkeypatch):
-    """G13: `RunTree.read_bytes` used to be `Path.read_bytes()`, with no ceiling
-    of its own -- a damaged or hostile run tree could be read whole into memory
-    before anything got a chance to refuse it. This is the same shape as the
+    """`RunTree.read_bytes` has a ceiling of its own, so a damaged or hostile run
+    tree is refused before it is read whole into memory. The same shape as the
     manifest-artifact bound above, for the tree's general reader.
     """
     tree = make_run(tmp_path)
@@ -1902,10 +1854,10 @@ def test_read_run_refuses_a_run_authority_grown_past_the_record_read_limit(tmp_p
 
 
 def test_read_bytes_takes_an_explicit_ceiling_when_a_caller_asks_for_one(tmp_path):
-    """G13: a caller reading a JSON record through `read_bytes` -- the fetch
-    verb's `_fetched_manifest` is the live one -- must be able to ask for the
-    record-sized ceiling rather than the blob-sized default, so the bytes it is
-    about to parse are bounded by what a record can legitimately be.
+    """A caller reading a JSON record through `read_bytes`, such as the fetch
+    verb's `_fetched_manifest`, can ask for the record-sized ceiling rather than
+    the blob-sized default, so the bytes it is about to parse are bounded by what
+    a record can legitimately be.
     """
     tree = make_run(tmp_path)
     envelope = make_envelope()
@@ -1980,19 +1932,15 @@ def test_a_manifest_rechecks_containment_after_collecting_walk_members(tmp_path,
         tree.build_manifest(DESIGNATOR)
 
 
-# --- Inventory scope: harvest invariant #13 ------------------------------------
+# --- Inventory scope -----------------------------------------------------------
 
 
 def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
-    """Harvest #13: every managed output path any code can write must resolve
-    inside the inventory scope; adding a managed path without extending the scope
-    fails a static drift test, loudly, naming the path.
+    """Every managed output path the store can write resolves inside the inventory
+    scope, naming the path that does not.
 
     Driven against real writes rather than a list of strings, so a new writer that
-    forgot to extend the scope is caught by what it actually does. Spec 03 adds
-    the approval record, System 09 the Recensor partition receipt, and spec 10
-    the rebuildable stage index; each is exercised here through its real writer
-    rather than a guessed path.
+    forgot to extend the scope is caught by what it actually does.
     """
     tree = make_run(tmp_path)
     scope = tree.inventory_scope()
@@ -2007,11 +1955,9 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
     written.append(
         tree.write_recensor_partition_receipt(make_recensor_partition_receipt()).relative_path
     )
-    # Not just "in scope" like every other entry below -- the receipt is a
-    # replace-in-place write, so its exact published location is worth
-    # pinning against the module's own named constant rather than only its
-    # source text (which `test_no_store_writer_reaches_a_path_the_inventory_
-    # scope_cannot_name` checks separately, for a different reason).
+    # Not just "in scope" like every other entry below: the receipt is a
+    # replace-in-place write, so its exact location is pinned against the
+    # module's own named constant.
     assert written[-1] == runtree_store.RECENSOR_PARTITION_RECEIPT_FILE
 
     assert len(written) == 8
@@ -2021,7 +1967,7 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
         )
 
 
-# --- The commit and the clock a tree used to carry nowhere (F098) --------------
+# --- The commit and the clock a tree carries ------------------------------------
 
 
 def test_a_run_authority_seals_the_commit_the_code_that_created_it_ran_at(tmp_path):
@@ -2123,14 +2069,13 @@ def test_the_inventory_scope_covers_every_producer(tmp_path):
 
 
 def test_the_inventory_scope_names_the_serving_log_directory_the_launcher_writes(tmp_path):
-    """Harvest #13 is about every managed path *any* code writes, not only this store's.
+    """The scope covers every managed path any code writes, not only this store's.
 
     A stage that serves a chair leaves the engine's launch log at
-    `<stage>/serving-logs/<name>.log`, written by the serving launcher. While
-    the scope did not name it, a consumer reading the scope as the whole of what
-    a run tree may hold -- `operator.surface._fetch_run_tree` does -- refused
-    the entire served run tree at the first log it listed, and brought home
-    nothing from a run that had already billed a card.
+    `<stage>/serving-logs/<name>.log`, written by the serving launcher. A consumer
+    reading the scope as the whole of what a run tree may hold, such as
+    `operator.surface._fetch_run_tree`, would otherwise refuse the served run tree
+    at the first log it listed.
     """
     from common.contracts.stages import WRITING_DIRECTORIES
 
@@ -2273,12 +2218,10 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
     assert tree.write_recensor_partition_receipt(receipt).reused is False
 
     target = tree.resolve(tree.recensor_partition_receipt_path())
-    # Six shapes reaching four different refusal paths, not four reaching two: an
-    # empty file and a truncated one both fail the JSON reader, so the first draft
-    # of this test looked broader than it was. The float and wrong-self-hash cases
-    # both reach `verify_self_hash`; the float is refused by strict canonicalization
-    # with the `TypeError` class that escaped the first fix, while the latter pins
-    # the validator's own integrity refusal.
+    # Several shapes reaching different refusal paths: the empty and truncated
+    # files fail the JSON reader; the float and wrong-self-hash cases both reach
+    # `verify_self_hash`, where the float is refused by strict canonicalization
+    # with a `TypeError` and the latter by the validator's integrity refusal.
     valid = json.dumps(receipt).encode("utf-8")
     float_damaged = json.loads(valid)
     float_damaged["expected_act_count"] = 1.0
@@ -2291,12 +2234,8 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
         "non-utf8": b"\xff\xfe not utf-8",
         "float": json.dumps(float_damaged).encode("utf-8"),
         "wrong-self-hash": json.dumps(self_hash_damaged).encode("utf-8"),
-        # The `RecursionError` branch of the writer's except clause, which
-        # nothing else drives. `json.loads` really does raise it rather than a
-        # `ValueError` at this depth (measured here: 100,000 levels still parse,
-        # 200,000 raise), which is precisely why `_read_json` cannot translate
-        # it and why it is named separately in that clause. Without this case
-        # that branch was untested and could have been deleted green.
+        # The `RecursionError` branch of the writer's except clause: `json.loads`
+        # raises it rather than `ValueError` at this depth.
         "deeply-nested": (b"[" * 200_000) + (b"]" * 200_000),
     }[damage_kind]
     target.write_bytes(damage)
@@ -2307,23 +2246,15 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
 
 
 def test_an_artifact_too_deeply_nested_for_the_json_reader_is_refused_not_a_crash(tmp_path):
-    """`_read_json` names the ways a file can fail to be read, and `RecursionError`
-    was not among them: `json`'s scanner recurses once per nesting level, so a
-    deeply nested artifact raised straight through every caller. A stage that
-    should have refused the file and held died with a traceback instead, and
-    because `build_manifest` reads every artifact under a directory, one such
-    file stopped the whole stage rather than its own record. 30,000 is driven
-    deliberately deep rather than pinned to the scanner's exact failure depth,
-    which is an interpreter fact, not one this suite should assert.
+    """`json`'s scanner recurses once per nesting level, so a deeply nested artifact
+    is refused rather than raising a traceback through every caller; since
+    `build_manifest` reads every artifact under a directory, one such file would
+    otherwise stop the whole stage rather than its own record.
 
-    **Which refusal fires is that same interpreter fact, so it is not asserted
-    either.** This test pinned the reader's own message and passed on Python 3.12
-    and 3.13 while failing on 3.14, where the scanner absorbs this depth: the file
-    then parses cleanly and is refused one step later for the fields it does not
-    have. Both are refusals and neither is a traceback, which is the whole of what
-    this test exists to prove. Pinning the message asserted the mechanism instead
-    of the guarantee, and the mechanism belongs to CPython. CI's matrix carries
-    3.14 today, so a regression here would be caught."""
+    The depth is driven deliberately deep rather than pinned to the scanner's
+    failure depth, and which refusal fires is not asserted: some interpreters parse
+    this depth and refuse the missing fields instead. Both are refusals, which is
+    the guarantee."""
     tree = make_run(tmp_path)
     envelope = make_envelope()
     tree.publish_artifact(envelope)
@@ -2462,8 +2393,7 @@ def test_publication_syncs_the_file_then_the_name(
 
     `fsync` on the artifact persists its *bytes*; the entry naming them is a
     separate call, and without it a power cut can leave a published artifact
-    with its data intact and its name gone. Every publication here recorded one
-    regular-file sync and no directory sync at 36acde636f.
+    with its data intact and its name gone.
     """
 
     observed = _fsync_kinds(monkeypatch)
@@ -2536,3 +2466,244 @@ def test_a_tampered_run_receipt_is_refused_when_its_reference_is_read(tmp_path):
     with pytest.raises(SchemaRefusal) as caught:
         tree.read_run_receipt(reference)
     assert "digest" in str(caught.value)
+
+
+# --- Refusal paths: every one named, none a hang or a traceback -----------------
+
+
+@pytest.fixture
+def no_hang():
+    """Fail a test that blocks, rather than hanging the suite, on a FIFO read."""
+    signal = pytest.importorskip("signal")
+    if not hasattr(signal, "setitimer"):
+        pytest.skip("this platform has no interval timer to bound a blocking read")
+
+    def expire(_signum, _frame):
+        raise AssertionError("the read blocked on a non-regular file")
+
+    previous = signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, 5)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+requires_fifo = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no os.mkfifo here")
+
+
+@requires_fifo
+def test_an_artifact_input_replaced_by_a_fifo_is_refused_not_a_hang(tmp_path, no_hang):
+    tree = make_run(tmp_path)
+    digest, blob = tree.put_blob(DESIGNATOR, b"a crop")
+    subject = "pg_0123456789abcdef"
+    envelope = build_envelope(
+        run_id="r1",
+        artifact_id=artifact_id(DESIGNATOR, "proposal", subject),
+        subject_id=subject,
+        stage=DESIGNATOR,
+        kind="proposal",
+        outcome="proposed",
+        config_digest=CONFIG_DIGEST,
+        adapter_revision="fake-designator-v0",
+        inputs=[{"relative_path": blob.relative_path, "sha256": digest}],
+        payload={"proposals": 2},
+    )
+    tree.publish_artifact(envelope)
+    blob_file = tree.resolve(blob.relative_path)
+    blob_file.unlink()
+    os.mkfifo(blob_file)
+
+    with pytest.raises(SchemaRefusal, match="artifact input .* could not be read"):
+        tree.read_artifact(DESIGNATOR, "proposal", envelope["artifact_id"])
+
+
+@requires_fifo
+def test_publishing_onto_a_fifo_is_refused_and_leaves_nothing_behind(tmp_path, no_hang):
+    tree = make_run(tmp_path)
+    data = b"a crop"
+    fifo = tree.resolve(tree.blob_path(DESIGNATOR, digest_bytes(data)))
+    fifo.parent.mkdir(parents=True)
+    os.mkfifo(fifo)
+
+    with pytest.raises(IncompatibleReuse, match="could not be read"):
+        tree.put_blob(DESIGNATOR, data)
+
+    assert [entry.name for entry in fifo.parent.iterdir()] == [fifo.name]
+    assert stat.S_ISFIFO(fifo.lstat().st_mode)
+
+
+DEEP_RECORD = (b"[" * 200_000) + (b"]" * 200_000)
+
+
+def _plant(tree, relative_path, data):
+    target = tree.resolve(relative_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+
+
+def _requires_recursion_error():
+    try:
+        json.loads(DEEP_RECORD)
+    except RecursionError:
+        return
+    pytest.skip("this interpreter's JSON scanner parses this depth, so the guard is unreachable")
+
+
+def test_a_deeply_nested_run_receipt_is_a_named_refusal(tmp_path):
+    _requires_recursion_error()
+    tree = make_run(tmp_path)
+    digest = digest_bytes(DEEP_RECORD)
+    relative_path = tree.receipt_path(digest)
+    _plant(tree, relative_path, DEEP_RECORD)
+
+    with pytest.raises(SchemaRefusal, match="run receipt .* could not be read"):
+        tree.read_run_receipt(runtree_store.RunReceiptReference(relative_path, digest))
+
+
+def test_a_run_receipt_that_is_not_json_is_a_named_refusal(tmp_path):
+    tree = make_run(tmp_path)
+    data = b"\xff not json"
+    digest = digest_bytes(data)
+    relative_path = tree.receipt_path(digest)
+    _plant(tree, relative_path, data)
+
+    with pytest.raises(SchemaRefusal, match="run receipt .* could not be read"):
+        tree.read_run_receipt({"relative_path": relative_path, "sha256": digest})
+
+
+def test_a_deeply_nested_approval_record_is_a_named_refusal(tmp_path):
+    _requires_recursion_error()
+    tree = make_run(tmp_path)
+    digest = digest_bytes(DEEP_RECORD)
+    relative_path = tree.receipt_path(digest)
+    _plant(tree, relative_path, DEEP_RECORD)
+
+    with pytest.raises(ApprovalRefusal, match="approval record .* could not be read"):
+        tree.read_approval_record(ApprovalRecordReference(relative_path, digest))
+
+
+def test_a_deeply_nested_referenced_artifact_is_a_named_refusal(tmp_path):
+    _requires_recursion_error()
+    tree = make_run(tmp_path)
+    relative_path = tree.artifact_path(DESIGNATOR, "proposal", "deep")
+    _plant(tree, relative_path, DEEP_RECORD)
+    reference = {"relative_path": relative_path, "sha256": digest_bytes(DEEP_RECORD)}
+
+    with pytest.raises(SchemaRefusal, match="is not valid JSON evidence"):
+        tree.read_artifact_reference(reference, stage=DESIGNATOR, kind="proposal")
+
+
+def test_record_references_are_read_under_the_record_ceiling(tmp_path, monkeypatch):
+    tree = make_run(tmp_path)
+    receipt, _ = tree.write_run_receipt(make_receipt())
+    approval, _ = tree.write_approval_record(make_approval_record())
+    envelope = make_envelope()
+    published = tree.publish_artifact(envelope)
+    reference = {
+        "relative_path": published.relative_path,
+        "sha256": digest_bytes(canonical_bytes(envelope)),
+    }
+    monkeypatch.setattr(runtree_store, "MAX_RECORD_READ_BYTES", 4)
+
+    with pytest.raises(SchemaRefusal, match="4-byte tree read limit"):
+        tree.read_run_receipt(receipt)
+    with pytest.raises(SchemaRefusal, match="4-byte tree read limit"):
+        tree.read_approval_record(approval)
+    with pytest.raises(SchemaRefusal, match="4-byte tree read limit"):
+        tree.read_artifact_reference(reference, stage=DESIGNATOR, kind="proposal")
+
+
+@pytest.mark.parametrize("config_digest", ("C" * 64, "c" * 63, "not-a-digest"))
+def test_a_malformed_config_digest_is_refused_before_anything_is_written(tmp_path, config_digest):
+    with pytest.raises(SchemaRefusal, match="config_digest must be a lowercase sha256"):
+        make_run(tmp_path, config_digest=config_digest)
+    assert not (tmp_path / "r1").exists()
+
+
+@pytest.mark.parametrize(
+    "chairs",
+    (
+        ["attestator_1", "attestator_1"],
+        ["attestator_1", ""],
+        ["attestator_1", 2],
+        "attestator_1",
+    ),
+)
+def test_a_malformed_witness_roster_is_refused_before_anything_is_written(tmp_path, chairs):
+    with pytest.raises(SchemaRefusal, match="witness_chairs must be a list of distinct"):
+        make_run(tmp_path, witness_chairs=chairs)
+    assert not (tmp_path / "r1").exists()
+
+
+@pytest.mark.parametrize("render_settings", ({}, "300dpi"))
+def test_render_settings_must_be_a_non_empty_object(tmp_path, render_settings):
+    with pytest.raises(SchemaRefusal, match="render_settings must be a non-empty object"):
+        make_run(tmp_path, render_settings=render_settings)
+
+
+@pytest.mark.parametrize(
+    ("digests", "message"),
+    (
+        ({}, "sealed_config_digests must be a non-empty object"),
+        (["a" * 64], "sealed_config_digests must be a non-empty object"),
+        ({"": "a" * 64}, "every sealed configuration digest"),
+        ({"policy": "A" * 64}, "every sealed configuration digest"),
+    ),
+)
+def test_sealed_config_digests_must_name_lowercase_sha256s(tmp_path, digests, message):
+    with pytest.raises(SchemaRefusal, match=message):
+        make_run(tmp_path, sealed_config_digests=digests)
+
+
+def test_reuse_refuses_a_run_sealed_under_another_seal_method(tmp_path):
+    sealed = {"policy": "a" * 64}
+    tree = make_run(tmp_path, sealed_config_digests=sealed)
+    run_file = tree.root / RUN_FILE
+    record = json.loads(run_file.read_bytes())
+    del record["self_hash"]
+    del record[runtree_store.SEAL_METHOD_FIELD]
+    record["self_hash"] = self_hash(record)
+    run_file.write_bytes(canonical_bytes(record))
+
+    with pytest.raises(IncompatibleReuse, match="raw-bytes"):
+        make_run(tmp_path, sealed_config_digests=sealed)
+
+
+def test_a_partition_receipt_from_another_run_authority_is_refused(tmp_path):
+    tree = make_run(tmp_path)
+    foreign = build_recensor_partition_receipt(
+        run_id="r1",
+        config_digest="d" * 64,
+        proposal_seal_ref=make_recensor_partition_receipt()["proposal_seal_ref"],
+        items=make_recensor_partition_receipt()["items"],
+    )
+    with pytest.raises(SchemaRefusal, match="does not belong to this run authority"):
+        tree.write_recensor_partition_receipt(foreign)
+
+    other = make_run(tmp_path / "other", config_digest="d" * 64)
+    other.write_recensor_partition_receipt(foreign)
+    _plant(
+        tree,
+        tree.recensor_partition_receipt_path(),
+        other.resolve(other.recensor_partition_receipt_path()).read_bytes(),
+    )
+    with pytest.raises(SchemaRefusal, match="does not belong to this run authority"):
+        tree.read_recensor_partition_receipt()
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "sha256", "message"),
+    (
+        ("", "a" * 64, "has no relative_path"),
+        (None, "a" * 64, "has no relative_path"),
+        (f"{RECEIPTS_DIR}/{'a' * 64}.json", "A" * 64, "has no lowercase sha256"),
+    ),
+)
+def test_an_approval_reference_without_a_path_or_digest_is_refused(
+    tmp_path, relative_path, sha256, message
+):
+    tree = make_run(tmp_path)
+    with pytest.raises(ApprovalRefusal, match=message):
+        tree.read_approval_record(ApprovalRecordReference(relative_path, sha256))

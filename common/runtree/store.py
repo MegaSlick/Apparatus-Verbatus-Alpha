@@ -7,10 +7,14 @@ responsible for:
   Artifacts are immutable.   Once published, bytes never change. A second publish
                              of identical bytes is a no-op that reports `reused`; a
                              second publish of *different* bytes under the same
-                             identity is refused before anything is written.
-  Publication is atomic.     Temp file in the same directory, then os.replace. A
-                             crash leaves either the old file or the new one, never
-                             a half-written artifact that a resume would trust.
+                             identity is refused: the existing file is not
+                             touched and nothing is left behind.
+  Publication is atomic.     An artifact, blob or receipt is written to a synced
+                             temporary file in the same directory and hard-linked
+                             to its unused name; manifests, indexes and the
+                             partition receipt are replaced with os.replace. A
+                             crash never leaves a half-written file that a resume
+                             would trust.
   Manifests are rebuildable. manifest.json is an inventory derived from the
                              artifacts on disk, never the only evidence that
                              something happened. Delete it and it comes back
@@ -22,18 +26,17 @@ deliberately does not predeclare acts — the Designator's proposal seal is the
 downstream expected-act authority, because acts are discovered and pages are given.
 
 Reusing a run id whose source, configuration, or adapter recipes have changed fails
-before any write. That is spec 01's third test, and it is the difference between a
-resumed run and a corrupted one.
+before any write: that is the difference between a resumed run and a corrupted one.
 
 `receipts/sha256/` is the one thing here that is not a stage artifact. Serving receipts
-and approval records both carry a real moment, so `envelope.py`'s docstring already
-rules them out of a stage artifact; publishing either one there would break "repeating
-the identical command leaves every byte unchanged". They are written content-addressed
-under the run root, outside every stage's directory and out of every stage manifest,
-and a stage payload carries only its digest-checked reference plus the immutable facts
-it needs.
+and approval records both carry a real moment, so publishing either one as a stage
+artifact would make a repeat of the identical command change bytes. They are written
+content-addressed under the run root, outside every stage's directory and out of every
+stage manifest, and a stage payload carries only its digest-checked reference plus the
+immutable facts it needs.
 """
 
+import errno
 import json
 import os
 import stat
@@ -137,7 +140,7 @@ class PublishResult:
     """What happened when an artifact was published, so callers can say so.
 
     `reused` is the interesting one: it is how a resumed run proves it did not
-    rewrite work it had already done, which is spec 01's fourth test.
+    rewrite work it had already done.
     """
 
     __slots__ = ("relative_path", "reused")
@@ -218,6 +221,17 @@ class RunTree:
         leaves the tree exactly as it found it.
         """
         tree = cls(root, run_id)
+        # Every read route binds artifacts to this digest, so a malformed one would
+        # leave the run unreadable.
+        if not is_sha256(config_digest):
+            raise SchemaRefusal("a run's config_digest must be a lowercase sha256")
+        # A chair is named once, so a roster cannot count one reader twice.
+        if (
+            not isinstance(witness_chairs, (list, tuple))
+            or any(not isinstance(chair, str) or not chair for chair in witness_chairs)
+            or len(set(witness_chairs)) != len(witness_chairs)
+        ):
+            raise SchemaRefusal("witness_chairs must be a list of distinct, non-empty chair names")
         # Not stored until the authority accepts it: storing first would write a
         # foreign register into an existing run on the way to refusing it.
         snapshot = empty_register() if register_bytes is None else register_bytes
@@ -519,8 +533,8 @@ class RunTree:
 
         Three checks, because each catches a different lie: the path must be the
         one its own digest names, the bytes there must hash to that digest, and
-        the record must still be a whole receipt (#42 — tampered or wrong-schema
-        provenance is refused, never repaired).
+        the record must still be a whole receipt, since tampered or wrong-schema
+        provenance is refused, never repaired.
         """
         parsed = _receipt_reference(reference)
         data = self._read_receipt_bytes(
@@ -532,7 +546,7 @@ class RunTree:
         )
         try:
             return validate_receipt(json.loads(data.decode("utf-8")))
-        except (UnicodeDecodeError, ValueError) as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise SchemaRefusal(
                 f"run receipt {parsed.relative_path} could not be read: {error}"
             ) from error
@@ -556,7 +570,7 @@ class RunTree:
         )
         try:
             decoded = json.loads(data.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise ApprovalRefusal(
                 f"approval record {parsed.relative_path} could not be read: {error}"
             ) from error
@@ -583,7 +597,7 @@ class RunTree:
                 f"path {expected_path!r}"
             )
         ref = {"relative_path": relative_path, "sha256": sha256}
-        return read_verified(self.read_bytes, ref, label, refusal)
+        return read_verified(self._read_record_bytes, ref, label, refusal)
 
     def _publish_bytes(self, relative: str, data: bytes) -> PublishResult:
         self._require_inventory_path(relative)
@@ -674,10 +688,10 @@ class RunTree:
         """
         validate_input_refs([reference])
         relative_path = reference["relative_path"]
-        data = read_verified(self.read_bytes, reference, "referenced artifact")
+        data = read_verified(self._read_record_bytes, reference, "referenced artifact")
         try:
             record = validate_envelope(json.loads(data.decode("utf-8")))
-        except (UnicodeDecodeError, ValueError) as error:
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
             raise SchemaRefusal(
                 f"referenced artifact {relative_path!r} is not valid JSON evidence: {error}"
             ) from error
@@ -703,9 +717,13 @@ class RunTree:
         passes `max_bytes=MAX_RECORD_READ_BYTES`, so the bytes it is about to
         hand to `json.loads` -- which costs several times their size again in
         parsed objects -- are bounded by what a record can legitimately be and
-        not by what an image can (G13).
+        not by what an image can.
         """
         return _read_bytes_bounded(self.resolve(relative_path), max_bytes=max_bytes)
+
+    def _read_record_bytes(self, relative_path: str) -> bytes:
+        """`read_bytes` under the record ceiling, for bytes about to be decoded as JSON."""
+        return self.read_bytes(relative_path, max_bytes=MAX_RECORD_READ_BYTES)
 
     def has_artifact(self, stage: str, kind: str, artifact_id: str) -> bool:
         return self.resolve(self.artifact_path(stage, kind, artifact_id)).exists()
@@ -933,22 +951,7 @@ class RunTree:
 
     def _bind_root_identity(self) -> None:
         """Bind this object to the run directory it opened, by device and inode."""
-        try:
-            descriptor = os.open(self.root, _DIRECTORY_OPEN_FLAGS)
-        except OSError as error:
-            raise SchemaRefusal(
-                f"run root {self.root} could not be opened without links: {error}"
-            ) from error
-        try:
-            identity = _inode_identity(os.fstat(descriptor))
-        finally:
-            os.close(descriptor)
-        if self._root_identity is not None and identity != self._root_identity:
-            raise SchemaRefusal(
-                f"run root {self.root} is no longer the directory this RunTree opened; "
-                "its device or inode changed"
-            )
-        self._root_identity = identity
+        os.close(self._open_root_fd())
 
     def _open_root_fd(self) -> int:
         """Open the bound run root without following a replacement link."""
@@ -1129,10 +1132,7 @@ class RunTree:
         self, relative_path: str, ancestors: frozenset[tuple[int, int]]
     ) -> None:
         """Refuse a link, retaining the most specific safe diagnostic available."""
-        try:
-            resolved = self.resolve(relative_path)
-        except SchemaRefusal:
-            raise
+        resolved = self.resolve(relative_path)
         try:
             target = resolved.stat()
         except OSError:
@@ -1379,12 +1379,8 @@ def _existing_partition_receipt(target: Path) -> dict[str, Any] | None:
 
 
 def _verify_compatible_reuse(tree: RunTree, run_id: str, authority: dict[str, Any]) -> None:
+    # `read_run` has already refused an authority under another schema.
     existing = tree.read_run()
-    if existing["schema"] != authority["schema"]:
-        raise IncompatibleReuse(
-            f"run {run_id!r} was written under schema {existing['schema']!r} and this is "
-            f"{authority['schema']!r}; the two describe different shapes and cannot share a tree"
-        ) from None
     if _SEALED_CONFIG_DIGESTS_FIELD in existing:
         require_seal_method(existing, f"run {run_id!r}")
     optional_bound_fields = tuple(
@@ -1465,14 +1461,19 @@ def _read_bytes_bounded(path: Path, *, max_bytes: int | None = None) -> bytes:
 
     Checked before and after the read, because a file can grow in between.
     `max_bytes` defaults to the blob ceiling, read at call time so a test can
-    monkeypatch it.  A missing or unreadable file still raises the `OSError`
-    subclass `Path.read_bytes()` would, which callers convert to their own
-    refusals; only the ceiling raises `SchemaRefusal`.
+    monkeypatch it.  Opened without following a link or blocking, and anything
+    but a regular file is an `OSError`: a FIFO would otherwise hang the read.
+    A missing or unreadable file raises `OSError` too, which callers convert to
+    their own refusals; only the ceiling raises `SchemaRefusal`.
     """
     if max_bytes is None:
         max_bytes = _MAX_TREE_READ_BYTES
-    with open(path, "rb") as handle:
-        size = os.fstat(handle.fileno()).st_size
+    descriptor = os.open(path, _FILE_OPEN_FLAGS)
+    with os.fdopen(descriptor, "rb") as handle:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise OSError(errno.EINVAL, f"{path.name} is not a regular file")
+        size = status.st_size
         if size > max_bytes:
             raise SchemaRefusal(
                 f"{path.name} is {size} bytes, above the {max_bytes}-byte tree read limit"
