@@ -1427,9 +1427,10 @@ plus two fields. `presentations` lists every image the chair was shown, in
 unit order, each an `adapter-crop` of the one sealed page, and `presented` is
 its first. `unit_captures` holds one retained model view per presentation
 (`null` for a unit that never reached the chair), each naming a response the
-record retains in `raw_response_refs`. `observed` has one `native` box per
-unit, the record's own bounds, each contained by the image it was read from,
-with a `span` into the page text when that unit delivered a reading. Every
+record retains in `raw_response_refs`. `observed` has one `presented` box per
+unit: DAI reports no geometry, so each box is exactly the detector crop that
+unit was shown, checked against that unit's own presentation, with a `span`
+into the page text when that unit delivered a reading. Every
 presented image and retained response is digest-bound in `inputs`. Both later
 readers take every presentation from `presentations`
 (`common/native_witness.py::record_presentations`).
@@ -1456,7 +1457,11 @@ and one `line_geometry` box per owned record; `unaligned` with reason
 `no-detector-record-owned` when the act owns no record; and
 `non-reading-page-testimonium-<outcome>` when the page did not read. A
 continuation page stays `continuation-page-no-act-anchor`, as for every page
-witness. The act's own `testimonium` view keeps the act's Designator crop as
+witness. That alignment is recorded and attaches nothing: a `presented` box is
+not reported geometry, so it never counts as `geometric-overlap`, and a
+`detector-record` alignment is not a located anchor line. Every DAI entry is
+therefore `attached: false`, `attachment_basis: "unattached"`, `span: null`,
+and DAI reaches no act comparison until witnesses are read page-only. The act's own `testimonium` view keeps the act's Designator crop as
 its presentation, since the chair was never shown that crop.
 
 ## Act-attachment schema (R4)

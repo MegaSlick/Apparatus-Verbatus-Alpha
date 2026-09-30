@@ -102,6 +102,13 @@ def test_an_acts_slice_spans_exactly_the_records_it_owns():
     assert (outcome, reason, completed) == ("read", None, True)
     assert [item["ordinal"] for item in observed] == [0, 1, 2, 3, 4]
     assert [item["bounds"] for item in observed] == [bounds for _name, bounds in RECORDS]
+    # Echoes of the crops DAI was shown, never geometry it reported.
+    assert {item["bounds_source"] for item in observed} == {"presented"}
+    assert not any(
+        attestatores.reported_geometry_overlaps(observed, bounds)
+        for regions, _owner in REGIONS_BY_ACT.values()
+        for bounds in (region["payload"]["transform"]["bounds"] for region in regions)
+    )
     alignments = _alignments(outcome, observed)
     assert {
         act_id: (alignment["status"], alignment.get("witness_span"))

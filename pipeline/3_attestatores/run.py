@@ -4567,8 +4567,9 @@ def _detector_page_reading(
         {
             "ordinal": index,
             "bounds": dict(region["payload"]["transform"]["bounds"]),
-            # The box is the DAI project's own detector's, which is how DAI sees a page.
-            "bounds_source": "native",
+            # DAI reports no geometry: the box is the detector crop it was shown,
+            # a presentation echo that never attaches DAI to an act by overlap.
+            "bounds_source": "presented",
             "span": spans[index],
         }
         for index, (region, _presented, _attempt) in enumerate(served)

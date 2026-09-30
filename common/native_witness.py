@@ -380,18 +380,25 @@ def validate_observed(
     page_size: tuple[int, int] | None = None,
     retained_text: Any = None,
     presentation_is_witness_view: bool = True,
+    unit_presentations: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Validate dense witness order, source-page boxes, and non-overlapping text spans.
 
     A span addresses this Testimonium's exact retained string in code points,
     never the normalized alignment view. It may be null, but it may not name an
     offset the record cannot answer, so every span stays checkable against
-    the record.
+    the record. A record shown one image per unit passes `unit_presentations`,
+    and each box is checked against its own unit's image, not the first.
     """
     if not isinstance(value, list):
         raise SchemaRefusal("a Testimonium observed block is not a list")
+    if unit_presentations is not None and len(unit_presentations) != len(value):
+        raise SchemaRefusal(
+            "a page Testimonium shown several images does not report one box per image"
+        )
     spans: list[tuple[int, int]] = []
     for index, item in enumerate(value):
+        shown = presented if unit_presentations is None else unit_presentations[index]
         if not isinstance(item, dict) or set(item) != _OBSERVED_ENTRY_FIELDS:
             raise SchemaRefusal("a Testimonium observed entry is not its closed schema")
         if not is_plain_int(item["ordinal"]) or item["ordinal"] != index:
@@ -401,17 +408,14 @@ def validate_observed(
             or item["bounds_source"] not in BOUNDS_SOURCES
         ):
             raise SchemaRefusal("a Testimonium observed box has an unknown bounds_source")
-        if (
-            item["bounds_source"] == "presented"
-            and item["bounds"] != presented["transform"]["bounds"]
-        ):
+        if item["bounds_source"] == "presented" and item["bounds"] != shown["transform"]["bounds"]:
             raise SchemaRefusal(
                 "a presented-source observed box differs from the presented transform"
             )
         bounds = _bounds(item["bounds"], "a Testimonium observed box", page_size=page_size)
         # A page witness's act view restates page-level geometry, so its boxes
         # may exceed this record's crop; they stay bounded by the sealed page.
-        presented_bounds = presented["transform"]["bounds"]
+        presented_bounds = shown["transform"]["bounds"]
         if presentation_is_witness_view and not _contains(presented_bounds, bounds):
             raise SchemaRefusal(
                 "a Testimonium observed box falls outside the exact image presentation. "
@@ -466,7 +470,7 @@ def record_presentations(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _validate_presentations(
     payload: dict[str, Any], *, page_size: tuple[int, int] | None
 ) -> list[dict[str, Any]]:
-    """A several-image page record: first equals `presented`, one page, one box per image."""
+    """A several-image page record: first equals `presented`, all crops of one page."""
     presentations = payload["presentations"]
     if payload.get("scope") != "page" or not isinstance(presentations, list) or not presentations:
         raise SchemaRefusal(
@@ -482,21 +486,6 @@ def _validate_presentations(
         ):
             raise SchemaRefusal(
                 "a page Testimonium's presentations are not adapter crops of its one page"
-            )
-    observed = payload.get("observed")
-    if not isinstance(observed, list) or len(observed) != len(presentations):
-        raise SchemaRefusal(
-            "a page Testimonium shown several images does not report one box per image"
-        )
-    for item, presentation in zip(observed, presentations, strict=True):
-        bounds = item.get("bounds") if isinstance(item, dict) else None
-        if not isinstance(bounds, dict) or not _contains(
-            presentation["transform"]["bounds"],
-            _bounds(bounds, "a Testimonium observed box", page_size=page_size),
-        ):
-            raise SchemaRefusal(
-                "a page Testimonium observed box falls outside the image it was read from. The "
-                "record would attribute unseen page pixels to this witness"
             )
     return presentations
 
@@ -519,9 +508,11 @@ def validate_native_witness_geometry(
             raise SchemaRefusal("an unpresented Testimonium must carry an empty observed block")
         return payload
     presented = validate_presented(presented, page_size=page_size)
-    several = "presentations" in payload
-    if several:
+    unit_presentations = (
         _validate_presentations(payload, page_size=page_size)
+        if "presentations" in payload
+        else None
+    )
     validate_observed(
         observed,
         presented=presented,
@@ -530,10 +521,11 @@ def validate_native_witness_geometry(
         # The one record that does not present the witness's own view is a page
         # witness's act view (`page_witness: True`, scope != "page"); consumers
         # reconcile the flag against the sealed declaration, so an act chair
-        # cannot forge it. A record shown several images checks each box against
-        # its own image above instead.
-        presentation_is_witness_view=not several
-        and (payload.get("scope") == "page" or payload.get("page_witness") is not True),
+        # cannot forge it.
+        presentation_is_witness_view=(
+            payload.get("scope") == "page" or payload.get("page_witness") is not True
+        ),
+        unit_presentations=unit_presentations,
     )
     return payload
 

@@ -261,7 +261,8 @@ def test_dai_is_asked_once_per_detector_record_and_shown_that_records_crop(witne
         assert [item["bounds"] for item in payload["observed"]] == [
             crop["transform"]["bounds"] for crop in crops
         ]
-        assert {item["bounds_source"] for item in payload["observed"]} == {"native"}
+        # DAI reports no geometry: each box echoes the crop that unit was shown.
+        assert {item["bounds_source"] for item in payload["observed"]} == {"presented"}
 
     # Page 1's text joins in act order although the detector found a2's record first.
     page_one = next(
@@ -278,18 +279,22 @@ def test_dai_is_asked_once_per_detector_record_and_shown_that_records_crop(witne
     ]
 
 
-def test_each_act_is_placed_in_dais_page_text_by_the_records_it_owns(witnessed):
-    """Each act's DAI entry on its own page spans exactly the records it owns.
+def test_each_acts_owned_records_are_recorded_but_attach_nothing(witnessed):
+    """Each act's DAI alignment on its own page spans exactly the records it owns.
 
-    A continuation page carries no act anchor for any page witness, DAI included,
-    so a2's page-2 entry attaches by geometry and stays unaligned.
+    The alignment is recorded, and it attaches nothing: DAI's boxes are the
+    crops it was shown, not geometry it reported, and an ownership alignment is
+    not a located anchor line. A continuation page carries no act anchor for
+    any page witness, DAI included.
     """
     tree, _world = witnessed
     placed = {
         record["payload"]["act_key"]: {
             entry["page_ordinal"]: (
                 entry["attached"],
+                entry["attachment_basis"],
                 entry["span"],
+                entry["alignment"].get("witness_span"),
                 entry["alignment"].get("anchor_basis") or entry["alignment"].get("reason"),
                 [line["bbox"] for line in entry["alignment"].get("line_geometry", [])],
             )
@@ -302,7 +307,9 @@ def test_each_act_is_placed_in_dais_page_text_by_the_records_it_owns(witnessed):
     assert placed == {
         "a1": {
             1: (
-                True,
+                False,
+                "unattached",
+                None,
                 {"start": 0, "end": len(DAI_ACT_ONE)},
                 "detector-record",
                 [{"x": 25, "y": 25, "w": 151, "h": 71}],
@@ -310,11 +317,13 @@ def test_each_act_is_placed_in_dais_page_text_by_the_records_it_owns(witnessed):
         },
         "a2": {
             1: (
-                True,
+                False,
+                "unattached",
+                None,
                 {"start": two_start, "end": two_start + len(DAI_ACT_TWO)},
                 "detector-record",
                 [{"x": 25, "y": 130, "w": 151, "h": 81}],
             ),
-            2: (True, None, "continuation-page-no-act-anchor", []),
+            2: (False, "unattached", None, None, "continuation-page-no-act-anchor", []),
         },
     }
