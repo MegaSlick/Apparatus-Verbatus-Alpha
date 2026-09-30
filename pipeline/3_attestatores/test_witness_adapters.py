@@ -293,7 +293,9 @@ def test_the_registry_binds_the_native_intake_contract_seams():
     # whether this adapter's `observe` accepts the sealed page's own size, and
     # `resolve_framing` how it resolves a declared framing name (`None` where it
     # has one framing and a run has nothing to choose) -- all three read off the
-    # registry entry rather than off the adapter's name.
+    # registry entry rather than off the adapter's name. `page_units` says how a
+    # page-scoped occupant is shown its page: DAI one image per record its own
+    # project's detector found, the others one whole-page image.
     assert fields == {
         "prompt",
         "parse",
@@ -305,6 +307,12 @@ def test_the_registry_binds_the_native_intake_contract_seams():
         "resolve_framing",
         "format_capabilities",
         "fixture_parse",
+        "page_units",
+    }
+    assert {name: entry.page_units for name, entry in adapters.RUNNABLE_ADAPTERS.items()} == {
+        "chandra.v1": None,
+        "churro.v1": None,
+        "dai.v1": "detector-records",
     }
     # The reader each adapter's fixture posture uses where its declared rows are
     # not in the grammar a served chair answers in. Chandra alone has one until

@@ -354,17 +354,21 @@ def test_every_testimonium_writer_has_a_dominating_declaration_call():
         module_path.read_text(encoding="utf-8")
     )
 
-    assert set(writers) == {"publish_attempt", "publish_page_testimonia_and_attachments"}, (
+    assert set(writers) == {
+        "publish_attempt",
+        "publish_page_testimonia_and_attachments",
+        "publish_detector_page_testimonium",
+    }, (
         f"{module_path} publishes a Testimonium from {sorted(writers)}; a new write path "
         "must validate sealed page-witness scope before it seals, and this scan is what "
         "notices it was added"
     )
     assert dynamic == {}, (
         f"{module_path} has publish calls with a non-literal or missing kind at {dynamic}; "
-        "the two-function Testimonium-write proof cannot classify them"
+        "the Testimonium-write proof cannot classify them"
     )
     assert aliases == {}, (
-        f"{module_path} aliases a publish method at {aliases}; the two-function "
+        f"{module_path} aliases a publish method at {aliases}; the "
         "Testimonium-write proof cannot follow indirect calls"
     )
     assert bypasses == {}, (

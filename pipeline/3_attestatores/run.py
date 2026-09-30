@@ -3445,8 +3445,15 @@ def publish_page_testimonia_and_attachments(
     # Built once; each lookup would otherwise walk the Exemplar inventory.
     page_ids = exemplar_page_ids(context)
 
-    detector_alignments: dict[tuple[int, str], dict[str, Any]] = {}
-    sealed_page_records = _sealed_page_testimonia(context, ordinal)
+    detector_alignments: dict[tuple[int, str, str], dict[str, Any]] = {}
+    # Walked only when a chair reads detector records; no other chair needs it.
+    sealed_page_records = (
+        _sealed_page_testimonia(context, ordinal)
+        if any(
+            reads_detector_records(context.registry.resolve(chair)) for chair in page_chairs
+        )
+        else {}
+    )
     for page_ordinal, page_acts in sorted(by_page.items()):
         page_subject_id = page_subject(context, page_ordinal, page_ids=page_ids)
         page_proposal_regions = sealed_page_proposal_regions(context, page_ordinal)
@@ -4611,6 +4618,14 @@ def publish_detector_page_testimonium(
     page_ids: dict[int, str] | None = None,
 ) -> Attempt:
     """Seal one DAI page record over every unit it read; return the page attempt."""
+    # First, so a bad roster or a chair the run did not seal page-scoped refuses
+    # before any record is built.
+    page_witness_chairs = declared_page_witness_chairs(context)
+    if chair not in page_witness_chairs:
+        raise FatalAccounting(
+            f"chair {chair!r} is not a page witness in the sealed roster; a page record "
+            "for it would claim a scope the run never declared"
+        )
     page_subject_id = page_subject(context, page_ordinal, page_ids=page_ids)
     page_attempt_id = attempt_id(page_subject_id, f"read:{chair}", ordinal)
     page_artifact_id = artifact_id(
