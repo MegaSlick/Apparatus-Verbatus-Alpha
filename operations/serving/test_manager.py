@@ -2013,7 +2013,7 @@ def test_failed_cleanup_surfaces_stop_error_and_keeps_the_residency_lease(tmp_pa
     # Recovery uses the same process handle after the operator's concrete
     # condition changes; it does not PID-search or release the lease blindly.
     process.ignore_kill = False
-    manager.recover_failed_start()
+    manager.recover()
     publisher.fail = False
     launcher.ignore_terminate = False
     launcher.ignore_kill = False

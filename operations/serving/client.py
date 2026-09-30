@@ -495,7 +495,8 @@ class ChairClient:
             # missing, corrupt or invalid receipt whose reader raises instead
             # of returning a value. Stop it before propagating that original
             # refusal; if shutdown is itself unverifiable, retain it as the
-            # cause rather than replacing the receipt diagnosis.
+            # cause rather than replacing the receipt diagnosis; the manager
+            # keeps the service, and `ServingManager.recover` retries its stop.
             try:
                 handle.stop()
             except BaseException as stop_error:
@@ -507,9 +508,10 @@ class ChairClient:
     def __exit__(self, *exc: object) -> None:
         if self._handle is None:
             return
-        handle, self._handle = self._handle, None
         self._prepared_chandra_dispatches.clear()
-        handle.stop()
+        # Cleared only once the stop is verified, so a failed stop can be retried.
+        self._handle.stop()
+        self._handle = None
 
     def read(self, request: ChairRequest) -> ChairResponse:
         """Issue exactly one reading request. Never retries, never re-samples.

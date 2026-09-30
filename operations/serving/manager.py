@@ -764,14 +764,17 @@ class ServingManager:
         else:
             self._active = None
 
-    def recover_failed_start(self) -> None:
-        """Retry cleanup after a failed start kept the pod lease; never a launch path.
+    def recover(self) -> None:
+        """Retry the cleanup a failed start or a failed stop left; never a launch path.
 
-        Once the child and endpoint are proved gone, the lease is released.
+        The manager keeps the process it launched, so recovery does not depend
+        on a caller still holding the service handle. Once the child and
+        endpoint are proved gone, the lease is released.
         """
 
         if self._active is not None:
-            raise ServiceStopError("active service must be stopped through its ServiceHandle")
+            self.stop(self._active)
+            return
         if self._residency_handle is None:
             return
         error = self._attempt_cleanup(self._unready_process, self._unready_endpoint)
@@ -1150,7 +1153,7 @@ class ServingManager:
 
         Stop, verify the endpoint is absent, then release the lease; releasing
         first would let another start run beside a live process. On failure the
-        process and endpoint are kept for :meth:`recover_failed_start`. The error
+        process and endpoint are kept for :meth:`recover`. The error
         is returned, not raised, so it joins the start failure in one refusal.
         """
 

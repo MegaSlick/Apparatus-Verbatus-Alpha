@@ -1440,6 +1440,28 @@ def test_receipt_drift_refusal_survives_an_unverifiable_shutdown(tmp_path: Path)
     assert excinfo.value.code == "CHAIR_RECEIPT_DRIFT"
     assert isinstance(excinfo.value.__cause__, ServiceStopError)
 
+    # The unstopped service is still reachable through its manager: once the
+    # endpoint goes away, recovery stops it and frees the card for the next start.
+    endpoint.sticky_after_stop = False
+    manager.recover()
+    FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(chair).release()
+
+
+def test_a_failed_stop_on_exit_can_be_retried_through_the_client(tmp_path: Path) -> None:
+    client, endpoint, _, chair = _built(tmp_path)
+    client._manager.shutdown_timeout_seconds = 0.01
+    client.__enter__()
+    endpoint.sticky_after_stop = True
+    with pytest.raises(ServiceStopError):
+        client.__exit__(None, None, None)
+
+    endpoint.sticky_after_stop = False
+    client.__exit__(None, None, None)
+    with pytest.raises(ServingConfigurationError, match="no active service"):
+        client.handle
+    # The retried stop was verified, so the card's lease is free again.
+    FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(chair).release()
+
 
 # --- never a retry ------------------------------------------------------------
 
