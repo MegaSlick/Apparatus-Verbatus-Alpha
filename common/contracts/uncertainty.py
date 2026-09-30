@@ -166,7 +166,7 @@ def _validate(layer: Any, text: Any, fields: frozenset[str]) -> dict[str, Any]:
             )
         if position == "leading" and gap["start"] != 0:
             raise SchemaRefusal(f"gaps[{index}] is declared leading but does not start at 0")
-        if position == "trailing" and not is_trailing_offset(text, gap["end"]):
+        if position == "trailing" and text.strip() and not is_trailing_offset(text, gap["end"]):
             raise SchemaRefusal(
                 f"gaps[{index}] is declared trailing but text follows it other than whitespace "
                 "or closing punctuation"
@@ -197,7 +197,7 @@ def _validate(layer: Any, text: Any, fields: frozenset[str]) -> dict[str, Any]:
             "a whole-act gap must be the only gap in canonical uncertainty; a reading "
             "cannot be simultaneously wholly illegible and partly read"
         )
-    # Over an empty text every position check passes vacuously, so only
+    # Over an empty text the position checks above say nothing, so only
     # `whole-act` may appear. Asked after exclusivity, the stronger statement.
     if text.strip() == "":
         for index, gap in enumerate(gaps):

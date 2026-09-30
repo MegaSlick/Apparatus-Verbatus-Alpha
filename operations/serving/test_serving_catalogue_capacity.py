@@ -378,7 +378,8 @@ _PROSE = (
 # characters), a full neighbour cap, and a fed prior draft longer than the reading
 # cap, so it is charged the cap.
 DENSE = (_PROSE * 60)[:5944]
-NEIGHBOUR = [(_PROSE * 10)[:800]] * 3
+# Each neighbour sits on the act's own page.
+NEIGHBOUR = ([(_PROSE * 10)[:800]] * 3, True)
 PRIOR = (_PROSE * 60)[:6000]
 
 # (pages as (size, crops), prior) -> (need under the sealed rule, fits; need with
