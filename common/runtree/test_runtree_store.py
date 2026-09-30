@@ -1,11 +1,10 @@
 """The run tree's three promises, each asserted in both directions.
 
-Harvest invariant #14, verbatim: "A seal that stops refusing bad things in order to
-stop refusing good things is not a fix" — both directions are asserted. So every
-refusal here has an acceptance beside it: identical bytes are reused *and*
-different bytes are refused; an unchanged run resumes *and* a changed one does not.
+A seal that stops refusing bad things in order to stop refusing good things is not
+a fix, so every refusal here has an acceptance beside it: identical bytes are reused
+*and* different bytes are refused; an unchanged run resumes *and* a changed one does
+not.
 
-Meta-invariant #86 — load-bearing tests drive real producers over real artifacts.
 These write real files to a real temporary directory through the real store; there
 is no in-memory stand-in, because the properties under test are properties of the
 filesystem behaviour.
@@ -265,8 +264,8 @@ def test_reopening_an_unchanged_run_is_allowed(tmp_path):
 
 
 def test_reusing_a_run_id_with_changed_source_is_refused(tmp_path):
-    """Spec 01 test 3: reusing a run ID with changed source/config/adapter revision
-    fails before writing."""
+    """Reusing a run ID with changed source/config/adapter revision fails before
+    writing."""
     make_run(tmp_path)
     changed = [{"relative_path": "proof/page-1.png", "sha256": "b" * 64, "ordinal": 1}]
     with pytest.raises(IncompatibleReuse) as caught:
@@ -343,8 +342,8 @@ def test_a_source_page_ordinal_below_one_is_refused(tmp_path):
 
 
 def test_a_well_formed_manifest_of_several_pages_is_still_accepted(tmp_path):
-    """Invariant #14: the refusals above must not have bought their strictness by
-    refusing good input too."""
+    """The refusals above must not have bought their strictness by refusing good
+    input too."""
     fine = [
         {"relative_path": "proof/page-1.png", "sha256": "a" * 64, "ordinal": 1},
         {"relative_path": "proof/page-2.png", "sha256": "b" * 64, "ordinal": 2},
@@ -481,6 +480,31 @@ def test_reusing_a_run_id_with_a_changed_chair_roster_is_refused(tmp_path):
     make_run(tmp_path)
     with pytest.raises(IncompatibleReuse):
         make_run(tmp_path, witness_chairs=["attestator_1", "attestator_2"])
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    (
+        ({"config_digest": "not-a-digest"}, "config_digest must be a lowercase sha256"),
+        ({"config_digest": "C" * 64}, "config_digest must be a lowercase sha256"),
+        ({"ingress": {"mode": "maybe"}}, "closed fixture-or-real record"),
+        ({"ingress": {"mode": "real", "extra": 1}}, "closed fixture-or-real record"),
+    ),
+)
+def test_a_run_authority_every_later_read_would_refuse_is_never_sealed(tmp_path, overrides, match):
+    """Refused at creation, before anything is written, not sealed and refused forever."""
+    with pytest.raises(SchemaRefusal, match=match):
+        make_run(tmp_path, **overrides)
+    assert not (tmp_path / "r1").exists()
+
+
+def test_resuming_under_a_different_commit_keeps_the_run_and_its_first_commit(tmp_path):
+    """A run id names inputs and configuration, not a build: a resume after a fix
+    is the same run, and the authority keeps the commit that created it."""
+    make_run(tmp_path, repository_commit=COMMIT)
+    resumed = make_run(tmp_path, repository_commit="f" * 40)
+
+    assert resumed.read_run()["repository_commit"] == COMMIT
 
 
 def test_reusing_a_run_id_with_changed_ingress_evidence_is_refused(tmp_path):
@@ -704,9 +728,8 @@ def test_publishing_an_artifact_writes_it_once(tmp_path):
 
 
 def test_republishing_identical_bytes_is_reuse_not_a_rewrite(tmp_path):
-    """Spec 01 test 2 and 4: repeating the identical command leaves all artifact
-    bytes unchanged, and an interrupted run resumes from valid artifacts without
-    rewriting them."""
+    """Repeating the identical command leaves all artifact bytes unchanged, and an
+    interrupted run resumes from valid artifacts without rewriting them."""
     tree = make_run(tmp_path)
     first = tree.publish_artifact(make_envelope())
     written = tree.resolve(first.relative_path)
@@ -740,6 +763,69 @@ def test_an_artifact_for_another_run_is_refused(tmp_path):
     tree = make_run(tmp_path)
     with pytest.raises(SchemaRefusal):
         tree.publish_artifact(make_envelope(run_id="r2"))
+
+
+def _proposal(**overrides):
+    fields = {
+        "run_id": "r1",
+        "artifact_id": artifact_id(DESIGNATOR, "proposal", "pg_0123456789abcdef"),
+        "subject_id": "pg_0123456789abcdef",
+        "stage": DESIGNATOR,
+        "kind": "proposal",
+        "outcome": "proposed",
+        "config_digest": CONFIG_DIGEST,
+        "adapter_revision": "fake-designator-v0",
+        "inputs": [],
+        "payload": {"proposals": 2},
+    }
+    fields.update(overrides)
+    return build_envelope(**fields)
+
+
+def test_publication_refuses_what_every_read_route_would_refuse(tmp_path):
+    """An immutable artifact readers refuse could never be replaced, and would stop
+    its stage's manifest for good, so the writer refuses it with nothing written."""
+    tree = make_run(tmp_path)
+    blob_digest, _ = tree.put_blob(DESIGNATOR, b"a crop")
+    present = {"relative_path": tree.blob_path(DESIGNATOR, blob_digest), "sha256": blob_digest}
+    dangling = {"relative_path": tree.blob_path(DESIGNATOR, "e" * 64), "sha256": "e" * 64}
+    before = tree_snapshot(tree.root)
+
+    with pytest.raises(SchemaRefusal, match="two runs may share a name"):
+        tree.publish_artifact(_proposal(config_digest="d" * 64))
+    with pytest.raises(SchemaRefusal, match="artifact input"):
+        tree.publish_artifact(_proposal(inputs=[dangling]))
+    assert _stray_writes(before, tree_snapshot(tree.root)) == []
+
+    published = tree.publish_artifact(_proposal(inputs=[present]))
+    reference = {
+        "relative_path": published.relative_path,
+        "sha256": digest_bytes(tree.read_bytes(published.relative_path)),
+    }
+    read_back = tree.read_artifact_reference(reference, stage=DESIGNATOR, kind="proposal")
+    assert read_back["inputs"] == [present]
+
+
+def test_record_reads_by_reference_are_bounded_by_the_record_ceiling(tmp_path, monkeypatch):
+    """A referenced artifact, a serving receipt and an approval record are JSON
+    records about to be parsed, so each is read under the record ceiling rather
+    than the page-blob ceiling."""
+    tree = make_run(tmp_path)
+    published = tree.publish_artifact(make_envelope())
+    artifact_ref = {
+        "relative_path": published.relative_path,
+        "sha256": digest_bytes(tree.read_bytes(published.relative_path)),
+    }
+    receipt_ref, _ = tree.write_run_receipt(make_receipt())
+    approval_ref, _ = tree.write_approval_record(make_approval_record())
+    monkeypatch.setattr(runtree_store, "MAX_RECORD_READ_BYTES", 4)
+
+    with pytest.raises(SchemaRefusal, match="tree read limit"):
+        tree.read_artifact_reference(artifact_ref, stage=DESIGNATOR, kind="proposal")
+    with pytest.raises(SchemaRefusal, match="tree read limit"):
+        tree.read_run_receipt(receipt_ref)
+    with pytest.raises(SchemaRefusal, match="tree read limit"):
+        tree.read_approval_record(approval_ref)
 
 
 def test_every_artifact_read_route_refuses_bytes_from_another_run(tmp_path):
@@ -812,7 +898,9 @@ def test_a_same_named_run_in_another_root_cannot_lend_this_one_its_evidence(tmp_
         ours.build_manifest(DESIGNATOR)
 
 
-@pytest.mark.parametrize("authority_state", ("missing", "self-hash-corrupt", "bad-digest"))
+@pytest.mark.parametrize(
+    "authority_state", ("missing", "self-hash-corrupt", "bad-digest", "not-an-object")
+)
 def test_every_generic_store_route_fails_closed_without_a_valid_run_authority(
     tmp_path, authority_state
 ):
@@ -828,6 +916,8 @@ def test_every_generic_store_route_fails_closed_without_a_valid_run_authority(
 
     if authority_state == "missing":
         run_file.unlink()
+    elif authority_state == "not-an-object":
+        run_file.write_bytes(b"[]")
     else:
         authority = tree.read_run()
         if authority_state == "self-hash-corrupt":
@@ -1154,13 +1244,6 @@ def test_a_manifest_metadata_and_digest_come_from_one_byte_snapshot(tmp_path, mo
     without ever substituting anything. What is asserted is the property either
     branch's reader owes -- the row's metadata and its digest describe the same
     bytes -- against whichever bytes the one read actually returned.
-
-    A second test used to sit above this one doing exactly the patch this
-    docstring warns against: it hooked `Path.read_text`, the hook never fired,
-    its forged bytes were never written, and both of its assertions compared the
-    original bytes with themselves. It was named for this seam and would have
-    stayed green if the seam broke, so it was removed rather than counted as
-    coverage.
     """
     tree = make_run(tmp_path)
     published = tree.publish_artifact(make_envelope(outcome="proposed"))
@@ -1838,7 +1921,23 @@ def test_a_manifest_refuses_case_variant_inventory_names(tmp_path):
     if lower.samefile(upper):
         pytest.skip("the filesystem itself conflates case variants")
 
-    with pytest.raises(SchemaRefusal, match="case-variant names"):
+    with pytest.raises(SchemaRefusal, match="differ only in case or Unicode normalisation"):
+        tree.build_manifest(DESIGNATOR)
+
+
+def test_a_manifest_refuses_unicode_normalisation_variant_inventory_names(tmp_path):
+    """APFS also stores a composed and a decomposed spelling as one name."""
+    tree = make_run(tmp_path)
+    artifacts_root = tree.resolve(f"{writing_directory(DESIGNATOR)}/{ARTIFACTS_DIR}")
+    artifacts_root.mkdir(parents=True)
+    composed = artifacts_root / "\u00e9tienne"
+    decomposed = artifacts_root / "e\u0301tienne"
+    composed.write_bytes(b"one")
+    decomposed.write_bytes(b"two")
+    if composed.samefile(decomposed):
+        pytest.skip("the filesystem itself conflates normalisation variants")
+
+    with pytest.raises(SchemaRefusal, match="differ only in case or Unicode normalisation"):
         tree.build_manifest(DESIGNATOR)
 
 
@@ -1854,10 +1953,9 @@ def test_a_manifest_refuses_an_artifact_too_large_to_read_safely(tmp_path):
 
 
 def test_read_bytes_refuses_a_file_grown_past_the_tree_read_limit(tmp_path, monkeypatch):
-    """G13: `RunTree.read_bytes` used to be `Path.read_bytes()`, with no ceiling
-    of its own -- a damaged or hostile run tree could be read whole into memory
-    before anything got a chance to refuse it. This is the same shape as the
-    manifest-artifact bound above, for the tree's general reader.
+    """A damaged or hostile run tree is never read whole into memory before
+    anything can refuse it: the manifest-artifact bound above, for the tree's
+    general reader.
     """
     tree = make_run(tmp_path)
     envelope = make_envelope()
@@ -1902,7 +2000,7 @@ def test_read_run_refuses_a_run_authority_grown_past_the_record_read_limit(tmp_p
 
 
 def test_read_bytes_takes_an_explicit_ceiling_when_a_caller_asks_for_one(tmp_path):
-    """G13: a caller reading a JSON record through `read_bytes` -- the fetch
+    """A caller reading a JSON record through `read_bytes` -- the fetch
     verb's `_fetched_manifest` is the live one -- must be able to ask for the
     record-sized ceiling rather than the blob-sized default, so the bytes it is
     about to parse are bounded by what a record can legitimately be.
@@ -1980,19 +2078,18 @@ def test_a_manifest_rechecks_containment_after_collecting_walk_members(tmp_path,
         tree.build_manifest(DESIGNATOR)
 
 
-# --- Inventory scope: harvest invariant #13 ------------------------------------
+# --- Inventory scope: every managed path is inside it ------------------------
 
 
 def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
-    """Harvest #13: every managed output path any code can write must resolve
-    inside the inventory scope; adding a managed path without extending the scope
-    fails a static drift test, loudly, naming the path.
+    """Every managed output path any code can write must resolve inside the
+    inventory scope; adding a managed path without extending the scope fails a
+    static drift test, loudly, naming the path.
 
     Driven against real writes rather than a list of strings, so a new writer that
-    forgot to extend the scope is caught by what it actually does. Spec 03 adds
-    the approval record, System 09 the Recensor partition receipt, and spec 10
-    the rebuildable stage index; each is exercised here through its real writer
-    rather than a guessed path.
+    forgot to extend the scope is caught by what it actually does. Every writer,
+    including the approval record, the Recensor partition receipt and the
+    rebuildable stage index, is exercised here rather than a guessed path.
     """
     tree = make_run(tmp_path)
     scope = tree.inventory_scope()
@@ -2021,7 +2118,7 @@ def test_every_path_the_store_can_write_is_inside_the_inventory_scope(tmp_path):
         )
 
 
-# --- The commit and the clock a tree used to carry nowhere (F098) --------------
+# --- The commit of the code that created a run -------------------------------
 
 
 def test_a_run_authority_seals_the_commit_the_code_that_created_it_ran_at(tmp_path):
@@ -2123,14 +2220,13 @@ def test_the_inventory_scope_covers_every_producer(tmp_path):
 
 
 def test_the_inventory_scope_names_the_serving_log_directory_the_launcher_writes(tmp_path):
-    """Harvest #13 is about every managed path *any* code writes, not only this store's.
+    """The scope covers every managed path *any* code writes, not only this store's.
 
     A stage that serves a chair leaves the engine's launch log at
-    `<stage>/serving-logs/<name>.log`, written by the serving launcher. While
-    the scope did not name it, a consumer reading the scope as the whole of what
-    a run tree may hold -- `operator.surface._fetch_run_tree` does -- refused
-    the entire served run tree at the first log it listed, and brought home
-    nothing from a run that had already billed a card.
+    `<stage>/serving-logs/<name>.log`, written by the serving launcher. A consumer
+    reading the scope as the whole of what a run tree may hold --
+    `operator.surface._fetch_run_tree` does -- refuses the entire served run tree
+    at the first log the scope does not name.
     """
     from common.contracts.stages import WRITING_DIRECTORIES
 
@@ -2142,10 +2238,9 @@ def test_the_inventory_scope_names_the_serving_log_directory_the_launcher_writes
         log = f"{prefix}vllm-attestator_1-0123456789ab.log"
         assert any(log.startswith(item) for item in scope)
     # And by the expression the stages actually call, per stage, not only by
-    # directory: `serving_log_path` takes a *stage*, and the two differ. A stage
-    # name passed where the writing directory was wanted is the defect this
-    # binds against -- `attestatores` against `3_attestatores`, which put every
-    # witness chair's engine log outside the scope.
+    # directory: `serving_log_path` takes a *stage*, and the two differ, so a
+    # stage name passed where the writing directory was wanted (`attestatores`
+    # for `3_attestatores`) would put every engine log outside the scope.
     for stage in sorted(WRITING_DIRECTORIES):
         assert f"{tree.serving_log_path(stage)}/" in scope, (
             f"{stage} would write its engine log outside the inventory scope"

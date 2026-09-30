@@ -8,9 +8,13 @@ responsible for:
                              of identical bytes is a no-op that reports `reused`; a
                              second publish of *different* bytes under the same
                              identity is refused before anything is written.
-  Publication is atomic.     Temp file in the same directory, then os.replace. A
-                             crash leaves either the old file or the new one, never
-                             a half-written artifact that a resume would trust.
+  Publication is atomic.     An artifact, blob, receipt or run.json is written to a
+                             temp file in the same directory and hard-linked into
+                             its unused name, so a crash leaves either no file or
+                             the whole one. A rewritable derived record (a
+                             manifest, an index, the Recensor partition receipt)
+                             replaces its old file with os.replace.
+                             Neither leaves a half-written file a resume would trust.
   Manifests are rebuildable. manifest.json is an inventory derived from the
                              artifacts on disk, never the only evidence that
                              something happened. Delete it and it comes back
@@ -22,8 +26,7 @@ deliberately does not predeclare acts — the Designator's proposal seal is the
 downstream expected-act authority, because acts are discovered and pages are given.
 
 Reusing a run id whose source, configuration, or adapter recipes have changed fails
-before any write. That is spec 01's third test, and it is the difference between a
-resumed run and a corrupted one.
+before any write. That is the difference between a resumed run and a corrupted one.
 
 `receipts/sha256/` is the one thing here that is not a stage artifact. Serving receipts
 and approval records both carry a real moment, so `envelope.py`'s docstring already
@@ -45,7 +48,11 @@ from typing import Any, Final
 
 from common.chairs.models import is_hf_revision
 from common.chairs.receipts import receipt_record, validate_receipt
-from common.contracts.approval import ApprovalRecordReference, validate_approval_record
+from common.contracts.approval import (
+    ApprovalRecordReference,
+    parse_ingress_record,
+    validate_approval_record,
+)
 from common.contracts.canonical import (
     SCHEMA_LABEL,
     canonical_bytes,
@@ -57,6 +64,7 @@ from common.contracts.canonical import (
 )
 from common.contracts.envelope import (
     digest_ref,
+    portable_spelling,
     read_verified,
     validate_envelope,
     validate_input_refs,
@@ -137,7 +145,7 @@ class PublishResult:
     """What happened when an artifact was published, so callers can say so.
 
     `reused` is the interesting one: it is how a resumed run proves it did not
-    rewrite work it had already done, which is spec 01's fourth test.
+    rewrite work it had already done.
     """
 
     __slots__ = ("relative_path", "reused")
@@ -218,6 +226,15 @@ class RunTree:
         leaves the tree exactly as it found it.
         """
         tree = cls(root, run_id)
+        # Checked as every later read checks them, so a sealed authority cannot
+        # carry a value that leaves the run unreadable.
+        if not is_sha256(config_digest):
+            raise SchemaRefusal(
+                "a run's config_digest must be a lowercase sha256; every artifact is bound "
+                "to the run through it, so any other value leaves nothing readable"
+            )
+        if ingress is not None:
+            parse_ingress_record(ingress)
         # Not stored until the authority accepts it: storing first would write a
         # foreign register into an existing run on the way to refusing it.
         snapshot = empty_register() if register_bytes is None else register_bytes
@@ -330,6 +347,11 @@ class RunTree:
                 "a stage that wrote into one anyway would be writing into nothing"
             )
         record = _read_json(run_file)
+        if not isinstance(record, dict):
+            raise IncompatibleReuse(
+                f"{run_file} is not a JSON object, so it is no run authority and nothing "
+                "in this tree can be trusted against it"
+            )
         if not verify_self_hash(record):
             unhashable = self_hash_refusal(record)
             if unhashable is not None:
@@ -382,8 +404,8 @@ class RunTree:
         """Where the serving launcher writes this stage's engine logs, inside the tree.
 
         Owned here so the launcher and `inventory_scope()` derive the directory
-        from `writing_directory` alike; a stage spelling it for itself put logs
-        outside the scope, and `fetch-run` then refused the whole tree.
+        from `writing_directory` alike; a directory outside that scope makes
+        `fetch-run` refuse the whole tree.
         """
         return f"{writing_directory(stage)}/{SERVING_LOGS_DIR}"
 
@@ -422,12 +444,14 @@ class RunTree:
     # --- Publication -----------------------------------------------------------
 
     def publish_artifact(self, envelope: dict[str, Any]) -> PublishResult:
-        """Publish one artifact. Immutable, atomic, and honest about reuse."""
+        """Publish one artifact. Immutable, atomic, and honest about reuse.
+
+        Refused unless every read route would accept it: an immutable artifact that
+        readers refuse could never be replaced, and its stage could never seal.
+        """
         validate_envelope(envelope)
-        if envelope["run_id"] != self.run_id:
-            raise SchemaRefusal(
-                f"artifact belongs to run {envelope['run_id']!r}, not {self.run_id!r}"
-            )
+        self._verify_artifact_run(envelope)
+        self._verify_artifact_inputs(envelope)
         relative = self.artifact_path(envelope["stage"], envelope["kind"], envelope["artifact_id"])
         return self._publish_bytes(relative, canonical_bytes(envelope))
 
@@ -519,8 +543,8 @@ class RunTree:
 
         Three checks, because each catches a different lie: the path must be the
         one its own digest names, the bytes there must hash to that digest, and
-        the record must still be a whole receipt (#42 — tampered or wrong-schema
-        provenance is refused, never repaired).
+        the record must still be a whole receipt. Tampered or wrong-schema
+        provenance is refused, never repaired.
         """
         parsed = _receipt_reference(reference)
         data = self._read_receipt_bytes(
@@ -583,7 +607,7 @@ class RunTree:
                 f"path {expected_path!r}"
             )
         ref = {"relative_path": relative_path, "sha256": sha256}
-        return read_verified(self.read_bytes, ref, label, refusal)
+        return read_verified(self._read_record_bytes, ref, label, refusal)
 
     def _publish_bytes(self, relative: str, data: bytes) -> PublishResult:
         self._require_inventory_path(relative)
@@ -674,7 +698,7 @@ class RunTree:
         """
         validate_input_refs([reference])
         relative_path = reference["relative_path"]
-        data = read_verified(self.read_bytes, reference, "referenced artifact")
+        data = read_verified(self._read_record_bytes, reference, "referenced artifact")
         try:
             record = validate_envelope(json.loads(data.decode("utf-8")))
         except (UnicodeDecodeError, ValueError) as error:
@@ -703,9 +727,13 @@ class RunTree:
         passes `max_bytes=MAX_RECORD_READ_BYTES`, so the bytes it is about to
         hand to `json.loads` -- which costs several times their size again in
         parsed objects -- are bounded by what a record can legitimately be and
-        not by what an image can (G13).
+        not by what an image can.
         """
         return _read_bytes_bounded(self.resolve(relative_path), max_bytes=max_bytes)
+
+    def _read_record_bytes(self, relative_path: str) -> bytes:
+        """One JSON record's bytes, under the record ceiling."""
+        return self.read_bytes(relative_path, max_bytes=MAX_RECORD_READ_BYTES)
 
     def has_artifact(self, stage: str, kind: str, artifact_id: str) -> bool:
         return self.resolve(self.artifact_path(stage, kind, artifact_id)).exists()
@@ -933,22 +961,7 @@ class RunTree:
 
     def _bind_root_identity(self) -> None:
         """Bind this object to the run directory it opened, by device and inode."""
-        try:
-            descriptor = os.open(self.root, _DIRECTORY_OPEN_FLAGS)
-        except OSError as error:
-            raise SchemaRefusal(
-                f"run root {self.root} could not be opened without links: {error}"
-            ) from error
-        try:
-            identity = _inode_identity(os.fstat(descriptor))
-        finally:
-            os.close(descriptor)
-        if self._root_identity is not None and identity != self._root_identity:
-            raise SchemaRefusal(
-                f"run root {self.root} is no longer the directory this RunTree opened; "
-                "its device or inode changed"
-            )
-        self._root_identity = identity
+        os.close(self._open_root_fd())
 
     def _open_root_fd(self) -> int:
         """Open the bound run root without following a replacement link."""
@@ -1097,14 +1110,15 @@ class RunTree:
         names.sort()
         folded: dict[str, str] = {}
         for name in names:
-            collision = folded.get(name.casefold())
+            spelling = portable_spelling(name)
+            collision = folded.get(spelling)
             if collision is not None and collision != name:
                 raise SchemaRefusal(
-                    f"{relative_directory!r} contains case-variant names {collision!r} and "
-                    f"{name!r}; default APFS stores them as one name, so this inventory "
-                    "cannot preserve both"
+                    f"{relative_directory!r} contains names {collision!r} and {name!r} that "
+                    "differ only in case or Unicode normalisation; default APFS stores them "
+                    "as one name, so this inventory cannot preserve both"
                 )
-            folded[name.casefold()] = name
+            folded[spelling] = name
         return names
 
     def _require_directory_identity(self, relative_path: str, descriptor: int) -> None:
@@ -1129,10 +1143,7 @@ class RunTree:
         self, relative_path: str, ancestors: frozenset[tuple[int, int]]
     ) -> None:
         """Refuse a link, retaining the most specific safe diagnostic available."""
-        try:
-            resolved = self.resolve(relative_path)
-        except SchemaRefusal:
-            raise
+        resolved = self.resolve(relative_path)
         try:
             target = resolved.stat()
         except OSError:
