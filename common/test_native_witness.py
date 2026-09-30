@@ -2509,3 +2509,16 @@ def test_a_text_view_on_a_grammar_read_under_none_is_refused(adapter, parse):
         validate_native_capture(value)
     del value["text_view"]
     assert validate_capture_text_view(validate_native_capture(value)) is value
+
+
+def test_the_churro_intake_closes_the_document_record_its_readers_index(monkeypatch):
+    """The capture writer and the page feed index `text`, `sections` and
+    `findings` on this record, so a record outside its schema is refused here by
+    name rather than as a KeyError inside a reader."""
+    from common import churro_document
+
+    monkeypatch.setattr(
+        churro_document, "parse_churro_document", lambda raw, **kwargs: {"state": "parsed"}
+    )
+    with pytest.raises(SchemaRefusal, match="not its closed schema"):
+        parse_churro_response(_DOCUMENT)

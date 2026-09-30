@@ -1285,13 +1285,17 @@ CHURRO_PARSERS: Final = frozenset({churro_document.CHURRO_PARSER})
 def parse_churro_response(raw: bytes, *, system_prompt: str | None = None) -> dict[str, Any]:
     """One Churro body, read under the vendor's own grammar and its two fallbacks.
 
-    Adds only the intake ceiling to `churro_document.parse_churro_document`.
+    Adds the intake ceiling to `churro_document.parse_churro_document`, and
+    closes the record it returns, so the capture writer and the Perlector's
+    page feed index a record of the declared shape or refuse it by name.
     `system_prompt` must be the exact string sent: trimming an echo of a
     framing that was not sent could cut real transcription.
     """
 
-    return churro_document.parse_churro_document(
-        raw, system_prompt=system_prompt, max_bytes=CHURRO_MAX_RESPONSE_BYTES
+    return churro_document.validate_churro_document_parse(
+        churro_document.parse_churro_document(
+            raw, system_prompt=system_prompt, max_bytes=CHURRO_MAX_RESPONSE_BYTES
+        )
     )
 
 
