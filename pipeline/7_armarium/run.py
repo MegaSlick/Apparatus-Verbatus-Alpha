@@ -33,9 +33,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from armarium_export import (  # noqa: E402
     ARMARIUM_ARCHIVE_NAME,
+    FIRST_READING_LABEL,
     NOT_MEASURED_BASIS_SCHEMA,
     NOT_MEASURED_INSTRUMENTS,
     PAGE_NOT_MEASURED_INSTRUMENTS,
+    READ_ON_REASK_LABEL,
     READING_UNIT_PAGE,
     ArmariumProjection,
     act_key_sort_key,
@@ -2348,7 +2350,13 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
                 raised = [flag for flag in CONTINUATION_FLAGS if row[flag] is True]
                 if raised:
                     continuation_flags[row["act_key"]] = raised
-            projected_acts.append(projected)
+            projected_acts.append(
+                {
+                    **projected,
+                    "page_ordinal": row["page_ordinal"],
+                    "reading": _ACT_READING_LABELS[row["reading_attempt"]],
+                }
+            )
         context.publish(
             kind="manifest-entry",
             subject_id=row["act_id"],
@@ -2488,6 +2496,15 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
     context.seal_boundary()
     context.finish()
     return EXIT_COMPLETE if export_status == "complete" else EXIT_HELD
+
+
+# The reading a counted row came from, by the attempt its verified denominator
+# row names: a page's first reading, its re-ask, or none for a row with no entry.
+_ACT_READING_LABELS: Final = {
+    page_path.FIRST_READING: FIRST_READING_LABEL,
+    page_path.REASK_READING: READ_ON_REASK_LABEL,
+    None: None,
+}
 
 
 def _require_refused_in_census(row: dict, census: dict[int, dict]) -> None:

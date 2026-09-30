@@ -451,9 +451,16 @@ flags travel in `aggregate_basis.continuation_flags` (`{act_key: [flag, ...]}`,
 page path only), and a flag no join has as a side is a named partial reason, so a
 flag is never dropped.
 
-**Manifest `armarium-export-manifest.v9`**, its own id because its denominator
+**Acts read on a re-ask.** An act a page's one re-ask recovered is counted in
+the act partition like any other, and labelled with the reading it came from:
+each counted row's `reading` is `first reading` or `read on re-ask`, from the
+`reading_attempt` of its row in the verified denominator (1 or 2), and `null` for
+a `page-unread` or `page-blank` row, which stands for no entry. The other layer
+carries no such label: it is never counted as acts.
+
+**Manifest `armarium-export-manifest.v10`**, its own id because its denominator
 differs (a v7/v8 reader must not read reading acts as proposal-seal rows), with
-two more required claims:
+three more required claims:
 
 - `claims.other_readings` -- `{layer, counted_as_acts: false, count,
   by_category, act_ids, carried_by}`, derived from `sources.json`'s
@@ -464,6 +471,12 @@ two more required claims:
   policy_sha256s}`, one row per real sealed page: `{ordinal, page_id, rules
   (letter -> status), hold_codes, policy_sha256, accounting_ref}`, read from the
   page's `page-accounting` under the policy this run sealed.
+- `claims.reask` -- `{label: "read on re-ask", first_reading_acts,
+  read_on_reask_acts, read_on_reask_act_ids, pages}`, the acts read on a re-ask
+  counted apart from those of first readings, in total and per real sealed page
+  (`pages`: `{ordinal, first_reading_acts, read_on_reask_acts}`, one per
+  `page_accounting` row), derived from `sources.json`'s `act_readings`. A row
+  standing for no entry counts in neither.
 
 `claims.not_measured` names the page path's instruments, in order (every
 threshold must be an integer, and one that is not is fatal rather than left out):
@@ -478,13 +491,16 @@ bound to that page count; the page path never runs Pass C, so
 and act-visibility instruments read act-path records a page-read run does not
 make; the page accounting measures what they did, and it is claimed above.
 
-**Formats.** `sources.json` is `armarium-sources.v4`: v3 plus `other_outcomes`,
-`other_citations` and `page_accounting`. A page reading's uncertainty layer names
-its own lectio kind, `page-read` (`self_revisions: null`), a value the v3 act
-shapes do not know, so page-path act rows are `armarium-act.v4` and the acts
-database `armarium-acts-sqlite.v4` (`user_version` 4), each otherwise the v3
-shape; the act path's ids and bytes are unchanged. The other layer is carried
-by:
+**Formats.** `sources.json` is `armarium-sources.v5`: v3 plus `other_outcomes`,
+`other_citations`, `page_accounting` and `act_readings` (`{act_id, act_key,
+page_ordinal, reading}` per counted act, in act-id order). A page reading's
+uncertainty layer names its own lectio kind, `page-read` (`self_revisions:
+null`), a value the v3 act shapes do not know, and each page-path act carries its
+`reading`, so page-path act rows are `armarium-act.v5` and the acts database
+`armarium-acts-sqlite.v5` (`user_version` 5, a `reading` column on `acts`), each
+otherwise the v3 shape; a delivered act's text-bundle section carries a
+`reading:` line after its `act-id:`. The act path's ids and bytes are unchanged.
+The other layer is carried by:
 
 - `other.jsonl` (with `jsonl`) -- one `armarium-other-reading.v1` row per other
   reading, text only when delivered. A separate member rather than a `kind` field
@@ -499,8 +515,10 @@ by:
 `acts.sqlite` carries no other reading; `claims.other_readings.carried_by` says
 which formats do.
 
-**Verification.** `verify_export_bundle` recomputes both claims from
-`sources.json`, requires every other reading apart from the act partition, reads
+**Verification.** `verify_export_bundle` recomputes the three claims from
+`sources.json`, requires `act_readings` to name exactly the act partition's acts
+and every act row, database row and text-bundle act section to carry its
+source reading (and no act-path row or section to carry one), requires every other reading apart from the act partition, reads
 `other.jsonl` and every OTHER section against the source rows and requires the
 formats carrying the layer to agree on each reading's text, uncertainty and
 status, recomputes the ledger with its `other` units, requires the acts

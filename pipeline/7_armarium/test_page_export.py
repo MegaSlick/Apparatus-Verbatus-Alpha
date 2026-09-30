@@ -176,7 +176,7 @@ def _unit_types(manifest: dict) -> dict:
 def test_a_page_read_run_exports_its_acts_and_other_readings_complete(complete):
     manifest, members = complete["manifest"], complete["members"]
     claims = manifest["claims"]
-    assert manifest["schema"] == "armarium-export-manifest.v9"
+    assert manifest["schema"] == "armarium-export-manifest.v10"
     assert claims["status"] == "complete" and manifest["aggregate"]["status"] == "complete"
     partition = claims["act_partition"]
     assert partition["denominator"] == "page-read reading acts"
@@ -408,6 +408,18 @@ def _held_page_one(members: dict) -> None:
     _claims(members, hold)
 
 
+def _relabel_jsonl_act(members: dict) -> None:
+    """acts.jsonl's first act relabelled as read on re-ask, every other carrier unchanged."""
+    rows = [json.loads(line) for line in members["acts.jsonl"].splitlines()]
+    rows[0]["reading"] = "read on re-ask"
+    members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+
+
+def _unlabel_text_bundle_act(members: dict) -> None:
+    [name] = [name for name in members if name.startswith("text/")]
+    members[name] = members[name].replace(b"reading: first reading\n", b"", 1)
+
+
 def _page_roster_narrowed(members: dict) -> None:
     """The page witness chairs narrowed by one chair, in the basis and the manifest."""
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
@@ -455,6 +467,24 @@ def _page_roster_narrowed(members: dict) -> None:
         (_other_named_as_an_act, "other reading is counted in the act partition"),
         (_other_doubt, "formats carrying the other layer disagree"),
         (_page_roster_narrowed, "disagrees with the exported roster"),
+        (
+            lambda m: _claims(m, lambda c: c["reask"].update(read_on_reask_acts=1)),
+            "re-ask claim does not follow",
+        ),
+        (
+            lambda m: _sources(m, lambda s: s["act_readings"][0].update(reading="second")),
+            "a reading other than",
+        ),
+        (
+            lambda m: _sources(m, lambda s: s["act_readings"].pop()),
+            "act readings do not reconcile to the manifest act partition",
+        ),
+        (
+            lambda m: _sources(m, lambda s: s["act_readings"][0].update(reading="read on re-ask")),
+            "does not name the reading",
+        ),
+        (_relabel_jsonl_act, "acts JSONL does not name the reading"),
+        (_unlabel_text_bundle_act, "text-bundle act does not name the reading"),
     ],
     ids=[
         "other-count",
@@ -467,6 +497,12 @@ def _page_roster_narrowed(members: dict) -> None:
         "other-as-act",
         "formats-disagree",
         "page-roster",
+        "reask-count",
+        "unknown-reading",
+        "reading-dropped",
+        "relabelled-source",
+        "relabelled-jsonl",
+        "unlabelled-text",
     ],
 )
 def test_the_clean_verifier_recomputes_the_page_claims_and_refuses_a_tampered_one(
@@ -664,14 +700,16 @@ def test_a_blinded_run_exports_each_witness_by_chair_and_by_the_label_its_reader
 def test_page_rows_carry_the_page_read_lectio_kind_under_their_own_ids(complete):
     members = complete["members"]
     for row in _jsonl(members, "acts.jsonl").values():
-        assert row["schema"] == "armarium-act.v4"
+        assert row["schema"] == "armarium-act.v5"
         assert row["uncertainty"]["lectio_kind"] == "page-read"
         assert row["uncertainty"]["self_revisions"] is None
+        assert row["reading"] == "first reading"
     with sqlite3.connect(complete["clean"] / "acts.sqlite") as connection:
         assert connection.execute(
             "SELECT value FROM export_metadata WHERE key = 'schema'"
-        ).fetchone() == ("armarium-acts-sqlite.v4",)
-        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
+        ).fetchone() == ("armarium-acts-sqlite.v5",)
+        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+        assert set(connection.execute("SELECT reading FROM acts")) == {("first reading",)}
 
 
 # --- the export's own checks of a page reading's category ---------------------------
@@ -735,9 +773,37 @@ def test_a_re_asked_page_exports_its_recovered_act_with_the_rest(tmp_path):
         tmp_path, "reask-recovers", recovery_config=reask_recovery_config(tmp_path / "reask", 1)
     )
     result = _export(root, options, "reask-recovers")
-    assert result.returncode in (0, 3), result.stderr
+    assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
-    partition = bundle["manifest"]["claims"]["act_partition"]
+    claims = bundle["manifest"]["claims"]
+    partition = claims["act_partition"]
     assert partition["expected_count"] == 3
     exported = {**_jsonl(bundle["members"], "acts.jsonl")}
     assert sorted(exported) == ["p1:1", "p1:2", "p2:1"]
+    # The recovered act is in the main act layer, labelled apart from the first reading's.
+    assert {key: row["reading"] for key, row in exported.items()} == {
+        "p1:1": "first reading",
+        "p1:2": "read on re-ask",
+        "p2:1": "first reading",
+    }
+    with sqlite3.connect(bundle["clean"] / "acts.sqlite") as connection:
+        assert dict(connection.execute("SELECT act_key, reading FROM acts")) == {
+            key: row["reading"] for key, row in exported.items()
+        }
+    assert claims["reask"] == {
+        "label": "read on re-ask",
+        "first_reading_acts": 2,
+        "read_on_reask_acts": 1,
+        "read_on_reask_act_ids": [exported["p1:2"]["act_id"]],
+        "pages": [
+            {"ordinal": 1, "first_reading_acts": 1, "read_on_reask_acts": 1},
+            {"ordinal": 2, "first_reading_acts": 1, "read_on_reask_acts": 0},
+        ],
+    }
+    # Page 1 stays held by Churro's unboxed line, which no re-ask may name, so both
+    # of its acts are held; page 2's is delivered.
+    assert {key: row["category"] for key, row in exported.items()} == {
+        "p1:1": "held-for-review",
+        "p1:2": "held-for-review",
+        "p2:1": "delivered",
+    }
