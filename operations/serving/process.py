@@ -64,6 +64,9 @@ class PopenServerProcess:
     process: subprocess.Popen[bytes]
     log_path: Path
     _log_handle: object
+    # Once the leader is reaped and the group has no running member, the
+    # kernel may hand this id to an unrelated group; nothing is signalled then.
+    _group_gone: bool = False
 
     @property
     def pid(self) -> int:
@@ -96,6 +99,7 @@ class PopenServerProcess:
                     f"process group of owned process pid={self.pid} still has a running member"
                 )
             time.sleep(_GROUP_POLL_SECONDS)
+        self._group_gone = True
         return exit_code
 
     def read_tail(self, maximum_bytes: int = 16_384) -> str:
@@ -112,9 +116,17 @@ class PopenServerProcess:
         # for this exact Popen instance, so no model name/PID-pattern search can
         # reach an unrelated service. The group is signalled whether or not the
         # direct child is still running: its other members may outlive it.
-        with suppress(ProcessLookupError):
+        # Only once the leader is reaped can the id be reused, so a group seen
+        # empty after that is never signalled again.
+        if self._group_gone:
+            return
+        leader_reaped = self.process.poll() is not None
+        try:
             os.killpg(self.pid, signal_number)
-        if self.process.poll() is not None:
+        except ProcessLookupError:
+            if leader_reaped:
+                self._group_gone = True
+        if leader_reaped:
             self._close_log()
 
     def _close_log(self) -> None:

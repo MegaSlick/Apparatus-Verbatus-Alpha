@@ -2525,6 +2525,41 @@ def test_cleanup_after_the_direct_child_exited_stops_its_group_before_releasing_
                 os.kill(grandchild_pid, signal.SIGKILL)
 
 
+def test_a_group_seen_empty_after_the_leader_is_reaped_is_never_signalled_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The kernel may reuse an empty group's id; a later stop must not reach it."""
+
+    process = SubprocessLauncher().launch((sys.executable, "-c", "pass"), tmp_path / "child.log")
+    assert process.wait(3) == 0
+
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: signalled.append((pgid, sig)))
+    process.terminate()
+    process.kill()
+
+    assert signalled == []
+
+
+def test_a_failed_signal_after_the_leader_is_reaped_ends_group_signalling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = SubprocessLauncher().launch((sys.executable, "-c", "pass"), tmp_path / "child.log")
+    _wait_until(lambda: process.poll() is not None)
+
+    calls: list[int] = []
+
+    def _missing(pgid: int, sig: int) -> None:
+        calls.append(sig)
+        raise ProcessLookupError
+
+    monkeypatch.setattr(os, "killpg", _missing)
+    process.terminate()
+    process.kill()
+
+    assert calls == [signal.SIGTERM]
+
+
 def test_read_tail_returns_only_the_bounded_tail_of_a_real_log(tmp_path: Path) -> None:
     marker = "END-OF-LOG-MARKER"
     script = (

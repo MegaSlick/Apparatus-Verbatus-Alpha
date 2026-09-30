@@ -97,7 +97,8 @@ passes `--no-enable-log-requests`, because golden-page bytes and transcriptions 
 diagnostics and a recipe must not turn request logging on.
 
 **Shutdown.** The lease spans probing, launch and verified shutdown. It is released only
-after the child exits and a bounded `/health` poll sees a definite TCP connection refusal; a
+once the launch's whole process group has no running member (vLLM's engine process can
+outlive the server the manager launched) and a bounded `/health` poll sees a definite TCP connection refusal; a
 timeout or other ambiguous failure is not proof of absence. Otherwise the stop reports
 `VLLM_STOP_FAILED` and keeps the lease. `recover()` retries only that same cleanup, for a
 failed start or a failed stop, on the process the manager launched; it cannot launch
