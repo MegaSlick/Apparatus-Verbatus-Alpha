@@ -976,6 +976,61 @@ def test_materializer_joins_a_loaded_record_to_the_roster_before_indexing_it(tmp
         materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
 
 
+def _materialized_before_the_detector_joined(tmp_path, monkeypatch):
+    """A real store written while the roster did not yet require the record detector."""
+    earlier = tuple(item for item in REQUIRED_ARTIFACTS if item.chair != "secondary_proposer")
+    fetcher = _FakeMaterializationFetcher()
+    with monkeypatch.context() as patch:
+        patch.setattr(model_store, "REQUIRED_ARTIFACTS", earlier)
+        materialize_real_roster(tmp_path, fetcher)
+    return fetcher
+
+
+def test_a_store_written_before_an_artifact_joined_the_roster_is_upgraded_then_fetched(
+    tmp_path, monkeypatch
+):
+    fetcher = _materialized_before_the_detector_joined(tmp_path, monkeypatch)
+    earlier_bytes = (tmp_path / "download_record.json").read_bytes()
+    with pytest.raises(DigestMismatchRefusal, match="exactly 6 unique roster"):
+        load_download_record(tmp_path)
+    calls = list(fetcher.calls)
+
+    receipt = materialize_real_roster(tmp_path, fetcher)
+
+    detector = next(item for item in REQUIRED_ARTIFACTS if item.chair == "secondary_proposer")
+    assert fetcher.calls == [*calls, (detector.repo, detector.revision)]
+    assert receipt["real_roster_complete"] is True
+    record = load_download_record(tmp_path)
+    [entry] = [item for item in record["artifacts"] if item["artifact"] == detector.artifact]
+    assert entry["state"] == "present"
+    # Every version stays: the earlier record, and the one that added the artifact pending.
+    versions = {path.read_bytes() for path in (tmp_path / "records").glob("*.json")}
+    assert earlier_bytes in versions
+    assert any(
+        {item["artifact"]: item["state"] for item in json.loads(version)["artifacts"]}.get(
+            detector.artifact
+        )
+        == "pending-fetch"
+        for version in versions
+    )
+
+
+def test_an_older_store_whose_entries_left_the_roster_is_not_upgraded(tmp_path, monkeypatch):
+    fetcher = _materialized_before_the_detector_joined(tmp_path, monkeypatch)
+    record = json.loads((tmp_path / "download_record.json").read_bytes())
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    entry["revision"] = "1" * 40
+    payload = canonical_bytes(record)
+    (tmp_path / "download_record.json").write_bytes(payload)
+    (tmp_path / "records" / f"{digest_bytes(payload)}.json").write_bytes(payload)
+    calls = list(fetcher.calls)
+
+    with pytest.raises(DigestMismatchRefusal, match="diverges from roster policy"):
+        materialize_real_roster(tmp_path, fetcher)
+    assert fetcher.calls == calls
+    assert (tmp_path / "download_record.json").read_bytes() == payload
+
+
 def test_materializer_clears_leftover_staging_before_fetch(tmp_path):
     staging = tmp_path / "staging"
     staging.mkdir()
