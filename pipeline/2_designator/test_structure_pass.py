@@ -2616,6 +2616,26 @@ def test_one_region_covering_half_two_rectangles_is_still_shared_detection():
     assert all(block["detected_bounds"] == band for block in blocks)
 
 
+def test_a_parsed_answer_records_the_text_view_its_parser_reports(
+    live_run, tmp_path, monkeypatch
+):
+    """The record names the view the parser read under, not a fixed constant, so a
+    parser reporting a view this build does not read is refused by that name."""
+    root, catalogue = live_run
+    answers = [_answer(PAGE_ONE_ACTS), _answer(PAGE_TWO_ACTS)]
+    original = chandra_layout.parse_layout_html
+
+    def retired_view(raw):
+        result = original(raw)
+        if chandra_layout.is_refusal(result):
+            return result
+        return {**result, "text_view": "chandra-layout-text.v1"}
+
+    monkeypatch.setattr(chandra_layout, "parse_layout_html", retired_view)
+    with pytest.raises(ContractError, match="read under chandra-layout-text.v1"):
+        _run_designator(root, catalogue, tmp_path, monkeypatch, answers)
+
+
 # --- a custody refusal is one page's outcome ------------------------------------
 
 

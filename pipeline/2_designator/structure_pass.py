@@ -1196,9 +1196,12 @@ def ask_page(
         "prompt_version": structure_prompt.STRUCTURE_PROMPT_VERSION,
         "prompt_sha256": structure_prompt.prompt_sha256(),
         "answer_schema": structure_prompt.STRUCTURE_ANSWER_GRAMMAR,
-        # The rule each block's text_digest was taken under: this project's own
-        # text view, not the vendor's.
-        "text_view": chandra_layout.LAYOUT_TEXT_VIEW,
+        # The rule each block's text_digest was taken under: the text view the
+        # parser reports reading under (this project's own, not the vendor's),
+        # or the grammar's view where no answer was parsed.
+        "text_view": (
+            chandra_layout.LAYOUT_TEXT_VIEW if parsed is None else parsed["text_view"]
+        ),
         # The vendor code whose prompt bytes were sent and grammar was read,
         # beside the serving block's model identity below.
         "vendor": structure_prompt.vendor_identity(),
