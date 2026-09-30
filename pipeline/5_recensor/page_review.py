@@ -34,7 +34,7 @@ from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES, classify, witness_coverage
 from common.contracts.stages import ATTESTATORES, EXEMPLAR, PERLECTOR, RECENSOR
 from common.page_accounting import NOT_APPLICABLE, PASS
-from common.page_path import PAGE_ACCOUNTING_KIND
+from common.page_path import PAGE_ACCOUNTING_KIND, refs_by_path
 from common.page_testimonia import (
     PAGE_TESTIMONIUM_KIND,
     current_page_testimonia,
@@ -810,7 +810,7 @@ def current_links(context, expected: list[tuple[str, dict]], by_id, pages) -> li
             or record.get("attempt_id") != attempt_id(subject, "link", 1)
             or record.get("payload") != payload
             or record.get("outcome") != link_outcome(payload)
-            or _by_path(record.get("inputs")) != _by_path(link_inputs(payload, by_id, pages))
+            or refs_by_path(record["inputs"]) != refs_by_path(link_inputs(payload, by_id, pages))
         ):
             raise FatalAccounting(
                 f"the continuation-link of {subject} is not the one record the answers' "
@@ -826,12 +826,6 @@ def current_links(context, expected: list[tuple[str, dict]], by_id, pages) -> li
             }
         )
     return rows
-
-
-def _by_path(references: Any) -> Any:
-    if not isinstance(references, list):
-        return references
-    return sorted(references, key=lambda reference: reference.get("relative_path", ""))
 
 
 def write_reading_receipt(context) -> None:
