@@ -538,9 +538,9 @@ def scripted_prompt_too_long(
 
 
 def scripted_input_too_long(*, max_model_len: int, input_tokens: int) -> ScriptedAnswer:
-    """The refusal vLLM 0.27.1 gave a real Perlector act whose prompt overran the row.
+    """The refusal a real Perlector act got when its prompt overran the row.
 
-    Observed on the 2026-09-27 run (a 34,741-token request against a 32,768
+    Observed from vLLM 0.27.1 (a 34,741-token request against a 32,768
     row): an HTTP 400 whose body is the nested envelope
     ``{"error": {"message": ..., "type": "BadRequestError", "param": null,
     "code": 400}}``.  ``scripted_prompt_too_long`` scripts the older flat

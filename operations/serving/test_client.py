@@ -342,7 +342,7 @@ def test_each_sealed_chair_row_is_sent_exactly_and_retained(tmp_path: Path) -> N
 
 
 def test_the_engine_effective_values_are_recorded_beside_the_sent_ones(tmp_path: Path) -> None:
-    """Churro's 1e-06 is sent as the maker wrote it; vLLM 0.27.1 samples at 0.01."""
+    """Churro's 1e-06 is sent as the maker wrote it; vLLM 0.30.0 samples at 0.01."""
 
     client, endpoint, blob_store, _ = _built(tmp_path, chair=_identity(role="attestator_3"))
     with client:

@@ -69,9 +69,9 @@ error_backoff_seconds = [2, 4, 6, 8, 10, 12]
 # page: `generate_vllm` sends a vLLM server only temperature and top_p.
 temperature = 0.0         # maker: `generate_vllm`'s default
 top_p = 0.1               # maker: `generate_vllm`'s default
-top_k = 0                 # vLLM 0.27.1 default for an unsent field (off)
-min_p = 0.0               # vLLM 0.27.1 default for an unsent field (off)
-repetition_penalty = 1.0  # vLLM 0.27.1 default for an unsent field (off)
+top_k = 0                 # vLLM 0.30.0 default for an unsent field (off)
+min_p = 0.0               # vLLM 0.30.0 default for an unsent field (off)
+repetition_penalty = 1.0  # vLLM 0.30.0 default for an unsent field (off)
 source = "https://github.com/datalab-to/chandra/blob/d4f7467435aa4137d9539f000ddf0b7ced3eb43f/chandra/model/vllm.py"
 revision = "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
 verification = "read from the pinned source by the vendor-decoding session (Claude), and checked on every load to equal the first request of common/chandra_native_retry.py's port over vLLM's defaults"
@@ -81,9 +81,9 @@ verification = "read from the pinned source by the vendor-decoding session (Clau
 # sends this as its first request and follows the recipe's retry schedule.
 temperature = 0.0         # maker: `generate_vllm`'s default
 top_p = 0.1               # maker: `generate_vllm`'s default
-top_k = 0                 # vLLM 0.27.1 default for an unsent field (off)
-min_p = 0.0               # vLLM 0.27.1 default for an unsent field (off)
-repetition_penalty = 1.0  # vLLM 0.27.1 default for an unsent field (off)
+top_k = 0                 # vLLM 0.30.0 default for an unsent field (off)
+min_p = 0.0               # vLLM 0.30.0 default for an unsent field (off)
+repetition_penalty = 1.0  # vLLM 0.30.0 default for an unsent field (off)
 source = "https://github.com/datalab-to/chandra/blob/d4f7467435aa4137d9539f000ddf0b7ced3eb43f/chandra/model/vllm.py"
 revision = "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
 verification = "read from the pinned source by the vendor-decoding session (Claude), and checked on every load to equal the first request of common/chandra_native_retry.py's port over vLLM's defaults"
