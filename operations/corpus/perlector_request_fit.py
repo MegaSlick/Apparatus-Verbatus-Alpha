@@ -8,6 +8,15 @@ counts how many fit `config/serving_recipes_real.toml`'s Perlector row under thr
 settings: the old 1,024-pixel render with no neighbour clues, the old render with
 them, and the sealed `[page_context]` rule with them.
 
+It then counts, per page, whether the whole-page request (`reading_unit =
+"page"`) fits at 32,768 and 65,536 tokens of context under the three feed
+settings that matter most: the default feed, no Surya detections, and flat
+witness units. Each page is fed as three witnesses reporting its gold text --
+two in record units with the gold boxes (as Chandra's blocks and DAI's records
+are), one in lines with no box (as Churro's are) -- and one Surya line per gold
+text line, boxed inside its record, with one Surya block per record. The Surya
+line count is an estimate from the gold text until real detections are on disk.
+
 Read-only; prints counts only, never a reading, a record id or a page.
 
     python operations/corpus/perlector_request_fit.py PAGE_MANIFEST.jsonl
@@ -18,6 +27,7 @@ from __future__ import annotations
 import json
 import sys
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -27,13 +37,25 @@ if str(_PERLECTOR_DIR) not in sys.path:
     sys.path.insert(0, str(_PERLECTOR_DIR))
 
 import live_reader  # noqa: E402
+import page_feed  # noqa: E402
+import page_prompt  # noqa: E402
 import prompts  # noqa: E402
 import protocol  # noqa: E402
 
 from common.background import round_half_up_bp  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.decoding import load_decoding_policy, perlector_max_tokens  # noqa: E402
-from common.request_capacity import perlector_prompt_bound, request_fits  # noqa: E402
+from common.contracts.canonical import digest_bytes  # noqa: E402
+from common.decoding import (  # noqa: E402
+    load_decoding_policy,
+    perlector_max_tokens,
+    perlector_page_max_tokens,
+)
+from common.request_capacity import (  # noqa: E402
+    RequestCapacityRefusal,
+    page_request_capacity,
+    perlector_prompt_bound,
+    request_fits,
+)
 from operations.serving.config import ServingProfile, load_serving_recipes  # noqa: E402
 
 WITNESSES: Final = ("attestator_1", "attestator_2", "attestator_3")
@@ -256,6 +278,118 @@ def fit_table(acts: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
     return table
 
 
+PAGE_CONTEXTS: Final = (32_768, 65_536)
+PAGE_SETTINGS: Final = {
+    "default feed": {},
+    "no Surya": {"surya_lines": False, "surya_blocks": False},
+    "flat witness units": {"witness_units": "flat"},
+}
+_PLACEHOLDER_REF: Final = {"relative_path": "measured/none", "sha256": digest_bytes(b"")}
+
+
+def _clamped(bbox: list[int], size: tuple[int, int]) -> dict[str, int] | None:
+    x, y, w, h = bbox
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(size[0], x + w), min(size[1], y + h)
+    return None if x1 <= x0 or y1 <= y0 else {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
+
+
+def page_shape(page: dict[str, Any]) -> dict[str, Any]:
+    """One gold page as record units, line units, and estimated Surya detections."""
+    size = (page["width"], page["height"])
+    records, lines, surya_lines, blocks = [], [], [], []
+    for record in page["records"]:
+        box = _clamped(record["bbox"], size)
+        if box is None or not record["text"].strip():
+            continue
+        records.append(
+            {"ordinal": len(records), "box_px": box, "label": None, "text": record["text"]}
+        )
+        blocks.append(
+            {"box_px": box, "label": "Text", "position": len(blocks), "ref": _PLACEHOLDER_REF}
+        )
+        texts = [line for line in record["text"].split("\n") if line.strip()]
+        band = max(1, box["h"] // len(texts))
+        for index, text in enumerate(texts):
+            lines.append({"ordinal": len(lines) + 1, "box_px": None, "label": None, "text": text})
+            top = box["y"] + min(index * band, box["h"] - 1)
+            height = max(1, min(band, box["y"] + box["h"] - top))
+            surya_lines.append({"box_px": {**box, "y": top, "h": height}, "ref": _PLACEHOLDER_REF})
+    return {
+        "size": size,
+        "witnesses": [
+            ("attestator_1", "chandra.v1", records),
+            ("attestator_2", "dai.v1", records),
+            ("attestator_3", "churro.v1", lines),
+        ],
+        "surya": {"census_ref": _PLACEHOLDER_REF, "lines": surya_lines, "blocks": blocks},
+    }
+
+
+def page_request(row: ServingProfile, sealed: dict[str, Any], shape: dict[str, Any], change: dict):
+    """The admitted page request, or the refusal it would meet."""
+    size = shape["size"]
+    render = _rendered(size, sealed["page_context"]["maximum_edge"])
+    feed = page_feed.assemble_page_feed(
+        page_id="page",
+        page_ordinal=1,
+        page_size=size,
+        feed_switches={**sealed["feed"], **change},
+        witness_regime="named",
+        witnesses=[
+            {
+                "chair": chair,
+                "witness_label": chair,
+                "adapter": adapter,
+                "outcome": "read",
+                "testimonium_ref": _PLACEHOLDER_REF,
+                "units": units,
+            }
+            for chair, adapter, units in shape["witnesses"]
+        ],
+        surya=shape["surya"],
+        page_render={
+            "reason": "legible-ink",
+            "transform": {"target_dimensions": {"w": render[0], "h": render[1]}},
+        },
+        serving_recipe="unproven-real-perlector",
+    )
+    return page_request_capacity(
+        row,
+        image_sizes=page_feed.request_image_sizes(feed),
+        prompt_text=page_prompt.build_page_prompt("unproven-real-perlector", feed),
+        template_digest=page_prompt.BUILDER_SHA256,
+        answer_measure=feed["answer_measure"],
+        page_max_tokens=page_max_tokens(),
+    )
+
+
+def page_max_tokens() -> int:
+    policy, _ = load_decoding_policy(ROOT / "config" / "decoding.toml")
+    return perlector_page_max_tokens(policy)
+
+
+def page_fit_table(pages: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Per feed setting and context: pages admitted, refused by context, refused by the cap."""
+    row, sealed = perlector_row(), sealed_protocol()
+    shapes = [page_shape(page) for page in pages]
+    table = {}
+    for name, change in PAGE_SETTINGS.items():
+        for context in PAGE_CONTEXTS:
+            sized = replace(row, max_model_len=context)
+            cell = {"fit": 0, "refused_context": 0, "refused_answer_cap": 0, "worst_need": 0}
+            for shape in shapes:
+                try:
+                    record = page_request(sized, sealed, shape, change)["capacity"]
+                    cell["fit"] += 1
+                except RequestCapacityRefusal as refusal:
+                    record = refusal.capacity
+                    cell["refused_context" if not record["fits"] else "refused_answer_cap"] += 1
+                cell["worst_need"] = max(cell["worst_need"], record["need"])
+            table[f"page request, {name}, {context}"] = cell
+    return table
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         print(__doc__)
@@ -268,6 +402,8 @@ def main(argv: list[str]) -> int:
     acts = gold_shapes(pages, padding)
     print(f"{len(acts)} acts on {len(pages)} pages, each on one page")
     for name, cell in fit_table(acts).items():
+        print(f"{name}: {cell}")
+    for name, cell in page_fit_table(pages).items():
         print(f"{name}: {cell}")
     return 0
 
