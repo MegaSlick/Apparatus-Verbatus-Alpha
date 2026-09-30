@@ -611,14 +611,15 @@ def _comparison_text(text: str, capabilities: Any) -> str:
     return text
 
 
-def _dissent_rows(
-    text: str,
-    feed: Mapping[str, Any],
-    cited_ids: list[str],
-    witnesses: list[dict[str, Any]],
-    seconds: int | None,
-) -> list[tuple[dict[str, Any], str | None]]:
-    """Each shown witness's dissent row, with the text it was compared against (or `None`)."""
+def page_dissent(
+    text: str, feed: Mapping[str, Any], cited_ids: list[str], witnesses: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Where an entry's reading departed from each shown witness's cited units.
+
+    Each alignment runs under `dissent.MAX_COMPARISON_STEPS`, a counted bound,
+    so the same entry and feed always give the same dissent; one that needs
+    more is recorded as not compared (`dissent.unaligned_row`).
+    """
     capabilities = {
         witness["witness_label"]: witness["testimonium"]["payload"].get("format_capabilities")
         for witness in witnesses
@@ -629,12 +630,12 @@ def _dissent_rows(
         head = {"letter": witness["letter"], "witness_label": witness["witness_label"]}
         if witness["outcome"] != READ_OUTCOME:
             reason = f"this witness's page outcome is {witness['outcome']}; it has no units"
-            rows.append(({**head, "cited_units": [], "compared": False, "reason": reason}, None))
+            rows.append({**head, "cited_units": [], "compared": False, "reason": reason})
             continue
         units = [unit for unit in witness["units"] if unit["id"] in cited]
         if not units:
             reason = "no unit of this witness is cited by this entry"
-            rows.append(({**head, "cited_units": [], "compared": False, "reason": reason}, None))
+            rows.append({**head, "cited_units": [], "compared": False, "reason": reason})
             continue
         reported = _comparison_text(
             "\n".join(unit["text"] for unit in units), capabilities[witness["witness_label"]]
@@ -647,30 +648,13 @@ def _dissent_rows(
                     "payload": {"chair": witness["letter"], "comparison_reported": reported},
                 }
             ],
-            seconds=seconds,
         )
         if len(compared) != 1:
             raise ContractError(f"dissent gave {len(compared)} rows for one witness, not one")
         row = dict(compared[0])
         row.pop("chair")
-        rows.append(({**head, "cited_units": [unit["id"] for unit in units], **row}, reported))
+        rows.append({**head, "cited_units": [unit["id"] for unit in units], **row})
     return rows
-
-
-def page_dissent(
-    text: str, feed: Mapping[str, Any], cited_ids: list[str], witnesses: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Where an entry's reading departed from each shown witness's cited units.
-
-    Each alignment runs under `dissent.MAX_COMPARISON_SECONDS`; one that does
-    not finish is recorded as not compared (`dissent.unaligned_row`).
-    """
-    return [
-        row
-        for row, _reported in _dissent_rows(
-            text, feed, cited_ids, witnesses, dissent.MAX_COMPARISON_SECONDS
-        )
-    ]
 
 
 def dissent_holds(
@@ -680,29 +664,8 @@ def dissent_holds(
     cited_ids: list[str],
     witnesses: list[dict[str, Any]],
 ) -> bool:
-    """Whether a sealed Perlectio's dissent is the one its entry and feed give.
-
-    Every row is computed again with every alignment run to its end, so the
-    check does not depend on how fast this machine is. A sealed row may
-    instead be the not-compared row of an alignment that ran out of time where
-    it was sealed: that row claims no comparison, only that none was made.
-    """
-    if not isinstance(rows, list):
-        return False
-    expected = _dissent_rows(text, feed, cited_ids, witnesses, None)
-    if len(rows) != len(expected):
-        return False
-    for sealed, (row, reported) in zip(rows, expected, strict=True):
-        if sealed == row:
-            continue
-        if row["compared"] is not True or reported is None:
-            return False
-        head = {name: row[name] for name in ("letter", "witness_label", "cited_units")}
-        unaligned = dissent.unaligned_row(row["letter"], text, reported)
-        unaligned.pop("chair")
-        if sealed != {**head, **unaligned}:
-            return False
-    return True
+    """Whether a sealed Perlectio's dissent is exactly the one its entry and feed give."""
+    return rows == page_dissent(text, feed, cited_ids, witnesses)
 
 
 def expected_perlectio(

@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 import pytest
 
-from common import dissent, page_path
+from common import dissent, page_path, page_testimonia
 from common import stage as stage_module
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
 from common.contracts.errors import ContractError, FatalAccounting, IdentityRefusal
@@ -611,9 +611,45 @@ def _refuse_page_two(tree: tuple[Path, dict[str, Path], str]) -> str:
     return page_id
 
 
-def test_a_page_the_exemplar_refused_is_a_row_that_is_not_counted(happy_tree, tmp_path):
+@pytest.fixture()
+def refuse_page_two(monkeypatch) -> Callable:
+    """`_refuse_page_two`, with the page's upstream crops and Testimonia let through.
+
+    The forgery refuses page 2 after the Designator cut crops from it and the
+    Attestatores showed it to the witnesses; no run can hold both. Those
+    records' page lineage is therefore not checked on the refused page, and
+    every other page's is.
+    """
+    refused: list[str] = []
+    verify_region = page_testimonia.verify_region
+    validate_presented_page = page_testimonia.validate_presented_page
+
+    def region(context, record):
+        if record["payload"]["transform"]["source_page_id"] in refused:
+            return record
+        return verify_region(context, record)
+
+    def presented(context, payload, presentations):
+        if presentations and presentations[0].get("source_page_id") in refused:
+            return None
+        return validate_presented_page(context, payload, presentations)
+
+    monkeypatch.setattr(page_testimonia, "verify_region", region)
+    monkeypatch.setattr(page_testimonia, "validate_presented_page", presented)
+
+    def refuse(tree: tuple[Path, dict[str, Path], str]) -> str:
+        page_id = _refuse_page_two(tree)
+        refused.append(page_id)
+        return page_id
+
+    return refuse
+
+
+def test_a_page_the_exemplar_refused_is_a_row_that_is_not_counted(
+    happy_tree, tmp_path, refuse_page_two
+):
     tree = _copy(happy_tree, tmp_path)
-    page_id = _refuse_page_two(tree)
+    page_id = refuse_page_two(tree)
     denominator = reading_denominator(_context(tree))
     assert sorted(denominator["pages"]) == [1]
     row = denominator["acts"][-1]
@@ -670,29 +706,31 @@ def test_a_page_the_exemplar_refused_is_a_row_that_is_not_counted(happy_tree, tm
     ],
 )
 def test_a_refused_page_s_reading_that_is_not_its_not_run_reading_is_refused(
-    happy_tree, tmp_path, change, refusal
+    happy_tree, tmp_path, change, refusal, refuse_page_two
 ):
     tree = _copy(happy_tree, tmp_path)
-    _refuse_page_two(tree)
+    refuse_page_two(tree)
     _forge(tree[0], "page-reading", 2, None, change)
     with pytest.raises(FatalAccounting, match=refusal):
         reading_acts(_context(tree))
 
 
 @pytest.mark.parametrize("keep", [False, True], ids=["page-read-2-alone", "beside-page-read-1"])
-def test_a_refused_page_s_second_reading_attempt_is_refused(happy_tree, tmp_path, keep):
+def test_a_refused_page_s_second_reading_attempt_is_refused(
+    happy_tree, tmp_path, keep, refuse_page_two
+):
     tree = _copy(happy_tree, tmp_path)
-    _refuse_page_two(tree)
+    refuse_page_two(tree)
     _second_attempt(tree[0], 2, keep=keep)
     with pytest.raises(FatalAccounting, match="has 2 records|not the page path's attempt"):
         reading_acts(_context(tree))
 
 
-def test_a_refused_page_with_an_act_record_is_refused(happy_tree, tmp_path):
+def test_a_refused_page_with_an_act_record_is_refused(happy_tree, tmp_path, refuse_page_two):
     tree = _copy(happy_tree, tmp_path)
     root = tree[0]
     region, record = _one(root, "act-region", 2, 1)
-    _refuse_page_two(tree)
+    refuse_page_two(tree)
     # The page's feed, reading and accounting it was cut from are gone with the page.
     record["inputs"] = []
     _write(region, record)
@@ -855,10 +893,14 @@ def test_a_perlectio_whose_dissent_is_not_its_entrys_is_refused(happy_tree, tmp_
         reading_acts(_context(tree))
 
 
-def test_a_dissent_row_whose_alignment_ran_out_of_time_where_it_was_sealed_is_counted(
+def test_a_sealed_not_compared_row_where_the_alignment_fits_its_budget_is_refused(
     happy_tree, tmp_path
 ):
-    """The not-compared row a clock gave claims no comparison, so it stands as sealed."""
+    """Dissent is bounded by a counted budget, never a clock, so it is required exactly.
+
+    A sealed row saying an alignment did not run, where the same texts align
+    within the budget, would hide a real disagreement.
+    """
     tree = _copy(happy_tree, tmp_path)
     root = tree[0]
     _path, perlectio = _one(root, "perlectio", 1, 1)
@@ -869,15 +911,15 @@ def test_a_dissent_row_whose_alignment_ran_out_of_time_where_it_was_sealed_is_co
     unaligned = dissent.unaligned_row(row["letter"], perlectio["payload"]["text"], reported)
     unaligned.pop("chair")
 
-    def ran_out(record):
+    def not_compared(record):
         sealed = _compared_row(record)
         kept = {name: sealed[name] for name in ("letter", "witness_label", "cited_units")}
         sealed.clear()
         sealed.update(kept, **unaligned)
 
-    _forge(root, "perlectio", 1, 1, ran_out)
-    acts = reading_acts(_context(tree))
-    assert [act["act_key"] for act in acts] == ["p1:1", "p1:2", "p2:1"]
+    _forge(root, "perlectio", 1, 1, not_compared)
+    with pytest.raises(FatalAccounting, match="dissent is not where its reading departs"):
+        reading_acts(_context(tree))
 
 
 @pytest.mark.parametrize(
@@ -992,9 +1034,7 @@ def _forge_page_testimonium(root: Path, change: Callable) -> None:
     path, record = next(
         (path, record)
         for path in sorted(directory.glob("*.json"))
-        if (record := json.loads(path.read_text(encoding="utf-8")))["payload"].get(
-            "native_capture"
-        )
+        if (record := json.loads(path.read_text(encoding="utf-8")))["payload"].get("native_capture")
         is not None
     )
     change(record)

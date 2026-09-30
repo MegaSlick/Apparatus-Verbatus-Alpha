@@ -409,9 +409,12 @@ alignment starts. It is **not**, on its own, a wall-clock bound: `SequenceMatche
 cost on text that differs in many scattered places — exactly the shape a
 systematically-mistaken witness produces — runs close to the *cube* of the
 length rather than the square the pair count assumes, so a comparison well
-under the pair bound can still run for minutes. `dissent.MAX_COMPARISON_SECONDS`
-is the real backstop: a `SIGALRM` deadline around the alignment itself, so a
-comparison that has not finished by then is abandoned rather than awaited.
+under the pair bound can still run for minutes. `dissent.MAX_COMPARISON_STEPS`
+is the real backstop: a counted work budget, each longest-match search charged
+before it runs for every position of the report it will visit, so a comparison
+that would need more is abandoned rather than awaited. It is counted, never
+timed, so the same texts give the same dissent on any machine, and a reader
+recomputing a sealed dissent requires it exactly.
 Either bound is on the **comparison**, never the text — nothing is clipped, no
 reading changes, and the row says in words which bound stopped it and that it
 did not run.

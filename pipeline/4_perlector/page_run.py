@@ -558,7 +558,8 @@ def _check_adopted_perlectio(record: dict[str, Any], expected: dict[str, Any], a
     """Refuse a retained Perlectio other than the one this entry and its page records give.
 
     Every field but its dissent must be `page_path.expected_perlectio`'s; the
-    dissent is adopted as sealed, since its alignments ran under a clock.
+    dissent is adopted as sealed rather than aligned again, and the page-read
+    denominator measures it again exactly (`page_path.dissent_holds`).
     """
     payload = record["payload"]
     if (
@@ -585,8 +586,7 @@ def publish_act_records(
     Every record carries `page_accounting_ref` and the page's hold codes as
     `page_holds`, and is held when those or its own holds are non-empty. A
     `perlectio` already sealed for the entry is adopted when every field but
-    its dissent is the expected one: its dissent is bounded by time, so a
-    second computation could differ.
+    its dissent is the expected one, so a resumed pass aligns nothing again.
     """
     if not plans:
         return

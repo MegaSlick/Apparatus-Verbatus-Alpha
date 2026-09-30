@@ -127,9 +127,9 @@ writer and the counter cannot read a page two ways:
   and number the entries `1..k` with no record beyond them; every field of the
   Perlectio but its dissent must be `page_path.expected_perlectio`'s, the
   function stage 4 publishes and adopts it by, and its dissent is computed
-  again (`page_path.dissent_holds`) with every alignment run to its end. A
-  sealed dissent row may instead be the not-compared row of an alignment that
-  ran out of time where it was sealed: it claims no comparison. Neither record
+  again (`page_path.dissent_holds`) and must be exactly the sealed one: each
+  alignment is bounded by a counted step budget, never a clock, so the same
+  texts align the same way everywhere. Neither record
   may carry a field beyond its schema. A placed region's crop is proven from
   the Exemplar by `exemplar_boundary.verify_reading_region_lineage`.
 

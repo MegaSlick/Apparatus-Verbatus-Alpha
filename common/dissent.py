@@ -31,9 +31,8 @@ from wholesale disagreement.
 
 from __future__ import annotations
 
-import signal
-import threading
 import unicodedata
+from bisect import bisect_left
 from difflib import SequenceMatcher
 from typing import Any, Final
 
@@ -41,77 +40,49 @@ from common.alignment import markup_text_view
 from common.contracts.errors import SchemaRefusal
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 
-# `SequenceMatcher`'s alignment cost is not simply the product of the two
-# lengths: a reading and a report that differ in many scattered places --
-# exactly what a systematically-mistaken witness produces, the case this
-# instrument exists to catch -- costs close to the *cube* of the length, not
-# the square. Measured in this chamber: a 6,800-character reading against an
-# equally long, scattered-difference report is 46.2M pairs, comfortably under
-# the bound below, and took 127 seconds. This constant is kept as a cheap
-# prefilter for a witness stuck in a repetition loop until its token cap --
-# the witness stage puts no ceiling on report length, and Churro's own
-# 24,000-token cap can run well over a hundred thousand characters -- but it
-# no longer bounds wall-clock time on its own -- `MAX_COMPARISON_SECONDS`
-# below does that. Both numbers are untuned; alpha testing over real reports
-# would tune them.
+# A cheap refusal before any alignment: a witness stuck in a repetition loop
+# until its token cap can report far more text than any act holds.
 MAX_COMPARISON_CHARACTER_PAIRS: Final = 100_000_000
 
-# The real backstop. `SequenceMatcher.get_opcodes()` is pure Python, so a
-# `SIGALRM` fired while it is running interrupts it cleanly -- verified in this
-# chamber. Where `SIGALRM` does not exist (non-Unix), the comparison runs to
-# completion exactly as it did before this bound existed; there is no silent
-# narrowing, only a platform on which this particular backstop cannot fire.
-MAX_COMPARISON_SECONDS: Final = 5
+# The work one alignment may do, counted in steps: a step is one position of
+# the witness report `SequenceMatcher`'s longest-match search visits. A report
+# that differs from the reading in many scattered places costs close to the
+# cube of its length, far more than the pair bound above admits, so the count
+# is what bounds it. Charged before the work is done, so whether a comparison
+# aligns depends only on its two texts, never on the machine or the clock.
+MAX_COMPARISON_STEPS: Final = 50_000_000
 
 
-class _ComparisonTimedOut(Exception):
-    """Raised only inside `_aligned_within_deadline`, never let escape it."""
+class _OutOfSteps(Exception):
+    """Raised only inside `_bounded_departures`, never let escape it."""
 
 
-def _deadline_handler(signum: int, frame: Any) -> None:
-    raise _ComparisonTimedOut()
+class _CountedMatcher(SequenceMatcher):
+    """`SequenceMatcher` whose longest-match searches spend a counted budget."""
+
+    def __init__(self, a: str, b: str, steps: int) -> None:
+        self.steps_left = steps
+        super().__init__(None, a, b, autojunk=False)
+
+    def find_longest_match(self, alo=0, ahi=None, blo=0, bhi=None):
+        ahi = len(self.a) if ahi is None else ahi
+        bhi = len(self.b) if bhi is None else bhi
+        # The search visits, for each character of `a[alo:ahi]`, every position
+        # of that character in `b` before `bhi`, and one more to stop.
+        self.steps_left -= sum(
+            bisect_left(self.b2j.get(self.a[i], ()), bhi) + 1 for i in range(alo, ahi)
+        )
+        if self.steps_left < 0:
+            raise _OutOfSteps()
+        return super().find_longest_match(alo, ahi, blo, bhi)
 
 
-def _aligned_within_deadline(reading: str, reported: str, *, seconds: int) -> list | None:
-    """`departures(reading, reported)`, abandoned rather than awaited past `seconds`.
-
-    Returns `None` on timeout. Nothing about `reading` or `reported` is
-    touched either way -- the alignment simply does not finish, exactly as
-    the pair-count bound already declares of itself.
-    """
-    # The same ownership rule `common/alignment.py::align_to_anchor` carries:
-    # `SIGALRM` and `ITIMER_REAL` are process-global, so arming unconditionally
-    # would replace a caller's own real-time timer and then cancel it in
-    # `finally`, destroying a deadline this module never owned. From a
-    # non-main thread `signal.signal` raises outright. Arm only where nothing
-    # else owns the timer; otherwise run without installing a timeout -- a
-    # caller deadline applies only when the caller provides one, as in the
-    # missing-SIGALRM branch below.
-    if (
-        not hasattr(signal, "SIGALRM")
-        or not hasattr(signal, "ITIMER_REAL")
-        or threading.current_thread() is not threading.main_thread()
-        or signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0)
-    ):
-        return departures(reading, reported)
-    previous_handler = signal.signal(signal.SIGALRM, _deadline_handler)
-    signal.alarm(seconds)
+def _bounded_departures(reading: str, reported: str, *, steps: int) -> list | None:
+    """`departures(reading, reported)`, or `None` when its alignment needs more than `steps`."""
     try:
-        result = departures(reading, reported)
-        # Cancelled inside the `try`, not only in `finally`: an alarm that
-        # fires after `departures` returns but before `finally` runs would
-        # otherwise raise `_ComparisonTimedOut` past the `except` above and
-        # propagate a timeout out of a function whose contract is to return
-        # `None` instead. A firing in the remaining instructions is still
-        # caught below and understates a finished comparison rather than
-        # crashing one -- the safe direction of the two.
-        signal.alarm(0)
-        return result
-    except _ComparisonTimedOut:
+        return _departure_spans(_CountedMatcher(reading, reported, steps))
+    except _OutOfSteps:
         return None
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def comparison_view(text: str) -> dict[str, object]:
@@ -153,14 +124,16 @@ def departures(reading: str, reported: str) -> list[dict[str, dict[str, int]]]:
     output on the easy line every witness agrees about (ARCHITECTURE: "a metric
     that rewards disagreement rewards hallucination").
     """
+    return _departure_spans(SequenceMatcher(a=reading, b=reported, autojunk=False))
+
+
+def _departure_spans(matcher: SequenceMatcher) -> list[dict[str, dict[str, int]]]:
     return [
         {
             "reading_span": {"start": reading_start, "end": reading_end},
             "testimonium_span": {"start": witness_start, "end": witness_end},
         }
-        for tag, reading_start, reading_end, witness_start, witness_end in SequenceMatcher(
-            a=reading, b=reported, autojunk=False
-        ).get_opcodes()
+        for tag, reading_start, reading_end, witness_start, witness_end in matcher.get_opcodes()
         if tag != "equal"
     ]
 
@@ -192,7 +165,7 @@ def is_comparable(record: dict[str, Any]) -> bool:
 
 
 def dissent_against(
-    reading: str, testimonia: list[dict], *, seconds: int | None = MAX_COMPARISON_SECONDS
+    reading: str, testimonia: list[dict], *, steps: int = MAX_COMPARISON_STEPS
 ) -> list[dict]:
     """Where the reading departed from each witness that actually reported.
 
@@ -203,9 +176,10 @@ def dissent_against(
     retained testimony that is not text, a declared format that cannot be reduced
     to a comparison view, a page witness unattached to this act and carrying no
     `comparison_reported`, a report large enough to refuse outright
-    (`MAX_COMPARISON_CHARACTER_PAIRS`), and an alignment that did not finish
-    within `seconds` (`MAX_COMPARISON_SECONDS`; `None` runs every alignment to its
-    end). Never guessed at, and never silently dropped from the record either.
+    (`MAX_COMPARISON_CHARACTER_PAIRS`), and an alignment that needed more than
+    `steps` counted steps (`MAX_COMPARISON_STEPS`). The same texts always give
+    the same rows. Never guessed at, and never silently dropped from the record
+    either.
     """
     reading_view = comparison_view(reading)
     rows = []
@@ -214,8 +188,9 @@ def dissent_against(
         if record["outcome"] not in WITNESS_READING_OUTCOMES:
             rows.append({"chair": chair, "compared": False, "reason": record["outcome"]})
             continue
-        # Legacy fixture inputs may carry `reported`; production records use
-        # `payload`, while an act-aligned page slice still takes priority.
+        # An act-aligned page slice (`comparison_reported`) is compared first;
+        # otherwise the retained `payload`, or `reported` where a record names
+        # its text so.
         reported = record["payload"].get(
             "comparison_reported",
             record["payload"].get("payload", record["payload"].get("reported")),
@@ -279,13 +254,9 @@ def dissent_against(
                 }
             )
             continue
-        spans = (
-            departures(reading, reported)
-            if seconds is None
-            else _aligned_within_deadline(reading, reported, seconds=seconds)
-        )
+        spans = _bounded_departures(reading, reported, steps=steps)
         if spans is None:
-            rows.append(unaligned_row(chair, reading, reported))
+            rows.append(unaligned_row(chair, reading, reported, steps))
             continue
         markup_view = markup_text_view(reported)
         witness_view = comparison_view(markup_view["text"])
@@ -317,16 +288,18 @@ def dissent_against(
     return rows
 
 
-def unaligned_row(chair: str, reading: str, reported: str) -> dict[str, Any]:
-    """The row of a comparison that did not align within `MAX_COMPARISON_SECONDS`."""
+def unaligned_row(
+    chair: str, reading: str, reported: str, steps: int = MAX_COMPARISON_STEPS
+) -> dict[str, Any]:
+    """The row of a comparison whose alignment needed more than `steps` counted steps."""
     return {
         "chair": chair,
         "compared": "unknown",
         "reason": (
             f"a {len(reading)}-character reading against a {len(reported)}-"
-            f"character report did not align within this module's "
-            f"{MAX_COMPARISON_SECONDS}-second bound; neither text is clipped and "
-            "neither is changed, the alignment simply did not run"
+            f"character report needs more than this module's {steps}-step "
+            "alignment bound; neither text is clipped and neither is changed, the "
+            "alignment simply did not run"
         ),
     }
 

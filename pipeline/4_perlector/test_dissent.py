@@ -4,13 +4,8 @@ metric; a raw-string cross-check beside the normalized one; an honest
 """
 
 import ast
-import signal
-import threading
-import time
 import unicodedata
 from pathlib import Path
-
-import pytest
 
 from common import dissent
 
@@ -358,41 +353,31 @@ def test_a_long_but_affordable_comparison_is_still_genuinely_aligned():
     assert rows[0]["departures"], "an affordable comparison must still locate its departures"
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "SIGALRM"),
-    reason="the wall-clock backstop is a SIGALRM mechanism; where it cannot exist the "
-    "comparison runs unbounded and this test would hang for minutes to say nothing",
-)
-def test_a_scattered_difference_comparison_well_under_the_pair_bound_is_still_stopped(
-    monkeypatch,
-):
-    """`SequenceMatcher`'s cost is not the product of the two lengths -- text that
-    differs in many scattered places (exactly what a systematically-mistaken
-    witness produces) runs close to the *cube* of the length instead. Measured
-    in this chamber: a 6,800-character scattered comparison took 127 seconds
-    unbounded, while its pair count (~46M) is under
-    `MAX_COMPARISON_CHARACTER_PAIRS` (100M) -- so the pair-count prefilter alone
-    would let it run. The deadline is pinned to one second here so the test
-    asserts the *mechanism* -- the alarm interrupting a comparison the prefilter
-    admitted -- with a ~100x margin over the measured cost, rather than racing
-    the production five-second bound on whatever hardware runs the suite."""
+def test_a_scattered_difference_comparison_well_under_the_pair_bound_is_stopped_by_count():
+    """Text that differs in many scattered places costs close to the cube of its
+    length, so a comparison the pair prefilter admits can still run for
+    minutes. The counted step budget stops it, and because the budget is counted,
+    not timed, the same texts stop at the same place every time."""
     reading = "alpha beta gamma " * 400
     reported = "alpha beta gamna " * 400
-    pairs = len(reading) * len(reported)
-    assert pairs < dissent.MAX_COMPARISON_CHARACTER_PAIRS, "the pair prefilter must not catch this"
+    assert len(reading) * len(reported) < dissent.MAX_COMPARISON_CHARACTER_PAIRS
+    testimonia = [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
+    # A tenth of the sealed budget, so the test spends a fraction of its time.
+    steps = dissent.MAX_COMPARISON_STEPS // 10
 
-    monkeypatch.setattr(dissent, "MAX_COMPARISON_SECONDS", 1)
-    started = time.monotonic()
-    rows = dissent.dissent_against(
-        reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
-    )
-    elapsed = time.monotonic() - started
-    # Generous headroom on purpose: the alarm fires at one second; the margin
-    # covers a loaded CI machine, not the property under test.
-    assert elapsed < 10, "the wall-clock bound must stop the alignment"
+    rows = dissent.dissent_against(reading, testimonia, steps=steps)
+
+    assert rows == dissent.dissent_against(reading, testimonia, steps=steps)
     assert rows[0]["chair"] == "attestator_1", "the witness must not vanish from the record"
-    assert rows[0]["compared"] == "unknown"
-    assert "did not align within" in rows[0]["reason"]
+    assert rows[0] == dissent.unaligned_row("attestator_1", reading, reported, steps)
+    assert "step alignment bound" in rows[0]["reason"]
+
+
+def test_the_step_budget_decides_by_count_alone():
+    """One comparison, two budgets: the smaller one stops it, the larger one does not."""
+    testimonia = [{"outcome": "read", "payload": {"chair": "c", "reported": "alpha gamma"}}]
+    assert dissent.dissent_against("alpha beta", testimonia, steps=1)[0]["compared"] == "unknown"
+    assert dissent.dissent_against("alpha beta", testimonia, steps=10_000)[0]["compared"] is True
 
 
 def test_is_comparable_defaults_true_when_a_testimonium_declares_no_capabilities():
@@ -482,111 +467,6 @@ def test_this_module_pins_equality_only_and_takes_no_similarity_parameter():
 
 
 # --- F-X4 (R4 audit, seat 3): the comparison deadline owns its own alarm ---
-
-
-@pytest.mark.skipif(
-    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
-    reason="requires the POSIX real-time alarm this backstop is built on",
-)
-def test_the_comparison_deadline_leaves_a_callers_own_alarm_alone():
-    """`SIGALRM` is process-global. Arming unconditionally replaced a caller's
-    real-time timer and then cancelled it in `finally`, destroying a deadline
-    this module never owned -- the same defect `common/alignment.py` closed as
-    F-L3, still open in its sibling on the same call path."""
-    previous_handler = signal.getsignal(signal.SIGALRM)
-
-    def caller_handler(signum, frame):
-        pass
-
-    signal.signal(signal.SIGALRM, caller_handler)
-    signal.setitimer(signal.ITIMER_REAL, 30.0)
-    try:
-        result = dissent._aligned_within_deadline("alpha beta", "alpha beta", seconds=1)
-
-        assert result == []
-        remaining, _ = signal.getitimer(signal.ITIMER_REAL)
-        # Not merely "still running": a module that armed its own 1s timer and
-        # left it in place also leaves `remaining > 0`, while the caller's 30s
-        # deadline is gone -- and later fires an unrelated SIGALRM mid-run.
-        assert remaining > 20, "alignment replaced or cancelled a timer it did not own"
-        assert signal.getsignal(signal.SIGALRM) is caller_handler
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0.0)
-        signal.signal(signal.SIGALRM, previous_handler)
-
-
-@pytest.mark.skipif(
-    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
-    reason="requires the POSIX real-time alarm this backstop is built on",
-)
-def test_the_comparison_runs_off_the_main_thread_without_touching_signal_state():
-    """`signal.signal` raises outright from a non-main thread, so the bounded
-    comparison could not run there at all. It degrades to an unbounded run --
-    the same honest degradation the missing-SIGALRM platform already takes --
-    rather than crashing the caller."""
-    captured = {}
-
-    def work():
-        try:
-            captured["result"] = dissent._aligned_within_deadline(
-                "alpha beta", "alpha gamma", seconds=1
-            )
-        except BaseException as error:  # noqa: BLE001 - the point of the test
-            captured["error"] = error
-
-    thread = threading.Thread(target=work)
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    signal.setitimer(signal.ITIMER_REAL, 30.0)
-    try:
-        thread.start()
-        thread.join()
-
-        # The name promises "without touching signal state", so pin the state:
-        # a worker-thread path that reached the process alarm in some way that
-        # did not raise would otherwise stay green while destroying a caller's
-        # timer.
-        remaining, _ = signal.getitimer(signal.ITIMER_REAL)
-        assert remaining > 20, "the worker-thread path disturbed the main thread's timer"
-        assert signal.getsignal(signal.SIGALRM) is previous_handler
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0.0)
-        signal.signal(signal.SIGALRM, previous_handler)
-
-    assert "error" not in captured, captured.get("error")
-    assert captured["result"], "a real difference must still be reported"
-
-
-@pytest.mark.skipif(
-    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
-    reason="requires the POSIX real-time alarm this backstop is built on",
-)
-def test_the_thread_clause_alone_keeps_a_worker_from_the_process_alarm():
-    """The armed-timer case above cannot fail on the main-thread clause: with a
-    caller timer running, the `getitimer` clause already refuses to arm
-    whatever the thread check does. Here NO timer is armed, so the main-thread
-    check is the only thing standing between the worker and `signal.signal` --
-    which raises ValueError off the main thread. Delete that clause and this
-    test goes red where the other stays green."""
-    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0), (
-        "precondition: no caller timer may be armed, or the getitimer clause masks "
-        "the one this test exists to hold"
-    )
-    captured = {}
-
-    def work():
-        try:
-            captured["result"] = dissent._aligned_within_deadline(
-                "alpha beta", "alpha gamma", seconds=1
-            )
-        except BaseException as error:  # noqa: BLE001 - the point of the test
-            captured["error"] = error
-
-    thread = threading.Thread(target=work)
-    thread.start()
-    thread.join()
-
-    assert "error" not in captured, captured.get("error")
-    assert captured["result"], "a real difference must still be reported"
 
 
 # --- P2 review: the two halves of comparison_loss answer the same question ---
