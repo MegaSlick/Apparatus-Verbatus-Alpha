@@ -527,10 +527,12 @@ PERLECTOR_TOKENS_PER_WORD: Final = (120, 73)
 PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS: Final = 4127
 # Kept apart from the ratio so measurement and margin stay visible.
 PERLECTOR_BOUND_SAFETY_MARGIN: Final = (105, 100)
-# Chat-template cost: 52 per turn plus 2 per image, charged at the protocol's
-# `max_images` ceiling so it bounds any request; a test reconciles the 32 with
-# `config/perlector_protocol.toml`.
-PERLECTOR_PROMPT_OVERHEAD_TOKENS: Final = 52 + 2 * 32
+# The Perlector chat template's measured cost of one turn, and of each image in it.
+CHAT_TURN_TOKENS: Final = 52
+CHAT_IMAGE_TOKENS: Final = 2
+# Chat-template cost charged at the protocol's `max_images` ceiling so it bounds
+# any request; a test reconciles the 32 with `config/perlector_protocol.toml`.
+PERLECTOR_PROMPT_OVERHEAD_TOKENS: Final = CHAT_TURN_TOKENS + CHAT_IMAGE_TOKENS * 32
 PERLECTOR_MAX_IMAGES_THE_OVERHEAD_COVERS: Final = 32
 # `prompts.py`'s module digest (`builder_sha256`): editing the builder expires
 # the measured ratio.  The neighbouring-acts block is outside the ratio: the live
@@ -676,10 +678,12 @@ def _rate_bound_tokens(characters: int) -> int:
 PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST: Final = (
     "81f50e7d053dca1b397812f4a8521985317466131d336b3c43854e9efeeade7d"
 )
-# Chat-template cost: 52 for the one turn plus 2 per image, charged at the most a
+# Chat-template cost: one turn plus each image, charged at the most a
 # page request sends -- the page render and its overlay (`[feed] page_overlay`).
 PERLECTOR_PAGE_MAX_IMAGES: Final = 2
-PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS: Final = 52 + 2 * PERLECTOR_PAGE_MAX_IMAGES
+PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS: Final = (
+    CHAT_TURN_TOKENS + CHAT_IMAGE_TOKENS * PERLECTOR_PAGE_MAX_IMAGES
+)
 
 # The page answer's reserve. The answer transcribes the same ink the witnesses
 # read, so its text is estimated at the page's longest witness text, and each act

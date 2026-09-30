@@ -379,25 +379,31 @@ paid on/off comparison is worth running; the feature itself stays off
 
 Per page it records:
 
-- `native`: the manifest's `width` and `height` (which `local_admission.py`
-  checks against the decoded pixels); no image is opened;
+- `native`: the manifest's `width` and `height`, taken to be the sealed page's
+  (`local_admission.py` checks them against the decoded pixels); no image is
+  opened;
 - `sent`: the page render the page request embeds, at `[page_context]
   maximum_edge` (`common.page_render.render_size`, the rule the renderer uses);
 - `seen`: the size the Perlector row's processor resizes that render to
   (`common.request_capacity.smart_resize`, with the row's `min_pixels`,
   `max_pixels`, `patch_size` and `merge_size`; the token count is the
   processor's `image_grid_thw.prod() // merge_size**2`);
-- `gain_bp`: how many times finer, linearly, native pixels are than those seen,
-  `sqrt(native area / seen area)`, in basis points;
+- `page_gain_bp`: how many times finer, linearly, native pixels are than those
+  seen, `sqrt(native area / seen area)`, in basis points;
+- `crop_native`, `crop_seen` and `gain_bp`: one crop's native size, the size the
+  processor resizes it to, and the gain the chair actually gets from it —
+  `page_gain_bp` scaled by the crop's own seen-over-native factor, never above
+  one, so a crop the processor shrinks gains less;
 - `need` and `headroom`: the page request's capacity record against the sealed
   row's 65,536-token context, built as `perlector_request_fit.py` builds it (the
   sealed feed, the page's gold text standing in for three witnesses, Surya lines
   estimated from it);
-- `k`: the most crops, up to `--max-crops`, that round two fits. Round two is
-  the page request exactly as admitted — same images, prompt charge and answer
-  reserve — plus k crops, each charged its image tokens (`request_fits`) and the
-  chat template's two tokens per image. The round-one answer is not carried into
-  round two, and no wording for the crop request is charged beyond those tokens;
+- `k` and `k_capped`: the most crops, up to `--max-crops`, that round two fits,
+  and whether the cap stopped it. Round two is the page request as admitted,
+  plus its answer reserve again for the round-one reply carried in context, one
+  more chat turn (`CHAT_TURN_TOKENS`) and k crops, each charged its image tokens
+  (`request_fits`) and `CHAT_IMAGE_TOKENS`, answered within the same reserve.
+  Wording that asks for the crops is not charged beyond that turn;
 - `qualifies`: `gain_bp` at least `--min-gain` and k at least 1. A page whose
   request is refused at 65,536 tokens has k 0 and does not qualify.
 
@@ -410,7 +416,8 @@ Per page it records:
 
 The default crop is half the page wide and an eighth tall, a few lines of an
 act; k falls as the crop's area grows, so the census is worth running at more
-than one crop size. The report is canonical JSON (sorted keys, no timestamps)
-carrying its inputs, the manifest's digest, every page and a summary: the share
-of pages qualifying, gain quantiles (nearest rank) and a histogram of k. The
-printed summary carries counts only.
+than one crop size. The report is sorted-key JSON with no timestamps, carrying
+its inputs (the manifest's digest, the digests of the three configs it reads and
+of the page-prompt builder), every page and a summary: the share of pages
+qualifying, gain quantiles (nearest rank), a histogram of k and how many pages
+reached the cap. The printed summary carries counts only.
