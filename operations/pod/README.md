@@ -416,7 +416,10 @@ builds that environment right after the project's own, with
 catalogue has a subprocess row for a chair the roster configures, and then counts its
 14 GiB in the container disk it checks first. Its weight bundle is fetched once onto the
 network volume by `operations/serving/surya/prefetch.py`
-(`operations/serving/surya/README.md`, "On the pod").
+(`operations/serving/surya/README.md`, "On the pod"). `pod_run` counts Surya among the
+Designator's chairs: a selection that runs the Designator with Surya configured is
+refused unless the preflight report places Surya as a subprocess, verified its cache and
+carries its golden-page run in `subprocess_receipts`.
 
 ## The pod guard: every pod deletes itself when idle or out of time
 
@@ -642,7 +645,11 @@ A kernel without working Landlock is a refusal: choose another host, never bypas
 
 Keep the repository, `.venv` and `UV_CACHE_DIR` on container-local disk. The serving stack
 keeps only the active model in its container-local cache. Keep inputs, outputs,
-evidence and the materialized model store on the network volume.
+evidence and the materialized model store on the network volume. A store on the volume
+written before the roster gained an artifact (the record detector, for one) is upgraded
+at boot: materialization adds each new artifact to its record as `pending-fetch` and
+fetches it, provided every artifact the store already names still matches the roster;
+any other record is refused (`common/chairs/README.md`).
 
 ### What the image must carry
 

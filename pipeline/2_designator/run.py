@@ -43,6 +43,7 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import (  # noqa: E402
     digest_of,
+    half_even_bp,
     is_plain_int,
     self_hash,
 )
@@ -81,6 +82,7 @@ from common.stage import (  # noqa: E402
     SECONDARY_PROPOSER_CHAIR,
     STRUCTURE_ANSWER_KIND,
     STRUCTURE_ANSWER_RECORD_SCHEMA,
+    STRUCTURE_ATTEMPT_KIND,
     StageContext,
     _stage_records,
     canary_ordinals,
@@ -92,6 +94,7 @@ from common.stage import (  # noqa: E402
     open_stage_context,
     page_residual_act_key,
     refuse_retired_structure_answer,
+    refuse_structure_answer_text_view,
     run_stage,
     stage_parser,
     validate_serving_provenance,
@@ -102,6 +105,7 @@ from operations.serving.client import ChairClient, serving_mode_for  # noqa: E40
 from operations.serving.detector import (  # noqa: E402
     FIXTURE_ENGINE,
     RecordDetector,
+    check_record_detector_runnable,
     fixture_record_detector,
     load_ultralytics_record_detector,
 )
@@ -114,7 +118,6 @@ DESCRIPTION = "Designator: marks out the acts and cuts the crops. It establishes
 # equal to common/recovery.py's RULED_ABSOLUTE_CAP by hand: recovery restores
 # coverage, never quality, so the attempt ceiling must equal the absolute cap.
 ABSOLUTE_STRUCTURE_ATTEMPT_CEILING = 3
-STRUCTURE_ATTEMPT_KIND = "structure-attempt"
 
 # How much of a page's secondary rescue pass its records enumerate. Kept here,
 # not in `common/`, because nothing outside this stage reads it.
@@ -379,6 +382,9 @@ def _validate_structure_answer_payload(payload: object, *, terminal: bool = True
     schema = payload.get("schema")
     refuse_retired_structure_answer(schema, subject="structure answer", error_type=ContractError)
     if schema == STRUCTURE_ANSWER_RECORD_SCHEMA:
+        refuse_structure_answer_text_view(
+            payload.get("text_view"), subject="structure answer", error_type=ContractError
+        )
         record = _closed_object(payload, _STRUCTURE_ANSWER_V3_FIELDS, "v3 structure-answer payload")
         _closed_object(
             record["presentation_ref"],
@@ -521,7 +527,12 @@ def secondary_provenance(context) -> tuple[dict, RecordDetector | None]:
     resolved = _resolved_secondary(context)
     if isinstance(resolved, AbsentChair):
         return _absent_chair_record(context, resolved), None
-    return _open_record_detector(context, resolved, fixture_allowed=True)
+    return _open_record_detector(
+        context,
+        resolved,
+        fixture_allowed=True,
+        published=_published_secondary_provenance(context),
+    )
 
 
 def _resolved_secondary(context) -> ChairIdentity | AbsentChair:
@@ -2461,6 +2472,22 @@ def _published_secondary_provenance(context) -> dict | None:
     return records[0]["payload"] if records else None
 
 
+def _check_record_detector_runnable(context) -> None:
+    """Refuse a configured record detector the live pass could not load: its row,
+    its pinned package versions and its weights digest, without loading the model."""
+    identity = _resolved_secondary(context)
+    if not isinstance(identity, ChairIdentity):
+        return
+    _record_detector_mode(context, identity, fixture_allowed=False)
+    profile = bound_serving_recipes(context, context.args.serving_recipes_config).for_identity(
+        identity, context.args.placement_tier
+    )
+    try:
+        check_record_detector_runnable(profile, lambda: context.registry.ensure(identity).root)
+    except ServingError as error:
+        raise ContractError(f"the record detector is not ready: {error}") from error
+
+
 def _live_secondary(context) -> tuple[dict, RecordDetector | None]:
     """The secondary proposer on the live path: recorded absent, or run in-process.
 
@@ -2583,7 +2610,7 @@ def _publish_detector_records(
             receipt_ref=secondary["receipt_ref"],
             response_ref=raw_ref,
             detections=[
-                {"obb": quantized[index], "score_bp": round(detections[index]["score"] * 10_000)}
+                {"obb": quantized[index], "score_bp": half_even_bp(detections[index]["score"])}
                 for index in cuttable
             ],
         )
@@ -2610,7 +2637,7 @@ def _publish_detector_records(
                 "raw_output_ref": raw_ref,
                 "quantization": DETECTOR_QUANTIZATION,
                 "score_quantization": DETECTOR_SCORE_QUANTIZATION,
-                "score_bp": round(detection["score"] * 10_000),
+                "score_bp": half_even_bp(detection["score"]),
                 "class_id": detection["class_id"],
                 "class_name": detection["class_name"],
                 "raw_proposal": proposal,
@@ -3084,12 +3111,16 @@ def live_initial_pass(
                 subject=f"page {row.get('subject_id')}'s structure answer",
                 error_type=ContractError,
             )
-    # Checked before the structure chair starts, so a detector row this stage
-    # cannot run refuses before any paid work; the detector itself loads only
-    # once the structure chair has closed, and Surya runs then too.
-    configured_secondary = _resolved_secondary(context)
-    if isinstance(configured_secondary, ChairIdentity):
-        _record_detector_mode(context, configured_secondary, fixture_allowed=False)
+            if payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA:
+                refuse_structure_answer_text_view(
+                    payload.get("text_view"),
+                    subject=f"page {row.get('subject_id')}'s structure answer",
+                    error_type=ContractError,
+                )
+    # Checked before the structure chair starts, so a detector this stage cannot
+    # run refuses before any paid work; the detector itself loads only once the
+    # structure chair has closed, and Surya runs then too.
+    _check_record_detector_runnable(context)
     surya_detection.check_surya_runnable(context, surya_runner)
 
     page_cache: dict[int, dict] = {}

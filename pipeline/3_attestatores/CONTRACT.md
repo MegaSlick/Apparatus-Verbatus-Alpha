@@ -81,7 +81,10 @@ naming no serving call, is refused rather than resumed over: a live pass cannot
 continue a fixture-posture run. A `dead`/`not-run` record is not that evidence
 — it names no serving call because no chair was ever shown pixels for it, which
 is an independent fact from a fixture-posture response, so it is skipped rather
-than raised on.
+than raised on. A sealed capture read under a text view this build no longer
+produces is refused by name at every point a resumed pass reuses one (the page
+record, the act record and a Chandra terminal record), before its bytes are
+read; see "The capture's text view" below.
 
 **Closed asymmetry: cut-off composition is shared.** A parse failure landing on
 a response the provider itself cut off at its bound now reads as an exhausted
@@ -172,8 +175,9 @@ reading order, each carrying `data-bbox` (four integers normalized to
 `BBOX_SCALE = 1000`) and `data-label` from the vendor's own label vocabulary.
 Nothing is repaired: a malformed or out-of-range `data-bbox` becomes
 `bbox_1000: None` plus a `malformed-bbox` finding where the vendor prints a
-line and substitutes `[0, 0, 1, 1]`; a `Blank-Page` block is retained without
-text or geometry where the vendor drops it; a nested `data-bbox` is recorded
+line and substitutes `[0, 0, 1, 1]`; a `Blank-Page` block is retained where the
+vendor drops it, with no geometry and with its text kept like any other
+block's; a nested `data-bbox` is recorded
 rather than stripped; and the block count the reader returns is reconciled
 against the raw HTML's own top-level `div` count as a finding. Those findings
 travel on the capture beside the reading, because they are the
@@ -181,6 +185,30 @@ whole of what the vendor's parser would have printed to a stdout nobody
 retains. A body the reader can place in no shape at all lands in the
 `unrecognized-shape` state naming what it saw in `outcome`, with its bytes
 already retained.
+
+### The capture's text view
+
+A capture read under a vendor grammar records `text_view`, the named rule its
+parse text and findings were read under: `chandra-layout-text.v2` for Chandra
+under `html`, `churro-historical-document-text.v2` for Churro under `xml`
+(`common.native_witness.CAPTURE_TEXT_VIEWS`). The writer takes it from the
+parser's own result where the parser reports one and from that table where it
+does not (a Churro body that failed to parse, a Chandra body in no shape), so
+it is recorded whatever the parse state. A capture of any other adapter and
+parser — DAI's `text`, the fixture's `json`, no parse — records none, and one
+that names a view anyway is refused.
+
+`v1` of each view is retired: Chandra's dropped a `Blank-Page` block's text and
+Churro's did not report document text outside every page, so a capture read
+under either differs from what this build reads from the same bytes.
+`validate_capture_text_view` refuses a capture naming a retired view, or none
+where its grammar has one, by that name and whatever its parse state, before
+anything re-derives it: at the resume points above, in
+`verify_native_capture_bytes` (every reader's re-derivation) and at the writer
+itself. The refusal says to re-run the submission from the Door. A new
+Attestatores pass over the same run tree would resume the sealed capture and
+meet the same refusal, and no stage starts a run tree past the Door, so a fresh
+run is the only route that reads the page again.
 
 **Attestator 1 carries Chandra's pinned native inference loop.** New runs seal
 the decoding policy's exact `datalab-to/chandra@d4f7467` recipe: the initial
@@ -1427,9 +1455,10 @@ arrives. A unit refused for capacity before it is sent is a `failed` unit with
 no capture. The page record is sealed only once every unit on the page has
 been answered, so a pass interrupted inside a page asks that page's units
 again, and a page record already sealed is resumed and never asked again. A
-page the detector found nothing on is sealed `not-run` without a request, with
-reason "DAI's own record detector found no record on this page, so DAI was
-shown nothing here".
+page with no unit is sealed `not-run` without a request, with reason "DAI's own
+record detector found no record on this page, so DAI was shown nothing here",
+or, when the census counts records none of which enclosed a crop, a reason
+naming that count.
 
 **The fixture posture.** A fixture row reads each record exactly as a served
 one is read -- the same presentation, the same closed model view and the same
@@ -1443,15 +1472,19 @@ live pass, and a sealed act view is reused rather than re-derived, because the
 page record it derives from is never read again.
 
 **The page record.** One `page-testimonium` per page, in the closed page shape
-plus two fields. `presentations` lists every image the chair was shown, in
+plus three fields. `presentations` lists every image the chair was shown, in
 unit order, each an `adapter-crop` of the one sealed page, and `presented` is
 its first. `unit_captures` holds one retained model view per presentation
 (`null` for a unit that never reached the chair), each naming a response the
-record retains in `raw_response_refs`. `observed` has one `presented` box per
+record retains in `raw_response_refs`. `unit_call_refs` holds each unit's
+retained call record (`null` for a unit refused before it was sent), held to
+the chair's sealed sampling row and its receipt's seed when the record is
+written and again when a resumed pass reads it back. `observed` has one `presented` box per
 unit: DAI reports no geometry, so each box is exactly the detector crop that
 unit was shown, checked against that unit's own presentation, with a `span`
 into the page text when that unit delivered a reading. Every
-presented image and retained response is digest-bound in `inputs`. Both later
+presented image, retained response and unit call record is digest-bound in
+`inputs`. Both later
 readers take every presentation from `presentations`
 (`common/native_witness.py::record_presentations`).
 

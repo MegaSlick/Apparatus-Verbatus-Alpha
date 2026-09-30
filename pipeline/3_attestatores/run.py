@@ -95,6 +95,7 @@ from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
     split_page_edge_overshoots,
     unpresented_region_ids,
+    validate_capture_text_view,
     validate_native_capture,
     validate_native_witness_geometry,
     validate_presented_page_binding,
@@ -1262,6 +1263,7 @@ def page_testimonium_payload(
     native_inference: dict[str, Any] | None = None,
     presentations: list[dict[str, Any]] | None = None,
     unit_captures: list[dict[str, Any] | None] | None = None,
+    unit_call_refs: list[dict[str, str] | None] | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Page-scoped Testimonia admit only the producer's closed field set.
@@ -1311,6 +1313,7 @@ def page_testimonium_payload(
         native_inference=native_inference,
         presentations=presentations,
         unit_captures=unit_captures,
+        unit_call_refs=unit_call_refs,
     )
     validate_page_testimonium_payload(record, testimonium_id=testimonium_id)
     # The tally read-back excludes page Testimonia, so their health closes here.
@@ -1932,6 +1935,11 @@ def fixture_attempt(context, act, chair, resolved, declarations) -> Any:
 def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
     """Rehydrate digest-identical Chandra bytes needed for the derived page record."""
     payload = record["payload"]
+    capture = payload.get("native_capture")
+    if capture is not None:
+        # Reused as this pass's own capture, so one read under a view this build
+        # no longer produces is refused by that name before its bytes are reused.
+        capture = validate_capture_text_view(validate_native_capture(capture))
     raw_response_ref = payload.get("raw_response_ref")
     observation_payload = None
     # A live attempt carries geometry bytes only where its response parsed; the
@@ -1961,7 +1969,7 @@ def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
         raw_response_ref=raw_response_ref,
         observation_payload=observation_payload,
         # Lets a resumed live pass rebuild the page record without re-asking.
-        native_capture=payload.get("native_capture"),
+        native_capture=capture,
         serving_call_ref=payload.get("serving_call_ref"),
         receipt_ref=provenance.get("receipt_ref") if isinstance(provenance, dict) else None,
         raw_response_kind=payload.get("raw_response_kind"),
@@ -3914,7 +3922,7 @@ def _page_capture_from_record(
         )
     capture = payload.get("native_capture")
     if capture is not None:
-        capture = validate_native_capture(capture)
+        capture = validate_capture_text_view(validate_native_capture(capture))
     observation_payload = None
     if (
         capture is not None
@@ -4067,10 +4075,9 @@ def _prepared_detector_pages(
     """Each page's DAI units, with every page that needs no request settled first.
 
     A page record sealed by an interrupted pass is resumed, never asked again,
-    and a page the detector found no record on is sealed `not-run` without a
-    request. Both then feed their act views like any answered page.
+    and a page with no record crop is sealed `not-run` without a request. Both then feed their act views like any answered page.
     """
-    units_by_page = detector_units_by_page(context)
+    units_by_page, detections_by_page = detector_units_by_page(context)
     sealed = _sealed_page_testimonia(context, ordinal)
     for chair in detector_chairs:
         resolved = context.registry.resolve(chair)
@@ -4083,7 +4090,10 @@ def _prepared_detector_pages(
                 )
             record = sealed.get((page_ordinal, chair))
             if record is not None:
-                page_captures[(page_ordinal, chair)] = (_detector_page_attempt(record), None)
+                page_captures[(page_ordinal, chair)] = (
+                    _detector_page_attempt(context, record, chair),
+                    None,
+                )
             elif not units_by_page[page_ordinal]:
                 page_captures[(page_ordinal, chair)] = (
                     publish_detector_page_testimonium(
@@ -4097,6 +4107,7 @@ def _prepared_detector_pages(
                         served=[],
                         receipt_ref=None,
                         page_ids=page_ids,
+                        detection_count=detections_by_page[page_ordinal],
                     ),
                     None,
                 )
@@ -4437,6 +4448,16 @@ NO_DETECTOR_RECORD_REASON: Final = (
 )
 
 
+def no_detector_unit_reason(detection_count: int) -> str:
+    """Why a page's DAI record is `not-run`: no record found, or none that enclosed a crop."""
+    if detection_count == 0:
+        return NO_DETECTOR_RECORD_REASON
+    return (
+        f"DAI's own record detector found {detection_count} record(s) on this page and none "
+        "enclosed a crop, so DAI was shown nothing here"
+    )
+
+
 def reads_detector_records(resolved: Any) -> bool:
     """Whether this chair reads its page one detector record at a time."""
     return (
@@ -4472,12 +4493,15 @@ def _verify_detector_region(context, region: dict[str, Any]) -> None:
     )
 
 
-def detector_units_by_page(context) -> dict[int, list[dict[str, Any]]]:
-    """Each sealed page's record crops, in the detector's own order.
+def detector_units_by_page(
+    context,
+) -> tuple[dict[int, list[dict[str, Any]]], dict[int, int]]:
+    """Each sealed page's record crops, in the detector's own order, and its census count.
 
     Read from the Designator's per-page census, so a page the detector found
     nothing on has no units and a missing record refuses by name. A record whose
-    box encloses no crop is kept by the Designator and is not a unit.
+    box encloses no crop is kept by the Designator and is not a unit, but it is
+    counted.
     """
     kinds = (DETECTOR_PAGE_KIND, DETECTOR_RECORD_KIND, DETECTOR_REGION_KIND)
     by_kind: dict[str, dict[str, dict[str, Any]]] = {kind: {} for kind in kinds}
@@ -4491,6 +4515,7 @@ def detector_units_by_page(context) -> dict[int, list[dict[str, Any]]]:
                 )
             by_kind[entry["kind"]][record["subject_id"]] = record
     units: dict[int, list[dict[str, Any]]] = {}
+    detections: dict[int, int] = {}
     for page in by_kind[DETECTOR_PAGE_KIND].values():
         payload = page["payload"]
         ordinal = payload["page_ordinal"]
@@ -4523,7 +4548,8 @@ def detector_units_by_page(context) -> dict[int, list[dict[str, Any]]]:
             _verify_detector_region(context, region)
             page_units.append(region)
         units[ordinal] = page_units
-    return units
+        detections[ordinal] = payload["detection_count"]
+    return units, detections
 
 
 def _record_owner(
@@ -4632,8 +4658,14 @@ def publish_detector_page_testimonium(
     served: list[tuple[dict[str, Any], dict[str, Any], Attempt]],
     receipt_ref: dict[str, str] | None,
     page_ids: dict[int, str] | None = None,
+    detection_count: int = 0,
 ) -> Attempt:
-    """Seal one DAI page record over every unit it read; return the page attempt."""
+    """Seal one DAI page record over every unit it read; return the page attempt.
+
+    A page with no unit is sealed `not-run`; ``detection_count`` is its census
+    count, which says whether the detector found nothing or found records that
+    enclosed no crop.
+    """
     # First, so a bad roster or a chair the run did not seal page-scoped refuses
     # before any record is built.
     page_witness_chairs = declared_page_witness_chairs(context)
@@ -4654,7 +4686,7 @@ def publish_detector_page_testimonium(
     adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
     capabilities = _declared_format_capabilities(adapter)
     if not served:
-        outcome, reason = "not-run", NO_DETECTOR_RECORD_REASON
+        outcome, reason = "not-run", no_detector_unit_reason(detection_count)
         attempt = Attempt(
             outcome=outcome,
             native_payload=None,
@@ -4705,6 +4737,7 @@ def publish_detector_page_testimonium(
         raw_refs = _named_once(
             [a.raw_response_ref for _r, _p, a in served if a.raw_response_ref is not None]
         )
+        unit_call_refs = [a.serving_call_ref for _r, _p, a in served]
         page_proposal_regions = sealed_page_proposal_regions(context, page_ordinal)
         disagreement = partition_disagreement(
             {
@@ -4722,6 +4755,7 @@ def publish_detector_page_testimonium(
             raw_response_refs=raw_refs,
             presentations=presentations,
             unit_captures=[a.native_capture for _r, _p, a in served],
+            unit_call_refs=unit_call_refs,
             chair=chair,
             act_key=f"page-{page_ordinal}",
             ordinal=ordinal,
@@ -4738,8 +4772,11 @@ def publish_detector_page_testimonium(
             reason=reason,
         )
         inputs = _named_once(
-            [context.input_ref(presented["image_path"]) for presented in presentations] + raw_refs
+            [context.input_ref(presented["image_path"]) for presented in presentations]
+            + raw_refs
+            + [reference for reference in unit_call_refs if reference is not None]
         )
+        verify_unit_call_sampling(context, payload, chair)
     validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
     context.publish(
         kind="page-testimonium",
@@ -5030,9 +5067,34 @@ def fixture_detector_pages(
     return recorded
 
 
-def _detector_page_attempt(record: dict[str, Any]) -> Attempt:
-    """The page attempt a sealed DAI page record states, for a resumed pass."""
+def verify_unit_call_sampling(context, payload: dict[str, Any], chair: str) -> None:
+    """Hold every unit call a DAI page record retains to its chair's sealed sampling row
+    and its receipt's seed, as an act reading's one call is held."""
+    for reference in payload.get("unit_call_refs", []):
+        if reference is None:
+            continue
+        validate_retained_response_blob(context.tree, reference, "unit_call_refs")
+        try:
+            call = json.loads(context.tree.read_bytes(reference["relative_path"]))
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
+            raise SchemaRefusal("a page Testimonium's unit call record is not JSON") from error
+        if not isinstance(call, dict):
+            raise SchemaRefusal("a page Testimonium's unit call record is not an object")
+        try:
+            verify_retained_call_sampling(context, call, chair)
+        except ContractError as error:
+            raise SchemaRefusal(
+                f"a page Testimonium's unit call record is not its sealed request: {error}"
+            ) from error
+
+
+def _detector_page_attempt(context, record: dict[str, Any], chair: str) -> Attempt:
+    """The page attempt a sealed DAI page record states, for a resumed pass.
+
+    Its unit calls are held to the sealed sampling again before anything reads it.
+    """
     payload = record["payload"]
+    verify_unit_call_sampling(context, payload, chair)
     provenance = payload.get("provenance")
     return Attempt(
         outcome=record["outcome"],
@@ -5133,7 +5195,7 @@ def _attempt_from_evidence_record(context, value: Any) -> Attempt:
     observation_payload = None
     capture = value["native_capture"]
     if capture is not None:
-        validate_native_capture(capture)
+        validate_capture_text_view(validate_native_capture(capture))
         reference = validate_raw_response_ref(capture["raw_response_ref"])
         observation_payload = read_verified(
             context.tree.read_bytes,

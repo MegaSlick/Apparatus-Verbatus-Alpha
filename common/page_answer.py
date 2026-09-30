@@ -39,8 +39,11 @@ after it carries no content and is accepted. Anything else outside the object
 was asked for bare JSON, and taking the object out of a wrapper would be
 reading a reply the grammar does not admit (a fence is named
 `fenced-answer`, so a proof run can count how often it happens). Duplicate
-keys, `NaN`/`Infinity` and nesting too deep to read are `malformed` too: each
-would make the parsed object say something the bytes do not. So is a lone
+keys and `NaN`/`Infinity` are `malformed` too: each would make the parsed
+object say something the bytes do not. So is an array or object nested more
+than `MAX_NESTING_DEPTH` deep (`too-deep`), counted before the reply is parsed,
+so the answer does not depend on how deep the interpreter's own parser can go;
+the grammar itself nests four deep. So is a lone
 surrogate (a `\\ud800`-style escape with no partner) in any key or string
 value: it is no Unicode character, so the answer could not be encoded as the
 UTF-8 every record is written in (`lone-surrogate`).
@@ -67,6 +70,7 @@ _ACT_FIELDS: Final = _ACT_REQUIRED | {"label"}
 _SET_ASIDE_FIELDS: Final = frozenset({"id", "reason"})
 _JSON_WHITESPACE: Final = " \t\n\r"
 _FENCE_MARK: Final = "```"
+MAX_NESTING_DEPTH: Final = 64
 
 
 class _DuplicateKey(ValueError):
@@ -89,18 +93,42 @@ def _problem(code: str, detail: str) -> dict[str, str]:
     return {"code": code, "detail": detail}
 
 
+def _nesting_depth(text: str) -> int:
+    """The deepest `[`/`{` nesting in `text`, not counting brackets inside strings."""
+    depth = deepest = 0
+    in_string = escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif character in "]}":
+            depth -= 1
+    return deepest
+
+
 def _decode(body: str) -> tuple[Any, list[dict[str, str]]]:
     """Exactly one JSON value spanning `body` (surrounding whitespace aside), or problems."""
     decoder = json.JSONDecoder(
         object_pairs_hook=_refuse_duplicates, parse_constant=_refuse_constant
     )
     stripped = body.strip(_JSON_WHITESPACE)
+    if (depth := _nesting_depth(stripped)) > MAX_NESTING_DEPTH:
+        return None, [
+            _problem("too-deep", f"nested {depth} deep, past the {MAX_NESTING_DEPTH} admitted")
+        ]
     try:
         value, end = decoder.raw_decode(stripped)
     except _DuplicateKey as error:
         return None, [_problem("duplicate-key", str(error))]
-    except RecursionError:
-        return None, [_problem("not-json", "nested too deeply to read")]
     except ValueError as error:
         return None, [_problem("not-json", str(error))]
     if end != len(stripped):

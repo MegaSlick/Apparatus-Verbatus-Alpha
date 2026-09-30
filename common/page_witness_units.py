@@ -154,12 +154,27 @@ def _chandra_reading(
             "a Chandra page Testimonium read as `read` retains a response with no layout "
             f"blocks ({parsed['parse_outcome']})"
         )
-    if (
-        capture["parse"].get("state") == "parsed"
-        and capture["parse"]["text"] != parsed["page_text"]
-    ):
+    # The bytes parse, so the capture must say so: one recorded as another state
+    # was not read by this parser from these bytes.
+    if capture["parse"].get("state") != "parsed":
+        raise SchemaRefusal(
+            f"a Chandra page capture records its parse as {capture['parse'].get('state')!r}, "
+            "but its retained raw response parses"
+        )
+    if capture["parse"]["text"] != parsed["page_text"]:
         raise SchemaRefusal(
             "a Chandra page capture's parsed text differs from its retained raw response"
+        )
+    # The repetition scan's finding is the Attestatores' own; the rest are the
+    # grammar's and must be what this parse finds in the same bytes.
+    grammar_findings = [
+        finding
+        for finding in capture["findings"]
+        if finding.get("kind") not in REPETITION_FINDING_KINDS
+    ]
+    if grammar_findings != parsed["findings"]:
+        raise SchemaRefusal(
+            "a Chandra page capture's findings differ from its retained raw response"
         )
     units = [
         witness_unit(

@@ -271,7 +271,9 @@ def validate_failed_perlectio(
                 decoding_policy,
                 "perlector",
                 expected_seed=(
-                    sent_seed if sent_seed in admitted_seeds else serving_receipt.get("seed")
+                    sent_seed
+                    if type(sent_seed) is int and sent_seed in admitted_seeds
+                    else serving_receipt.get("seed")
                 ),
             )
         except ContractError as error:

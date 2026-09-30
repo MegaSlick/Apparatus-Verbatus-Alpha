@@ -126,20 +126,28 @@ def sealed_proposal_regions(context) -> list[dict]:
 # --- one page Testimonium -------------------------------------------------------------
 
 
-def validate_presented_page(context, payload: dict, presented: dict) -> None:
-    """Bind a witness's presentation and observed geometry to its sealed Exemplar page."""
-    page_id = presented.get("source_page_id")
+def validate_presented_page(context, payload: dict, presentations: list[dict]) -> None:
+    """Bind a witness's presentations and observed geometry to their one sealed Exemplar page.
+
+    The page is read and sized once; every presentation must name it.
+    """
+    if not presentations:
+        raise SchemaRefusal("an attempted Testimonium names no presentation")
+    page_id = presentations[0].get("source_page_id")
+    if any(shown.get("source_page_id") != page_id for shown in presentations):
+        raise SchemaRefusal("a Testimonium's presentations name more than one sealed page")
     page, page_bytes = read_sealed_page(context.tree, page_id)
     page_size = dimensions(page_bytes)
     validate_native_witness_geometry(payload, page_size=page_size)
-    validate_presented_page_binding(
-        presented,
-        page_ordinal=page["payload"]["ordinal"],
-        page_image_path=page["payload"]["image_path"],
-        page_sha256=page["payload"]["source_sha256"],
-        page_size=page_size,
-        page_bytes=page_bytes,
-    )
+    for presented in presentations:
+        validate_presented_page_binding(
+            presented,
+            page_ordinal=page["payload"]["ordinal"],
+            page_image_path=page["payload"]["image_path"],
+            page_sha256=page["payload"]["source_sha256"],
+            page_size=page_size,
+            page_bytes=page_bytes,
+        )
 
 
 def validate_page_testimonium_record(
@@ -196,8 +204,7 @@ def validate_page_testimonium_record(
                 "record. Its observations would be attributed to the wrong sealed ink. Restore "
                 "the page identity and ordinal of the presentation actually served"
             )
-        for shown in presentations:
-            validate_presented_page(context, payload, shown)
+        validate_presented_page(context, payload, presentations)
         expected_inputs = [
             {"relative_path": shown["image_path"], "sha256": shown["image_sha256"]}
             for shown in presentations
@@ -212,6 +219,9 @@ def validate_page_testimonium_record(
         if native_inference is not None:
             for row in validate_chandra_trace(native_inference)["attempts"]:
                 retained.extend((row["intent_ref"], row["attempt_ref"]))
+        retained.extend(
+            reference for reference in payload.get("unit_call_refs", []) if reference is not None
+        )
         # De-duplicated as the producer does: one response can reach the same blob
         # through both `raw_response_refs` and `native_capture`, and
         # `validate_input_refs` refuses a repeated path, so a doubled expectation could

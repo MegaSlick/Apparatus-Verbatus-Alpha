@@ -31,7 +31,7 @@ Each unit is one line: its id, `[x0,y0,x1,y1]` (its box_1000) when coordinates
 are shown, its label as a JSON string in parentheses when it has one, and its
 text as a JSON string. The text is the unit's text as the feed holds it -- for
 Chandra, its text view of its blocks: markup removed, character references
-resolved and whitespace runs made one space (`chandra-layout-text.v1`) -- with
+resolved and whitespace runs made one space (`chandra-layout-text.v2`) -- with
 only JSON's own escapes, so where a label or a unit ends and the next begins is
 never in doubt. Under `witness_units = "flat"` a witness is one unit with no
 box, on one line: the range of its unit ids, then its units' texts joined by

@@ -448,7 +448,7 @@ class RunPlan:
         selected = set(self.selected_stages())
         roles: set[str] = set()
         if "designator" in selected:
-            roles.update(("designator_structure", "secondary_proposer"))
+            roles.update(("designator_structure", "secondary_proposer", "designator_surya"))
         if selected & {"perlector", "recovery"}:
             roles.add("perlector")
         try:
@@ -1234,14 +1234,22 @@ def main(
             else set()
         )
         required = plan.required_chairs(configured_only=True)
-        # A chair its own stage runs in-process has no engine to smoke-read; its
-        # verified cache is what PREFLIGHT can show for it.
+        # A chair its own stage runs has no engine to smoke-read. An in-process
+        # chair shows its verified cache; a subprocess chair (Surya) its verified
+        # cache and the receipt of its own runner reading the golden page.
         in_process = required & _receipt_chairs(receipt, "placements", state="in-process")
+        subprocess_run = required & _receipt_chairs(receipt, "placements", state="subprocess")
         cached = _receipt_chairs(receipt, "cache_receipts")
-        missing = (required - in_process - smoked) | (in_process - cached)
+        measured = _receipt_chairs(receipt, "subprocess_receipts")
+        missing = (
+            (required - in_process - subprocess_run - smoked)
+            | ((in_process | subprocess_run) - cached)
+            | (subprocess_run - measured)
+        )
         if missing:
             raise RunRefusal(
-                f"selection needs a chair without a green PREFLIGHT smoke receipt: {sorted(missing)}"
+                "selection needs a chair without green PREFLIGHT evidence (a smoke receipt, "
+                f"or a verified cache and, for a subprocess chair, its run): {sorted(missing)}"
             )
     except RunRefusal as refusal:
         refusal.report_path = plan.report_path

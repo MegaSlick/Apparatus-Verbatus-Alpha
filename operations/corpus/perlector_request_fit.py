@@ -437,6 +437,9 @@ def page_fit_table(pages: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
                     cell["fit"] += 1
                     cell["reserve_clamped"] += admitted["answer_reserve"]["reserve_clamped"]
                 except RequestCapacityRefusal as refusal:
+                    # A refusal with no capacity record is not a context refusal.
+                    if refusal.capacity is None:
+                        raise
                     record = refusal.capacity
                     cell["refused_context"] += 1
                 cell["worst_need"] = max(cell["worst_need"], record["need"])

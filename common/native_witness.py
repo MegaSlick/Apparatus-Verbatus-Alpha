@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable
 from typing import Any, Final
 
-from common import churro_document
+from common import chandra_layout, churro_document
 from common.chairs.models import is_hf_revision
 from common.chandra_native_retry import validate_trace as validate_chandra_native_trace
 from common.contracts.canonical import digest_bytes, is_plain_int, is_sha256
@@ -70,9 +70,11 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
         "native_inference",
         # A chair shown several images of one page (DAI, one per record its own
         # detector found): every image in order, `presented` being the first,
-        # and each unit's retained model view (null where no response arrived).
+        # each unit's retained model view (null where no response arrived), and
+        # each unit's retained call record (null where no request was sent).
         "presentations",
         "unit_captures",
+        "unit_call_refs",
     }
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
@@ -742,6 +744,10 @@ def validate_page_testimonium_payload(
         _validate_unit_captures(payload)
     elif "presentations" in payload:
         raise SchemaRefusal("a page Testimonium shown several images names no unit captures")
+    if "unit_call_refs" in payload:
+        _validate_unit_call_refs(payload, read_bytes)
+    elif "presentations" in payload:
+        raise SchemaRefusal("a page Testimonium shown several images names no unit call records")
     validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated
 
@@ -765,6 +771,30 @@ def _validate_unit_captures(payload: dict[str, Any]) -> None:
             raise SchemaRefusal(
                 "a page Testimonium unit capture names a response the record does not retain"
             )
+
+
+def _validate_unit_call_refs(
+    payload: dict[str, Any], read_bytes: Callable[[str], bytes] | None
+) -> None:
+    """One retained call record per presentation, each a closed Attestatores blob."""
+    references = payload["unit_call_refs"]
+    presentations = payload.get("presentations")
+    if (
+        not isinstance(presentations, list)
+        or not isinstance(references, list)
+        or len(references) != len(presentations)
+    ):
+        raise SchemaRefusal("a page Testimonium names unit call records that are not one per image")
+    for reference in references:
+        if reference is None:
+            continue
+        digest_ref(reference, "a page Testimonium unit call record reference")
+        if reference["relative_path"] != _attestatores_blob_path(reference["sha256"]):
+            raise SchemaRefusal(
+                "a page Testimonium unit call record reference is not a closed blob reference"
+            )
+        if read_bytes is not None:
+            read_verified(read_bytes, reference, "page Testimonium unit call record")
 
 
 def _validate_churro_page_health(payload: dict[str, Any], capture: dict[str, Any]) -> None:
@@ -1164,9 +1194,63 @@ _NATIVE_CAPTURE_FIELDS: Final = frozenset(
         "parse",
     }
 )
-# Optional so earlier records stay valid; each adapter's tests require it for
-# that chair.
-_NATIVE_CAPTURE_OPTIONAL_FIELDS: Final = frozenset({"vendor_identity"})
+# `vendor_identity` is the vendor pin a chair's request carried, where it
+# carries one. `text_view` names the view a vendor grammar's parse was read
+# under; only an adapter and parser in `CAPTURE_TEXT_VIEWS` has one, and there it
+# is required whenever the bytes are re-derived.
+_NATIVE_CAPTURE_OPTIONAL_FIELDS: Final = frozenset({"vendor_identity", "text_view"})
+# The text view each vendor grammar's capture must name, by (adapter, parser),
+# and the views it retires. A capture made before its view was recorded, or
+# under a retired one, is refused by name whatever its parse state: its text and
+# findings are not what this build's parser reads from the same bytes.
+CAPTURE_TEXT_VIEWS: Final = {
+    ("chandra.v1", "html"): (
+        chandra_layout.LAYOUT_TEXT_VIEW,
+        chandra_layout.RETIRED_LAYOUT_TEXT_VIEWS,
+    ),
+    ("churro.v1", churro_document.CHURRO_PARSER): (
+        churro_document.CHURRO_TEXT_VIEW,
+        churro_document.RETIRED_CHURRO_TEXT_VIEWS,
+    ),
+}
+
+
+def capture_text_view(adapter: str, parser: str | None) -> str | None:
+    """The text view a capture of this adapter and parser records, if it records one."""
+    views = CAPTURE_TEXT_VIEWS.get((adapter, parser))
+    return None if views is None else views[0]
+
+
+def validate_capture_text_view(capture: dict[str, Any]) -> dict[str, Any]:
+    """Refuse a capture not read under this build's text view for its grammar, by name.
+
+    Called wherever a retained capture is reused or re-derived, so a capture
+    read under a retired view, or before views were recorded, is refused as
+    that rather than as a capture that differs from its own bytes.
+    """
+    views = CAPTURE_TEXT_VIEWS.get((capture["adapter"], capture["parse"].get("parser")))
+    if views is None:
+        return capture
+    current, retired = views
+    named = capture.get("text_view")
+    if named == current:
+        return capture
+    if named is None or named in retired:
+        read_under = (
+            "records no text view"
+            if named is None
+            else f"was read under the retired text view {named}, which this build no longer reads"
+        )
+        raise SchemaRefusal(
+            f"a {capture['adapter']} page capture {read_under}; this build reads {current}; "
+            "its text and findings are not this parser's; re-run the submission from the Door"
+        )
+    raise SchemaRefusal(
+        f"a {capture['adapter']} page capture names unknown text view {named!r}, not {current}; "
+        "re-run the submission from the Door"
+    )
+
+
 _VENDOR_IDENTITY_FIELDS: Final = frozenset({"repository", "sha", "carried_strings"})
 #: One parser name per vendor grammar: Chandra `html`, Churro `xml`, DAI `text`.
 #: Closed because re-derivation dispatches on the recorded name.
@@ -1205,13 +1289,17 @@ CHURRO_PARSERS: Final = frozenset({churro_document.CHURRO_PARSER})
 def parse_churro_response(raw: bytes, *, system_prompt: str | None = None) -> dict[str, Any]:
     """One Churro body, read under the vendor's own grammar and its two fallbacks.
 
-    Adds only the intake ceiling to `churro_document.parse_churro_document`.
+    Adds the intake ceiling to `churro_document.parse_churro_document`, and
+    closes the record it returns, so the capture writer and the Perlector's
+    page feed index a record of the declared shape or refuse it by name.
     `system_prompt` must be the exact string sent: trimming an echo of a
     framing that was not sent could cut real transcription.
     """
 
-    return churro_document.parse_churro_document(
-        raw, system_prompt=system_prompt, max_bytes=CHURRO_MAX_RESPONSE_BYTES
+    return churro_document.validate_churro_document_parse(
+        churro_document.parse_churro_document(
+            raw, system_prompt=system_prompt, max_bytes=CHURRO_MAX_RESPONSE_BYTES
+        )
     )
 
 
@@ -1326,12 +1414,14 @@ def derive_churro_capture(
 
     parse: dict[str, Any] = {"state": "not-requested", "parser": None}
     findings: list[dict[str, Any]] = []
+    text_view: str | None = None
     if parser is not None:
         document = document_parser(raw, system_prompt=system_prompt)
         # Copied: an injected parser may hand back records it keeps.
         findings.extend(dict(finding) for finding in document["findings"])
         if document["state"] == "parsed":
             parse = {"state": "parsed", "parser": parser, "text": document["text"]}
+            text_view = document["view"]
         elif document["state"] == "failed":
             parse = {"state": "failed", "parser": parser, "reason": document["reason"]}
         else:
@@ -1351,13 +1441,17 @@ def derive_churro_capture(
     if finding := repetition_detector(inspected):
         findings.append({**finding, "inspected": basis})
         repeated = finding["kind"] == "post-hoc-repetition"
-    return {
+    derived = {
         "parse": parse,
         "findings": findings,
         "stop_reason": _churro_stop_reason(
             transport_stop_reason, parse["state"], repeated=repeated
         ),
     }
+    # The view the parser says it read under, where it read the document at all.
+    if text_view is not None:
+        derived["text_view"] = text_view
+    return derived
 
 
 def _churro_stop_reason(transport_stop_reason: str, parse_state: str, *, repeated: bool) -> str:
@@ -1385,8 +1479,12 @@ def churro_capture_system_prompt(capture: dict[str, Any]) -> str | None:
 
 
 def verify_native_capture_bytes(value: Any, raw: bytes) -> dict[str, Any]:
-    """Verify one capture's derived record against raw bytes already digest-checked."""
-    capture = validate_native_capture(value)
+    """Verify one capture's derived record against raw bytes already digest-checked.
+
+    A capture read under a text view this build no longer produces is refused by
+    that name first, rather than reported as differing from its bytes.
+    """
+    capture = validate_capture_text_view(validate_native_capture(value))
     if capture["adapter"] != "churro.v1":
         return capture
     derived = derive_churro_capture(
@@ -1599,8 +1697,17 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         raise SchemaRefusal(
             "a page Testimonium native capture claims an unrecognized shape without naming it"
         )
+    if "text_view" in value and not (
+        isinstance(value["text_view"], str) and value["text_view"].strip()
+    ):
+        raise SchemaRefusal("a page Testimonium native capture names a blank text view")
     if value["adapter"] == "churro.v1":
         _validate_churro_capture(value)
+    if "text_view" in value and (value["adapter"], parser) not in CAPTURE_TEXT_VIEWS:
+        raise SchemaRefusal(
+            f"a {value['adapter']} page capture under parser {parser!r} names text view "
+            f"{value['text_view']!r}, but that grammar's parse is read under no text view"
+        )
     return value
 
 

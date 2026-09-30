@@ -15,6 +15,7 @@ shown and each unit's capture; and each act's slice is the records it owns.
 
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import sys
@@ -46,6 +47,7 @@ from test_live_reading_seam_e2e import (  # noqa: E402
 )
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.errors import SchemaRefusal  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
@@ -139,9 +141,8 @@ def _run_main(module, argv: list[str], **kwargs) -> int:
         sys.argv = original
 
 
-@pytest.fixture(scope="module")
-def witnessed(tmp_path_factory):
-    work = tmp_path_factory.mktemp("dai-detector-e2e")
+def _witness(work: Path, detections, dai_answers: list[str]):
+    """Run the Door through the Attestatores with these declared detections."""
     models = _config(work)
     catalogue = _catalogue(work / "serving_recipes.toml", models)
     run_root = work / "runs"
@@ -158,7 +159,7 @@ def witnessed(tmp_path_factory):
 
     def open_with_detections(args, registry_factory):
         context, real_input = real_open(args, registry_factory)
-        context.fixture["detector_record"] = [dict(row) for row in DETECTIONS]
+        context.fixture["detector_record"] = [dict(row) for row in detections]
         return context, real_input
 
     patch = pytest.MonkeyPatch()
@@ -175,11 +176,7 @@ def witnessed(tmp_path_factory):
             ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
         ],
         # One answer per detector record, in the detector's order.
-        DAI: [
-            ScriptedAnswer(content=DAI_ACT_TWO, finish_reason="stop"),
-            ScriptedAnswer(content=DAI_ACT_ONE, finish_reason="stop"),
-            ScriptedAnswer(content=DAI_CONTINUATION, finish_reason="stop"),
-        ],
+        DAI: [ScriptedAnswer(content=answer, finish_reason="stop") for answer in dai_answers],
         "attestator_3": [
             ScriptedAnswer(content=CHURRO_PAGE_ONE, finish_reason="stop"),
             ScriptedAnswer(content=CHURRO_PAGE_TWO, finish_reason="stop"),
@@ -193,6 +190,15 @@ def witnessed(tmp_path_factory):
     )
     assert exit_code == EXIT_COMPLETE
     return RunTree(run_root, RUN_ID), world
+
+
+@pytest.fixture(scope="module")
+def witnessed(tmp_path_factory):
+    return _witness(
+        tmp_path_factory.mktemp("dai-detector-e2e"),
+        DETECTIONS,
+        [DAI_ACT_TWO, DAI_ACT_ONE, DAI_CONTINUATION],
+    )
 
 
 def test_dai_is_asked_once_per_detector_record_and_shown_that_records_crop(witnessed):
@@ -297,3 +303,61 @@ def test_each_acts_owned_records_are_recorded_but_attach_nothing(witnessed):
             2: (False, "unattached", None, None, "continuation-page-no-act-anchor", []),
         },
     }
+
+
+def test_a_page_whose_records_enclose_no_crop_is_not_run_with_its_census_count(tmp_path):
+    """A record that collapses to one pixel is counted but is not a unit, so the page
+    is not asked and its reason says records were found, not that none were."""
+    collapsed = {
+        "page_ordinal": 2,
+        "corners": [[30.1, 30.2], [30.9, 30.1], [30.8, 30.9], [30.2, 30.7]],
+        "score_bp": 8800,
+    }
+    tree, world = _witness(tmp_path, (*DETECTIONS[:2], collapsed), [DAI_ACT_TWO, DAI_ACT_ONE])
+    [page_two] = [
+        record
+        for record in _records(tree, ATTESTATORES, "page-testimonium")
+        if record["payload"]["chair"] == DAI and record["payload"]["page_ordinal"] == 2
+    ]
+    assert page_two["outcome"] == "not-run"
+    assert page_two["payload"]["reason"] == attestatores.no_detector_unit_reason(1)
+    assert "found 1 record(s)" in page_two["payload"]["reason"]
+    assert attestatores.no_detector_unit_reason(0) == attestatores.NO_DETECTOR_RECORD_REASON
+
+
+def test_each_unit_call_is_bound_and_held_to_the_sealed_sampling_on_resume(tmp_path, monkeypatch):
+    """Every unit's call record is named on the page record and bound as an input, and
+    a resumed pass holds each to the sealed sampling row and seed before reading it."""
+    tree, world = _witness(tmp_path, DETECTIONS, [DAI_ACT_TWO, DAI_ACT_ONE, DAI_CONTINUATION])
+    pages = [
+        record
+        for record in _records(tree, ATTESTATORES, "page-testimonium")
+        if record["payload"]["chair"] == DAI
+    ]
+    for record in pages:
+        references = record["payload"]["unit_call_refs"]
+        assert len(references) == len(record["payload"]["presentations"])
+        assert None not in references
+        assert all(reference in record["inputs"] for reference in references)
+
+    checked = []
+    real = attestatores.verify_unit_call_sampling
+
+    def recording(context, payload, chair):
+        checked.append((context, payload["page_ordinal"]))
+        return real(context, payload, chair)
+
+    monkeypatch.setattr(attestatores, "verify_unit_call_sampling", recording)
+    resumed = WitnessWorld(world.catalogue, world.decoding_sha256, tmp_path / "resume", {})
+    argv = _argv(tmp_path / "runs", world.catalogue, tmp_path / "config" / "models.toml", TIER)
+    assert _run_main(attestatores, argv, serving_factory=resumed.factory) == EXIT_COMPLETE
+    assert sorted(ordinal for _context, ordinal in checked) == [1, 2]
+
+    context = checked[0][0]
+    payload = copy.deepcopy(pages[0]["payload"])
+    call = json.loads(tree.read_bytes(payload["unit_call_refs"][0]["relative_path"]))
+    call["generation_sent"]["seed"] += 1
+    digest, forged = tree.put_blob(ATTESTATORES, json.dumps(call).encode("utf-8"))
+    payload["unit_call_refs"][0] = {"relative_path": forged.relative_path, "sha256": digest}
+    with pytest.raises(SchemaRefusal, match="unit call record is not its sealed request"):
+        real(context, payload, DAI)

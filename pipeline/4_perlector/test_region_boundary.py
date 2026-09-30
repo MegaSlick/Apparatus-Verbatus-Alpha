@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from common import page_testimonia
 from common.chairs import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import SchemaRefusal
@@ -384,6 +385,36 @@ def test_page_testimonium_consumer_reconciles_outcome_page_and_inputs(real_regio
     extra_input["inputs"].sort(key=lambda row: (row["relative_path"], row["sha256"]))
     with pytest.raises(SchemaRefusal, match="does not bind exactly its presented image"):
         perlector.validate_page_testimonium_record(context, extra_input, proposals)
+
+
+def test_a_page_shown_several_times_is_read_once_and_binds_each_presentation(
+    real_region, monkeypatch
+):
+    """Every presentation names the one sealed page, which is read and sized once."""
+    context, _ = real_region
+    testimony = next(
+        context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium" and entry["outcome"] == "read"
+    )
+    payload = testimony["payload"]
+    reads = []
+    read_sealed_page = page_testimonia.read_sealed_page
+    monkeypatch.setattr(
+        page_testimonia,
+        "read_sealed_page",
+        lambda tree, page_id: reads.append(page_id) or read_sealed_page(tree, page_id),
+    )
+    shown = payload["presented"]
+    page_testimonia.validate_presented_page(context, payload, [shown, shown, shown])
+    assert reads == [shown["source_page_id"]]
+
+    moved = {**shown, "image_sha256": "0" * 64}
+    with pytest.raises(SchemaRefusal):
+        page_testimonia.validate_presented_page(context, payload, [shown, moved])
+    elsewhere = {**shown, "source_page_id": "another-page"}
+    with pytest.raises(SchemaRefusal, match="more than one sealed page"):
+        page_testimonia.validate_presented_page(context, payload, [shown, elsewhere])
 
 
 @pytest.mark.parametrize("retained", ["native_capture", "raw_response_refs"])
@@ -776,7 +807,11 @@ def _replace_capture_projection(payload):
             "serving receipt",
         ),
         (
-            lambda payload: payload["native_capture"].update(adapter="another-adapter.v1"),
+            # Another adapter's capture carries no Churro text view.
+            lambda payload: (
+                payload["native_capture"].update(adapter="another-adapter.v1"),
+                payload["native_capture"].pop("text_view", None),
+            ),
             "configured boundary",
         ),
         (_replace_capture_projection, "parse.*retained raw response"),

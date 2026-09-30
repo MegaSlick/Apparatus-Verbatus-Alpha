@@ -593,7 +593,7 @@ def validate_testimonium_regions(context, record: dict, proposal_regions: list[d
             "Its act association could omit or acquire evidence silently. Restore the sealed "
             "proposal references without substituting a recovery crop"
         )
-    validate_presented_page(context, payload, presented)
+    validate_presented_page(context, payload, [presented])
     input_references = [
         context.input_ref(region["payload"]["image_path"]) for region in proposal_regions
     ]

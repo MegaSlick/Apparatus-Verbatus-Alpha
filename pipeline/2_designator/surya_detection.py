@@ -19,13 +19,13 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 import geometry_layer
 from no_text import refuse_text_fields
 
 from common.chairs.models import AbsentChair, ChairIdentity
+from common.contracts.canonical import half_even_bp
 from common.contracts.errors import ContractError
 from common.contracts.stages import DESIGNATOR
 from common.exemplar_boundary import sealed_page_bytes
@@ -94,7 +94,7 @@ def quantized_bounds(corners: list[dict[str, int]], width: int, height: int) -> 
 def confidence_bp(value: float | None) -> int | None:
     if value is None:
         return None
-    return int((Decimal(repr(value)) * 10_000).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
+    return half_even_bp(value)
 
 
 def resolved_surya(context) -> ChairIdentity | None:

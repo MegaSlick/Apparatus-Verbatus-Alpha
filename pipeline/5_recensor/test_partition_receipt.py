@@ -341,6 +341,8 @@ def test_recensor_refuses_a_native_capture_attributed_to_another_adapter(tmp_pat
         if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_3":
             record = copy.deepcopy(record)
             record["payload"]["native_capture"]["adapter"] = "another-adapter.v1"
+            # Another adapter's capture carries no Churro text view.
+            record["payload"]["native_capture"].pop("text_view", None)
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact_reference", wrong_adapter)
@@ -373,6 +375,46 @@ def test_recensor_names_an_absent_chair_that_still_carries_a_native_capture(tmp_
     with pytest.raises(FatalAccounting, match="roster records that chair as absent") as caught:
         recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
     assert "attestator_3" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("text_view", "refusal"),
+    [
+        (
+            "churro-historical-document-text.v1",
+            "was read under the retired text view churro-historical-document-text.v1, "
+            "which this build no longer reads",
+        ),
+        ("churro-historical-document-text.v9", "names unknown text view"),
+        (None, "records no text view"),
+    ],
+)
+def test_recensor_lets_a_text_view_refusal_through_as_itself(
+    tmp_path, monkeypatch, text_view, refusal
+):
+    root = tmp_path / "runs"
+    through_perlector(root, "capture-view", "happy")
+    recensor = load_stage("5_recensor")
+    context = recensor.open_context(_recensor_args(root, "capture-view"), RECENSOR)
+    act = next(act for act in recensor.expected_acts(context) if act["act_key"] == "a1")
+    original = context.tree.read_artifact_reference
+
+    def other_view(reference, *, stage, kind, subject_id):
+        record = original(reference, stage=stage, kind=kind, subject_id=subject_id)
+        if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_3":
+            record = copy.deepcopy(record)
+            capture = record["payload"]["native_capture"]
+            if text_view is None:
+                del capture["text_view"]
+            else:
+                capture["text_view"] = text_view
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact_reference", other_view)
+    with pytest.raises(SchemaRefusal, match=refusal) as caught:
+        recensor.validate_chair_coverage(context, act["act_id"], context.witness_floor)
+    assert "re-run the submission from the Door" in str(caught.value)
+    assert "does not derive from its retained raw response" not in str(caught.value)
 
 
 def test_recensor_refuses_a_partition_whose_retained_responses_are_not_inputs(

@@ -421,9 +421,9 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
     """The actual subprocess route seals the selected real pair, not the defaults.
 
     The real roster carries measured manifest pins, while its serving catalogue
-    remains deliberately unproven.  Reaching that preflight refusal proves the
-    real roster passed its native-adapter boundary and that the Door sealed the
-    caller-selected catalogue before any model could run.  Catalogue row
+    remains deliberately unproven.  Reaching the Designator's preflight refusal
+    proves the real roster passed its native-adapter boundary and that the Door
+    sealed the caller-selected catalogue before any model could run.  Catalogue row
     completeness and unproven state are checked against these same literal files
     in ``operations/serving/test_manager.py``.
     """
@@ -449,7 +449,9 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
     )
 
     assert result.returncode == 2
-    assert "preflight must prove this exact profile before launch" in result.stderr
+    # The Designator's first refusal is its in-process record detector, checked before
+    # the structure chair starts; this host installs none of its pinned packages.
+    assert "the record detector is not ready" in result.stderr
     assert "pre-materialization sentinel" not in result.stderr
     assert "has no witness_adapter" not in result.stderr
     run_record = json.loads((run_root / "r" / "run.json").read_text(encoding="utf-8"))

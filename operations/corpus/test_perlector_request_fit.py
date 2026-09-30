@@ -1,5 +1,9 @@
 """The request-fit measurement, proven on synthetic pages only."""
 
+import pytest
+
+from common.request_capacity import RequestCapacityRefusal
+from operations.corpus import perlector_request_fit
 from operations.corpus.perlector_request_fit import (
     _clue,
     fit_table,
@@ -74,3 +78,15 @@ def test_every_page_is_counted_under_each_feed_setting_and_context():
     shape = page_shape(pages[0])
     assert [len(units) for _chair, _adapter, units in shape["witnesses"]] == [21, 21, 121]
     assert len(shape["surya"]["lines"]) == 121 and len(shape["surya"]["blocks"]) == 21
+
+
+def test_a_refusal_with_no_capacity_record_is_not_counted_as_a_context_refusal(monkeypatch):
+    """Only a refusal carrying its arithmetic is a context refusal; any other stops the table."""
+
+    def refuse(_row, _feed):
+        raise RequestCapacityRefusal("the prompt is malformed")
+
+    monkeypatch.setattr(perlector_request_fit, "page_request", refuse)
+    page = {"width": 2550, "height": 3300, "records": [{"bbox": [1, 1, 500, 200], "text": "a"}]}
+    with pytest.raises(RequestCapacityRefusal, match="malformed"):
+        page_fit_table([page])

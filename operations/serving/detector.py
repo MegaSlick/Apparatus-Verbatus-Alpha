@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from common.chairs.models import ChairIdentity, ServingDetails
 
@@ -60,7 +61,12 @@ def _checked_detection(item: Mapping[str, Any]) -> dict[str, Any]:
         or any(
             not isinstance(point, list)
             or len(point) != 2
-            or any(isinstance(value, bool) or not isinstance(value, int | float) for value in point)
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not math.isfinite(value)
+                for value in point
+            )
             for point in corners
         )
     ):
@@ -134,6 +140,10 @@ def _installed_versions(profile: InProcessProfile) -> dict[str, str]:
 
 def _verified_weights(snapshot_root: Path) -> Path:
     path = snapshot_root / RECORD_DETECTOR_WEIGHTS_FILE
+    if not path.is_file():
+        raise ServingConfigurationError(
+            f"the record detector weights are not at {path}; nothing is loaded"
+        )
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     if digest != RECORD_DETECTOR_WEIGHTS_SHA256:
         raise ServingConfigurationError(
@@ -141,6 +151,16 @@ def _verified_weights(snapshot_root: Path) -> Path:
             f"{RECORD_DETECTOR_WEIGHTS_SHA256}; they are not loaded"
         )
     return path
+
+
+def check_record_detector_runnable(
+    profile: InProcessProfile, snapshot_root: Callable[[], Path]
+) -> None:
+    """Refuse a detector that could not load, without loading it: its pinned package
+    versions must be installed, then its verified snapshot resolved and its weights
+    hashed to the pinned digest."""
+    _installed_versions(profile)
+    _verified_weights(snapshot_root())
 
 
 def load_ultralytics_record_detector(

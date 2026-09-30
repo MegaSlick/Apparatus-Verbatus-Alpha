@@ -610,7 +610,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert payload["block_count"] == len(expected)
         assert payload["blocks_without_proposal"] == []
         assert payload["answer_schema"] == "chandra-layout-html.v1"
-        assert payload["text_view"] == "chandra-layout-text.v1"
+        assert payload["text_view"] == "chandra-layout-text.v2"
         assert payload["vendor"]["repository"] == "github.com/datalab-to/chandra"
         assert payload["vendor"]["commit"] == "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
         presentation = tree.read_artifact_reference(
@@ -1221,6 +1221,7 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
     second_ref = {"relative_path": "2_designator/a2.json", "sha256": "2" * 64}
     first = {
         "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
+        "text_view": chandra_layout.LAYOUT_TEXT_VIEW,
         "page_id": page_id,
         "page_ordinal": 1,
         "attempt_ordinal": 1,
@@ -1288,7 +1289,13 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
 def test_real_denominator_indexes_structure_attempts_and_decoding_once(monkeypatch):
     pages = ["page_" + "1" * 16, "page_" + "2" * 16]
     answers = [
-        {"subject_id": page_id, "payload": {"schema": STRUCTURE_ANSWER_RECORD_SCHEMA}}
+        {
+            "subject_id": page_id,
+            "payload": {
+                "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
+                "text_view": chandra_layout.LAYOUT_TEXT_VIEW,
+            },
+        }
         for page_id in pages
     ]
     attempt_rows = [{"subject_id": page_id, "payload": {}} for page_id in pages]
@@ -2068,6 +2075,62 @@ def test_a_record_detector_the_live_pass_cannot_run_is_refused_before_any_reques
     assert _receipts(root) == []
 
 
+@pytest.mark.parametrize(
+    ("installed", "refusal"),
+    [
+        (False, "needs torch==2.13.0, and it is not installed"),
+        (True, "record detector weights are not at"),
+    ],
+)
+def test_a_record_detector_that_could_not_load_is_refused_before_any_request(
+    tmp_path, monkeypatch, installed, refusal
+):
+    """Its pinned packages and weights are checked before the structure chair starts,
+    without loading the model; the fixture snapshot carries no detector weights."""
+    import tomllib
+
+    from operations.serving import detector
+
+    pins = {"torch": "2.13.0", "ultralytics": "8.4.14"}
+    if installed:
+        monkeypatch.setattr(detector, "metadata", SimpleNamespace(version=pins.__getitem__))
+    config_root = tmp_path / "chair-config"
+    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
+    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
+    live = MODELS_CONFIG.read_text(encoding="utf-8")
+    digest_manifest = tomllib.loads(live)["chairs"]["designator_structure"]["digest_manifest"]
+    models = config_root / "models.toml"
+    configured = _CONFIGURED_SECONDARY.format(digest_manifest=digest_manifest).replace(
+        'serving_recipe = "fake-designator-v0"', 'serving_recipe = "in-process-detector-test"'
+    )
+    models.write_text(live.replace(_ABSENT_SECONDARY, configured), encoding="utf-8")
+    catalogue = _live_catalogue(tmp_path)
+    catalogue.write_text(
+        catalogue.read_text(encoding="utf-8")
+        + '\n[[profiles]]\nkind = "in-process"\nrecipe = "in-process-detector-test"\n'
+        f'chair = "secondary_proposer"\ntier = "{TIER}"\nengine = "ultralytics"\n'
+        'task = "obb"\ndevice = "cpu"\nimgsz = 1024\nconf_bp = 2500\niou_bp = 7000\n'
+        'max_det = 300\nrequired_packages = { torch = "2.13.0", ultralytics = "8.4.14" }\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "runs"
+    _chain(root, catalogue, "--models-config", str(models))
+    endpoint = FakeEndpoint(served_model_id=SERVED_MODEL_ID)
+    factory = _serving_factory(
+        endpoint, catalogue, tmp_path / "logs", tmp_path / "lock", ROOT / "config" / "decoding.toml"
+    )
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _argv(root, catalogue, "--placement-tier", TIER, "--models-config", str(models)),
+    )
+    with pytest.raises(ContractError, match=f"record detector is not ready: .*{refusal}"):
+        designator.main(serving_factory=factory, surya_runner=in_process_surya())
+    assert endpoint.requests == []
+    assert _receipts(root) == []
+
+
 # --- the fixture pass is the fixture pass ----------------------------------------------
 
 
@@ -2113,6 +2176,7 @@ def _minimal_answer_record() -> dict[str, Any]:
     """
     record: dict[str, Any] = dict.fromkeys(designator._STRUCTURE_ANSWER_V3_FIELDS)
     record["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA
+    record["text_view"] = chandra_layout.LAYOUT_TEXT_VIEW
     record["presentation_ref"] = {"relative_path": "p", "sha256": "0" * 64}
     record["attempt_policy"] = {"max_attempts": 3, "sampling_schedule": "chandra-native-retry"}
     record["attempt_ordinal"] = 1
@@ -2300,6 +2364,65 @@ def test_retired_structure_answer_schema_is_refused_by_name(schema):
         match=f"sealed under {schema}, which this build no longer reads; re-run",
     ):
         designator._validate_structure_answer_payload(record)
+
+
+@pytest.mark.parametrize(
+    ("text_view", "refusal"),
+    [
+        (
+            "chandra-layout-text.v1",
+            "read under chandra-layout-text.v1, which this build no longer reads; "
+            "re-run the submission from the Door",
+        ),
+        (
+            "chandra-layout-text.v9",
+            "names unknown text view 'chandra-layout-text.v9', not chandra-layout-text.v2; "
+            "re-run the submission from the Door",
+        ),
+        (
+            None,
+            "names no text view, not chandra-layout-text.v2; re-run the submission from the Door",
+        ),
+    ],
+)
+def test_a_structure_answer_not_read_under_this_builds_text_view_is_refused_by_name(
+    text_view, refusal
+):
+    """Blank-Page block text changed the view, so each block's text digest did too."""
+    record = _minimal_answer_record()
+    record["text_view"] = text_view
+
+    with pytest.raises(ContractError, match=refusal):
+        designator._validate_structure_answer_payload(record)
+
+
+def test_a_resumed_pass_refuses_an_answer_read_under_a_retired_text_view(monkeypatch):
+    context = SimpleNamespace(
+        args=SimpleNamespace(decoding_config=None),
+        tree=object(),
+        require_sealed_config=lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        designator, "_initial_pages_and_policies", lambda unused: ({}, {}, None, None)
+    )
+    monkeypatch.setattr(designator, "load_decoding_policy", lambda unused: ({}, "0" * 64))
+    monkeypatch.setattr(designator, "structure_recovery_policy", lambda unused: {})
+    monkeypatch.setattr(designator.structure_pass, "resolved_structure_chair", lambda unused: None)
+    record = _minimal_answer_record()
+    record["text_view"] = "chandra-layout-text.v1"
+    monkeypatch.setattr(
+        designator, "_stage_records", lambda *_args: [{"subject_id": "page-1", "payload": record}]
+    )
+    monkeypatch.setattr(
+        designator,
+        "_publish_secondary_provenance",
+        lambda *_args: pytest.fail("secondary provenance was published before refusal"),
+    )
+
+    with pytest.raises(
+        ContractError, match="page page-1's structure answer was read under chandra-layout-text.v1"
+    ):
+        designator.live_initial_pass(context, None, "small")
 
 
 @pytest.mark.parametrize("schema", sorted(RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS))
@@ -2491,6 +2614,24 @@ def test_one_region_covering_half_two_rectangles_is_still_shared_detection():
         "shared-detection",
     ]
     assert all(block["detected_bounds"] == band for block in blocks)
+
+
+def test_a_parsed_answer_records_the_text_view_its_parser_reports(live_run, tmp_path, monkeypatch):
+    """The record names the view the parser read under, not a fixed constant, so a
+    parser reporting a view this build does not read is refused by that name."""
+    root, catalogue = live_run
+    answers = [_answer(PAGE_ONE_ACTS), _answer(PAGE_TWO_ACTS)]
+    original = chandra_layout.parse_layout_html
+
+    def retired_view(raw):
+        result = original(raw)
+        if chandra_layout.is_refusal(result):
+            return result
+        return {**result, "text_view": "chandra-layout-text.v1"}
+
+    monkeypatch.setattr(chandra_layout, "parse_layout_html", retired_view)
+    with pytest.raises(ContractError, match="read under chandra-layout-text.v1"):
+        _run_designator(root, catalogue, tmp_path, monkeypatch, answers)
 
 
 # --- a custody refusal is one page's outcome ------------------------------------

@@ -20,7 +20,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Final, Protocol
 
-from common import fixture_identity, page_accounting, page_path
+from common import chandra_layout, fixture_identity, page_accounting, page_path
 from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH, load_alignment_limits
 from common.armarium_formats import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
@@ -335,13 +335,38 @@ RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS: Final = frozenset(
 RETIRED_RESIDUAL_ENUMERATION: Final = "withheld-page-held"
 
 
+# The remedy a retired structure answer's refusal names: the run tree is
+# immutable and a resumed Designator re-reads its sealed answers, so only a
+# fresh run of the submission re-asks the chair.
+_RERUN_FROM_THE_DOOR: Final = "re-run the submission from the Door"
+
+
 def refuse_retired_structure_answer(
     schema: object, *, subject: str, error_type: type[Exception] = FatalAccounting
 ) -> None:
     if isinstance(schema, str) and schema in RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS:
         raise error_type(
-            f"{subject} was sealed under {schema}, which this build no longer reads; re-run"
+            f"{subject} was sealed under {schema}, which this build no longer reads; "
+            f"{_RERUN_FROM_THE_DOOR}"
         )
+
+
+def refuse_structure_answer_text_view(
+    text_view: object, *, subject: str, error_type: type[Exception] = FatalAccounting
+) -> None:
+    """Refuse a structure answer whose block texts were not read under this build's
+    Chandra text view, naming the view it records or its absence."""
+    if text_view == chandra_layout.LAYOUT_TEXT_VIEW:
+        return
+    if isinstance(text_view, str) and text_view in chandra_layout.RETIRED_LAYOUT_TEXT_VIEWS:
+        raise error_type(
+            f"{subject} was read under {text_view}, which this build no longer reads; "
+            f"{_RERUN_FROM_THE_DOOR}"
+        )
+    named = "no text view" if text_view is None else f"unknown text view {text_view!r}"
+    raise error_type(
+        f"{subject} names {named}, not {chandra_layout.LAYOUT_TEXT_VIEW}; {_RERUN_FROM_THE_DOOR}"
+    )
 
 
 STRUCTURE_ATTEMPT_KIND: Final = "structure-attempt"
@@ -3161,6 +3186,9 @@ def _verify_real_act_denominator(
                 f"page {page_id}'s terminal structure answer has unsupported schema "
                 f"{payload.get('schema')!r}"
             )
+        refuse_structure_answer_text_view(
+            payload.get("text_view"), subject=f"page {page_id}'s terminal structure answer"
+        )
         if attempts_by_page is None:
             attempts_by_page = _structure_attempts_by_page(context)
             sealed_decoding = load_decoding_policy(context.args.decoding_config)
@@ -3339,6 +3367,11 @@ def _verify_structure_attempt_chain(
                 attempt.get("schema"),
                 subject=f"page {page_id}'s structure attempt {expected_ordinal}",
             )
+            if attempt.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA:
+                refuse_structure_answer_text_view(
+                    attempt.get("text_view"),
+                    subject=f"page {page_id}'s structure attempt {expected_ordinal}",
+                )
         prior = references[: expected_ordinal - 1]
         if (
             record.get("attempt_id") != attempt_id(page_id, "structure", expected_ordinal)
@@ -3575,6 +3608,11 @@ def verify_structure_attempt_call(
     )
     if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA:
         raise ContractError(f"structure attempt for page {page_id} has no supported schema")
+    refuse_structure_answer_text_view(
+        payload.get("text_view"),
+        subject=f"structure attempt for page {page_id}",
+        error_type=ContractError,
+    )
     decoding_policy, decoding_digest = (
         sealed_decoding_policy(context) if sealed_decoding is None else sealed_decoding
     )
@@ -3822,6 +3860,9 @@ def _verify_proposal_act_row(
             f"act {act_id}'s page names a structure answer with unsupported schema "
             f"{payload.get('schema')!r}"
         )
+    refuse_structure_answer_text_view(
+        payload.get("text_view"), subject=f"act {act_id}'s page's structure answer"
+    )
     if row["page_id"] not in verified_structure_attempt_pages:
         _verify_structure_attempt_chain(context, payload, row["page_id"])
         verified_structure_attempt_pages.add(row["page_id"])
