@@ -1,0 +1,50 @@
+# Page accounting: the model-free check that a page reading missed nothing
+# (common/page_accounting.py). Sealed at run creation and rechecked where the
+# check runs. Every value below is a starting value, set on synthetic pages
+# and to be measured on the proof run (operations/corpus/exactly_once.py).
+
+[inside]
+# A box is inside the reading regions when at least this share of its area
+# (basis points) lies inside their union. Starting value: half, the design's
+# one rule for "inside"; to be measured on the proof run.
+min_area_bp = 5000
+
+[witness_text]
+# Longest run of a witness unit's normalized text (letters and digits only)
+# the readings citing it may leave unaccounted for. Starting value: about one
+# written line of a register (50-70 letters). On synthetic register entries
+# the longest false run was 27 at 20% character error and 59 at 30%; one
+# merged-in record left at least 146. To be measured on the proof run.
+max_unread_characters = 60
+
+# Shortest matched run that counts as the reading holding witness text. Below
+# four, common letter pairs of French prose match anywhere. Starting value;
+# to be measured on the proof run.
+min_block_characters = 4
+
+# Length of the k-grams that, occurring once in each text, anchor a long
+# alignment. Six was the length with no false run over the threshold on a
+# synthetic 20-entry flat page at 15% and 30% error. Starting value; to be
+# measured on the proof run.
+anchor_characters = 6
+
+# Ranges up to this many character pairs (about 200 x 200) are matched
+# directly; larger ones are split at anchors first, because a direct match
+# over several entries pairs one entry's formula with another's. Starting
+# value; to be measured on the proof run.
+direct_alignment_max_pairs = 40000
+
+# A range with no anchor is matched directly only up to this many pairs;
+# beyond it the unit is not measured, which holds. Starting value; to be
+# measured on the proof run.
+max_alignment_pairs = 4000000
+
+# A unit or its readings longer than this many normalized characters is not
+# measured, which holds. Starting value; to be measured on the proof run.
+max_characters = 200000
+
+# Wall-clock budget for one page's witness-text rule; running out is not
+# measured, which holds. A dense synthetic page (20 entries, 12,000 characters
+# per witness, three witnesses) took well under a second. Starting value; to
+# be measured on the proof run.
+deadline_milliseconds = 30000
