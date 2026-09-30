@@ -9,7 +9,7 @@
 # keeps its deadline, keep-alive file and log in $POD_GUARD_DIR (default
 # /workspace/.pod_guard, on the network volume). To extend the deadline, write the new
 # epoch second to a temporary file and move it over deadline-<pod id>. Touching
-# keepalive-<pod id> counts as work for anything that uses neither GPU nor CPU for a while.
+# keepalive-<pod id> counts as work at that moment: the idle limit then runs from the touch.
 set -u
 
 max_hours=${1:?usage: pod_guard.sh <max_hours> [idle_minutes]}
@@ -115,14 +115,22 @@ cpu_usec() {
   if [ -r "$cgroup/cpu.stat" ]; then
     awk '$1 == "usage_usec" { print $2 }' "$cgroup/cpu.stat"
   elif [ -r "$cgroup/cpuacct/cpuacct.usage" ]; then
-    awk '{ printf "%d", $1 / 1000 }' "$cgroup/cpuacct/cpuacct.usage"
+    awk '{ printf "%.0f", $1 / 1000 }' "$cgroup/cpuacct/cpuacct.usage"
   fi
 }
 
 # Bytes this container has received on every interface but loopback: a download bound by
-# the network can use little CPU and no GPU.
+# the network can use little CPU and no GPU. Each line is split at its first colon, because
+# the kernel pads interface names only up to six characters and a longer name runs straight
+# into the colon. %.0f, not %d: some awks clamp %d at 2^31, which a byte counter passes.
 net_bytes() {
-  [ -r "$netdev" ] && awk -F'[: ]+' 'NR > 2 && $2 != "lo" { total += $3 } END { printf "%d", total }' "$netdev"
+  [ -r "$netdev" ] && awk 'NR > 2 {
+    sub(/^[ \t]+/, "")
+    colon = index($0, ":")
+    if (colon == 0 || substr($0, 1, colon - 1) == "lo") next
+    split(substr($0, colon + 1), field, " ")
+    total += field[1]
+  } END { printf "%.0f", total }' "$netdev"
 }
 
 cpu_before=$(cpu_usec)
@@ -148,8 +156,13 @@ cpu_busy() {
   [ $((now - before)) -ge $((interval * 10000 * busy_cpu_percent)) ]
 }
 
-kept_alive() {
-  [ -n "$(find "$dir" -maxdepth 1 -name "keepalive-$pod" -mmin "-$(((idle_limit + 59) / 60))" 2>/dev/null)" ]
+# Seconds since the keep-alive file was last touched; fails when there is none.
+keepalive_age() {
+  touched=$(stat -c %Y "$dir/keepalive-$pod" 2>/dev/null || stat -f %m "$dir/keepalive-$pod" 2>/dev/null)
+  is_epoch "$touched" || return 1
+  age=$(($(date +%s) - touched))
+  [ "$age" -ge 0 ] || age=0
+  printf '%s' "$age"
 }
 
 idle_for=0
@@ -169,10 +182,12 @@ while :; do
   cpu=$?
   net_busy
   net=$?
-  if [ "$cpu" -eq 0 ] || [ "$net" -eq 0 ] || gpu_busy || kept_alive; then
+  if [ "$cpu" -eq 0 ] || [ "$net" -eq 0 ] || gpu_busy; then
     idle_for=0
   else
     idle_for=$((idle_for + interval))
+    # Idle time counts from the later of the last busy sample and the last keep-alive touch.
+    if age=$(keepalive_age) && [ "$age" -lt "$idle_for" ]; then idle_for=$age; fi
     if [ "$idle_for" -ge "$idle_limit" ]; then shut_down "no GPU, CPU or network work for ${idle_for}s"; fi
   fi
   sleep "$interval"

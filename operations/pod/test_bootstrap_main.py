@@ -27,7 +27,12 @@ from common.contracts.errors import ContractError
 from common.sealed_config import read_sealed_toml
 
 from . import bootstrap_main
-from .bootstrap import CONFIGURATION_RECEIPT_SCHEMA, BootstrapStep, BootstrapStepFailure
+from .bootstrap import (
+    CONFIGURATION_RECEIPT_SCHEMA,
+    BootstrapReport,
+    BootstrapStep,
+    BootstrapStepFailure,
+)
 from .bootstrap_main import (
     HARD_DEADLINE_ENV,
     HOLD_SCHEMA,
@@ -613,6 +618,27 @@ def test_a_refusal_report_write_failure_is_named_not_swallowed(
     assert "--interval-seconds must be a positive finite number" in err
     assert "refusal report could not be written" in err
     assert "no space left on device" in err
+
+
+def test_an_unbuildable_factory_names_a_refusal_report_it_could_not_write(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+
+    def unbuildable(plan):  # type: ignore[no-untyped-def]
+        def broken_atomic_write(path, payload):  # type: ignore[no-untyped-def]
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(bootstrap_main, "atomic_write", broken_atomic_write)
+        raise RuntimeError("the workspace has no uv")
+
+    exit_code = main(_argv(ws), environ=_environ(clock), actions_factory=unbuildable)
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "bootstrap actions could not be built: the workspace has no uv" in err
+    assert "refusal report could not be written: no space left on device" in err
     assert not ws.report_path.exists()
 
 
@@ -1376,7 +1402,7 @@ def test_a_placement_value_changed_after_a_green_bootstrap_refuses_the_resume(
     first = bootstrap_main.run_bootstrap(
         plan, now=lambda: START, actions_factory=lambda _plan: _configuration_actions(plan)
     )
-    assert not isinstance(first, int) and first.green
+    assert isinstance(first, BootstrapReport) and first.green
 
     ws.placement_config.write_bytes(
         ws.placement_config.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
@@ -1386,7 +1412,9 @@ def test_a_placement_value_changed_after_a_green_bootstrap_refuses_the_resume(
         plan, now=lambda: START, actions_factory=lambda _plan: resumed_actions
     )
 
-    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
 
 
@@ -1529,7 +1557,9 @@ def test_configuration_refuses_semantic_selected_source_before_later_work(
         plan, now=lambda: START, actions_factory=lambda _plan: actions
     )
 
-    assert not isinstance(result, int) and result.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(result, BootstrapReport) and result.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert actions.calls == [BootstrapStep.REPOSITORY, BootstrapStep.CONFIGURATION]
     assert named_source in (result.detail or "")
     assert str(selected) in (result.detail or "")
@@ -1546,7 +1576,7 @@ def test_a_partial_journal_refuses_a_changed_configuration_path_before_uv(
         now=lambda: START,
         actions_factory=lambda plan: first_actions,
     )
-    assert not isinstance(first, int) and first.failure_step is BootstrapStep.UV_ENVIRONMENT
+    assert isinstance(first, BootstrapReport) and first.failure_step is BootstrapStep.UV_ENVIRONMENT
 
     alternate = ws.repository / "config" / "alternate-context.toml"
     alternate.write_bytes(original.witness_context_config.read_bytes())  # type: ignore[union-attr]
@@ -1558,7 +1588,9 @@ def test_a_partial_journal_refuses_a_changed_configuration_path_before_uv(
         actions_factory=lambda plan: resumed_actions,
     )
 
-    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
     journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     assert journal["receipts"]["configuration"]["bindings"]["witness_context_config"][
@@ -1578,7 +1610,7 @@ def test_a_green_journal_refuses_a_changed_configuration_path_before_shortcut(
         now=lambda: START,
         actions_factory=lambda plan: first_actions,
     )
-    assert not isinstance(first, int) and first.green
+    assert isinstance(first, BootstrapReport) and first.green
 
     alternate = ws.repository / "config" / "alternate-recipes.toml"
     assert original.serving_recipes_config is not None
@@ -1591,7 +1623,9 @@ def test_a_green_journal_refuses_a_changed_configuration_path_before_shortcut(
         actions_factory=lambda plan: resumed_actions,
     )
 
-    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
     assert BootstrapStep.UV_ENVIRONMENT not in resumed_actions.calls
 
@@ -1606,7 +1640,7 @@ def test_a_same_path_serving_byte_change_refuses_before_a_partial_resume(
         now=lambda: START,
         actions_factory=lambda selected: first_actions,
     )
-    assert not isinstance(first, int) and first.failure_step is BootstrapStep.UV_ENVIRONMENT
+    assert isinstance(first, BootstrapReport) and first.failure_step is BootstrapStep.UV_ENVIRONMENT
     original_receipt = json.loads(ws.journal.read_text(encoding="utf-8"))["receipts"][
         "configuration"
     ]
@@ -1624,7 +1658,9 @@ def test_a_same_path_serving_byte_change_refuses_before_a_partial_resume(
         actions_factory=lambda selected: resumed_actions,
     )
 
-    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
     journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     assert journal["receipts"]["configuration"] == original_receipt
@@ -1641,7 +1677,7 @@ def test_an_unchanged_resume_revalidates_configuration_without_rerunning_paid_st
         now=lambda: START,
         actions_factory=lambda selected: first_actions,
     )
-    assert not isinstance(first, int) and first.green
+    assert isinstance(first, BootstrapReport) and first.green
 
     resumed_actions = _configuration_actions(plan)
     resumed = bootstrap_main.run_bootstrap(
@@ -1650,7 +1686,7 @@ def test_an_unchanged_resume_revalidates_configuration_without_rerunning_paid_st
         actions_factory=lambda selected: resumed_actions,
     )
 
-    assert not isinstance(resumed, int) and resumed.green
+    assert isinstance(resumed, BootstrapReport) and resumed.green
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION, BootstrapStep.CUDA_COMPAT]
 
 
@@ -1664,7 +1700,7 @@ def test_a_completed_receipt_missing_one_binding_fails_closed(
         now=lambda: START,
         actions_factory=lambda selected: first_actions,
     )
-    assert not isinstance(first, int) and first.green
+    assert isinstance(first, BootstrapReport) and first.green
 
     journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     del journal["receipts"]["configuration"]["bindings"]["placement_config"]
@@ -1676,7 +1712,9 @@ def test_a_completed_receipt_missing_one_binding_fails_closed(
         actions_factory=lambda selected: resumed_actions,
     )
 
-    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert "lacks the required binding" in (resumed.detail or "")
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
 
@@ -1688,7 +1726,7 @@ def test_a_journal_bound_under_the_raw_byte_receipt_is_refused_by_schema(
     first = bootstrap_main.run_bootstrap(
         plan, now=lambda: START, actions_factory=lambda selected: _configuration_actions(plan)
     )
-    assert not isinstance(first, int) and first.green
+    assert isinstance(first, BootstrapReport) and first.green
 
     journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     journal["receipts"]["configuration"]["schema"] = "pod-bootstrap-configuration.v1"
@@ -1698,7 +1736,9 @@ def test_a_journal_bound_under_the_raw_byte_receipt_is_refused_by_schema(
         plan, now=lambda: START, actions_factory=lambda selected: resumed_actions
     )
 
-    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert "predates seal method v2" in (resumed.detail or "")
     assert "lacks the required binding" not in (resumed.detail or "")
     assert f"move {ws.journal} aside" in (resumed.remediation or "")
@@ -1720,7 +1760,7 @@ def test_a_failed_configuration_may_repair_its_selection_before_first_completion
         actions_factory=lambda selected: first_actions,
     )
 
-    assert not isinstance(first, int) and first.failure_step is BootstrapStep.CONFIGURATION
+    assert isinstance(first, BootstrapReport) and first.failure_step is BootstrapStep.CONFIGURATION
     failed_journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     assert failed_journal["completed"] == ["repository"]
     assert "configuration" not in failed_journal["receipts"]
@@ -1732,7 +1772,7 @@ def test_a_failed_configuration_may_repair_its_selection_before_first_completion
         actions_factory=lambda selected: repaired_actions,
     )
 
-    assert not isinstance(repaired, int) and repaired.green
+    assert isinstance(repaired, BootstrapReport) and repaired.green
     assert repaired_actions.calls[0] is BootstrapStep.CONFIGURATION
     assert BootstrapStep.UV_ENVIRONMENT in repaired_actions.calls
     repaired_journal = json.loads(ws.journal.read_text(encoding="utf-8"))

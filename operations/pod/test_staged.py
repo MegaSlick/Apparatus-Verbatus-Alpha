@@ -1,4 +1,4 @@
-"""Fake-provider acceptance tests for Unit 17's per-stage pod lifecycle."""
+"""Fake-provider acceptance tests for the per-stage pod lifecycle."""
 
 from __future__ import annotations
 
@@ -116,11 +116,6 @@ def test_each_stage_boot_needs_its_own_authorization_and_the_same_one_cannot_boo
         work=lambda _: "witness evidence",
     )
 
-    # The old message read "the first confirmation did not create a second pod",
-    # which describes the opposite of the failure this file exists to catch: a
-    # refused second boot leaking through makes the count 3, and an engineer
-    # reading that during a billing incident goes looking for a missing pod
-    # rather than an extra one.
     assert runtime.calls == 2, (
         "expected exactly one paid create per authorization; a different count means either "
         "the second authorization did not create its pod or a refused boot reached the provider"
@@ -286,9 +281,36 @@ def test_one_authorization_reference_cannot_boot_again_under_a_different_scope(
         work=lambda _: None,
     )
 
-    with pytest.raises(StageBootRefusal, match="already spent"):
+    with pytest.raises(StageBootRefusal, match="already spent") as refused:
         subject.boot(
             StageAuthorization("another-collection", "perlector", "grant-shared"),
+            request(clock, name="perlector"),
+            confirmation="separate confirmed stage grant",
+        )
+
+    # The refusal names the stage that spent the grant, read back off the claim.
+    message = str(refused.value)
+    assert "collection 'parish-17' stage 'designator'" in message
+    assert "another-collection" not in message and "perlector" not in message
+    assert runtime.calls == 1
+
+
+def test_a_spent_grant_whose_claim_cannot_be_read_back_is_still_refused(
+    tmp_path: Path,
+) -> None:
+    clock, _, runtime, subject = lifecycle(tmp_path)
+    subject.run(
+        StageAuthorization("parish-17", "designator", "grant-shared"),
+        request(clock, name="designator"),
+        confirmation="separate confirmed stage grant",
+        work=lambda _: None,
+    )
+    [claim] = (tmp_path / "volume" / StageCostStore.CLAIMS).iterdir()
+    claim.write_bytes(b"not json")
+
+    with pytest.raises(StageBootRefusal, match="could not be read back"):
+        subject.boot(
+            StageAuthorization("parish-17", "perlector", "grant-shared"),
             request(clock, name="perlector"),
             confirmation="separate confirmed stage grant",
         )
@@ -516,6 +538,57 @@ def test_a_close_that_raises_still_names_the_pod_that_may_still_be_billing(
     assert failure["pod_id"] == "fake-pod-1"
     assert "provider unreachable at shutdown" in failure["detail"]
     assert failure["stage"] == "perlector"
+
+
+def test_a_failed_close_after_failed_work_keeps_the_work_error_and_its_own_cause(
+    tmp_path: Path,
+) -> None:
+    clock, _, runtime, subject = lifecycle(tmp_path)
+
+    def raise_on_close(record: object, *, reason: str) -> CloseReport:
+        raise ConnectionError("provider unreachable at shutdown")
+
+    def broken_work(_record: object) -> None:
+        try:
+            raise KeyError("missing page")
+        except KeyError as cause:
+            raise ValueError("stage work broke") from cause
+
+    runtime.shutdown.close = raise_on_close  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="stage work broke") as raised:
+        subject.run(
+            StageAuthorization("parish-17", "perlector", "grant-perlector"),
+            request(clock, name="perlector"),
+            confirmation="separate confirmed stage grant",
+            work=broken_work,
+        )
+
+    assert isinstance(raised.value.__cause__, KeyError)
+    assert any("provider unreachable at shutdown" in note for note in raised.value.__notes__)
+    failure = cost_records(tmp_path, "stage-pod-close-failure.v1")[0]
+    assert "provider unreachable at shutdown" in failure["detail"]
+
+
+def test_an_interrupt_during_the_close_stands_over_a_failed_work_error(tmp_path: Path) -> None:
+    clock, _, runtime, subject = lifecycle(tmp_path)
+
+    def interrupted_close(record: object, *, reason: str) -> CloseReport:
+        raise KeyboardInterrupt
+
+    def broken_work(_record: object) -> None:
+        raise ValueError("stage work broke")
+
+    runtime.shutdown.close = interrupted_close  # type: ignore[method-assign]
+    with pytest.raises(KeyboardInterrupt) as raised:
+        subject.run(
+            StageAuthorization("parish-17", "perlector", "grant-perlector"),
+            request(clock, name="perlector"),
+            confirmation="separate confirmed stage grant",
+            work=broken_work,
+        )
+
+    assert isinstance(raised.value.__context__, ValueError)
+    assert cost_records(tmp_path, "stage-pod-close-failure.v1")
 
 
 def test_a_stage_runtime_with_no_shutdown_controller_records_before_it_refuses(
@@ -877,20 +950,14 @@ def test_a_close_record_write_failure_leaves_unknown_not_zero(
     assert intent["close_state"] == intent["cost_state"] == "unknown"
 
 
-def test_a_restarted_lifecycle_closes_a_recovered_pod_against_its_original_grant(
+def test_a_fresh_lifecycle_closes_a_pod_under_the_boot_it_is_handed(
     tmp_path: Path,
 ) -> None:
-    """A pod recovered after a crash settles against the grant that booted it.
+    """``close`` records its cost under the ``ActiveStageBoot``'s grant and creates no pod.
 
-    The adoption itself is a stub: this layer has no adoption path (see
-    `staged.py`'s module docstring), so the closure below only produces the
-    record a real `PodRuntime.adopt` would return. Asserting on that closure's
-    own refusal proved nothing -- no change to production code could fail it --
-    and the test's old name read as coverage of a confirmation gate, which would
-    have stayed green after such a gate was added and broken. What is real is
-    below: a restarted lifecycle closes the recovered pod id against the
-    original stage grant, verifies it, and writes exactly one cost record, while
-    no second pod is created.
+    This layer has no adoption path and nothing here recovers a grant from a
+    durable boot record (see `staged.py`'s module docstring); the test hands
+    the grant in itself and checks only what ``close`` does with it.
     """
 
     clock, provider, _, before_crash = lifecycle(tmp_path)
@@ -901,27 +968,14 @@ def test_a_restarted_lifecycle_closes_a_recovered_pod_against_its_original_grant
         confirmation="separate confirmed stage grant",
     )
     create_calls = sum(verb == "create" for verb, _subject in provider.calls)
-
-    def adopt(confirmation: str | None) -> LaunchResult:
-        if confirmation != "fresh confirmed adoption":
-            return LaunchResult(
-                LaunchState.REFUSED_CONFIRMATION, detail="fresh confirmation required"
-            )
-        return LaunchResult(
-            LaunchState.ADOPTED_GUARDED, record=provider.adopt(active.record.pod_id)
-        )
-
-    adopted = adopt("fresh confirmed adoption")
-    assert adopted.record is not None and adopted.record.pod_id == active.record.pod_id
-    assert sum(verb == "create" for verb, _subject in provider.calls) == create_calls
+    adopted = provider.adopt(active.record.pod_id)
+    assert adopted.pod_id == active.record.pod_id
 
     restarted_runtime = FakeStageRuntime(provider, clock)
     restarted = PerStagePodLifecycle(
         restarted_runtime, cost_store=StageCostStore(tmp_path / "volume")
     )
-    settled = restarted.close(
-        ActiveStageBoot(grant, adopted.record), reason="recovered after crash"
-    )
+    settled = restarted.close(ActiveStageBoot(grant, adopted), reason="recovered after crash")
 
     assert settled.pod_id == active.record.pod_id
     assert settled.close.verified
@@ -933,5 +987,4 @@ def test_a_restarted_lifecycle_closes_a_recovered_pod_against_its_original_grant
     assert closes[0]["collection_id"] == "parish-17"
     assert closes[0]["stage"] == "attestatores"
     assert closes[0]["authorization_ref"] == "grant-witnesses"
-    # And recovery through close must create no second pod.
     assert sum(verb == "create" for verb, _subject in provider.calls) == create_calls
