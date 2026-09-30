@@ -4,6 +4,7 @@ metric; a raw-string cross-check beside the normalized one; an honest
 """
 
 import ast
+import sys
 import unicodedata
 from pathlib import Path
 
@@ -15,11 +16,11 @@ from common.alignment import (
     StepCountedMatcher,
     load_dissent_limits,
 )
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.prior_draft import COMPARISON_STEP_LIMIT_REASON, unmeasured_comparison
 from common.contracts.stages import PERLECTOR
 from common.runtree.store import RunTree
-from conftest import programs_through, run_stage
+from conftest import load_stage, programs_through, run_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 # The sealed dissent budget, loaded, never a copy of it.
@@ -430,6 +431,24 @@ def test_a_budget_is_recorded_only_on_an_unknown_row():
             dissent.validate_dissent(
                 [{**stopped, "max_comparison_steps": budget}], text="", basis_testimonia=basis
             )
+    # A row that compared, and a row for a witness that never reported, have no
+    # budget to have run out of.
+    (compared,) = _dissent_against(
+        "alpha", [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": "alpha"}}]
+    )
+    assert compared["compared"] is True
+    dissent.validate_dissent([compared], text="alpha", basis_testimonia=basis)
+    with pytest.raises(SchemaRefusal, match="closed compared-row schema"):
+        dissent.validate_dissent(
+            [{**compared, "max_comparison_steps": 5}], text="alpha", basis_testimonia=basis
+        )
+    silent = [{"chair": "attestator_1", "outcome": "failed"}]
+    unreported = {"chair": "attestator_1", "compared": False, "reason": "failed"}
+    dissent.validate_dissent([unreported], text="", basis_testimonia=silent)
+    with pytest.raises(SchemaRefusal, match="uncomputed-row schema"):
+        dissent.validate_dissent(
+            [{**unreported, "max_comparison_steps": 5}], text="", basis_testimonia=silent
+        )
 
 
 def test_the_perlector_compares_under_the_sealed_dissent_budget(tmp_path):
@@ -462,6 +481,40 @@ def test_the_perlector_compares_under_the_sealed_dissent_budget(tmp_path):
     assert all(row["compared"] == "unknown" for row in stopped)
     assert {row["max_comparison_steps"] for row in stopped} == {1}
     assert not [row for row in rows if row["compared"] is True and row["departures"]]
+
+
+def test_the_perlector_refuses_a_dissent_budget_the_run_never_sealed(tmp_path, monkeypatch):
+    """The run seals the shipped `config/alignment.toml`, and the stage's binding
+    check reads that file when the pass opens. If the budget the Perlector then
+    loads differs -- the file changed between the two reads -- it must refuse,
+    not compare under a budget the run never bound. Run in process so the
+    second read alone sees the change."""
+    shipped = DEFAULT_ALIGNMENT_CONFIG_PATH.read_text(encoding="utf-8")
+    sealed_line = f"max_comparison_steps = {BUDGET}\n"
+    changed = tmp_path / "alignment.toml"
+    changed.write_text(
+        shipped.replace(sealed_line, f"max_comparison_steps = {BUDGET + 1}\n"), encoding="utf-8"
+    )
+    root = tmp_path / "runs"
+    for program in programs_through("attestatores"):
+        result = run_stage(root, "r", "happy", program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    perlector = load_stage("4_perlector")
+    monkeypatch.setattr(
+        perlector, "load_dissent_limits", lambda _path: load_dissent_limits(changed)
+    )
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(ROOT / "pipeline/4_perlector/run.py"), "--run-root", str(root), "--run-id", "r"]
+        + ["--scenario", "happy"],
+    )
+
+    with pytest.raises(ContractError, match="the alignment configuration changed between"):
+        perlector.main()
+    assert not RunTree(root, "r").build_manifest(PERLECTOR)["artifacts"]
 
 
 def test_is_comparable_defaults_true_when_a_testimonium_declares_no_capabilities():

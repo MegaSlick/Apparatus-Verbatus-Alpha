@@ -278,13 +278,23 @@ def dissent_against(
     return rows
 
 
-def validate_dissent(rows: Any, *, text: str, basis_testimonia: list[dict]) -> None:
+def validate_dissent(
+    rows: Any,
+    *,
+    text: str,
+    basis_testimonia: list[dict],
+    max_comparison_steps: int | None = None,
+) -> None:
     """Refuse a dissent record that loses or duplicates a witness.
 
     Agreement is represented by one row with an empty ``departures`` list, not
     by omitting the row.  Otherwise an empty dissent list makes "all witnesses
     agreed" indistinguishable from "the instrument did not run" -- exactly the
     silent loss this record exists to prevent.
+
+    Given `max_comparison_steps`, the run's sealed dissent budget, a row the
+    budget stopped must name exactly that budget: any other is one the run
+    never sealed.
     """
     if not isinstance(rows, list):
         raise SchemaRefusal("a Perlector reading carries no dissent record")
@@ -383,5 +393,14 @@ def validate_dissent(rows: Any, *, text: str, basis_testimonia: list[dict]) -> N
                 )
             ):
                 raise SchemaRefusal(f"dissent[{index}] is not the closed uncomputed-row schema")
+            if (
+                "max_comparison_steps" in row
+                and max_comparison_steps is not None
+                and budget != max_comparison_steps
+            ):
+                raise SchemaRefusal(
+                    f"dissent[{index}] records a {budget}-step dissent budget, but this run "
+                    f"sealed {max_comparison_steps}"
+                )
         else:
             raise SchemaRefusal(f"dissent[{index}] has an invalid comparison state")
