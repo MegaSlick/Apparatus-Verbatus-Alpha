@@ -296,16 +296,16 @@ def chandra_native_request_body(
     payload: Mapping[str, object],
     *,
     model_id: str,
-    temperature: float,
-    top_p: float,
+    sampling: Mapping[str, int | float],
 ) -> bytes:
     """Render only the admitted Chandra native request shape.
 
-    This deliberately has no seed argument.  The pinned upstream client sends
-    ``temperature`` and ``top_p`` per request and omits a per-request seed; the
-    serving receipt still records the server launch seed.  Keeping this as a
-    separate function prevents the exception from becoming an ambient switch
-    on :func:`request_body`.
+    This deliberately has no seed argument.  The pinned upstream client omits a
+    per-request seed; the serving receipt still records the server launch seed.
+    ``sampling`` is the attempt's sealed sampling row: the recipe's temperature
+    and top_p over the vLLM defaults the upstream client reads under.  Keeping
+    this as a separate function prevents the exception from becoming an ambient
+    switch on :func:`request_body`.
     """
 
     value = dict(payload)
@@ -314,19 +314,12 @@ def chandra_native_request_body(
         raise ServingConfigurationError(
             f"request named model {supplied!r}, not this service's exact id {model_id!r}"
         )
-    forbidden = sorted({"stream", "temperature", "top_p", "seed"} & set(value))
+    forbidden = sorted(({"stream", "seed"} | set(sampling)) & set(value))
     if forbidden:
         raise ServingConfigurationError(
             f"Chandra native request payload may not predeclare manager-owned {forbidden}"
         )
-    value.update(
-        {
-            "model": model_id,
-            "stream": False,
-            "temperature": temperature,
-            "top_p": top_p,
-        }
-    )
+    value.update({"model": model_id, "stream": False, **sampling})
     rendered = _canonical_json(value)
     assert_wire_part_order(json.loads(rendered), label=f"Chandra native request for {model_id}")
     return rendered

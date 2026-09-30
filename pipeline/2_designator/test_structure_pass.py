@@ -54,8 +54,9 @@ from common.sealed_config import read_sealed_toml
 from common.stage import (
     EXIT_COMPLETE,
     EXIT_HELD,
+    RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS,
     STRUCTURE_ANSWER_KIND,
-    STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+    STRUCTURE_ANSWER_RECORD_SCHEMA,
     expected_acts,
     load_fixture,
     open_stage_context,
@@ -554,7 +555,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
     assert set(answers) == {1, 2}
     for ordinal, expected in ((1, PAGE_ONE_ACTS), (2, PAGE_TWO_ACTS)):
         payload = answers[ordinal]["payload"]
-        assert payload["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
+        assert payload["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA
         assert payload["parse_state"] == "parsed"
         assert payload["parse_outcome"] is None
         assert payload["disposition"] == "detected"
@@ -570,6 +571,9 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert payload["decoding"]["sampling"] == {
             "temperature": {"schema": "wire-decimal.v1", "decimal": "0.0"},
             "top_p": {"schema": "wire-decimal.v1", "decimal": "0.1"},
+            "top_k": 0,
+            "min_p": {"schema": "wire-decimal.v1", "decimal": "0.0"},
+            "repetition_penalty": {"schema": "wire-decimal.v1", "decimal": "1.0"},
         }
         assert payload["prompt_version"] == "verbatus-structure-prompt.v3"
         assert payload["block_count"] == len(expected)
@@ -1170,8 +1174,8 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
     current_policy, _digest = load_decoding_policy()
     monkeypatch.setattr(
         stage_contract,
-        "load_decoding_policy",
-        lambda _path: (current_policy, "d" * 64),
+        "sealed_decoding_policy",
+        lambda _context: (current_policy, "d" * 64),
     )
     page_id = "page_" + "1" * 16
     policy = {"max_attempts": 3, "sampling_schedule": "chandra-native-retry"}
@@ -1182,7 +1186,7 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
     first_ref = {"relative_path": "2_designator/a1.json", "sha256": "1" * 64}
     second_ref = {"relative_path": "2_designator/a2.json", "sha256": "2" * 64}
     first = {
-        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
         "page_id": page_id,
         "page_ordinal": 1,
         "attempt_ordinal": 1,
@@ -1250,7 +1254,7 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
 def test_real_denominator_indexes_structure_attempts_and_decoding_once(monkeypatch):
     pages = ["page_" + "1" * 16, "page_" + "2" * 16]
     answers = [
-        {"subject_id": page_id, "payload": {"schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V3}}
+        {"subject_id": page_id, "payload": {"schema": STRUCTURE_ANSWER_RECORD_SCHEMA}}
         for page_id in pages
     ]
     attempt_rows = [{"subject_id": page_id, "payload": {}} for page_id in pages]
@@ -1488,7 +1492,13 @@ def test_an_answer_the_grammar_refuses_holds_the_page_by_its_outcome(
     assert [row["payload"]["attempt_seed"] for row in attempts] == [0, 0, 0]
     assert [row["payload"]["attempt_ordinal"] for row in attempts] == [1, 2, 3]
     assert [row["payload"]["decoding"]["sampling"] for row in attempts] == [
-        recorded_sampling(chandra_wire_parameters(ordinal)) for ordinal in (1, 2, 3)
+        recorded_sampling(
+            {
+                **chair_decoding(load_decoding_policy()[0], "designator_structure"),
+                **chandra_wire_parameters(ordinal),
+            }
+        )
+        for ordinal in (1, 2, 3)
     ]
     assert payload["attempt_ordinal"] == len(payload["attempts"]) == 3
     last_reference = payload["attempts"][-1]
@@ -1947,13 +1957,22 @@ def test_a_real_recovery_requires_the_same_explicit_request_identity(
 def test_the_structure_chair_reads_at_chandras_own_first_request_settings(tmp_path):
     """The structure chair's sealed row is Chandra's own pipeline's first request."""
     policy, _digest = load_decoding_policy()
-    assert chair_decoding(policy, "designator_structure") == {"temperature": 0.0, "top_p": 0.1}
+    assert chair_decoding(policy, "designator_structure") == {
+        "temperature": 0.0,
+        "top_p": 0.1,
+        "top_k": 0,
+        "min_p": 0.0,
+        "repetition_penalty": 1.0,
+    }
     # Recorded on the answer in the call record's own form, so the two compare as written.
     assert stage_contract.structure_attempt_decoding(policy, 1, "d" * 64) == {
         "policy": "structure",
         "sampling": {
             "temperature": {"schema": "wire-decimal.v1", "decimal": "0.0"},
             "top_p": {"schema": "wire-decimal.v1", "decimal": "0.1"},
+            "top_k": 0,
+            "min_p": {"schema": "wire-decimal.v1", "decimal": "0.0"},
+            "repetition_penalty": {"schema": "wire-decimal.v1", "decimal": "1.0"},
         },
         "decoding_config_sha256": "d" * 64,
     }
@@ -2053,7 +2072,7 @@ def _minimal_answer_record() -> dict[str, Any]:
     which would drift from what the validator actually uses.
     """
     record: dict[str, Any] = dict.fromkeys(designator._STRUCTURE_ANSWER_V3_FIELDS)
-    record["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA_V3
+    record["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA
     record["presentation_ref"] = {"relative_path": "p", "sha256": "0" * 64}
     record["attempt_policy"] = {"max_attempts": 3, "sampling_schedule": "chandra-native-retry"}
     record["attempt_ordinal"] = 1
@@ -2231,9 +2250,7 @@ def test_a_field_outside_the_structure_answer_contract_refuses_by_name():
         designator._validate_structure_answer_payload(record)
 
 
-@pytest.mark.parametrize(
-    "schema", ["designator-structure-answer.v1", "designator-structure-answer.v2"]
-)
+@pytest.mark.parametrize("schema", sorted(RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS))
 def test_retired_structure_answer_schema_is_refused_by_name(schema):
     record = _minimal_answer_record()
     record["schema"] = schema
@@ -2245,9 +2262,7 @@ def test_retired_structure_answer_schema_is_refused_by_name(schema):
         designator._validate_structure_answer_payload(record)
 
 
-@pytest.mark.parametrize(
-    "schema", ["designator-structure-answer.v1", "designator-structure-answer.v2"]
-)
+@pytest.mark.parametrize("schema", sorted(RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS))
 def test_retired_answer_refuses_before_secondary_provenance_publish(monkeypatch, schema):
     context = SimpleNamespace(
         args=SimpleNamespace(decoding_config=None),

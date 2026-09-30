@@ -86,7 +86,7 @@ from common.contracts.prior_draft import (  # noqa: E402
     validate_establishing_view,
 )
 from common.contracts.serving import (  # noqa: E402
-    CHAIR_CALL_RECORD_SCHEMAS,
+    CHAIR_CALL_RECORD_SCHEMA,
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
 )
 from common.contracts.stages import (  # noqa: E402
@@ -102,7 +102,12 @@ from common.cross_capture_autopsia import (  # noqa: E402
     presented_image_sha256s,
     validate_autopsia,
 )
-from common.decoding import load_decoding_policy, perlector_max_tokens  # noqa: E402
+from common.decoding import (  # noqa: E402
+    VARIANCE_ARMS,
+    load_decoding_policy,
+    perlector_max_tokens,
+    refuse_retired_call_record,
+)
 from common.exemplar_boundary import read_sealed_page, verify_exemplar_crop_lineage  # noqa: E402
 from common.image_sniff import PNG_SIGNATURE  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
@@ -143,6 +148,7 @@ from common.stage import (  # noqa: E402
     stage_manifest,
     stage_parser,
     validate_serving_provenance,
+    verify_retained_call_sampling,
 )
 from operations.serving.assembly import (  # noqa: E402
     bound_serving_recipes,
@@ -1670,12 +1676,16 @@ class ResidentChair:
             client.__exit__()
 
 
-def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict[str, str]]:
+def engine_call_inputs(
+    context, engine_call: dict[str, Any] | None, *, variance_arm: str | None
+) -> list[dict[str, str]]:
     """Bind the two blobs a live reading's record names as direct inputs.
 
     A fixture reading has no `engine_call` and adds nothing. Each reference is
     re-derived from the bytes on disk, so a record cannot name a response that is
-    absent or has changed.
+    absent or has changed, and the call record is held to the Perlector's sealed
+    sampling row and to its seed: `variance_arm`'s for a sampling-variance arm,
+    otherwise the serving receipt's.
     """
     if engine_call is None:
         return []
@@ -1703,6 +1713,15 @@ def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict
                 f"path are {observed!r}"
             )
         references.append(observed)
+    call = _json_object(context.tree.read_bytes(engine_call["call_record_ref"]["relative_path"]))
+    if call is None:
+        raise SchemaRefusal("a live reading's call record is not a JSON object")
+    try:
+        verify_retained_call_sampling(context, call, "perlector", variance_arm=variance_arm)
+    except ContractError as error:
+        raise SchemaRefusal(
+            f"a live reading's call record is not its sealed request: {error}"
+        ) from error
     return references
 
 
@@ -1954,7 +1973,10 @@ def _unrecorded_replies(context) -> tuple[list[dict[str, Any]], bool]:
             continue
         record = _json_object(data)
         schema = record.get("schema") if record is not None else None
-        if schema in CHAIR_CALL_RECORD_SCHEMAS or schema == CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA:
+        # A call record from before the decoding bump is refused by its name, not
+        # counted as a reply no record binds.
+        refuse_retired_call_record(schema, subject=f"retained blob {path}")
+        if schema in {CHAIR_CALL_RECORD_SCHEMA, CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA}:
             reply = record.get("raw_response_ref")
             if reply is not None:
                 named.add(reply["relative_path"])
@@ -3559,7 +3581,11 @@ def _publish_arm(
             autopsia=payload["dossier"]["cross_capture_autopsia"],
         )
         + (witness_inputs or [])
-        + engine_call_inputs(context, result.get("engine_call"))
+        + engine_call_inputs(
+            context,
+            result.get("engine_call"),
+            variance_arm=operation if operation in VARIANCE_ARMS else None,
+        )
     )
     validate_reading_payload(
         payload,
@@ -3880,7 +3906,7 @@ def _pending_row(
         + list(_testimonium_references(context, testimonia).values())
         + [attachment_view["reference"]]
         + ([prior["reference"]] if prior else [])
-        + engine_call_inputs(context, engine_call),
+        + engine_call_inputs(context, engine_call, variance_arm=None),
     }
 
 
@@ -4969,7 +4995,7 @@ def _delivered_reproof(
             row,
             inputs=row["inputs"]
             + [draft_ref]
-            + engine_call_inputs(context, reply.get("engine_call"))
+            + engine_call_inputs(context, reply.get("engine_call"), variance_arm=None)
             + _published_arm_refs(context, row["act_id"], payload["attempt_ordinal"])
             + _reproof_sent_refs(run, row),
             failure=_failure_from_engine_call(context, reply.get("engine_call"), detail=str(error)),
@@ -4982,7 +5008,8 @@ def _delivered_reproof(
         text=text,
         edits=edits,
         call_record=call_record,
-        inputs=engine_call_inputs(context, reply.get("engine_call")) + _reproof_sent_refs(run, row),
+        inputs=engine_call_inputs(context, reply.get("engine_call"), variance_arm=None)
+        + _reproof_sent_refs(run, row),
     )
 
 

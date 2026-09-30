@@ -112,7 +112,7 @@ DAI_TOKENIZER_EOS_TOKEN_ID: Final = 151645
 
 
 def dai_wire_stop_token_ids() -> dict[str, list[int]]:
-    """DAI's second EOS id, sent explicitly as well as resolved under ``auto``.
+    """DAI's second EOS id, sent explicitly as well as read by the engine from the file.
 
     Derived from the carried ``eos_token_id`` (:func:`dai_generation`),
     ``[151645, 151643]``, never re-typed. Sent as redundant request evidence,
@@ -176,27 +176,26 @@ def dai_generation() -> dict[str, Any]:
     }
 
 
-def dai_generation_accounting(generation_config: str) -> dict[str, Any]:
-    """Account for every carried DAI key under the resolved serving posture.
+def dai_generation_accounting() -> dict[str, Any]:
+    """Account for every carried DAI key under the serving posture.
 
     This is an account of request construction, not a claim that a live engine
-    applied every vendor default. ``auto`` directs the engine to the pinned
-    vendor file at launch; the sampling values are sent from the sealed decoding
-    table's DAI row, which carries this file's values, and the chair-call record
-    proves every explicit field, including the manager-owned seed.
+    applied every vendor value. Every serving row runs vLLM under
+    ``generation_config = "vllm"``, which fills no sampling field from the file
+    but still reads its ``eos_token_id``; the sampling values are sent from the
+    sealed decoding table's DAI row, which carries this file's values, and the
+    chair-call record proves every explicit field, including the seed.
     """
-    if generation_config != "auto":
-        raise SchemaRefusal("DAI native generation accounting requires generation_config='auto'")
     vendor_generation = dai_generation()
     # Read off the carried file, not typed again: the sealed table's DAI row sends
-    # exactly these values (`common/test_vendor_parity.py` proves the two equal).
+    # these values (`common/test_vendor_parity.py` proves the two equal).
     sampling_keys = tuple(sorted(set(vendor_generation) & SAMPLING_FIELDS))
     deliberately_not_sent = {
-        "bos_token_id": "delegated to the engine's pinned model snapshot under auto",
-        "pad_token_id": "delegated to the engine's pinned model snapshot under auto",
+        "bos_token_id": "not a request field; the served tokenizer's own id applies",
+        "pad_token_id": "not a request field; a single unbatched sequence is never padded",
         "eos_token_id": (
-            "delegated to the pinned generation config under auto; the secondary id is "
-            "also sent explicitly as stop_token_ids"
+            "read by the engine from the pinned file under either generation-config "
+            "setting; the secondary id is also sent explicitly as stop_token_ids"
         ),
         "do_sample": "an OpenAI request has no such field; the sent temperature samples",
         "transformers_version": "vendor metadata, not an OpenAI request field",
@@ -208,15 +207,11 @@ def dai_generation_accounting(generation_config: str) -> dict[str, Any]:
         deliberately_not_sent=deliberately_not_sent,
     )
     return {
-        "schema": "dai-generation-accounting.v2",
-        "engine_generation_config": "auto",
+        "schema": "dai-generation-accounting.v3",
+        "engine_generation_config": "vllm",
         "vendor_keys_sent_by_sealed_decoding": list(sampling_keys),
-        "vendor_keys_delegated_to_engine_auto": [
-            "bos_token_id",
-            "eos_token_id",
-            "pad_token_id",
-        ],
-        "vendor_keys_without_request_field": ["do_sample"],
+        "vendor_keys_read_by_engine": ["eos_token_id"],
+        "vendor_keys_without_request_field": ["bos_token_id", "do_sample", "pad_token_id"],
         "vendor_metadata_keys": ["transformers_version"],
         "vendor_do_sample": vendor_generation["do_sample"],
         "explicit_secondary_eos_token_ids": dai_wire_stop_token_ids()["stop_token_ids"],
@@ -226,11 +221,9 @@ def dai_generation_accounting(generation_config: str) -> dict[str, Any]:
 
 def validate_dai_generation_accounting(value: Any) -> dict[str, Any]:
     """Close the retained DAI generation ledger against the carried vendor view."""
-    expected = dai_generation_accounting("auto")
+    expected = dai_generation_accounting()
     if not isinstance(value, dict) or value != expected:
-        raise SchemaRefusal(
-            "DAI model view generation accounting differs from the closed auto-policy ledger"
-        )
+        raise SchemaRefusal("DAI model view generation accounting differs from the closed ledger")
     return value
 
 

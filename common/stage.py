@@ -63,10 +63,7 @@ from common.contracts.outcomes import (
 from common.contracts.prior_draft import BLIND_READ_MODES
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
-    CHAIR_CALL_RECORD_FIELDS_V1,
     CHAIR_CALL_RECORD_SCHEMA,
-    CHAIR_CALL_RECORD_SCHEMA_V1,
-    CHAIR_CALL_RECORD_SCHEMAS,
     CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
     CHAIR_TRANSPORT_PROBLEM_FIELDS,
@@ -93,7 +90,9 @@ from common.decoding import (
     chair_attempt_decoding,
     load_decoding_policy,
     recorded_sampling,
+    refuse_retired_call_record,
     structure_recovery_policy,
+    variance_arm_seed,
     verify_call_sampling,
 )
 from common.durability import is_unpublished_blob_temporary
@@ -309,11 +308,15 @@ STRUCTURE_DECODING_POLICY: Final = "structure"
 
 # Named once for the Designator, which writes them, and the verifier here.
 STRUCTURE_ANSWER_KIND: Final = "structure-answer"
-STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v1"
-STRUCTURE_ANSWER_RECORD_SCHEMA_V2: Final = "designator-structure-answer.v2"
-STRUCTURE_ANSWER_RECORD_SCHEMA_V3: Final = "designator-structure-answer.v3"
+# v4: each attempt's `decoding` carries its sealed sampling values, every
+# attempt keeps the serving row's seed, and its call record is chair-call-record.v3.
+STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v4"
 RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS: Final = frozenset(
-    {STRUCTURE_ANSWER_RECORD_SCHEMA, STRUCTURE_ANSWER_RECORD_SCHEMA_V2}
+    {
+        "designator-structure-answer.v1",
+        "designator-structure-answer.v2",
+        "designator-structure-answer.v3",
+    }
 )
 RETIRED_RESIDUAL_ENUMERATION: Final = "withheld-page-held"
 
@@ -2283,7 +2286,7 @@ def _verify_real_act_denominator(
         refuse_retired_structure_answer(
             payload.get("schema"), subject=f"page {page_id}'s terminal structure answer"
         )
-        if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+        if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA:
             raise FatalAccounting(
                 f"page {page_id}'s terminal structure answer has unsupported schema "
                 f"{payload.get('schema')!r}"
@@ -2425,7 +2428,7 @@ def _verify_structure_attempt_chain(
             f"page {page_id}'s terminal structure answer has no bounded exact attempt ledger"
         )
     if sealed_decoding is None:
-        sealed_decoding = load_decoding_policy(context.args.decoding_config)
+        sealed_decoding = sealed_decoding_policy(context)
     decoding_policy, decoding_digest = sealed_decoding
     decoding = payload.get("decoding")
     if (
@@ -2470,7 +2473,7 @@ def _verify_structure_attempt_chain(
         if (
             record.get("attempt_id") != attempt_id(page_id, "structure", expected_ordinal)
             or not isinstance(attempt, Mapping)
-            or attempt.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3
+            or attempt.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA
             or attempt.get("page_id") != page_id
             or attempt.get("page_ordinal") != payload.get("page_ordinal")
             or attempt.get("attempt_ordinal") != expected_ordinal
@@ -2653,6 +2656,38 @@ def sealed_decoding_policy(context: StageContext) -> tuple[dict[str, Any], str]:
     return policy, digest
 
 
+def verify_retained_call_sampling(
+    context: StageContext,
+    call: Mapping[str, Any],
+    chair: str,
+    *,
+    attempt_ordinal: int = 1,
+    variance_arm: str | None = None,
+    sends_seed: bool = True,
+) -> None:
+    """Hold one retained call record to its chair's sealed decoding row and seed.
+
+    The seed the call must have sent is `variance_arm`'s for a Perlector
+    sampling-variance arm, none when `sends_seed` is false (a Chandra native
+    request), and otherwise its serving receipt's. For a reader that holds only
+    the stage context and the parsed record; raises `ContractError`.
+    """
+    policy, _digest = sealed_decoding_policy(context)
+    expected_seed: int | None
+    if not sends_seed:
+        expected_seed = None
+    elif variance_arm is not None:
+        expected_seed = variance_arm_seed(policy, variance_arm)
+    else:
+        receipt_ref = call.get("receipt_ref")
+        if not isinstance(receipt_ref, Mapping):
+            raise ContractError(f"a {chair} call record names no serving receipt")
+        expected_seed = context.tree.read_run_receipt(dict(receipt_ref)).get("seed")
+    verify_call_sampling(
+        call, policy, chair, attempt_ordinal=attempt_ordinal, expected_seed=expected_seed
+    )
+
+
 def verify_structure_attempt_call(
     context: StageContext,
     payload: Mapping[str, Any],
@@ -2668,7 +2703,7 @@ def verify_structure_attempt_call(
         subject=f"structure attempt for page {page_id}",
         error_type=ContractError,
     )
-    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA:
         raise ContractError(f"structure attempt for page {page_id} has no supported schema")
     decoding_policy, decoding_digest = (
         sealed_decoding_policy(context) if sealed_decoding is None else sealed_decoding
@@ -2717,8 +2752,8 @@ def verify_structure_attempt_call(
     if not isinstance(call, Mapping):
         raise ContractError(f"structure attempt for page {page_id} call record is not an object")
     schema = call.get("schema")
+    refuse_retired_call_record(schema, subject=f"structure attempt for page {page_id} call record")
     expected_fields = {
-        CHAIR_CALL_RECORD_SCHEMA_V1: CHAIR_CALL_RECORD_FIELDS_V1,
         CHAIR_CALL_RECORD_SCHEMA: CHAIR_CALL_RECORD_FIELDS,
         CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
     }.get(schema)
@@ -2757,7 +2792,17 @@ def verify_structure_attempt_call(
         raise ContractError(
             f"structure attempt for page {page_id} disagrees with its retained call record"
         )
-    verify_call_sampling(call, decoding_policy, DESIGNATOR_CHAIR, attempt_ordinal=attempt_ordinal)
+    receipt_ref = call.get("receipt_ref")
+    if not isinstance(receipt_ref, Mapping):
+        raise ContractError(f"structure attempt for page {page_id} call record names no receipt")
+    # Every recovery attempt keeps the serving row's seed.
+    verify_call_sampling(
+        call,
+        decoding_policy,
+        DESIGNATOR_CHAIR,
+        attempt_ordinal=attempt_ordinal,
+        expected_seed=context.tree.read_run_receipt(dict(receipt_ref)).get("seed"),
+    )
     if schema == CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA:
         problem = call.get("transport_problem")
         response_fields = (
@@ -2902,7 +2947,7 @@ def _verify_proposal_act_row(
     refuse_retired_structure_answer(
         payload.get("schema"), subject=f"act {act_id}'s page's structure answer"
     )
-    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA:
         raise FatalAccounting(
             f"act {act_id}'s page names a structure answer with unsupported schema "
             f"{payload.get('schema')!r}"
@@ -2960,9 +3005,15 @@ def _verify_proposal_act_row(
         raise FatalAccounting(
             f"act {act_id}'s structure answer names a call record that is not valid JSON: {error}"
         ) from error
+    if isinstance(call_record, Mapping):
+        refuse_retired_call_record(
+            call_record.get("schema"),
+            subject=f"act {act_id}'s structure answer call record",
+            error_type=FatalAccounting,
+        )
     if (
         not isinstance(call_record, Mapping)
-        or call_record.get("schema") not in CHAIR_CALL_RECORD_SCHEMAS
+        or call_record.get("schema") != CHAIR_CALL_RECORD_SCHEMA
         or call_record.get("chair") != DESIGNATOR_CHAIR
         or call_record.get("decoding_config_sha256") != structure_call["decoding_config_sha256"]
     ):
@@ -2972,6 +3023,17 @@ def _verify_proposal_act_row(
             "seal's own sealed decoding digest; a parsed answer naming a call record with no "
             "genuine reading behind it is a reading of nothing"
         )
+    try:
+        verify_retained_call_sampling(
+            context,
+            call_record,
+            DESIGNATOR_CHAIR,
+            attempt_ordinal=payload.get("attempt_ordinal"),
+        )
+    except ContractError as error:
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer call record is not its sealed attempt: {error}"
+        ) from error
     answered = payload.get("acts")
     if not isinstance(answered, list):
         raise FatalAccounting(

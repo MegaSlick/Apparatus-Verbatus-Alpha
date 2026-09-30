@@ -230,7 +230,7 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
     # never has to run `adapter.present` a second time for this same act.
     assert act_request.presented == presentation
     assert act_request.prompt == feeding.dai_prompt()
-    assert act_request.generation_accounting == feeding.dai_generation_accounting("auto")
+    assert act_request.generation_accounting == feeding.dai_generation_accounting()
 
     declared = feeding.dai_generation()
     assert request.generation_declared == declared
@@ -240,8 +240,8 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
         # DAI's own model card runs it at `max_new_tokens=1024`, and this crop
         # leaves the row far more room than that, so the declared bound wins.
         "max_tokens": DECLARED_ANSWER_BOUND_TOKENS["attestator_2"],
-        # The second EOS id in the carried config, sent as well as resolved
-        # under the row's `generation_config = "auto"`.
+        # The second EOS id in the carried config, sent as well as read by the
+        # engine from the pinned file.
         "stop_token_ids": [151643],
     }
     assert declared["eos_token_id"] == [feeding.DAI_TOKENIZER_EOS_TOKEN_ID, 151643]

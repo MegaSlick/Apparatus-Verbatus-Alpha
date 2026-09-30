@@ -221,7 +221,6 @@ def stage_chair_client(
     *,
     decoding_policy: Mapping[str, Any],
     decoding_config_sha256: str,
-    chandra_native_policy: Mapping[str, object] | None = None,
 ) -> ChairClient:
     """The client a stage reads one configured chair through; nothing starts until
     it is entered. Logs travel with the run tree; the residency lease belongs to the
@@ -254,7 +253,6 @@ def stage_chair_client(
         decoding_config_sha256=decoding_config_sha256,
         decoding_policy=decoding_policy,
         read_receipt=context.tree.read_run_receipt,
-        chandra_native_policy=chandra_native_policy,
     )
 
 

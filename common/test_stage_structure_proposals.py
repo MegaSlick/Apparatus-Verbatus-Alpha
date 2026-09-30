@@ -74,9 +74,10 @@ from common.runtree.store import RunTree
 from common.stage import (
     DESIGNATOR_CHAIR,
     REAL_SCENARIO,
+    RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS,
     STRUCTURE_ANSWER_KIND,
     STRUCTURE_ANSWER_PARSED,
-    STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+    STRUCTURE_ANSWER_RECORD_SCHEMA,
     STRUCTURE_CALL_KIND,
     STRUCTURE_CALL_SCHEMA,
     STRUCTURE_DECODING_POLICY,
@@ -306,7 +307,7 @@ class _StructureDesignator:
         return record
 
     def call_record(self, **changes: Any) -> dict[str, Any]:
-        """A genuine `chair-call-record.v1` blob, shaped as `operations/serving/client.py`
+        """A genuine `chair-call-record.v3` blob, shaped as `operations/serving/client.py`
         retains one -- what a structure answer's `call_record_ref` actually names on a
         served chair, not just a shape the digest hop happens to accept."""
         record: dict[str, Any] = {
@@ -358,7 +359,7 @@ class _StructureDesignator:
         rectangles: list[dict[str, int]],
         *,
         provenance: dict[str, Any] | None = None,
-        schema: str = STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+        schema: str = STRUCTURE_ANSWER_RECORD_SCHEMA,
         attempt_schema: str | None = None,
         parse_state: str = STRUCTURE_ANSWER_PARSED,
         parse_outcome: str | None = None,
@@ -367,8 +368,13 @@ class _StructureDesignator:
         act_count: int | None = None,
         call_record_ref: Any = "default",
         call_record: dict[str, Any] | str = "default",
+        attempt_seed: int = 0,
+        call_changes: dict[str, Any] | None = None,
     ) -> dict[str, str]:
-        """One `structure-answer` record, text-free as SPEC_D §1.3 requires."""
+        """One `structure-answer` record, text-free as SPEC_D §1.3 requires.
+
+        `attempt_seed` is sent and recorded on both the attempt and its call
+        record; `call_changes` edits the default call record."""
         page = self.pages[ordinal]
         source_page_id = page["subject_id"]
         source_ref = self.context.input_ref(page["payload"]["image_path"])
@@ -408,12 +414,13 @@ class _StructureDesignator:
             self.call_record(
                 request_sha256="a" * 64,
                 image_sha256s=[image_ref["sha256"]],
-                generation_sent={"seed": 0, **recorded_sampling(sampling)},
+                generation_sent={"seed": attempt_seed, **recorded_sampling(sampling)},
                 sampling_effective=recorded_sampling(engine_effective_sampling(sampling)),
                 raw_response_ref=raw_ref,
                 response_sha256=raw_ref["sha256"],
                 response_status=200,
                 capacity=capacity,
+                **(call_changes or {}),
             )
             if call_record == "default"
             else call_record
@@ -478,7 +485,7 @@ class _StructureDesignator:
             "capacity": capacity,
             "attempt_ordinal": 1,
             "attempts": [],
-            "attempt_seed": 0,
+            "attempt_seed": attempt_seed,
             "attempt_policy": structure_recovery_policy(decoding_policy),
             "presentation_ref": presentation_ref,
         }
@@ -809,9 +816,7 @@ def test_an_answer_under_the_wrong_record_schema_is_refused_by_name(real_root):
         expected_acts(context)
 
 
-@pytest.mark.parametrize(
-    "schema", ["designator-structure-answer.v1", "designator-structure-answer.v2"]
-)
+@pytest.mark.parametrize("schema", sorted(RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS))
 def test_a_retired_structure_answer_is_refused_by_its_schema(real_root, schema):
     designator = _real_designator(real_root)
     rectangle = designator.rectangle(1, 0)
@@ -825,9 +830,7 @@ def test_a_retired_structure_answer_is_refused_by_its_schema(real_root, schema):
         expected_acts(_open(real_root, ATTESTATORES))
 
 
-@pytest.mark.parametrize(
-    "schema", ["designator-structure-answer.v1", "designator-structure-answer.v2"]
-)
+@pytest.mark.parametrize("schema", sorted(RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS))
 def test_a_retired_structure_attempt_is_refused_by_its_schema(real_root, monkeypatch, schema):
     monkeypatch.setattr(
         stage_contract, "_verify_structure_attempt_chain", real_verify_structure_attempt_chain
@@ -979,6 +982,34 @@ def test_a_call_record_naming_a_different_decoding_digest_is_refused(real_root):
     context = _open(real_root, ATTESTATORES)
 
     with pytest.raises(FatalAccounting, match="without a supported chair-call-record schema"):
+        expected_acts(context)
+
+
+def test_a_structure_call_under_another_seed_than_its_receipt_s_is_refused(real_root):
+    """Every structure attempt keeps the serving row's seed, which its receipt records."""
+    designator = _real_designator(real_root)
+    rectangle = designator.rectangle(1, 0)
+    designator.status(1, designator.answer(1, [rectangle], attempt_seed=5))
+    designator.propose(1, rectangle)
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="sent seed 5, not 0"):
+        expected_acts(context)
+
+
+def test_a_structure_call_record_under_a_retired_schema_is_refused_by_name(real_root):
+    designator = _real_designator(real_root)
+    rectangle = designator.rectangle(1, 0)
+    designator.status(
+        1,
+        designator.answer(1, [rectangle], call_changes={"schema": "chair-call-record.v2"}),
+    )
+    designator.propose(1, rectangle)
+    designator.seal()
+    context = _open(real_root, ATTESTATORES)
+
+    with pytest.raises(FatalAccounting, match="written as chair-call-record.v2"):
         expected_acts(context)
 
 

@@ -15,8 +15,8 @@ Five of the vendor systems design's six offline tests live here:
    digested as it is rendered, against the digest recorded beside it with its
    vendor commit or revision.
 2. **Request shape** — one wire body per chair, checked against the shape the
-   design fixed, including the generation bound's arithmetic and the argmax
-   pin.
+   design fixed, including the generation bound's arithmetic and the chair's
+   sealed sampling row.
 4. **Resize ports** — ``common/imaging_ports.py``'s two ported vendor resize
    rules over a table of dimensions.
 5. **Vendor equality** — network-gated (``-m vendor_network``, deselected by
@@ -388,10 +388,12 @@ def test_the_carried_dai_generation_values_are_the_shipped_configuration():
         "its sampling values."
     )
     # The sealed decoding table is the one source of DAI's sampling values on the
-    # wire; it must equal the carried file's sampling fields, every one of them.
+    # wire: it must send every sampling field the carried file sets, at the
+    # file's value, and the transformers default for the one it leaves unset.
     policy, _digest = load_decoding_policy()
     assert chair_decoding(policy, "attestator_2") == {
-        key: value for key, value in generation.items() if key in SAMPLING_FIELDS
+        **{key: value for key, value in generation.items() if key in SAMPLING_FIELDS},
+        "min_p": 0.0,
     }
 
 
@@ -1003,12 +1005,12 @@ def test_sampling_values_that_are_not_the_makers_row_are_refused():
         )
 
 
-def test_a_caller_that_names_a_manager_owned_field_is_refused_by_the_client():
+def test_a_caller_that_names_a_sampling_field_is_refused_by_the_client():
     """The sampling values are checked on the composed body because of exactly this."""
     chair = "attestator_3"
     # attestator_3's row governs at this sample cost (`_bound_is_owed` is
     # false), so the conforming body sends no `max_tokens` -- unrelated to
-    # the manager-owned field under test here.
+    # the sampling field under test here.
     base = _conforming_request(chair, max_tokens=None)
     request = ChairRequest(
         kind=base.kind,
@@ -1412,8 +1414,9 @@ def test_the_carried_bytes_and_ports_equal_the_pinned_vendor_sources(request):
         assert _name_of(profile["template"]) == "CHURRO_3B_XML_TEMPLATE"
         assert "transport" not in profile and "huggingface" not in profile, (
             "the vendor now overrides transport or generation for churro-3B; the "
-            "sealed Churro row carries generation_config.json only because the vendor "
-            "sends no sampling of its own, and that is no longer so"
+            "sealed Churro row reads generation_config.json and transformers' defaults "
+            "only because the vendor's profile sends no sampling of its own, and that "
+            "is no longer so"
         )
         assert "churro_3b_profile()" in payloads["churro_specs.py"].decode("utf-8"), (
             "churro_3b_profile is no longer built into the profile registry"

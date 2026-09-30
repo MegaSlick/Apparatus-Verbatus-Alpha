@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 
 from common.chandra_native_retry import recipe_record
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.serving import RETIRED_CALL_RECORD_SCHEMAS
 from common.decoding import (
     DEFAULT_DECODING_CONFIG_PATH,
+    ENGINE_FILLED_SAMPLING_FIELDS,
     READING_CHAIRS,
     VARIANCE_ARMS,
     chair_attempt_decoding,
@@ -17,21 +19,38 @@ from common.decoding import (
     load_decoding_policy,
     perlector_max_tokens,
     recorded_sampling,
+    refuse_retired_call_record,
     structure_recovery_policy,
     variance_arm_seed,
     verify_call_sampling,
 )
 
 # The makers' recommendations, typed here from their sources rather than read
-# back from the file under test, so a drifted row fails by value.
+# back from the file under test, so a drifted row fails by value. A field the
+# maker leaves unset is at the value the maker's own pipeline runs under.
+_VLLM_UNSENT = {"top_k": 0, "min_p": 0.0, "repetition_penalty": 1.0}
 MAKERS_SAMPLING = {
-    # datalab-to/chandra@d4f7467, chandra/model/vllm.py::generate_vllm defaults.
-    "designator_structure": {"temperature": 0.0, "top_p": 0.1},
-    "attestator_1": {"temperature": 0.0, "top_p": 0.1},
-    # Teklia DAI generation_config.json @ e371095.
-    "attestator_2": {"temperature": 0.1, "top_k": 1, "top_p": 0.001, "repetition_penalty": 1.05},
-    # stanford-oval/churro-3B generation_config.json @ ca2150e.
-    "attestator_3": {"temperature": 1e-06, "repetition_penalty": 1.05},
+    # datalab-to/chandra@d4f7467, chandra/model/vllm.py::generate_vllm defaults,
+    # sent to a vLLM server; the rest are vllm==0.27.1's request defaults.
+    "designator_structure": {"temperature": 0.0, "top_p": 0.1, **_VLLM_UNSENT},
+    "attestator_1": {"temperature": 0.0, "top_p": 0.1, **_VLLM_UNSENT},
+    # Teklia DAI generation_config.json @ e371095; min_p unset in transformers.
+    "attestator_2": {
+        "temperature": 0.1,
+        "top_k": 1,
+        "top_p": 0.001,
+        "repetition_penalty": 1.05,
+        "min_p": 0.0,
+    },
+    # stanford-oval/churro-3B generation_config.json @ ca2150e; the rest are
+    # transformers v5.2.0 GenerationConfig defaults.
+    "attestator_3": {
+        "temperature": 1e-06,
+        "repetition_penalty": 1.05,
+        "top_k": 50,
+        "top_p": 1.0,
+        "min_p": 0.0,
+    },
     # Qwen/Qwen3.8-27B model card @ 1d4bf0f, non-thinking mode.
     "perlector": {
         "temperature": 0.7,
@@ -42,6 +61,28 @@ MAKERS_SAMPLING = {
         "repetition_penalty": 1.0,
     },
 }
+
+
+def test_every_row_names_every_field_the_engine_would_otherwise_fill():
+    """vllm==0.27.1's `get_diff_sampling_param` fills these from a generation config."""
+    assert ENGINE_FILLED_SAMPLING_FIELDS == {
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+    }
+    policy, _digest = load_decoding_policy()
+    for chair in READING_CHAIRS:
+        assert ENGINE_FILLED_SAMPLING_FIELDS <= set(chair_decoding(policy, chair)), chair
+
+
+@pytest.mark.parametrize("field", sorted(ENGINE_FILLED_SAMPLING_FIELDS))
+def test_a_row_that_leaves_a_fillable_field_to_the_engine_is_refused(field):
+    policy, _digest = load_decoding_policy()
+    del policy["chair_decoding"]["attestator_3"][field]
+    with pytest.raises(ContractError, match=rf"attestator_3 must state \['{field}'\]"):
+        chair_decoding(policy, "attestator_3")
 
 
 def test_each_reading_chair_carries_its_makers_sampling_and_its_source():
@@ -63,7 +104,7 @@ def test_a_chair_without_a_row_is_refused_by_name():
 def test_the_chandra_chairs_must_keep_the_pinned_recipes_first_request(tmp_path: Path):
     source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
     moved = source.replace(
-        "[chair_decoding.designator_structure]\n# datalab-to/chandra-ocr-2, read the way Chandra's own page pipeline reads a\n# page: `generate_vllm`'s defaults for the first request.\ntemperature = 0.0",
+        "[chair_decoding.designator_structure]\n# datalab-to/chandra-ocr-2, read the way Chandra's own page pipeline reads a\n# page: `generate_vllm` sends a vLLM server only temperature and top_p.\ntemperature = 0.0",
         "[chair_decoding.designator_structure]\ntemperature = 1",
         1,
     )
@@ -148,7 +189,7 @@ def test_non_string_decoding_schema_gets_a_named_refusal(tmp_path: Path):
         ("temperature = 0.7", "temperature = 2.5", r"in \[0.0, 2.0\]"),
         ("temperature = 0.7", "temperature = true", "must be a finite number"),
         ("temperature = 0.7", 'temperature = "0.7"', "must be a finite number"),
-        ("temperature = 0.7\n", "", "must state its temperature"),
+        ("temperature = 0.7\n", "", r"must state \['temperature'\]"),
         ("top_p = 0.8", "top_p = 0.0", r"top_p must be a finite number in \(0.0, 1.0\]"),
         ("top_p = 0.8", "top_p = 1.5", r"top_p must be a finite number in \(0.0, 1.0\]"),
         ("min_p = 0.0", "min_p = 1.5", r"min_p must be a finite number in \[0.0, 1.0\]"),
@@ -259,13 +300,17 @@ def test_a_missing_perlector_generation_section_is_refused(tmp_path: Path):
 def test_the_structure_chair_recovers_along_chandras_own_retry_schedule():
     policy, _digest = load_decoding_policy()
     assert [chair_attempt_decoding(policy, "designator_structure", n) for n in (1, 2, 3)] == [
-        {"temperature": 0.0, "top_p": 0.1},
-        {"temperature": 0.2, "top_p": 0.95},
-        {"temperature": 0.4, "top_p": 0.95},
+        {"temperature": 0.0, "top_p": 0.1, **_VLLM_UNSENT},
+        {"temperature": 0.2, "top_p": 0.95, **_VLLM_UNSENT},
+        {"temperature": 0.4, "top_p": 0.95, **_VLLM_UNSENT},
     ]
     with pytest.raises(ContractError, match="no attempt 4"):
         chair_attempt_decoding(policy, "designator_structure", 4)
-    assert chair_attempt_decoding(policy, "attestator_1", 7) == {"temperature": 0.8, "top_p": 0.95}
+    assert chair_attempt_decoding(policy, "attestator_1", 7) == {
+        "temperature": 0.8,
+        "top_p": 0.95,
+        **_VLLM_UNSENT,
+    }
     with pytest.raises(ContractError, match="only the Chandra chairs retry"):
         chair_attempt_decoding(policy, "perlector", 2)
     with pytest.raises(ContractError, match="positive integer"):
@@ -319,11 +364,15 @@ def test_the_engine_effective_mapping_agrees_with_the_pinned_engine_when_install
         assert {field: getattr(params, field) for field in sent} == engine_effective_sampling(sent)
 
 
-def _call(chair: str, attempt: int = 1) -> dict:
+def _call(chair: str, attempt: int = 1, seed: int | None = 7) -> dict:
     policy, _digest = load_decoding_policy()
     sampling = chair_attempt_decoding(policy, chair, attempt)
+    sent = {**recorded_sampling(sampling), "max_tokens": 10}
+    if seed is not None:
+        sent["seed"] = seed
     return {
-        "generation_sent": {**recorded_sampling(sampling), "max_tokens": 10, "seed": 7},
+        "schema": "chair-call-record.v3",
+        "generation_sent": sent,
         "sampling_effective": recorded_sampling(engine_effective_sampling(sampling)),
     }
 
@@ -331,7 +380,7 @@ def _call(chair: str, attempt: int = 1) -> dict:
 @pytest.mark.parametrize("chair", sorted(READING_CHAIRS))
 def test_a_call_record_at_its_sealed_row_verifies(chair):
     policy, _digest = load_decoding_policy()
-    verify_call_sampling(_call(chair), policy, chair)
+    verify_call_sampling(_call(chair), policy, chair, expected_seed=7)
 
 
 @pytest.mark.parametrize(
@@ -347,6 +396,14 @@ def test_a_call_record_at_its_sealed_row_verifies(chair):
         ),
         (lambda call: call.pop("sampling_effective"), "sampling_effective"),
         (lambda call: call.update(generation_sent=None), "no generation_sent"),
+        (lambda call: call["generation_sent"].update(seed=8), "sent seed 8, not 7"),
+        (lambda call: call["generation_sent"].pop("seed"), "sent seed None, not 7"),
+        (lambda call: call["generation_sent"].update(seed=True), "sent seed True"),
+        (lambda call: call["generation_sent"].update(n=2), r"generation field\(s\) \['n'\]"),
+        (
+            lambda call: call["generation_sent"].update(model="x", stream=False),
+            r"\['model', 'stream'\]",
+        ),
     ],
 )
 def test_a_call_record_off_its_sealed_row_is_refused(mutate, message):
@@ -354,12 +411,55 @@ def test_a_call_record_off_its_sealed_row_is_refused(mutate, message):
     call = _call("attestator_3")
     mutate(call)
     with pytest.raises(ContractError, match=message):
-        verify_call_sampling(call, policy, "attestator_3")
+        verify_call_sampling(call, policy, "attestator_3", expected_seed=7)
+
+
+def test_a_caller_generation_field_is_admitted_on_the_call_record():
+    policy, _digest = load_decoding_policy()
+    call = _call("attestator_2")
+    call["generation_sent"].update(
+        stop_token_ids=[151643], chat_template_kwargs={"enable_thinking": False}
+    )
+    verify_call_sampling(call, policy, "attestator_2", expected_seed=7)
 
 
 def test_a_structure_attempt_call_is_verified_against_its_own_attempt():
     policy, _digest = load_decoding_policy()
     call = _call("designator_structure", 2)
-    verify_call_sampling(call, policy, "designator_structure", attempt_ordinal=2)
+    verify_call_sampling(call, policy, "designator_structure", attempt_ordinal=2, expected_seed=7)
     with pytest.raises(ContractError, match="for attempt 1"):
-        verify_call_sampling(call, policy, "designator_structure")
+        verify_call_sampling(call, policy, "designator_structure", expected_seed=7)
+
+
+def test_a_request_that_sends_no_seed_is_stated_and_held_to_it():
+    """A Chandra native request sends no seed; its reader says so with `None`."""
+    policy, _digest = load_decoding_policy()
+    unseeded = _call("attestator_1", 4, seed=None)
+    verify_call_sampling(unseeded, policy, "attestator_1", attempt_ordinal=4, expected_seed=None)
+    with pytest.raises(ContractError, match="sent a seed its request sends none of"):
+        verify_call_sampling(
+            _call("attestator_1", 4), policy, "attestator_1", attempt_ordinal=4, expected_seed=None
+        )
+    with pytest.raises(ContractError, match="sent seed None"):
+        verify_call_sampling(unseeded, policy, "attestator_1", attempt_ordinal=4, expected_seed=7)
+
+
+def test_each_variance_arm_call_is_held_to_its_own_seed():
+    policy, _digest = load_decoding_policy()
+    prior, nuda = (variance_arm_seed(policy, arm) for arm in VARIANCE_ARMS)
+    verify_call_sampling(_call("perlector", seed=nuda), policy, "perlector", expected_seed=nuda)
+    with pytest.raises(ContractError, match=f"not {prior}"):
+        verify_call_sampling(
+            _call("perlector", seed=nuda), policy, "perlector", expected_seed=prior
+        )
+
+
+@pytest.mark.parametrize("schema", sorted(RETIRED_CALL_RECORD_SCHEMAS))
+def test_a_retired_call_record_is_refused_by_its_schema_name(schema):
+    policy, _digest = load_decoding_policy()
+    call = {**_call("attestator_3"), "schema": schema}
+    with pytest.raises(ContractError, match=f"written as {schema}, which this build no longer"):
+        verify_call_sampling(call, policy, "attestator_3", expected_seed=7)
+    with pytest.raises(SchemaRefusal, match=schema):
+        refuse_retired_call_record(schema, subject="a record", error_type=SchemaRefusal)
+    refuse_retired_call_record("chair-call-record.v3", subject="a record")

@@ -49,7 +49,6 @@ import feeding  # noqa: E402
 from common import chandra_layout  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.chandra_native_retry import recipe_record  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA  # noqa: E402
 from common.contracts.stages import ATTESTATORES  # noqa: E402
@@ -508,7 +507,6 @@ class LiveWorld:
             decoding_config_sha256=self.live_run.decoding_sha256,
             decoding_policy=shipped_decoding_policy()[0],
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
-            chandra_native_policy=recipe_record(),
         )
 
     def requests(self, chair: str) -> list[dict[str, object]]:
@@ -1080,7 +1078,8 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
     payload = act_records(tree)[("a1", "attestator_2")]["payload"]
     view = payload["native_capture"]["view"]
     assert payload["native_capture"]["adapter"] == "dai.v1"
-    assert view["adapter"] == "dai-atr.v1"
+    assert view["adapter"] == "dai-atr.v2"
+    assert view["generation_accounting"] == feeding.dai_generation_accounting()
     # `feeding.dai_model_view` already refuses either mismatched state (a
     # resize whose digests still agree, or a claimed identity whose digests
     # differ -- feeding.py), so a persisted view's kind and digest relation
@@ -1107,13 +1106,14 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
     # And the call record carries the vendor's own declared values, floats
     # included, beside everything that actually went on the wire: DAI's sealed
     # sampling row, the bound derived from the sealed serving row, and the
-    # second EOS id sent as well as resolved under `generation_config = "auto"`.
+    # second EOS id sent as well as read by the engine from the pinned file.
     call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
     declared = feeding.dai_generation()
     assert set(call["generation_sent"]) == {
         "repetition_penalty",
         "top_k",
         "top_p",
+        "min_p",
         "max_tokens",
         "stop_token_ids",
         "seed",
@@ -3074,3 +3074,50 @@ def test_derived_chandra_anchor_assigns_largest_overlap_and_leaves_ties_unowned(
             "line_geometry": [{"bbox": {"x": 0, "y": 50, "w": 100, "h": 50}}],
         },
     }
+
+
+def _testimonium_call_world(
+    generation_sent: dict[str, Any], *, schema: str = CHAIR_CALL_RECORD_SCHEMA
+):
+    """A Testimonium naming one retained call record, and a context that reads it."""
+    from common.decoding import DEFAULT_DECODING_CONFIG_PATH
+
+    receipt_ref = {"relative_path": "receipts/sha256/r.json", "sha256": "a" * 64}
+    call = {"schema": schema, "receipt_ref": receipt_ref, "generation_sent": generation_sent}
+    call_ref = {"relative_path": "3_attestatores/blobs/call", "sha256": "b" * 64}
+    context = SimpleNamespace(
+        tree=SimpleNamespace(
+            read_bytes=lambda _path: json.dumps(call).encode(),
+            read_run_receipt=lambda reference: {"seed": 7} if reference == receipt_ref else {},
+        ),
+        args=SimpleNamespace(decoding_config=DEFAULT_DECODING_CONFIG_PATH),
+        require_sealed_config=lambda _name, _digest: None,
+    )
+    return context, call, {"serving_call_ref": call_ref}
+
+
+@pytest.mark.parametrize("chair", ["attestator_2", "attestator_3", "attestator_1"])
+def test_a_tallied_testimonium_s_serving_call_is_held_to_its_chair_s_row_and_seed(chair):
+    """The tally re-reads every Testimonium's serving call, not only its digest."""
+    from common.decoding import chair_decoding, engine_effective_sampling, recorded_sampling
+
+    policy, _digest = load_decoding_policy()
+    sampling = chair_decoding(policy, chair)
+    sent = {**recorded_sampling(sampling), "max_tokens": 64, "seed": 7}
+    context, call, payload = _testimonium_call_world(sent)
+    call["sampling_effective"] = recorded_sampling(engine_effective_sampling(sampling))
+    context.tree.read_bytes = lambda _path: json.dumps(call).encode()
+    attestatores._verify_testimonium_call_sampling(context, payload, chair)
+
+    for moved, message in (
+        ({**sent, "seed": 8}, "sent seed 8, not 7"),
+        ({**sent, "top_k": 3}, "not the sealed"),
+        ({**sent, "n": 2}, r"generation field\(s\) \['n'\]"),
+    ):
+        call["generation_sent"] = moved
+        with pytest.raises(SchemaRefusal, match=message):
+            attestatores._verify_testimonium_call_sampling(context, payload, chair)
+    call["generation_sent"] = sent
+    call["schema"] = "chair-call-record.v2"
+    with pytest.raises(SchemaRefusal, match="written as chair-call-record.v2"):
+        attestatores._verify_testimonium_call_sampling(context, payload, chair)

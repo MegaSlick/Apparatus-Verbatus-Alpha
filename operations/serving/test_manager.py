@@ -4980,97 +4980,36 @@ def test_a_split_declaration_that_disagrees_with_the_row_is_refused(tmp_path: Pa
 
 
 # --------------------------------------------------------------------------
-# generation_config = "auto"; hybrid-attention prefix caching;
+# generation_config = "vllm" only; hybrid-attention prefix caching;
 # --enable-prompt-tokens-details and usage reconciliation; a deterministic
 # probe rejection breaking before the watchdog; local.env discoverability;
 # and static preflight assertions.
 # --------------------------------------------------------------------------
 
 
-def test_generation_config_auto_is_admitted_only_for_a_witness_role() -> None:
-    witness_row = profile_row(
-        recipe="witness-v1", chair="attestator_2", served_model_id="witness-api", port=8200
-    )
-    witness_row["generation_config"] = "auto"
-    profile = recipes(witness_row).profiles[0]
-    assert profile.generation_config == "auto"
-
-    non_witness_row = profile_row(
-        recipe="perlector-v1", chair="perlector", served_model_id="perlector-api", port=8300
-    )
-    non_witness_row["generation_config"] = "auto"
-    with pytest.raises(ServingConfigurationError, match="admitted only for witness"):
-        recipes(non_witness_row)
-
-    bad_value_row = profile_row(
-        recipe="witness-v1", chair="attestator_2", served_model_id="witness-api", port=8200
-    )
-    bad_value_row["generation_config"] = "custom"
-    with pytest.raises(ServingConfigurationError, match="generation_config must be one of"):
-        recipes(bad_value_row)
-
-
-def test_generation_config_auto_records_the_generation_config_json_digest_in_the_audit(
-    tmp_path: Path,
-) -> None:
-    chair = identity("attestator_2", "witness-v1")
-    row = profile_row(
-        recipe="witness-v1", chair="attestator_2", served_model_id="witness-api", port=8200
-    )
+@pytest.mark.parametrize("chair", ["attestator_2", "perlector"])
+def test_generation_config_auto_is_refused_on_every_row(chair: str) -> None:
+    """'auto' would fill an unsent sampling field from the model's file, unseen."""
+    row = profile_row(recipe="row-v1", chair=chair, served_model_id="row-api", port=8200)
     row["generation_config"] = "auto"
-    snapshot_root = tmp_path / "attestator_2"
-    snapshot_root.mkdir(parents=True)
-    payload = b'{"eos_token_id":[151645,151643],"repetition_penalty":1.05,"top_k":1,"top_p":0.001}'
-    (snapshot_root / "generation_config.json").write_bytes(payload)
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(row,),
-        model_ids=("witness-api",),
-    )
+    with pytest.raises(ServingConfigurationError, match=r"must be one of \['vllm'\]"):
+        recipes(row)
 
-    handle = manager.start(chair, TIER)
-
-    assert (
-        handle.launch_audit["profile"]["generation_config_digest"]  # type: ignore[index]
-        == hashlib.sha256(payload).hexdigest()
-    )
-    handle.stop()
-    assert launcher.calls
+    row["generation_config"] = "vllm"
+    assert recipes(row).profiles[0].generation_config == "vllm"
 
 
-def test_generation_config_vllm_carries_no_digest(tmp_path: Path) -> None:
+def test_generation_config_vllm_is_rendered_on_the_launch(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
-    manager, _, _, _, _, _ = reader_manager(tmp_path, chair=chair)
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
 
     handle = manager.start(chair, TIER)
 
-    assert handle.launch_audit["profile"]["generation_config_digest"] is None  # type: ignore[index]
+    assert handle.launch_audit["profile"]["generation_config"] == "vllm"  # type: ignore[index]
+    assert "generation_config_digest" not in handle.launch_audit["profile"]  # type: ignore[operator]
+    argv, _log_path = launcher.calls[0]
     handle.stop()
-
-
-def test_generation_config_auto_without_a_readable_file_refuses(tmp_path: Path) -> None:
-    chair = identity("attestator_2", "witness-v1")
-    row = profile_row(
-        recipe="witness-v1", chair="attestator_2", served_model_id="witness-api", port=8200
-    )
-    row["generation_config"] = "auto"
-    (tmp_path / "attestator_2").mkdir(parents=True)  # no generation_config.json inside
-    manager, _, _, launcher, _, publisher = manager_for(
-        tmp_path,
-        identities={chair.role: chair},
-        profiles=(row,),
-        model_ids=("witness-api",),
-    )
-
-    with pytest.raises(ServingRecipeRefusal, match="no readable"):
-        manager.start(chair, TIER)
-
-    # Checked before any process exists, alongside the processor-geometry
-    # check -- a real launch's boot time is not spent to discover a fact
-    # already on local disk.
-    assert launcher.processes == []
-    assert publisher.calls == []
+    assert argv[argv.index("--generation-config") + 1] == "vllm"
 
 
 def test_a_hybrid_attention_checkpoint_refuses_to_launch_with_prefix_caching_on(

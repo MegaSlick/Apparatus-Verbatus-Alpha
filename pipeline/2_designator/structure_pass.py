@@ -101,7 +101,7 @@ from common.request_capacity import (
 from common.stage import (
     DESIGNATOR_CHAIR,
     STRUCTURE_ANSWER_PARSED,
-    STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+    STRUCTURE_ANSWER_RECORD_SCHEMA,
     STRUCTURE_CALL_KIND,
     STRUCTURE_CALL_SCHEMA,
     STRUCTURE_DECODING_POLICY,
@@ -840,7 +840,7 @@ def _refused_page_answer(
     """
 
     record = {
-        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
         "page_id": page_id,
         "page_ordinal": ordinal,
         "page_w": page_w,
@@ -906,7 +906,7 @@ def _failed_call_page_answer(
 ) -> "PageAnswer":
     """Retain one failed dispatched call as a terminal held attempt."""
     record = {
-        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
         "page_id": page_id,
         "page_ordinal": ordinal,
         "page_w": page_w,
@@ -1188,7 +1188,7 @@ def ask_page(
             "a block that is in neither list has been lost"
         )
     record = {
-        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
         "page_id": page_id,
         "page_ordinal": ordinal,
         "page_w": page_w,

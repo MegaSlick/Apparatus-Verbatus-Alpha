@@ -387,9 +387,9 @@ class VLLMReader:
                 page_render_sizes=page_render_sizes,
             ),
             # The pass label is deliberately absent from this message: this
-            # module may read it in exactly two places (the closed membership
-            # check and the audit hand-off) so that nothing about a request can
-            # vary with which pass it is. A refusal message is no exception.
+            # module reads it only in the three places the module docstring
+            # names, so that nothing else about a request can vary with which
+            # pass it is. A refusal message is no exception.
             what=f"the Perlector request for act {dossier.get('act_key')!r}",
             prompt_tokens_basis=bound_basis,
             prompt_tokens_floor=prompt_floor,

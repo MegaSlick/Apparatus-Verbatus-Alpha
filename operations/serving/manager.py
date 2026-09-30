@@ -583,9 +583,6 @@ class ServingManager:
                 else self.registry.ensure(base_identity)
             )
             assert_processor_geometry(base_snapshot, profile)
-            # Before launch: a bad generation_config.json is knowable offline,
-            # so finding it after boot would waste GPU time.
-            generation_config_digest = _generation_config_digest(profile, base_snapshot)
             endpoint = profile.endpoint
             # Held from endpoint probing through failed-launch cleanup, or two
             # assemblers can race from an empty endpoint into GPU co-residency.
@@ -641,7 +638,6 @@ class ServingManager:
                 activation=activation,
                 runtime_packages=observed_packages,
                 started_at=started_at,
-                generation_config_digest=generation_config_digest,
             )
             sealed_audit = _immutable_json_value(audit)
             publication = self._publish(receipt, audit)
@@ -1047,7 +1043,6 @@ class ServingManager:
         activation: AdapterActivationEvidence | None,
         runtime_packages: Mapping[str, str],
         started_at: str,
-        generation_config_digest: str | None,
     ) -> Mapping[str, object]:
         """Return operational evidence kept outside the receipt schema."""
 
@@ -1089,9 +1084,6 @@ class ServingManager:
                     "enforce_eager": profile.enforce_eager,
                     "trust_remote_code": profile.trust_remote_code,
                     "generation_config": profile.generation_config,
-                    # Only for 'auto': pins the generation_config.json vLLM will
-                    # read, so 'auto' cannot change silently under the row.
-                    "generation_config_digest": generation_config_digest,
                     "request_logging": False,
                     "startup_timeout_seconds": profile.startup_timeout_seconds,
                     "poll_interval_seconds": profile.poll_interval_seconds,
@@ -1433,31 +1425,6 @@ def _launchable(
             f"enable_prefix_caching must be false for this chair"
         )
     return profile
-
-
-def _generation_config_digest(
-    profile: ServingProfile, base_snapshot: VerifiedSnapshot
-) -> str | None:
-    """Digest the generation_config.json an 'auto' row will resolve to.
-
-    ``None`` for a 'vllm' row, although vLLM still reads the file's
-    ``eos_token_id`` under 'vllm' (v0.27.1,
-    ``ModelConfig.try_get_generation_config``); only its sampling parameters
-    are ignored. A
-    missing file on an 'auto' row is first caught here, at launch.
-    """
-
-    if profile.generation_config != "auto":
-        return None
-    path = base_snapshot.root / "generation_config.json"
-    try:
-        data = path.read_bytes()
-    except OSError as error:
-        raise ServingConfigurationError(
-            f"chair {profile.chair!r} row is generation_config='auto' but its verified "
-            f"snapshot has no readable {path}: {error}"
-        ) from error
-    return hashlib.sha256(data).hexdigest()
 
 
 def render_vllm_argv(

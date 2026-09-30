@@ -108,26 +108,20 @@
 # serve it.  The two smaller tiers have unsupported rows so the catalogue
 # still names their measured refusal rather than offering impossible launches.
 #
-# `generation_config = "auto"` ON EVERY ATTESTATOR (WITNESS) ROW.
-# `operations/serving/config.py` accepts it for Attestator rows
-# only -- `designator_structure` is a Designator, not a witness, and the
-# Perlector is neither, so both stay `"vllm"`.  In vLLM 0.27.1
-# (`vllm/config/model.py`) `"vllm"` drops the model's sampling defaults
-# (`repetition_penalty`, `temperature`, `top_k`, `top_p`, ...) but NOT its
-# `eos_token_id`s: `try_get_generation_config` loads the file under both
+# `generation_config = "vllm"` ON EVERY ROW.  In vLLM 0.27.1
+# (`vllm/config/model.py`, `ModelConfig.get_diff_sampling_param`) `"auto"`
+# fills any of `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`
+# and `max_tokens` a request leaves out from the model's generation_config.json,
+# unseen on the wire; `"vllm"` fills nothing.  Every chair's request carries
+# its full sampling row from `config/decoding.toml`'s `chair_decoding` table,
+# which names every one of those sampling fields, so under `"vllm"` nothing a
+# reading samples under comes from a file by default.  `"vllm"` still reads the
+# file's `eos_token_id`s: `try_get_generation_config` loads it under both
 # settings and `SamplingParams.update_from_generation_config` adds the ids as
-# stop tokens, so the Designator keeps Chandra's 248044 and the Perlector its
-# second id 248044 either way.  `"auto"` additionally applies the file's
-# sampling defaults to any field a request leaves out, which is what the
-# witnesses' makers intend, and the Perlector must not have: its file ships the
-# thinking-mode values (temperature 1.0, top_k 20, top_p 0.95), and it reads in
-# non-thinking mode.  Every chair's request carries its makers' sampling values
-# explicitly from `config/decoding.toml`'s `chair_decoding` table, so the file
-# decides nothing a request names.  `"auto"` also makes the manager receipt
-# record the digest of the chair's own `generation_config.json`.  Chandra-2's
-# file (`designator_structure` serves the same checkpoint) carries only the EOS
-# id and `use_cache`.
-#
+# stop tokens, so the Designator keeps Chandra's 248044, the Perlector its
+# second id 248044, and DAI and Churro theirs.  The file's bytes are pinned by
+# the chair's verified snapshot manifest.
+
 # `min_pixels` ON THE PERLECTOR (65,536) is the vendor default: Qwen3.8-27B's
 # `preprocessor_config.json` says `shortest_edge = 65536`; the 3,136 this row
 # carried was the Qwen2.5-VL processor's figure.  Every image is therefore at
@@ -320,7 +314,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -351,7 +345,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_1 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -382,7 +376,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_1 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -421,7 +415,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -452,7 +446,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_2 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -483,7 +477,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_2 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -514,7 +508,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -545,7 +539,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_3 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -576,7 +570,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_3 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2

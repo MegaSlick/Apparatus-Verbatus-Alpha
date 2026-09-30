@@ -74,7 +74,7 @@ from common.stage import (  # noqa: E402
     RESIDUAL_ENUMERATION_COMPLETE,
     SECONDARY_PROPOSER_CHAIR,
     STRUCTURE_ANSWER_KIND,
-    STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+    STRUCTURE_ANSWER_RECORD_SCHEMA,
     StageContext,
     _stage_records,
     canary_ordinals,
@@ -401,7 +401,7 @@ def _validate_structure_answer_payload(payload: object, *, terminal: bool = True
         raise ContractError("a Designator structure-answer payload is not an object")
     schema = payload.get("schema")
     refuse_retired_structure_answer(schema, subject="structure answer", error_type=ContractError)
-    if schema == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+    if schema == STRUCTURE_ANSWER_RECORD_SCHEMA:
         record = _closed_object(payload, _STRUCTURE_ANSWER_V3_FIELDS, "v3 structure-answer payload")
         _closed_object(
             record["presentation_ref"],

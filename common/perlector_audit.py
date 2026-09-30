@@ -28,14 +28,13 @@ from common.contracts.envelope import read_verified, validate_input_refs
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_SCHEMA,
-    CHAIR_CALL_RECORD_SCHEMAS,
     WIRE_DECIMAL_FIELDS,
     WIRE_DECIMAL_SCHEMA,
 )
 from common.contracts.stages import PERLECTOR
 from common.corpus_register import refuse_capture_preference
 from common.cross_capture_autopsia import presented_image_refs, presented_image_sha256s
-from common.decoding import verify_call_sampling
+from common.decoding import refuse_retired_call_record, verify_call_sampling
 
 SCHEMA: Final = "perlector-audit.v3"
 LEGACY_SCHEMA: Final = "perlector-audit.v2"
@@ -716,15 +715,19 @@ def _validate_live_reproof_request(
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SchemaRefusal("an audit re-proof call record is not JSON") from error
     read_verified(tree.read_bytes, raw_ref, "an audit re-proof raw response")
+    if isinstance(call, dict):
+        refuse_retired_call_record(
+            call.get("schema"), subject="an audit re-proof call record", error_type=SchemaRefusal
+        )
     if (
         not isinstance(call, dict)
-        or call.get("schema") not in CHAIR_CALL_RECORD_SCHEMAS
+        or call.get("schema") != CHAIR_CALL_RECORD_SCHEMA
         or call.get("request_sha256") != prompt["request_sha256"]
         or call.get("raw_response_ref") != call_evidence["raw_response_ref"]
         or call.get("served_model_id") != call_evidence["served_model_id"]
         or call.get("parse_problem") is not None
         or call.get("response_model") != call_evidence["served_model_id"]
-        or (call.get("schema") == CHAIR_CALL_RECORD_SCHEMA and call.get("response_status") != 200)
+        or call.get("response_status") != 200
     ):
         raise SchemaRefusal("an audit re-proof prompt is not bound to its successful chair call")
     dossier = reading["payload"].get("dossier")
@@ -764,7 +767,7 @@ def _validate_live_reproof_request(
             "an audit re-proof call cannot be verified without the run's sealed decoding policy"
         )
     try:
-        verify_call_sampling(call, decoding_policy, "perlector")
+        verify_call_sampling(call, decoding_policy, "perlector", expected_seed=receipt["seed"])
     except ContractError as error:
         raise SchemaRefusal(f"an audit re-proof call's sampling is off: {error}") from error
 

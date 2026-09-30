@@ -17,7 +17,6 @@ import pytest
 
 from common.chairs.models import ChairIdentity, ServingDetails
 from common.chairs.receipts import build_receipt, receipt_record
-from common.chandra_native_retry import recipe_record
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
@@ -81,14 +80,10 @@ SHIPPED_POLICY, DECODING_SHA = load_decoding_policy()
 
 
 def _policy_with_row(chair: str, sampling: Mapping[str, object]) -> dict[str, object]:
-    """The shipped policy with one chair's sampling values replaced."""
+    """The shipped policy with some of one chair's sampling values changed."""
 
     policy = copy.deepcopy(SHIPPED_POLICY)
-    row = policy["chair_decoding"][chair]
-    policy["chair_decoding"][chair] = {
-        **{key: value for key, value in row.items() if key not in SAMPLING_FIELDS},
-        **sampling,
-    }
+    policy["chair_decoding"][chair] = {**policy["chair_decoding"][chair], **sampling}
     return policy
 
 
@@ -200,7 +195,6 @@ def _built(
     row: dict[str, object] | None = None,
     read_receipt=None,
     sampling: Mapping[str, object] | None = None,
-    chandra_native_policy=None,
 ):
     chair = chair or _identity()
     row = _seal(
@@ -233,7 +227,6 @@ def _built(
         decoding_config_sha256=table_seal(policy),
         decoding_policy=policy,
         read_receipt=read_receipt or _default_read_receipt(chair),
-        chandra_native_policy=chandra_native_policy,
     )
     return client, endpoint, blob_store, chair
 
@@ -394,9 +387,7 @@ def test_chandra_native_capability_is_attestator_1_only_and_omits_request_seed(
             "witness_scope": "page",
         }
     )
-    client, endpoint, blob_store, _ = _built(
-        tmp_path, chair=chair, chandra_native_policy=recipe_record()
-    )
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=chair)
     intent_ref = {"relative_path": "3_attestatores/artifacts/intent.json", "sha256": "d" * 64}
     request = _request(
         generation_declared={"max_new_tokens": 12384},
@@ -411,16 +402,20 @@ def test_chandra_native_capability_is_attestator_1_only_and_omits_request_seed(
         monkeypatch.setattr(client, "prepare_chandra_native", unexpected_reprepare)
         endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
         response = client.read_chandra_native(dispatch, intent_ref=intent_ref)
-    assert endpoint.requests[0]["temperature"] == 0.6000000000000001
-    assert endpoint.requests[0]["top_p"] == 0.95
+    expected = {
+        "temperature": 0.6000000000000001,
+        "top_p": 0.95,
+        "top_k": 0,
+        "min_p": 0.0,
+        "repetition_penalty": 1.0,
+    }
+    assert {field: endpoint.requests[0][field] for field in expected} == expected
     assert "seed" not in endpoint.requests[0]
     record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
     assert record["schema"] == CHANDRA_NATIVE_CALL_RECORD_SCHEMA
     assert set(record) == CHANDRA_NATIVE_CALL_RECORD_FIELDS
     assert record["native_attempt_intent_ref"] == intent_ref
-    assert record["sampling_effective"] == recorded_sampling(
-        {"temperature": 0.6000000000000001, "top_p": 0.95}
-    )
+    assert record["sampling_effective"] == recorded_sampling(expected)
 
 
 def test_chandra_native_dispatch_is_a_one_use_client_minted_capability(tmp_path: Path) -> None:
@@ -431,9 +426,7 @@ def test_chandra_native_dispatch_is_a_one_use_client_minted_capability(tmp_path:
             "witness_scope": "page",
         }
     )
-    client, endpoint, _blob_store, _ = _built(
-        tmp_path, chair=chair, chandra_native_policy=recipe_record()
-    )
+    client, endpoint, _blob_store, _ = _built(tmp_path, chair=chair)
     request = _request(
         generation_declared={"max_new_tokens": 12384},
         generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
@@ -459,17 +452,10 @@ def test_chandra_native_capability_refuses_a_different_chair(tmp_path: Path) -> 
             "witness_scope": "page",
         }
     )
-    client, endpoint, _blob_store, _ = _built(
-        tmp_path, chair=chair, chandra_native_policy=recipe_record()
-    )
+    client, endpoint, _blob_store, _ = _built(tmp_path, chair=chair)
     with client, pytest.raises(ChairRequestRefusal, match="only to Attestator 1"):
         client.prepare_chandra_native(_request(), attempt_ordinal=1)
     assert endpoint.requests == []
-
-
-def test_a_legacy_client_does_not_acquire_the_native_capability(tmp_path: Path) -> None:
-    client, _endpoint, _blob_store, _ = _built(tmp_path)
-    assert client.carries_chandra_native_recipe is False
 
 
 def test_chandra_native_call_refuses_without_durable_intent_before_http(tmp_path: Path) -> None:
@@ -480,9 +466,7 @@ def test_chandra_native_call_refuses_without_durable_intent_before_http(tmp_path
             "witness_scope": "page",
         }
     )
-    client, endpoint, blob_store, _ = _built(
-        tmp_path, chair=chair, chandra_native_policy=recipe_record()
-    )
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=chair)
     request = _request(
         generation_declared={"max_new_tokens": 12384},
         generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
@@ -505,9 +489,7 @@ def test_chandra_native_transport_failure_retains_intent_and_physical_request(
             "witness_scope": "page",
         }
     )
-    client, endpoint, blob_store, _ = _built(
-        tmp_path, chair=chair, chandra_native_policy=recipe_record()
-    )
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=chair)
     request = _request(
         generation_declared={"max_new_tokens": 12384},
         generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
@@ -552,7 +534,12 @@ def test_a_structure_recovery_attempt_sends_chandras_own_retry_request(
     posted = endpoint.requests[0]
     assert (posted["temperature"], posted["top_p"], posted["seed"]) == (temperature, top_p, 7)
     assert record["generation_sent"] == recorded_generation(
-        {"temperature": temperature, "top_p": top_p, "seed": 7}
+        {
+            **chair_decoding(SHIPPED_POLICY, "designator_structure"),
+            "temperature": temperature,
+            "top_p": top_p,
+            "seed": 7,
+        }
     )
 
 
@@ -629,7 +616,13 @@ def test_a_caller_cannot_move_a_sealed_sampling_value(tmp_path: Path) -> None:
     add one it leaves to the engine -- is refused before a byte is sent.
     """
 
-    sealed = {"temperature": 0.1, "top_k": 1, "top_p": 0.001, "repetition_penalty": 1.05}
+    sealed = {
+        "temperature": 0.1,
+        "top_k": 1,
+        "top_p": 0.001,
+        "repetition_penalty": 1.05,
+        "min_p": 0.0,
+    }
     client, endpoint, _, _ = _built(tmp_path, chair=_identity(role="attestator_2"))
     with client:
         endpoint.script(ScriptedAnswer(content="read", finish_reason="stop"))
@@ -847,7 +840,7 @@ def test_transport_timeout_retains_the_known_request_and_explicit_response_uncer
     assert record["request_sha256"] == excinfo.value.request_sha256
     assert record["image_sha256s"] == []
     assert record["generation_sent"] == recorded_generation(
-        {"temperature": 0.0, "top_p": 0.1, "seed": 7}
+        {**chair_decoding(SHIPPED_POLICY, "attestator_1"), "seed": 7}
     )
     assert record["generation_declared"] == {}
     assert record["capacity"] is None
@@ -1025,9 +1018,11 @@ def test_call_record_has_the_exact_closed_field_set_and_canonical_bytes(tmp_path
     assert record["request_sha256"] == response.request_sha256
     assert record["image_sha256s"] == []
     assert record["generation_sent"] == recorded_generation(
-        {"temperature": 0.0, "top_p": 0.1, "seed": 7}
+        {**chair_decoding(SHIPPED_POLICY, "attestator_1"), "seed": 7}
     )
-    assert record["sampling_effective"] == recorded_sampling({"temperature": 0.0, "top_p": 1.0})
+    assert record["sampling_effective"] == recorded_sampling(
+        {**chair_decoding(SHIPPED_POLICY, "attestator_1"), "top_p": 1.0}
+    )
     assert record["generation_declared"] == {"top_k": 1}
     assert record["raw_response_ref"] == dict(response.raw_response_ref)
     assert record["response_sha256"] == response.response_sha256

@@ -13,14 +13,18 @@ from common.chandra_native_retry import (
     wire_parameters,
 )
 from common.contracts.errors import ContractError
-from common.contracts.serving import WIRE_DECIMAL_SCHEMA
+from common.contracts.serving import (
+    CALLER_GENERATION_FIELDS,
+    RETIRED_CALL_RECORD_SCHEMAS,
+    WIRE_DECIMAL_SCHEMA,
+)
 from common.sealed_config import read_sealed_toml
 
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
 _PERLECTOR_BOUNDS = ("reading_max_tokens", "reproof_max_tokens")
-# Every sampling field a chair's row may carry: the top-level sampling fields of
-# the pinned vLLM 0.27.1 `ChatCompletionRequest`. Only the sealed table puts
-# them on the wire; a caller's request may not name them.
+# Every sampling field a chair's row may carry, each a top-level field of the
+# pinned vLLM 0.27.1 `ChatCompletionRequest`. Only the sealed table puts them on
+# the wire; a caller's request may not name them.
 SAMPLING_FIELDS = frozenset(
     {
         "temperature",
@@ -32,6 +36,25 @@ SAMPLING_FIELDS = frozenset(
         "repetition_penalty",
     }
 )
+# The sampling fields the pinned engine fills from a model's
+# `generation_config.json` when a request leaves them out (vllm==0.27.1,
+# `ModelConfig.get_diff_sampling_param`'s `available_params`, less
+# `max_new_tokens`, which is not a sampling field). Every chair's row names all
+# of them, so no reading's sampling rests on a value nobody sealed.
+ENGINE_FILLED_SAMPLING_FIELDS = frozenset(
+    {"temperature", "top_p", "top_k", "min_p", "repetition_penalty"}
+)
+# What the pinned engine samples under for a field a request leaves out when no
+# generation config fills it (vllm==0.27.1,
+# `ChatCompletionRequest._DEFAULT_SAMPLING_PARAMS`): the values a maker who
+# serves with vLLM and sends only some fields reads under for the rest.
+VLLM_REQUEST_DEFAULTS: dict[str, int | float] = {
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "min_p": 0.0,
+    "repetition_penalty": 1.0,
+}
 # The ranges the pinned vLLM 0.27.1 `SamplingParams._verify_args` accepts, so a
 # row the engine would refuse is refused when the policy loads. Each is
 # (low, high, low inclusive); presence and frequency penalties may be negative,
@@ -62,9 +85,9 @@ _PROVENANCE_FIELDS = frozenset({"source", "revision", "verification"})
 READING_CHAIRS = frozenset(
     {"designator_structure", "attestator_1", "attestator_2", "attestator_3", "perlector"}
 )
-# The chairs Chandra fills; their rows must be the first request of the pinned
-# Chandra recipe, so the structure chair and a plain Attestator 1 read cannot
-# drift from the maker's own pipeline.
+# The chairs Chandra fills. Chandra's own pipeline sends the pinned recipe's
+# temperature and top_p to a vLLM server and nothing else, so their rows must be
+# the recipe's first request over vLLM's defaults, and cannot drift from it.
 _CHANDRA_CHAIRS = ("designator_structure", "attestator_1")
 # The structure chair's coverage recovery sends, at attempt n, the pinned Chandra
 # recipe's own request n: the maker's recovery from a degenerate page.
@@ -192,10 +215,11 @@ def _validate_chair_decoding(table: Any) -> None:
                 f"decoding chair_decoding.{chair} source, revision and verification must be "
                 "nonblank text"
             )
-        if "temperature" not in row:
+        missing = sorted(ENGINE_FILLED_SAMPLING_FIELDS - set(row))
+        if missing:
             raise ContractError(
-                f"decoding chair_decoding.{chair} must state its temperature; an absent one "
-                "would leave the engine's default in force"
+                f"decoding chair_decoding.{chair} must state {missing}; an absent one would "
+                "leave an engine or generation-config default in force"
             )
         for field in sorted(SAMPLING_FIELDS & set(row)):
             value = row[field]
@@ -214,12 +238,12 @@ def _validate_chair_decoding(table: Any) -> None:
                     f"decoding chair_decoding.{chair}.{field} must be a finite number in "
                     f"{interval}{', and an integer' if field == 'top_k' else ''}; got {value!r}"
                 )
-    first_chandra_request = wire_parameters(1)
+    first_chandra_request = {**VLLM_REQUEST_DEFAULTS, **wire_parameters(1)}
     for chair in _CHANDRA_CHAIRS:
         if _sampling_values(table[chair]) != first_chandra_request:
             raise ContractError(
                 f"decoding chair_decoding.{chair} must equal the first request of the pinned "
-                f"Chandra recipe, {first_chandra_request!r}"
+                f"Chandra recipe over vLLM's defaults, {first_chandra_request!r}"
             )
 
 
@@ -245,9 +269,9 @@ def chair_attempt_decoding(
     """The sampling values one attempt of a chair sends.
 
     Attempt one is the chair's row. Only the two Chandra chairs have later
-    attempts, and each sends the pinned recipe's request for its ordinal: the
-    structure chair within its sealed recovery ceiling, Attestator 1's native
-    page route within the recipe's own seven.
+    attempts, and each sends the row with the pinned recipe's temperature and
+    top_p for its ordinal: the structure chair within its sealed recovery
+    ceiling, Attestator 1's native page route within the recipe's own seven.
     """
     row = chair_decoding(policy, chair)
     if (
@@ -269,7 +293,7 @@ def chair_attempt_decoding(
             f"decoding has no attempt {attempt_ordinal} for chair {chair!r}; only the Chandra "
             "chairs retry, within their sealed ceilings"
         )
-    return wire_parameters(attempt_ordinal)
+    return {**row, **wire_parameters(attempt_ordinal)}
 
 
 def variance_arm_seed(policy: Mapping[str, Any], arm: str) -> int:
@@ -317,27 +341,56 @@ def recorded_sampling(sampling: Mapping[str, int | float]) -> dict[str, object]:
     }
 
 
+def refuse_retired_call_record(
+    schema: object, *, subject: str, error_type: type[Exception] = ContractError
+) -> None:
+    """Refuse a call record written under a retired schema, by that schema's name."""
+    if isinstance(schema, str) and schema in RETIRED_CALL_RECORD_SCHEMAS:
+        raise error_type(
+            f"{subject} was written as {schema}, which this build no longer reads; re-run"
+        )
+
+
 def verify_call_sampling(
     call: Mapping[str, Any],
     policy: Mapping[str, Any],
     chair: str,
     *,
+    expected_seed: int | None,
     attempt_ordinal: int = 1,
 ) -> None:
     """Refuse a call record whose sampling is not the sealed policy's for its chair.
 
-    `generation_sent` must carry exactly the attempt's sealed sampling fields,
-    and `sampling_effective` the pinned engine's reading of them.
+    `generation_sent` may carry only a caller's generation fields, sampling
+    fields and the seed; its sampling fields must be exactly the attempt's
+    sealed values, and `sampling_effective` the pinned engine's reading of them.
+    `expected_seed` is the seed the call sent: a variance arm's
+    (`variance_arm_seed`), otherwise the serving receipt's. A Chandra native
+    request sends none, and its reader says so with `None`.
     """
+    refuse_retired_call_record(call.get("schema"), subject=f"a {chair} call record")
     expected = chair_attempt_decoding(policy, chair, attempt_ordinal)
     sent = call.get("generation_sent")
     if not isinstance(sent, Mapping):
         raise ContractError(f"a {chair} call record carries no generation_sent object")
+    unknown = sorted(set(sent) - CALLER_GENERATION_FIELDS - SAMPLING_FIELDS - {"seed"})
+    if unknown:
+        raise ContractError(
+            f"a {chair} call record sent generation field(s) {unknown}, which no caller, "
+            "sealed row or seed puts on the wire"
+        )
     observed = {field: sent[field] for field in SAMPLING_FIELDS if field in sent}
     if observed != recorded_sampling(expected):
         raise ContractError(
             f"a {chair} call record sent sampling {observed!r}, not the sealed "
             f"{recorded_sampling(expected)!r} for attempt {attempt_ordinal}"
+        )
+    if expected_seed is None:
+        if "seed" in sent:
+            raise ContractError(f"a {chair} call record sent a seed its request sends none of")
+    elif type(sent.get("seed")) is not int or sent["seed"] != expected_seed:
+        raise ContractError(
+            f"a {chair} call record sent seed {sent.get('seed')!r}, not {expected_seed!r}"
         )
     if call.get("sampling_effective") != recorded_sampling(engine_effective_sampling(expected)):
         raise ContractError(

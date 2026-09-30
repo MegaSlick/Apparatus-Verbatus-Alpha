@@ -21,15 +21,11 @@ from typing import Callable, Mapping, Protocol, cast
 
 from common.chair_wire import chandra_wire_fields
 from common.chairs.models import ChairIdentity
-from common.chandra_native_retry import (
-    CHANDRA_MAX_OUTPUT_TOKENS,
-    attempt_parameters,
-    validate_policy_record,
-    wire_parameters,
-)
+from common.chandra_native_retry import CHANDRA_MAX_OUTPUT_TOKENS, attempt_parameters
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.contracts.errors import ContractError
 from common.contracts.serving import (
+    CALLER_GENERATION_FIELDS,
     CHAIR_CALL_RECORD_FIELDS,
     CHAIR_CALL_RECORD_SCHEMA,
     CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
@@ -70,14 +66,6 @@ from .http import (
     request_body,
 )
 from .manager import AdapterCalibration, ServiceHandle, ServingManager, _immutable_json_value
-
-# The only generation fields a caller's request may carry: the answer bound,
-# the chat-template switch (Chandra's and the Perlector's thinking flag) and
-# DAI's secondary stop id. Sampling values are the sealed decoding table's and
-# `model`, `stream`, `seed` and `n` the manager's; anything else is refused by
-# name before anything is built or sent, since the engine would silently ignore
-# a field it does not know.
-CALLER_GENERATION_FIELDS = frozenset({"max_tokens", "chat_template_kwargs", "stop_token_ids"})
 
 # One JSON serialization, used for both halves of the generation round-trip
 # check below, so the comparison is between two texts rather than between two
@@ -418,7 +406,6 @@ class ChairClient:
         decoding_policy: Mapping[str, object],
         read_receipt: Callable[[Mapping[str, str]], Mapping[str, object]],
         adapter_calibration: AdapterCalibration | None = None,
-        chandra_native_policy: Mapping[str, object] | None = None,
     ) -> None:
         if not is_sha256(decoding_config_sha256):
             raise ServingConfigurationError(
@@ -444,9 +431,6 @@ class ChairClient:
         self._decoding_policy = policy
         self._read_receipt = read_receipt
         self._adapter_calibration = adapter_calibration
-        self._chandra_native_policy = (
-            dict(chandra_native_policy) if chandra_native_policy is not None else None
-        )
         # A native dispatch is a one-use capability minted only after every
         # request and evidence field has been checked.  Holding the object
         # itself in this private registry prevents a caller-created dataclass,
@@ -462,12 +446,6 @@ class ChairClient:
                 "ChairClient has no active service; enter it as a context manager first"
             )
         return self._handle
-
-    @property
-    def carries_chandra_native_recipe(self) -> bool:
-        """Whether this client was built from the decoding policy's native recipe."""
-
-        return self._chandra_native_policy is not None
 
     def __enter__(self) -> "ChairClient":
         self._prepared_chandra_dispatches.clear()
@@ -556,17 +534,6 @@ class ChairClient:
                 "the Chandra native inference capability belongs only to Attestator 1's "
                 "page-scoped chandra.v1 reading route",
             )
-        if self._chandra_native_policy is None:
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID",
-                "the run carries no sealed Chandra native inference recipe",
-            )
-        try:
-            validate_policy_record(dict(self._chandra_native_policy))
-        except ContractError as error:
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID", f"the sealed Chandra native recipe moved: {error}"
-            ) from error
         _refuse_unbuildable_request(request)
         if request.structure_attempt_ordinal is not None or request.variance_arm is not None:
             raise ChairRequestRefusal(
@@ -595,7 +562,14 @@ class ChairClient:
                 "a Chandra native request does not declare the pinned upstream output bound",
             )
         declared = attempt_parameters(attempt_ordinal)
-        sampling = wire_parameters(attempt_ordinal)
+        try:
+            # The sealed policy's native recipe is validated with the policy, at
+            # construction; its schedule is the attempt's temperature and top_p.
+            sampling = chair_attempt_decoding(
+                self._decoding_policy, self._identity.role, attempt_ordinal
+            )
+        except ContractError as error:
+            raise ChairRequestRefusal("CHAIR_REQUEST_INVALID", str(error)) from error
         sent = {**request.generation_sent, **sampling}
         sent_record = _recorded_generation(sent)
         declared_record = _recorded_generation(request.generation_declared)
@@ -606,8 +580,7 @@ class ChairClient:
         body = chandra_native_request_body(
             {**request.generation_sent, "messages": list(request.messages)},
             model_id=handle.profile.served_model_id,
-            temperature=sent["temperature"],  # type: ignore[arg-type]
-            top_p=sent["top_p"],  # type: ignore[arg-type]
+            sampling=sampling,
         )
         dispatch = ChandraNativeDispatch(
             request=request,

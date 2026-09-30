@@ -288,12 +288,7 @@ def act_chair_request(
         {"role": "user", "content": _user_content(prompt["user"], image_bytes)},
     )
     generation_declared = feeding.dai_generation()
-    # Sealed fixture/live-test profiles still name the historical `vllm`
-    # posture and keep the truthful legacy dai-atr.v1 shape; production
-    # profiles are `auto` and get the versioned closed ledger.
-    generation_accounting = (
-        feeding.dai_generation_accounting("auto") if profile.generation_config == "auto" else None
-    )
+    generation_accounting = feeding.dai_generation_accounting()
     generation_sent = generation_bound_sent(_ADAPTER_CHAIRS["dai.v1"], capacity)
     generation_sent.update(feeding.dai_wire_stop_token_ids())
     request = ChairRequest(
