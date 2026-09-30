@@ -29,8 +29,8 @@ runs as a child process in its own pinned environment, on the CPU (Surya);
 ``fixture`` is the offline walking
 skeleton's stand-in; and ``unsupported`` keeps a configured real chair covered
 without inventing launch flags for an engine this package does not implement.
-The last three carry no vLLM flags and must refuse by their actual cause before
-runtime checks.
+Every kind but ``vllm`` carries no vLLM flags and must refuse by its actual cause
+before runtime checks.
 """
 
 from __future__ import annotations
@@ -336,13 +336,16 @@ class ServingProfile:
 class ServingRecipes:
     """The complete closed serving-profile catalogue."""
 
-    profiles: tuple["ServingProfile | InProcessProfile | FixtureProfile | UnsupportedProfile", ...]
+    profiles: tuple[
+        "ServingProfile | InProcessProfile | SubprocessProfile | FixtureProfile | UnsupportedProfile",
+        ...,
+    ]
     source_path: Path | None = None
     source_sha256: str | None = None
 
     def for_identity(
         self, identity: ChairIdentity, tier: str
-    ) -> "ServingProfile | InProcessProfile | FixtureProfile | UnsupportedProfile":
+    ) -> "ServingProfile | InProcessProfile | SubprocessProfile | FixtureProfile | UnsupportedProfile":
         """Return the only profile configured for this identity and tier.
 
         This is lookup, not a ranking or fallback: zero or multiple matches are
@@ -543,7 +546,7 @@ def profile_preflight_digest(raw: Mapping[str, Any]) -> str:
 
 def _parse_profile(
     raw: Any,
-) -> "ServingProfile | InProcessProfile | FixtureProfile | UnsupportedProfile":
+) -> "ServingProfile | InProcessProfile | SubprocessProfile | FixtureProfile | UnsupportedProfile":
     if not isinstance(raw, dict):
         raise ServingConfigurationError("each serving profile must be a table")
     kind = raw.get("kind")
@@ -824,7 +827,10 @@ def _parse_subprocess_profile(raw: Mapping[str, Any]) -> SubprocessProfile:
 
 
 def _validate_catalogue(
-    profiles: tuple["ServingProfile | InProcessProfile | FixtureProfile | UnsupportedProfile", ...],
+    profiles: tuple[
+        "ServingProfile | InProcessProfile | SubprocessProfile | FixtureProfile | UnsupportedProfile",
+        ...,
+    ],
 ) -> None:
     keys = [profile.key for profile in profiles]
     if len(keys) != len(set(keys)):
@@ -832,8 +838,8 @@ def _validate_catalogue(
     endpoint_chairs: dict[tuple[str, int], set[str]] = {}
     served_chairs: dict[str, set[str]] = {}
     for profile in profiles:
-        # Fixture and unsupported rows own neither endpoint nor API alias;
-        # applying launch-only collision rules would invent serving claims.
+        # Only a vLLM row owns an endpoint and an API alias; applying these
+        # launch-only collision rules to any other kind would invent serving claims.
         if not isinstance(profile, ServingProfile):
             continue
         endpoint_chairs.setdefault((profile.host, profile.port), set()).add(profile.chair)

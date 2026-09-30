@@ -1044,7 +1044,10 @@ def _peek_model(body: bytes) -> str | None:
 
 
 def _other_tiers_posture(
-    rows: tuple["ServingProfile | InProcessProfile | FixtureProfile | UnsupportedProfile", ...],
+    rows: tuple[
+        "ServingProfile | InProcessProfile | SubprocessProfile | FixtureProfile | UnsupportedProfile",
+        ...,
+    ],
     tier: str,
 ) -> str:
     """Name the posture(s) the *other* tiers hold, for a mixed-posture refusal.

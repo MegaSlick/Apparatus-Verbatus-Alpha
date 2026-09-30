@@ -1368,7 +1368,7 @@ def assert_no_discoverable_local_env(*, directory: str | Path | None = None) -> 
 
 
 def _launchable(
-    profile: "ServingProfile | InProcessProfile | FixtureProfile | UnsupportedProfile",
+    profile: "ServingProfile | InProcessProfile | SubprocessProfile | FixtureProfile | UnsupportedProfile",
     identity: ChairIdentity,
     *,
     qualification: bool = False,
