@@ -37,14 +37,11 @@ from geometry import (
 
 # Re-exported (not this stage's own): the Ink Map and Recensor also infer
 # paper value under the same sealed policy, and callers use this spelling.
-from common.background import (  # noqa: F401
-    BACKGROUND_BP_FIELDS as _BACKGROUND_BP_FIELDS,
-)
 from common.background import (
     BASIS_POINTS as _BASIS_POINTS,
 )
 from common.background import (  # noqa: F401
-    FORBIDDEN_NAMES,
+    refuse_forbidden_names,
     resolve_background_policy,
     validate_background_table,
 )
@@ -109,20 +106,6 @@ _GROUPING_TOP_FIELDS: Final = _GROUPING_COUNT_FIELDS + (
 _TOP_LEVEL_TABLES: Final = ("grouping", "coverage_audit")
 
 
-def _refuse_forbidden_names(fields: dict, where: str) -> None:
-    found = sorted(name for name in FORBIDDEN_NAMES if name in fields)
-    if found:
-        raise ContractError(
-            f"the grouping configuration's {where} carries forbidden field(s) {found}; "
-            "primary_margin/secondary_margin are absolute 8-bit ink-intensity offsets pinned "
-            "as Python module constants in structure.py by "
-            "common/test_designator_recensor_ink_calibration.py and may never become a per-run "
-            "config value. What is sealed instead is [grouping.background] ink_margin_bp, the "
-            "fraction of a page's own two-mode distance that derives its margin: a population "
-            "fraction, which scales with the page, and not an offset"
-        )
-
-
 def load_grouping_config(
     path: str | Path = DEFAULT_GROUPING_CONFIG_PATH,
 ) -> dict[str, Any]:
@@ -136,7 +119,7 @@ def load_grouping_config(
     if not isinstance(grouping, dict):
         raise ContractError("the grouping configuration has no [grouping] table")
 
-    _refuse_forbidden_names(grouping, "[grouping] table")
+    refuse_forbidden_names(grouping, "[grouping] table")
 
     unexpected = sorted(set(grouping) - set(_GROUPING_TOP_FIELDS))
     if unexpected:
@@ -176,10 +159,7 @@ def load_grouping_config(
     coverage_audit = {
         **validate_coverage_audit_table(config.get("coverage_audit")),
         "provenance": validate_provenance_block(
-            (config.get("coverage_audit") or {}).get("provenance")
-            if isinstance(config.get("coverage_audit"), dict)
-            else None,
-            where="[coverage_audit.provenance]",
+            config["coverage_audit"].get("provenance"), where="[coverage_audit.provenance]"
         ),
         # A separate provenance block: it must not be read as covering the
         # unmeasured noise-floor pair too.
@@ -243,7 +223,7 @@ def _load_residual_presentation(table: Any) -> dict[str, Any]:
 def _load_closed_int_table(table: Any, fields: tuple[str, ...], what: str) -> dict[str, int]:
     if not isinstance(table, dict):
         raise ContractError(f"the grouping configuration has no {what} table")
-    _refuse_forbidden_names(table, what)
+    refuse_forbidden_names(table, what)
     unexpected = sorted(set(table) - set(fields))
     if unexpected:
         raise ContractError(
@@ -274,7 +254,7 @@ def _load_continuation(table: Any) -> dict[str, Any]:
     """
     if not isinstance(table, dict):
         raise ContractError("the grouping configuration has no [grouping.continuation] table")
-    _refuse_forbidden_names(table, "[grouping.continuation]")
+    refuse_forbidden_names(table, "[grouping.continuation]")
     expected = set(_CONTINUATION_BP_FIELDS) | {"provenance"}
     unexpected = sorted(set(table) - expected)
     if unexpected:
@@ -317,7 +297,7 @@ def _load_page_area_bp(table: Any) -> dict[str, Any]:
     """
     if not isinstance(table, dict):
         raise ContractError("the grouping configuration has no [grouping.page_area_bp] table")
-    _refuse_forbidden_names(table, "[grouping.page_area_bp]")
+    refuse_forbidden_names(table, "[grouping.page_area_bp]")
     expected = set(_PAGE_AREA_BP_FIELDS) | {"provenance"}
     unexpected = sorted(set(table) - expected)
     if unexpected:
@@ -350,30 +330,11 @@ def _load_page_area_bp(table: Any) -> dict[str, Any]:
 def _load_background(table: Any) -> dict[str, Any]:
     """Read `[grouping.background]` and its own provenance.
 
-    Its own provenance block because these four values are measured on 127
-    real pages, one of several such blocks in this file (continuation is
-    measured on 44, and page-area and the coverage audit carry their own
-    too). The values themselves are
-    validated by `common.background.validate_background_table`, shared with
-    the Ink Map and the Recensor's residual-ink audit so all three refuse the
-    same malformed value; this function adds only the forbidden-name refusal,
-    the closed field set, and the provenance schema.
+    The values are validated by `common.background.validate_background_table`,
+    shared with the Ink Map and the Recensor's residual-ink audit so all three
+    refuse the same malformed value; this function adds only the provenance
+    schema, which a table built in code does not carry.
     """
-    if not isinstance(table, dict):
-        raise ContractError("the grouping configuration has no [grouping.background] table")
-    _refuse_forbidden_names(table, "[grouping.background]")
-    expected = set(_BACKGROUND_BP_FIELDS) | {"provenance"}
-    unexpected = sorted(set(table) - expected)
-    if unexpected:
-        raise ContractError(
-            f"the grouping configuration's [grouping.background] carries unknown field(s) "
-            f"{unexpected}; an unread policy field cannot be applied"
-        )
-    missing = sorted(expected - set(table))
-    if missing:
-        raise ContractError(
-            f"the grouping configuration's [grouping.background] is missing field(s) {missing}"
-        )
     values = validate_background_table(table)
     values["provenance"] = validate_provenance_block(
         table.get("provenance"), where="[grouping.background.provenance]"

@@ -456,6 +456,20 @@ def _settle_background_evidence(
 FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
 
 
+def refuse_forbidden_names(fields: dict, where: str) -> None:
+    """Refuse a grouping-configuration table that names a pinned margin."""
+    found = sorted(name for name in FORBIDDEN_NAMES if name in fields)
+    if found:
+        raise ContractError(
+            f"the grouping configuration's {where} carries forbidden field(s) {found}; "
+            "primary_margin/secondary_margin are absolute 8-bit ink-intensity offsets pinned "
+            "as module constants in common/background.py and may never become a per-run "
+            "config value. What is sealed instead is [grouping.background] ink_margin_bp, the "
+            "fraction of a page's own two-mode distance that derives its margin: a population "
+            "fraction, which scales with the page, and not an offset"
+        )
+
+
 def validate_ink_not_measurable_payload(payload: Any) -> dict[str, Any]:
     """Validate the closed Ink Map refusal payload before a consumer drops evidence.
 
@@ -631,16 +645,7 @@ def validate_background_table(
     """
     if not isinstance(table, dict):
         raise ContractError(f"the grouping configuration has no {where} table")
-    forbidden = sorted(name for name in FORBIDDEN_NAMES if name in table)
-    if forbidden:
-        raise ContractError(
-            f"the grouping configuration's {where} carries forbidden field(s) {forbidden}; "
-            "primary_margin/secondary_margin are absolute 8-bit ink-intensity offsets pinned "
-            "as Python module constants and may never become a per-run config value. What is "
-            "sealed instead is ink_margin_bp, the fraction of a page's own two-mode distance "
-            "that derives its margin: a population fraction, which scales with the page, and "
-            "not an offset"
-        )
+    refuse_forbidden_names(table, where)
     unexpected = sorted(set(table) - set(BACKGROUND_BP_FIELDS) - {"provenance"})
     if unexpected:
         raise ContractError(
