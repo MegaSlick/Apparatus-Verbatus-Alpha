@@ -108,7 +108,7 @@ from common.chairs.config import parse_models_config
 from common.chairs.errors import ChairRefusal
 from common.chairs.manifests import verify_snapshot
 from common.chairs.model_store import StoreRoleFetcher, pending_local_artifacts
-from common.chairs.models import ChairIdentity, ServingReceipt
+from common.chairs.models import ChairIdentity, ModelsConfig, ServingReceipt
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
     ChairRegistry,
@@ -1379,9 +1379,6 @@ class _LazyChairCache:
     and verifies the retained-store source plan; built eagerly, a
     CHAIR_CACHE receipt would attest to whatever ``models.toml`` happened to be
     on disk at container start, not to the commit the journal names.
-    The transfer and model-store actions are already lazy this
-    way (``materialize_model_store=lambda: ...``); this closes the one that
-    was not.
     """
 
     def __init__(self, plan: Plan) -> None:
@@ -1541,6 +1538,18 @@ def _store_environments(plan: Plan) -> frozenset[str]:
     return frozenset({_bundle_fetcher().environment}) if pending else frozenset()
 
 
+def _checked_out_roster(plan: Plan) -> ModelsConfig:
+    """The selected roster, read from inside the checked-out repository."""
+
+    return parse_models_config(
+        parse_sealed_toml(
+            _read_configuration_source(plan.models_config, "model roster", plan.repository),  # type: ignore[arg-type]
+            f"model roster {plan.models_config}",
+        )[0],
+        source_path=plan.models_config,
+    )
+
+
 def _stage_environments(plan: Plan) -> frozenset[str]:
     """The environments the checked-out catalogue's subprocess rows run in, for
     the chairs the roster configures and this pod's preflight selects: every
@@ -1550,14 +1559,16 @@ def _stage_environments(plan: Plan) -> frozenset[str]:
         return frozenset()
     if plan.serving_recipes_config is None:
         return frozenset()
-    models = parse_models_config(
-        parse_sealed_toml(
-            _read_configuration_source(plan.models_config, "model roster", plan.repository),
-            f"model roster {plan.models_config}",
-        )[0],
-        source_path=plan.models_config,
+    models = _checked_out_roster(plan)
+    raw, digest = parse_sealed_toml(
+        _read_configuration_source(
+            plan.serving_recipes_config, "serving catalogue", plan.repository
+        ),
+        "serving catalogue",
     )
-    recipes = load_serving_recipes(plan.serving_recipes_config)
+    recipes = parse_serving_recipes(
+        raw, source_path=plan.serving_recipes_config, source_sha256=digest
+    )
     selected = plan.preflight_roles
     configured = {
         (identity.serving_recipe, role)
@@ -1571,11 +1582,39 @@ def _stage_environments(plan: Plan) -> frozenset[str]:
     )
 
 
+def _local_bundles(plan: Plan) -> dict[Path, int]:
+    """Where CHAIR_CACHE copies each local-repository chair the roster configures,
+    and the bytes its pinned manifest names, so the container-disk check counts them."""
+
+    if plan.repository is None or plan.models_config is None:
+        return {}
+    models = _checked_out_roster(plan)
+    if models.model_root is None:
+        return {}
+    registry = ChairRegistry(models)
+    model_root = plan.models_config.parent / models.model_root
+    try:
+        return {
+            model_root / identity.path: sum(row.size for row in registry.manifest(identity).rows)
+            for identity in models.chairs.values()
+            if isinstance(identity, ChairIdentity)
+            and identity.source == "local-repository"
+            and identity.path is not None
+        }
+    except ChairRefusal as error:
+        raise BootstrapStepFailure(
+            BootstrapStep.UV_ENVIRONMENT,
+            f"a local-repository chair's pinned manifest could not be read: {error}",
+            "Restore the pinned checkout's manifests, then resume.",
+        ) from error
+
+
 def build_actions(plan: Plan) -> BootstrapActions:
     """The real composition; check image facts at REPOSITORY before paid setup."""
 
     return SubprocessBootstrapActions(
         subprocess_environments=lambda: _subprocess_environments(plan),
+        local_bundles=lambda: _local_bundles(plan),
         repository=plan.repository,  # type: ignore[arg-type]
         configuration=_build_configuration_validation(plan),
         transfer=_build_transfer(plan),

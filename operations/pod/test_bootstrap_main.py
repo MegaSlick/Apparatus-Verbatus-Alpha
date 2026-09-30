@@ -2064,6 +2064,50 @@ def test_bootstrap_syncs_surya_s_environment_only_for_a_stage_that_runs_it(
     assert _subprocess_environments(designator) == frozenset({"operations/serving/surya"})
 
 
+def test_bootstrap_reads_the_serving_catalogue_only_from_inside_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catalogue swapped for a link out of the checkout after the plan is
+    resolved is refused by name, as the roster is."""
+    from .bootstrap_main import _stage_environments, build_parser, resolve_plan
+
+    monkeypatch.setattr(bootstrap_main, "pending_local_artifacts", lambda root: ())
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    catalogue = ws.repository / "config" / "serving_recipes.toml"
+    outside = tmp_path / "elsewhere.toml"
+    outside.write_bytes(catalogue.read_bytes())
+    catalogue.unlink()
+    catalogue.symlink_to(outside)
+
+    with pytest.raises(ContractError, match="serving catalogue .* escapes"):
+        _stage_environments(plan)
+
+
+def test_the_disk_check_counts_each_local_bundle_chair_cache_copies(tmp_path: Path) -> None:
+    """CHAIR_CACHE copies each local-repository chair onto container-local disk,
+    so its manifest's bytes are counted where the roster binds it."""
+    from common.chairs.config import load_models_toml
+    from common.chairs.manifests import read_manifest
+
+    from .bootstrap_main import _local_bundles, build_parser, resolve_plan
+
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    models = load_models_toml(ws.models_config)
+    surya = models.chairs[SURYA_CHAIR]
+    manifest = read_manifest(
+        ws.models_config.parent / surya.manifest,
+        expected_digest=surya.digest_manifest,
+        chair=SURYA_CHAIR,
+    )
+
+    bundles = _local_bundles(plan)
+
+    target = ws.models_config.parent / models.model_root / surya.path
+    assert bundles[target] == sum(row.size for row in manifest.rows) > 0
+
+
 def test_the_bundle_fetcher_s_environment_is_synced_while_the_store_lacks_a_bundle(
     tmp_path: Path,
 ) -> None:

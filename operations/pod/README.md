@@ -417,8 +417,8 @@ run measured go in the report's `subprocess_receipts`. Bootstrap's UV_ENVIRONMEN
 builds that environment right after the project's own, with
 `uv sync --locked --project operations/serving/surya`, when the checked-out catalogue
 has a subprocess row for a chair the roster configures and the pod's selected roles
-include, or whenever the model store still lacks Surya's bundle, and counts its 14 GiB
-in the container disk it checks first. The store fetches the bundle whatever the roster
+include, or whenever the model store still lacks Surya's bundle, and counts its 14 GiB,
+with the bundle CHAIR_CACHE copies, in the container disk it checks first. The store fetches the bundle whatever the roster
 configures, so a fresh store costs those 14 GiB even on a pod whose stages never run
 Surya. The MODEL_STORE step then fetches Surya's
 weight bundle onto the network volume by running `operations/serving/surya/prefetch.py`
