@@ -1,0 +1,471 @@
+"""Surya's text lines and layout blocks, as the Designator receives them.
+
+Surya runs apart, in its own pinned environment (`operations/serving/surya/`),
+because it pins Pillow and OpenCV versions this environment cannot share. Two
+detectors answer the same call: that environment's runner, started as a child
+process on the CPU, and a fixture that answers from the synthetic fixture's
+declared rows. Both give one page document per page in the runner's shape, and
+every document is checked here against that closed shape, refused by name if
+anything differs, before the Designator reads a value from it.
+
+A detection is returned exactly as Surya gave it: float polygons, float
+confidences, labels and reading-order positions. Turning that into integer page
+geometry is the Designator's declared quantization, not this module's.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import math
+import os
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Callable, Mapping, Sequence
+
+from common.chairs.models import ChairIdentity, ServingDetails
+
+from .config import SubprocessProfile
+from .errors import ServingConfigurationError
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+_CONTRACT_PATH = REPO_ROOT / "operations" / "serving" / "surya" / "contract.py"
+
+
+def _load_contract():
+    """The runner's own stdlib contract module, loaded by path: it lives in Surya's
+    environment folder, which is not a package of this one."""
+    name = "verbatus_surya_contract"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, _CONTRACT_PATH)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+contract = _load_contract()
+PAGE_SCHEMA = contract.PAGE_SCHEMA
+FIXTURE_ENGINE = "fixture"
+RUNNER = "runner.py"
+
+_PAGE_FIELDS = {"schema", "input_ordinal", "image_size", "run", "text_detection", "layout"}
+_LINES_FIELDS = {"bboxes", "image_bbox"}
+_LINE_FIELDS = {"polygon", "confidence", "bbox"}
+_LAYOUT_FIELDS = {"bboxes", "image_bbox", "raw", "error"}
+_BLOCK_FIELDS = _LINE_FIELDS | {"label", "raw_label", "position", "count"}
+_SURYA_RUN_FIELDS = {
+    "engine",
+    "surya_ocr",
+    "torch",
+    "python",
+    "device",
+    "threads",
+    "deterministic_algorithms",
+    "settings",
+    "checkpoints",
+    "weights",
+}
+_FIXTURE_RUN_FIELDS = {"engine", "declared_by"}
+_FIXTURE_DECLARATION = "proof/skeleton_fixture.toml"
+
+
+class SuryaOutputRefusal(ServingConfigurationError):
+    """A Surya page document that is not the shape Surya's own schema gives."""
+
+
+@dataclass(frozen=True, slots=True)
+class SuryaPage:
+    """One page's document: the bytes as the detector wrote them, and their parse."""
+
+    raw: bytes
+    document: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class SuryaRun:
+    """What ran, the serving facts its receipt records, and each page's document."""
+
+    run_facts: Mapping[str, Any]
+    serving_details: ServingDetails
+    pages: Mapping[int, SuryaPage]
+
+
+# --- the closed shape --------------------------------------------------------
+
+
+def _refuse(path: str, what: str) -> SuryaOutputRefusal:
+    return SuryaOutputRefusal(f"Surya page document at {path} {what}")
+
+
+def _closed(value: Any, fields: set[str], path: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise _refuse(path, "is not an object")
+    unknown, missing = sorted(set(value) - fields), sorted(fields - set(value))
+    if unknown or missing:
+        raise _refuse(path, f"has unknown field(s) {unknown} or missing field(s) {missing}")
+    return value
+
+
+def _number(value: Any, path: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise _refuse(path, "is not a finite number")
+    return float(value)
+
+
+def _count(value: Any, path: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _refuse(path, "is not a non-negative integer")
+    return value
+
+
+def _polygon_box(item: dict[str, Any], path: str) -> None:
+    """Four (x, y) corners, and the bbox Surya derives from them, as Surya derives it."""
+    polygon = item["polygon"]
+    if not isinstance(polygon, list) or len(polygon) != 4:
+        raise _refuse(f"{path}.polygon", "is not four corners")
+    for index, point in enumerate(polygon):
+        if not isinstance(point, list) or len(point) != 2:
+            raise _refuse(f"{path}.polygon[{index}]", "is not an (x, y) pair")
+        for axis, value in enumerate(point):
+            _number(value, f"{path}.polygon[{index}][{axis}]")
+    bbox = item["bbox"]
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        raise _refuse(f"{path}.bbox", "is not four numbers")
+    xs = [point[0] for point in polygon]
+    ys = [point[1] for point in polygon]
+    if [_number(value, f"{path}.bbox") for value in bbox] != [min(xs), min(ys), max(xs), max(ys)]:
+        raise _refuse(f"{path}.bbox", "is not the extent of its polygon")
+    confidence = item["confidence"]
+    if confidence is not None and not 0 <= _number(confidence, f"{path}.confidence") <= 1:
+        raise _refuse(f"{path}.confidence", "is not in [0, 1]")
+
+
+def _image_bbox(value: Any, width: int, height: int, path: str) -> None:
+    if not isinstance(value, list) or [_number(v, path) for v in value] != [0, 0, width, height]:
+        raise _refuse(path, f"is not the whole {width}x{height} page")
+
+
+def _no_floats(value: Any, path: str) -> None:
+    """Run facts travel into records, which carry no floats."""
+    if isinstance(value, float):
+        raise _refuse(path, "carries a float")
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _no_floats(item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _no_floats(item, f"{path}[{index}]")
+
+
+def _check_run(run: Any) -> None:
+    if not isinstance(run, dict) or run.get("engine") not in ("surya", FIXTURE_ENGINE):
+        raise _refuse("$.run", "names neither the surya nor the fixture engine")
+    if run["engine"] == FIXTURE_ENGINE:
+        _closed(run, _FIXTURE_RUN_FIELDS, "$.run")
+        return
+    _closed(run, _SURYA_RUN_FIELDS, "$.run")
+    _no_floats(run, "$.run")
+    if run["device"] != "cpu" or run["deterministic_algorithms"] is not True:
+        raise _refuse("$.run", "is not a deterministic CPU run")
+    for field in ("surya_ocr", "torch", "python"):
+        if not isinstance(run[field], str) or not run[field]:
+            raise _refuse(f"$.run.{field}", "is not a version")
+    if (
+        isinstance(run["threads"], bool)
+        or not isinstance(run["threads"], int)
+        or run["threads"] < 1
+    ):
+        raise _refuse("$.run.threads", "is not a positive integer")
+    settings = _closed(run["settings"], set(contract.OUTPUT_SETTINGS), "$.run.settings")
+    if not all(isinstance(value, str) for value in settings.values()):
+        raise _refuse("$.run.settings", "carries a setting that is not recorded as text")
+    checkpoints = _closed(
+        run["checkpoints"], set(contract.CHECKPOINT_SETTINGS), "$.run.checkpoints"
+    )
+    for name, checkpoint in checkpoints.items():
+        _closed(checkpoint, {"source", "revision", "path"}, f"$.run.checkpoints.{name}")
+    if not isinstance(run["weights"], list) or not run["weights"]:
+        raise _refuse("$.run.weights", "lists no weight file")
+    for index, row in enumerate(run["weights"]):
+        _closed(row, {"path", "sha256", "size"}, f"$.run.weights[{index}]")
+
+
+def validate_page_document(
+    document: Any, *, width: int, height: int, input_ordinal: int
+) -> dict[str, Any]:
+    """One page document, checked against its closed shape and its own page.
+
+    Lines keep Surya's order. Blocks come in Surya's reading order, so each
+    block's `position` is its index; anything else is not what Surya returns.
+    """
+    page = _closed(document, _PAGE_FIELDS, "$")
+    if page["schema"] != PAGE_SCHEMA:
+        raise _refuse("$.schema", f"is {page['schema']!r}, not {PAGE_SCHEMA!r}")
+    if page["input_ordinal"] != input_ordinal:
+        raise _refuse("$.input_ordinal", f"is not {input_ordinal}")
+    if page["image_size"] != [width, height]:
+        raise _refuse("$.image_size", f"is not the sealed page's {width}x{height}")
+    _check_run(page["run"])
+    lines = _closed(page["text_detection"], _LINES_FIELDS, "$.text_detection")
+    _image_bbox(lines["image_bbox"], width, height, "$.text_detection.image_bbox")
+    if not isinstance(lines["bboxes"], list):
+        raise _refuse("$.text_detection.bboxes", "is not a list")
+    for index, line in enumerate(lines["bboxes"]):
+        where = f"$.text_detection.bboxes[{index}]"
+        _polygon_box(_closed(line, _LINE_FIELDS, where), where)
+    layout = _closed(page["layout"], _LAYOUT_FIELDS, "$.layout")
+    _image_bbox(layout["image_bbox"], width, height, "$.layout.image_bbox")
+    if not isinstance(layout["error"], bool):
+        raise _refuse("$.layout.error", "is not a boolean")
+    if layout["raw"] is not None and not isinstance(layout["raw"], str):
+        raise _refuse("$.layout.raw", "is neither null nor a string")
+    if not isinstance(layout["bboxes"], list):
+        raise _refuse("$.layout.bboxes", "is not a list")
+    for index, block in enumerate(layout["bboxes"]):
+        where = f"$.layout.bboxes[{index}]"
+        _polygon_box(_closed(block, _BLOCK_FIELDS, where), where)
+        for field in ("label", "raw_label"):
+            if not isinstance(block[field], str) or not block[field]:
+                raise _refuse(f"{where}.{field}", "is not a non-blank string")
+        if _count(block["position"], f"{where}.position") != index:
+            raise _refuse(f"{where}.position", f"is not {index}, its place in reading order")
+        _count(block["count"], f"{where}.count")
+    return page
+
+
+def parse_page_document(raw: bytes, *, width: int, height: int, input_ordinal: int) -> SuryaPage:
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise SuryaOutputRefusal(f"a Surya page document is not JSON: {error}") from error
+    return SuryaPage(
+        raw=raw,
+        document=validate_page_document(
+            document, width=width, height=height, input_ordinal=input_ordinal
+        ),
+    )
+
+
+def _page_bytes(document: Mapping[str, Any]) -> bytes:
+    return (
+        json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+    ).encode("utf-8")
+
+
+# --- the fixture detector ----------------------------------------------------
+
+
+def _fixture_polygon(row: Mapping[str, Any]) -> dict[str, Any]:
+    polygon = [[float(x), float(y)] for x, y in row["polygon"]]
+    xs = [point[0] for point in polygon]
+    ys = [point[1] for point in polygon]
+    return {
+        "polygon": polygon,
+        "bbox": [min(xs), min(ys), max(xs), max(ys)],
+        "confidence": row["confidence_bp"] / 10_000,
+    }
+
+
+def fixture_surya_run(
+    lines: Sequence[Mapping[str, Any]],
+    blocks: Sequence[Mapping[str, Any]],
+    pages: Mapping[int, tuple[int, int]],
+    identity: ChairIdentity,
+    details: ServingDetails,
+) -> SuryaRun:
+    """Answer each page with the lines and blocks the synthetic fixture declares for it.
+
+    `pages` maps each page ordinal to its (width, height). Documents are built in
+    the runner's shape and checked like the runner's, so the fixture proves the
+    same reader the real detector feeds.
+    """
+    run_facts = {"engine": FIXTURE_ENGINE, "declared_by": _FIXTURE_DECLARATION}
+    documents = {}
+    for input_ordinal, (ordinal, (width, height)) in enumerate(sorted(pages.items()), start=1):
+        page_blocks = sorted(
+            (row for row in blocks if row["page_ordinal"] == ordinal),
+            key=lambda row: row["position"],
+        )
+        document = {
+            "schema": PAGE_SCHEMA,
+            "input_ordinal": input_ordinal,
+            "image_size": [width, height],
+            "run": run_facts,
+            "text_detection": {
+                "bboxes": [
+                    _fixture_polygon(row) for row in lines if row["page_ordinal"] == ordinal
+                ],
+                "image_bbox": [0.0, 0.0, float(width), float(height)],
+            },
+            "layout": {
+                "bboxes": [
+                    {
+                        **_fixture_polygon(row),
+                        "label": row["label"],
+                        "raw_label": row["raw_label"],
+                        "position": row["position"],
+                        "count": row["count"],
+                    }
+                    for row in page_blocks
+                ],
+                "image_bbox": [0.0, 0.0, float(width), float(height)],
+                "raw": None,
+                "error": False,
+            },
+        }
+        documents[ordinal] = parse_page_document(
+            _page_bytes(document), width=width, height=height, input_ordinal=input_ordinal
+        )
+    return SuryaRun(run_facts=run_facts, serving_details=details, pages=documents)
+
+
+# --- the real detector, in its own environment -------------------------------
+
+Runner = Callable[..., subprocess.CompletedProcess]
+
+
+def _environment_dir(profile: SubprocessProfile) -> Path:
+    return REPO_ROOT / profile.environment
+
+
+def _command(profile: SubprocessProfile, *arguments: str) -> list[str]:
+    """The runner under the environment's own interpreter, by absolute path.
+
+    `uv sync --frozen --project <environment>` builds that interpreter from the
+    committed lock; nothing here syncs, resolves or searches PATH for it.
+    """
+    environment = _environment_dir(profile)
+    interpreter = environment / ".venv" / "bin" / "python"
+    if not interpreter.is_file():
+        raise ServingConfigurationError(
+            f"Surya's environment has no interpreter at {interpreter}; build it with "
+            f"`uv sync --frozen --project {profile.environment}`"
+        )
+    return [str(interpreter), str(environment / RUNNER), *arguments]
+
+
+def _child_environment() -> dict[str, str]:
+    """What the child inherits: a locale and a temporary directory, and nothing
+    that could set one of Surya's own settings behind the record's back."""
+    kept = {"LANG", "LC_ALL", "TMPDIR"}
+    return {key: value for key, value in os.environ.items() if key in kept}
+
+
+def _release(version: str) -> str:
+    """`2.14.0+cu130` and `2.14.0` are the same release."""
+    return version.split("+", 1)[0]
+
+
+def environment_versions(
+    profile: SubprocessProfile, *, runner: Runner = subprocess.run
+) -> dict[str, str]:
+    """The versions Surya's environment reports, refused unless the row's pins match."""
+    result = runner(
+        _command(profile, "--check"),
+        capture_output=True,
+        text=True,
+        timeout=profile.timeout_seconds,
+        env=_child_environment(),
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ServingConfigurationError(
+            f"Surya's environment in {profile.environment} did not answer its version check "
+            f"(exit {result.returncode}): {result.stderr.strip()[-400:]}; sync it with "
+            f"`uv sync --frozen --project {profile.environment}`"
+        )
+    try:
+        found = json.loads(result.stdout)
+    except ValueError as error:
+        raise ServingConfigurationError(
+            "Surya's environment answered its version check with something other than JSON"
+        ) from error
+    expected = {"surya_ocr": profile.required_packages["surya-ocr"]}
+    expected["torch"] = profile.required_packages["torch"]
+    if not isinstance(found, dict) or any(
+        _release(str(found.get(key))) != value for key, value in expected.items()
+    ):
+        raise ServingConfigurationError(
+            f"Surya's environment reports {found}, and the serving row pins {expected}; the "
+            "sealed catalogue would describe an engine that did not run"
+        )
+    return {key: str(value) for key, value in found.items()}
+
+
+def run_surya_subprocess(
+    profile: SubprocessProfile,
+    bundle_root: Path,
+    pages: Mapping[int, bytes],
+    sizes: Mapping[int, tuple[int, int]],
+    identity: ChairIdentity,
+    *,
+    runner: Runner = subprocess.run,
+) -> SuryaRun:
+    """Run Surya once over every page, in page order, and check what it wrote."""
+    versions = environment_versions(profile, runner=runner)
+    ordinals = sorted(pages)
+    with tempfile.TemporaryDirectory(prefix="verbatus-surya-") as work:
+        work_root = Path(work)
+        inputs = []
+        for ordinal in ordinals:
+            # No extension: the sealed page may be any format Pillow reads.
+            path = work_root / f"page-{ordinal}"
+            path.write_bytes(pages[ordinal])
+            inputs.append(str(path))
+        output = work_root / "out"
+        started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        result = runner(
+            _command(
+                profile,
+                "--weights",
+                str(bundle_root),
+                "--threads",
+                str(profile.threads),
+                "--output-dir",
+                str(output),
+                *inputs,
+            ),
+            capture_output=True,
+            text=True,
+            timeout=profile.timeout_seconds,
+            env=_child_environment(),
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ServingConfigurationError(
+                f"Surya's runner failed (exit {result.returncode}): {result.stderr.strip()[-800:]}"
+            )
+        documents = {}
+        for input_ordinal, ordinal in enumerate(ordinals, start=1):
+            written = output / f"page-{input_ordinal}.json"
+            if not written.is_file():
+                raise SuryaOutputRefusal(f"Surya's runner wrote no document for page {ordinal}")
+            width, height = sizes[ordinal]
+            documents[ordinal] = parse_page_document(
+                written.read_bytes(), width=width, height=height, input_ordinal=input_ordinal
+            )
+    run_facts = documents[ordinals[0]].document["run"]
+    if any(page.document["run"] != run_facts for page in documents.values()):
+        raise SuryaOutputRefusal("Surya's page documents disagree about the run that wrote them")
+    if run_facts["engine"] != "surya" or run_facts["threads"] != profile.threads:
+        raise SuryaOutputRefusal("Surya's run facts do not describe the run this row asked for")
+    details = ServingDetails(
+        tokenizer_revision=identity.receipt_revision,
+        seed=0,
+        # A detector has no token context, and each model sizes the page itself.
+        context_cap=0,
+        pixel_cap=0,
+        engine="surya-ocr",
+        engine_version=f"surya-ocr {versions['surya_ocr']}; torch {versions['torch']}",
+        dtype="float32",
+        adapter_identity=None,
+        endpoint=f"subprocess://{profile.device}/threads-{profile.threads}",
+        started_at=started_at,
+    )
+    return SuryaRun(run_facts=run_facts, serving_details=details, pages=documents)

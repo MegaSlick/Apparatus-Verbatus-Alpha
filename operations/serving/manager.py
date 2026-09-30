@@ -40,6 +40,7 @@ from .config import (
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
+    SubprocessProfile,
     UnsupportedProfile,
     chair_preflight_identity_digest,
     model_and_tokenizer_pins,
@@ -1388,6 +1389,12 @@ def _launchable(
             f"chair {identity.role!r} resolves to in-process profile {profile.recipe!r} at "
             f"tier {profile.tier!r}; its own stage loads and runs it on the "
             f"{profile.device}, and no serving process is ever started for it"
+        )
+    if isinstance(profile, SubprocessProfile):
+        raise ServingConfigurationError(
+            f"chair {identity.role!r} resolves to subprocess profile {profile.recipe!r} at "
+            f"tier {profile.tier!r}; its own stage runs it on the {profile.device} in "
+            f"{profile.environment}, and no serving process is ever started for it"
         )
     if isinstance(profile, UnsupportedProfile):
         raise ServingConfigurationError(

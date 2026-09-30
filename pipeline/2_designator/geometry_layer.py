@@ -10,7 +10,7 @@ proposal and represents overlap and occlusion as review facts.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Final, TypedDict
+from typing import Any, Final, TypedDict
 
 # One-receipt Chandra custody lives in common/chandra_custody.py (a stage may
 # not import another stage's module); re-exported here under this module's
@@ -34,14 +34,11 @@ RESOLUTION_SCHEMA: Final = "designator-geometry-resolution.v1"
 DEFAULT_POLICY_PATH: Final = (
     Path(__file__).resolve().parents[2] / "config" / "designator_geometry.toml"
 )
-_SOURCES: Final = frozenset({"surya", "yolo-obb", "chandra-layout"})
-# What a raw proposal's `observed_ordinals` count. Surya's tiling issues the same
-# page twice at a half-tile vertical offset, so its ordinals index those passes;
-# YOLO and Chandra are each one call, so their ordinals index the detections
-# within that one retained response.
-_TILING_PASS: Final = "surya-tiling-pass"
+_SOURCES: Final = frozenset({"yolo-obb", "chandra-layout"})
+# What a raw proposal's `observed_ordinals` count: YOLO and Chandra are each one
+# call, so their ordinals index the detections within that one retained response.
 _RESPONSE_DETECTION: Final = "response-detection"
-_OBSERVATION_UNITS: Final = frozenset({_TILING_PASS, _RESPONSE_DETECTION})
+_OBSERVATION_UNITS: Final = frozenset({_RESPONSE_DETECTION})
 
 
 class Bounds(TypedDict):
@@ -76,35 +73,9 @@ def load_geometry_policy(path: str | Path = DEFAULT_POLICY_PATH) -> dict[str, An
 
 def _validate_geometry_policy(value: object) -> dict[str, Any]:
     """Validate every named sealed value, including non-behavioural provenance."""
-    geometry = _closed(value, {"schema", "surya", "yolo_obb", "provenance"}, "geometry policy")
+    geometry = _closed(value, {"schema", "yolo_obb", "provenance"}, "geometry policy")
     if geometry["schema"] != POLICY_SCHEMA:
         raise SchemaRefusal("geometry policy has an unknown schema")
-    surya = _closed(
-        geometry["surya"],
-        {
-            "role",
-            "tile_width_px",
-            "tile_height_px",
-            "half_tile_vertical_offset_px",
-            "horizontal_overlap_px",
-        },
-        "Surya policy",
-    )
-    for field in ("role",):
-        if not isinstance(surya[field], str) or not surya[field]:
-            raise SchemaRefusal(f"Surya policy {field} is blank")
-    for field in (
-        "tile_width_px",
-        "tile_height_px",
-        "half_tile_vertical_offset_px",
-        "horizontal_overlap_px",
-    ):
-        if not is_plain_int(surya[field]) or surya[field] <= 0:
-            raise SchemaRefusal(f"Surya policy {field} is not a positive integer")
-    if surya["half_tile_vertical_offset_px"] * 2 != surya["tile_height_px"]:
-        raise SchemaRefusal("Surya vertical offset does not equal half the sealed tile height")
-    if surya["horizontal_overlap_px"] * 2 != surya["tile_width_px"]:
-        raise SchemaRefusal("Surya horizontal overlap does not equal half the sealed tile width")
     yolo = _closed(
         geometry["yolo_obb"], {"role", "task", "crop_policy", "rectify"}, "YOLO OBB policy"
     )
@@ -281,9 +252,8 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
     _ref(record["receipt_ref"], "receipts/sha256/", "raw proposal receipt reference")
     _ref(record["response_ref"], RESPONSE_BLOB_PREFIX, "raw proposal response reference")
     _sha(record["adapter_config_sha256"], "raw proposal adapter config")
-    # observation_unit names what observed_ordinals count, since Surya's
-    # tiling-pass ordinal and a detection's index within one response are
-    # different things and a reader can't tell them apart otherwise.
+    # observation_unit names what observed_ordinals count, so a reader never
+    # has to guess what an ordinal indexes.
     if record["observation_unit"] not in _OBSERVATION_UNITS:
         raise SchemaRefusal("raw proposal does not name what its observation ordinals count")
     if (
@@ -338,9 +308,9 @@ def validate_occlusion(payload: object) -> dict[str, Any]:
 
 
 def _proposal_id(source: str, page_id: str, geometry: list[dict[str, int]], score_bp: int) -> str:
-    # Identity excludes observed_ordinals (accumulated as tilings union, so an
-    # id built from a first-seen value wouldn't reproduce from the final
-    # record); score stays identity-bearing since differently scored
+    # Identity excludes observed_ordinals (accumulated as repeated detections
+    # union, so an id built from a first-seen value wouldn't reproduce from the
+    # final record); score stays identity-bearing since differently scored
     # observations are distinct raw signals.
     return f"proposal_{digest_of({'source': source, 'page_id': page_id, 'geometry': geometry, 'score_bp': score_bp})[:16]}"
 
@@ -395,88 +365,6 @@ def _retain_by_content_identity(union: dict[str, dict[str, Any]], proposal: dict
     existing["observed_ordinals"] = sorted(
         set(existing["observed_ordinals"] + proposal["observed_ordinals"])
     )
-
-
-def _within_issued_tile(points: list[dict[str, int]], tile: dict[str, int], what: str) -> None:
-    """Refuse a detection that names page pixels its own tile never contained.
-
-    `detect` must return polygons in page-absolute pixels; nothing else here
-    can tell a page-absolute polygon from a tile-local one, so an adapter that
-    forgot to add the tile origin would silently place a proposal in the wrong
-    part of the page. This is also what lets two tiles' sightings of one
-    detection collapse into one retained proposal: they must report the same
-    page coordinates for the union key to match.
-    """
-    far_x, far_y = tile["x"] + tile["w"], tile["y"] + tile["h"]
-    if any(
-        not (tile["x"] <= point["x"] < far_x and tile["y"] <= point["y"] < far_y)
-        for point in points
-    ):
-        raise SchemaRefusal(f"{what} names page pixels outside the tile it was issued for")
-
-
-def surya_double_pass(
-    *,
-    page_id: str,
-    page_ordinal: int,
-    page_w: int,
-    page_h: int,
-    policy: dict[str, Any],
-    receipt_ref: dict[str, str],
-    response_ref: dict[str, str],
-    detect: Callable[[dict[str, int]], list[dict[str, Any]]],
-) -> list[dict[str, Any]]:
-    """Run exact sealed tiling at zero and half-tile offset, then additive union.
-
-    Tiling covers the full page on both axes (a page wider than one tile is a
-    real corpus case); horizontal tiles overlap by the sealed half-tile amount
-    so a boundary lies inside another complete tile rather than splitting a
-    detection. `detect` must return page-absolute polygons inside the tile it
-    was given (`_within_issued_tile`); a detection too wide for one tile
-    arrives clipped from each tile that saw part of it, each clipping retained
-    as its own raw proposal -- nothing here selects among them.
-    """
-    checked = load_geometry_policy_record(policy)
-    tile_h, tile_w = checked["surya"]["tile_height_px"], checked["surya"]["tile_width_px"]
-    horizontal_step = tile_w - checked["surya"]["horizontal_overlap_px"]
-    offsets = (0, checked["surya"]["half_tile_vertical_offset_px"])
-    union: dict[str, dict[str, Any]] = {}
-    for pass_ordinal, offset in enumerate(offsets):
-        for y in range(offset, page_h, tile_h):
-            for x in range(0, page_w, horizontal_step):
-                tile = {
-                    "x": x,
-                    "y": y,
-                    "w": min(tile_w, page_w - x),
-                    "h": min(tile_h, page_h - y),
-                }
-                for detection in detect(tile):
-                    item = _closed(detection, {"polygon", "score_bp"}, "Surya detection")
-                    points = _polygon(item["polygon"], page_w, page_h, "Surya polygon")
-                    _within_issued_tile(points, tile, "Surya polygon")
-                    _score_bp(item["score_bp"], "Surya score")
-                    key = digest_of({"geometry": points, "score_bp": item["score_bp"]})
-                    if key not in union:
-                        union[key] = _raw(
-                            "surya",
-                            page_id,
-                            page_ordinal,
-                            points,
-                            page_w,
-                            page_h,
-                            item["score_bp"],
-                            receipt_ref,
-                            response_ref,
-                            checked["config_sha256"],
-                            _TILING_PASS,
-                            [pass_ordinal],
-                            "polygon",
-                        )
-                    else:
-                        union[key]["observed_ordinals"] = sorted(
-                            set(union[key]["observed_ordinals"] + [pass_ordinal])
-                        )
-    return [union[key] for key in sorted(union)]
 
 
 def yolo_obb(
@@ -583,14 +471,13 @@ def load_geometry_policy_record(policy: object) -> dict[str, Any]:
     if not isinstance(policy, dict) or set(policy) != {
         "config_sha256",
         "schema",
-        "surya",
         "yolo_obb",
         "provenance",
     }:
         raise SchemaRefusal("loaded geometry policy is not a closed record")
     _sha(policy["config_sha256"], "geometry policy digest")
     _validate_geometry_policy(
-        {field: policy[field] for field in ("schema", "surya", "yolo_obb", "provenance")}
+        {field: policy[field] for field in ("schema", "yolo_obb", "provenance")}
     )
     return policy
 

@@ -18,7 +18,6 @@ from common.chairs.config import load_models_toml, parse_models_config
 from common.chairs.errors import DigestMismatchRefusal, DiskSpaceRefusal
 from common.chairs.manifests import build_manifest, write_manifest
 from common.chairs.model_store import (
-    CHAIRS_WITHOUT_ROSTER_ROLE,
     DAI_PROMPT_CITATION,
     REQUIRED_ARTIFACTS,
     STORE_SCHEMA,
@@ -716,11 +715,11 @@ def test_a_store_whose_surya_bundle_has_not_landed_verifies_and_says_so(tmp_path
     assert inventory["pending"] == ["surya2-detection"]
     rows = {row["chair"]: row for row in inventory["artifacts"]}
     assert len(rows) == 7
-    assert rows["proposer_surya2"]["state"] == "pending-fetch"
-    assert rows["proposer_surya2"]["reason"] == "s3 bundle not yet fetched by the host"
-    assert "snapshot" not in rows["proposer_surya2"]
+    assert rows["designator_surya"]["state"] == "pending-fetch"
+    assert rows["designator_surya"]["reason"] == "s3 bundle not yet fetched by the host"
+    assert "snapshot" not in rows["designator_surya"]
     # The artifacts that did land are verified exactly as before.
-    assert all(rows[chair]["state"] == "present" for chair in rows if chair != "proposer_surya2")
+    assert all(rows[chair]["state"] == "present" for chair in rows if chair != "designator_surya")
     assert inventory == derived_inventory(record)
 
 
@@ -790,7 +789,7 @@ def test_write_download_record_can_express_a_partial_store(tmp_path):
 # --- O2: the inventory's chair column is a roster role, not a label -------------
 
 
-def test_every_store_chair_is_a_models_toml_role_or_one_recorded_exception():
+def test_every_store_chair_is_a_models_toml_role():
     """A chair name the roster does not know cannot be joined to anything.
 
     The store exists to be bound to `config/models.toml` when the real roster is
@@ -802,9 +801,7 @@ def test_every_store_chair_is_a_models_toml_role_or_one_recorded_exception():
     store_chairs = {item.chair for item in REQUIRED_ARTIFACTS}
     assert store_chairs, "meta-invariant 88: the roster policy is not empty"
 
-    assert store_chairs - set(config.chairs) == set(CHAIRS_WITHOUT_ROSTER_ROLE)
-    assert set(CHAIRS_WITHOUT_ROSTER_ROLE) <= store_chairs
-    assert all(reason.strip() for reason in CHAIRS_WITHOUT_ROSTER_ROLE.values())
+    assert store_chairs <= set(config.chairs)
 
 
 def _artifact_disagreements(chairs) -> list[str]:
@@ -1546,7 +1543,7 @@ def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
     }
     assert len({row["snapshot"] for row in plan["cache_root_entries"].values()}) == 5
     # model_root is local-repository only; it is not a second cache.
-    assert plan["model_root_entries"]["proposer_surya2"]["snapshot"] == ("local/surya2-detection")
+    assert plan["model_root_entries"]["designator_surya"]["snapshot"] == ("local/surya2-detection")
     assert plan["download_record_sha256"] == derived_inventory(record)["download_record_sha256"]
     assert plan["provenance_scope"] == "verified-store-source-only"
 

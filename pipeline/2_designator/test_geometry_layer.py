@@ -17,7 +17,6 @@ from geometry_layer import (
     read_retained_chandra_response,
     resolve,
     retain_chandra_response,
-    surya_double_pass,
     validate_raw_proposal,
     yolo_obb,
 )
@@ -36,36 +35,11 @@ RESPONSE = {"relative_path": RESPONSE_BLOB_PREFIX + "b" * 64, "sha256": "b" * 64
 PAGE_ID = "pg_fixture"
 PAGE_ORDINAL = 0
 
-# A polygon inside the vertical band both Surya passes tile (the offset-0 pass
-# covers y=0..1400, the offset-700 pass covers y=700..2100), so a physically
-# honest detector reports it from one tile in each pass.
-BOTH_PASS_POLYGON = [{"x": 4, "y": 804}, {"x": 8, "y": 804}, {"x": 8, "y": 808}]
 
-
-def _detector_that_only_sees_its_own_tile(polygon, score=lambda tile: 9000):
-    """A detector reports page-absolute geometry, and only for tiles containing
-    it -- a fixture returning one polygon from every tile would describe a
-    detector that cannot exist.
-    """
-
-    def detect(tile):
-        far_x, far_y = tile["x"] + tile["w"], tile["y"] + tile["h"]
-        if all(
-            tile["x"] <= point["x"] < far_x and tile["y"] <= point["y"] < far_y for point in polygon
-        ):
-            return [{"polygon": polygon, "score_bp": score(tile)}]
-        return []
-
-    return detect
-
-
-def test_sealed_policy_exposes_integer_surya_sizing_and_yolo_rectification_toggle():
+def test_sealed_policy_exposes_the_yolo_rectification_toggle():
     policy = load_geometry_policy()
     # Must be the same raw bytes common/stage.py seals, or an unchanged file refuses.
     assert policy["config_sha256"] == read_sealed_toml(DEFAULT_POLICY_PATH, "geometry")[1]
-    assert policy["surya"]["tile_height_px"] == 1400
-    assert policy["surya"]["half_tile_vertical_offset_px"] == 700
-    assert policy["surya"]["horizontal_overlap_px"] == 700
     assert policy["yolo_obb"] == {
         "role": "designator_yolo_obb",
         "task": "obb",
@@ -101,11 +75,6 @@ def test_unknown_top_level_geometry_policy_table_is_refused(tmp_path):
     "field_path",
     [
         ("schema",),
-        ("surya", "role"),
-        ("surya", "tile_width_px"),
-        ("surya", "tile_height_px"),
-        ("surya", "half_tile_vertical_offset_px"),
-        ("surya", "horizontal_overlap_px"),
         ("yolo_obb", "role"),
         ("yolo_obb", "task"),
         ("yolo_obb", "crop_policy"),
@@ -133,72 +102,6 @@ def test_an_enabled_rectify_toggle_is_refused_until_an_implementation_exists():
     policy["yolo_obb"]["rectify"] = True
     with pytest.raises(SchemaRefusal, match="rectification is not implemented"):
         load_geometry_policy_record(policy)
-
-
-@pytest.mark.parametrize("field", ["half_tile_vertical_offset_px", "horizontal_overlap_px"])
-def test_sealed_tiling_geometry_must_stay_half_the_tile_it_offsets(field):
-    """A vertical offset that isn't half the tile height reopens the seam the
-    double pass exists to cover; a horizontal overlap that isn't half the
-    tile width reopens the same fragmentation at the tile boundary -- so a
-    present-but-wrong value must refuse, not load.
-    """
-    policy = deepcopy(load_geometry_policy())
-    policy["surya"][field] = policy["surya"][field] + 1
-    with pytest.raises(SchemaRefusal, match="half the sealed tile"):
-        load_geometry_policy_record(policy)
-
-
-def test_surya_runs_both_half_offset_tilings_and_unions_without_discarding_pass_evidence():
-    policy = load_geometry_policy()
-    calls = []
-    seeing = _detector_that_only_sees_its_own_tile(BOTH_PASS_POLYGON)
-
-    def detect(tile):
-        calls.append(tile)
-        return seeing(tile)
-
-    proposals = surya_double_pass(
-        page_id="pg_fixture",
-        page_ordinal=0,
-        page_w=100,
-        page_h=2600,
-        policy=policy,
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        detect=detect,
-    )
-    assert [call["y"] for call in calls] == [0, 1400, 700, 2100]
-    assert len(proposals) == 1
-    assert proposals[0]["source"] == "surya"
-    # Seen once per pass and unioned, both pass ordinals retained.
-    assert proposals[0]["observation_unit"] == "surya-tiling-pass"
-    assert proposals[0]["observed_ordinals"] == [0, 1]
-    validate_raw_proposal(proposals[0])
-
-
-def test_surya_horizontal_overlap_recovers_a_detection_cut_by_the_original_width_seam():
-    """Union cannot reconstruct partial boxes, so one tile must see the whole detection."""
-    policy = load_geometry_policy()
-    target = [{"x": 1390, "y": 100}, {"x": 1410, "y": 100}, {"x": 1410, "y": 120}]
-
-    def detect(tile):
-        x1, y1 = tile["x"] + tile["w"], tile["y"] + tile["h"]
-        if all(tile["x"] <= point["x"] < x1 and tile["y"] <= point["y"] < y1 for point in target):
-            return [{"polygon": target, "score_bp": 9000}]
-        return []
-
-    proposals = surya_double_pass(
-        page_id="pg_width_seam",
-        page_ordinal=0,
-        page_w=3000,
-        page_h=1400,
-        policy=policy,
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        detect=detect,
-    )
-    assert len(proposals) == 1
-    assert proposals[0]["geometry"] == target
 
 
 def test_yolo_retains_obb_and_derives_aabb_under_default_policy():
@@ -644,93 +547,17 @@ def test_resolver_consumer_refuses_a_raw_proposal_with_unsealed_extra_field():
         resolve([forged, raw_sources[1]], [])
 
 
-# --- full-width tiling edge cases -----------------------------------------
-
-
-def test_surya_tiles_the_full_page_width_not_only_the_first_tile_column():
-    """A page wider than one sealed tile must still be scanned past x=1400."""
-    policy = load_geometry_policy()
-    calls = []
-
-    def detect(tile):
-        calls.append(tile)
-        return []
-
-    surya_double_pass(
-        page_id="pg_wide",
-        page_ordinal=0,
-        page_w=3000,
-        page_h=1400,
-        policy=policy,
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        detect=detect,
-    )
-    origins = {(call["y"], call["x"]) for call in calls}
-    assert (0, 0) in origins and (0, 1400) in origins and (0, 2800) in origins, (
-        "Surya must tile across the full 3000px width, not just x=0..1400"
-    )
-    widths = {call["x"]: call["w"] for call in calls}
-    assert widths[2800] == 200, "the last column tile must be clipped to the remaining width"
-
-
-def test_surya_still_covers_a_narrow_page_with_a_single_column():
-    policy = load_geometry_policy()
-    calls = []
-
-    def detect(tile):
-        calls.append(tile)
-        return []
-
-    surya_double_pass(
-        page_id="pg_narrow",
+def test_proposal_identity_is_reproducible_without_first_seen_observation_provenance():
+    obb = [{"x": 10, "y": 20}, {"x": 20, "y": 10}, {"x": 30, "y": 20}, {"x": 20, "y": 30}]
+    proposal = yolo_obb(
+        page_id="pg_fixture",
         page_ordinal=0,
         page_w=100,
         page_h=100,
-        policy=policy,
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        detect=detect,
-    )
-    assert {call["x"] for call in calls} == {0}
-    assert {call["w"] for call in calls} == {100}
-
-
-def test_surya_union_key_includes_score_so_a_rescored_repeat_is_retained_not_merged():
-    """Identical geometry at a different score across passes is two honest
-    raw signals, never silently averaged or discarded."""
-    policy = load_geometry_policy()
-    detect = _detector_that_only_sees_its_own_tile(
-        BOTH_PASS_POLYGON, score=lambda tile: 9000 if tile["y"] == 0 else 7000
-    )
-
-    proposals = surya_double_pass(
-        page_id="pg_fixture",
-        page_ordinal=0,
-        page_w=100,
-        page_h=2600,  # tall enough that both offset-0 and offset-700 tile it
-        policy=policy,
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        detect=detect,
-    )
-    assert len(proposals) == 2, "a different score is a different raw observation, not a duplicate"
-    assert {p["score_bp"] for p in proposals} == {9000, 7000}
-    assert len({p["proposal_id"] for p in proposals}) == 2, (
-        "each retained proposal keeps its own id"
-    )
-
-
-def test_proposal_identity_is_reproducible_without_first_seen_pass_provenance():
-    proposal = surya_double_pass(
-        page_id="pg_fixture",
-        page_ordinal=0,
-        page_w=100,
-        page_h=2600,
         policy=load_geometry_policy(),
         receipt_ref=RECEIPT,
         response_ref=RESPONSE,
-        detect=_detector_that_only_sees_its_own_tile(BOTH_PASS_POLYGON),
+        detections=[{"obb": obb, "score_bp": 8000}, {"obb": obb, "score_bp": 8000}],
     )[0]
     assert proposal["observed_ordinals"] == [0, 1]
     for ordinals in ([0], [1], [0, 1]):
@@ -920,19 +747,6 @@ def test_resolve_does_not_mutate_its_inputs_across_the_internal_double_derivatio
 def test_empty_detections_lists_are_held_as_empty_not_an_error():
     policy = load_geometry_policy()
     assert (
-        surya_double_pass(
-            page_id="pg_fixture",
-            page_ordinal=0,
-            page_w=100,
-            page_h=100,
-            policy=policy,
-            receipt_ref=RECEIPT,
-            response_ref=RESPONSE,
-            detect=lambda tile: [],
-        )
-        == []
-    )
-    assert (
         yolo_obb(
             page_id="pg_fixture",
             page_ordinal=0,
@@ -952,26 +766,6 @@ def test_resolver_refuses_a_page_with_zero_raw_proposals_rather_than_an_empty_pa
     so it fails closed instead of returning an empty coverage record."""
     with pytest.raises(SchemaRefusal, match="no raw proposal denominator"):
         resolve([], [])
-
-
-def test_three_point_collinear_polygon_is_accepted_as_a_thin_one_pixel_region():
-    """A degenerate 3-point line does not crash the pipeline; the enclosing
-    AABB's half-open-edge rule gives it a real, non-empty crop."""
-    policy = load_geometry_policy()
-    collinear = [{"x": 10, "y": 10}, {"x": 20, "y": 10}, {"x": 30, "y": 10}]  # one horizontal line
-
-    proposals = surya_double_pass(
-        page_id="pg_fixture",
-        page_ordinal=0,
-        page_w=100,
-        page_h=100,
-        policy=policy,
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        detect=_detector_that_only_sees_its_own_tile(collinear, score=lambda tile: 5000),
-    )
-    assert proposals[0]["aabb"] == {"x": 10, "y": 10, "w": 21, "h": 1}
-    validate_raw_proposal(proposals[0])
 
 
 def test_degenerate_obb_with_only_three_distinct_corners_is_accepted():
@@ -1119,8 +913,8 @@ def test_chandra_bbox_rounding_never_inverts_for_a_thin_real_region():
 
 
 def test_a_raw_proposal_must_name_what_its_observation_ordinals_count():
-    """`[0, 1]` means two tiling passes for Surya but two detections in one
-    response for YOLO/Chandra; the record says which."""
+    """`[0, 1]` means two detections in one response; the record says what an
+    ordinal counts, so a reader never has to guess."""
     proposal = chandra_layout(
         page_id="pg_fixture",
         page_ordinal=0,
@@ -1161,106 +955,12 @@ def test_occlusion_polygon_answers_the_same_shape_question_as_proposal_geometry(
         )
 
 
-def test_surya_refuses_tile_local_coordinates_instead_of_placing_ink_on_the_wrong_region():
-    """The union across overlapping tiles assumes page-absolute detector
-    output. A tile-local polygon is indistinguishable from a page-absolute
-    one by shape alone, so without this refusal a live adapter that forgot
-    the tile origin would silently file every proposal at the wrong place.
-    """
-    policy = load_geometry_policy()
-    line = [{"x": 800, "y": 100}, {"x": 1500, "y": 100}, {"x": 1500, "y": 120}]
-
-    def detect_tile_local(tile):
-        far_x, far_y = tile["x"] + tile["w"], tile["y"] + tile["h"]
-        if not all(
-            tile["x"] <= point["x"] < far_x and tile["y"] <= point["y"] < far_y for point in line
-        ):
-            return []
-        return [
-            {
-                "polygon": [
-                    {"x": point["x"] - tile["x"], "y": point["y"] - tile["y"]} for point in line
-                ],
-                "score_bp": 9000,
-            }
-        ]
-
-    with pytest.raises(SchemaRefusal, match="outside the tile it was issued for"):
-        surya_double_pass(
-            page_id="pg_local",
-            page_ordinal=0,
-            page_w=3000,
-            page_h=1400,
-            policy=policy,
-            receipt_ref=RECEIPT,
-            response_ref=RESPONSE,
-            detect=detect_tile_local,
-        )
-
-
-def test_a_detection_wider_than_the_overlap_keeps_its_complete_sighting_and_its_fragments():
-    """A detection wider than the sealed 700px overlap cannot fit inside every
-    tile that touches it, so overlapping tiles clip it differently and each
-    clipping is retained as its own raw proposal -- honest retention, not
-    double counting, since the resolver publishes the complete sighting as
-    containing each fragment rather than choosing between them. No coverage
-    denominator is inflated -- the residual-ink check counts page pixels,
-    never proposals.
-    """
-    policy = load_geometry_policy()
-    line = [
-        {"x": 800, "y": 100},
-        {"x": 1500, "y": 100},
-        {"x": 1500, "y": 120},
-        {"x": 800, "y": 120},
-    ]
-
-    def detect_clipping(tile):
-        far_x, far_y = tile["x"] + tile["w"], tile["y"] + tile["h"]
-        if not any(
-            tile["x"] <= point["x"] < far_x and tile["y"] <= point["y"] < far_y for point in line
-        ):
-            return []
-        clipped = [
-            {
-                "x": min(max(point["x"], tile["x"]), far_x - 1),
-                "y": min(max(point["y"], tile["y"]), far_y - 1),
-            }
-            for point in line
-        ]
-        if len({(point["x"], point["y"]) for point in clipped}) < 3:
-            return []
-        return [{"polygon": clipped, "score_bp": 9000}]
-
-    proposals = surya_double_pass(
-        page_id="pg_straddle",
-        page_ordinal=0,
-        page_w=3000,
-        page_h=1400,
-        policy=policy,
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        detect=detect_clipping,
-    )
-    spans = {(row["aabb"]["x"], row["aabb"]["x"] + row["aabb"]["w"]) for row in proposals}
-    assert (800, 1501) in spans, "the tile spanning x=700..2100 saw the whole detection"
-    assert (800, 1400) in spans and (1400, 1501) in spans, "clipped fragments are retained too"
-
-    resolved = resolve([_raw_envelope(row) for row in proposals], [])
-    complete = next(row["proposal_id"] for row in proposals if row["aabb"]["w"] == 701)
-    contained = {row["inner"] for row in resolved["containment"] if row["outer"] == complete}
-    assert contained == {row["proposal_id"] for row in proposals} - {complete}, (
-        "every fragment is published as contained by the complete sighting"
-    )
-    assert len(resolved["partition"]) == len(proposals), "invariant 8: one row per proposal"
-    assert {row["disposition"] for row in resolved["partition"]} == {"accepted-coverage"}
-
-
 def test_two_proposals_with_the_same_box_are_an_ambiguity_not_an_invented_hierarchy():
     """Coincident AABBs each 'contain' the other, so publishing one as the
     outer one would invent a parent-child relation from sort order."""
     policy = load_geometry_policy()
-    proposals = surya_double_pass(
+    box = [{"x": 4, "y": 804}, {"x": 8, "y": 804}, {"x": 8, "y": 808}, {"x": 4, "y": 808}]
+    proposals = yolo_obb(
         page_id="pg_coincident",
         page_ordinal=0,
         page_w=100,
@@ -1268,9 +968,8 @@ def test_two_proposals_with_the_same_box_are_an_ambiguity_not_an_invented_hierar
         policy=policy,
         receipt_ref=RECEIPT,
         response_ref=RESPONSE,
-        detect=_detector_that_only_sees_its_own_tile(
-            BOTH_PASS_POLYGON, score=lambda tile: 9000 if tile["y"] == 0 else 7000
-        ),
+        # The same box at two scores is two raw observations, never one.
+        detections=[{"obb": box, "score_bp": 9000}, {"obb": box, "score_bp": 7000}],
     )
     assert len(proposals) == 2
     assert proposals[0]["aabb"] == proposals[1]["aabb"]

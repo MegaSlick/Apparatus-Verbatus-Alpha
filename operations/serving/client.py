@@ -50,6 +50,7 @@ from .config import (
     InProcessProfile,
     ServingProfile,
     ServingRecipes,
+    SubprocessProfile,
     UnsupportedProfile,
 )
 from .errors import (
@@ -1029,7 +1030,7 @@ def _other_tiers_posture(
 
 
 def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str | None) -> str:
-    """``"fixture"``, ``"live"`` or ``"in-process"`` by the sealed row kind alone.
+    """``"fixture"``, ``"live"``, ``"in-process"`` or ``"subprocess"`` by row kind alone.
 
     Three-name lookup, never a ranking: every row for this ``(recipe, chair)``
     is collected first. If every one of them is a fixture row, the chair is
@@ -1070,6 +1071,8 @@ def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str
         return "live"
     if isinstance(profile, InProcessProfile):
         return "in-process"
+    if isinstance(profile, SubprocessProfile):
+        return "subprocess"
     if isinstance(profile, FixtureProfile):
         raise ServingModeRefusal(
             "SERVING_MODE_UNRESOLVED",

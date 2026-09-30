@@ -405,6 +405,15 @@ engine that served it (`SmokeResult.served_by`). Both carry an opaque module-pri
 minted only by the `nvidia-smi` probe and the serving evidence path and refused from any
 caller, so the claim cannot be set from outside.
 
+A chair whose serving row is `kind = "subprocess"` (Surya, run by stage 2 on the CPU) is
+never served, so preflight reads no golden page through it: it verifies the chair's
+weights against the pinned manifest and asks the chair's own environment for its
+versions (`operations/serving/surya_detector.py::environment_versions`), and goes red
+with the sync command as the remedy when they differ. That environment is built on the
+pod with `uv sync --frozen --project operations/serving/surya`, and its weight bundle is
+fetched once onto the network volume by `operations/serving/surya/prefetch.py`
+(`operations/serving/surya/README.md`, "On the pod").
+
 ## The pod guard: every pod deletes itself when idle or out of time
 
 `pod_guard.sh` runs on the pod and deletes that same pod when its approved time runs out

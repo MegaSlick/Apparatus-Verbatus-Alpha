@@ -11,6 +11,8 @@
 #
 #   kind = "vllm"     a complete flag profile for a chair that really is served
 #   kind = "fixture"  the offline walking skeleton's stand-in, never launched
+#   kind = "subprocess"  a detector its own stage runs on the CPU in a pinned
+#                        environment (Surya; operations/serving/surya/README.md)
 #
 # A fixture row carries no flags at all, and that is the point.  The walking
 # skeleton's readings are answered by `common/stage.py::fixture_serving_details`

@@ -24,7 +24,9 @@ mismatch at launch instead.
 
 A profile declares its ``kind``. ``vllm`` is a complete launch shape;
 ``in-process`` is a model the calling stage loads and runs itself, on the CPU,
-with no server (the record detector); ``fixture`` is the offline walking
+with no server (the record detector); ``subprocess`` is a detector its stage
+runs as a child process in its own pinned environment, on the CPU (Surya);
+``fixture`` is the offline walking
 skeleton's stand-in; and ``unsupported`` keeps a configured real chair covered
 without inventing launch flags for an engine this package does not implement.
 The last three carry no vLLM flags and must refuse by their actual cause before
@@ -59,7 +61,7 @@ from .errors import ServingConfigurationError
 
 SCHEMA = "serving-recipes.v1"
 _TOP_LEVEL = {"schema", "profiles"}
-_KINDS = {"vllm", "in-process", "fixture", "unsupported"}
+_KINDS = {"vllm", "in-process", "subprocess", "fixture", "unsupported"}
 # 'vllm' pins vLLM's own defaults, applied uniformly regardless of chair.
 # 'auto' is admitted only for a witness (Attestator) row: it defers to the
 # exact generation_config.json the chair's own pinned revision ships, which
@@ -85,6 +87,20 @@ _IN_PROCESS_FIELDS = _PROFILE_COMMON | {
 # shares a card with a served chair and its output does not vary with a GPU kernel.
 _IN_PROCESS_ENGINES = {"ultralytics": frozenset({"ultralytics", "torch"})}
 _IN_PROCESS_DEVICES = {"cpu"}
+_SUBPROCESS_FIELDS = _PROFILE_COMMON | {
+    "engine",
+    "environment",
+    "device",
+    "threads",
+    "timeout_seconds",
+    "required_packages",
+}
+# The one engine a subprocess row may name, the packages its row pins, and the
+# pinned environment it runs in. CPU only: no card is shared with a served chair,
+# and the output does not vary with a GPU kernel.
+_SUBPROCESS_ENGINES = {"surya": frozenset({"surya-ocr", "torch"})}
+_SUBPROCESS_ENVIRONMENTS = {"surya": "operations/serving/surya"}
+_SUBPROCESS_DEVICES = {"cpu"}
 _PROFILE_FIELDS = {
     "kind",
     "recipe",
@@ -211,6 +227,37 @@ class InProcessProfile:
     max_det: int
     required_packages: Mapping[str, str]
     kind: str = "in-process"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "required_packages", MappingProxyType(dict(self.required_packages))
+        )
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.recipe, self.chair, self.tier)
+
+
+@dataclass(frozen=True, slots=True)
+class SubprocessProfile:
+    """A detector its own stage runs as a child process, in a pinned environment.
+
+    Never launched by the serving manager and never on the card: the stage
+    starts it, on the CPU, with the stated thread count, and reads the JSON it
+    writes. ``required_packages`` are the versions that environment's lock
+    installs, checked against the environment before a run.
+    """
+
+    recipe: str
+    chair: str
+    tier: str
+    engine: str
+    environment: str
+    device: str
+    threads: int
+    timeout_seconds: int
+    required_packages: Mapping[str, str]
+    kind: str = "subprocess"
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -502,6 +549,8 @@ def _parse_profile(
         return _parse_fixture_profile(raw)
     if kind == "in-process":
         return _parse_in_process_profile(raw)
+    if kind == "subprocess":
+        return _parse_subprocess_profile(raw)
     if kind == "unsupported":
         unknown = sorted(set(raw) - _UNSUPPORTED_FIELDS)
         missing = sorted(_UNSUPPORTED_FIELDS - set(raw))
@@ -724,6 +773,52 @@ def _parse_in_process_profile(raw: Mapping[str, Any]) -> InProcessProfile:
         iou_bp=basis_points["iou_bp"],
         max_det=_positive_int(raw["max_det"], "max_det"),
         required_packages=packages,
+    )
+
+
+def _parse_subprocess_profile(raw: Mapping[str, Any]) -> SubprocessProfile:
+    """A subprocess row names its engine, environment, device, threads and pins."""
+
+    unknown = sorted(set(raw) - _SUBPROCESS_FIELDS)
+    missing = sorted(_SUBPROCESS_FIELDS - set(raw))
+    if unknown or missing:
+        raise ServingConfigurationError(
+            f"subprocess serving profile has unknown field(s) {unknown} or missing field(s) "
+            f"{missing}"
+        )
+    engine = _text(raw["engine"], "engine")
+    if engine not in _SUBPROCESS_ENGINES:
+        raise ServingConfigurationError(
+            f"subprocess engine must be one of {sorted(_SUBPROCESS_ENGINES)}, not {engine!r}"
+        )
+    environment = _text(raw["environment"], "environment")
+    if environment != _SUBPROCESS_ENVIRONMENTS[engine]:
+        raise ServingConfigurationError(
+            f"the {engine} engine runs in {_SUBPROCESS_ENVIRONMENTS[engine]!r}, not {environment!r}"
+        )
+    device = _text(raw["device"], "device")
+    if device not in _SUBPROCESS_DEVICES:
+        raise ServingConfigurationError(
+            f"subprocess device must be one of {sorted(_SUBPROCESS_DEVICES)}, not {device!r}"
+        )
+    raw_packages = raw["required_packages"]
+    if not isinstance(raw_packages, dict) or set(raw_packages) != _SUBPROCESS_ENGINES[engine]:
+        raise ServingConfigurationError(
+            f"a subprocess {engine} row pins exactly {sorted(_SUBPROCESS_ENGINES[engine])}"
+        )
+    return SubprocessProfile(
+        recipe=_text(raw["recipe"], "recipe"),
+        chair=_text(raw["chair"], "chair"),
+        tier=_text(raw["tier"], "tier"),
+        engine=engine,
+        environment=environment,
+        device=device,
+        threads=_positive_int(raw["threads"], "threads"),
+        timeout_seconds=_positive_int(raw["timeout_seconds"], "timeout_seconds"),
+        required_packages={
+            package: _text(version, f"required_packages.{package}")
+            for package, version in raw_packages.items()
+        },
     )
 
 

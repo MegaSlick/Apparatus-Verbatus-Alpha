@@ -95,6 +95,17 @@ manifest = "manifests/yolov26-record-detection.json"
 serving_recipe = "unproven-real-secondary-proposer"
 license_note = "AGPL-3.0. Accepted under the research track (2026-08-20)"
 
+# Surya (datalab-to/surya), run apart as an independent, deterministic text-line
+# and layout detector: a check that nothing is missed. Its weights are no single
+# Hub revision (text detection comes from Datalab's model host), so the chair is
+# the locked bundle `operations/serving/surya/prefetch.py` writes, pinned by its
+# digest manifest like any local repository. That manifest can only be measured
+# from a real fetch, and none has been made; the steps that configure this chair
+# are in operations/serving/surya/README.md.
+[chairs.designator_surya]
+state = "absent"
+reason = "Surya's weight bundle has not been fetched, so there is no measured manifest to pin"
+
 [chairs.perlector]
 state = "configured"
 source = "huggingface"

@@ -628,6 +628,94 @@ beside the fixture detector, as the offline stand-in it has always been, and a
 real run's in-process detector leaves it off (`_pixel_rescue_provenance`).
 Leaving the chair absent publishes none of the three kinds and changes no
 authoritative outcome (`pipeline/2_designator/test_secondary_proposer.py`).
+## `kind="surya-provenance"`, `kind="surya-page"`, `kind="surya-line"` and `kind="surya-block"`
+
+Surya (`datalab-to/surya`) runs beside the structure chair as an independent,
+deterministic text-line and layout detector: a check that no ink goes unseen.
+Its records are evidence for later stages to account against. None carries
+text (`no_text.refuse_text_fields` walks every payload), none cuts a crop, holds
+an act, enters an act or the proposal seal, and every one says
+`authoritative: false`. Removing the chair changes no `region`, `act-group`,
+`hold` or `proposal-seal` outcome. The records are written by
+`pipeline/2_designator/surya_detection.py`.
+
+**The chair.** `designator_surya` is resolved every run. Absent, nothing is
+published and the sealed roster says why. Configured, its serving row decides
+how it answers: a `fixture` row answers from the fixture's `[[surya_line]]`
+and `[[surya_block]]` rows, and only on the fixture pass; a `subprocess` row
+runs Surya's runner (`operations/serving/surya/runner.py`) in Surya's own
+locked environment, on the CPU, with the row's thread count, over the chair's
+verified weight bundle. Any other row is refused. On the fixture pass Surya
+runs before the structure decisions; on the live pass the row is checked
+before the structure chair starts, and Surya runs once that chair has closed,
+so it never shares the card or the pod's attention with a served model.
+
+**What runs.** Surya's own `DetectionPredictor.local()` for text lines and the
+`LayoutEngine.run_batch` call its fast-layout server makes (rf-detr layout and
+the learned reading-order head), each on the whole sealed page, one page per
+call, as Surya's own image loader opens it. Surya chunks a tall page itself
+(`DETECTOR_IMAGE_CHUNK_HEIGHT`); nothing here tiles or rescales a page.
+Surya's output-shaping settings must hold Surya's defaults, and the reading-order
+head must have loaded (Surya would otherwise fall back to raster order with only
+a log line); the runner refuses rather than record a run that differs.
+
+**Determinism.** CPU only, a fixed torch thread count, one interop thread,
+`torch.use_deterministic_algorithms(True)`, models in eval mode, batch size one
+page, and no network at run time. Two runs with the same weight bundle, the same
+locked environment, the same thread count and the same CPU instruction set
+produce byte-identical page documents; this was checked on this repository's
+synthetic pages with stand-in weights. What is not guaranteed: identical floats
+across CPUs whose vector instruction sets differ, since torch picks kernels by
+instruction set. A resumed run that re-derives a different document refuses at
+publication rather than overwrite what was sealed.
+
+`surya-provenance` (subject `"surya-provenance"`) is published once per run:
+the resolved chair and its serving receipt, in the shape every chair's
+provenance takes. A resumed pass reads it back and reuses it, since a second
+receipt would name a second serving moment.
+
+`surya-page` (subject: the page id) is one census per sealed page, including a
+page Surya found nothing on (`line_count` and `block_count` zero), so a page
+found empty reads differently from a page never asked:
+
+| field | meaning |
+|---|---|
+| `schema` | `surya-page.v1` |
+| `page_id`, `page_ordinal`, `page_width_px`, `page_height_px` | the sealed page |
+| `line_count`, `block_count` | how many lines and blocks Surya returned |
+| `line_subjects`, `block_subjects` | the records below, in Surya's order |
+| `layout_error` | Surya's own layout `error` flag, as returned |
+| `raw_output_ref` | the retained page document, exactly as the runner wrote it |
+| `run` | what ran: Surya, torch and Python versions, device, threads, the settings it ran with (as text), the three checkpoints with their sources and revisions, and every weight file's digest; or, for a fixture row, the fixture declaration |
+| `quantization`, `confidence_quantization` | as below |
+| `authoritative` | `false` |
+| `provenance` | the `surya-provenance` payload |
+
+`surya-line` (subject `<page_id>-surya-line-<n>`) and `surya-block` (subject
+`<page_id>-surya-block-<n>`) are one per detection, `n` counting from 1 in
+Surya's own order: text lines as the detector returned them, blocks in Surya's
+reading order. Both carry `schema` (`surya-line.v1` / `surya-block.v1`),
+`page_id`, `page_ordinal`, `n`, `polygon_px`, `bounds`, `quantization`,
+`confidence_bp`, `confidence_quantization`, `raw_output_ref`, `authoritative`
+and `provenance`. A block adds Surya's `label` and `raw_label`, its 0-based
+`reading_order_position` (equal to `n - 1`, since Surya returns blocks in
+reading order) and its `count`.
+
+`quantization` is `surya-corner-floor-clamp.v1`: each of Surya's four float
+corners is floored to the pixel it falls in and clamped to the page, giving
+`polygon_px`; `bounds` is the half-open hull of those pixels
+(`geometry_layer.enclosing_aabb`), so a box never excludes a pixel a corner
+touches. Surya's float corners stay in the retained document.
+`confidence_quantization` is `confidence-round-half-even-bp.v1`: the confidence
+in basis points, rounded half to even from its shortest decimal form, or null
+where Surya gives none.
+
+The runner's page document (`verbatus-surya-page.v1`) is checked against a
+closed shape by `operations/serving/surya_detector.py` before anything reads
+it: Surya's own `TextDetectionResult` and `LayoutResult` dumps, the page's size
+and `image_bbox`, block positions equal to their order, finite coordinates,
+confidences in [0, 1], and run facts with no floats. Anything else is refused by
+name.
 
 ## `kind="structure-status"`
 
@@ -1369,9 +1457,12 @@ those declared witness reports and the Perlector's observed-empty reading exist.
 and by the Armarium, which projects it as a continuation join.
 `detector-page`, `detector-record` and `detector-region` are read by the
 Attestatores, and only for a page-scoped chair that reads its page one detector
-record at a time (DAI): they are its units. `act-group`,
-`secondary-provenance`, `secondary-proposal`, `rescue-crop` and
-`structure-status` have no consumer downstream of this stage today.
+record at a time (DAI): they are its units. The Perlector's whole-page reading
+reads `detector-record`, `surya-page`, `surya-line` and `surya-block` as the
+page's candidate units and layout evidence (`pipeline/4_perlector/CONTRACT.md`).
+`act-group`, `secondary-provenance`, `secondary-proposal`, `rescue-crop`,
+`structure-status` and `surya-provenance` have no consumer downstream of this
+stage today.
 `structure-status` is the exception in one direction only: it is not *read* by a
 later stage, but `common/stage.py::_verify_page_fallback_act_row` reads it back
 within this stage's own denominator check, as the independent evidence that a
