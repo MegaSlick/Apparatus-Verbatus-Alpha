@@ -304,8 +304,31 @@ orchestrator and records it in the report. `--stage` runs one boundary, `--from`
 selects Door through Attestatores on a cheap card; `--models big` resumes Perlector
 through Armarium on a big card, after verifying this run's sealed Attestatores
 stage on the volume before bootstrap. The two model toggles use the same range validation.
+Any range is the orchestrator's semi mode, which stops at the first held stage: a real run
+whose Recensor holds acts for review stops there, before Archetypus and Armarium. No
+selection is the auto mode, which carries a held Recensor through to the Armarium.
 
-**It holds only for a finished full run.** A selection ending before Armarium records
+- **`--mechanics-qualification`** is needed for any real-roster run today. Every row in
+  `config/serving_recipes_real.toml` is `preflight_state = "unproven"`; PREFLIGHT may serve
+  one to qualify it, but the stages refuse it by name, from the first stage that serves a
+  chair, unless this flag is passed. It is forwarded to the orchestrator, sealed into the
+  run (every later selection or resume of that run must pass it too), recorded in the
+  report, and proves no row.
+- **`--perlector-protocol-config <path>`**, inside the repository, is forwarded to the
+  orchestrator, which seals its bytes into the run; the report records it
+  (`plan.perlector_protocol_config`, `null` for the orchestrator's default). Its
+  `reading_unit` picks the Perlector's act or page path.
+- **`--no-hold`** is for a run started by hand, outside the pod timer
+  ([the hand route](#the-hand-route-a-proof-run-started-by-hand)). After the final report
+  of a run whose orchestrator ran, whatever its outcome, it returns instead of holding and
+  moves the pod guard's deadline (`<volume>/.pod_guard/deadline-$RUNPOD_POD_ID`) to now, so
+  the guard deletes the pod on its next one-minute tick instead of after 30 idle minutes.
+  The report records the flag (`plan.no_hold`) and what happened (`guard_release`). A
+  refusal or a red bootstrap leaves the guard alone, so the pod stays through the idle
+  window for a fix and a rerun. Never use it under the pod timer, which reads the early
+  exit as `completed-early`.
+
+**Without `--no-hold`, it holds only for a finished full run.** A selection ending before Armarium records
 `selection-complete` and returns at once so the pod timer closes the card. A held
 selection ending before Armarium also closes promptly. A full `complete` or terminal
 `held` holds toward the hard deadline (paid idle time), because the pod timer
@@ -444,20 +467,43 @@ repository at a pinned commit, starts a backstop that deletes the pod an hour af
 deadline even if the guard never ran, and then hands over to the image's `/start.sh`:
 
 ```sh
-runpodctl create pod ... --args "$(sh operations/pod/pod_start_command.sh <hours> <sha>)"
+runpodctl pod create ... --volume-mount-path /workspace/private \
+  --docker-args "$(sh operations/pod/pod_start_command.sh <hours> <sha>)"
 ```
 
-`<hours>` is the approved window and `<sha>` a commit on `main` that carries the guard.
+(`runpodctl create pod ... --args` in runpodctl releases before `pod create`.) `<hours>` is
+the approved window and `<sha>` a commit on `main` that carries the guard. The network
+volume must be mounted at `/workspace/private`, the one path the bootstrap and the data
+gate accept (`models.POD_VOLUME_MOUNT_PATH`). The start command exports
+`POD_GUARD_DIR=/workspace/private/.pod_guard` to the guard and reads it in the backstop,
+so the guard's deadline and log sit on the volume and survive the pod, even when the guard
+is fetched from an older commit.
 
 - **A long quiet wait that is still wanted** (no GPU, CPU or network use for half an
-  hour) touches `/workspace/.pod_guard/keepalive-<pod id>`.
+  hour) touches `/workspace/private/.pod_guard/keepalive-<pod id>`.
 - **More time:** write the new deadline (epoch seconds) to a temporary file and move it
-  over `/workspace/.pod_guard/deadline-<pod id>`; the guard and the backstop both read it.
+  over `/workspace/private/.pod_guard/deadline-<pod id>`; the guard and the backstop both
+  read it. A deadline moved earlier ends the pod on the guard's next tick; that is what
+  `pod_run --no-hold` does.
   A pod that was stopped and is started again keeps its old deadline, so write a new one
   when the lead approves more time.
-- **Records:** `/workspace/.pod_guard/guard.log`; with a topic in
-  `/workspace/.pod_guard/ntfy_topic` it pings when it deletes, fails to delete, or has to
-  stop the pod instead.
+- **Records:** `/workspace/private/.pod_guard/guard.log`; with a topic in
+  `/workspace/private/.pod_guard/ntfy_topic` it pings when it deletes, fails to delete, or
+  has to stop the pod instead. The ping is also the completion notice of a `--no-hold` run.
+- **Arming the ping.** The topic is the bearer secret `operations/notify/README.md`
+  describes; it never enters git, a command line or a note. Send it over SSH's standard
+  input from the laptop's ignored `private/ntfy.conf`:
+
+  ```sh
+  sed -n 's/^NTFY_TOPIC=//p' private/ntfy.conf | tail -n 1 | tr -d "\"'" |
+    ssh <pod ssh target> 'umask 077 && mkdir -p /workspace/private/.pod_guard &&
+      cat > /workspace/private/.pod_guard/ntfy_topic'
+  ```
+
+  The guard reads it on every ping, so it can be written after the pod starts. It stays
+  on the volume for later pods; delete it with the volume, or by hand when the topic is
+  rotated. `ssh.runpod.io`'s proxied SSH may not carry standard input; use the pod's
+  public-IP SSH (TCP port 22 exposed) for this.
 - **Not yet observed on a live pod:** how RunPod passes `--args` to the container, the
   image's `/start.sh`, whether the pod-scoped key may delete its own pod, and the cgroup
   and `nvidia-smi` readings inside the container. The first pod after this change is
@@ -466,6 +512,173 @@ runpodctl create pod ... --args "$(sh operations/pod/pod_start_command.sh <hours
 - The guard is a backstop, not the shutdown: close pods yourself when work ends and verify
   the close against RunPod's own state and billing. `session_end_pod_check.sh`, a Claude
   Code SessionEnd hook, pings the lead if a pod is still running when a session closes.
+
+## The hand route: a proof run started by hand
+
+The project lead starts the first real proof run from the laptop with `runpodctl` and SSH,
+without the pod CLI, lease, supervisor or pod timer. The pod guard is then the only thing
+that ends the pod, so it is armed at creation. **The card, the hours and the spend are the
+lead's decision**; this section names what the code needs, not what to rent. Nothing here
+has run against a live pod yet: the `runpodctl` flags are from its documentation, and the
+guard's own "not yet observed" list above applies.
+
+**What the run needs.** The 27B Perlector needs the `generic-80gb-plus` tier in
+`config/pod_placement.toml`; its one reviewed card is `NVIDIA RTX PRO 6000 Blackwell
+Server Edition` (96 GB, $1.99/h on the sheet, the id string still to be confirmed in the
+console). Container disk at least 120 GB (`models.BIG_CARD_CONTAINER_DISK_GB`). The
+network volume mounted at exactly `/workspace/private`. Serving is sequential, so one card
+serves every chair in turn.
+
+### Before renting (free)
+
+1. The page images are on the volume: `verbatus upload --network-volume DATACENTER:VOLUME_ID`
+   wrote `submission/` and `submission-manifest.json` at the volume root.
+2. **Prove the S3 path home.** With the two storage-key variables `upload --network-volume`
+   uses set in the laptop shell, run
+
+   ```sh
+   verbatus fetch-run --run-id s3-path-check --into /tmp/verbatus-s3-check \
+     --network-volume DATACENTER:VOLUME_ID
+   ```
+
+   It lists the volume and needs no pod. The expected answer is a refusal naming
+   `nothing is stored under 'runs/s3-path-check/'`: the listing worked and the path is
+   empty. Any other failure (credential, endpoint, datacenter) is fixed before renting.
+   If an earlier run's tree is on the volume, fetch that run id instead for a full proof.
+3. Pick `<sha>`: a commit on `main` carrying this runbook, `pod_start_command.sh` and
+   `pod_run --no-hold`. The pod checks it out, and the guard is fetched at it.
+
+### Create the pod with its guard armed
+
+From a checkout at `<sha>` on the laptop:
+
+```sh
+runpodctl pod create \
+  --name verbatus-<run id> \
+  --image <RunPod Ubuntu 24.04 CUDA image> \
+  --gpu-id "NVIDIA RTX PRO 6000 Blackwell Server Edition" --gpu-count 1 \
+  --cloud-type SECURE \
+  --data-center-ids <DATACENTER of the volume> \
+  --network-volume-id <VOLUME_ID> \
+  --volume-mount-path /workspace/private \
+  --container-disk-in-gb 120 \
+  --ports "22/tcp" \
+  --docker-args "$(sh operations/pod/pod_start_command.sh <hours> <sha>)"
+```
+
+`<hours>` is the approved window: the guard deletes the pod at that deadline whatever the
+run is doing, and an hour later the backstop deletes it even if the guard never started.
+`runpodctl pod get <pod id>` shows the SSH details.
+
+### On the pod, over SSH
+
+```sh
+findmnt /workspace/private                  # the network volume, not a plain directory
+cat /workspace/private/.pod_guard/guard.log # "armed for pod <id>: deadline ..."
+echo "$RUNPOD_POD_ID"                       # must print the pod id; --no-hold needs it
+
+git clone https://github.com/MegaSlick/Apparatus-Verbatus-Alpha /opt/verbatus
+cd /opt/verbatus && git checkout --detach <sha>
+bash operations/pod/prepare_runtime.sh
+UV_CACHE_DIR=/var/tmp/uv-cache uv sync --frozen
+```
+
+If `RUNPOD_POD_ID` is empty in the SSH shell, `export RUNPOD_POD_ID=<pod id>` first.
+Arm the guard's completion ping now if wanted ("Arming the ping" above).
+
+Then launch detached, so a dropped SSH session or a sleeping laptop cannot kill it. The
+hard deadline is taken from the guard's own, five minutes earlier:
+
+```sh
+V=/workspace/private RUN=<run id> R=/opt/verbatus
+export VERBATUS_HARD_DEADLINE=$(date -u -d "@$(( $(cat $V/.pod_guard/deadline-$RUNPOD_POD_ID) - 300 ))" +%Y-%m-%dT%H:%M:%SZ)
+setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
+  --report-path $V/pod-run-report-$RUN.json \
+  --run-id $RUN \
+  --submission-folder $V/submission \
+  --submission-manifest $V/submission-manifest.json \
+  --mechanics-qualification \
+  --no-hold \
+  -- \
+  --volume-mount-path $V \
+  --report-path $V/bootstrap-report-$RUN.json \
+  --repository $R \
+  --repository-commit <sha> \
+  --lockfile $R/uv.lock \
+  --journal $V/bootstrap-journal-$RUN.json \
+  --store-root $V/model-store \
+  --models-config $R/config/models-real.toml \
+  --serving-recipes-config $R/config/serving_recipes_real.toml \
+  --witness-context-config $R/config/witness_context-real.toml \
+  > $V/pod-run-$RUN.out 2>&1 < /dev/null &
+```
+
+- **No selection: the full auto run.** `--models big` is a semi-mode range and stops at
+  a held Recensor, before Archetypus and Armarium; a first proof run should reach the
+  Armarium.
+- **`--store-root`** names the model store on the volume. If the weights were
+  materialized under another root on this volume, name that one; a new root downloads
+  every chair's weights onto the volume during the paid bootstrap.
+- Add `--perlector-protocol-config <path in the repository>` to choose the Perlector's
+  protocol (and with it the act or page path); omitted, the orchestrator's default.
+- The file names carry the run id so a second run on the same volume cannot overwrite
+  them. A gated Hugging Face model needs its token in the environment and
+  `--keep-env HF_TOKEN` in the bootstrap half, never on the command line.
+- A refusal or a red bootstrap leaves the pod up until the guard's idle window (30
+  minutes): read the report, fix, and launch again.
+
+### Watching it
+
+```sh
+cat $V/pod-run-report-$RUN.json          # state: bootstrapping, running, then the outcome
+cat $V/pod-run-report-$RUN-liveness.json # last_seen should keep moving while it runs
+tail -f $V/pod-run-report-$RUN-transcript.log
+tail -f $V/pod-run-$RUN.out              # the bootstrap's own output as well
+tail -f $V/.pod_guard/guard.log
+```
+
+A long quiet wait that is still wanted (no GPU, CPU or network use for 30 minutes)
+touches the keep-alive file above, or the guard deletes the pod. More time is the lead's
+decision and a new deadline file.
+
+**The hard-failure cap.** `config/hard_failure.toml` halts the run at the next stage
+boundary once more than two distinct subjects (acts or pages) carry a counted failure;
+the stage in flight finishes. It counts Door refusals for `corrupt` or `unreadable`
+pages, Designator and Recensor `failed`, Archetypus `refused`, and Perlector `failed`.
+On the Perlector's **act** path (`reading_unit = "act"`, the committed default today) a
+reading that failed is `failed` and counts, once per act however often it is retried. On
+the **page** path nothing is recorded `failed`: a page whose call failed, was cut off, was
+refused for capacity or did not parse is `held`, which the cap does not count, and yields
+no act records. So on the page path the cap never trips on Perlector trouble; watch the
+held pages in the transcript and the run tree instead. A halted run exits 4 and stays
+halted: every stage refuses to start while the cap is breached.
+
+### When it ends, and how results come home
+
+With `--no-hold`, `pod_run` writes its final report, then moves the guard's deadline to
+now; the guard deletes the pod within about a minute (and pings, if armed). Confirm it is
+gone with `runpodctl pod list` and `runpodctl pod get <pod id>`, and check the billing in
+RunPod's console: a shutdown is verified, never assumed. The volume and everything on it
+remain.
+
+Then, on the laptop, no pod needed:
+
+```sh
+verbatus fetch-run --run-id <run id> --into <local root> \
+  --network-volume DATACENTER:VOLUME_ID \
+  --evidence-prefix preflight/bootstrap-report-<run id> \
+  --evidence-key pod-run-report-<run id>.json \
+  --evidence-key pod-run-report-<run id>-transcript.log \
+  --evidence-key pod-run-report-<run id>-liveness.json \
+  --evidence-key pod-run-report-<run id>-timings.json \
+  --evidence-key bootstrap-report-<run id>.json \
+  --evidence-key bootstrap-journal-<run id>.json \
+  --evidence-key pod-run-<run id>.out \
+  --evidence-key .pod_guard/guard.log
+```
+
+There is no launch receipt on this route, so each key is named. A run that held (not
+`--no-hold`) also has `pod-run-report-<run id>-hold.json`.
 
 ## The pod CLI
 
@@ -598,6 +811,7 @@ A key that still starts with `/` is refused by name in the receipt's `refusals`.
 | `<volume>/pod-run-report-<token>.json` | `pod_run --report-path`; a refused run argument is recorded here, never in the bootstrap report | the nested `--report-path` the launch request carried, mount prefix stripped |
 | `<volume>/pod-run-report-<token>-hold.json` | `pod_run`'s hold after a `complete` or `held` run (`Plan.hold_path`) | the pod-run report key with `-hold` before its suffix. The only record that the pod stayed alive to the hard deadline |
 | `<volume>/pod-runtime-report-<token>.json` | `pod_timer --report-path` | the request's outermost `--report-path`, mount prefix stripped |
+| `<volume>/.pod_guard/guard.log` | `pod_guard.sh`: when it armed, each deadline change, why and when it deleted the pod | a fixed name, no token: `--evidence-key .pod_guard/guard.log`. One log for every pod on the volume |
 | `<volume>/pod-transfer-journal.json` | `ChecksummedTransfer` | **a fixed name at the volume root**, no token. The only durable record of which submission rows were verified against target-observed bytes |
 
 The pod-run report's `-liveness.json`, `-timings.json` and `-transcript.log` siblings and

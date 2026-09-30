@@ -7,7 +7,7 @@
 #
 # Uses RUNPOD_POD_ID and the pod-scoped RUNPOD_API_KEY that RunPod sets in every pod, and
 # keeps its deadline, keep-alive file and log in $POD_GUARD_DIR (default
-# /workspace/.pod_guard, on the network volume). To extend the deadline, write the new
+# /workspace/private/.pod_guard, on the network volume at the pod's mount path). To extend the deadline, write the new
 # epoch second to a temporary file and move it over deadline-<pod id>. Touching
 # keepalive-<pod id> counts as work at that moment: the idle limit then runs from the touch.
 set -u
@@ -15,7 +15,7 @@ set -u
 max_hours=${1:?usage: pod_guard.sh <max_hours> [idle_minutes]}
 idle_minutes=${2:-30}
 pod=${RUNPOD_POD_ID:?RUNPOD_POD_ID is not set}
-dir=${POD_GUARD_DIR:-/workspace/.pod_guard}
+dir=${POD_GUARD_DIR:-/workspace/private/.pod_guard}
 interval=${POD_GUARD_INTERVAL:-60}
 idle_limit=${POD_GUARD_IDLE_SECONDS:-$((idle_minutes * 60))}
 busy_percent=${POD_GUARD_BUSY_PERCENT:-5}

@@ -6,6 +6,7 @@ fake cgroup directory, so nothing here reaches RunPod or depends on the test mac
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -466,3 +467,37 @@ def test_the_backstop_honours_an_extended_deadline(pod):
     argv, env = start_command(env, "0.0003")
     run_until(argv, env, lambda: False, limit=5)
     assert lines(calls) == []
+
+
+def test_the_guard_keeps_its_records_under_the_volume_mount_the_bootstrap_requires():
+    from operations.pod.models import POD_VOLUME_MOUNT_PATH
+
+    expected = f"{POD_VOLUME_MOUNT_PATH}/.pod_guard"
+    env = {key: value for key, value in os.environ.items() if key != "POD_GUARD_DIR"}
+    printed = subprocess.run(
+        ["sh", str(START_COMMAND), "1", "0" * 40], env=env, capture_output=True, text=True
+    ).stdout
+    assert f"${{POD_GUARD_DIR:-{expected}}}; export POD_GUARD_DIR=$d;" in printed
+    assert f"dir=${{POD_GUARD_DIR:-{expected}}}" in GUARD.read_text()
+    policy = json.loads((HERE.parents[1] / "config" / "data_handling_policy.json").read_text())
+    assert POD_VOLUME_MOUNT_PATH in policy["storage_roots"]
+    from operations.pod import pod_run
+
+    assert expected == f"{POD_VOLUME_MOUNT_PATH}/{pod_run.POD_GUARD_DIRECTORY}"
+
+
+def test_a_guard_fetched_from_an_older_commit_still_uses_the_start_command_s_directory(
+    pod, tmp_path
+):
+    env, calls, state = pod
+    older = tmp_path / "older_guard.sh"
+    older.write_text(
+        GUARD.read_text().replace("/workspace/private/.pod_guard", str(tmp_path / "wrong"))
+    )
+    env = {key: value for key, value in env.items() if key != "POD_GUARD_DIR"}
+    env["FAKE_GUARD"] = str(older)
+    argv, env = start_command(env, "5")
+    argv[2] = argv[2].replace("/workspace/private/.pod_guard", str(state))
+    run_until(argv, env, lambda: "pod delete testpod" in lines(calls))
+    assert "armed for pod testpod" in log_of(state)
+    assert not (tmp_path / "wrong").exists()

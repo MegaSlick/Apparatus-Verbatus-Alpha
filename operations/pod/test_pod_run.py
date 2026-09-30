@@ -370,6 +370,175 @@ def test_mechanics_qualification_reaches_orchestrator_and_report(tmp_path: Path)
     assert "--mechanics-qualification" in report["orchestrator_argv"]
 
 
+def test_perlector_protocol_config_reaches_orchestrator_and_report(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    protocol = ws.repository / "config" / "perlector_protocol_page.toml"
+    protocol.write_text('reading_unit = "page"\n', encoding="utf-8")
+    clock = Clock()
+    runner = RecordedRunner()
+
+    code = main(
+        _run_argv(ws, extra=("--perlector-protocol-config", str(protocol))),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+
+    assert code == EXIT_COMPLETE
+    command = runner.calls[0][0]
+    flag = command.index("--perlector-protocol-config")
+    assert command[flag + 1] == str(protocol.resolve())
+    assert _report(ws)["plan"]["perlector_protocol_config"] == str(protocol.resolve())
+
+
+def test_without_a_protocol_flag_the_orchestrator_keeps_its_default(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+
+    main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+
+    assert "--perlector-protocol-config" not in runner.calls[0][0]
+    assert _report(ws)["plan"]["perlector_protocol_config"] is None
+
+
+@pytest.mark.parametrize("where", ["outside", "missing"])
+def test_a_protocol_outside_the_repository_or_missing_is_refused_before_bootstrap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], where: str
+) -> None:
+    ws = _prepared(tmp_path)
+    if where == "outside":
+        protocol = tmp_path / "protocol.toml"
+        protocol.write_text("", encoding="utf-8")
+    else:
+        protocol = ws.repository / "config" / "absent.toml"
+    exit_code, runner = _refused(
+        ws, _run_argv(ws, extra=("--perlector-protocol-config", str(protocol)))
+    )
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "--perlector-protocol-config" in capsys.readouterr().err
+
+
+def _guard_deadline(ws: Workspace, value: int) -> Path:
+    guard = ws.volume / pod_run.POD_GUARD_DIRECTORY
+    guard.mkdir()
+    path = guard / "deadline-pod123"
+    path.write_text(f"{value}\n", encoding="ascii")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("orchestrator_exit", "expected_exit"),
+    [
+        (0, EXIT_COMPLETE),
+        (orchestrator.EXIT_HELD, EXIT_HELD),
+        (orchestrator.EXIT_RUN_HALTED, EXIT_HALTED),
+    ],
+)
+def test_no_hold_returns_at_once_and_moves_the_guard_deadline_to_now(
+    tmp_path: Path, orchestrator_exit: int, expected_exit: int
+) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    later = int(clock.now().timestamp()) + 3600
+    deadline = _guard_deadline(ws, later)
+
+    code = main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENV: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(returncode=orchestrator_exit),
+    )
+
+    assert code == expected_exit
+    # No paid idle time, and no hold record.
+    assert clock.seconds == 0.0
+    assert not (ws.volume / "pod-run-report-hold.json").exists()
+    now = int(clock.now().timestamp())
+    assert deadline.read_text(encoding="ascii") == f"{now}\n"
+    report = _report(ws)
+    assert report["plan"]["no_hold"] is True
+    assert report["held_to_hard_deadline"] is False
+    assert "--no-hold" in report["hold_detail"]
+    assert report["guard_release"] == {"path": str(deadline), "released": True, "deadline": now}
+
+
+def test_no_hold_never_moves_an_earlier_guard_deadline_later(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    earlier = int(clock.now().timestamp()) - 60
+    deadline = _guard_deadline(ws, earlier)
+
+    main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENV: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(),
+    )
+
+    assert deadline.read_text(encoding="ascii") == f"{earlier}\n"
+    assert _report(ws)["guard_release"]["released"] is True
+
+
+@pytest.mark.parametrize("case", ["no-pod-id", "no-guard-directory"])
+def test_no_hold_without_an_armed_guard_still_returns_and_says_so(
+    tmp_path: Path, case: str
+) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    extra = {} if case == "no-pod-id" else {pod_run.POD_ID_ENV: "pod123"}
+
+    code = main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0, extra=extra),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(),
+    )
+
+    assert code == EXIT_COMPLETE
+    assert clock.seconds == 0.0
+    release = _report(ws)["guard_release"]
+    assert release["released"] is False
+    assert release["detail"]
+    assert not (ws.volume / pod_run.POD_GUARD_DIRECTORY).exists()
+
+
+def test_no_hold_leaves_the_guard_alone_when_the_orchestrator_never_ran(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    later = int(clock.now().timestamp()) + 3600
+    deadline = _guard_deadline(ws, later)
+    red = FakeActions(fail_step=BootstrapStep.PREFLIGHT)
+
+    code = main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENV: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: red,
+        runner=RecordedRunner(),
+    )
+
+    assert code == EXIT_BOOTSTRAP_RED
+    assert deadline.read_text(encoding="ascii") == f"{later}\n"
+
+
 def test_small_models_selects_cheap_stages_and_returns_after_selection(tmp_path: Path) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()

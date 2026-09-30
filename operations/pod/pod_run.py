@@ -82,6 +82,12 @@ only here.
 
 ``--mechanics-qualification`` permits unproven rows for that run.
 
+**``--no-hold`` is for a run started by hand, outside the pod timer.**  After
+the final report of a run whose orchestrator ran, it returns instead of
+holding and moves the pod guard's deadline to now, so the guard deletes the
+pod within about a minute rather than after its idle window.  Under the pod
+timer the early exit reads as ``completed-early``.
+
 **The data gate is checked before the bootstrap spends anything.**  The
 orchestrator's Door refuses a submission folder outside the policy's approved
 storage roots (``config/data_handling_policy.json``; README.md says which
@@ -140,6 +146,7 @@ from .bootstrap_main import (
 )
 from .durable import atomic_write, canonical_json
 from .models import run_report_paths, utc_now
+from .provider_runpod import POD_ID_ENVIRONMENT
 from .run_exits import (
     EXIT_BOOTSTRAP_RED,
     EXIT_COMPLETE,
@@ -155,6 +162,10 @@ RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
 RUN_LIVENESS_SCHEMA = "pod-run-liveness.v1"
 DEFAULT_RUNS_DIRECTORY = "runs"
+# The pod guard's state directory on the volume (`pod_start_command.sh`); its
+# deadline file is keyed by the pod id the provider sets in the environment.
+POD_GUARD_DIRECTORY = ".pod_guard"
+POD_ID_ENV = POD_ID_ENVIRONMENT
 
 # The transcript's two bounds. The head is written to the volume as it arrives,
 # so a process killed mid-run still leaves the beginning of the run durable; the
@@ -245,6 +256,8 @@ class RunPlan:
     dry_run: bool
     mechanics_qualification: bool = False
     blind_read: str = "off"
+    perlector_protocol_config: Path | None = None
+    no_hold: bool = False
     stage: str | None = None
     from_stage: str | None = None
     to_stage: str | None = None
@@ -392,6 +405,8 @@ class RunPlan:
             command.append("--mechanics-qualification")
         if self.blind_read != "off":
             command += ["--blind-read", self.blind_read]
+        if self.perlector_protocol_config is not None:
+            command += ["--perlector-protocol-config", str(self.perlector_protocol_config)]
         if self.stage is not None:
             command += ["--stage", self.stage]
         if self.from_stage is not None and self.to_stage is not None:
@@ -432,6 +447,11 @@ class RunPlan:
             "dry_run": self.dry_run,
             "mechanics_qualification": self.mechanics_qualification,
             "blind_read": self.blind_read,
+            # None: the orchestrator's own default protocol.
+            "perlector_protocol_config": str(self.perlector_protocol_config)
+            if self.perlector_protocol_config
+            else None,
+            "no_hold": self.no_hold,
             "selection": self.selection_record(),
             "triage_decision_manifest": str(self.triage_decision_manifest)
             if self.triage_decision_manifest
@@ -582,6 +602,18 @@ def build_parser() -> bootstrap_main.RefusingParser:
         help="the Perlector's blind read, passed to the orchestrator (sealed into the run): "
         "off (default), fed, or saved as a training witness",
     )
+    parser.add_argument(
+        "--perlector-protocol-config",
+        type=Path,
+        help="the Perlector protocol the orchestrator seals, inside the repository; "
+        "omitted, the orchestrator's default",
+    )
+    parser.add_argument(
+        "--no-hold",
+        action="store_true",
+        help="for a run started by hand: after the final report, return and move the pod "
+        "guard's deadline to now instead of holding",
+    )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--stage", choices=SEQUENCE_NAMES)
     selection.add_argument("--from", dest="from_stage", choices=SEQUENCE_NAMES)
@@ -700,6 +732,21 @@ def resolve_run_plan(
             f"--data-gate-policy {data_gate_policy} is not a file in the checked-out repository",
             report_path=report_path,
         )
+    perlector_protocol_config = None
+    if args.perlector_protocol_config is not None:
+        perlector_protocol_config = _require_contained(
+            args.perlector_protocol_config,
+            repository,
+            "--perlector-protocol-config",
+            base_label="the checked-out repository",
+            report_path=report_path,
+        )
+        if not perlector_protocol_config.is_file():
+            raise RunRefusal(
+                f"--perlector-protocol-config {perlector_protocol_config} is not a file in the "
+                "checked-out repository",
+                report_path=report_path,
+            )
     if not isinstance(args.fixture, str) or not args.fixture.strip():
         raise RunRefusal("--fixture must be a non-blank fixture name", report_path=report_path)
     interval = bootstrap_main._positive_interval(args.interval_seconds, report_path=report_path)
@@ -732,6 +779,8 @@ def resolve_run_plan(
         dry_run=args.dry_run or bootstrap.dry_run,
         mechanics_qualification=args.mechanics_qualification,
         blind_read=args.blind_read,
+        perlector_protocol_config=perlector_protocol_config,
+        no_hold=args.no_hold,
         stage=stage,
         from_stage=from_stage,
         to_stage=to_stage,
@@ -982,6 +1031,42 @@ def _records_at_close(
     return audit, missing
 
 
+def release_pod_guard(
+    volume: Path, pod_id: str | None, *, now: Callable[[], datetime]
+) -> dict[str, object]:
+    """Move the pod guard's deadline to now, so the guard deletes this pod on its next tick.
+
+    Uses the guard's own deadline file, the one it and the start command's
+    backstop both read; nothing here reaches the provider. Never raises: a
+    failed release leaves the guard's idle window, which still deletes the pod.
+    """
+
+    if not pod_id or not all(character.isalnum() for character in pod_id):
+        return {"released": False, "detail": f"{POD_ID_ENV} is unset or not a pod id"}
+    directory = volume / POD_GUARD_DIRECTORY
+    path = directory / f"deadline-{pod_id}"
+    record: dict[str, object] = {"path": str(path)}
+    if not directory.is_dir():
+        return {
+            **record,
+            "released": False,
+            "detail": "no guard directory on the volume; the pod stays until its guard's "
+            "idle window or deadline",
+        }
+    stamp = int(now().timestamp())
+    try:
+        current = int(path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        current = None
+    if current is not None and current <= stamp:
+        return {**record, "released": True, "deadline": current}
+    try:
+        atomic_write(path, f"{stamp}\n".encode("ascii"))
+    except OSError as error:
+        return {**record, "released": False, "detail": f"deadline write failed: {error}"}
+    return {**record, "released": True, "deadline": stamp}
+
+
 def _refuse(refusal: PlanRefusal, *, now: Callable[[], datetime]) -> int:
     print(f"pod_run refused: {refusal}", file=sys.stderr)
     failure = _write_refusal(refusal.report_path, str(refusal), now=now)
@@ -1215,6 +1300,7 @@ def main(
     # The token is read before `prepare` scrubs the environment: its own name
     # is credential-shaped and would be gone afterwards.
     launch_token = environment.get("VERBATUS_LAUNCH_TOKEN") or None
+    pod_id = environment.get(POD_ID_ENV) or None
     try:
         bootstrap_plan, hard_deadline = bootstrap_main.prepare(bootstrap_argv, environment, now=now)
     except PlanRefusal as refusal:
@@ -1414,8 +1500,14 @@ def main(
         else:
             failure_detail = absence if failure_detail is None else f"{failure_detail}. {absence}"
     state = _STATE_FOR_EXIT[exit_code]
-    holding = exit_code in _HOLD_AFTER_EXITS and not plan.ends_before_armarium
-    if holding:
+    holding = exit_code in _HOLD_AFTER_EXITS and not plan.ends_before_armarium and not plan.no_hold
+    if plan.no_hold:
+        hold_detail = (
+            f"the run ended {state}; --no-hold returns now and moves the pod guard's deadline "
+            "to now, so the guard deletes the pod. Every record is on the volume, which "
+            "outlives the pod"
+        )
+    elif holding:
         hold_detail = (
             f"the run ended {state}; holding toward the hard deadline so the pod timer does "
             "not read this as completed-early. The pod guard deletes an idle pod, which ends "
@@ -1451,6 +1543,12 @@ def main(
         "finished_at": _stamp(now()),
     }
     _write_run_report(plan, final)
+    if plan.no_hold:
+        # After the final report, so a prompt delete cannot cost the run's record.
+        release = release_pod_guard(plan.bootstrap.volume_mount_path, pod_id, now=now)
+        _write_run_report(plan, {**final, "guard_release": release})
+        print(f"pod_run {plan.run_id}: {state} (exit {exit_code}); guard release: {release}")
+        return exit_code
     if not holding:
         print(
             f"pod_run {plan.run_id}: {state} (exit {exit_code}); returning now so the pod "
