@@ -236,7 +236,8 @@ def write_catalogue(path: Path, registry) -> Path:
             "environment": "operations/serving/surya",
             "device": "cpu",
             "threads": 2,
-            "timeout_seconds": 600,
+            "startup_timeout_seconds": 300,
+            "seconds_per_page": 60,
             "required_packages": {"surya-ocr": "0.22.1", "torch": "2.14.0"},
         }
         for tier in TIERS

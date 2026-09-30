@@ -4027,7 +4027,7 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
         page_record,
         analysis,
         [{"act_id": "act-1", "bounds": {"x": 0, "y": 0, "w": width, "h": height}}],
-        {"chair_state": "absent"},
+        None,  # no pixel-scan rescue runs: the secondary chair is absent
         grouping_policy,
     )
     conservation = next(row for row in designator_context.records if row["kind"] == "conservation")
@@ -4248,7 +4248,7 @@ def test_a_real_background_refusal_reaches_the_complete_export_as_not_measured(
         page_record,
         analysis,
         [],
-        {"chair_state": "absent"},
+        None,  # no pixel-scan rescue runs: the secondary chair is absent
         grouping_policy,
     )
     assert residual_rows == [] and secondary_held is False

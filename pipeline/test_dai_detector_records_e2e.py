@@ -113,7 +113,7 @@ def _config(work: Path) -> Path:
 
 
 def _catalogue(path: Path, models: Path) -> Path:
-    """Fixture rows for the Designator's two chairs, live rows for the witnesses."""
+    """Fixture rows for the Designator's three chairs, live rows for the witnesses."""
     registry = ChairRegistry.from_toml(str(models))
     rows = [
         {
@@ -126,6 +126,7 @@ def _catalogue(path: Path, models: Path) -> Path:
         for chair, recipe in (
             ("designator_structure", "fake-designator-v0"),
             ("secondary_proposer", "fake-secondary-proposer-v0"),
+            ("designator_surya", "fake-surya-v0"),
         )
         for tier in TIERS
     ]
