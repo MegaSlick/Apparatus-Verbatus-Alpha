@@ -963,8 +963,7 @@ def publish_page_accounting(
 
     Published before any act record, which names it. A resumed pass adopts the
     one already sealed for the page when it was measured from exactly these
-    inputs under this policy -- rule (e) is bounded by a clock, so a second
-    measurement could differ -- and refuses by name when any input differs.
+    inputs under this policy, and refuses by name when any input differs.
     """
     context = state.context
     reading_ref = context.artifact_ref(PERLECTOR, PAGE_READING_KIND, reading["artifact_id"])

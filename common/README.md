@@ -114,9 +114,9 @@ cannot read a page two ways:
   proven from the Exemplar by `exemplar_boundary.verify_reading_region_lineage`.
 
 The run tree binds every record read to this run's configuration. Rule (e) of
-the accounting runs under its sealed deadline here as in stage 4, so a page
-whose measurement reached the deadline on one side only does not reproduce
-and is refused. Fixture and real runs take the same path.
+the accounting is bounded by its sealed work budget (`max_alignment_steps`),
+counted rather than timed, so the same inputs measure the same way here as in
+stage 4 on any machine. Fixture and real runs take the same path.
 
 The reader lives here rather than in the orchestrator's contract because it is a
 `common/` function three stages call (Recensor, Archetypus, Armarium); the

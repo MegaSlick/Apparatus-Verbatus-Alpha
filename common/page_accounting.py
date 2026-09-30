@@ -24,11 +24,10 @@ from __future__ import annotations
 import html
 import json
 import re
-import time
 import unicodedata
 from bisect import bisect_left
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -183,7 +182,7 @@ class PageAccountingPolicy:
     direct_alignment_max_pairs: int
     max_alignment_pairs: int
     max_characters: int
-    deadline_milliseconds: int
+    max_alignment_steps: int
     piece_characters: int
     piece_edits: int
     window_slack: int
@@ -209,7 +208,7 @@ _POLICY_TABLES: Final = {
         "direct_alignment_max_pairs",
         "max_alignment_pairs",
         "max_characters",
-        "deadline_milliseconds",
+        "max_alignment_steps",
     ),
     "identity": (
         "piece_characters",
@@ -736,30 +735,49 @@ class _NotMeasured(Exception):
         self.reason = reason
 
 
-@dataclass
-class _Deadline:
-    clock: Callable[[], float]
-    start: float
-    seconds: float
+class _WorkBudget:
+    """The alignment work one page's rule (e) may do, counted in steps.
 
-    def check(self) -> None:
-        if self.clock() - self.start >= self.seconds:
-            raise _NotMeasured("deadline")
+    A step is one range taken from a work list or one character pair the
+    alignment compares, or may compare. Work is charged before it is done, so
+    running out stops the rule before the work, and whether a page is measured
+    depends only on its inputs and the sealed policy, never on the machine.
+    """
+
+    def __init__(self, steps: int) -> None:
+        self.left = steps
+
+    def spend(self, steps: int) -> None:
+        self.left -= steps
+        if self.left < 0:
+            raise _NotMeasured("work-bound")
 
 
 def _longest_in_band(
-    matcher: SequenceMatcher, a: str, b: str, box: tuple[int, int, int, int], band: tuple[int, int]
+    matcher: SequenceMatcher,
+    a: str,
+    b: str,
+    box: tuple[int, int, int, int],
+    band: tuple[int, int],
+    budget: _WorkBudget,
 ) -> tuple[int, int, int]:
-    """The longest common run of `a[i0:i1]` and `b[j0:j1]` whose diagonal `i - j` is in `band`."""
+    """The longest common run of `a[i0:i1]` and `b[j0:j1]` whose diagonal `i - j` is in `band`.
+
+    The unbanded search is charged every pair of the box, the most it compares;
+    the banded scan each pair on the diagonals it walks.
+    """
     i0, i1, j0, j1 = box
     low, high = band
+    budget.spend((i1 - i0) * (j1 - j0))
     i, j, size = matcher.find_longest_match(i0, i1, j0, j1)
     if size == 0 or low <= i - j <= high:
         return i, j, size
     best = (i0, j0, 0)
     for diagonal in range(max(low, i0 - j1 + 1), min(high, i1 - 1 - j0) + 1):
+        start, stop = max(i0, j0 + diagonal), min(i1, j1 + diagonal)
+        budget.spend(max(0, stop - start))
         run = 0
-        for x in range(max(i0, j0 + diagonal), min(i1, j1 + diagonal)):
+        for x in range(start, stop):
             if a[x] == b[x - diagonal]:
                 run += 1
                 if run > best[2]:
@@ -777,7 +795,7 @@ def _direct_blocks(
     blo: int,
     bhi: int,
     policy: PageAccountingPolicy,
-    deadline: _Deadline,
+    budget: _WorkBudget,
 ) -> list[tuple[int, int, int]]:
     """Ratcliff-Obershelp matching blocks of at least `min_block_characters`, banded.
 
@@ -798,13 +816,13 @@ def _direct_blocks(
     blocks: list[tuple[int, int, int]] = []
     work = [(0, ahi - alo, 0, bhi - blo)]
     while work:
-        deadline.check()
+        budget.spend(1)
         i0, i1, j0, j1 = work.pop()
         if i0 >= i1 or j0 >= j1:
             continue
         corners = (i0 - j0, i1 - j1)
         band = (min(corners) - slack, max(corners) + slack)
-        i, j, size = _longest_in_band(matcher, sliced_a, sliced_b, (i0, i1, j0, j1), band)
+        i, j, size = _longest_in_band(matcher, sliced_a, sliced_b, (i0, i1, j0, j1), band, budget)
         if size < policy.min_block_characters:
             continue
         blocks.append((alo + i, blo + j, size))
@@ -887,7 +905,7 @@ def _consistent_anchors(
 
 
 def _matching_blocks(
-    a: str, b: str, policy: PageAccountingPolicy, deadline: _Deadline
+    a: str, b: str, policy: PageAccountingPolicy, budget: _WorkBudget
 ) -> list[tuple[int, int, int]]:
     """Ordered, non-overlapping matching blocks of `a` against `b`, or `_NotMeasured`.
 
@@ -900,21 +918,23 @@ def _matching_blocks(
     blocks: list[tuple[int, int, int]] = []
     work = [(0, len(a), 0, len(b))]
     while work:
-        deadline.check()
+        budget.spend(1)
         alo, ahi, blo, bhi = work.pop()
         if alo >= ahi or blo >= bhi:
             continue
         pairs = (ahi - alo) * (bhi - blo)
         if pairs <= policy.direct_alignment_max_pairs:
-            blocks.extend(_direct_blocks(a, b, alo, ahi, blo, bhi, policy, deadline))
+            blocks.extend(_direct_blocks(a, b, alo, ahi, blo, bhi, policy, budget))
             continue
+        # Anchoring reads each character of both ranges once per k-gram.
+        budget.spend((ahi - alo + bhi - blo) * policy.anchor_characters)
         anchors = _consistent_anchors(
             _anchor_blocks(a, b, alo, ahi, blo, bhi, policy.anchor_characters), policy
         )
         if not anchors:
             if pairs > policy.max_alignment_pairs:
                 raise _NotMeasured("size-bound")
-            blocks.extend(_direct_blocks(a, b, alo, ahi, blo, bhi, policy, deadline))
+            blocks.extend(_direct_blocks(a, b, alo, ahi, blo, bhi, policy, budget))
             continue
         blocks.extend(anchors)
         cursor_a, cursor_b = alo, blo
@@ -947,7 +967,7 @@ class TextCoverage:
 
 
 def _text_coverage(
-    witness: str, reading: str, policy: PageAccountingPolicy, deadline: _Deadline
+    witness: str, reading: str, policy: PageAccountingPolicy, budget: _WorkBudget
 ) -> TextCoverage:
     """Align a normalized witness text with a normalized reading and count what is unread.
 
@@ -962,7 +982,7 @@ def _text_coverage(
     counts, none is dropped after matching, so no gap is widened into credit.
     """
     threshold = policy.max_unread_characters
-    blocks = _matching_blocks(witness, reading, policy, deadline)
+    blocks = _matching_blocks(witness, reading, policy, budget)
     longest = total = matched = 0
     position = [0] * (len(witness) + 1)
     cursor_a = cursor_b = 0
@@ -1145,7 +1165,6 @@ def page_accounting(
     policy: PageAccountingPolicy,
     feed_ref: Any,
     page_reading_ref: Any,
-    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """The `page-accounting.v1` payload for one page reading.
 
@@ -1182,7 +1201,6 @@ def page_accounting(
       `truncation-not-classified` (not measured, which holds).
     - `ink`: `{"runs": <ink-runs.v2 evidence> | None, "coverage_policy":
       <CoverageAuditPolicy resolved for this page>}`, or `None`.
-    - `clock`: the deadline's clock; a parameter so a test can expire it.
 
     A missing input is never a pass: without a Surya census rule (d), without
     ink runs rule (f), and without detector records from a configured detector,
@@ -1343,9 +1361,7 @@ def page_accounting(
             ]
         )
 
-    rules["e"] = _witness_text_rule(
-        sealed, units, entries, set_aside, cited_by, unit_boxes, policy, clock
-    )
+    rules["e"] = _witness_text_rule(sealed, units, entries, set_aside, cited_by, unit_boxes, policy)
     rules["f"] = _ink_rule(ink, all_regions)
     rules["g"] = _rule(incomplete_reading)
 
@@ -1389,7 +1405,6 @@ def _witness_text_rule(
     cited_by: Mapping[str, list[int]],
     unit_boxes: Mapping[str, Box | None],
     policy: PageAccountingPolicy,
-    clock: Callable[[], float],
 ) -> dict[str, Any]:
     """(e) Every witness unit's own text appears in the readings that cite it.
 
@@ -1424,13 +1439,9 @@ def _witness_text_rule(
     Every measured unit's run, shares and piece count are kept as
     `measurements`, so the proof run can set these thresholds from real pages.
     """
-    deadline = _Deadline(clock, clock(), policy.deadline_milliseconds / 1000)
+    budget = _WorkBudget(policy.max_alignment_steps)
     readings = {entry["n"]: normalized_text(entry["text"], unreadable=True) for entry in entries}
-    try:
-        texts, distinctive_by_unit = _distinctive_pieces(units, readings, policy.piece_characters)
-        deadline.check()
-    except _NotMeasured as error:
-        return _rule([{"code": WITNESS_TEXT_NOT_MEASURED, "reason": error.reason}])
+    texts, distinctive_by_unit = _distinctive_pieces(units, readings, policy.piece_characters)
     findings: list[dict[str, Any]] = _witness_findings(witnesses)
     measurements: list[dict[str, Any]] = []
     for unit in units:
@@ -1441,8 +1452,7 @@ def _witness_text_rule(
         scope = sorted(cited_by.get(identifier, readings))
         joined = "".join(readings[n] for n in scope)
         try:
-            deadline.check()
-            coverage = _text_coverage(witness, joined, policy, deadline)
+            coverage = _text_coverage(witness, joined, policy, budget)
         except _NotMeasured as error:
             findings.append(
                 {"code": WITNESS_TEXT_NOT_MEASURED, "id": identifier, "reason": error.reason}

@@ -1401,8 +1401,8 @@ was made under this run's configuration from this page's feed and, for a live
 reading, its call record still holds to the sealed Perlector row and the reading
 names that row as its `sampling`. Its `page-accounting`
 and each entry's `perlectio`, when already sealed, are adopted rather than measured
-again -- rule (e) and dissent are bounded by a clock, so a second measurement could
-differ -- and refused by name only when they name other inputs than the page has now
+again -- dissent is bounded by a clock, so a second measurement could differ -- and
+refused by name only when they name other inputs than the page has now
 (another feed, reading, region, accounting, policy, configuration or input set); a
 missing one is computed and published. Act-regions are deterministic and re-published
 byte-identical. Before a live chair starts, a page it will send with `reader-sent`

@@ -2804,9 +2804,9 @@ def _measure_page_accounting(
     Every input is read as stage 4 read it (`page_path.accounting_inputs`):
     the feed, the reading and its entry plans, each chair's current page
     Testimonium, the Designator's Surya and detector records and the Ink Map's
-    runs, under the sealed policy. Rule (e) runs under the policy's deadline
-    here too; a page whose measurement hit it on one side and not the other
-    does not reproduce, and is refused.
+    runs, under the sealed policy. Rule (e)'s alignment is bounded by the
+    policy's sealed work budget, counted rather than timed, so the same inputs
+    measure the same way here as in stage 4.
     """
     witnesses = _accounting_page_witnesses(context, index, what, feed_record)
     try:

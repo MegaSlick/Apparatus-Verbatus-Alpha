@@ -74,11 +74,16 @@ max_alignment_pairs = 4000000
 # measured, which holds. Starting value; to be measured on the proof run.
 max_characters = 200000
 
-# Wall-clock budget for one page's witness-text rule; running out is not
-# measured, which holds. A dense synthetic page (20 entries, 12,000 characters
-# per witness, three witnesses) took well under a second. Starting value; to
-# be measured on the proof run.
-deadline_milliseconds = 30000
+# Alignment work one page's witness-text rule may do, in steps: one range taken
+# from a work list, or one character pair compared or bounded as compared.
+# Running out is not measured, which holds. Counted, not timed, so the same
+# page under the same policy is measured the same way on every machine. A
+# dense synthetic page (20 entries, 13,100 characters per witness, two
+# witnesses as own units and two flat, 30% character error) took 8.8 million
+# steps, and at 40 entries and 26,100 characters 17.6 million. Twenty
+# 2,000-letter units over a two-letter alphabet ran out in about 6.5 seconds.
+# Starting value; to be measured on the proof run.
+max_alignment_steps = 100000000
 
 [identity]
 # A unit's distinctive pieces are its normalized pieces of this many letters

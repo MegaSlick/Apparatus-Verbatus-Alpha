@@ -1402,7 +1402,7 @@ def test_a_resumed_pass_never_asks_a_read_page_again(live_tree, tmp_path, monkey
 def test_a_resumed_pass_adopts_its_sealed_measures_rather_than_measuring_again(
     live_tree, tmp_path, monkeypatch
 ):
-    """Rule (e) and dissent are bounded by a clock: a resume reads back what was sealed."""
+    """A resume reads back the sealed accounting and dissent rather than measuring again."""
     root = live_tree.root
     _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
     assert exit_code == 0
