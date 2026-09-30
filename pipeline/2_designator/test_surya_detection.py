@@ -38,7 +38,8 @@ from common.contracts.stages import DESIGNATOR
 from common.imaging import dimensions
 from common.stage import open_context, stage_parser
 from conftest import programs_through
-from operations.serving.fakes import FakeEndpoint
+from operations.serving.errors import ServingConfigurationError
+from operations.serving.fakes import FakeEndpoint, InProcessSurya
 from operations.serving.surya_detector import fixture_surya_run
 from proof.build_fixture import SURYA_BLOCKS, SURYA_LINES
 
@@ -207,7 +208,9 @@ def test_the_fixture_path_publishes_one_census_per_page_and_one_record_per_detec
         ):
             block = blocks[subject]["payload"]
             assert block["reading_order_position"] == n - 1 == row["position"]
+            assert block["reading_order"] == payload["reading_order"] == "surya-order-head"
             assert (block["label"], block["raw_label"]) == ("Text", "Text")
+        assert payload["reading_order_reason"] is None
 
     # Acts' ink on pages 1 and 2; page 3 carries none, and still has its census.
     counts = {page["payload"]["page_ordinal"]: page["payload"] for page in pages.values()}
@@ -240,7 +243,7 @@ def test_every_surya_record_has_exactly_the_contract_fields(fixture_run):
             "label",
             "raw_label",
             "reading_order_position",
-            "count",
+            "reading_order",
         }
         assert record["payload"]["schema"] == "surya-block.v1"
     for record in _artifacts(root, DESIGNATOR, "surya-page"):
@@ -254,7 +257,8 @@ def test_every_surya_record_has_exactly_the_contract_fields(fixture_run):
             "block_count",
             "line_subjects",
             "block_subjects",
-            "layout_error",
+            "reading_order",
+            "reading_order_reason",
             "raw_output_ref",
             "run",
             "quantization",
@@ -389,20 +393,33 @@ def test_the_live_pass_runs_surya_only_after_the_structure_chair_has_answered(
     tmp_path, monkeypatch
 ):
     root, catalogue, endpoint, factory = _live_setup(tmp_path)
-    surya = in_process_surya()
     seen: dict[str, object] = {}
 
-    def runner(profile, bundle_root, pages, sizes, identity):
-        seen["answers_before"] = len(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
-        seen["requests_before"] = len(endpoint.requests)
-        seen["profile"] = (profile.kind, profile.device, profile.threads)
-        assert sizes == {ordinal: dimensions(data) for ordinal, data in pages.items()}
-        return surya(profile, bundle_root, pages, sizes, identity)
+    class Watched(InProcessSurya):
+        def check(self, profile):
+            seen["checked_before"] = len(endpoint.requests)
+            return super().check(profile)
+
+        def __call__(self, profile, bundle_root, pages, sizes, identity, *, manifest_rows=None):
+            seen["answers_before"] = len(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
+            seen["requests_before"] = len(endpoint.requests)
+            seen["profile"] = (profile.kind, profile.device, profile.threads)
+            seen["manifest"] = manifest_rows is not None
+            assert sizes == {ordinal: dimensions(data) for ordinal, data in pages.items()}
+            return super().__call__(
+                profile, bundle_root, pages, sizes, identity, manifest_rows=manifest_rows
+            )
 
     monkeypatch.chdir(ROOT)
     monkeypatch.setattr(sys, "argv", _argv(root, catalogue, "--placement-tier", TIER))
-    designator.main(serving_factory=factory, surya_runner=runner)
-    assert seen == {"answers_before": 2, "requests_before": 2, "profile": ("subprocess", "cpu", 2)}
+    designator.main(serving_factory=factory, surya_runner=Watched(SURYA_LINES, SURYA_BLOCKS))
+    assert seen == {
+        "checked_before": 0,
+        "answers_before": 2,
+        "requests_before": 2,
+        "profile": ("subprocess", "cpu", 2),
+        "manifest": True,
+    }
     pages = _artifacts(root, DESIGNATOR, "surya-page")
     assert len(pages) == 2
     # The subprocess row's run, recorded as such: no fixture engine, no fixture receipt.
@@ -424,3 +441,112 @@ def test_a_fixture_surya_row_is_refused_by_the_live_pass_before_any_chair_is_ask
         designator.main(serving_factory=factory, surya_runner=in_process_surya())
     assert endpoint.requests == []
     assert _artifacts(root, DESIGNATOR, "surya-page") == []
+
+
+def test_a_subprocess_surya_row_is_refused_on_the_fixture_pass(tmp_path):
+    """A fixture run's receipts are all declared; a real one never joins them."""
+    root, catalogue, _endpoint, _factory = _live_setup(tmp_path)
+    args = stage_parser("surya detection test").parse_args(
+        _argv(root, catalogue, "--placement-tier", TIER)[1:]
+    )
+    context = open_context(args, DESIGNATOR)
+    identity = surya_detection.resolved_surya(context)
+    with pytest.raises(ContractError, match="subprocess row answers only the live pass"):
+        surya_detection.surya_mode(context, identity, live=False)
+
+
+def test_an_empty_page_set_is_refused_by_name(tmp_path):
+    context, _pages = _prepared(tmp_path)
+    with pytest.raises(ContractError, match="no sealed page for Surya"):
+        surya_detection.publish_surya_detections(context, {}, live=False)
+
+
+def test_the_fixture_receipt_of_a_detector_names_no_context_or_pixel_cap(tmp_path):
+    context, pages = _prepared(tmp_path)
+    surya_detection.publish_surya_detections(context, pages, live=False)
+    (provenance,) = _artifacts(tmp_path / "runs", DESIGNATOR, "surya-provenance")
+    receipt = context.tree.read_run_receipt(provenance["payload"]["receipt_ref"])
+    assert (receipt["context_cap"], receipt["pixel_cap"]) == (0, 0)
+    assert receipt["endpoint"].startswith("fixture://")
+
+
+def _live_run(tmp_path, monkeypatch, surya):
+    root, catalogue, _endpoint, factory = _live_setup(tmp_path)
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(sys, "argv", _argv(root, catalogue, "--placement-tier", TIER))
+    designator.main(serving_factory=factory, surya_runner=surya)
+    return root, catalogue
+
+
+def test_a_raster_fallback_is_recorded_on_the_page_and_on_every_block(tmp_path, monkeypatch):
+    reason = "3 detections exceed the order head's limit of 2"
+    surya = InProcessSurya(
+        SURYA_LINES, SURYA_BLOCKS, reading_orders={1: ("raster-fallback", reason)}
+    )
+    root, _catalogue = _live_run(tmp_path, monkeypatch, surya)
+    pages = {
+        record["payload"]["page_ordinal"]: record["payload"]
+        for record in _artifacts(root, DESIGNATOR, "surya-page")
+    }
+    assert (pages[1]["reading_order"], pages[1]["reading_order_reason"]) == (
+        "raster-fallback",
+        reason,
+    )
+    assert (pages[2]["reading_order"], pages[2]["reading_order_reason"]) == (
+        "surya-order-head",
+        None,
+    )
+    blocks = {
+        record["subject_id"]: record["payload"]
+        for record in _artifacts(root, DESIGNATOR, "surya-block")
+    }
+    for page in pages.values():
+        assert page["block_subjects"]
+        for subject in page["block_subjects"]:
+            assert blocks[subject]["reading_order"] == page["reading_order"]
+
+
+def test_a_resume_on_another_cpu_instruction_set_is_refused(tmp_path, monkeypatch):
+    root, catalogue = _live_run(tmp_path, monkeypatch, in_process_surya())
+    args = stage_parser("surya detection test").parse_args(
+        _argv(root, catalogue, "--placement-tier", TIER)[1:]
+    )
+    context = open_context(args, DESIGNATOR)
+    pages = designator.sealed_pages(designator.page_records(context))
+    same = in_process_surya()
+    surya_detection.publish_surya_detections(context, pages, live=True, runner=same)
+    other = in_process_surya()
+    other.cpu_capability = "AVX2"
+    with pytest.raises(ContractError, match="engine and CPU instruction set that sealed them"):
+        surya_detection.publish_surya_detections(context, pages, live=True, runner=other)
+
+
+def test_the_live_pass_refuses_an_environment_that_is_not_ready_before_any_chair_is_asked(
+    tmp_path, monkeypatch
+):
+    root, catalogue, endpoint, factory = _live_setup(tmp_path)
+
+    class Unready(InProcessSurya):
+        def check(self, profile):
+            raise ServingConfigurationError("Surya's environment reports surya-ocr 0.22.0")
+
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(sys, "argv", _argv(root, catalogue, "--placement-tier", TIER))
+    with pytest.raises(ContractError, match="environment is not ready"):
+        designator.main(serving_factory=factory, surya_runner=Unready(SURYA_LINES, SURYA_BLOCKS))
+    assert endpoint.requests == []
+
+
+def test_fixture_rows_for_an_unsealed_page_are_refused_unless_the_door_refused_it(tmp_path):
+    context, pages = _prepared(tmp_path)
+    without_two = {ordinal: page for ordinal, page in pages.items() if ordinal != 2}
+    with pytest.raises(ContractError, match=r"rows for page\(s\) \[2\], which are not"):
+        surya_detection.publish_surya_detections(context, without_two, live=False)
+    surya_detection.publish_surya_detections(
+        context, without_two, live=False, refused_pages=frozenset({2})
+    )
+    published = {
+        record["payload"]["page_ordinal"]
+        for record in _artifacts(tmp_path / "runs", DESIGNATOR, "surya-page")
+    }
+    assert published == {1}

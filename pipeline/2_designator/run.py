@@ -2264,15 +2264,14 @@ def _publish_proposal_seal(context, expected: list[dict], inputs: list, provenan
     )
 
 
-def initial_pass(
-    context,
-    surya_runner: surya_detection.SuryaRunner = surya_detection.run_surya_subprocess,
-) -> bool:
+def initial_pass(context) -> bool:
     """Mark out every act on every sealed page. True when anything was held."""
     records, pages, padding, grouping_policy = _initial_pages_and_policies(context)
     provenance = structure_provenance(context)
     secondary = _publish_secondary_provenance(context, secondary_provenance(context))
-    surya_detection.publish_surya_detections(context, pages, live=False, runner=surya_runner)
+    surya_detection.publish_surya_detections(
+        context, pages, live=False, refused_pages=frozenset(records) - frozenset(pages)
+    )
     # Decided once, before any crop is cut.
     failures = structure_failures(context, pages)
     page_cache: dict[int, dict] = {}
@@ -2756,7 +2755,7 @@ def live_initial_pass(
     context,
     serving_factory,
     tier: str,
-    surya_runner: surya_detection.SuryaRunner = surya_detection.run_surya_subprocess,
+    surya_runner: surya_detection.SuryaRunner = surya_detection.SURYA_SUBPROCESS,
 ) -> bool:
     """Mark out sealed pages through the served chair; return whether any were held.
 
@@ -2780,7 +2779,7 @@ def live_initial_pass(
             )
     secondary = _publish_secondary_provenance(context, _live_secondary_provenance(context))
     # Checked before the structure chair starts; Surya itself runs once it has closed.
-    surya_detection.check_surya_runnable(context)
+    surya_detection.check_surya_runnable(context, surya_runner)
 
     page_cache: dict[int, dict] = {}
     for ordinal, page_record in pages.items():
@@ -3231,13 +3230,13 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None, surya_r
 
     `serving_factory(context, identity, tier) -> ChairClient` is the live seam;
     tests inject a fake, production gets `structure_pass.default_serving_factory`.
-    `surya_runner` is the same seam for a Surya subprocess row: production runs
-    Surya's runner process, tests an in-process stand-in. The sealed catalogue,
-    not either seam, decides which pass runs.
+    `surya_runner` is the same seam for a Surya subprocess row, which only the
+    live pass runs: production runs Surya's runner process, tests an in-process
+    stand-in. The sealed catalogue, not either seam, decides which pass runs.
     """
     args = stage_parser(DESCRIPTION).parse_args()
     context, real_input = _open(args, registry_factory)
-    surya = surya_detection.run_surya_subprocess if surya_runner is None else surya_runner
+    surya = surya_detection.SURYA_SUBPROCESS if surya_runner is None else surya_runner
 
     if args.operation == "recover":
         if not args.act:
@@ -3262,7 +3261,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None, surya_r
                     "reconciled the Exemplar filename ledger, and no proposals or holds were "
                     "fabricated"
                 )
-            held = initial_pass(context, surya)
+            held = initial_pass(context)
         elif mode == "live":
             held = live_initial_pass(
                 context,

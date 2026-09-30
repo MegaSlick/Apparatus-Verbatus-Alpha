@@ -553,7 +553,6 @@ SURYA_BLOCKS = tuple(
         "raw_label": "Text",
         "position": position,
         "confidence_bp": 9500 - position,
-        "count": 0,
     }
     for page in ALL_PAGES
     for position, act in enumerate(sorted(page["acts"], key=lambda act: act["bounds"]["y"]))

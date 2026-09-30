@@ -562,14 +562,23 @@ an act, enters an act or the proposal seal, and every one says
 
 **The chair.** `designator_surya` is resolved every run. Absent, nothing is
 published and the sealed roster says why. Configured, its serving row decides
-how it answers: a `fixture` row answers from the fixture's `[[surya_line]]`
-and `[[surya_block]]` rows, and only on the fixture pass; a `subprocess` row
-runs Surya's runner (`operations/serving/surya/runner.py`) in Surya's own
-locked environment, on the CPU, with the row's thread count, over the chair's
-verified weight bundle. Any other row is refused. On the fixture pass Surya
-runs before the structure decisions; on the live pass the row is checked
-before the structure chair starts, and Surya runs once that chair has closed,
-so it never shares the card or the pod's attention with a served model.
+how it answers, and each row answers one pass only, so a run's receipts are
+never a mix of declared and real ones: a `fixture` row answers from the
+fixture's `[[surya_line]]` and `[[surya_block]]` rows, on the fixture pass
+only; a `subprocess` row runs Surya's runner
+(`operations/serving/surya/runner.py`) in Surya's own locked environment, on
+the CPU, with the row's thread count, over the chair's verified weight bundle,
+on the live pass only. Any other row, or a row on the other pass, is refused.
+On the fixture pass Surya runs before the structure decisions. On the live pass
+the row, the versions Surya's environment reports and the chair's weights are
+checked before the structure chair starts, and Surya runs once that chair has
+closed, so it never shares the card or the pod's attention with a served model.
+One runner process reads every page, so its timeout is the row's
+`startup_timeout_seconds` plus `seconds_per_page` for each page; a timeout, a
+runner that cannot start, and an empty page set are each refused by name. A
+fixture row declared for a page the Exemplar refused is left out, since the
+door already records that loss by name; a fixture row for any other page that
+is not sealed is refused by name.
 The fixture roster configures the chair against fixture rows; the real roster
 records it absent until Surya's weight bundle has been fetched and its digest
 manifest measured (`operations/serving/surya/README.md`, "On the pod").
@@ -579,24 +588,44 @@ manifest measured (`operations/serving/surya/README.md`, "On the pod").
 the learned reading-order head), each on the whole sealed page, one page per
 call, as Surya's own image loader opens it. Surya chunks a tall page itself
 (`DETECTOR_IMAGE_CHUNK_HEIGHT`); nothing here tiles or rescales a page.
-Surya's output-shaping settings must hold Surya's defaults, and the reading-order
-head must have loaded (Surya would otherwise fall back to raster order with only
-a log line); the runner refuses rather than record a run that differs.
+Surya's output-shaping settings must hold Surya's defaults, no `local.env`
+settings file may sit where Surya would read it, and the reading-order head
+must have loaded from the bundle; the runner refuses rather than record a run
+that differs.
+
+**Reading order.** Surya orders a page's blocks with its learned reading-order
+head, but raster-sorts them (top to bottom, then left to right) on a page with
+more detections than the head takes (`MAX_BOXES`, 128), or when the layout
+detector returned no feature map for the head to read. Surya only logs either
+fallback. The detections are kept either way, and each page records which
+ordering its block positions come from: `reading_order` is `surya-order-head`
+or `raster-fallback`, and `reading_order_reason` says why a page fell back, or
+is null. A page with no detection, or one, is `surya-order-head`: Surya's head
+path returns its trivial order.
 
 **Determinism.** CPU only, a fixed torch thread count, one interop thread,
 `torch.use_deterministic_algorithms(True)`, models in eval mode, batch size one
-page, and no network at run time. Two runs with the same weight bundle, the same
-locked environment, the same thread count and the same CPU instruction set
-produce byte-identical page documents; this was checked on this repository's
-synthetic pages with stand-in weights. What is not guaranteed: identical floats
-across CPUs whose vector instruction sets differ, since torch picks kernels by
-instruction set. A resumed run that re-derives a different document refuses at
-publication rather than overwrite what was sealed.
+page, and no network at run time. No network rests on two things: every
+checkpoint is handed to Surya as a local directory in the bundle, which Surya's
+loaders use before any fetch, and the Hugging Face libraries run with
+`HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE` set. Surya has no offline switch of
+its own. Two runs with the same weight bundle, the same locked environment, the
+same thread count and the same CPU instruction set produce byte-identical page
+documents; `operations/serving/test_surya_environment.py` checks this on the
+synthetic pages with stand-in weights wherever Surya's environment is synced.
+What is not guaranteed: identical floats across CPUs whose vector instruction
+sets differ, since torch picks kernels by instruction set. The run facts and
+the receipt's `engine_version` therefore name the instruction set torch chose
+(`torch.backends.cpu.get_cpu_capability()`) and the machine. A resumed run whose
+engine or instruction set differs from the sealed receipt's is refused before it
+reuses that provenance, and a resumed run that re-derives a different document
+refuses at publication rather than overwrite what was sealed.
 
 `surya-provenance` (subject `"surya-provenance"`) is published once per run:
 the resolved chair and its serving receipt, in the shape every chair's
 provenance takes. A resumed pass reads it back and reuses it, since a second
-receipt would name a second serving moment.
+receipt would name a second serving moment. The receipt names no token context
+or pixel cap (both 0) on either pass: a detector has neither.
 
 `surya-page` (subject: the page id) is one census per sealed page, including a
 page Surya found nothing on (`line_count` and `block_count` zero), so a page
@@ -608,9 +637,9 @@ found empty reads differently from a page never asked:
 | `page_id`, `page_ordinal`, `page_width_px`, `page_height_px` | the sealed page |
 | `line_count`, `block_count` | how many lines and blocks Surya returned |
 | `line_subjects`, `block_subjects` | the records below, in Surya's order |
-| `layout_error` | Surya's own layout `error` flag, as returned |
+| `reading_order`, `reading_order_reason` | `surya-order-head` with a null reason, or `raster-fallback` with the reason Surya fell back |
 | `raw_output_ref` | the retained page document, exactly as the runner wrote it |
-| `run` | what ran: Surya, torch and Python versions, device, threads, the settings it ran with (as text), the three checkpoints with their sources and revisions, and every weight file's digest; or, for a fixture row, the fixture declaration |
+| `run` | what ran: Surya, torch and Python versions, device, the CPU instruction set torch used and the machine, threads, the settings it ran with (as text), the three checkpoints with their sources and revisions, and every weight file's digest; or, for a fixture row, the fixture declaration |
 | `quantization`, `confidence_quantization` | as below |
 | `authoritative` | `false` |
 | `provenance` | the `surya-provenance` payload |
@@ -623,7 +652,8 @@ reading order. Both carry `schema` (`surya-line.v1` / `surya-block.v1`),
 `confidence_bp`, `confidence_quantization`, `raw_output_ref`, `authoritative`
 and `provenance`. A block adds Surya's `label` and `raw_label`, its 0-based
 `reading_order_position` (equal to `n - 1`, since Surya returns blocks in
-reading order) and its `count`.
+reading order), and `reading_order`, the page's ordering that position comes
+from: the head's order, or a raster sort.
 
 `quantization` is `surya-corner-floor-clamp.v1`: each of Surya's four float
 corners is floored to the pixel it falls in and clamped to the page, giving
@@ -638,8 +668,13 @@ The runner's page document (`verbatus-surya-page.v1`) is checked against a
 closed shape by `operations/serving/surya_detector.py` before anything reads
 it: Surya's own `TextDetectionResult` and `LayoutResult` dumps, the page's size
 and `image_bbox`, block positions equal to their order, finite coordinates,
-confidences in [0, 1], and run facts with no floats. Anything else is refused by
-name.
+confidences in [0, 1], a layout `error` of false, a block `count` of 0 (Surya's
+fast layout never sets it, so no record carries it), the reading order and its
+reason, and run facts with no floats whose checkpoints and weight rows pass the
+bundle lock's own checks (`contract.check_checkpoints`, `contract.check_file_rows`).
+The parent also refuses run facts that name other versions than the environment
+reported, and weights that are not exactly the files the chair's digest
+manifest pins, less the bundle's own lock. Anything else is refused by name.
 
 ## `kind="structure-status"`
 

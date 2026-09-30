@@ -185,7 +185,7 @@ def surya_subprocess_rows(recipe: str) -> str:
     return "".join(
         f'\n[[profiles]]\nkind = "subprocess"\nrecipe = "{recipe}"\nchair = "designator_surya"\n'
         f'tier = "{tier}"\nengine = "surya"\nenvironment = "operations/serving/surya"\n'
-        'device = "cpu"\nthreads = 2\ntimeout_seconds = 600\n'
+        'device = "cpu"\nthreads = 2\nstartup_timeout_seconds = 300\nseconds_per_page = 60\n'
         'required_packages = { "surya-ocr" = "0.22.1", torch = "2.14.0" }\n'
         for tier in SURYA_TIERS
     )
