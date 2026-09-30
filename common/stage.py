@@ -2705,7 +2705,8 @@ def _verify_page_reading(
         f"{what}'s page accounting",
         attempt,
     )
-    _verify_disposition(what, payload, feed)
+    _verify_reply(context, index, what, ordinal, page_id, payload, feed)
+    _verify_disposition(what, payload)
     try:
         plans = (
             page_path.entry_plans(
@@ -2762,41 +2763,118 @@ def _refs_by_path(references: Any, what: str) -> list[dict[str, str]]:
     return page_path.refs_by_path(references)
 
 
-def _verify_disposition(what: str, payload: Mapping[str, Any], feed: Mapping[str, Any]) -> None:
-    """Recompute whether the page's answer is read, from the answer, the feed and the finish.
+# The fields a reading derives from what the engine said, or from why it was not asked.
+_REPLY_FIELDS: Final = ("parse_state", "answer", "problems", "finish_reason", "stop_reason")
+_REPLY_STATES: Final = frozenset({page_path.PARSED, page_path.MALFORMED, page_path.CUT_OFF})
 
-    A parsed answer's `problems` must be exactly what `page_path.answer_problems`
-    gives and its disposition `read` exactly when there are none. An answer
-    the engine cut at its output cap is `cut-off`, never parsed.
+
+def _verify_reply(
+    context,
+    index: _PageReadRecords,
+    what: str,
+    ordinal: int,
+    page_id: str,
+    payload: Mapping[str, Any],
+    feed: Mapping[str, Any],
+) -> None:
+    """The reading's parse state, answer, problems and finish, derived again, never trusted.
+
+    A reply is read again with stage 4's own reader (`page_path.read_reply`):
+    a live reading's from the response bytes its `engine_call` names, a
+    fixture run's from the fixture's declared page answer. A page not asked
+    has exactly the reasons `page_path.not_run_problems` gives from its feed,
+    the roster and its witnesses. A page the engine could not take or answer
+    records only that, with no call and no answer.
     """
-    if payload["parse_state"] != page_path.PARSED:
+    state = payload["parse_state"]
+    engine_call = payload.get("engine_call")
+    failure = payload.get("failure")
+    if state == page_path.NOT_RUN:
+        chair = context.registry.resolve(PERLECTOR_CHAIR)
+        derived: dict[str, Any] = {
+            "parse_state": state,
+            "answer": None,
+            "problems": page_path.not_run_problems(
+                feed,
+                chair_present=isinstance(chair, ChairIdentity),
+                no_testimony=not index.testimonia.get(page_id),
+            ),
+            "finish_reason": None,
+            "stop_reason": None,
+        }
         _require(
-            payload["disposition"] == page_path.HELD,
-            f"{what}'s reading is {payload['parse_state']!r} yet says it was read",
+            engine_call is None and failure is None and payload.get("request_digest") is None,
+            f"{what}'s reading was not asked, yet it names a request, a call or a failure",
         )
-        return
-    _require(
-        isinstance(payload.get("answer"), Mapping),
-        f"{what}'s reading is parsed, but its answer is not an object",
-    )
-    _require(
-        payload.get("stop_reason") != "length",
-        f"{what}'s reading was cut at the output cap (stop reason 'length') yet is parsed; "
-        "a cut answer is held whole as cut-off",
-    )
-    try:
-        problems = page_path.answer_problems(
-            payload.get("answer"), feed, payload.get("stop_reason")
+    elif state in (page_path.REFUSED_CAPACITY, page_path.CALL_FAILED):
+        refused = state == page_path.REFUSED_CAPACITY
+        _require(
+            engine_call is None
+            and (failure is None if refused else isinstance(failure, Mapping))
+            and _problem_codes(payload["problems"], f"{what}'s page reading")
+            == [page_path.REFUSED_CAPACITY if refused else failure.get("code")],
+            f"{what}'s reading is {state!r}, but does not record exactly that, with no call and "
+            "no answer",
         )
-    except (ContractError, KeyError, TypeError) as error:
-        raise FatalAccounting(
-            f"{what}'s answer cannot be read against its feed: {error}"
-        ) from error
+        derived = {
+            "parse_state": state,
+            "answer": None,
+            "problems": payload["problems"]
+            if refused
+            else [{"code": failure.get("code"), "detail": failure.get("detail")}],
+            "finish_reason": None,
+            "stop_reason": None,
+        }
+    else:
+        _require(
+            state in _REPLY_STATES and failure is None,
+            f"{what}'s reading is {state!r}, not a state a page reading records",
+        )
+        try:
+            if engine_call is not None:
+                reply = page_path.retained_reply(context.tree.read_bytes, engine_call)
+                _require(
+                    reply["finish_reason"] == engine_call.get("finish_reason"),
+                    f"{what}'s engine_call names a finish its retained response does not give",
+                )
+                content, finish, stop = (
+                    reply["content"],
+                    reply["finish_reason"],
+                    reply["stop_reason"],
+                )
+            else:
+                _require(
+                    not is_real_ingress(context.run),
+                    f"{what}'s reading of a real page names no engine call to read its reply from",
+                )
+                row = page_path.fixture_page_answer(context, ordinal)
+                content, finish = row["answer"], row.get("stop_reason", "stop")
+                stop = finish
+            parse_state, answer, problems = page_path.read_reply(content, stop, feed)
+        except (ContractError, KeyError, TypeError, ValueError, OSError) as error:
+            raise FatalAccounting(f"{what}'s reply cannot be read again: {error}") from error
+        derived = {
+            "parse_state": parse_state,
+            "answer": answer,
+            "problems": problems,
+            "finish_reason": finish,
+            "stop_reason": stop,
+        }
+    mismatched = sorted(name for name in _REPLY_FIELDS if payload.get(name) != derived[name])
     _require(
-        payload["problems"] == problems,
-        f"{what}'s reading records problems other than its answer and feed give",
+        not mismatched,
+        f"{what}'s reading is not what its reply gives ({', '.join(mismatched)}): the answer and "
+        "its problems are read again, never taken from the record",
     )
-    expected = page_path.READ if not problems else page_path.HELD
+
+
+def _verify_disposition(what: str, payload: Mapping[str, Any]) -> None:
+    """A reading is `read` exactly when its answer parsed and nothing holds it whole."""
+    expected = (
+        page_path.READ
+        if payload["parse_state"] == page_path.PARSED and not payload["problems"]
+        else page_path.HELD
+    )
     _require(
         payload["disposition"] == expected,
         f"{what}'s reading says {payload['disposition']!r}, but its answer against its feed "

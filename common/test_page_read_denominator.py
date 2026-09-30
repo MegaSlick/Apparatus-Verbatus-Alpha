@@ -190,6 +190,42 @@ def _with_feed_digest(change: Callable) -> Callable:
     return changed
 
 
+def _fixture_says(monkeypatch, ordinal: int, answer: str, stop_reason: str | None = "stop"):
+    """The fixture's declared answer to page `ordinal`, as a forged reading needs it to be.
+
+    The denominator reads a fixture run's reply from the fixture; a test that
+    forges what stage 4 was answered forges what the fixture declares too.
+    """
+    declared = page_path.fixture_page_answer
+
+    def said(context, asked):
+        if asked == ordinal:
+            return {"answer": answer, "stop_reason": stop_reason}
+        return declared(context, asked)
+
+    monkeypatch.setattr(page_path, "fixture_page_answer", said)
+
+
+def _read_as(root: Path, ordinal: int, content: str, stop_reason: str | None) -> Callable:
+    """A forge making page `ordinal`'s reading what stage 4 reads from `content`."""
+    feed = _one(root, "page-feed", ordinal)[1]["payload"]
+    state, answer, problems = page_path.read_reply(content, stop_reason, feed)
+    read = state == "parsed" and not problems
+
+    def forged(record):
+        record["outcome"] = "read" if read else "held"
+        record["payload"].update(
+            parse_state=state,
+            answer=answer,
+            problems=problems,
+            finish_reason=stop_reason,
+            stop_reason=stop_reason,
+            disposition="read" if read else "held",
+        )
+
+    return forged
+
+
 def _drop_act_records(root: Path, ordinal: int) -> None:
     for kind in ("act-region", "perlectio"):
         for path, record in _records(root, kind):
@@ -384,21 +420,16 @@ def test_a_hidden_witness_is_measured_again_as_stage_4_measured_it(tmp_path):
     assert all("unknown-id" in act["hold_codes"] for act in acts)
 
 
-def test_a_page_whose_answer_was_not_read_is_one_held_page_unread_row(happy_tree, tmp_path):
+def test_a_page_whose_answer_was_not_read_is_one_held_page_unread_row(
+    happy_tree, tmp_path, monkeypatch
+):
     tree = _copy(happy_tree, tmp_path)
     root = tree[0]
     _drop_act_records(root, 2)
-
-    def malformed(record):
-        record["outcome"] = "held"
-        record["payload"].update(
-            parse_state="malformed",
-            answer=None,
-            problems=[{"code": "json-invalid", "detail": "the reply is not JSON"}],
-            disposition="held",
-        )
-
-    _forge(root, "page-reading", 2, None, malformed)
+    _fixture_says(monkeypatch, 2, "the reply is not JSON")
+    _forge(root, "page-reading", 2, None, _read_as(root, 2, "the reply is not JSON", "stop"))
+    reply_codes = [p["code"] for p in _one(root, "page-reading", 2)[1]["payload"]["problems"]]
+    assert reply_codes
     page_holds = _reaccount(tree, 2)
     assert "page-answer-incomplete" in page_holds
     context = _context(tree)
@@ -423,13 +454,13 @@ def test_a_page_whose_answer_was_not_read_is_one_held_page_unread_row(happy_tree
         "reading_ref": pages[2]["reading_ref"],
         "perlectio_ref": None,
         "accounting_ref": pages[2]["accounting_ref"],
-        "hold_codes": sorted({"json-invalid", "page-unread", *page_holds}),
+        "hold_codes": sorted({*reply_codes, "page-unread", *page_holds}),
         "continues_from_previous_page": None,
         "continues_to_next_page": None,
     }
 
 
-def test_a_read_answer_naming_no_act_is_one_held_page_blank_row(happy_tree, tmp_path):
+def test_a_read_answer_naming_no_act_is_one_held_page_blank_row(happy_tree, tmp_path, monkeypatch):
     tree = _copy(happy_tree, tmp_path)
     root = tree[0]
     _drop_act_records(root, 2)
@@ -441,7 +472,8 @@ def test_a_read_answer_naming_no_act_is_one_held_page_blank_row(happy_tree, tmp_
         "acts": [],
         "set_aside": [{"id": identifier, "reason": "blank paper"} for identifier in ids],
     }
-    _forge(root, "page-reading", 2, None, lambda record: record["payload"].update(answer=answer))
+    _fixture_says(monkeypatch, 2, json.dumps(answer))
+    _forge(root, "page-reading", 2, None, _read_as(root, 2, json.dumps(answer), "stop"))
     page_holds = _reaccount(tree, 2)
     context = _context(tree)
     assert page_readings(context)[2]["entry_count"] == 0
@@ -451,7 +483,9 @@ def test_a_read_answer_naming_no_act_is_one_held_page_blank_row(happy_tree, tmp_
     assert row["region_ref"] is None and row["perlectio_ref"] is None
 
 
-def test_a_read_page_naming_only_other_entries_is_held_until_confirmed(happy_tree, tmp_path):
+def test_a_read_page_naming_only_other_entries_is_held_until_confirmed(
+    happy_tree, tmp_path, monkeypatch
+):
     tree = _copy(happy_tree, tmp_path)
     root = tree[0]
 
@@ -462,6 +496,7 @@ def test_a_read_page_naming_only_other_entries_is_held_until_confirmed(happy_tre
 
     for kind in ("page-reading", "act-region", "perlectio"):
         _forge(root, kind, 2, None, other)
+    _fixture_says(monkeypatch, 2, json.dumps(_one(root, "page-reading", 2)[1]["payload"]["answer"]))
     _reaccount(tree, 2)
     context = _context(tree)
     assert page_readings(context)[2]["entry_count"] == 1
@@ -478,7 +513,7 @@ def test_a_read_page_naming_only_other_entries_is_held_until_confirmed(happy_tre
 
 
 def test_a_page_with_one_act_and_one_other_entry_is_not_held_for_naming_no_act(
-    happy_tree, tmp_path
+    happy_tree, tmp_path, monkeypatch
 ):
     tree = _copy(happy_tree, tmp_path)
     root = tree[0]
@@ -493,30 +528,24 @@ def test_a_page_with_one_act_and_one_other_entry_is_not_held_for_naming_no_act(
     _forge(root, "page-reading", 1, None, second_is_other)
     for kind in ("act-region", "perlectio"):
         _forge(root, kind, 1, 2, second_is_other)
+    _fixture_says(monkeypatch, 1, json.dumps(_one(root, "page-reading", 1)[1]["payload"]["answer"]))
     _reaccount(tree, 1)
     rows = [act for act in reading_acts(_context(tree)) if act["page_ordinal"] == 1]
     assert [row["kind"] for row in rows] == ["act", "other"]
     assert all("no-act-on-page-unconfirmed" not in row["hold_codes"] for row in rows)
 
 
-def test_a_reading_with_no_stop_reason_is_held_whole_by_that_tail(happy_tree, tmp_path):
+def test_a_reading_with_no_stop_reason_is_held_whole_by_that_tail(
+    happy_tree, tmp_path, monkeypatch
+):
     tree = _copy(happy_tree, tmp_path)
     root = tree[0]
     _drop_act_records(root, 2)
-    tail = page_path.answer_problems(
-        _one(root, "page-reading", 2)[1]["payload"]["answer"],
-        _one(root, "page-feed", 2)[1]["payload"],
-        None,
-    )
-    assert [problem["code"] for problem in tail] == ["no-stop-reason"]
-
-    def no_stop(record):
-        record["outcome"] = "held"
-        record["payload"].update(
-            stop_reason=None, finish_reason=None, problems=tail, disposition="held"
-        )
-
-    _forge(root, "page-reading", 2, None, no_stop)
+    content = json.dumps(_one(root, "page-reading", 2)[1]["payload"]["answer"])
+    _fixture_says(monkeypatch, 2, content, stop_reason=None)
+    _forge(root, "page-reading", 2, None, _read_as(root, 2, content, None))
+    problems = _one(root, "page-reading", 2)[1]["payload"]["problems"]
+    assert [problem["code"] for problem in problems] == ["no-stop-reason"]
     _reaccount(tree, 2)
     row = reading_acts(_context(tree))[-1]
     assert row["class"] == "page-unread" and "no-stop-reason" in row["hold_codes"]
@@ -531,7 +560,7 @@ def test_a_reading_with_no_stop_reason_is_held_whole_by_that_tail(happy_tree, tm
             record["payload"].update(problems=[], disposition="read"),
         ),
     )
-    with pytest.raises(FatalAccounting, match="records problems other than"):
+    with pytest.raises(FatalAccounting, match=r"not what its reply gives \(problems\)"):
         reading_acts(_context(tree))
 
 
@@ -703,7 +732,9 @@ def test_a_reading_the_engine_cut_at_its_cap_cannot_be_parsed(happy_tree, tmp_pa
         None,
         lambda record: record["payload"].update(stop_reason="length", finish_reason="length"),
     )
-    with pytest.raises(FatalAccounting, match="cut at the output cap"):
+    with pytest.raises(
+        FatalAccounting, match=r"not what its reply gives \(finish_reason, stop_reason\)"
+    ):
         reading_acts(_context(tree))
 
 
@@ -826,7 +857,7 @@ def test_a_page_accounting_its_inputs_do_not_measure_is_refused(review_tree, tmp
 def test_a_parsed_reading_whose_answer_is_not_an_object_is_refused(happy_tree, tmp_path, answer):
     tree = _copy(happy_tree, tmp_path)
     _forge(tree[0], "page-reading", 1, None, lambda record: record["payload"].update(answer=answer))
-    with pytest.raises(FatalAccounting, match="is parsed, but its answer is not an object"):
+    with pytest.raises(FatalAccounting, match=r"not what its reply gives \(answer"):
         reading_acts(_context(tree))
 
 
@@ -887,6 +918,33 @@ def test_a_forged_page_feed_is_refused_against_the_feed_its_inputs_build(
     root = tree[0]
     _forge_through(root, "page-feed", 1, None, _with_feed_digest(forgery(root)))
     with pytest.raises(FatalAccounting, match="page feed is not the feed its sealed inputs build"):
+        reading_acts(_context(tree))
+
+
+def test_a_reading_whose_answer_drops_an_entry_its_reply_gave_is_refused(happy_tree, tmp_path):
+    """Stage 4's records agree with each other; only the reply read again shows the gap."""
+    tree = _copy(happy_tree, tmp_path)
+    root = tree[0]
+    for kind in ("perlectio", "act-region"):
+        _one(root, kind, 1, 2)[0].unlink()
+    _forge(root, "page-reading", 1, None, lambda r: r["payload"]["answer"]["acts"].pop())
+    _reaccount(tree, 1)
+    with pytest.raises(FatalAccounting, match=r"not what its reply gives \(answer\)"):
+        reading_acts(_context(tree))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("parse_state", "malformed"),
+        ("finish_reason", None),
+        ("problems", [{"code": "no-stop-reason", "detail": "forged"}]),
+    ],
+)
+def test_a_reading_departing_from_its_reply_is_refused(happy_tree, tmp_path, field, value):
+    tree = _copy(happy_tree, tmp_path)
+    _forge(tree[0], "page-reading", 1, None, lambda r: r["payload"].update({field: value}))
+    with pytest.raises(FatalAccounting, match=rf"not what its reply gives \(.*{field}"):
         reading_acts(_context(tree))
 
 

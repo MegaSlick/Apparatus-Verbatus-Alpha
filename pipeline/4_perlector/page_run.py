@@ -54,7 +54,6 @@ from throughput import planned_seconds_per_page
 import operations.serving.errors as serving_errors
 from common import (
     page_accounting,
-    page_answer,
     page_feed,
     page_overlay,
     page_path,
@@ -77,7 +76,6 @@ from common.page_path import (
     ACT_REGION_KIND,
     ACT_REGION_SCHEMA,
     CALL_FAILED,
-    CUT_OFF,
     HELD,
     NOT_RUN,
     PAGE_ACCOUNTING_KIND,
@@ -106,12 +104,6 @@ from operations.serving.http import EndpointUnavailable
 
 # The `reader-sent` pass a page's call is recorded under.
 PAGE_READING_PASS: Final = "page-reading"
-
-# Why a page is not asked (`not-run`); the page path's other names are in
-# `common/page_path.py`.
-CHAIR_ABSENT: Final = "chair-absent"
-NO_WITNESS_TESTIMONY: Final = "no-witness-testimony"
-NOTHING_TO_SHOW: Final = "nothing-to-show"
 
 _PAGE_LOCAL_CALL_FAILURES: Final = (
     EngineSignalRefusal,
@@ -269,29 +261,6 @@ def _existing_reading(context, page_id: str) -> dict[str, Any] | None:
     return _sealed(context, PAGE_READING_KIND, page_id, page_path.page_reading_attempt(page_id))
 
 
-def _fixture_answer(context, ordinal: int) -> dict[str, Any]:
-    rows = [
-        row
-        for row in context.fixture.get("page_answer", [])
-        if row.get("scenario") == context.scenario and row.get("page_ordinal") == ordinal
-    ]
-    if len(rows) != 1:
-        raise ContractError(
-            f"the fixture declares {len(rows)} page answers for scenario {context.scenario!r}, "
-            f"page {ordinal}; a page read offline needs exactly one"
-        )
-    row = rows[0]
-    if not isinstance(row.get("answer"), str) or row.get("stop_reason", "stop") not in (
-        "stop",
-        "length",
-    ):
-        raise ContractError(
-            f"the fixture's page answer for {context.scenario!r}, page {ordinal} is not an "
-            "answer string with a stop reason of stop or length"
-        )
-    return row
-
-
 def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
     """Build and publish one page's feed and resolve its request; publish nothing else."""
     run, context = state.run, state.context
@@ -332,31 +301,9 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
         payload=feed,
     )
     page.feed, page.feed_ref = feed, context.input_ref(published.relative_path)
-    if not state.chair_present:
-        page.not_run.append(
-            {
-                "code": CHAIR_ABSENT,
-                "detail": "the Perlector chair is absent from this run's roster; nothing read "
-                "the page",
-            }
-        )
-    if no_testimony:
-        page.not_run.append(
-            {
-                "code": NO_WITNESS_TESTIMONY,
-                "detail": "no witness testified to this page (the Attestatores serve only pages "
-                "with a proposed Designator act); the page is held for a human, not read "
-                "without its witnesses",
-            }
-        )
-    if page_feed.shows_nothing(feed):
-        page.not_run.append(
-            {
-                "code": NOTHING_TO_SHOW,
-                "detail": "the sealed feed shows no page image, and this page has no witness "
-                "text and no detection to show; a reading would have nothing to be made from",
-            }
-        )
+    page.not_run = page_path.not_run_problems(
+        feed, chair_present=state.chair_present, no_testimony=no_testimony
+    )
     page.adopted = _existing_reading(context, page_id)
     if page.not_run or page.adopted is not None:
         return page
@@ -365,7 +312,7 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
     if feed["overlay"] is not None:
         page.image_sha256s.append(feed["overlay"]["image_sha256"])
     if not state.live:
-        page.fixture_row = _fixture_answer(context, ordinal)
+        page.fixture_row = page_path.fixture_page_answer(context, ordinal)
         return page
     try:
         page.capacity = page_request_capacity(
@@ -477,25 +424,6 @@ def _request_digest(page: _Page) -> str | None:
     )
 
 
-def _read_reply(content: str, stop_reason: str | None, feed: dict[str, Any]):
-    """`(parse_state, answer, problems)` for a reply the engine finished or was cut on."""
-    if stop_reason == "length":
-        return (
-            CUT_OFF,
-            None,
-            [
-                {
-                    "code": CUT_OFF,
-                    "detail": "the engine stopped at the output cap; the answer is held whole",
-                }
-            ],
-        )
-    state, answer, problems = page_answer.parse_page_answer(content)
-    if state == PARSED:
-        problems = page_path.answer_problems(answer, feed, stop_reason)
-    return state, answer, problems
-
-
 def _finish(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | None) -> None:
     """Publish the page's reading, then its accounting, then its act records."""
     if page.adopted is not None:
@@ -540,7 +468,7 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
     elif not state.live:
         row = page.fixture_row
         finish_reason = stop_reason = row.get("stop_reason", "stop")
-        parse_state, answer, problems = _read_reply(row["answer"], stop_reason, page.feed)
+        parse_state, answer, problems = page_path.read_reply(row["answer"], stop_reason, page.feed)
     else:
         receipt_ref = run.receipt_ref
         capacity = page.capacity
@@ -565,7 +493,9 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
             engine_call = result["engine_call"]
             finish_reason, stop_reason = result["finish_reason"], result["stop_reason"]
             inputs += hooks.engine_call_inputs(context, engine_call, variance_arm=None)
-            parse_state, answer, problems = _read_reply(result["content"], stop_reason, page.feed)
+            parse_state, answer, problems = page_path.read_reply(
+                result["content"], stop_reason, page.feed
+            )
     disposition = READ if parse_state == PARSED and not problems else HELD
     payload = {
         "schema": PAGE_READING_SCHEMA,

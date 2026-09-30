@@ -73,7 +73,7 @@ from common import reading_annotations as annotations
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
-from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
+from common.contracts.serving import reading_stop_reason
 from common.cross_capture_autopsia import presented_image_sha256s
 from common.decoding import VARIANCE_ARMS
 from common.perlector_audit import render_reproof_instruction
@@ -138,12 +138,10 @@ def _mapped_stop_reason(finish_reason: str | None, *, act_key: object, response:
     """The engine's own word, translated into the reader-protocol's closed
     vocabulary (``common/truncation.py``'s own ``"stop"``/``"length"``/``None``), or
     a named refusal for anything else."""
-    if finish_reason is None:
-        return None
-    if finish_reason in ENGINE_STOP_COMPLETE:
-        return "stop"
-    if finish_reason in ENGINE_STOP_CUT_OFF:
-        return "length"
+    try:
+        return reading_stop_reason(finish_reason)
+    except ValueError:
+        pass
     raise EngineSignalRefusal(
         "ENGINE_FINISH_REASON_UNRECOGNIZED",
         f"act {act_key!r} received an engine stop reason {finish_reason!r} this seam does "

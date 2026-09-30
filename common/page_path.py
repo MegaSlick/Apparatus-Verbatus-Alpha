@@ -37,6 +37,7 @@ from common.contracts.envelope import read_verified
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import attempt_id, perlector_attempt_id
+from common.contracts.serving import reading_stop_reason
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP
 from common.page_witness_units import DAI, WITNESS_LETTERS, witness_reading
 from common.residual_ink import (
@@ -80,6 +81,9 @@ HELD: Final = "held"
 
 # Why a page is not asked (`not-run`), and why a parsed answer is held whole.
 PAGE_NOT_SEALED: Final = "page-not-sealed"
+CHAIR_ABSENT: Final = "chair-absent"
+NO_WITNESS_TESTIMONY: Final = "no-witness-testimony"
+NOTHING_TO_SHOW: Final = "nothing-to-show"
 NO_STOP_REASON: Final = "no-stop-reason"
 
 # Why one entry of a parsed, valid answer is held.
@@ -129,6 +133,127 @@ def distinct_refs(references: list[dict[str, str] | None]) -> list[dict[str, str
 
 def refs_by_path(references: list[dict[str, str]]) -> list[dict[str, str]]:
     return sorted(references, key=lambda reference: reference["relative_path"])
+
+
+# --- the reply ------------------------------------------------------------------
+
+
+def not_run_problems(
+    feed: Mapping[str, Any], *, chair_present: bool, no_testimony: bool
+) -> list[dict[str, str]]:
+    """Every reason a sealed page with a feed is not asked, in the order they are recorded."""
+    # The serving package reads `common.stage`, which reads this module.
+    from common import page_feed
+
+    problems = []
+    if not chair_present:
+        problems.append(
+            {
+                "code": CHAIR_ABSENT,
+                "detail": "the Perlector chair is absent from this run's roster; nothing read "
+                "the page",
+            }
+        )
+    if no_testimony:
+        problems.append(
+            {
+                "code": NO_WITNESS_TESTIMONY,
+                "detail": "no witness testified to this page (the Attestatores serve only pages "
+                "with a proposed Designator act); the page is held for a human, not read "
+                "without its witnesses",
+            }
+        )
+    if page_feed.shows_nothing(feed):
+        problems.append(
+            {
+                "code": NOTHING_TO_SHOW,
+                "detail": "the sealed feed shows no page image, and this page has no witness "
+                "text and no detection to show; a reading would have nothing to be made from",
+            }
+        )
+    return problems
+
+
+def fixture_page_answer(context, ordinal: int) -> dict[str, Any]:
+    """The synthetic fixture's one declared answer to page `ordinal` under this scenario."""
+    rows = [
+        row
+        for row in context.fixture.get("page_answer", [])
+        if row.get("scenario") == context.scenario and row.get("page_ordinal") == ordinal
+    ]
+    if len(rows) != 1:
+        raise ContractError(
+            f"the fixture declares {len(rows)} page answers for scenario {context.scenario!r}, "
+            f"page {ordinal}; a page read offline needs exactly one"
+        )
+    row = rows[0]
+    if not isinstance(row.get("answer"), str) or row.get("stop_reason", "stop") not in (
+        "stop",
+        "length",
+    ):
+        raise ContractError(
+            f"the fixture's page answer for {context.scenario!r}, page {ordinal} is not an "
+            "answer string with a stop reason of stop or length"
+        )
+    return row
+
+
+def retained_reply(read_bytes, engine_call: Mapping[str, Any]) -> dict[str, Any]:
+    """What the engine answered a live page call, read again from its retained bytes.
+
+    `engine_call` is the `page-reading`'s: the raw response and the call record
+    are read digest-checked, and the response is parsed as the serving client
+    parsed it. Returns `{content, finish_reason, stop_reason}`.
+    """
+    # The serving package reads `common.stage`, which reads this module.
+    from operations.serving.errors import ChairRequestRefusal, ChairResponseRefusal
+    from operations.serving.http import HttpResponse, parse_openai_reading
+
+    if not isinstance(engine_call, Mapping):
+        raise ContractError("a live page reading's engine_call is not an object")
+    body = read_verified(read_bytes, engine_call["raw_response_ref"], "a page reading's response")
+    call = json.loads(
+        read_verified(read_bytes, engine_call["call_record_ref"], "a page reading's call record")
+    )
+    if not isinstance(call, dict):
+        raise ContractError("a page reading's call record is not a JSON object")
+    try:
+        result = parse_openai_reading(
+            HttpResponse(status=call.get("response_status"), body=body),
+            kind=call.get("kind"),
+            expected_model_id=engine_call["served_model_id"],
+        )
+        stop_reason = reading_stop_reason(result.finish_reasons[0])
+    except (ChairRequestRefusal, ChairResponseRefusal, ValueError) as error:
+        raise ContractError(
+            f"a page reading's retained response is not a reading: {error}"
+        ) from error
+    return {
+        "content": result.outputs[0],
+        "finish_reason": result.finish_reasons[0],
+        "stop_reason": stop_reason,
+    }
+
+
+def read_reply(
+    content: str, stop_reason: str | None, feed: Mapping[str, Any]
+) -> tuple[str, Any, list[dict[str, Any]]]:
+    """`(parse_state, answer, problems)` for a reply the engine finished or was cut on."""
+    if stop_reason == "length":
+        return (
+            CUT_OFF,
+            None,
+            [
+                {
+                    "code": CUT_OFF,
+                    "detail": "the engine stopped at the output cap; the answer is held whole",
+                }
+            ],
+        )
+    state, answer, problems = page_answer.parse_page_answer(content)
+    if state == PARSED:
+        problems = answer_problems(answer, feed, stop_reason)
+    return state, answer, problems
 
 
 # --- the answer -----------------------------------------------------------------

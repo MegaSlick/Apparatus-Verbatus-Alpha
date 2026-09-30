@@ -37,6 +37,7 @@ from common import page_feed, page_path
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import act_bindings, artifact_id, region_id, verify
+from common.contracts.stages import RECENSOR
 from common.decoding import (
     chair_decoding,
     engine_effective_sampling,
@@ -48,6 +49,7 @@ from common.imaging import crop_png
 from common.page_accounting import is_inside, load_page_accounting_policy, placement_boxes
 from common.page_witness_units import DAI
 from common.runtree.store import RunTree
+from common.stage import open_context, reading_acts, stage_parser
 from conftest import file_bytes_snapshot, load_stage, programs_through
 from operations.serving.config import profile_preflight_digest
 from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
@@ -1415,6 +1417,40 @@ def test_a_resumed_pass_adopts_its_sealed_measures_rather_than_measuring_again(
     _endpoint, exit_code = _read_pages(live_tree, tmp_path / "again", monkeypatch)
     assert exit_code == 0
     assert file_bytes_snapshot(root / "r" / "4_perlector") == before
+
+
+def test_the_denominator_reads_a_live_reading_again_from_its_retained_reply(
+    live_tree, tmp_path, monkeypatch
+):
+    """The page-read denominator re-derives each live answer from the engine's own bytes."""
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
+    assert exit_code == 0
+    for reading in _records(live_tree.root, "page-reading"):
+        payload = reading["payload"]
+        reply = page_path.retained_reply(
+            lambda path: (live_tree.root / "r" / path).read_bytes(), payload["engine_call"]
+        )
+        assert reply == {
+            "content": PAGE_ANSWERS[payload["page_ordinal"]],
+            "finish_reason": "stop",
+            "stop_reason": "stop",
+        }
+    args = stage_parser("page-read denominator").parse_args(
+        [
+            "--run-root",
+            str(live_tree.root),
+            "--run-id",
+            "r",
+            "--scenario",
+            live_tree.scenario,
+            "--serving-recipes-config",
+            str(live_tree.catalogue),
+            "--perlector-protocol-config",
+            str(live_tree.protocol),
+        ]
+    )
+    acts = reading_acts(open_context(args, RECENSOR))
+    assert [act["act_key"] for act in acts] == ["p1:1", "p1:2", "p2:1"]
 
 
 def test_a_page_sent_but_never_answered_is_sent_again_naming_the_first_send(

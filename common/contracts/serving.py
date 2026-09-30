@@ -98,6 +98,22 @@ CHAIR_TRANSPORT_PROBLEM_FIELDS: Final = frozenset(
 ENGINE_STOP_COMPLETE: Final = frozenset({"stop"})
 ENGINE_STOP_CUT_OFF: Final = frozenset({"length"})
 
+
+def reading_stop_reason(finish_reason: str | None) -> str | None:
+    """An engine's finish word as a reading records it: `"stop"`, `"length"` or `None`.
+
+    `None` when the engine gave none. Any other word raises `ValueError`: a
+    reading is never recorded under a finish this build does not recognize.
+    """
+    if finish_reason is None:
+        return None
+    if finish_reason in ENGINE_STOP_COMPLETE:
+        return "stop"
+    if finish_reason in ENGINE_STOP_CUT_OFF:
+        return "length"
+    raise ValueError(f"engine finish reason {finish_reason!r} is neither a completion nor a cut")
+
+
 # Recorded when a response carries no `finish_reason`: a label for absence.
 STOP_REASON_UNREPORTED: Final = "unreported"
 
