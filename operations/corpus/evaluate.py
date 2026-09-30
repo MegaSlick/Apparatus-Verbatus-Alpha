@@ -461,7 +461,7 @@ def evaluate_run(
     code_ref: str,
     reference_ledger: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """One `recordgold-evaluation.v1` report for one sealed run against reference pages.
+    """One `recordgold-evaluation.v2` report for one sealed run against reference pages.
 
     `reference_ledger` is a `recordgold-local-admission.v1` body. It is validated
     here rather than taken on the caller's word, its digest is derived from the
@@ -762,7 +762,7 @@ def _validate_units(value: Any, what: str) -> None:
 
 
 def validate_evaluation(report: Any) -> dict[str, Any]:
-    """Refuse an evaluation that is not exactly `recordgold-evaluation.v1`.
+    """Refuse an evaluation that is not exactly `recordgold-evaluation.v2`.
 
     This is the artifact a person reads as the measurement, and it was the one
     record in this package that nothing held to a shape.

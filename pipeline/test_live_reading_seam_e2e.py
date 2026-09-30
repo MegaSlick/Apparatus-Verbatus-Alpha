@@ -85,7 +85,6 @@ TIER = "generic-48gb"
 TIERS = ("generic-24gb", "generic-48gb", "generic-80gb-plus")
 WITNESS_CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
 LIVE_CHAIRS = (*WITNESS_CHAIRS, "perlector")
-ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 CHAIN_TO_DESIGNATOR = programs_through("designator")
 TAIL_FROM_RECENSOR = (
     "pipeline/5_recensor/run.py",
@@ -114,27 +113,13 @@ CHANDRA_PAGE_ONE = (
 # is kept rather than dropped. The grammar names it (`malformed-bbox`, reason
 # "no data-bbox attribute") instead of substituting the [0,0,1,1] rectangle the
 # vendor's own parser would have.
-#
-# The geometry form on a continuation page is accepted:
-# `pipeline/4_perlector/run.py::act_attachment_view` requires a page witness's
-# `attached` to equal its geometric overlap with the act's sealed regions on
-# that page, and does not separately refuse an attached continuation entry.
-# What a continuation page genuinely lacks is an ANCHOR, and that is what
-# this rule says.
-# `pipeline/4_perlector/test_live_perlector.py::test_a_page_witness_attached_by_geometry_on_a_continuation_page_is_readable`
-# pins the geometry form, and
-# `pipeline/3_attestatores/test_attestatores_live_pass.py` pins it at the
-# Attestatores' own boundary.
 CHANDRA_PAGE_TWO = '<div data-label="Text">SYNTHETIC ACT TWO delta epsilon zeta eta</div>'
 # Churro answers page 1 in the vendor's own `HistoricalDocument` grammar -- the
 # shape `churro.prompt` asks for, read by `common/churro_document.py`. It
 # carries no geometry, and nothing in the grammar could: `Page`, `Header`,
 # `Body`, `Footer` and `Line`, and not one coordinate in the guide or the XSD.
-# The JSON coordinate channel this repository asked for until U10 is retired
-# with the modified-carry prompt that asked for it, so this chair reports the
-# `bounds_source="presented"` echo that routing and coverage exclude, and
-# attaching it is the Perlector's `anchor-line` basis (U12), not geometry it
-# does not have.
+# The chair reports the `bounds_source="presented"` echo that routing and
+# coverage exclude.
 CHURRO_PAGE_ONE = (
     "<HistoricalDocument><Page><Body>"
     "<Line>SYNTHETIC ACT ONE alpha beta gamma</Line>"
@@ -150,10 +135,7 @@ CHURRO_PAGE_TWO = "<output>SYNTHETIC ACT TWO delta epsilon zeta eta</output>"
 DAI_ACT_ONE = "SYNTHETIC ACT ONE alpha beta gamma"
 DAI_ACT_TWO = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 DAI_CONTINUATION = "zeta eta"
-# Long enough that `truncation.is_length_suspicious` never fires on this
-# fixture's regions under the sealed `[truncation]` floor: these tests are about
-# the engine's own stop word, and a reading the length heuristic independently
-# called suspicious would prove something else.
+# The act reading `ReaderWorld` answers with, for the structure-chair harness.
 READING = "SYNTHETIC LIVE READING alpha beta gamma delta epsilon zeta eta theta iota kappa"
 
 
@@ -680,30 +662,6 @@ class ReaderWorld:
         )
 
 
-# ------------------------------ reading the tree ------------------------------
-
-
-def act_records(tree: RunTree) -> dict[tuple[str, str], dict[str, Any]]:
-    records: dict[tuple[str, str], dict[str, Any]] = {}
-    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "testimonium":
-            continue
-        record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        key = (record["subject_id"], record["payload"]["chair"])
-        assert key not in records, (
-            f"act_records saw two Testimonia for {key}: "
-            f"{records.get(key, {}).get('artifact_id')} "
-            f"(ordinal {records.get(key, {}).get('payload', {}).get('attempt_ordinal')}) "
-            f"vs {record.get('artifact_id')} "
-            f"(ordinal {record['payload'].get('attempt_ordinal')}) -- these trees are a "
-            "single ordinal-1 pass, so a second record here is either a duplicate "
-            "publication or an unintended second attempt, and manifest hash order "
-            "must not silently pick one over the other"
-        )
-        records[key] = record
-    return records
-
-
 # --------------------------------- the fixtures -------------------------------
 
 
@@ -724,12 +682,6 @@ def designated(tmp_path_factory) -> SimpleNamespace:
     return SimpleNamespace(
         work=work, catalogue=catalogue, run_root=run_root, decoding_sha256=decoding_sha256
     )
-
-
-def fresh_tree(designated: SimpleNamespace, tmp_path: Path, name: str = "runs") -> Path:
-    run_root = tmp_path / name
-    shutil.copytree(designated.run_root, run_root)
-    return run_root
 
 
 def read_by_live_witnesses(
@@ -756,12 +708,6 @@ def witnessed(designated) -> SimpleNamespace:
     return SimpleNamespace(run_root=run_root, world=world)
 
 
-# =============================== the live seam ================================
-
-
-# ============================ the fixture path, unmoved =======================
-
-
 # ============================ the live page seam ==============================
 
 PAGE_ANSWERS = {
@@ -773,18 +719,50 @@ PAGE_ANSWERS = {
 }
 
 
-class PageReaderWorld(ReaderWorld):
-    """The Perlector's chair answering each page it is sent with the scripted page answer."""
+class PageReaderWorld:
+    """The Perlector's single resident chair, answering each page with its scripted answer."""
+
+    def __init__(self, catalogue: Path, work: Path) -> None:
+        self.catalogue = catalogue
+        self.work = work
+        self.work.mkdir(parents=True, exist_ok=True)
+        self.endpoint: RecordingEndpoint | None = None
 
     def factory(self, context, identity, tier: str) -> ChairClient:
-        client = super().factory(context, identity, tier)
-        self.endpoint.script(
+        policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
+        endpoint = RecordingEndpoint(
+            served_model_id=f"served-{identity.role}",
+            blob_store=_TreeBlobs(context, PERLECTOR),
+            assert_retained_before_next_request=True,
+        )
+        endpoint.script(
             *(
                 ScriptedAnswer(content=PAGE_ANSWERS[ordinal], finish_reason="stop")
                 for ordinal in (1, 2)
             )
         )
-        return client
+        self.endpoint = endpoint
+        manager = ServingManager(
+            registry=context.registry,
+            recipes=load_serving_recipes(self.catalogue),
+            config_inputs=ServingConfigInputs.from_record(dict(context.serving_config_inputs)),
+            launcher=FakeLauncher(endpoint),
+            http=endpoint,
+            receipt_publisher=StageContextReceiptPublisher(context),
+            log_root=self.work / "serving-logs",
+            package_inspector=FakePackages({"vllm": "0.test"}),
+            residency_lease=FileResidencyLease(self.work / "pod-gpu.lock"),
+            producer="pipeline/4_perlector/run.py",
+        )
+        return ChairClient(
+            manager=manager,
+            identity=identity,
+            tier=tier,
+            retain=lambda data: retain_chair_bytes(context, data),
+            decoding_config_sha256=decoding_sha256,
+            decoding_policy=policy,
+            read_receipt=context.tree.read_run_receipt,
+        )
 
 
 def test_a_live_page_read_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(
@@ -800,7 +778,7 @@ def test_a_live_page_read_run_carries_on_through_the_recensor_to_a_sealed_termin
     """
     run_root = tmp_path / "runs"
     shutil.copytree(witnessed.run_root, run_root)
-    reader = PageReaderWorld(designated.catalogue, tmp_path / "reader", finish_reason="stop")
+    reader = PageReaderWorld(designated.catalogue, tmp_path / "reader")
     assert (
         run_in_process(
             perlector,

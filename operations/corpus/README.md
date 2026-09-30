@@ -92,8 +92,9 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   `OCR_Gold` is written.
 - `evaluate.py` — the one caller of `compare_page` that builds its hypotheses from a
   real run: it pairs the act-regions the page readings established their acts over
-  (`compare.load_pipeline_reading_acts`; an `other` or unplaced reading has none and is
-  counted in `excluded_reading_regions`) with the reference boxes, reads the sealed
+  (`compare.load_pipeline_reading_acts`; the act-region of an `other` reading, or of an
+  unplaced one, which has no rectangle, is counted in `excluded_reading_regions`, and a
+  page with no reading has no region at all) with the reference boxes, reads the sealed
   Armarium export, re-digests every delivered text against
   the Archetypus record that established it (`digest_of(text)`), maps each export
   category to the scorer's response state (a held, refused, blank or excluded act is an

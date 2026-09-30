@@ -342,12 +342,6 @@ def fresh_tree(designated: SimpleNamespace, tmp_path: Path, name: str = "runs") 
     return run_root
 
 
-# ============================== the marked-out tree ==============================
-
-
-# ============================ the roster over those acts =========================
-
-
 # =============================== the other answers ===============================
 
 
@@ -361,9 +355,6 @@ def test_the_scripted_refusal_set_is_the_two_shapes_this_suite_documents():
     assert that would surface as a collection error instead of a test failure.
     """
     assert len(_SCRIPTABLE_STRUCTURE_REFUSALS) == 2, _SCRIPTABLE_STRUCTURE_REFUSALS
-
-
-# ------------------------------- resuming the pass ------------------------------
 
 
 # ============================== an act across a page break ==============================

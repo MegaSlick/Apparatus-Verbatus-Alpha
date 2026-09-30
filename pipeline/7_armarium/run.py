@@ -185,9 +185,8 @@ def logical_act_projection_entry(
             "the projection is refused because added or missing fields can bypass conservation"
         )
     # A matching field set proves nothing about the bytes inside it, so this
-    # boundary re-derives the record's own integrity the way the image-local one
-    # does (`_archetypus_rows`'s `validate_record`, and
-    # `verify_established_record`'s self-hash and text_hash checks). Without the
+    # boundary re-derives the record's own integrity, as
+    # `verify_established_page_record` does for a page record. Without the
     # checks that follow, a forged, truncated, or memberless record projects as
     # an established logical act.
     if not verify_self_hash(record):
@@ -1204,14 +1203,14 @@ def missing_export_provenance(payload: object) -> str | None:
     """Name a reading that cannot travel as an exportable, cited result.
 
     This is deliberately narrower than the lineage checks in
-    ``verify_established_record``.  A damaged envelope or a disagreement with a
+    ``verify_established_page_record``.  A damaged envelope or a disagreement with a
     parent remains fatal accounting; an otherwise sealed established reading
     that simply lacks identity or region provenance is a refused unit with a
     visible review record, not a dropped one.
     """
     if not isinstance(payload, dict) or not verify_self_hash(payload):
         # This does not mean provenance is complete. A damaged envelope is fatal
-        # accounting, and `verify_established_record` immediately raises on this same
+        # accounting, and `verify_established_page_record` immediately raises on this same
         # self-hash. Returning None delegates to that check; callers must preserve the
         # order rather than treating this helper alone as an exportability decision.
         return None

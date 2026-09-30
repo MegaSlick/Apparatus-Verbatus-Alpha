@@ -140,6 +140,12 @@ projection configuration. The bundle may contain these plainly specified formats
   The rendering never replaces the canonical field: the clean verifier strips it and
   requires the canonical value back exactly. No convention has been chosen, and
   `claims.display.status` says so on the face of every bundle.
+`run.py` writes the page-read ids (`armarium-export-manifest.v9`,
+`armarium-act.v4`, `armarium-acts-sqlite.v4`, `armarium-sources.v4`; "Formats" under
+"What is exported"). The ids and shapes below are the builder's, each of which
+those extend; the image-local v7 and clustered v8 manifests are the builder's
+too, and `run.py` publishes neither.
+
 - `acts.sqlite` — an `acts` table with the literal Archetypus field, and a
   separate `act_search` / FTS5 layer whose search fold is visibly derived and
   revision-marked. Metadata schema `armarium-acts-sqlite.v3`

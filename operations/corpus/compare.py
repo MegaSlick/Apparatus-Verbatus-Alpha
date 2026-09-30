@@ -755,8 +755,9 @@ def compare_page(
     never compares IoU in binary floating point, so a caller-supplied float
     threshold must not silently reach that comparison.
 
-    `excluded_region_counts` is this call's own `count_excluded_designator_artifacts`
-    result, when the caller read `pipeline_acts` from a run tree -- carried into
+    `excluded_region_counts` is the excluded count matching the loader the caller
+    read `pipeline_acts` with (`count_excluded_designator_artifacts` or
+    `count_excluded_reading_regions`), when it read them from a run tree -- carried into
     the record so a reader can see how much of the run this comparison declined to
     look at. Defaults to an explicit all-zero shape (never omitted from the
     record) for callers exercising this function without a run tree.

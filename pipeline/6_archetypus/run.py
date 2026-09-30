@@ -389,8 +389,7 @@ def validate_record_fields(record: dict) -> None:
 
     Refuses any field the record is not defined to carry, and any absence of
     one it is, so a second text-bearing field cannot be reintroduced one name
-    at a time. The dead shape this guards against is `kind="archetypus"` in
-    CONTRACT.md.
+    at a time (CONTRACT.md, `kind="archetypus"`).
     """
     unexpected = sorted(set(record) - _RECORD_FIELDS)
     missing = sorted(_RECORD_FIELDS - set(record))
@@ -1161,7 +1160,7 @@ def _direct_inputs(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
     only remaining way two groups could name one path is the review or the
     Perlectio itself coinciding with a crop path — which the run tree's own
     layout (`5_recensor/artifacts/...`, `4_perlector/artifacts/...` and
-    `2_designator/blobs/...` never overlap) makes structurally impossible today.
+    `4_perlector/blobs/...` never overlap) makes structurally impossible.
     The dedup-by-path stays as the cheap defensive form of that same guarantee:
     every digest here was read off the same disk moments earlier, so two
     entries naming one path cannot disagree.

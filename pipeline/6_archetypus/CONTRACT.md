@@ -47,7 +47,8 @@ row is the census's and is never reviewed (`reviewed_rows`).
   reading (`page-unread`, `page-blank`) or any other hold is fatal, because a stage
   may not resurrect a held reading. Every record is built and checked before any is
   published, so a refusal leaves no partial set behind. Held and page rows end at
-  the Recensor with no record and count toward held.
+  the Recensor with no record; only an outcome the algebra leaves open makes the
+  stage exit `EXIT_HELD`.
 - **`other` readings are established too.** The Perlector names `act` and `other`
   entries on a page; both are established here, so every export shows the one
   established reading of each. The record carries `kind` (`act` | `other`).
@@ -205,9 +206,9 @@ below is what the logical record and `validate_annotations` hold it to. A list o
 The shapes map onto the mature convention rather than inventing markup: `<unclear
 cert="">` and `<gap>` (TEI P5, "Representation of Primary Sources"; EpiDoc Guidelines).
 Rendering either of them — brackets, underdots, sigla — is the Armarium's business at
-export time and is deliberately not stored here. `annotations` is optional on the wire
-today: nothing upstream of this stage populates it yet, and it defaults to `[]`, which is
-what every page record carries.
+export time and is deliberately not stored here. A page reading carrying an annotation
+layer is refused, so every page record's `annotations` is `[]`; the rules above and
+below are what `validate_annotations` holds the logical record's layer to.
 
 **Beside, not instead of, the canonical `uncertainty` layer.** The two describe the same
 kinds of damage — `uncertain` against `uncertain_spans`, `illegible` against `gaps` — and
@@ -238,7 +239,8 @@ the whole Archetypus run down for every other act. Whether the comparison itself
 Unicode-normalize before checking substring containment (while continuing to *store* exact
 bytes either way) is a product decision, not made here.
 
-`text`, `regions`, and provenance are exact copies of the one reviewed Perlectio;
+`text` and provenance are exact copies of the one reviewed Perlectio, and `regions` is
+exactly what `verify_reading_region_lineage` proves of the act-region it names;
 `dissent_ref` names that Perlectio artifact rather than making a second mutable dissent
 copy. **`dissent_ref` and `perlectio_ref` are the same value by design, not by
 accident**: `perlectio_ref` is the parent evidence this record establishes from,

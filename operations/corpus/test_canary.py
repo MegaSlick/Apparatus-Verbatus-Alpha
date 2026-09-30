@@ -36,6 +36,8 @@ def _bundle(members=None):
         ("sources.json", canonical_bytes({"regions": [{"source_page_ordinal": 2}]})),
         ("text/_source_root/readings.txt", b"## act (act)\nact-id: act\n"),
         ("review-items.jsonl", canonical_bytes({"act_id": "act"}) + b"\n"),
+        ("other.jsonl", canonical_bytes({"act_id": "act"}) + b"\n"),
+        ("text/_source_root/readings.txt", b"## OTHER act (not an act)\nother-id: act\n"),
     ],
 )
 def test_bundle_inspection_finds_canary_identity_without_reference_text(member, contents):
@@ -226,16 +228,18 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
     tree.build_manifest = original_manifest
     original_artifact = tree.read_artifact
 
-    def leaked(stage, kind, artifact_id):
-        record = original_artifact(stage, kind, artifact_id)
-        if kind == "export":
-            record["payload"]["delivered"] = [{"act_id": "act"}]
-        return record
+    for layer in ("delivered", "other_readings"):
 
-    tree.read_artifact = leaked
-    leak = canary.check_run(tree, tmp_path)
-    assert not leak["stages"][canary.ARMARIUM]
-    assert {row["rule"] for row in leak["dead"]} >= {"canary-in-real-export"}
+        def leaked(stage, kind, artifact_id, layer=layer):
+            record = original_artifact(stage, kind, artifact_id)
+            if kind == "export":
+                record["payload"][layer] = [{"act_id": "act"}]
+            return record
+
+        tree.read_artifact = leaked
+        leak = canary.check_run(tree, tmp_path)
+        assert not leak["stages"][canary.ARMARIUM], layer
+        assert {row["rule"] for row in leak["dead"]} >= {"canary-in-real-export"}
 
     tree.read_artifact = original_artifact
     tree.build_manifest = lambda stage: (
@@ -258,6 +262,7 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
     tree.readings = [("act", 2, reference_text), ("act", 2, reference_text)]
     doubled = canary.check_run(tree, tmp_path)
     assert {row["rule"] for row in doubled["dead"]} >= {"canary-reading-ambiguous"}
+    assert doubled["stages"][canary.ARMARIUM], "one ambiguity is the reader's, not the export's"
 
     tree.readings = [("elsewhere", 1, reference_text)]
     absent = canary.check_run(tree, tmp_path)

@@ -131,10 +131,10 @@ _NOT_ASSESSED = {
 def _test_not_measured_basis(**overrides):
     """A minimal, valid not-measured basis for a hand-built projection.
 
-    The production basis is derived from a run's own records
-    (`pipeline/7_armarium/run.py::not_measured_basis`, proven against a real run
-    in `test_export.py`); these projections have no run behind them, so they
-    declare the shape, and a test about the block's content overrides the one
+    These hand-built projections are the builder's image-local shape, whose
+    instrument set `run.py` no longer derives (its page export's basis is
+    `page_not_measured_basis`, proven in `test_page_export.py`); they declare
+    the shape, and a test about the block's content overrides the one
     sub-record it is about.
     """
     basis = {

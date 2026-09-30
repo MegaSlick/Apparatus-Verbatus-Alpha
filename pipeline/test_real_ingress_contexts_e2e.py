@@ -17,8 +17,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from conftest import load_stage
-
 PIPELINE = Path(__file__).resolve().parent
 ROOT = PIPELINE.parents[0]
 ATTESTATORES_DIR = PIPELINE / "3_attestatores"
@@ -39,7 +37,6 @@ for _directory in (PIPELINE, ATTESTATORES_DIR):
 # in-process invocation — so a change in how a fake chair is stood up is made
 # once for both seams.
 from test_attestatores_real_ingress import (  # noqa: E402
-    ACTS,
     RUN_ID,
     _real_submission,
 )
@@ -54,24 +51,8 @@ from common.stage import (  # noqa: E402
     EXIT_FATAL,
 )
 
-# The binding recheck's own suite owns how a sealed input is moved: an appended
-# byte for a file, and for the roster a record that moves without its membership
-# moving — the case `run.json`'s `witness_chairs` cannot see. Imported rather
-# than rewritten, so the unit and the end-to-end move the same bytes.
-
 MODELS_CONFIG = ROOT / "config" / "models.toml"
 DESIGNATOR_CLI = PIPELINE / "2_designator" / "run.py"
-TAIL_FROM_RECENSOR = (
-    PIPELINE / "5_recensor" / "run.py",
-    PIPELINE / "6_archetypus" / "run.py",
-    PIPELINE / "7_armarium" / "run.py",
-)
-ACT_KEYS = tuple(key for _ordinal, _bounds, key in ACTS)
-
-
-armarium = load_stage("7_armarium", isolate_path=True)
-
-
 # --------------------------------- driving ----------------------------------
 
 
@@ -122,9 +103,6 @@ def run_in_process(module, run_root: Path, catalogue: Path, *, serving_factory):
         sys.argv = original
 
 
-# --------------------------------- the run ----------------------------------
-
-
 # ========================= what a real run cannot do =========================
 
 
@@ -153,15 +131,3 @@ def test_the_designator_itself_refuses_a_real_submission_and_writes_nothing(tmp_
     assert "a real submission may not be marked out by the fixture structure chair" in result.stderr
     assert "no proposals or holds were fabricated" in result.stderr
     assert snapshot(run_root) == before, "a refused structural pass writes nothing"
-
-
-# ======================= the contexts, stage by stage ========================
-
-
-# ============================ the real denominator ===========================
-
-
-# ============================== the whole carry ==============================
-
-
-# ========================== the export's own identity ========================

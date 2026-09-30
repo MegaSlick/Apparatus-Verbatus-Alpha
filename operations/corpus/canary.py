@@ -121,7 +121,12 @@ def _canary_in_bundle(data: bytes, act_ids: set[str], ordinals: set[int]) -> boo
         for name in ("EXPORT_MANIFEST.json", "sources.json"):
             if _contains_canary_identity(json.loads(archive.read(name)), act_ids, ordinals):
                 return True
-        for name in {"acts.jsonl", "review-items.jsonl", "reconstructions.jsonl"} & names:
+        for name in {
+            "acts.jsonl",
+            "other.jsonl",
+            "review-items.jsonl",
+            "reconstructions.jsonl",
+        } & names:
             with archive.open(name) as member:
                 if any(
                     _contains_canary_identity(json.loads(line), act_ids, ordinals)
@@ -131,10 +136,12 @@ def _canary_in_bundle(data: bytes, act_ids: set[str], ordinals: set[int]) -> boo
         for name in names:
             if name.endswith("/readings.txt"):
                 with archive.open(name) as member:
+                    # An act section names its reading by `act-id:`, an other
+                    # reading's section by `other-id:`.
                     if any(
-                        line.removeprefix(b"act-id: ").strip().decode("utf-8") in act_ids
+                        line.split(b":", 1)[1].strip().decode("utf-8") in act_ids
                         for line in member
-                        if line.startswith(b"act-id: ")
+                        if line.startswith((b"act-id: ", b"other-id: "))
                     ):
                         return True
         if "acts.sqlite" in names:
@@ -318,11 +325,9 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 raise ValueError("ambiguous canary export")
             # Every reading on a canary page must be in the block; a page with no
             # reading still has a block row, so the block may name more.
-            read_canaries = {
-                row["subject_id"]
-                for rows in _canary_readings(tree, ordinals).values()
-                for row in rows
-            }
+            # Unreadable readings already killed the Perlector's canary; the
+            # block and leak checks below still run on what the export names.
+            read_canaries = {row["subject_id"] for rows in readings.values() for row in rows}
             sealed_canaries = set(read_canaries)
             block = export.get("canary")
             if not isinstance(block, dict) or not isinstance(block.get("acts"), list):
@@ -342,7 +347,9 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                     fail(ARMARIUM, "canary-missing-from-block")
             if any(row["ordinal"] in ordinals for row in export["pages"]) or any(
                 row["act_id"] in sealed_canaries
-                for row in export["delivered"] + export["non_delivered"]
+                for row in export["delivered"]
+                + export["non_delivered"]
+                + export.get("other_readings", [])
             ):
                 fail(ARMARIUM, "canary-in-real-export")
             bundle = export["bundle"]

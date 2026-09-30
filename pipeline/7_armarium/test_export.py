@@ -13,7 +13,7 @@ import pytest
 from armarium_export import verify_export_bundle, verify_projection_identity
 
 from common.contracts.canonical import canonical_bytes, self_hash
-from common.contracts.errors import FatalAccounting
+from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, RECENSOR
 from common.runtree.store import RunTree
@@ -294,4 +294,81 @@ def test_an_archetypus_claiming_whole_text_over_its_reading_s_gap_is_refused_at_
     with pytest.raises(FatalAccounting, match="does not exactly preserve"):
         armarium.verify_established_page_record(
             context, row, review, {"payload": forged, "inputs": inputs}
+        )
+
+
+def _forge_self_hash(case):
+    case["payload"]["text"] = "Marie"
+
+
+def _forge_kind(case):
+    case["payload"] = _reseal(case["payload"], kind="other")
+
+
+def _forge_review(case):
+    case["review"]["outcome"] = "held-for-review"
+
+
+def _forge_region_ref(case):
+    case["reading"]["act_region_ref"] = {"relative_path": "elsewhere.json", "sha256": "e" * 64}
+
+
+def _forge_holds(case):
+    case["reading"]["holds"] = ["page-unread"]
+
+
+def _forge_lineage(case):
+    def stale(*_args):
+        raise ContractError("the crop bytes do not match the sealed page region")
+
+    case["monkeypatch"].setattr(case["armarium"], "verify_reading_region_lineage", stale)
+
+
+def _forge_gaps(case):
+    case["reading"]["gaps"] = "not a list"
+
+
+def _forge_inputs(case):
+    case["inputs"].pop()
+
+
+def _reseal(payload, **changes):
+    resealed = {key: value for key, value in payload.items() if key != "self_hash"}
+    resealed.update(changes)
+    resealed["self_hash"] = self_hash(resealed)
+    return resealed
+
+
+@pytest.mark.parametrize(
+    ("forge", "refusal"),
+    [
+        (_forge_self_hash, "fails its own self-hash before export"),
+        (_forge_kind, "does not describe the reading being exported"),
+        (_forge_review, "is not bound to the accepted review"),
+        (_forge_region_ref, "names another act-region"),
+        (_forge_holds, "is held or is not the row's own page reading"),
+        (_forge_lineage, "does not trace to the Exemplar"),
+        (_forge_gaps, "cannot be reconciled with its reading"),
+        (_forge_inputs, "does not input exactly its review, reading"),
+    ],
+)
+def test_each_way_an_archetypus_can_disagree_with_its_page_reading_is_refused_at_export(
+    monkeypatch, forge, refusal
+):
+    """The export re-proves every established record against its row, review and reading."""
+    armarium = load_stage("7_armarium")
+    context, row, review, reading_payload, region, inputs = _page_record_case()
+    monkeypatch.setattr(armarium, "verify_reading_region_lineage", lambda *_args: region)
+    case = {
+        "armarium": armarium,
+        "monkeypatch": monkeypatch,
+        "payload": _sealed_page_record(armarium, row, reading_payload, region),
+        "review": review,
+        "reading": reading_payload,
+        "inputs": inputs,
+    }
+    forge(case)
+    with pytest.raises(FatalAccounting, match=refusal):
+        armarium.verify_established_page_record(
+            context, row, case["review"], {"payload": case["payload"], "inputs": case["inputs"]}
         )
