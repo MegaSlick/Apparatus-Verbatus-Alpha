@@ -412,3 +412,153 @@ def _notification_sink() -> None:
     """No test session may page his phone, whatever a caller forgot to inject."""
 
     os.environ["NTFY_TOPIC"] = NOTIFY_TEST_SINK_TOPIC
+
+
+def page_protocol_config(directory: Path) -> Path:
+    """The committed Perlector protocol with `reading_unit = "page"`, written under `directory`."""
+    text = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
+    assert 'reading_unit = "act"' in text
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "perlector_protocol.toml"
+    path.write_text(text.replace('reading_unit = "act"', 'reading_unit = "page"'), "utf-8")
+    return path
+
+
+def build_page_tree(base: Path, scenario: str, run_id: str = "r") -> tuple[Path, Path]:
+    """A fixture tree read page by page, through the Perlector; returns (root, protocol)."""
+    protocol = page_protocol_config(base / "config")
+    root = base / "runs"
+    for program in programs_through("perlector"):
+        result = run_stage(root, run_id, scenario, program, perlector_protocol_config=protocol)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+    return root, protocol
+
+
+def rewrite_page_answer_entry(root: Path, run_id: str, ordinal: int, n: int, **fields) -> None:
+    """Give one entry of a page's answer other `kind` or continuation flags, everywhere.
+
+    The page reading's answer, the entry's act-region (kind only) and its
+    Perlectio are rewritten and the Perlector's boundary rewitnessed, modelling a
+    reader that answered so; the act identity does not bind either field.
+    """
+    from common.contracts.stages import PERLECTOR
+    from common.runtree.store import RunTree
+
+    directory = root / run_id / "4_perlector" / "artifacts"
+    for kind in ("page-reading", "act-region", "perlectio"):
+        for path in sorted((directory / kind).glob("*.json")):
+            record = json.loads(path.read_text(encoding="utf-8"))
+            payload = record["payload"]
+            if payload["page_ordinal"] != ordinal:
+                continue
+            if kind == "page-reading":
+                [entry] = [item for item in payload["answer"]["acts"] if item["n"] == n]
+                entry.update(fields)
+            elif payload["n"] == n:
+                payload.update(
+                    {
+                        name: value
+                        for name, value in fields.items()
+                        if kind == "perlectio" or name == "kind"
+                    }
+                )
+            else:
+                continue
+            record["self_hash"] = self_hash(
+                {key: value for key, value in record.items() if key != "self_hash"}
+            )
+            path.write_bytes(canonical_bytes(record))
+    rewitness_stage_boundary(RunTree(root, run_id), PERLECTOR)
+
+
+def publish_stand_in_page_reviews(
+    root: Path,
+    run_id: str,
+    scenario: str,
+    protocol: Path,
+    *,
+    outcomes: dict[str, str] | None = None,
+) -> None:
+    """Publish and seal a Recensor page path for a page-read tree, standing in for it.
+
+    One `review` per `reading_acts` row -- `accepted` for a row the denominator
+    reads, `held-for-review` for a held one, unless `outcomes` names another by
+    act key -- and one agreed `continuation-link` per pair of readings whose
+    answer flags meet across a page break. The real Recensor page path replaces
+    this; the records carry the shape the downstream readers
+    (`common/page_review.py`) read.
+    """
+    from common.contracts.identities import attempt_id
+    from common.contracts.outcomes import witness_coverage
+    from common.contracts.stages import ATTESTATORES, RECENSOR
+    from common.stage import open_context, reading_acts, stage_parser
+
+    args = stage_parser("stand-in page Recensor").parse_args(
+        [
+            "--run-root",
+            str(root),
+            "--run-id",
+            run_id,
+            "--scenario",
+            scenario,
+            "--perlector-protocol-config",
+            str(protocol),
+        ]
+    )
+    context = open_context(args, RECENSOR)
+    rows = reading_acts(context)
+    # Coverage counts every roster chair that testified anywhere in the run, as
+    # `read`; how the real page path counts an act-scoped chair on a page is the
+    # Recensor's to decide.
+    testified = {
+        context.tree.read_artifact(ATTESTATORES, entry["kind"], entry["artifact_id"])["payload"][
+            "chair"
+        ]
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] in ("page-testimonium", "testimonium")
+    }
+    for row in rows:
+        outcome = (outcomes or {}).get(row["act_key"]) or (
+            "accepted" if row["disposition"] == "read" else "held-for-review"
+        )
+        chairs = {
+            chair: "read" if chair in testified else "not-run" for chair in context.witness_chairs
+        }
+        refs = [
+            row[name] for name in ("perlectio_ref", "region_ref", "reading_ref", "accounting_ref")
+        ]
+        inputs = {ref["relative_path"]: ref for ref in refs if ref is not None}
+        context.publish(
+            kind="review",
+            subject_id=row["act_id"],
+            outcome=outcome,
+            attempt=attempt_id(row["act_id"], "recense", 1),
+            inputs=[inputs[path] for path in sorted(inputs)],
+            payload={
+                "attempt_ordinal": 1,
+                "act_key": row["act_key"],
+                "kind": row["kind"],
+                "reason": "" if outcome == "accepted" else f"{row['act_key']} is held",
+                "coverage": witness_coverage(chairs, context.witness_floor),
+                "page_accounting_ref": row["accounting_ref"],
+                "perlectio_ref": row["perlectio_ref"],
+                "act_region_ref": row["region_ref"],
+                "page_reading_ref": row["reading_ref"],
+                "hold_codes": row["hold_codes"],
+            },
+        )
+    for head in rows:
+        for tail in rows:
+            if (
+                head["continues_to_next_page"]
+                and tail["continues_from_previous_page"]
+                and tail["page_ordinal"] == head["page_ordinal"] + 1
+            ):
+                context.publish(
+                    kind="continuation-link",
+                    subject_id=head["act_id"],
+                    outcome="accepted",
+                    payload={"act_ids": [head["act_id"], tail["act_id"]], "agreed": True},
+                )
+    context.seal_boundary()
+    context.finish()

@@ -88,3 +88,8 @@ same path.
 The reader lives here rather than in the orchestrator's contract because it is a
 `common/` function three stages call (Recensor, Archetypus, Armarium); the
 orchestrator counts nothing.
+
+`page_review.py` is the one reader of the Recensor's page path for the two
+stages after it: `current_page_reviews` (one current review per row, each
+naming its row), `reviewed_rows` (every row but a refused page's),
+`continuation_links`, and the review's reason and coverage.

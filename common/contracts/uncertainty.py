@@ -77,6 +77,34 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
     return layer
 
 
+def from_page_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
+    """The exportable uncertainty layer of a page reading's `perlectio.v2`.
+
+    A page reader is shown the witnesses and no Pass-A draft, so, like a
+    draft-withheld act reading, its self-revisions were not measured (`None`).
+    """
+    if not isinstance(payload, dict):
+        raise SchemaRefusal("canonical uncertainty requires an object Perlectio payload")
+    # The page reading's record also repeats the reader's spans and gaps beside
+    # its state; the layer keeps the closed `{state, problem}` pair.
+    recorded = payload.get("uncertainty_assessment")
+    if not isinstance(recorded, dict):
+        raise SchemaRefusal("the page Perlectio carries no uncertainty_assessment")
+    assessment = validate_assessment_record(
+        {"state": recorded.get("state"), "problem": recorded.get("problem")},
+        "the page Perlectio's uncertainty_assessment",
+    )
+    layer = {
+        "uncertain_spans": payload.get("uncertain_spans"),
+        "gaps": payload.get("gaps"),
+        "self_revisions": None,
+        "assessment": assessment,
+        "lectio_kind": "primed-draft-withheld",
+    }
+    validate(layer, payload.get("text"))
+    return layer
+
+
 def validate_assessment_record(assessment: Any, subject: str = "canonical uncertainty") -> dict:
     """The closed `{state, problem}` doubt record, refused by name or returned.
 
