@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from common.contracts.prior_draft import is_unmeasured_comparison
+
 
 class ProjectionShapeError(ValueError):
     """A projection field is not the shape this renderer reads out.
@@ -219,11 +221,18 @@ def _uncertainty_lines(
     spans = _uncertainty_entries(spans, f"{label}.uncertain_spans")
     gaps = _uncertainty_entries(gaps, f"{label}.gaps")
     withheld = lectio_kind == "primed-draft-withheld"
+    # A fed draft whose comparison ran out of its sealed step budget: the Perlectio
+    # carries the non-verdict, the canonical layer null.
+    unmeasured = lectio_kind == "primed-with-prior" and (
+        revisions is None or is_unmeasured_comparison(revisions)
+    )
     if withheld:
         if revisions is not None:
             raise ProjectionShapeError(
                 f"{label}.self_revisions", None, revisions, expected="null for a withheld draft"
             )
+        revisions = []
+    elif unmeasured:
         revisions = []
     else:
         revisions = _uncertainty_entries(revisions, f"{label}.self_revisions")
@@ -276,6 +285,10 @@ def _uncertainty_lines(
             lines.append(f"      published beside that state, not by the reader: {counted}")
     if withheld:
         lines.append("      self-revisions not measured (primed-draft-withheld)")
+    elif unmeasured:
+        lines.append(
+            "      self-revisions not measured (the comparison ran out of its step budget)"
+        )
     folded = _uncertainty_folds(spans)
     folded_source = [spans.index(span) for span, _ in folded]
     if len(folded) != len(spans):

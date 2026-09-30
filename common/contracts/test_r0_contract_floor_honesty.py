@@ -138,6 +138,7 @@ def test_health_unrecorded_is_counted_and_is_not_a_shortfall():
             "failed": 0,
             "truncated": 0,
             "unaligned": 0,
+            "unmeasured": 0,
         }
     )
     assert unrecorded["under_witnessed"] is healthy["under_witnessed"] is False
@@ -176,9 +177,19 @@ def test_an_unaligned_shortfall_is_counted_from_attachment_and_span_evidence():
     )
     uncovered_span = _coverage(chair_2=_fact(comparable=False))
 
-    assert aligned["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0}
-    assert unattached["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 1}
-    assert uncovered_span["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 1}
+    assert aligned["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0, "unmeasured": 0}
+    assert unattached["shortfalls"] == {
+        "failed": 0,
+        "truncated": 0,
+        "unaligned": 1,
+        "unmeasured": 0,
+    }
+    assert uncovered_span["shortfalls"] == {
+        "failed": 0,
+        "truncated": 0,
+        "unaligned": 1,
+        "unmeasured": 0,
+    }
     # The shortfall lives in the coverage accounting, not in the vocabulary: the
     # chairs are still three ordinary `read` outcomes.
     for coverage in (aligned, unattached, uncovered_span):
@@ -215,7 +226,9 @@ def test_a_health_unrecorded_count_beyond_the_configured_chairs_is_refused():
 
 def test_a_non_integer_unaligned_shortfall_is_refused():
     """A shortfall class carries a count, and only a count."""
-    coverage = _base_coverage(shortfalls={"failed": 0, "truncated": 0, "unaligned": -1})
+    coverage = _base_coverage(
+        shortfalls={"failed": 0, "truncated": 0, "unaligned": -1, "unmeasured": 0}
+    )
     with pytest.raises(SchemaRefusal):
         _validate_coverage(coverage)
 

@@ -190,7 +190,8 @@ projection configuration. The bundle may contain these plainly specified formats
   assessment state and a count of its uncertain spans, gaps and self-revisions (the
   offsets stay on each half's own literal). A `primed-draft-withheld` reading carries
   `self_revisions: null` and its lectio kind: the reader did not see Pass A, so a
-  self-revision count was not measured. V2 permits null head/tail doubt counts
+  self-revision count was not measured. So does a fed reading whose self-revision
+  comparison ran out of its sealed step budget. V2 permits null head/tail doubt counts
   and carries each half's `lectio_kind` in `armarium-reconstructed-join.v2`.
   It is written to `reconstructions.jsonl` (with `jsonl`) and as a
   `## RECONSTRUCTED <join_id> (not an act)` section, with mirrored

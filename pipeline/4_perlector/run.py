@@ -51,7 +51,12 @@ from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 from throughput import PLANNED_SECONDS_PER_CALL  # noqa: E402
 
 import operations.serving.errors as serving_errors  # noqa: E402
-from common.alignment import bracket_marker_view, markup_text_view  # noqa: E402
+from common.alignment import (  # noqa: E402
+    bracket_marker_view,
+    load_dissent_limits,
+    markup_text_view,
+    refuse_retired_alignment_fields,
+)
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.chandra_native_retry import validate_trace as validate_chandra_trace  # noqa: E402
@@ -1325,6 +1330,9 @@ def _page_comparison_view(
     view = None
     if attachment["attached"]:
         if aligned:
+            refuse_retired_alignment_fields(
+                alignment, f"act {act_id} page witness {chair!r}'s aligned record"
+            )
             if (
                 set(alignment)
                 != {
@@ -3775,6 +3783,7 @@ def _publish_primed_without_prior(
     testimonia: list[dict],
     attachment_view: dict[str, Any],
     approval_ref: ApprovalRecordBinding,
+    dissent_steps: int,
 ) -> None:
     """The sampled control sees witnesses but never the Pass-A draft."""
     payload, outcome, testimonium_references = _arm_reading(
@@ -3798,7 +3807,11 @@ def _publish_primed_without_prior(
             "act_id": payload["dossier"]["logical_act_id"],
             "protocol_sha256": attempt.protocol_sha256,
         },
-        dissent=dissent_against(payload["text"], dissent_testimonia(testimonia, attachment_view)),
+        dissent=dissent_against(
+            payload["text"],
+            dissent_testimonia(testimonia, attachment_view),
+            max_comparison_steps=dissent_steps,
+        ),
         provenance=attempt.provenance(context),
         lectio_kind="primed-without-prior",
         protocol=_protocol_record(context, attempt.protocol_config),
@@ -3833,6 +3846,7 @@ def _established_row(
     testimonia: list[dict],
     attachment_view: dict[str, Any],
     autopsia: dict[str, Any],
+    dissent_steps: int,
 ) -> dict[str, Any]:
     """The Pass-B Perlectio payload and everything the audit pass needs to finish it.
 
@@ -3875,7 +3889,11 @@ def _established_row(
         },
         "dossier": primed_dossier,
         "prompt": prompt,
-        "dissent": dissent_against(reading, dissent_testimonia(testimonia, attachment_view)),
+        "dissent": dissent_against(
+            reading,
+            dissent_testimonia(testimonia, attachment_view),
+            max_comparison_steps=dissent_steps,
+        ),
         "truncation": truncation_record,
         "uncertain_spans": reader_spans,
         "gaps": gaps,
@@ -3883,7 +3901,10 @@ def _established_row(
         "provenance": provenance,
         "lectio_kind": kind_for_view(primed_dossier["prior_draft_view"]),
         "self_revision": self_revision_for_view(
-            primed_dossier["prior_draft_view"], reading, _prior_text(prior), departures
+            primed_dossier["prior_draft_view"],
+            reading,
+            _prior_text(prior),
+            partial(departures, max_comparison_steps=dissent_steps),
         ),
         "protocol": _protocol_record(context, attempt.protocol_config),
     }
@@ -4067,6 +4088,8 @@ class _Pass:
     instrument_approval: ApprovalRecordBinding | None
     audit_policy: dict[str, Any]
     audit_sha256: str
+    # The sealed step budget of every dissent and self-revision comparison.
+    dissent_steps: int
     expected: list[dict[str, Any]]
     declared_order: dict[str, int]
     wanted: list[dict[str, Any]]
@@ -4144,6 +4167,8 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
     )
     audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
     context.require_sealed_config("perlector-audit", audit_sha256)
+    dissent_limits, alignment_sha256 = load_dissent_limits(args.alignment_config)
+    context.require_sealed_config("alignment", alignment_sha256)
 
     expected = expected_acts(context)
     # An attempt nobody requested would make the attempt tally meaningless.
@@ -4190,6 +4215,7 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         instrument_approval=instrument_approval,
         audit_policy=audit_policy,
         audit_sha256=audit_sha256,
+        dissent_steps=dissent_limits.max_comparison_steps,
         expected=expected,
         declared_order={act["act_id"]: order for order, act in enumerate(expected)},
         wanted=wanted,
@@ -4570,6 +4596,7 @@ def _publish_act(
             testimonia=testimonia,
             attachment_view=attachment_view,
             approval_ref=run.instrument_approval,
+            dissent_steps=run.dissent_steps,
         )
     row = _established_row(
         context,
@@ -4581,6 +4608,7 @@ def _publish_act(
         testimonia=testimonia,
         attachment_view=attachment_view,
         autopsia=prepared.autopsia,
+        dissent_steps=run.dissent_steps,
     )
     if run.serving_mode == "live":
         _publish_semi_final(run, row)
@@ -5172,10 +5200,15 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
     if reproof.call_record is not None:
         payload["prompt"] = copy.deepcopy(reproof.call_record["audit_prompt"])
     payload["dissent"] = dissent_against(
-        final_text, dissent_testimonia(row["testimonia"], row["attachment_view"])
+        final_text,
+        dissent_testimonia(row["testimonia"], row["attachment_view"]),
+        max_comparison_steps=run.dissent_steps,
     )
     payload["self_revision"] = self_revision_for_view(
-        payload["dossier"]["prior_draft_view"], final_text, _prior_text(row["prior"]), departures
+        payload["dossier"]["prior_draft_view"],
+        final_text,
+        _prior_text(row["prior"]),
+        partial(departures, max_comparison_steps=run.dissent_steps),
     )
     payload["truncation"] = _audited_truncation(
         pass_b=payload["truncation"],
@@ -5218,10 +5251,15 @@ def _adopt_reproof_text(run: _Pass, row: dict[str, Any], reproof: _Reproof) -> d
         if reproof_assessment["state"] == "malformed":
             payload["uncertainty_assessment"] = _sealed_assessment(reproof_assessment)
         payload["dissent"] = dissent_against(
-            "", dissent_testimonia(row["testimonia"], row["attachment_view"])
+            "",
+            dissent_testimonia(row["testimonia"], row["attachment_view"]),
+            max_comparison_steps=run.dissent_steps,
         )
         payload["self_revision"] = self_revision_for_view(
-            payload["dossier"]["prior_draft_view"], "", _prior_text(row["prior"]), departures
+            payload["dossier"]["prior_draft_view"],
+            "",
+            _prior_text(row["prior"]),
+            partial(departures, max_comparison_steps=run.dissent_steps),
         )
     return reproof_truncation
 

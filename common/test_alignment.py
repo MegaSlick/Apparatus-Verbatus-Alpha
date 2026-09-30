@@ -9,11 +9,11 @@ from common.alignment import (
     DEFAULT_ALIGNMENT_CONFIG_PATH,
     STEP_LIMIT_REASON,
     AlignmentLimits,
-    AlignmentStepLimit,
     StepCountedMatcher,
     align_to_anchor,
     bracket_marker_view,
     load_alignment_limits,
+    load_dissent_limits,
     markup_text_view,
 )
 from common.contracts.errors import ContractError, SchemaRefusal
@@ -206,6 +206,85 @@ def test_an_alignment_finishes_on_its_exact_step_count_and_not_one_step_fewer():
     assert result["witness"]["text"] == witness, "refused, never clipped"
 
 
+class _VisitCounter(dict):
+    """`b2j` with every position list counting the times `difflib` iterates it.
+
+    `find_longest_match`'s inner loop is `for j in b2j.get(a[i], nothing)`, so
+    each yielded position is one visit of the loop the step budget charges for,
+    counted by the loop itself rather than by the charge's own formula.
+    """
+
+    visits = 0
+
+    def __init__(self, b2j: dict) -> None:
+        super().__init__(
+            {char: _CountedPositions(self, positions) for char, positions in b2j.items()}
+        )
+
+
+class _CountedPositions(list):
+    def __init__(self, counter: _VisitCounter, positions: list[int]) -> None:
+        super().__init__(positions)
+        self.counter = counter
+
+    def __iter__(self):
+        for position in super().__iter__():
+            self.counter.visits += 1
+            yield position
+
+
+def _charge_and_visits(witness: str, anchor: str) -> tuple[int, int]:
+    matcher = StepCountedMatcher(witness, anchor, 10**12)
+    counter = matcher.b2j = _VisitCounter(matcher.b2j)
+    matcher.get_matching_blocks()
+    return 10**12 - matcher.steps_left, counter.visits
+
+
+def test_the_charge_is_a_hand_counted_number_and_covers_every_inner_loop_visit():
+    """ "ab" against "abab" is one search: two witness characters scanned, each
+    with two anchor positions below the range's end, so 2 + 2 + 2 = 6 steps
+    for 4 visits. The longest match is the whole witness, so neither side
+    recurses. Over other pairs the charge is never below the visits `difflib`
+    actually makes: the budget counts at least the work."""
+    assert _charge_and_visits("ab", "abab") == (6, 4)
+    pairs = [
+        ("alpha beta gamma", "alpha beta gamna"),
+        ("abcabcabcabc", "cbacbacba"),
+        ("a" * 300, "a" * 200 + "b" + "a" * 50),
+        ("et de Marie Bernard, laboureur", "et de Marie Bernart, laboreur de ceste paroisse"),
+    ]
+    for witness, anchor in pairs:
+        charged, visits = _charge_and_visits(witness, anchor)
+        assert 0 < visits <= charged, (witness, anchor)
+
+
+# One short act, 150 characters, repeated verbatim to fill a page at the pair
+# ceiling, read by a witness that misreads the same character in every act.
+# Every repeat is an equally long candidate match, so the search revisits them
+# all: the costliest legitimate page the bounds admit.
+_ACT = (
+    "L'an mil sept cent quarante-trois, le douziesme jour du mois de may, a este "
+    "baptise par nous soubsigne Jean, fils legitime de Pierre Moreau, laboureur"
+)
+
+
+@pytest.mark.full
+def test_the_costliest_legitimate_page_aligns_with_at_least_twice_the_steps_to_spare():
+    limits = _matcher_limits()
+    side = int(limits.max_character_pairs**0.5)
+    assert len(_ACT) == 150
+    anchor = (_ACT * (side // len(_ACT) + 1))[:side]
+    misread = _ACT[:75] + "X" + _ACT[76:]
+    witness = (misread * (side // len(_ACT) + 1))[:side]
+    assert len(witness) * len(anchor) <= limits.max_character_pairs
+
+    steps = _steps_to_align(witness, anchor)
+
+    # An unaligned page witness leaves the act's witness floor, so running out
+    # here would record a page read perfectly well as uncorroborated.
+    assert 2 * steps <= limits.max_alignment_steps, steps
+
+
 def test_the_step_counted_matcher_returns_exactly_the_standard_library_blocks():
     """The budget counts the work and changes none of it: every block and
     opcode is `difflib`'s own, so no aligned record moves because it is
@@ -227,26 +306,26 @@ def test_the_step_counted_matcher_returns_exactly_the_standard_library_blocks():
         assert counted.get_opcodes() == reference.get_opcodes()
 
 
+@pytest.mark.full
 def test_a_degenerate_pair_the_pair_bound_admits_stops_on_the_sealed_budget():
-    """A single repeated letter at the pair ceiling is the matcher's worst
-    shape. The first search is charged its whole cost before it runs, so it
-    stops before doing any of it."""
+    """Two different low-entropy responses at the pair ceiling -- a chair stuck
+    repeating one phrase against a page that repeats another -- would take many
+    times the budget to finish. They stop on it, unaligned with the reason
+    that says the aligner stopped, not that the witness was measured."""
     limits = load_alignment_limits()[0]
     side = int(limits.max_character_pairs**0.5)
-    with pytest.raises(AlignmentStepLimit):
-        StepCountedMatcher("a" * side, "a" * side, limits.max_alignment_steps).find_longest_match()
-    result = align_to_anchor("a" * side, "a" * side, limits)
+    witness, anchor = ("et le " * side)[:side], ("de la " * side)[:side]
+    result = align_to_anchor(witness, anchor, limits)
     assert (result["status"], result["reason"]) == ("unaligned", STEP_LIMIT_REASON)
 
 
 # --- The matcher's contract --------------------------------------------------
 #
-# Written while trying to replace `difflib` with RapidFuzz, and kept after that
-# swap was refused on measurement. They pin what `align_to_anchor`'s callers
-# actually depend on, so the next attempt fails loudly instead of quietly
-# redefining what "aligned" means: fidelity to the codepoints handed in,
-# monotonicity, and -- the one that killed the swap -- which of two equally
-# large attachments wins.
+# What `align_to_anchor`'s callers actually depend on, pinned so a faster
+# matcher fails loudly instead of quietly redefining what "aligned" means:
+# fidelity to the codepoints handed in, monotonicity, and -- the one a
+# coverage-maximizing matcher breaks -- which of two equally large attachments
+# wins.
 
 
 def _matcher_limits() -> AlignmentLimits:
@@ -340,8 +419,8 @@ def test_offsets_are_codepoint_indices_even_past_the_basic_multilingual_plane():
 
 
 def test_a_shared_act_opening_attaches_to_the_act_the_witness_actually_read():
-    """The property that refused the RapidFuzz swap, pinned
-    so it is not lost the next time someone reaches for a faster matcher.
+    """The property a coverage-maximizing matcher lacks, pinned so it is not
+    lost to a faster one.
 
     Register acts open with the same formula, so a page of them contains the
     same opening several times. A witness that read only the second act
@@ -355,11 +434,12 @@ def test_a_shared_act_opening_attaches_to_the_act_the_witness_actually_read():
         ties on characters and breaks the tie towards the earliest match.
 
     RapidFuzz's Indel/LCS opcodes take the second. It is not a smaller answer,
-    it is a wrong one, and the pipeline's `confirmed-blank` scenario failed on
-    it: twelve characters of page text fell outside every act attachment, the
-    Recensor read that as incomplete testimony coverage, and both acts were
-    held instead of the blank being sealed. Longest verbatim agreement wins;
-    that is the disambiguation this module is for.
+    it is a wrong one, and the pipeline's `confirmed-blank` scenario depends on
+    the difference: under the second, twelve characters of page text fall
+    outside every act attachment, the Recensor reads that as incomplete
+    testimony coverage, and both acts are held instead of the blank being
+    sealed. Longest verbatim agreement wins; that is the disambiguation this
+    module is for.
     """
     anchor = "SYNTHETIC ACT ONE alpha beta gamma SYNTHETIC ACT TWO delta epsilon zeta eta"
     witness = "SYNTHETIC ACT TWO delta epsilon zeta eta"
@@ -373,37 +453,6 @@ def test_a_shared_act_opening_attaches_to_the_act_the_witness_actually_read():
     assert all(anchor_start >= second_act_start for _, anchor_start, _ in blocks), (
         "no part of a reading of the second act may be attributed to the first, "
         "however many characters the two acts' openings share"
-    )
-
-
-@pytest.mark.full
-def test_the_page_that_set_the_budget_still_aligns_under_the_sealed_limits():
-    """The workload that decided `max_alignment_steps`, run against the sealed
-    value, so lowering that value goes red here.
-
-    A spent budget is `unaligned`, an unaligned page witness is not
-    `comparable`, and an incomparable chair leaves the act's witness floor --
-    so a budget that runs out on real work records coverage that is missing.
-    The input below is 7,500 characters of register prose whose acts repeat
-    one formula verbatim, which is what a scribe copying one form actually
-    produces, and which is the shape Ratcliff-Obershelp works hardest on. It
-    takes 76.8 million steps. Marked `full` so the seconds it takes stay out
-    of the fast loop; its verdict does not depend on them.
-    """
-    act = (
-        "L'an mil sept cent quarante-trois, le douziesme jour du mois de may, "
-        "a este baptise par nous soubsigne Jean, fils legitime de Pierre Moreau, "
-        "laboureur, et de Marie Bernard sa femme, de cette paroisse de Saint-Pierre. "
-    )
-    anchor = (act * 40)[:7_500]
-    witness = anchor.replace("este", "esté").replace("legitime", "legitirne")[:7_500]
-    limits = _matcher_limits()
-    result = align_to_anchor(witness, anchor, limits)
-
-    assert result["status"] == "aligned", (
-        f"the page that set the budget came back {result.get('reason')} under a sealed "
-        f"{limits.max_alignment_steps} steps; a page read perfectly well would be "
-        "recorded as an act nobody corroborated"
     )
 
 
@@ -456,6 +505,9 @@ def test_no_input_the_sealed_bounds_admit_is_silently_truncated():
 
 # --- The limits loader: the only gate between config/alignment.toml and every run
 
+_VALID_LIMITS = "[limits]\nmax_characters = 1\nmax_character_pairs = 1\nmax_alignment_steps = 1\n"
+_VALID_DISSENT = "[dissent]\nmax_comparison_steps = 1\n"
+
 
 def test_the_loader_returns_the_sealed_limits_and_the_file_seal():
     limits, digest = load_alignment_limits()
@@ -465,35 +517,69 @@ def test_the_loader_returns_the_sealed_limits_and_the_file_seal():
     assert digest == read_sealed_toml(DEFAULT_ALIGNMENT_CONFIG_PATH, "alignment")[1]
 
 
+def test_the_dissent_budget_is_its_own_sealed_key_in_the_same_file():
+    """The Perlector's comparison budget is read from `[dissent]`, under the
+    same seal as the page limits, so a run cannot compare under one file and
+    align under another."""
+    record, digest = read_sealed_toml(DEFAULT_ALIGNMENT_CONFIG_PATH, "alignment")
+    dissent, dissent_digest = load_dissent_limits()
+    assert dissent_digest == digest == load_alignment_limits()[1]
+    assert dissent.max_comparison_steps == record["dissent"]["max_comparison_steps"] > 0
+
+
+def _config(limits: str = _VALID_LIMITS, dissent: str = _VALID_DISSENT) -> str:
+    return f"{limits}{dissent}"
+
+
+def test_either_loader_reads_its_own_table_of_one_valid_file(tmp_path):
+    path = tmp_path / "limits.toml"
+    path.write_text(_config(dissent="[dissent]\nmax_comparison_steps = 7\n"))
+    assert load_alignment_limits(path)[0] == AlignmentLimits(1, 1, 1)
+    assert load_dissent_limits(path)[0].max_comparison_steps == 7
+
+
 def test_the_loader_refuses_an_unreadable_file(tmp_path):
     with pytest.raises(ContractError, match="could not be read"):
         load_alignment_limits(tmp_path / "absent.toml")
 
 
-def test_the_loader_refuses_an_unknown_or_missing_key(tmp_path):
-    misspelt = tmp_path / "misspelt.toml"
-    misspelt.write_text(
-        "[limits]\nmax_characters = 1\nmax_character_pairs = 1\nmax_alignment_step = 1\n"
-    )
-    with pytest.raises(ContractError, match="closed schema"):
-        load_alignment_limits(misspelt)
-    partial = tmp_path / "partial.toml"
-    partial.write_text("[limits]\nmax_characters = 1\n")
-    with pytest.raises(ContractError, match="closed schema"):
-        load_alignment_limits(partial)
-
-
-@pytest.mark.parametrize("bad", ['"3"', "true", "0", "-1", "1.5"])
-def test_the_loader_refuses_a_value_that_is_not_a_positive_integer(tmp_path, bad):
-    """`true` would parse as 1 and quietly cut every page alignment to one
-    step; a float or string would reach the matcher's budget at run time. The
-    loader is where those stop."""
+@pytest.mark.parametrize("loader", [load_alignment_limits, load_dissent_limits])
+@pytest.mark.parametrize(
+    "text",
+    [
+        _config(limits=_VALID_LIMITS.replace("max_alignment_steps", "max_alignment_step")),
+        _config(limits="[limits]\nmax_characters = 1\n"),
+        _config(dissent=""),
+        _config(dissent="[dissent]\nmax_comparison_step = 1\n"),
+        _config(dissent="[dissent]\nmax_comparison_steps = 1\nextra = 1\n"),
+    ],
+)
+def test_the_loader_refuses_an_unknown_or_missing_key(tmp_path, loader, text):
+    """Either loader refuses the whole file alike: the page limits are not
+    loaded from a file whose dissent table is wrong, nor the reverse."""
     path = tmp_path / "limits.toml"
-    path.write_text(
-        f"[limits]\nmax_characters = 1\nmax_character_pairs = 1\nmax_alignment_steps = {bad}\n"
-    )
+    path.write_text(text)
+    with pytest.raises(ContractError, match="closed schema"):
+        loader(path)
+
+
+@pytest.mark.parametrize("loader", [load_alignment_limits, load_dissent_limits])
+@pytest.mark.parametrize("bad", ['"3"', "true", "0", "-1", "1.5"])
+@pytest.mark.parametrize("table", ["limits", "dissent"])
+def test_the_loader_refuses_a_value_that_is_not_a_positive_integer(tmp_path, loader, bad, table):
+    """`true` would parse as 1 and quietly cut every alignment or comparison to
+    one step; a float or string would reach the matcher's budget at run time.
+    The loader is where those stop."""
+    path = tmp_path / "limits.toml"
+    if table == "limits":
+        text = _config(
+            limits=_VALID_LIMITS.replace("max_alignment_steps = 1", f"max_alignment_steps = {bad}")
+        )
+    else:
+        text = _config(dissent=f"[dissent]\nmax_comparison_steps = {bad}\n")
+    path.write_text(text)
     with pytest.raises(ContractError, match="positive integers"):
-        load_alignment_limits(path)
+        loader(path)
 
 
 # --- NFC composition and the offset map
@@ -501,10 +587,9 @@ def test_the_loader_refuses_a_value_that_is_not_a_positive_integer(tmp_path, bad
 
 def test_nfc_composition_keeps_the_offset_map_pointing_at_the_raw_cluster():
     """Composition changes codepoint count, so indexing pre-composition offsets
-    with a post-composition index mis-pointed every entry after the first
-    merge. Each composed character now maps to the raw offset of the cluster
-    that produced it -- for NFD French, the base letter the accent composed
-    into."""
+    with a post-composition index would mis-point every entry after the first
+    merge. Each composed character maps to the raw offset of the cluster that
+    produced it -- for NFD French, the base letter the accent composed into."""
     raw = "Genevie\u0300ve ne\u0301e"  # NFD: base letters with combining accents
     view = markup_text_view(raw)
 

@@ -34,6 +34,7 @@ from test_live_perlector import (
     _TreeBlobs,
 )
 
+from common.alignment import load_dissent_limits
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import act_bindings, region_id, verify
@@ -52,6 +53,7 @@ from operations.serving.config import profile_preflight_digest
 from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
 
 ROOT = Path(__file__).resolve().parents[2]
+BUDGET = load_dissent_limits()[0].max_comparison_steps
 PERLECTOR_PROGRAM = "pipeline/4_perlector/run.py"
 CHAIN = programs_through("attestatores")
 FIXTURE = tomllib.loads((ROOT / "proof" / "skeleton_fixture.toml").read_text(encoding="utf-8"))
@@ -939,9 +941,9 @@ def test_dissent_does_not_count_a_witness_s_own_doubt_markers_as_departure():
             "testimonium": {"payload": {"format_capabilities": capabilities}},
         }
 
-    [marked] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(True)])
+    [marked] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(True)], BUDGET)
     assert marked["compared"] is True and marked["departed"] is False
-    [plain] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(False)])
+    [plain] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(False)], BUDGET)
     assert plain["departed"] is True
 
 

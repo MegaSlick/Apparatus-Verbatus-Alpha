@@ -26,6 +26,10 @@ from common.act_visibility_geometry import (  # noqa: E402
     classify_capture_visibility,
     expected_surface_cells,
 )
+from common.alignment import (  # noqa: E402
+    UNMEASURED_REASONS,
+    refuse_retired_alignment_fields,
+)
 from common.background import (  # noqa: E402
     BackgroundInferenceRefusal,
     load_background_config,
@@ -648,6 +652,10 @@ def act_attachment_facts(
                 if page_witness and entry["attached"]
                 else None
             ),
+            # The aligner stopped on its own bound, so this page was never compared.
+            "alignment_unmeasured": page_witness
+            and entry["alignment"]["status"] == "unaligned"
+            and entry["alignment"]["reason"] in UNMEASURED_REASONS,
         }
         if chair in facts:
             if not (page_witness and facts[chair]["page_witness"]):
@@ -665,6 +673,10 @@ def act_attachment_facts(
             # Merge whole page rows; OR-ing flags would invent an unseen combination.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
+            # A page never compared leaves the chair unmeasured unless another page counts.
+            merged["alignment_unmeasured"] = (
+                previous["alignment_unmeasured"] or fact["alignment_unmeasured"]
+            )
             # One failed page means the shared attempt cannot claim a located act line.
             bases_seen = (previous["anchor_basis"], fact["anchor_basis"])
             if "act-line-not-located" in bases_seen:
@@ -855,6 +867,12 @@ def _require_alignment_shape(act_id: str, chair: str, alignment: dict) -> None:
     unaligned record needs a reason.
     """
     if alignment["status"] == "aligned":
+        try:
+            refuse_retired_alignment_fields(
+                alignment, f"act {act_id} page witness {chair!r}'s aligned record"
+            )
+        except SchemaRefusal as error:
+            raise FatalAccounting(str(error)) from error
         if (
             set(alignment) != _ALIGNED_KEYS
             or not isinstance(alignment["anchor_basis"], str)

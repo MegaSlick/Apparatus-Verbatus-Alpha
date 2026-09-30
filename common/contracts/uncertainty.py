@@ -10,6 +10,7 @@ from typing import Any, Final
 
 from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
+from common.contracts.prior_draft import is_unmeasured_comparison
 
 _FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions", "assessment", "lectio_kind"})
 _AUDIT_FIELDS = _FIELDS - {"lectio_kind"}
@@ -41,15 +42,18 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise SchemaRefusal("canonical uncertainty requires an object Perlectio payload")
     source_revisions = payload.get("self_revision")
-    if not isinstance(source_revisions, list):
-        raise SchemaRefusal("Perlectio self_revision is not a list")
+    # A fed draft whose comparison ran out of its sealed step budget carries the
+    # explicit non-verdict; its canonical self-revisions are not measured (null).
+    unmeasured = is_unmeasured_comparison(source_revisions)
+    if not unmeasured and not isinstance(source_revisions, list):
+        raise SchemaRefusal("Perlectio self_revision is not a list or a fed draft's non-verdict")
     lectio_kind = payload.get("lectio_kind")
     if lectio_kind not in ("primed-with-prior", "primed-draft-withheld"):
         raise SchemaRefusal(f"Perlectio has unknown lectio kind {lectio_kind!r}")
     if lectio_kind == "primed-draft-withheld" and source_revisions:
         raise SchemaRefusal("a draft-withheld Perlectio cannot claim self-revisions")
     revisions = []
-    for index, item in enumerate(source_revisions):
+    for index, item in enumerate([] if unmeasured else source_revisions):
         if not isinstance(item, dict) or set(item) != _SOURCE_REVISION_FIELDS:
             raise SchemaRefusal(
                 f"self_revision[{index}] is not the closed source schema canonicalization expects"
@@ -69,7 +73,9 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
     layer = {
         "uncertain_spans": payload.get("uncertain_spans"),
         "gaps": payload.get("gaps"),
-        "self_revisions": None if lectio_kind == "primed-draft-withheld" else revisions,
+        "self_revisions": (
+            None if lectio_kind == "primed-draft-withheld" or unmeasured else revisions
+        ),
         "assessment": {"state": assessment["state"], "problem": assessment["problem"]},
         "lectio_kind": lectio_kind,
     }
@@ -128,7 +134,10 @@ def _validate(layer: Any, text: Any, fields: frozenset[str]) -> dict[str, Any]:
         raise SchemaRefusal("canonical uncertainty names an unknown lectio kind")
     if kind == "primed-draft-withheld" and revisions is not None:
         raise SchemaRefusal("a draft-withheld reading's self-revisions are not measured")
-    if kind != "primed-draft-withheld" and not isinstance(revisions, list):
+    # Null is "not measured": always for a withheld draft, and for a fed one whose
+    # comparison ran out of its sealed step budget. Without a lectio kind (an audit
+    # projection) there is no draft to have measured against, so a list is required.
+    if not isinstance(revisions, list) and not (revisions is None and kind is not None):
         raise SchemaRefusal("canonical uncertainty self-revisions must be a list when measured")
     if not isinstance(uncertain, list) or not isinstance(gaps, list):
         raise SchemaRefusal("canonical uncertainty members must all be lists")

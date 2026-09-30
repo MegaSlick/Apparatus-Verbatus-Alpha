@@ -235,3 +235,84 @@ def test_an_act_scoped_attachment_may_not_name_another_chairs_testimonium(
     current = recensor.chair_current_attempts(context, act["act_id"])
     with pytest.raises(FatalAccounting, match="another chair's Testimonium"):
         recensor.act_attachment_facts(context, act["act_id"], current)
+
+
+def _rewrite_page_alignment(context, monkeypatch, act_id, change, page_ordinal=1):
+    """Apply `change` to the page witness's aligned record on one page."""
+    original = context.tree.read_artifact
+
+    def rewritten(stage, kind, artifact_id):
+        record = original(stage, kind, artifact_id)
+        if stage == ATTESTATORES and kind == "act-attachment" and record["subject_id"] == act_id:
+            record = copy.deepcopy(record)
+            row = next(
+                row
+                for row in record["payload"]["attachments"]
+                if row["chair"] == PAGE_CHAIR and row["page_ordinal"] == page_ordinal
+            )
+            assert row["alignment"]["status"] == "aligned", row
+            change(row)
+        return record
+
+    monkeypatch.setattr(context.tree, "read_artifact", rewritten)
+
+
+def test_an_aligned_record_carrying_the_retired_deadline_field_is_refused_by_name(
+    context_and_act, monkeypatch
+):
+    """A record aligned under a wall-clock deadline says whether it aligned
+    depended on the machine. The Recensor names the retired field rather than
+    counting the chair from it or refusing it as an anonymous shape error."""
+    recensor, context, act, _tree = context_and_act
+
+    def carry_deadline(row):
+        row["alignment"]["deadline_in_force"] = True
+
+    _rewrite_page_alignment(context, monkeypatch, act["act_id"], carry_deadline)
+
+    current = recensor.chair_current_attempts(context, act["act_id"])
+    with pytest.raises(FatalAccounting, match="retired alignment field.*deadline_in_force"):
+        recensor.act_attachment_facts(context, act["act_id"], current)
+
+
+def test_a_spent_alignment_budget_is_unmeasured_not_a_measured_shortfall(
+    context_and_act, monkeypatch
+):
+    """The aligner stopping on its step budget measured nothing, so the chair
+    lands in `unmeasured`, apart from `unaligned`, a comparison made and found
+    not to cover. It still leaves the floor: no comparison may be claimed."""
+    recensor, context, act, _tree = context_and_act
+
+    def spend_budget(row):
+        row["alignment"] = {"status": "unaligned", "reason": "alignment-step-limit"}
+        row["comparable"] = False
+
+    _rewrite_page_alignment(context, monkeypatch, act["act_id"], spend_budget)
+
+    current = recensor.chair_current_attempts(context, act["act_id"])
+    outcomes = recensor.chair_outcomes(current)
+    facts = recensor.act_attachment_facts(context, act["act_id"], current)
+    assert facts[PAGE_CHAIR]["alignment_unmeasured"] is True
+    assert facts[ACT_CHAIR]["alignment_unmeasured"] is False
+
+    coverage = recensor.witness_coverage(outcomes, context.witness_floor, attachments=facts)
+    assert coverage["under_witnessed"] is True
+    assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0, "unmeasured": 1}
+
+
+def test_a_measured_non_overlap_stays_unaligned(context_and_act, monkeypatch):
+    """The other half of the split: an alignment that ran and found no common
+    text is a measurement, and stays in `unaligned`."""
+    recensor, context, act, _tree = context_and_act
+
+    def no_common_text(row):
+        row["alignment"] = {"status": "unaligned", "reason": "no-common-anchor-text"}
+        row["comparable"] = False
+
+    _rewrite_page_alignment(context, monkeypatch, act["act_id"], no_common_text)
+
+    current = recensor.chair_current_attempts(context, act["act_id"])
+    outcomes = recensor.chair_outcomes(current)
+    facts = recensor.act_attachment_facts(context, act["act_id"], current)
+    coverage = recensor.witness_coverage(outcomes, context.witness_floor, attachments=facts)
+    assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 1, "unmeasured": 0}

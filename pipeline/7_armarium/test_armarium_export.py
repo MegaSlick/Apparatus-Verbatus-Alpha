@@ -5044,6 +5044,26 @@ def test_reconstruction_does_not_count_a_withheld_draft_as_zero(tmp_path):
     verify_delivered_bundle(bundle.data, tmp_path / "clean")
 
 
+def test_reconstruction_does_not_count_an_unmeasured_fed_draft_as_zero(tmp_path):
+    """A fed draft whose self-revision comparison ran out of its step budget
+    carries null in its canonical layer: not measured, never zero revisions."""
+    layer = {
+        "uncertain_spans": [],
+        "gaps": [],
+        "self_revisions": None,
+        "lectio_kind": "primed-with-prior",
+        "assessment": {"state": "assessed", "problem": None},
+    }
+    bundle = build_armarium_bundle(
+        _joined(head_uncertainty=layer), _formats(embed_pixels=False), _source_bytes
+    )
+    members = _members(bundle.data)
+    (record,) = [json.loads(line) for line in members["reconstructions.jsonl"].splitlines()]
+    assert record["head_doubt"]["self_revisions"] is None
+    assert record["head_doubt"]["lectio_kind"] == "primed-with-prior"
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+
+
 def test_chained_joins_reconstruct_each_pair_and_mirror_both_notes(tmp_path):
     bundle = build_armarium_bundle(
         _joined(chained=True), _formats(embed_pixels=False), _source_bytes

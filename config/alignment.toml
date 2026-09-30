@@ -5,13 +5,21 @@ max_characters = 100000
 max_character_pairs = 100000000
 # The matcher's work, in steps: one witness character scanned or one anchor
 # position visited by `find_longest_match`. Counted, not timed, so the same
-# page under the same limits aligns the same way on every machine. Sized from
-# the legitimate ceiling: an unaligned page witness is not comparable, so it
-# leaves the act's witness floor. Synthetic register pages of 2,000 to 8,000
-# characters, witnesses at 2% to 30% character error, reordered, half read or
-# unrelated, took 0.4 to 27.2 million steps. A 7,500-character page whose acts
-# repeat one formula verbatim -- what a scribe copying one form produces --
-# takes 76.8 million, and clears. Degenerate pairs the pair bound admits stop
-# here: two 10,000-character random two-letter responses reach the budget in
-# about 8.5 s on a laptop, a single repeated letter at once.
-max_alignment_steps = 100000000
+# page under the same limits aligns the same way on every machine. An
+# unaligned page witness is not comparable and leaves the act's witness floor,
+# so the budget is sized to clear, with room to spare, every legitimate page
+# the two bounds above admit. The costliest is a page at the pair ceiling
+# whose acts repeat one short formula verbatim and whose witness misreads the
+# same word in every act; varied acts, noisy witnesses and asymmetric page
+# shapes cost far less. Degenerate chair responses the bounds admit (a
+# repetition loop, two different low-entropy strings) stop here.
+max_alignment_steps = 500000000
+
+# The Perlector's dissent and self-revision comparisons: one act's reading
+# against one witness's act-length report or against the reading's own prior
+# draft, in the same steps. Sized to clear act-length text with room to spare,
+# a formula act and a noisy or unrelated witness included; a degenerate report
+# stops here. A comparison that would pass it is recorded as not measured,
+# never guessed.
+[dissent]
+max_comparison_steps = 100000000

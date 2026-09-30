@@ -110,6 +110,12 @@ missing configured chair, an unsealed extra chair, or a duplicate ordinal is a
 fatal accounting error; it is never resolved by sort order. Completed coverage is
 `read` plus `genuinely-empty`, while failed and not-run outcomes remain visible
 shortfalls.
+A chair not attached with comparable text is a shortfall in one of two buckets:
+`unmeasured` when its page alignment stopped on one of the aligner's own bounds
+(`character-limit`, `character-pair-limit`, `alignment-step-limit`), so nobody
+knows whether it covered the act, and `unaligned` when a comparison was made, or
+never needed, and did not cover. Either leaves the floor. The partition receipt
+carries the split from `recensor-partition-receipt.v3`.
 
 The act-attachment mirror is checked against those exact current records before
 the witness floor is counted. For a page witness, geometry against the sealed

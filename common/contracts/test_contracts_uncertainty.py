@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import pytest
 
+from common.alignment import load_dissent_limits
 from common.contracts import uncertainty as canonical_uncertainty
 from common.contracts.errors import SchemaRefusal
+from common.contracts.prior_draft import unmeasured_comparison
 from common.contracts.uncertainty import from_perlectio, utf8_round_trip, validate
 from conftest import load_stage
 
@@ -36,7 +38,7 @@ _EMPTY = {
 def test_source_revision_vocabulary_matches_the_perlector_producer() -> None:
     dissent = load_stage("4_perlector", "dissent")
 
-    produced = dissent.departures("a", "b")
+    produced = dissent.departures("a", "b", load_dissent_limits()[0].max_comparison_steps)
 
     assert len(produced) == 1
     assert canonical_uncertainty._SOURCE_REVISION_FIELDS == frozenset(produced[0])
@@ -57,6 +59,40 @@ def test_withheld_draft_has_no_self_revision_measurement() -> None:
     assert validate(layer, "Maria") == layer
     with pytest.raises(SchemaRefusal, match="not measured"):
         validate({**layer, "self_revisions": []}, "Maria")
+
+
+def test_a_fed_draft_whose_comparison_ran_out_is_not_measured_rather_than_unrevised() -> None:
+    """The Perlectio carries the explicit non-verdict; the canonical layer says
+    not measured (null), never `[]`, which would claim the reading and the
+    draft were compared and agreed."""
+    payload = {
+        "text": "Maria",
+        "lectio_kind": "primed-with-prior",
+        "self_revision": unmeasured_comparison(10),
+        "uncertain_spans": [],
+        "gaps": [],
+        "uncertainty_assessment": _ASSESSED,
+    }
+    layer = from_perlectio(payload)
+    assert layer["self_revisions"] is None
+    assert validate(layer, "Maria") == layer
+    # Only the exact closed record, and only for a fed draft.
+    for forged in (
+        {**unmeasured_comparison(10), "measured": True},
+        {**unmeasured_comparison(10), "reason": "other"},
+        {**unmeasured_comparison(10), "max_comparison_steps": 0},
+        None,
+    ):
+        with pytest.raises(SchemaRefusal, match="not a list"):
+            from_perlectio({**payload, "self_revision": forged})
+    with pytest.raises(SchemaRefusal):
+        from_perlectio({**payload, "lectio_kind": "primed-draft-withheld"})
+    # An audit projection has no draft to have measured against.
+    without_kind = {key: value for key, value in _EMPTY.items() if key != "lectio_kind"}
+    with pytest.raises(SchemaRefusal, match="must be a list when measured"):
+        canonical_uncertainty.validate_audit_projection(
+            {**without_kind, "self_revisions": None}, "Maria"
+        )
 
 
 def test_a_canonical_layer_requires_its_lectio_kind() -> None:

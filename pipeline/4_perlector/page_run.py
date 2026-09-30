@@ -1072,7 +1072,11 @@ def _comparison_text(text: str, capabilities: Any) -> str:
 
 
 def _dissent(
-    text: str, feed: dict[str, Any], cited_ids: list[str], witnesses: list[dict[str, Any]]
+    text: str,
+    feed: dict[str, Any],
+    cited_ids: list[str],
+    witnesses: list[dict[str, Any]],
+    max_comparison_steps: int,
 ) -> list[dict[str, Any]]:
     """Where the entry's reading departed from each shown witness's cited units."""
     capabilities = {
@@ -1116,6 +1120,7 @@ def _dissent(
                     "payload": {"chair": witness["letter"], "comparison_reported": reported},
                 }
             ],
+            max_comparison_steps=max_comparison_steps,
         )
         if len(compared) != 1:
             raise ContractError(f"dissent gave {len(compared)} rows for one witness, not one")
@@ -1147,8 +1152,9 @@ def publish_act_records(
 
     Every record carries `page_accounting_ref` and the page's hold codes as
     `page_holds`, and is held when those or its own holds are non-empty. A
-    `perlectio` already sealed for the entry is adopted, not recomputed: its
-    dissent is bounded by time, so a second computation could differ.
+    `perlectio` already sealed for the entry is adopted, not recomputed, once
+    `_check_adopted_perlectio` finds it names the region, reading, feed and
+    accounting this page has now.
     """
     if not plans:
         return
@@ -1249,7 +1255,13 @@ def publish_act_records(
                 "uncertain_spans": assessment["uncertain_spans"],
                 "gaps": assessment["gaps"],
                 "uncertainty_assessment": assessment,
-                "dissent": _dissent(plan["text"], page.feed, plan["cited_ids"], page.witnesses),
+                "dissent": _dissent(
+                    plan["text"],
+                    page.feed,
+                    plan["cited_ids"],
+                    page.witnesses,
+                    state.run.dissent_steps,
+                ),
                 "truncation": plan["truncation"],
                 "autopsia": plan["autopsia"],
                 "continues_from_previous_page": act["continues_from_previous_page"],

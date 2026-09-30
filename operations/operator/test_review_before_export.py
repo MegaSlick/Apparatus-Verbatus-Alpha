@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.canonical import digest_bytes
+from common.contracts.prior_draft import unmeasured_comparison
 from common.runtree.store import RunTree
 from operations.operator import cli, review, review_text
 from operations.operator.errors import ErrorCode, OperatorError
@@ -1307,6 +1308,25 @@ def test_withheld_reading_displays_unmeasured_self_revisions():
     assert "self-revisions not measured (primed-draft-withheld)" in text
     with pytest.raises(review_text.ProjectionShapeError, match="null for a withheld draft"):
         review_text.render(_reading_act({**reading, "self_revision": []}))
+
+
+def test_a_fed_reading_whose_comparison_ran_out_displays_unmeasured_self_revisions():
+    """The Perlectio's non-verdict and the canonical layer's null both read as
+    not measured, never as a reading with no revisions."""
+    reading = {
+        "outcome": "read",
+        "text": "alpha beta",
+        "lectio_kind": "primed-with-prior",
+        "self_revision": unmeasured_comparison(10),
+        "uncertain_spans": [],
+        "gaps": [],
+        "uncertainty_assessment": {"state": "assessed", "problem": None},
+    }
+    for revisions in (unmeasured_comparison(10), None):
+        text = "\n".join(review_text.render(_reading_act({**reading, "self_revision": revisions})))
+        assert "self-revisions not measured (the comparison ran out of its step budget)" in text
+    text = "\n".join(review_text.render(_reading_act({**reading, "self_revision": []})))
+    assert "self-revisions not measured" not in text
 
 
 def test_a_delivered_act_with_no_uncertainty_layer_still_says_so():

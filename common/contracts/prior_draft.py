@@ -1,6 +1,6 @@
 """The recorded relationship between a prior draft and its establishing reading."""
 
-from typing import Any, Callable
+from typing import Any, Callable, Final
 
 from common.contracts.errors import SchemaRefusal
 
@@ -27,9 +27,37 @@ def kind_for_view(view: str) -> str:
     raise SchemaRefusal(f"an establishing reading has unknown prior-draft view {view!r}")
 
 
+# A comparison stopped by its sealed step budget. Named so the record says the
+# instrument stopped, not that the reading and the draft were found to agree.
+COMPARISON_STEP_LIMIT_REASON: Final = "comparison-step-limit"
+_UNMEASURED_FIELDS: Final = frozenset({"measured", "reason", "max_comparison_steps"})
+
+
+def unmeasured_comparison(max_comparison_steps: int) -> dict[str, Any]:
+    """The explicit non-verdict of a comparison that would pass its step budget."""
+    return {
+        "measured": False,
+        "reason": COMPARISON_STEP_LIMIT_REASON,
+        "max_comparison_steps": max_comparison_steps,
+    }
+
+
+def is_unmeasured_comparison(value: Any) -> bool:
+    """Whether `value` is exactly the closed non-verdict `unmeasured_comparison` writes."""
+    return (
+        isinstance(value, dict)
+        and set(value) == _UNMEASURED_FIELDS
+        and value["measured"] is False
+        and value["reason"] == COMPARISON_STEP_LIMIT_REASON
+        and type(value["max_comparison_steps"]) is int
+        and value["max_comparison_steps"] > 0
+    )
+
+
 def self_revision_for_view(
-    view: str, text: str, prior_text: str, measure: Callable[[str, str], list]
-) -> list:
+    view: str, text: str, prior_text: str, measure: Callable[[str, str], list | dict]
+) -> list | dict:
+    """The fed draft's departures, `[]` for a withheld one, or `measure`'s non-verdict."""
     kind_for_view(view)
     return measure(text, prior_text) if view == "fed" else []
 

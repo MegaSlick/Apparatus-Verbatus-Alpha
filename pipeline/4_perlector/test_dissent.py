@@ -8,10 +8,26 @@ import unicodedata
 from pathlib import Path
 
 import dissent
+import pytest
 
-from common.alignment import StepCountedMatcher
+from common.alignment import (
+    DEFAULT_ALIGNMENT_CONFIG_PATH,
+    StepCountedMatcher,
+    load_dissent_limits,
+)
+from common.contracts.errors import SchemaRefusal
+from common.contracts.prior_draft import COMPARISON_STEP_LIMIT_REASON, unmeasured_comparison
+from common.contracts.stages import PERLECTOR
+from common.runtree.store import RunTree
+from conftest import programs_through, run_stage
 
 ROOT = Path(__file__).resolve().parents[2]
+# The sealed dissent budget, loaded, never a copy of it.
+BUDGET = load_dissent_limits()[0].max_comparison_steps
+
+
+def _dissent_against(reading, testimonia):
+    return dissent.dissent_against(reading, testimonia, max_comparison_steps=BUDGET)
 
 
 def test_comparison_view_collapses_whitespace_and_reports_what_it_dropped():
@@ -60,7 +76,7 @@ def test_composing_an_accent_is_not_counted_as_a_dropped_character():
 def test_a_normalization_form_difference_alone_produces_no_dissent():
     reading = unicodedata.normalize("NFC", "baptisé le premier février")
     reported = unicodedata.normalize("NFD", reading)
-    rows = dissent.dissent_against(
+    rows = _dissent_against(
         reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
     )
     assert rows[0]["departed"] is False
@@ -77,7 +93,7 @@ def test_a_witness_that_agrees_after_whitespace_normalization_departs_only_raw()
             "payload": {"chair": "attestator_1", "reported": "alpha  beta gamma"},
         }
     ]
-    rows = dissent.dissent_against("alpha beta gamma", testimonia)
+    rows = _dissent_against("alpha beta gamma", testimonia)
     assert rows == [
         {
             "chair": "attestator_1",
@@ -100,7 +116,7 @@ def test_a_witness_that_actually_disagrees_departs_on_both_views():
     testimonia = [
         {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "alpha beta gamna"}}
     ]
-    rows = dissent.dissent_against("alpha beta gamma", testimonia)
+    rows = _dissent_against("alpha beta gamma", testimonia)
     assert rows[0]["departed"] is True
     assert rows[0]["departed_raw"] is True
 
@@ -113,7 +129,7 @@ def test_departures_locate_the_one_character_the_witness_read_differently():
     testimonia = [
         {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "alpha beta gamna"}}
     ]
-    spans = dissent.dissent_against(reading, testimonia)[0]["departures"]
+    spans = _dissent_against(reading, testimonia)[0]["departures"]
     assert spans == [
         {"reading_span": {"start": 14, "end": 15}, "testimonium_span": {"start": 14, "end": 15}}
     ]
@@ -127,7 +143,7 @@ def test_an_agreeing_witness_produces_no_departures_at_all():
     testimonia = [
         {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "alpha beta gamma"}}
     ]
-    assert dissent.dissent_against("alpha beta gamma", testimonia)[0]["departures"] == []
+    assert _dissent_against("alpha beta gamma", testimonia)[0]["departures"] == []
 
 
 def test_departures_are_an_alignment_and_expose_no_similarity_number():
@@ -137,7 +153,7 @@ def test_departures_are_an_alignment_and_expose_no_similarity_number():
     testimonia = [
         {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "entirely other"}}
     ]
-    row = dissent.dissent_against("alpha beta gamma", testimonia)[0]
+    row = _dissent_against("alpha beta gamma", testimonia)[0]
     for span in row["departures"]:
         assert set(span) == {"reading_span", "testimonium_span"}
         for bounds in span.values():
@@ -207,7 +223,7 @@ def test_a_non_reading_outcome_is_recorded_as_no_opinion_not_agreement():
     `compared: False` with its outcome as the reason, never folded into the
     agreeing set."""
     for outcome in ("failed", "dead", "not-run", "excluded"):
-        rows = dissent.dissent_against(
+        rows = _dissent_against(
             "reading", [{"outcome": outcome, "payload": {"chair": "attestator_3"}}]
         )
         assert rows == [{"chair": "attestator_3", "compared": False, "reason": outcome}]
@@ -228,7 +244,7 @@ def test_a_witness_whose_format_can_express_uncertainty_is_unknown_not_guessed()
             },
         }
     ]
-    rows = dissent.dissent_against("alpha beta gamma", testimonia)
+    rows = _dissent_against("alpha beta gamma", testimonia)
     assert rows == [
         {
             "chair": "attestator_2",
@@ -255,7 +271,7 @@ def test_a_page_witness_comparison_view_lifts_the_capability_exemption():
             },
         }
     ]
-    rows = dissent.dissent_against("alpha beta gamma", testimonia)
+    rows = _dissent_against("alpha beta gamma", testimonia)
     assert rows[0]["compared"] is True
     # The point of the exemption lift: the act-anchored `comparison_reported`
     # view is what gets diffed. Diffing the raw report ("alpha [beta|beeta]
@@ -291,7 +307,7 @@ def test_a_bracket_marker_view_lifts_the_exemption_for_an_act_scoped_chair():
             },
         }
     ]
-    rows = dissent.dissent_against("Marie Dupont", testimonia)
+    rows = _dissent_against("Marie Dupont", testimonia)
     assert rows[0]["compared"] is True
     # The bracket marker is gone, so what remains is a whitespace difference:
     # `departed` (normalized) is False while `departed_raw` still records that
@@ -301,7 +317,7 @@ def test_a_bracket_marker_view_lifts_the_exemption_for_an_act_scoped_chair():
 
     # The counterfactual: without the strip, this chair reads as dissenting
     # about eleven characters it never disagreed about.
-    raw_rows = dissent.dissent_against(
+    raw_rows = _dissent_against(
         "Marie Dupont",
         [
             {
@@ -320,22 +336,19 @@ def test_a_bracket_marker_view_lifts_the_exemption_for_an_act_scoped_chair():
     assert raw_rows[0]["departures"], raw_rows[0]
 
 
-def test_a_runaway_witness_report_is_unknown_rather_than_aligned_for_twenty_minutes():
+def test_a_runaway_witness_report_is_unknown_rather_than_aligned():
     """A witness's `reported` is a model's own output and nothing upstream bounds
-    it. `SequenceMatcher` costs the product of the two lengths, so a model stuck
-    in a repetition loop until its token cap would hold this stage for tens of
-    minutes on every act it touched. The bound is on the comparison, not the
-    text: neither string is clipped, and the chair keeps a visible row."""
+    it. A model stuck in a repetition loop until its token cap produces a pair
+    far past the pair prefilter, which refuses it before the matcher runs. The
+    bound is on the comparison, not the text: neither string is clipped, and
+    the chair keeps a visible row."""
     reading = "alpha beta gamma" * 700  # a ~11k-character act, already unrealistic
     runaway = "ab" * 60_000  # ~120k characters, a plausible 32k-token repetition loop
     assert len(reading) * len(runaway) > dissent.MAX_COMPARISON_CHARACTER_PAIRS
 
-    # D-11: no wall-clock assert here. The prefilter this test exercises rejects
-    # before `SequenceMatcher` ever runs, so timing it adds a failure mode on a
-    # loaded box without adding a guarantee -- the functional asserts below
-    # (the row survives, "unknown", "did not run") already prove the bound was
-    # taken, and would themselves fail if the prefilter stopped firing.
-    rows = dissent.dissent_against(
+    # No timing assert: the prefilter rejects before the matcher runs, and the
+    # functional asserts below would fail if it stopped firing.
+    rows = _dissent_against(
         reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": runaway}}]
     )
     assert rows[0]["chair"] == "attestator_1", "the witness must not vanish from the record"
@@ -348,34 +361,107 @@ def test_a_long_but_affordable_comparison_is_still_genuinely_aligned():
     real register entry still gets its real spans."""
     reading = "alpha beta gamma " * 200
     reported = reading[:-6] + "gamna "
-    rows = dissent.dissent_against(
+    rows = _dissent_against(
         reading, [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
     )
     assert rows[0]["compared"] is True
     assert rows[0]["departures"], "an affordable comparison must still locate its departures"
 
 
-def test_a_comparison_under_the_pair_bound_stops_on_its_exact_step_count(monkeypatch):
+def _steps_to_compare(reading: str, reported: str) -> int:
+    matcher = StepCountedMatcher(reading, reported, 10**12)
+    matcher.get_opcodes()
+    return 10**12 - matcher.steps_left
+
+
+def test_a_comparison_under_the_pair_bound_stops_on_its_exact_step_count():
     """The pair prefilter admits comparisons whose matcher work runs far past
     the pair count, so the step budget is what stops them. It is a count: the
     same pair is compared with exactly the steps it needs and is `unknown` with
-    one fewer, on any machine and under any load."""
+    one fewer, on any machine and under any load, and the row records the
+    budget it ran out of."""
     reading = "alpha beta gamma " * 400
     reported = "alpha beta gamna " * 400
     assert len(reading) * len(reported) < dissent.MAX_COMPARISON_CHARACTER_PAIRS
-    matcher = StepCountedMatcher(reading, reported, 10**12)
-    matcher.get_opcodes()
-    needed = 10**12 - matcher.steps_left
+    needed = _steps_to_compare(reading, reported)
     testimonia = [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": reported}}]
 
-    monkeypatch.setattr(dissent, "MAX_COMPARISON_STEPS", needed)
-    assert dissent.dissent_against(reading, testimonia)[0]["compared"] is True
+    rows = dissent.dissent_against(reading, testimonia, max_comparison_steps=needed)
+    assert rows[0]["compared"] is True
 
-    monkeypatch.setattr(dissent, "MAX_COMPARISON_STEPS", needed - 1)
-    rows = dissent.dissent_against(reading, testimonia)
+    rows = dissent.dissent_against(reading, testimonia, max_comparison_steps=needed - 1)
     assert rows[0]["chair"] == "attestator_1", "the witness must not vanish from the record"
     assert rows[0]["compared"] == "unknown"
-    assert f"did not align within this module's {needed - 1}-step bound" in rows[0]["reason"]
+    assert rows[0]["max_comparison_steps"] == needed - 1
+    assert f"the sealed {needed - 1}-step dissent budget" in rows[0]["reason"]
+    dissent.validate_dissent(
+        rows,
+        text=reading,
+        basis_testimonia=[{"chair": "attestator_1", "outcome": "read"}],
+    )
+
+
+def test_departures_past_the_budget_is_an_explicit_non_verdict_not_an_agreement():
+    """`self_revision` is measured by `departures`. A comparison the budget
+    stops must never read as "no revisions", which `[]` means, so it returns
+    the closed non-verdict naming the budget instead."""
+    reading, prior = "alpha beta gamma " * 50, "alpha beta gamna " * 50
+    needed = _steps_to_compare(reading, prior)
+
+    assert dissent.departures(reading, prior, needed)
+    assert dissent.departures(reading, prior, needed - 1) == unmeasured_comparison(needed - 1)
+    assert unmeasured_comparison(needed - 1) == {
+        "measured": False,
+        "reason": COMPARISON_STEP_LIMIT_REASON,
+        "max_comparison_steps": needed - 1,
+    }
+
+
+def test_a_budget_is_recorded_only_on_an_unknown_row():
+    """A compared-row budget or a malformed one is refused, so the field means
+    one thing: this comparison ran out of that many steps."""
+    basis = [{"chair": "attestator_1", "outcome": "read"}]
+    stopped = {"chair": "attestator_1", "compared": "unknown", "reason": "stopped"}
+    dissent.validate_dissent(
+        [{**stopped, "max_comparison_steps": 5}], text="", basis_testimonia=basis
+    )
+    for budget in (0, True, "5"):
+        with pytest.raises(SchemaRefusal, match="uncomputed-row schema"):
+            dissent.validate_dissent(
+                [{**stopped, "max_comparison_steps": budget}], text="", basis_testimonia=basis
+            )
+
+
+def test_the_perlector_compares_under_the_sealed_dissent_budget(tmp_path):
+    """The budget is `config/alignment.toml`'s `[dissent] max_comparison_steps`,
+    sealed with the run and passed to every comparison, with no copy of it in
+    this module to drift from the config. A run sealed with a one-step budget
+    records every non-trivial comparison as stopped on exactly that budget."""
+    assert not hasattr(dissent, "MAX_COMPARISON_STEPS")
+    shipped = DEFAULT_ALIGNMENT_CONFIG_PATH.read_text(encoding="utf-8")
+    sealed_line = f"max_comparison_steps = {BUDGET}\n"
+    assert shipped.count(sealed_line) == 1
+    config = tmp_path / "alignment.toml"
+    config.write_text(shipped.replace(sealed_line, "max_comparison_steps = 1\n"), encoding="utf-8")
+    root = tmp_path / "runs"
+    for program in programs_through("perlector"):
+        result = run_stage(root, "dissent-budget", "happy", program, alignment_config=config)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+
+    tree = RunTree(root, "dissent-budget")
+    rows = [
+        row
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == "perlectio"
+        for row in tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])["payload"][
+            "dissent"
+        ]
+    ]
+    stopped = [row for row in rows if "max_comparison_steps" in row]
+    assert stopped, "a one-step budget stopped no comparison"
+    assert all(row["compared"] == "unknown" for row in stopped)
+    assert {row["max_comparison_steps"] for row in stopped} == {1}
+    assert not [row for row in rows if row["compared"] is True and row["departures"]]
 
 
 def test_is_comparable_defaults_true_when_a_testimonium_declares_no_capabilities():
@@ -397,7 +483,7 @@ def test_dissent_never_drops_an_unknown_chair_from_the_record():
         },
         {"outcome": "read", "payload": {"chair": "attestator_2", "reported": "alpha beta gamma"}},
     ]
-    rows = dissent.dissent_against("alpha beta gamma", testimonia)
+    rows = _dissent_against("alpha beta gamma", testimonia)
     chairs = {row["chair"] for row in rows}
     assert chairs == {"attestator_1", "attestator_2"}
     unknown_row = next(row for row in rows if row["chair"] == "attestator_1")
@@ -405,7 +491,7 @@ def test_dissent_never_drops_an_unknown_chair_from_the_record():
 
 
 def test_a_completed_structured_witness_stays_visible_but_cannot_be_compared():
-    assert dissent.dissent_against(
+    assert _dissent_against(
         "reading",
         [
             {
@@ -438,7 +524,7 @@ def test_a_completed_reading_outcome_carrying_no_text_at_all_is_unknown_not_a_re
     case because an absent payload and an object payload are different records
     reaching the same branch, and only one of them was ever exercised here.
     """
-    assert dissent.dissent_against(
+    assert _dissent_against(
         "reading", [{"outcome": "read", "payload": {"chair": "attestator_1"}}]
     ) == [
         {
@@ -482,7 +568,7 @@ def test_a_decomposed_witness_report_is_not_charged_a_character_per_accent():
     decomposed = unicodedata.normalize("NFD", precomposed)
     assert precomposed != decomposed, "the fixture must actually differ at the codepoint level"
 
-    rows = dissent.dissent_against(
+    rows = _dissent_against(
         precomposed,
         [{"outcome": "read", "payload": {"chair": "attestator_1", "reported": decomposed}}],
     )
@@ -498,7 +584,7 @@ def test_markup_and_collapsed_whitespace_stay_in_the_witness_loss_account():
     """The other direction: tags and a collapsed run are genuine removals, and
     dropping them from the account would hide what the comparison view discarded.
     """
-    rows = dissent.dissent_against(
+    rows = _dissent_against(
         "alpha beta",
         [
             {

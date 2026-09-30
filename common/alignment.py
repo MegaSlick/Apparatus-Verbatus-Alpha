@@ -11,7 +11,7 @@ import html
 import unicodedata
 from bisect import bisect_left
 from dataclasses import dataclass
-from difflib import SequenceMatcher
+from difflib import Match, SequenceMatcher
 from pathlib import Path
 from typing import Any, Final
 
@@ -29,12 +29,25 @@ class AlignmentLimits:
     max_alignment_steps: int
 
 
+@dataclass(frozen=True)
+class DissentLimits:
+    """The Perlector's act-length comparison budget, sealed beside the page limits."""
+
+    max_comparison_steps: int
+
+
+_CONFIG_SCHEMA: Final = {
+    "limits": {"max_characters", "max_character_pairs", "max_alignment_steps"},
+    "dissent": {"max_comparison_steps"},
+}
+
+
 # The longest HTML5 named entity is `&CounterClockwiseContourIntegral;` at 33
 # characters; numeric references are shorter still. The bound matters because
 # the terminator is searched for, not assumed: without it a literal ampersand
-# in the ink ("Jean & Marie", "&c.") swallowed every character up to the next
-# semicolon anywhere later in the document -- tags included -- and handed them
-# back as "stripped" text. See `markup_text_view`.
+# in the ink ("Jean & Marie", "&c.") would swallow every character up to the
+# next semicolon anywhere later in the document, tags included. See
+# `markup_text_view`.
 _MAX_ENTITY_CHARACTERS: Final = 40
 
 
@@ -43,6 +56,31 @@ _MAX_ENTITY_CHARACTERS: Final = 40
 # anything about coverage, so the shortfall is an absent measurement, not
 # evidence about the chair.
 STEP_LIMIT_REASON: Final = "alignment-step-limit"
+# Every reason this module stops on one of its own bounds rather than on a
+# comparison: a page witness unaligned for one of these was never measured.
+UNMEASURED_REASONS: Final = frozenset(
+    {"character-limit", "character-pair-limit", STEP_LIMIT_REASON}
+)
+
+
+# Fields the aligned act-attachment record no longer carries. A record holding
+# one was aligned under a wall-clock bound, so whether it aligned depended on
+# the machine; it is refused by name rather than as a generic shape error.
+_RETIRED_ALIGNED_FIELDS: Final = ("deadline_in_force",)
+
+
+def refuse_retired_alignment_fields(alignment: Any, subject: str) -> None:
+    """Name a retired field an aligned record still carries, so the remedy is plain."""
+    if not isinstance(alignment, dict):
+        return
+    retired = [field for field in _RETIRED_ALIGNED_FIELDS if field in alignment]
+    if retired:
+        raise SchemaRefusal(
+            f"{subject} carries the retired alignment field(s) {retired}: it was aligned "
+            "under a wall-clock deadline, not the sealed step budget, so whether it aligned "
+            "depended on the machine; re-run the Attestatores alignment under the current "
+            "contract"
+        )
 
 
 class AlignmentStepLimit(Exception):
@@ -52,12 +90,19 @@ class AlignmentStepLimit(Exception):
 class StepCountedMatcher(SequenceMatcher):
     """`difflib.SequenceMatcher` without autojunk, stopped by a count of its own work.
 
-    A step is one witness character scanned or one anchor position visited by
-    `find_longest_match`'s inner loop. Each call is charged its exact count
-    before it runs, so running out raises `AlignmentStepLimit` before the work,
-    and whether an alignment finishes depends only on its two texts and the
-    budget, never on the machine or its load. The matching itself is the
-    standard library's, unchanged.
+    `find_longest_match`'s inner loop is the matcher's only super-linear work.
+    Each call is charged, before it runs, one step per witness character in its
+    range plus one per anchor position of that character below the range's
+    end. The loop visits those positions and at most one more, where it stops,
+    and the one step per character covers that visit, so the charge is at least
+    the work. Running out raises `AlignmentStepLimit` before the work, and
+    whether an alignment finishes depends only on its two texts and the budget,
+    never on the machine or its load.
+
+    The linear work around the loop -- building the position index, extending a
+    match, recursing into the halves -- is not charged: it is bounded by the
+    text lengths, which the character bounds already cap. The matching itself
+    is the standard library's, unchanged.
     """
 
     def __init__(self, a: str, b: str, steps: int) -> None:
@@ -66,11 +111,10 @@ class StepCountedMatcher(SequenceMatcher):
 
     def find_longest_match(
         self, alo: int = 0, ahi: int | None = None, blo: int = 0, bhi: int | None = None
-    ):
+    ) -> Match:
         ahi = len(self.a) if ahi is None else ahi
         bhi = len(self.b) if bhi is None else bhi
-        # With no junk every anchor position of a character is in `b2j`, sorted,
-        # and the inner loop visits each one below `bhi`.
+        # With no junk every anchor position of a character is in `b2j`, sorted.
         positions = self.b2j
         self.steps_left -= sum(
             1 + bisect_left(positions.get(char, ()), bhi) for char in self.a[alo:ahi]
@@ -94,12 +138,12 @@ def _matching_blocks(witness_text: str, anchor_text: str, steps: int) -> list[tu
     alphabet. This is also what makes the matcher slow on degenerate input,
     hence the step budget.
 
-    RapidFuzz's LCS opcodes were tried and refused: they are far faster but
-    maximize matched characters, which on two acts opening with the same
-    formula can attribute a witness's second-act reading to the first act
-    instead -- a coverage-maximizing objective is the wrong one for attaching a
-    reading to an anchor. "Longest verbatim agreement wins" is the one that is
-    load-bearing here, and `common/test_alignment.py` pins that case by name.
+    Ratcliff-Obershelp rather than a longest-common-subsequence matcher: LCS
+    maximizes matched characters, which on two acts opening with the same
+    formula can attribute a witness's second-act reading to the first act. A
+    coverage-maximizing objective is the wrong one for attaching a reading to
+    an anchor; "longest verbatim agreement wins" is the load-bearing one, and
+    `common/test_alignment.py` pins that case by name.
 
     No normalization of its own: the comparison is over the codepoints
     `markup_text_view` produced, so the returned offsets index that same text.
@@ -124,22 +168,19 @@ def markup_text_view(raw: str) -> dict[str, Any]:
     """
     if not isinstance(raw, str):
         raise SchemaRefusal("alignment input is not text")
-    # Deliberately lexical rather than `html.parser.HTMLParser`: HTMLParser
-    # exposes source offsets only per token, not per character, so its column
-    # cannot seed an exact raw-offset map (and, run first only to catch
-    # malformed markup as a refusal, it never actually raised on any input in
-    # this module's own testing -- HTMLParser is intentionally permissive, so
-    # that pass was dead code pretending to be a validation guarantee it did
-    # not provide). Tags are omitted; entities are one visible character
-    # mapped to their opening ampersand.
+    # Lexical rather than `html.parser.HTMLParser`: HTMLParser exposes source
+    # offsets only per token, not per character, so its column cannot seed an
+    # exact raw-offset map, and it is permissive by design, so it cannot serve
+    # as a refusal of malformed markup either. Tags are omitted; entities are
+    # one visible character mapped to their opening ampersand.
     plain: list[str] = []
     offsets: list[int] = []
     in_tag = False
     # Only a `<` that actually closes is markup. An unterminated one is
     # ordinary ink ("aged < 30" at the end of a note), and treating it as an
-    # opened tag silently dropped every character after it. One index instead
-    # of a per-`<` forward scan: a `<` closes exactly when any `>` exists
-    # after it, i.e. when it sits before the last `>` of the whole input.
+    # opened tag would drop every character after it. One index instead of a
+    # per-`<` forward scan: a `<` closes exactly when any `>` exists after it,
+    # i.e. when it sits before the last `>` of the whole input.
     last_close = raw.rfind(">")
     i = 0
     while i < len(raw):
@@ -173,8 +214,8 @@ def markup_text_view(raw: str) -> dict[str, Any]:
     stripped = "".join(plain)
     composed = unicodedata.normalize("NFC", stripped)
     # NFC can change codepoint count, so indexing pre-composition offsets by a
-    # post-composition index mis-points every entry after the first merge. The
-    # map is rebuilt through composition instead: the stripped text splits
+    # post-composition index would mis-point every entry after the first merge.
+    # The map is rebuilt through composition instead: the stripped text splits
     # into clusters at combining-class-0 starters, and every composed
     # character maps to its cluster's first raw offset. Where per-cluster
     # composition cannot reproduce the composed text (e.g. Hangul jamo), the
@@ -272,28 +313,35 @@ def bracket_marker_view(raw: str) -> dict[str, Any]:
     }
 
 
+def _read_alignment_config(path: str | Path) -> tuple[dict[str, dict[str, int]], str]:
+    """The whole sealed file, closed-schema checked, so either loader refuses it alike."""
+    record, digest = read_sealed_toml(path, "alignment configuration")
+    if set(record) != set(_CONFIG_SCHEMA) or any(
+        not isinstance(record[table], dict) or set(record[table]) != keys
+        for table, keys in _CONFIG_SCHEMA.items()
+    ):
+        raise ContractError("alignment configuration has the wrong closed schema")
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value <= 0
+        for table in record.values()
+        for value in table.values()
+    ):
+        raise ContractError("alignment limits must be positive integers")
+    return record, digest
+
+
 def load_alignment_limits(
     path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
 ) -> tuple[AlignmentLimits, str]:
-    record, digest = read_sealed_toml(path, "alignment configuration")
-    if (
-        set(record) != {"limits"}
-        or not isinstance(record["limits"], dict)
-        or set(record["limits"])
-        != {
-            "max_characters",
-            "max_character_pairs",
-            "max_alignment_steps",
-        }
-    ):
-        raise ContractError("alignment configuration has the wrong closed schema")
-    values = record["limits"]
-    if any(
-        not isinstance(value, int) or isinstance(value, bool) or value <= 0
-        for value in values.values()
-    ):
-        raise ContractError("alignment limits must be positive integers")
-    return AlignmentLimits(**values), digest
+    record, digest = _read_alignment_config(path)
+    return AlignmentLimits(**record["limits"]), digest
+
+
+def load_dissent_limits(
+    path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
+) -> tuple[DissentLimits, str]:
+    record, digest = _read_alignment_config(path)
+    return DissentLimits(**record["dissent"]), digest
 
 
 def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) -> dict[str, Any]:

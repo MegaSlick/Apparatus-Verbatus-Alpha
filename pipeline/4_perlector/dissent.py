@@ -32,11 +32,11 @@ from wholesale disagreement.
 from __future__ import annotations
 
 import unicodedata
-from difflib import SequenceMatcher
 from typing import Any, Final
 
 from common.alignment import AlignmentStepLimit, StepCountedMatcher, markup_text_view
 from common.contracts.errors import SchemaRefusal
+from common.contracts.prior_draft import unmeasured_comparison
 from common.stage import WITNESS_READING_OUTCOMES
 
 # `SequenceMatcher`'s alignment cost is not simply the product of the two
@@ -46,32 +46,10 @@ from common.stage import WITNESS_READING_OUTCOMES
 # constant is a cheap prefilter for a witness stuck in a repetition loop until
 # its token cap -- the witness stage puts no ceiling on report length, and
 # Churro's own 24,000-token cap can run well over a hundred thousand
-# characters. It does not bound the matcher's work on its own;
-# `MAX_COMPARISON_STEPS` below does that.
+# characters. It does not bound the matcher's work on its own; the sealed
+# `[dissent] max_comparison_steps` in `config/alignment.toml`, which every
+# caller passes in, does that.
 MAX_COMPARISON_CHARACTER_PAIRS: Final = 100_000_000
-
-# The matcher's own work, counted in `common.alignment.StepCountedMatcher`
-# steps and charged before it is done, so whether a comparison finishes
-# depends only on the two texts, never on the machine. The same value as the
-# sealed page-alignment budget in `config/alignment.toml`, for the same
-# reason: it clears a 7,500-character page whose acts repeat one formula
-# verbatim (about 77 million steps) and stops a degenerate pair within about
-# ten seconds.
-MAX_COMPARISON_STEPS: Final = 100_000_000
-
-
-def _departures_within_budget(reading: str, reported: str) -> list | None:
-    """`departures(reading, reported)`, or `None` when it would pass `MAX_COMPARISON_STEPS`.
-
-    Nothing about `reading` or `reported` is touched either way -- the
-    alignment simply does not finish, exactly as the pair-count bound already
-    declares of itself.
-    """
-    try:
-        opcodes = StepCountedMatcher(reading, reported, MAX_COMPARISON_STEPS).get_opcodes()
-    except AlignmentStepLimit:
-        return None
-    return _departure_spans(opcodes)
 
 
 def comparison_view(text: str) -> dict[str, object]:
@@ -98,22 +76,34 @@ def comparison_view(text: str) -> dict[str, object]:
     return {"normalized": normalized, "dropped_characters": len(composed) - len(normalized)}
 
 
-def departures(reading: str, reported: str) -> list[dict[str, dict[str, int]]]:
+def departures(
+    reading: str, reported: str, max_comparison_steps: int
+) -> list[dict[str, dict[str, int]]] | dict[str, Any]:
     """Every span where the established reading and one witness's report differ.
 
-    `autojunk=False` is load-bearing rather than stylistic: with it on,
-    `SequenceMatcher` treats any element appearing in more than 1% of a
-    sequence longer than 200 characters as junk, which on French prose means
-    spaces and common letters stop counting as matches. The alignment would
-    then change shape purely because the act was long, and a dissent record
-    that means something different on long acts than on short ones is not a
-    structural record.
+    `autojunk=False` (the `StepCountedMatcher` default) is load-bearing rather
+    than stylistic: with it on, `SequenceMatcher` treats any element appearing
+    in more than 1% of a sequence longer than 200 characters as junk, which on
+    French prose means spaces and common letters stop counting as matches. The
+    alignment would then change shape purely because the act was long, and a
+    dissent record that means something different on long acts than on short
+    ones is not a structural record.
+
+    The matcher's work is counted against `max_comparison_steps`, the sealed
+    dissent budget. A comparison that would pass it returns the explicit
+    non-verdict `unmeasured_comparison` instead of spans: nothing about either
+    text is touched, the comparison simply did not finish, and whether it
+    finishes depends only on the two texts and the budget.
 
     An equal reading and report produce no departures at all -- the correct
     output on the easy line every witness agrees about (ARCHITECTURE: "a metric
     that rewards disagreement rewards hallucination").
     """
-    return _departure_spans(SequenceMatcher(a=reading, b=reported, autojunk=False).get_opcodes())
+    try:
+        opcodes = StepCountedMatcher(reading, reported, max_comparison_steps).get_opcodes()
+    except AlignmentStepLimit:
+        return unmeasured_comparison(max_comparison_steps)
+    return _departure_spans(opcodes)
 
 
 def _departure_spans(opcodes: list) -> list[dict[str, dict[str, int]]]:
@@ -153,7 +143,9 @@ def is_comparable(record: dict[str, Any]) -> bool:
     return isinstance(payload.get("comparison_reported"), str)
 
 
-def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
+def dissent_against(
+    reading: str, testimonia: list[dict], *, max_comparison_steps: int
+) -> list[dict]:
     """Where the reading departed from each witness that actually reported.
 
     Computed after the reading is fixed. A chair that failed or never ran has
@@ -164,8 +156,9 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
     to a comparison view, a page witness unattached to this act and carrying no
     `comparison_reported`, a report large enough to refuse outright
     (`MAX_COMPARISON_CHARACTER_PAIRS`), and an alignment that would pass
-    `MAX_COMPARISON_STEPS`. Never guessed at, and never silently dropped
-    from the record either.
+    `max_comparison_steps`, the sealed dissent budget, which that row records
+    beside its reason. Never guessed at, and never silently dropped from the
+    record either.
     """
     reading_view = comparison_view(reading)
     rows = []
@@ -239,18 +232,19 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 }
             )
             continue
-        spans = _departures_within_budget(reading, reported)
-        if spans is None:
+        spans = departures(reading, reported, max_comparison_steps)
+        if not isinstance(spans, list):
             rows.append(
                 {
                     "chair": chair,
                     "compared": "unknown",
                     "reason": (
                         f"a {len(reading)}-character reading against a {len(reported)}-"
-                        f"character report did not align within this module's "
-                        f"{MAX_COMPARISON_STEPS}-step bound; neither text is clipped and "
-                        "neither is changed, the alignment simply did not run"
+                        f"character report did not align within the sealed "
+                        f"{max_comparison_steps}-step dissent budget; neither text is clipped "
+                        "and neither is changed, the alignment simply did not finish"
                     ),
+                    "max_comparison_steps": max_comparison_steps,
                 }
             )
             continue
@@ -377,10 +371,16 @@ def validate_dissent(rows: Any, *, text: str, basis_testimonia: list[dict]) -> N
                             f"dissent[{index}].departures[{span_index}].{name} has invalid bounds"
                         )
         elif compared is False or compared == "unknown":
+            # Only a row the step budget stopped carries the budget it ran out of.
+            budget = row.get("max_comparison_steps")
             if (
-                set(row) != {"chair", "compared", "reason"}
+                set(row) - {"max_comparison_steps"} != {"chair", "compared", "reason"}
                 or not isinstance(row.get("reason"), str)
                 or not row["reason"]
+                or (
+                    "max_comparison_steps" in row
+                    and (compared != "unknown" or type(budget) is not int or budget <= 0)
+                )
             ):
                 raise SchemaRefusal(f"dissent[{index}] is not the closed uncomputed-row schema")
         else:

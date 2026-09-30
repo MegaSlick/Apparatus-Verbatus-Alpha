@@ -390,9 +390,12 @@ def _doubt(layer: Any) -> dict[str, int | str | None]:
     result = {
         "uncertain_spans": len(layer.get("uncertain_spans") or []),
         "gaps": len(layer.get("gaps") or []),
+        # Null when not measured: a withheld draft, or a fed one whose comparison
+        # ran out of its sealed step budget. Never counted as no revisions.
         "self_revisions": (
             None
             if layer.get("lectio_kind") == "primed-draft-withheld"
+            or ("self_revisions" in layer and layer["self_revisions"] is None)
             else len(layer.get("self_revisions") or [])
         ),
         "assessment": assessment.get("state") if isinstance(assessment, dict) else None,
