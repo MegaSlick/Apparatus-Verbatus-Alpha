@@ -35,6 +35,9 @@ NEIGHBOUR_FRAGMENT: Final = (
 )
 NEIGHBOURS_TABLE: Final = "neighbours"
 PAGE_CONTEXT_TABLE: Final = "page_context"
+READING_UNIT_FIELD: Final = "reading_unit"
+READING_UNITS: Final = frozenset({"act", "page"})
+FEED_TABLE: Final = "feed"
 _FIELDS: Final = frozenset(
     {
         "selection_rule",
@@ -44,11 +47,38 @@ _FIELDS: Final = frozenset(
         "truncation",
         NEIGHBOURS_TABLE,
         PAGE_CONTEXT_TABLE,
+        READING_UNIT_FIELD,
+        FEED_TABLE,
     }
 )
 _STRING_FIELDS: Final = frozenset(
-    {"selection_rule", "page_shared_prefix_policy", "pass_b_fragment"}
+    {"selection_rule", "page_shared_prefix_policy", "pass_b_fragment", READING_UNIT_FIELD}
 )
+
+# The page path's feed switches (`page_feed.py`). Closed: every key required,
+# every value one of the listed ones, so a run cannot read under a switch this
+# build does not apply.
+PAGE_IMAGE_SETTINGS: Final = frozenset({"legible", "full", "off"})
+WITNESS_UNIT_SETTINGS: Final = frozenset({"own", "flat"})
+ALL_WITNESSES: Final = "all"
+# Crops on request are later work; until then the only accepted value is off.
+CROP_SETTINGS: Final = frozenset({"off"})
+# "boxes" adds a second image: a copy of the page render with every shown boxed
+# candidate outlined and labelled with its id (`page_overlay.py`).
+PAGE_OVERLAY_SETTINGS: Final = frozenset({"off", "boxes"})
+_FEED_FIELDS: Final = frozenset(
+    {
+        "page_image",
+        "witnesses",
+        "witness_units",
+        "witness_coordinates",
+        "surya_lines",
+        "surya_blocks",
+        "crops",
+        "page_overlay",
+    }
+)
+_FEED_BOOLEAN_FIELDS: Final = ("witness_coordinates", "surya_lines", "surya_blocks")
 
 # The truncation instrument's sealed numbers, kept here so the length
 # floor and the legibility gate ride on the `perlector-protocol` seal rather than in source, where a
@@ -177,6 +207,58 @@ def _validate_small_tables(record: dict[str, Any]) -> None:
         )
 
 
+def validate_feed_table(table: Any) -> dict[str, Any]:
+    """The sealed `[feed]` table, checked closed and returned as a copy.
+
+    `witnesses` is `"all"` or a list of distinct chair names; whether each name
+    is in the run's sealed roster is checked where the roster is known
+    (`page_feed.build_page_feed`).
+    """
+    where = f"the Perlector protocol declaration's [{FEED_TABLE}]"
+    if not isinstance(table, dict) or set(table) != _FEED_FIELDS:
+        raise ContractError(
+            f"{where} is not its closed schema {sorted(_FEED_FIELDS)}; a feed switch this "
+            "build does not read cannot be applied"
+        )
+    if table["page_image"] not in PAGE_IMAGE_SETTINGS:
+        raise ContractError(
+            f"{where} page_image {table['page_image']!r} is not one of "
+            f"{sorted(PAGE_IMAGE_SETTINGS)}"
+        )
+    if table["witness_units"] not in WITNESS_UNIT_SETTINGS:
+        raise ContractError(
+            f"{where} witness_units {table['witness_units']!r} is not one of "
+            f"{sorted(WITNESS_UNIT_SETTINGS)}"
+        )
+    if table["crops"] not in CROP_SETTINGS:
+        raise ContractError(
+            f"{where} crops {table['crops']!r} is not accepted; only {sorted(CROP_SETTINGS)} "
+            "is applied by this build"
+        )
+    if table["page_overlay"] not in PAGE_OVERLAY_SETTINGS:
+        raise ContractError(
+            f"{where} page_overlay {table['page_overlay']!r} is not one of "
+            f"{sorted(PAGE_OVERLAY_SETTINGS)}"
+        )
+    if table["page_overlay"] != "off" and table["page_image"] == "off":
+        raise ContractError(
+            f"{where} page_overlay draws on a copy of the page render, but page_image is off"
+        )
+    for field in _FEED_BOOLEAN_FIELDS:
+        if not isinstance(table[field], bool):
+            raise ContractError(f"{where} {field} is not true or false")
+    witnesses = table["witnesses"]
+    if witnesses != ALL_WITNESSES and (
+        not isinstance(witnesses, list)
+        or not all(isinstance(chair, str) and chair.strip() for chair in witnesses)
+        or len(set(witnesses)) != len(witnesses)
+    ):
+        raise ContractError(
+            f"{where} witnesses is neither {ALL_WITNESSES!r} nor a list of distinct chair names"
+        )
+    return {**table, "witnesses": witnesses if witnesses == ALL_WITNESSES else list(witnesses)}
+
+
 def load(path: str | Path) -> tuple[dict[str, Any], str]:
     """Read the policy a Perlector pass will use, with its seal."""
     record, digest = read_sealed_toml(path, "Perlector protocol declaration")
@@ -184,6 +266,12 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
         raise ContractError("the Perlector protocol declaration is not its closed schema")
     record[TRUNCATION_TABLE] = validate_truncation_table(record[TRUNCATION_TABLE])
     _validate_small_tables(record)
+    if record[READING_UNIT_FIELD] not in READING_UNITS:
+        raise ContractError(
+            f"the Perlector protocol declaration's {READING_UNIT_FIELD} "
+            f"{record[READING_UNIT_FIELD]!r} is not one of {sorted(READING_UNITS)}"
+        )
+    record[FEED_TABLE] = validate_feed_table(record[FEED_TABLE])
     if (
         not isinstance(record["max_images"], int)
         or isinstance(record["max_images"], bool)

@@ -11,7 +11,7 @@ from common.contracts.errors import ContractError
 from common.sealed_config import read_sealed_toml
 
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
-_PERLECTOR_BOUNDS = ("reading_max_tokens", "reproof_max_tokens")
+_PERLECTOR_BOUNDS = ("reading_max_tokens", "reproof_max_tokens", "page_max_tokens")
 _LOAD_RECOVERY = (
     " No run or stage artifact was written. Restore or correct the decoding file and retry"
 )
@@ -92,7 +92,7 @@ def _validate_decoding_policy(policy: Any) -> None:
     ):
         raise ContractError(
             "decoding perlector_generation must declare positive integer output bounds "
-            "for a reading and for a re-proof"
+            "for a reading, for a re-proof and for a whole-page reading"
         )
     try:
         validate_policy_record(policy["chandra_native_inference"])
@@ -139,3 +139,9 @@ def perlector_max_tokens(policy: Mapping[str, Any]) -> tuple[int, int]:
     _validate_decoding_policy(policy)
     generation = policy["perlector_generation"]
     return generation["reading_max_tokens"], generation["reproof_max_tokens"]
+
+
+def perlector_page_max_tokens(policy: Mapping[str, Any]) -> int:
+    """Return the sealed output cap of one whole-page Perlector reading."""
+    _validate_decoding_policy(policy)
+    return policy["perlector_generation"]["page_max_tokens"]

@@ -11,6 +11,7 @@ from common.decoding import (
     DEFAULT_DECODING_CONFIG_PATH,
     load_decoding_policy,
     perlector_max_tokens,
+    perlector_page_max_tokens,
     structure_recovery_policy,
 )
 
@@ -27,8 +28,10 @@ def test_shipped_decoding_policy_declares_a_zero_temperature_record_and_variance
     assert policy["perlector_generation"] == {
         "reading_max_tokens": 4096,
         "reproof_max_tokens": 8192,
+        "page_max_tokens": 12288,
     }
     assert perlector_max_tokens(policy) == (4096, 8192)
+    assert perlector_page_max_tokens(policy) == 12288
     assert policy["chandra_native_inference"] == recipe_record()
     assert policy["structure"] == {
         "temperature": 1,
@@ -139,7 +142,7 @@ def test_decoding_policy_parse_refusals_name_the_actual_cause(tmp_path, body, me
     ["0", "-1", "4096.0", '"4096"', "true"],
     ids=["zero", "negative", "float", "str", "bool"],
 )
-@pytest.mark.parametrize("field", ["reading_max_tokens", "reproof_max_tokens"])
+@pytest.mark.parametrize("field", ["reading_max_tokens", "reproof_max_tokens", "page_max_tokens"])
 def test_a_perlector_output_bound_that_is_not_a_positive_integer_is_refused(
     tmp_path: Path, field: str, bound: str
 ):
@@ -164,4 +167,13 @@ def test_a_missing_perlector_generation_section_is_refused(tmp_path: Path):
     )
 
     with pytest.raises(ContractError, match="wrong closed schema"):
+        load_decoding_policy(path)
+
+
+def test_a_perlector_generation_section_without_the_page_cap_is_refused(tmp_path: Path):
+    source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
+    path = tmp_path / "decoding.toml"
+    path.write_text(re.sub(r"^page_max_tokens = \d+\n", "", source, flags=re.M), encoding="utf-8")
+
+    with pytest.raises(ContractError, match="perlector_generation must declare positive integer"):
         load_decoding_policy(path)
