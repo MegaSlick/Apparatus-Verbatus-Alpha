@@ -1111,9 +1111,9 @@ def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any
 
     This is where a pin is *born*, and it is the one place in this package that
     derives one from bytes rather than checking bytes against one.  That is not
-    an exception to "a pin is a constant the artifact must match"
-    (`README.md`): the first manifest of a fetch has nothing to be checked
-    against, which is why `config/models.toml` leaves `digest_manifest` unfilled
+    an exception to a pin being a constant the artifact must match: the first
+    manifest of a fetch has nothing to be checked against, which is why
+    `config/models.toml` leaves `digest_manifest` unfilled
     until a verified fetch exists.  Every later use of that manifest — a second
     promotion, `verify_store`, `ChairRegistry.ensure` — is a constant the
     artifact must match, and a second promotion of differing bytes is refused

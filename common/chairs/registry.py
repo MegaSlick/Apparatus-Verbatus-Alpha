@@ -403,9 +403,10 @@ class ChairRegistry:
         """Represent a serving-manager start failure without offering another recipe.
 
         The serving manager (`operations/serving/manager.py`) uses this for
-        ordinary start failures it observed that have not already crossed the chair boundary. A prior chair
-        refusal is normally re-raised without this call; unverified cleanup is
-        the exception, and operator interrupts never pass through this method.
+        ordinary start failures it observed that have not already crossed the
+        chair boundary. A prior chair refusal is normally re-raised without this
+        call; unverified cleanup is the exception, and operator interrupts never
+        pass through this method.
         """
 
         self._require_current_identity(identity)

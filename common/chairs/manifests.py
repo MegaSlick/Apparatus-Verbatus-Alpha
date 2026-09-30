@@ -80,7 +80,7 @@ def read_manifest(path: str | Path, *, expected_digest: str, chair: str) -> Dige
     try:
         data = read_limited_bytes(source, MAX_MANIFEST_BYTES, chair, f"manifest {source}")
         raw = json.loads(data)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise DigestMismatchRefusal(chair, f"cannot read manifest {source}: {error}") from error
     manifest = _manifest_from_record(raw, chair)
     canonical = canonical_bytes(manifest.to_record())

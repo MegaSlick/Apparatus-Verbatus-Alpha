@@ -1,14 +1,14 @@
-"""Import boundary: a static check that `common/chairs/` never imports a stage.
+"""Import boundary: a static check that `common/` never imports a stage.
 
-`common/README.md`, verbatim: "It knows nothing about stages. Stages import it;
-it never imports back. Add an executable import-boundary check when real modules
-exist; a placeholder declaration before code would prove nothing."
-`common/chairs/` is that real module, so this is that check.
+`common/` knows nothing about stages: stages import it and it never imports back.
+The chair package and its tests fail on any import of `pipeline` or `proof`, and
+every other module under `common/` fails on any import of `pipeline`, wherever in
+a file the import sits.
 
-`pipeline/README.md` names why it has to be static: numbering the stage
-directories makes `import 4_perlector` invalid Python, "a useful deterrent... but
-not a complete boundary: dynamic imports and path manipulation can still cross
-it." Everything below reads source through `ast` and executes nothing.
+The check is static because numbering the stage directories only makes a
+statement such as `import 4_perlector` invalid Python; a dynamic import or path
+manipulation would still cross. Everything below reads source through `ast` and
+executes nothing.
 
 Literal dynamic `import_module(...)` and `__import__(...)` calls are checked alongside
 ordinary imports.
@@ -118,9 +118,8 @@ def test_the_chair_tests_never_import_a_stage_either():
 
 
 def test_nothing_anywhere_under_common_imports_pipeline():
-    """The wider rule `common/README.md` states, made executable while a file is
-    open that can state it. `common/chairs/` is one module inside `common/`; the
-    boundary belongs to all of it."""
+    """`common/chairs/` is one module inside `common/`; the boundary against
+    stage code holds for all of `common/`."""
     files = sorted(COMMON.rglob("*.py"))
     assert len(files) >= 20, f"expected the whole of common/ under {COMMON}, found {len(files)}"
 

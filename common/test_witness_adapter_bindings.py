@@ -286,7 +286,7 @@ def test_case_variant_chair_roles_are_refused_before_they_alias_a_cache_director
         },
     }
 
-    with pytest.raises(ConfigurationRefusal, match="case-variant chair roles"):
+    with pytest.raises(ConfigurationRefusal, match="chair roles alias on default APFS"):
         parse_models_config(raw)
 
 
@@ -314,7 +314,7 @@ def test_case_variant_configured_paths_are_refused_before_filesystem_resolution(
         "chairs": {"first": first, "second": second},
     }
 
-    with pytest.raises(ConfigurationRefusal, match=f"case-variant {label}"):
+    with pytest.raises(ConfigurationRefusal, match=f"{label} alias on default APFS"):
         parse_models_config(raw)
 
 

@@ -354,6 +354,35 @@ def test_an_adapter_whose_base_became_absent_is_refused(adapter_world, tmp_path)
         registry.ensure(registry.resolve("attestator_1"))
 
 
+def test_a_hidden_role_is_refused_before_it_names_a_cache_directory(world, tmp_path):
+    """A leading dot would name `.`, `..` or one of the registry's own hidden work
+    directories under the cache root."""
+    traced, fetcher = world
+
+    # Built directly rather than through the parser, which refuses this role
+    # outright: the question here is what `ensure` does if it ever sees one.
+    from dataclasses import replace
+
+    from common.chairs.models import ModelsConfig
+
+    hidden = replace(traced.resolve("attestator_1"), role=".hidden")
+    config = ModelsConfig(
+        witness_floor=0,
+        chairs={".hidden": hidden},
+        source_path=tmp_path / "models.toml",
+    )
+    registry = ChairRegistry(
+        config, manifest_root=tmp_path, cache_root=traced.cache_root, fetcher=fetcher
+    )
+
+    with pytest.raises(CacheRevisionRefusal, match="unsafe as a cache path") as caught:
+        registry.ensure(registry.resolve(".hidden"))
+
+    assert caught.value.chair == ".hidden"
+    assert fetcher.calls == []
+    assert not (traced.cache_root / ".hidden").exists()
+
+
 # --- 5. A serving recipe that will not start ------------------------------------------
 
 
@@ -433,10 +462,15 @@ def test_a_local_path_escaping_the_model_root_refuses_without_touching_the_netwo
 
 
 def test_every_raise_in_this_package_names_a_member_of_the_closed_taxonomy():
-    """A new failure mode has to be spelled as one of these, so a reader of the
-    doors above can be sure the list is the whole list. Every `raise` in the
-    package's non-test modules is read from source: it either re-raises what it
-    caught or constructs a named member of `ALL_REFUSAL_TYPES`."""
+    """A new failure mode raised by the package has to be spelled as one of these.
+
+    Every `raise` with an expression in the package's non-test modules is read
+    from source and must construct a named member of `ALL_REFUSAL_TYPES`. A bare
+    `raise` passes unread: this proves the raise sites, not the type of every
+    exception that can escape through one. `conftest.py` is fixture code and is
+    left out: its deterministic registry raises `RuntimeError` when constructed
+    outside a pytest session, and its fetcher raises whatever failure a test
+    injects."""
     import ast
     from pathlib import Path
 

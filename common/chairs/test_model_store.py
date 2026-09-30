@@ -1474,11 +1474,9 @@ def test_the_real_roster_carries_the_licence_notes_it_was_drafted_with():
         if isinstance(identity, ChairIdentity)
     }
 
-    # `_commented_licence_notes` reads a fixed comment shape. Reflowing or
-    # reindenting that block used to make this fail with `KeyError: 'perlector'`
-    # below -- a missing dictionary key in a licence test, with nothing pointing
-    # at comment formatting in a config file, and the comparison the docstring is
-    # about never running at all.
+    # `_commented_licence_notes` reads a fixed comment shape. When a reflowed or
+    # reindented block stops parsing, this names the roles it lost, instead of a
+    # bare `KeyError` further down that never reaches the comparison below.
     unparsed = sorted(set(carried) - set(drafted))
     assert not unparsed, (
         f"no commented `license_note` was parsed for {unparsed}; the drafted roster in "

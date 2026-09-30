@@ -234,7 +234,7 @@ def test_two_roles_that_differ_only_in_unicode_normalization_are_refused(tmp_pat
     decomposed = unicodedata.normalize("NFD", "attestator_café")
     assert composed != decomposed
 
-    with pytest.raises(ConfigurationRefusal, match="case-variant chair roles"):
+    with pytest.raises(ConfigurationRefusal, match="chair roles alias on default APFS"):
         config_of(
             tmp_path,
             {composed: hf_chair(composed, DIGEST), decomposed: hf_chair(decomposed, DIGEST)},

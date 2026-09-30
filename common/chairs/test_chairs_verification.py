@@ -388,9 +388,8 @@ def test_a_manifest_that_cannot_be_read_at_all_is_refused_naming_the_chair(tmp_p
 
 
 def test_manifest_read_is_bounded_before_json_deserialization(tmp_path, monkeypatch):
-    """A manifest is a small control artifact, not model weight bytes -- unlike
-    `model_store.py`'s own bounded control-artifact reads, this one used to read
-    the whole file into memory before checking anything about it."""
+    """A manifest is a small control artifact, not model weight bytes, so an
+    oversized one is refused before any of it is parsed as JSON."""
     monkeypatch.setattr(manifests, "MAX_MANIFEST_BYTES", 32)
     path = tmp_path / "manifest.json"
     path.write_bytes(b"{" + b"x" * 32)

@@ -138,7 +138,8 @@ def _validate_identity(identity: ChairIdentity) -> None:
     witness_adapter = identity.witness_adapter
     witness_scope = identity.witness_scope
     if witness_adapter is None and witness_scope is None:
-        # Older fixtures carry neither; a real run requires both before pixels.
+        # Neither is a complete receipt identity; the witness-adapter binding check
+        # requires both on an Attestator chair before a run starts.
         return
     if not is_witness_role(identity.role):
         raise ReceiptRefusal(
@@ -162,7 +163,7 @@ def _validate_details(identity: ChairIdentity, details: ServingDetails) -> None:
     Deliberately not by building a throwaway `ChairIdentity` and reading the
     assembled record back: a stand-in identity constructed to satisfy a
     validator is the one shape this package exists to keep out of its own code,
-    and it also made the refusal name a chair whose fields were invented here.
+    and a refusal must name the real chair, not one with invented fields.
     """
     chair = identity.role
     if not isinstance(details, ServingDetails):
