@@ -336,9 +336,46 @@ def test_an_aligner_stop_is_unmeasured_not_a_measured_shortfall(
     (receipt_reason,) = receipt_reasons(
         [{"act_id": act["act_id"], "partition_class": "completed", "coverage": coverage}]
     )
+    assert "a witness failure" not in receipt_reason
     assert "is under-witnessed" in receipt_reason
     assert "1 chair(s) were never compared with this act" in receipt_reason
     assert "unmeasured, not failed" in receipt_reason
+
+
+def test_an_aligner_stop_beside_a_real_witness_failure_names_both(context_and_act, monkeypatch):
+    """One chair unmeasured, another genuinely short: the hold names the unmeasured
+    chair apart and keeps the witness-failure clause for the other, so the stop
+    cannot excuse a real failure beside it."""
+    recensor, context, act, _tree = context_and_act
+
+    def stop(row):
+        row["alignment"] = {"status": "unaligned", "reason": STEP_LIMIT_REASON}
+        row["comparable"] = False
+
+    _rewrite_page_alignment(context, monkeypatch, act["act_id"], stop)
+    current = recensor.chair_current_attempts(context, act["act_id"])
+    outcomes = recensor.chair_outcomes(current)
+    facts = recensor.act_attachment_facts(context, act["act_id"], current)
+    facts[ACT_CHAIR] = {**facts[ACT_CHAIR], "attached": False}
+
+    coverage = recensor.witness_coverage(outcomes, context.witness_floor, attachments=facts)
+    assert coverage["shortfalls"]["unmeasured"] == 1
+    assert coverage["shortfalls"]["unaligned"] == 1
+    _outcome, route = recensor.review_route_from_findings(
+        testimony_shortfall=False,
+        audit_unresolved=False,
+        under_witnessed=coverage["under_witnessed"],
+        unmeasured_chairs=recensor.alignment_unmeasured_chairs(facts),
+        witness_failure=recensor.witness_failure_shortfall(coverage["shortfalls"]),
+    )
+    assert f"chair(s) ['{PAGE_CHAIR}'] were never compared with this act on at least one" in route
+    assert "other chairs fell short as well, and a witness failure is not coverage" in route
+
+    (receipt_reason,) = receipt_reasons(
+        [{"act_id": act["act_id"], "partition_class": "completed", "coverage": coverage}]
+    )
+    assert "1 chair(s) were never compared with this act on at least one page" in receipt_reason
+    assert "other chairs fell short as well, a witness failure" in receipt_reason
 
 
 def _page_witness_pages(context, act_id):

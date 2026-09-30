@@ -482,6 +482,11 @@ def derive_record_text_status(text: Any, annotations: Any, uncertainty: Any) -> 
 SHORTFALL_KINDS: Final = ("failed", "truncated", "unaligned", "unmeasured")
 
 
+def witness_failure_shortfall(shortfalls: Mapping[str, int]) -> bool:
+    """Whether a chair fell short for a reason other than the aligner stopping on its bound."""
+    return any(shortfalls.get(kind, 0) for kind in SHORTFALL_KINDS if kind != "unmeasured")
+
+
 def witness_coverage(
     chair_outcomes: Mapping[str, str],
     configured_floor: int,

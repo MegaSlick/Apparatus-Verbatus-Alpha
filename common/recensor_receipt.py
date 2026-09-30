@@ -21,6 +21,7 @@ from common.contracts.outcomes import (
     WITNESS_READING_OUTCOMES,
     OutcomeClass,
     classify,
+    witness_failure_shortfall,
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR
 
@@ -373,14 +374,17 @@ def _reasons(items: list[dict[str, Any]]) -> list[str]:
                 f"act {act_id} is under-witnessed "
                 f"({_witnessed_count(coverage)} {measured} of a floor of {coverage['floor']})"
             )
-            unmeasured = coverage.get("shortfalls", {}).get("unmeasured", 0)
+            shortfalls = coverage.get("shortfalls", {})
+            unmeasured = shortfalls.get("unmeasured", 0)
             if unmeasured:
                 # The aligner's stop is named apart: it is not the witness falling short.
                 reason += (
-                    f"; {unmeasured} chair(s) were never compared with this act because the "
-                    "aligner stopped on its own bound, so their coverage is unmeasured, not "
-                    "failed"
+                    f"; {unmeasured} chair(s) were never compared with this act on at least "
+                    "one page because the aligner stopped on its own bound, so their coverage "
+                    "is unmeasured, not failed"
                 )
+                if witness_failure_shortfall(shortfalls):
+                    reason += "; other chairs fell short as well, a witness failure"
             reasons.append(reason)
         if coverage["unresolved_chairs"]:
             reasons.append(

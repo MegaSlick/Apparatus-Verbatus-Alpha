@@ -55,6 +55,7 @@ from common.contracts.outcomes import (  # noqa: E402
     page_attachment_basis,
     terminal_category,
     witness_coverage,
+    witness_failure_shortfall,
 )
 from common.contracts.stages import (  # noqa: E402
     ATTESTATORES,
@@ -2840,6 +2841,7 @@ def review_route_from_findings(
     assessment_malformed: bool = False,
     assessment_problem: str | None = None,
     unmeasured_chairs: Sequence[str] = (),
+    witness_failure: bool = False,
 ) -> tuple[str, str] | None:
     """Compose every independent review cause in stable priority order.
 
@@ -2930,12 +2932,15 @@ def review_route_from_findings(
     if under_witnessed:
         if unmeasured_chairs:
             # The aligner's stop is named apart: it is not the witness falling short.
-            reasons.append(
+            reason = (
                 "the configured act-level witness floor is not met; chair(s) "
-                f"{sorted(unmeasured_chairs)} were never compared with this act because the "
-                "aligner stopped on its own bound, so their coverage is unmeasured, not "
-                "failed, and an unmeasured chair is not coverage"
+                f"{sorted(unmeasured_chairs)} were never compared with this act on at least "
+                "one page because the aligner stopped on its own bound, so their coverage is "
+                "unmeasured, not failed, and an unmeasured chair is not coverage"
             )
+            if witness_failure:
+                reason += "; other chairs fell short as well, and a witness failure is not coverage"
+            reasons.append(reason)
         else:
             reasons.append(
                 "the configured act-level witness floor is not met; a witness failure is not "
@@ -3638,6 +3643,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             assessment_malformed=(assessment_record or {}).get("state") == "malformed",
             assessment_problem=(assessment_record or {}).get("problem"),
             unmeasured_chairs=alignment_unmeasured_chairs(attachment_facts),
+            witness_failure=witness_failure_shortfall(coverage["shortfalls"]),
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])
