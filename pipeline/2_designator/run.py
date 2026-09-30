@@ -72,7 +72,7 @@ from common.exemplar_boundary import (  # noqa: E402
 from common.fixture_identity import act_bounds, act_identity, page_identity  # noqa: E402
 from common.imaging import dimensions, grayscale_rows  # noqa: E402
 from common.recovery import FALLBACK_RECROP  # noqa: E402
-from common.residual_ink import validated_ink_runs  # noqa: E402
+from common.residual_ink import validated_ink_run_evidence, validated_ink_runs  # noqa: E402
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
@@ -3219,18 +3219,10 @@ def _refuse_duplicate_proposal_bounds(context) -> None:
 
 def _ink_outside_cut_union(evidence: dict, bounds: dict, covered: list[dict]) -> int:
     """Recompute ink in a requested rectangle outside the prior crop union."""
-    width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
-    if (
-        evidence.get("schema") != "ink-runs.v2"
-        or set(evidence) != {"schema", "width", "height", "rows"}
-        or not is_plain_int(width)
-        or width <= 0
-        or not is_plain_int(height)
-        or height <= 0
-        or not isinstance(rows, list)
-        or len(rows) != height
-    ):
-        raise ContractError("the recovery request's Ink Map evidence is malformed")
+    try:
+        width, _height, rows = validated_ink_run_evidence(evidence)
+    except ValueError as error:
+        raise ContractError(f"the recovery request's Ink Map evidence: {error}") from error
     total = 0
     for y in range(bounds["y"], bounds["y"] + bounds["h"]):
         try:

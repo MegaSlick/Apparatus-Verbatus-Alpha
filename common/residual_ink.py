@@ -531,7 +531,7 @@ def edge_ink_from_runs(
     retained runs; only the coverage mask may change. `coverage_policy` must be
     resolved for this page's own dimensions.
     """
-    width, height, rows = _validated_evidence(evidence)
+    width, height, rows = validated_ink_run_evidence(evidence)
     band = _edge_band(width, height, coverage_policy)
 
     def edge_intervals(y: int) -> list[tuple[int, int]]:
@@ -564,7 +564,7 @@ def residual_ink_from_runs(
     question `residual_ink` answers from the page bytes. `coverage_policy` must be
     resolved for this page's own dimensions.
     """
-    width, _height, rows = _validated_evidence(evidence)
+    width, _height, rows = validated_ink_run_evidence(evidence)
     total_ink, outside_ink = _ink_outside(width, rows, covered, lambda _y: [(0, width)])
     fraction_outside, flagged = _policy_flag(total_ink, outside_ink, coverage_policy)
     return {
@@ -597,7 +597,12 @@ def _ink_outside(
     return total_ink, outside_ink
 
 
-def _validated_evidence(evidence: Any) -> tuple[int, int, list[Any]]:
+def validated_ink_run_evidence(evidence: Any) -> tuple[int, int, list[Any]]:
+    """A closed `ink-runs.v2` record as its `(width, height, rows)`.
+
+    Every reader of the Ink Map's retained runs checks the envelope here, and each
+    row with `validated_ink_runs`. Raises `ValueError` naming the defect.
+    """
     if not isinstance(evidence, dict) or evidence.get("schema") != INK_RUNS_SCHEMA:
         raise ValueError("ink-run evidence has the wrong schema")
     if set(evidence) != {"schema", "width", "height", "rows"}:

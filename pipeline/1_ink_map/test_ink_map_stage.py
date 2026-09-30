@@ -827,3 +827,29 @@ def test_every_reader_of_the_retained_runs_refuses_the_same_row(row, defect):
         == designator._ink_outside_cut_union({**evidence, "rows": [[[0, 1], [2, 2]]]}, box, [])
         == 3
     )
+
+
+_RUNS = {"schema": "ink-runs.v2", "width": 4, "height": 1, "rows": [[[0, 1]]]}
+
+
+@pytest.mark.parametrize(
+    ("evidence", "defect"),
+    [
+        ("not a record", "wrong schema"),
+        ({**_RUNS, "schema": "ink-runs.v1"}, "wrong schema"),
+        ({**_RUNS, "extra": 1}, "not a closed record"),
+        ({**_RUNS, "width": 0}, "invalid dimensions"),
+        ({**_RUNS, "height": True}, "invalid dimensions"),
+        ({**_RUNS, "height": 2}, "invalid dimensions"),
+        ({**_RUNS, "rows": "rows"}, "invalid dimensions"),
+    ],
+)
+def test_every_reader_of_the_retained_runs_refuses_the_same_envelope(evidence, defect):
+    """The Recensor and the Designator check the run record through one validator."""
+    designator = load_stage("2_designator")
+    box = {"x": 0, "y": 0, "w": 4, "h": 1}
+
+    with pytest.raises(FatalAccounting, match=defect):
+        RECENSOR_RUN._ink_outside_cuts_in_box(evidence, box, [])
+    with pytest.raises(ContractError, match=defect):
+        designator._ink_outside_cut_union(evidence, box, [])

@@ -102,6 +102,7 @@ from common.residual_ink import (  # noqa: E402
     reconcile_edge_finding_with_runs,
     residual_ink,
     resolve_coverage_audit_policy,
+    validated_ink_run_evidence,
     validated_ink_runs,
 )
 from common.sealed_config import read_sealed_toml  # noqa: E402
@@ -1667,21 +1668,15 @@ def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> 
     An observation may overlap a recovery crop cut after it was recorded; subtracting
     every current crop keeps covered ink from funding another recovery.
     """
-    width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
-    if (
-        not is_plain_int(width)
-        or width <= 0
-        or not is_plain_int(height)
-        or height <= 0
-        or not isinstance(rows, list)
-        or len(rows) != height
-    ):
+    try:
+        width, height, rows = validated_ink_run_evidence(evidence)
+    except ValueError as error:
         raise FatalAccounting(
-            "ink-map edge findings have invalid dimensions. Their retained runs cannot be "
-            "measured against a witness pointer, so reading them as empty would suppress a "
-            "possible coverage finding. Restore the sealed Ink Map artifact or restart the "
-            "run before rerunning the Recensor."
-        )
+            f"ink-map edge findings: {error}. Their retained runs cannot be measured against "
+            "a witness pointer, so reading them as empty would suppress a possible coverage "
+            "finding. Restore the sealed Ink Map artifact or restart the run before rerunning "
+            "the Recensor."
+        ) from error
     x0 = max(0, box["x"])
     y0 = max(0, box["y"])
     # Clamp the far edge to the near edge too: a box above the page would otherwise
@@ -1770,6 +1765,9 @@ def unclaimed_ink_observations(
                 "restart the run before rerunning the Recensor."
             )
         return []
+    # The map carries its artifact reference beside the closed run record it measures.
+    ink_map_ref = evidence.get("_ink_map_ref")
+    evidence = {name: value for name, value in evidence.items() if name != "_ink_map_ref"}
     covered = cut_regions.get(page_ordinal, [])
     requests = []
     for observation in unclaimed_observations:
@@ -1811,8 +1809,8 @@ def unclaimed_ink_observations(
             ):
                 if name in observation:
                     request[name] = observation[name]
-            if "_ink_map_ref" in evidence:
-                request["ink_map_ref"] = evidence["_ink_map_ref"]
+            if ink_map_ref is not None:
+                request["ink_map_ref"] = ink_map_ref
             requests.append(request)
     return requests
 
