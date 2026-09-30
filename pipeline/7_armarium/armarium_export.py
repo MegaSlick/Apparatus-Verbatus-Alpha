@@ -383,6 +383,16 @@ def continuation_join_row(
     }
 
 
+def _self_revisions(layer: dict[str, Any]) -> list | None:
+    """The layer's self-revisions, refused when absent: a missing key is not zero revisions."""
+    if "self_revisions" not in layer:
+        raise SchemaRefusal(
+            "a delivered act's uncertainty layer carries no self_revisions field; an absent "
+            "measurement may not be counted as no revisions"
+        )
+    return layer["self_revisions"]
+
+
 def _doubt(layer: Any) -> dict[str, int | str | None]:
     """How much doubt a literal carries, so a join never reads cleaner than its halves."""
     layer = layer if isinstance(layer, dict) else {}
@@ -394,9 +404,8 @@ def _doubt(layer: Any) -> dict[str, int | str | None]:
         # ran out of its sealed step budget. Never counted as no revisions.
         "self_revisions": (
             None
-            if layer.get("lectio_kind") == "primed-draft-withheld"
-            or ("self_revisions" in layer and layer["self_revisions"] is None)
-            else len(layer.get("self_revisions") or [])
+            if layer.get("lectio_kind") == "primed-draft-withheld" or _self_revisions(layer) is None
+            else len(_self_revisions(layer))
         ),
         "assessment": assessment.get("state") if isinstance(assessment, dict) else None,
     }
@@ -875,12 +884,17 @@ _PAGE_INK_CONSERVATION: Final = "page-ink-conservation"
 _ACT_VISIBILITY_SURVEY: Final = "act-visibility-survey"
 _PERLECTOR_UNCERTAIN_SPANS: Final = "perlector-uncertain-spans"
 _GEOMETRY_CALIBRATION: Final = "designator-geometry-calibration"
+# The comparisons a sealed bound stopped: a delivered reading's self-revision
+# and dissent rows past the dissent budget, and page witness alignments the
+# aligner stopped on one of its own bounds.
+_COMPARISON_BOUNDS: Final = "comparison-bounds"
 NOT_MEASURED_INSTRUMENTS: Final = (
     _TESTIMONY_COVERAGE,
     _PAGE_INK_CONSERVATION,
     _ACT_VISIBILITY_SURVEY,
     _PERLECTOR_UNCERTAIN_SPANS,
     _GEOMETRY_CALIBRATION,
+    _COMPARISON_BOUNDS,
 )
 # `declared-unproduced` means no stage in this build publishes the instrument, so
 # nothing was attempted; `not-measured` would suggest an attempt that came back
@@ -910,7 +924,18 @@ _NOT_MEASURED_DETAIL_FIELDS: Final = {
         }
     ),
     _GEOMETRY_CALIBRATION: frozenset({"configurations"}),
+    _COMPARISON_BOUNDS: frozenset(
+        {
+            "delivered_self_revisions_stopped",
+            "delivered_dissent_rows_stopped",
+            "witness_alignments_unmeasured",
+            "delivered_acts",
+        }
+    ),
 }
+_COMPARISON_BOUNDS_ROW_FIELDS: Final = frozenset(
+    {"act_key", "self_revision_stopped", "dissent_chairs_stopped"}
+)
 _GEOMETRY_CALIBRATION_ROW_FIELDS: Final = frozenset(
     {"configuration", "calibrated_for_this_corpus", "sample_count"}
 )
@@ -936,6 +961,12 @@ _NOT_MEASURED_RECORDED_IN: Final = {
         "the `provenance` blocks of the sealed Designator padding, geometry and grouping "
         "configurations and of the Perlector protocol's `[truncation]` table, whose digests "
         "this run's `config_digest` binds"
+    ),
+    _COMPARISON_BOUNDS: (
+        "each delivered act's established Perlectio, fields `self_revision` (the "
+        "`comparison-step-limit` non-verdict) and `dissent` (rows carrying "
+        "`max_comparison_steps`), in the retained run; and the `unmeasured` shortfall of "
+        "each act's coverage record in this bundle's aggregate basis"
     ),
 }
 # In canonical order. `perlector-protocol` is not Designator geometry, but its
@@ -1157,6 +1188,36 @@ def _validate_not_measured_detail(
             raise SchemaRefusal(
                 f"{subject} names more acts with uncertain spans than delivered acts"
             )
+    elif instrument == _COMPARISON_BOUNDS:
+        for field in (
+            "delivered_self_revisions_stopped",
+            "delivered_dissent_rows_stopped",
+            "witness_alignments_unmeasured",
+        ):
+            _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
+        rows = detail["delivered_acts"]
+        if not isinstance(rows, list):
+            raise SchemaRefusal(f"{subject} delivered_acts is not a list")
+        for row in rows:
+            row = _require_exact_fields(
+                row, _COMPARISON_BOUNDS_ROW_FIELDS, subject=f"a row in {subject}"
+            )
+            if not _is_nonempty_str(row["act_key"]) or not isinstance(
+                row["self_revision_stopped"], bool
+            ):
+                raise SchemaRefusal(f"a row in {subject} has untyped values")
+            _require_distinct_strings(
+                row["dissent_chairs_stopped"], subject=f"a row in {subject} dissent_chairs_stopped"
+            )
+        keys = [row["act_key"] for row in rows]
+        if keys != sorted(set(keys)):
+            raise SchemaRefusal(f"{subject} does not name each delivered act once, in order")
+        if detail["delivered_self_revisions_stopped"] != sum(
+            row["self_revision_stopped"] for row in rows
+        ) or detail["delivered_dissent_rows_stopped"] != sum(
+            len(row["dissent_chairs_stopped"]) for row in rows
+        ):
+            raise SchemaRefusal(f"{subject} counts do not fall out of its own delivered-act rows")
     elif instrument == _GEOMETRY_CALIBRATION:
         configurations = detail["configurations"]
         if not isinstance(configurations, list) or len(configurations) != len(
@@ -1931,7 +1992,80 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
             and all(row["calibrated_for_this_corpus"] for row in detail["configurations"])
             else "not-measured"
         )
+    if instrument == _COMPARISON_BOUNDS:
+        stopped = (
+            detail["delivered_self_revisions_stopped"]
+            + detail["delivered_dissent_rows_stopped"]
+            + detail["witness_alignments_unmeasured"]
+        )
+        return "not-measured" if stopped else "measured"
     raise SchemaRefusal(f"no not-measured status rule exists for {instrument!r}")
+
+
+def _unmeasured_witness_alignments(coverage_records: Any, subject: str) -> int:
+    """Page witness alignments stopped on an aligner bound, over every act's coverage."""
+    if not isinstance(coverage_records, dict):
+        raise SchemaRefusal(f"{subject} has no coverage records to count unmeasured alignments")
+    try:
+        counts = [record["shortfalls"]["unmeasured"] for record in coverage_records.values()]
+    except (KeyError, TypeError) as error:
+        raise SchemaRefusal(
+            f"{subject} has a coverage record with no `unmeasured` shortfall count"
+        ) from error
+    if not all(_is_count(count) for count in counts):
+        raise SchemaRefusal(f"{subject} has a non-count `unmeasured` shortfall")
+    return sum(counts)
+
+
+def _fed_self_revision_stopped(uncertainty: Any) -> bool:
+    """A fed reading whose canonical self-revisions are null ran out of the budget."""
+    return (
+        isinstance(uncertainty, dict)
+        and uncertainty.get("lectio_kind") == "primed-with-prior"
+        and "self_revisions" in uncertainty
+        and uncertainty["self_revisions"] is None
+    )
+
+
+def _require_comparison_bounds_reconcile(
+    detail: dict[str, Any],
+    *,
+    delivered_witnesses: dict[str, set[str]],
+    coverage_records: Any,
+    self_revision_stopped: dict[str, bool] | None,
+    subject: str,
+) -> None:
+    """Recompute the comparison-bounds counts from the evidence beside them.
+
+    `delivered_witnesses` maps each delivered act key to its exported witness
+    chairs; `self_revision_stopped`, where a product carries the uncertainty
+    layer, maps it to whether that layer records the budget stop.
+    """
+    rows = {row["act_key"]: row for row in detail["delivered_acts"]}
+    if set(rows) != set(delivered_witnesses):
+        raise SchemaRefusal(f"{subject} does not name exactly the delivered acts")
+    for act_key, row in rows.items():
+        if not set(row["dissent_chairs_stopped"]) <= delivered_witnesses[act_key]:
+            raise SchemaRefusal(
+                f"{subject} names a stopped dissent row for a chair act {act_key!r} did not "
+                "export as a witness"
+            )
+        if (
+            self_revision_stopped is not None
+            and row["self_revision_stopped"] != self_revision_stopped[act_key]
+        ):
+            raise SchemaRefusal(
+                f"{subject} says act {act_key!r}'s self-revision "
+                f"{'was' if row['self_revision_stopped'] else 'was not'} stopped by the budget, "
+                "and its exported uncertainty layer says otherwise"
+            )
+    if detail["witness_alignments_unmeasured"] != _unmeasured_witness_alignments(
+        coverage_records, subject
+    ):
+        raise SchemaRefusal(
+            f"{subject} unmeasured witness alignments do not equal the unmeasured shortfalls "
+            "of its own coverage records"
+        )
 
 
 def _not_measured_claim(projection: ArmariumProjection) -> dict[str, Any]:
@@ -2028,6 +2162,22 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         act_ids.add(act_id)
         act_keys.add(act_key)
         _validate_projection_act(act)
+    delivered_acts = [
+        act for act in projection.acts if act["category"] == ArmariumCategory.DELIVERED.value
+    ]
+    _require_comparison_bounds_reconcile(
+        not_measured_basis[_COMPARISON_BOUNDS],
+        delivered_witnesses={
+            act["act_key"]: {witness["chair"] for witness in act["witnesses"]}
+            for act in delivered_acts
+        },
+        coverage_records=projection.aggregate_basis.get("coverage_records"),
+        self_revision_stopped={
+            act["act_key"]: _fed_self_revision_stopped(act.get("uncertainty"))
+            for act in delivered_acts
+        },
+        subject="an Armarium projection's comparison-bounds basis",
+    )
     perlector_basis = not_measured_basis[_PERLECTOR_UNCERTAIN_SPANS]
     delivered_counts = _delivered_doubt_counts(projection.acts)
     if any(perlector_basis[field] != count for field, count in delivered_counts.items()):
@@ -4398,6 +4548,7 @@ def _jsonl_act_records(
             "source_regions": record.get("source_regions"),
             "reason": reason,
             "text_status": record.get("text_status"),
+            "uncertainty": record.get("uncertainty"),
         }
     return records
 
@@ -4877,12 +5028,33 @@ def _verify_product_accounting(
         search_fold_verification = _verify_search_fold_claim(
             root / "acts.sqlite", database_literals
         )
+    fed_stops = None
     if "jsonl" in formats.formats:
         jsonl_records = _jsonl_act_records(root / "acts.jsonl", sources["regions"])
         if _product_categories(jsonl_records) != expected:
             raise SchemaRefusal("the acts JSONL does not reconcile to the manifest act partition")
         _verify_exact_product_outcomes(jsonl_records, outcomes, subject="acts JSONL")
         _verify_exact_delivered_citations(jsonl_records, citations, act_keys, subject="acts JSONL")
+        fed_stops = {
+            act_keys[act_id]: _fed_self_revision_stopped(jsonl_records[act_id]["uncertainty"])
+            for act_id in delivered
+        }
+    _require_comparison_bounds_reconcile(
+        {entry["instrument"]: entry["detail"] for entry in not_measured["entries"]}[
+            _COMPARISON_BOUNDS
+        ],
+        delivered_witnesses={
+            act_keys[act_id]: {
+                witness["chair"]
+                for witness in citations[act_id]["evidence"].get("witnesses", [])
+                if isinstance(witness, dict)
+            }
+            for act_id in delivered
+        },
+        coverage_records=sources["aggregate_basis"].get("coverage_records"),
+        self_revision_stopped=fed_stops,
+        subject="the manifest comparison-bounds claim",
+    )
     if "review-items" in formats.formats:
         expected_review = {
             act_id for act_id, category in expected.items() if category in _REVIEW_CATEGORIES

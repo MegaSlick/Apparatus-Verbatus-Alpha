@@ -24,6 +24,7 @@ from armarium_export import (
     NOT_MEASURED_SCHEMA,
     ArmariumProjection,
     _act_json_records,
+    _doubt,
     _jsonl_act_records,
     _not_measured_status,
     _page_ledger_category,
@@ -138,6 +139,9 @@ _NOT_ASSESSED = {
 }
 
 
+_NO_SHORTFALLS = {"failed": 0, "truncated": 0, "unaligned": 0, "unmeasured": 0}
+
+
 def _test_not_measured_basis(**overrides):
     """A minimal, valid not-measured basis for a hand-built projection.
 
@@ -172,6 +176,14 @@ def _test_not_measured_basis(**overrides):
             "acts_with_uncertain_spans": 0,
             "acts_assessed": 0,
             "acts_not_assessed": 1,
+        },
+        "comparison-bounds": {
+            "delivered_self_revisions_stopped": 0,
+            "delivered_dissent_rows_stopped": 0,
+            "witness_alignments_unmeasured": 0,
+            "delivered_acts": [
+                {"act_key": "one", "self_revision_stopped": False, "dissent_chairs_stopped": []}
+            ],
         },
         "designator-geometry-calibration": {
             "configurations": [
@@ -233,7 +245,29 @@ def _basis_for_acts(acts, *, sealed_pages=1):
         # rather than the partition rule one step earlier.
         "acts_not_assessed": len(delivered) - assessed,
     }
+    basis["comparison-bounds"] = _comparison_bounds_for(delivered)
     return basis
+
+
+def _comparison_bounds_for(delivered, *, unmeasured_alignments=0, dissent_stops=None):
+    """The comparison-bounds detail a producer would write for these delivered acts."""
+    dissent_stops = dissent_stops or {}
+    rows = [
+        {
+            "act_key": act["act_key"],
+            "self_revision_stopped": isinstance(act.get("uncertainty"), dict)
+            and act["uncertainty"].get("lectio_kind") == "primed-with-prior"
+            and act["uncertainty"].get("self_revisions", []) is None,
+            "dissent_chairs_stopped": sorted(dissent_stops.get(act["act_key"], [])),
+        }
+        for act in sorted(delivered, key=lambda act: act["act_key"])
+    ]
+    return {
+        "delivered_self_revisions_stopped": sum(row["self_revision_stopped"] for row in rows),
+        "delivered_dissent_rows_stopped": sum(len(row["dissent_chairs_stopped"]) for row in rows),
+        "witness_alignments_unmeasured": unmeasured_alignments,
+        "delivered_acts": rows,
+    }
 
 
 def _projection(*, salvage_items=()) -> ArmariumProjection:
@@ -336,12 +370,14 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                     "floor": 1,
                     "under_witnessed": False,
                     "unresolved_chairs": 0,
+                    "shortfalls": dict(_NO_SHORTFALLS),
                 },
                 "two": {
                     "configured": 1,
                     "floor": 1,
                     "under_witnessed": False,
                     "unresolved_chairs": 0,
+                    "shortfalls": dict(_NO_SHORTFALLS),
                 },
             },
             "unaddressed_chairs": [],
@@ -4123,6 +4159,8 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
         {},
         [],
         set(),
+        {},
+        {},
     )
     page_conservation_basis = derived_basis["page-ink-conservation"]
     assert page_conservation_basis == {
@@ -4286,6 +4324,8 @@ def test_a_real_background_refusal_reaches_the_complete_export_as_not_measured(
         {},
         [],
         set(),
+        {},
+        {},
     )
     page_basis = derived_basis["page-ink-conservation"]
     assert page_basis == {
@@ -5556,3 +5596,145 @@ def _recipient_whole_damaged_act():
         row["bytes"] = len(members[member])
     _refresh_manifest(members, manifest)
     return _zip_bytes(members)
+
+
+# --- The comparison-bounds ledger row ------------------------------------------
+
+
+def _stopped_projection() -> ArmariumProjection:
+    """A delivered fed act whose self-revision and one dissent row the sealed
+    budget stopped, beside one page witness alignment the aligner stopped."""
+    original = _projection()
+    delivered = {
+        **original.acts[0],
+        "uncertainty": {**original.acts[0]["uncertainty"], "self_revisions": None},
+    }
+    acts = (delivered, *original.acts[1:])
+    coverage = copy.deepcopy(original.aggregate_basis["coverage_records"])
+    coverage["two"]["shortfalls"]["unmeasured"] = 1
+    basis = _basis_for_acts(acts)
+    basis["comparison-bounds"] = _comparison_bounds_for(
+        [delivered], unmeasured_alignments=1, dissent_stops={"one": ["attestator_1"]}
+    )
+    return replace(
+        original,
+        acts=acts,
+        aggregate_basis={**original.aggregate_basis, "coverage_records": coverage},
+        not_measured_basis=basis,
+    )
+
+
+def _resealed_comparison_bounds(projection, mutate) -> bytes:
+    """A package whose comparison-bounds detail `mutate` edited, resealed."""
+    formats = ArmariumFormats(("jsonl",), embed_pixels=False)
+    bundle = build_armarium_bundle(projection, formats, lambda _path: b"")
+    members = _members(bundle.data)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    del manifest["self_hash"]
+    mutate(_entry(manifest["claims"]["not_measured"], "comparison-bounds")["detail"])
+    _refresh_manifest(members, manifest)
+    return _zip_bytes(members)
+
+
+def test_the_ledger_counts_every_comparison_a_sealed_bound_stopped(tmp_path):
+    """Run-level counts, each recomputed rather than believed: the self-revision
+    and dissent row the dissent budget stopped on the delivered act, and the
+    page witness alignment the aligner stopped. A clean machine verifies them."""
+    projection = _stopped_projection()
+    entry = _entry(_block(projection), "comparison-bounds")
+    assert entry["status"] == "not-measured"
+    assert {key: value for key, value in entry["detail"].items() if key != "delivered_acts"} == {
+        "delivered_self_revisions_stopped": 1,
+        "delivered_dissent_rows_stopped": 1,
+        "witness_alignments_unmeasured": 1,
+    }
+    assert _entry(_block(_projection()), "comparison-bounds")["status"] == "measured"
+
+    formats = ArmariumFormats(("jsonl",), embed_pixels=False)
+    bundle = build_armarium_bundle(projection, formats, lambda _path: b"")
+    verify_export_bundle(bundle.data, tmp_path / "clean")
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (
+            lambda basis: (
+                basis["delivered_acts"][0].update(self_revision_stopped=False)
+                or basis.update(delivered_self_revisions_stopped=0)
+            ),
+            "exported uncertainty layer says otherwise",
+        ),
+        (
+            lambda basis: basis.update(witness_alignments_unmeasured=0),
+            "unmeasured shortfalls of its own coverage records",
+        ),
+        (
+            lambda basis: basis["delivered_acts"][0].update(dissent_chairs_stopped=["intruder"]),
+            "did not export as a witness",
+        ),
+        (
+            lambda basis: basis.update(delivered_dissent_rows_stopped=0),
+            "counts do not fall out of its own delivered-act rows",
+        ),
+        (
+            lambda basis: basis.update(
+                delivered_acts=[],
+                delivered_self_revisions_stopped=0,
+                delivered_dissent_rows_stopped=0,
+            ),
+            "exactly the delivered acts",
+        ),
+    ],
+)
+def test_the_producer_refuses_comparison_bounds_its_evidence_contradicts(mutate, match):
+    projection = _stopped_projection()
+    basis = copy.deepcopy(projection.not_measured_basis)
+    mutate(basis["comparison-bounds"])
+    with pytest.raises(SchemaRefusal, match=match):
+        _manifest_of(replace(projection, not_measured_basis=basis))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (
+            lambda detail: detail.update(witness_alignments_unmeasured=0),
+            "unmeasured shortfalls of its own coverage records",
+        ),
+        (
+            lambda detail: (
+                detail["delivered_acts"][0].update(self_revision_stopped=False)
+                or detail.update(delivered_self_revisions_stopped=0)
+            ),
+            "exported uncertainty layer says otherwise",
+        ),
+        (
+            lambda detail: (
+                detail["delivered_acts"][0].update(dissent_chairs_stopped=["intruder"]) or None
+            ),
+            "did not export as a witness",
+        ),
+    ],
+)
+def test_the_clean_machine_verifier_recomputes_the_comparison_bounds(tmp_path, mutate, match):
+    """A resealed manifest whose counts no longer follow from the package's own
+    coverage records, exported uncertainty layers and witness roster is refused."""
+    with pytest.raises(SchemaRefusal, match=match):
+        verify_export_bundle(
+            _resealed_comparison_bounds(_stopped_projection(), mutate), tmp_path / "clean"
+        )
+
+
+def test_a_join_doubt_refuses_a_layer_with_no_self_revisions_field():
+    """A missing key is not zero revisions; a fed null is not measured."""
+    layer = {
+        "lectio_kind": "primed-with-prior",
+        "uncertain_spans": [],
+        "gaps": [],
+        "assessment": {"state": "assessed", "problem": None},
+    }
+    with pytest.raises(SchemaRefusal, match="carries no self_revisions field"):
+        _doubt(layer)
+    assert _doubt({**layer, "self_revisions": None})["self_revisions"] is None
+    assert _doubt({**layer, "self_revisions": []})["self_revisions"] == 0

@@ -183,7 +183,9 @@ def test_armarium_consumption_refuses_malformed_review_measurements(
     monkeypatch.setattr(armarium, "sealed_audit_round_cap", lambda _context: 1)
     monkeypatch.setattr(armarium, "geometry_calibration_rows", lambda _context: [])
     with pytest.raises(armarium.FatalAccounting, match=match) as refusal:
-        armarium.not_measured_basis(SimpleNamespace(), {}, {}, {"act-one": payload}, [], set())
+        armarium.not_measured_basis(
+            SimpleNamespace(), {}, {}, {"act-one": payload}, [], set(), {}, {}
+        )
     assert cause_match in str(refusal.value.__cause__)
 
 
@@ -204,4 +206,6 @@ def test_armarium_consumption_refuses_a_review_without_cross_capture_coverage(mo
     monkeypatch.setattr(armarium, "sealed_audit_round_cap", lambda _context: 1)
     monkeypatch.setattr(armarium, "geometry_calibration_rows", lambda _context: [])
     with pytest.raises(armarium.FatalAccounting, match="act-one.*no cross-capture coverage field"):
-        armarium.not_measured_basis(SimpleNamespace(), {}, {}, {"act-one": payload}, [], set())
+        armarium.not_measured_basis(
+            SimpleNamespace(), {}, {}, {"act-one": payload}, [], set(), {}, {}
+        )

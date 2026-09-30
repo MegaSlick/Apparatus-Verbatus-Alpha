@@ -54,6 +54,42 @@ def is_unmeasured_comparison(value: Any) -> bool:
     )
 
 
+def budget_stopped_comparisons(
+    payload: Any, max_comparison_steps: int, subject: str
+) -> tuple[bool, list[str]]:
+    """Whether the sealed dissent budget stopped this reading's self-revision, and
+    which chairs' dissent rows it stopped.
+
+    Every stopped record names the budget it ran out of; one naming any other
+    budget than the run sealed is refused, since the run never bound it.
+    """
+    if not isinstance(payload, dict):
+        raise SchemaRefusal(f"{subject} has no object payload")
+    recorded: list[tuple[str, Any]] = []
+    revision = payload.get("self_revision")
+    self_revision_stopped = is_unmeasured_comparison(revision)
+    if self_revision_stopped:
+        recorded.append(("self_revision", revision["max_comparison_steps"]))
+    rows = payload.get("dissent")
+    if not isinstance(rows, list):
+        raise SchemaRefusal(f"{subject} carries no dissent record")
+    chairs = []
+    for row in rows:
+        if isinstance(row, dict) and "max_comparison_steps" in row:
+            chair = row.get("chair", row.get("letter"))
+            if not isinstance(chair, str) or not chair:
+                raise SchemaRefusal(f"{subject} has a stopped dissent row naming no witness")
+            chairs.append(chair)
+            recorded.append((f"its dissent row for {chair!r}", row["max_comparison_steps"]))
+    for what, budget in recorded:
+        if budget != max_comparison_steps:
+            raise SchemaRefusal(
+                f"{subject} records {what} stopped on a {budget!r}-step dissent budget, but "
+                f"this run sealed {max_comparison_steps}"
+            )
+    return self_revision_stopped, sorted(chairs)
+
+
 def self_revision_for_view(
     view: str, text: str, prior_text: str, measure: Callable[[str, str], list | dict]
 ) -> list | dict:

@@ -16,7 +16,7 @@ import pytest
 from common.alignment import load_dissent_limits
 from common.contracts import uncertainty as canonical_uncertainty
 from common.contracts.errors import SchemaRefusal
-from common.contracts.prior_draft import unmeasured_comparison
+from common.contracts.prior_draft import budget_stopped_comparisons, unmeasured_comparison
 from common.contracts.uncertainty import from_perlectio, utf8_round_trip, validate
 from conftest import load_stage
 
@@ -410,3 +410,21 @@ def test_validation_refuses_an_assessment_that_says_nothing_usable(assessment, e
 
     with pytest.raises(SchemaRefusal, match=expected):
         validate(layer, "Maria")
+
+
+def test_budget_stopped_comparisons_names_the_stops_and_refuses_an_unsealed_budget():
+    payload = {
+        "self_revision": unmeasured_comparison(7),
+        "dissent": [
+            {"chair": "b", "compared": "unknown", "reason": "stopped", "max_comparison_steps": 7},
+            {"chair": "a", "compared": True},
+            {"letter": "C", "compared": "unknown", "reason": "stopped", "max_comparison_steps": 7},
+        ],
+    }
+    assert budget_stopped_comparisons(payload, 7, "a reading") == (True, ["C", "b"])
+    assert budget_stopped_comparisons({**payload, "self_revision": []}, 7, "a reading")[0] is False
+    with pytest.raises(SchemaRefusal, match="self_revision stopped on a 7-step .* sealed 8"):
+        budget_stopped_comparisons(payload, 8, "a reading")
+    unnamed = {"self_revision": [], "dissent": [{"max_comparison_steps": 7}]}
+    with pytest.raises(SchemaRefusal, match="naming no witness"):
+        budget_stopped_comparisons(unnamed, 7, "a reading")

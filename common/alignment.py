@@ -356,6 +356,13 @@ def load_dissent_limits(
     return DissentLimits(**record["dissent"]), digest
 
 
+def sealed_dissent_budget(context) -> int:
+    """The dissent budget this run sealed, read from the configuration the stage was given."""
+    limits, digest = load_dissent_limits(context.args.alignment_config)
+    context.require_sealed_config("alignment", digest)
+    return limits.max_comparison_steps
+
+
 def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) -> dict[str, Any]:
     """Align a witness comparison view to an anchor, or explicitly `unaligned`.
 
