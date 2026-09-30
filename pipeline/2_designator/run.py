@@ -82,6 +82,7 @@ from common.stage import (  # noqa: E402
     SECONDARY_PROPOSER_CHAIR,
     STRUCTURE_ANSWER_KIND,
     STRUCTURE_ANSWER_RECORD_SCHEMA,
+    STRUCTURE_ATTEMPT_KIND,
     StageContext,
     _stage_records,
     canary_ordinals,
@@ -117,7 +118,6 @@ DESCRIPTION = "Designator: marks out the acts and cuts the crops. It establishes
 # equal to common/recovery.py's RULED_ABSOLUTE_CAP by hand: recovery restores
 # coverage, never quality, so the attempt ceiling must equal the absolute cap.
 ABSOLUTE_STRUCTURE_ATTEMPT_CEILING = 3
-STRUCTURE_ATTEMPT_KIND = "structure-attempt"
 
 # How much of a page's secondary rescue pass its records enumerate. Kept here,
 # not in `common/`, because nothing outside this stage reads it.
