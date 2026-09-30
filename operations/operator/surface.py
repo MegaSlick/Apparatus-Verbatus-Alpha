@@ -309,6 +309,12 @@ class FixtureCache:
             raise CacheMismatch("injected fixture cache mismatch")
         return {"state": "fixture-verified", "chair": identity.role}
 
+    def manifest(self, identity):  # type: ignore[no-untyped-def]
+        raise RuntimeError(
+            f"the fixture cache holds no pinned manifest for chair {identity.role}; "
+            "a fixture preflight runs no subprocess chair"
+        )
+
 
 class FixtureSmokeReader:
     """A proof-page seam that never claims to have reached a model service."""

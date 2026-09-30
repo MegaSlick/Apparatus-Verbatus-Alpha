@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from common.chairs.errors import CacheRevisionRefusal, DigestMismatchRefusal
-from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
+from common.chairs.models import AbsentChair, ChairIdentity, DigestManifest, ModelsConfig
 
 if TYPE_CHECKING:
     from operations.serving.config import ServingRecipes
@@ -722,38 +722,40 @@ class ChairCacheVerifier(Protocol):
     def verify(self, identity: ChairIdentity) -> dict[str, object]:
         """Return an identity-bound verification receipt or raise a named refusal."""
 
+    def manifest(self, identity: ChairIdentity) -> DigestManifest:
+        """The chair's pinned digest manifest, the one ``verify`` checks the cache against."""
 
-SubprocessChecker = Callable[[ChairIdentity, Any, Path, Path], dict[str, object]]
+
+SubprocessChecker = Callable[
+    [ChairIdentity, Any, Path, Path, list[dict[str, object]]], dict[str, object]
+]
 """Run a subprocess chair once on the golden page; return what the run measured.
 
-Called as ``(identity, profile, verified_weights_root, golden_page)``.
+Called as ``(identity, profile, verified_weights_root, golden_page, manifest_rows)``,
+where the rows are the chair's pinned digest manifest.
 """
 
 _MEASURED_RUN_FACTS = ("surya_ocr", "torch", "python", "cpu_capability", "machine")
 
 
 def check_subprocess_environment(
-    identity: ChairIdentity, profile: Any, weights_root: Path, golden_page: Path
+    identity: ChairIdentity,
+    profile: Any,
+    weights_root: Path,
+    golden_page: Path,
+    manifest_rows: list[dict[str, object]],
 ) -> dict[str, object]:
     """Run the chair's own runner once, on the CPU, over the golden page.
 
     The run starts with the environment's version check against the row's
     pins, then loads the verified weights and reads one small page, so a broken
     environment or bundle fails here rather than in the paid run after it. The
-    weights the run names are checked against the files under the weights root,
-    whose manifest must digest to the chair's pin.
+    weights the run names are checked against the pinned manifest rows, as the
+    stage checks them.
     """
-    from common.chairs.manifests import build_manifest, manifest_digest
     from common.imaging import dimensions
-    from operations.serving.errors import ServingConfigurationError
     from operations.serving.surya_detector import run_surya_subprocess
 
-    manifest = build_manifest(weights_root)
-    if manifest_digest(manifest) != identity.digest_manifest:
-        raise ServingConfigurationError(
-            f"the weights under {weights_root} do not digest to chair {identity.role}'s "
-            "pinned manifest"
-        )
     data = golden_page.read_bytes()
     run = run_surya_subprocess(
         profile,
@@ -761,7 +763,7 @@ def check_subprocess_environment(
         {1: data},
         {1: dimensions(data)},
         identity,
-        manifest_rows=manifest.to_record(),
+        manifest_rows=manifest_rows,
     )
     page = run.pages[1].document
     return {
@@ -1254,7 +1256,21 @@ class PreflightRunner:
             )
             return
         try:
-            measured = self.subprocess_checker(identity, profile, Path(root), self.fixture)
+            manifest_rows = self.cache_verifier.manifest(identity).to_record()
+        except Exception as error:
+            issues.append(
+                PreflightIssue(
+                    "cache-mismatch" if is_cache_mismatch(error) else "cache-verification-failed",
+                    f"chair {identity.role}'s pinned manifest could not be read: {error}",
+                    "Inspect the named cache and pinned manifest; repair the cause before retrying.",
+                    identity.role,
+                )
+            )
+            return
+        try:
+            measured = self.subprocess_checker(
+                identity, profile, Path(root), self.fixture, manifest_rows
+            )
         except Exception as error:
             issues.append(
                 PreflightIssue(
