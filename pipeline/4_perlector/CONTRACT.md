@@ -1366,6 +1366,12 @@ name. A fixture pass republishes identical bytes.
 `--act` is refused under `reading_unit = "page"`: the Perlector names its own acts,
 so there is no Designator act to read alone.
 
+A later page-reading attempt (`page-read:2`, the re-ask Train 3 plans) is a new
+attempt of the same page, so every act it establishes gets new act ids: `act_id`
+binds the page-reading attempt. Attempt 1's act records stay sealed beside them.
+Whether a later attempt supersedes attempt 1 -- and how a consumer tells which
+attempt's acts are current -- is not decided here; the Train 3 design must state it.
+
 ## Not built here
 
 - Real serving on real silicon. What is proven offline: reader selection by sealed row
