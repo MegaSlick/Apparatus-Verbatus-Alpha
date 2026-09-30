@@ -248,7 +248,7 @@ def request_body(
     model_id: str,
     seed: int,
     deterministic: bool,
-    temperature: int | float | None = None,
+    sampling: Mapping[str, int | float] | None = None,
 ) -> bytes:
     """Render one request without allowing callers to lie about its target model."""
 
@@ -272,12 +272,11 @@ def request_body(
                     f"deterministic probe {field}={supplied!r}, expected {expected!r}"
                 )
             value[field] = expected
-    elif temperature is not None:
-        # A structural pass is permitted to use its separately sealed
-        # posture.  It still sends the serving profile's seed: sampling without
-        # the seed that actually governed it would leave the retained request
-        # unable to reproduce the observed variation.
-        for field, expected in (("temperature", temperature), ("seed", seed)):
+    elif sampling is not None:
+        # A chair's sealed sampling values go out with the seed that governed
+        # them: sampling without it would leave the retained request unable to
+        # reproduce the observed variation.
+        for field, expected in (*sampling.items(), ("seed", seed)):
             supplied = value.get(field)
             if supplied is not None and supplied != expected:
                 raise ServingConfigurationError(

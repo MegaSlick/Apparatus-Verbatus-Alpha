@@ -2711,7 +2711,7 @@ def _serve_unanswered_pages(
     attempt_policy: Mapping[str, Any],
     identity: ChairIdentity,
     decoding_sha256: str,
-    temperature: float,
+    temperature: object,
     serving_factory: Callable[[StageContext, ChairIdentity, str], ChairClient],
     tier: str,
 ) -> tuple[dict[int, structure_pass.PageAnswer], dict[int, dict[str, str]]]:

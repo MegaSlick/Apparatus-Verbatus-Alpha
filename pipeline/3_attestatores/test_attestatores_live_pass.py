@@ -79,6 +79,7 @@ from operations.serving.fakes import (  # noqa: E402
     FakeRegistry,
     ScriptedAnswer,
     scripted_prompt_too_long,
+    shipped_chair_decoding,
 )
 from operations.serving.manager import (  # noqa: E402
     ServingManager,
@@ -505,7 +506,7 @@ class LiveWorld:
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=self.live_run.decoding_sha256,
-            record_temperature=0,
+            chair_decoding=shipped_chair_decoding(identity.role),
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
             chandra_native_policy=recipe_record(),
         )
@@ -1104,9 +1105,9 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
     assert tree.read_bytes(view["prompts"]["system"]["relative_path"]).decode() == prompt["system"]
     assert tree.read_bytes(view["prompts"]["query"]["relative_path"]).decode() == prompt["user"]
     # And the call record carries the vendor's own declared values, floats
-    # included, beside everything that actually went on the wire: the three
-    # allow-listed decoding values, the bound derived from the sealed row, and
-    # the second EOS id `generation_config = "vllm"` never reads.
+    # included, beside everything that actually went on the wire: DAI's sealed
+    # sampling row, the bound derived from the sealed serving row, and the
+    # second EOS id sent as well as resolved under `generation_config = "auto"`.
     call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
     declared = feeding.dai_generation()
     assert set(call["generation_sent"]) == {
@@ -1120,7 +1121,7 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
     }
     assert call["generation_sent"]["stop_token_ids"] == [151643]
     assert call["generation_sent"]["seed"] == 7
-    assert call["generation_sent"]["temperature"] == 0
+    assert call["generation_sent"]["temperature"] == {"schema": "wire-decimal.v1", "decimal": "0.1"}
     # DAI's declared ceiling (1,024) is strictly below what any shipped row
     # leaves after its image and prompt tokens, so it is always the vendor
     # bound that binds here, exactly -- never merely an upper bound on it.
@@ -2141,7 +2142,7 @@ def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path
         tier=TIER,
         retain=blob_store.retain,
         decoding_config_sha256="c" * 64,
-        record_temperature=0,
+        chair_decoding=shipped_chair_decoding(identity.role),
         read_receipt=lambda reference: {
             "chair": identity.role,
             "source": identity.source,
@@ -2157,7 +2158,7 @@ def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path
         messages=({"role": "user", "content": [{"type": "text", "text": "read this"}]},),
         image_sha256s=(),
         generation_declared=declared,
-        generation_sent={key: declared[key] for key in ("repetition_penalty", "top_k", "top_p")},
+        generation_sent={},
     )
     with client:
         endpoint.script(ScriptedAnswer(content="transcribed", finish_reason="stop"))
@@ -2172,13 +2173,12 @@ def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path
             "decimal": json.dumps(declared[key]),
         }
         assert float(record["generation_sent"][key]["decimal"]) == declared[key]
-    # `temperature` is declared by the vendor and never sent -- the sealed
-    # reading-of-record posture is 0 -- and is still recorded to the digit.
+    # The declared view is recorded to the digit as well, beside what was sent.
     assert record["generation_declared"]["temperature"] == {
         "schema": "wire-decimal.v1",
         "decimal": json.dumps(declared["temperature"]),
     }
-    assert "temperature" not in request.generation_sent
+    assert posted["temperature"] == declared["temperature"]
 
 
 def test_the_default_serving_factory_binds_the_run_that_will_record_the_reading(live_run, tmp_path):

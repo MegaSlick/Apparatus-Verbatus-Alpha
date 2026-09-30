@@ -39,7 +39,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
-from common.decoding import load_decoding_policy
+from common.decoding import SAMPLING_FIELDS, chair_decoding, load_decoding_policy
 from common.runtree.store import SERVING_LOGS_DIR, RunTree
 from common.sealed_config import read_sealed_toml
 from common.stage import StageContext
@@ -61,6 +61,7 @@ from operations.serving.fakes import (
     FakeRegistry,
     ScriptedAnswer,
     scripted_prompt_too_long,
+    shipped_chair_decoding,
 )
 from operations.serving.http import EndpointUnavailable, HttpResponse
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
@@ -331,7 +332,7 @@ def _serving_factory(
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
-            record_temperature=decoding_policy["reading_of_record"]["temperature"],
+            chair_decoding=chair_decoding(decoding_policy, chair.role),
             read_receipt=context.tree.read_run_receipt,
         )
 
@@ -615,9 +616,10 @@ def test_the_pass_asks_the_engine_exactly_once_per_reading_and_never_retries(
     # Pass A and Pass B for every act that was read, plus at most one re-proof
     # each; nothing in this stage may ask twice for one arm.
     assert 2 * len(readings) <= len(endpoint.requests) <= 3 * len(readings)
-    # Every request carries the sealed record posture and nothing sampled.
+    # Every request carries the Perlector's sealed sampling row, exactly.
+    sampling = shipped_chair_decoding("perlector")
     for request in endpoint.requests:
-        assert request["temperature"] == 0
+        assert {key: request[key] for key in SAMPLING_FIELDS if key in request} == sampling
         assert request["stream"] is False
         assert request["model"] == SERVED_MODEL_ID
 
@@ -1478,8 +1480,8 @@ def test_stage_chair_client_logs_under_the_run_tree_and_leases_off_it(live_run, 
         context,
         _perlector_identity(),
         TIER,
+        decoding_policy=decoding_policy,
         decoding_config_sha256=decoding_sha256,
-        record_temperature=decoding_policy["reading_of_record"]["temperature"],
     )
     tree_root = context.tree.root
     assert client._manager.log_root.is_relative_to(tree_root)

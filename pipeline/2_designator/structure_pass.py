@@ -50,11 +50,11 @@ difference from a `Blank-Page` answer is only in the record
 both claims are "no rectangle was proposed" and tiling keeps the page covered
 rather than costing every act on it until reviewed.
 
-**Decoding** runs under `config/decoding.toml`'s `[structure]` section, never
-under `reading_of_record`, so this pass may vary its posture while the
-Attestatores stay fixed; the value is digest-checked and recorded on every
-page. Coverage recovery keeps temperature fixed and advances the seed by
-attempt ordinal from the serving profile's base seed.
+**Decoding** is the structure chair's row of `config/decoding.toml`'s
+`chair_decoding` table, which is Chandra's own first-request settings; the
+temperature is digest-checked and recorded on every page. Coverage recovery
+(`[structure]`) keeps those values and advances the seed by attempt ordinal
+from the serving profile's base seed.
 
 **No picker.** The chair proposes rectangles; the ink scan corroborates them
 and never overrides them; nothing here ranks, selects among, or repairs what
@@ -88,7 +88,7 @@ from common.contracts.envelope import verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
 from common.contracts.stages import DESIGNATOR
-from common.decoding import load_decoding_policy
+from common.decoding import chair_decoding, load_decoding_policy
 from common.imaging import Bounds, dimensions
 from common.native_witness import validate_presented, validate_presented_page_binding
 from common.request_capacity import (
@@ -107,7 +107,13 @@ from common.stage import (
     validate_serving_provenance,
 )
 from operations.serving.assembly import bound_serving_recipes, stage_chair_client
-from operations.serving.client import ChairClient, ChairRequest, ChairResponse, serving_mode_for
+from operations.serving.client import (
+    ChairClient,
+    ChairRequest,
+    ChairResponse,
+    recorded_generation,
+    serving_mode_for,
+)
 from operations.serving.errors import ChairResponseRefusal, ChairTransportFailure, ServingError
 from operations.serving.http import EndpointUnavailable
 
@@ -269,9 +275,10 @@ def structure_serving_mode(context: Any, args: Any) -> tuple[str, ChairIdentity]
 # --- decoding -----------------------------------------------------------------
 
 
-def executable_temperature(policy: Mapping[str, Any]) -> int | float:
-    """Return the sealed structure posture the serving seam sends verbatim."""
-    return policy["structure"]["temperature"]
+def executable_temperature(policy: Mapping[str, Any]) -> object:
+    """The structure chair's sealed temperature, in the form its call record holds it."""
+    sampling = chair_decoding(policy, DESIGNATOR_CHAIR)
+    return recorded_generation({"temperature": sampling["temperature"]})["temperature"]
 
 
 def structure_engine_call(decoding_config_sha256: str) -> dict[str, str]:
@@ -324,8 +331,8 @@ def default_serving_factory(context: Any, identity: ChairIdentity, tier: str) ->
         context,
         identity,
         tier,
+        decoding_policy=policy,
         decoding_config_sha256=decoding_sha256,
-        record_temperature=executable_temperature(policy),
     )
 
 
@@ -437,7 +444,7 @@ def page_request(
     image_bytes: bytes,
     image_sha256: str,
     *,
-    temperature: int | float,
+    temperature: object,
     structure_recovery_seed: int | None = None,
     capacity: Mapping[str, Any] | None = None,
 ) -> ChairRequest:
@@ -839,7 +846,7 @@ def _refused_page_answer(
     page_w: int,
     page_h: int,
     capacity: Mapping[str, Any],
-    temperature: int | float,
+    temperature: object,
     decoding_config_sha256: str,
     provenance: Mapping[str, Any],
     attempt_ordinal: int,
@@ -915,7 +922,7 @@ def _failed_call_page_answer(
     page_w: int,
     page_h: int,
     capacity: Mapping[str, Any],
-    temperature: int | float,
+    temperature: object,
     decoding_config_sha256: str,
     provenance: Mapping[str, Any],
     attempt_ordinal: int,
@@ -1035,7 +1042,7 @@ def ask_page(
     page_bytes: bytes,
     analysis: Mapping[str, Any],
     *,
-    temperature: int | float,
+    temperature: object,
     decoding_config_sha256: str,
     provenance: Mapping[str, Any],
     attempt_ordinal: int = 1,

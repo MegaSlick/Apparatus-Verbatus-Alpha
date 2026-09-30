@@ -91,6 +91,7 @@ from common.chandra_native_retry import (
 )
 from common.chandra_native_retry import wire_parameters as chandra_wire_parameters
 from common.contracts.canonical import ast_digest
+from common.decoding import SAMPLING_FIELDS, chair_decoding, load_decoding_policy
 from common.imaging import encode_grayscale_png
 from common.imaging_ports import (
     CHANDRA_GRID_SIZE,
@@ -383,13 +384,13 @@ def test_the_carried_dai_generation_values_are_the_shipped_configuration():
     assert generation == dict(DAI_GENERATION_CONFIG), (
         "DAI's carried generation values are no longer the shipped "
         "generation_config.json at the pinned revision. These are the vendor's "
-        "decoding policy, not ours; `do_sample` stays true and "
-        "`temperature` stays 0.1 even though the manager forces temperature 0 on "
-        "the wire, because what is carried is the record of what shipped."
+        "decoding policy, not ours, and the sealed decoding table's DAI row sends "
+        "its sampling values."
     )
-    # `top_k: 1` makes 0.1 argmax-equivalent; that equivalence is what lets the
-    # reading of record stay at temperature 0 without departing from the vendor.
-    assert generation["top_k"] == 1
+    policy, _digest = load_decoding_policy()
+    assert chair_decoding(policy, "attestator_2") == {
+        key: generation[key] for key in ("repetition_penalty", "temperature", "top_k", "top_p")
+    }
 
 
 def test_the_vendor_pins_this_file_states_are_internally_consistent():
@@ -516,8 +517,8 @@ CHAIR_VENDOR_SYSTEMS: Final[Mapping[str, Mapping[str, Any]]] = {
         "user_parts": ("image_url", "text"),
         "generation_ceiling": 1_024,
         "ceiling_source": "model card README, `max_new_tokens=1024`",
-        "required_generation_sent": ("repetition_penalty", "top_k", "top_p"),
-        "allowed_generation_sent": ("max_tokens", "repetition_penalty", "top_k", "top_p"),
+        "required_generation_sent": (),
+        "allowed_generation_sent": ("max_tokens",),
     },
     "attestator_3": {
         "adapter": "churro.v1",
@@ -528,15 +529,21 @@ CHAIR_VENDOR_SYSTEMS: Final[Mapping[str, Mapping[str, Any]]] = {
             "src/churro_ocr/providers/specs.py:77 DEFAULT_OCR_MAX_TOKENS at v0.3.0 "
             "(CHURRO paper section B.2 gives the reason)"
         ),
-        "required_generation_sent": ("repetition_penalty",),
-        "allowed_generation_sent": ("max_tokens", "repetition_penalty"),
+        "required_generation_sent": (),
+        "allowed_generation_sent": ("max_tokens",),
     },
 }
 
-# The manager owns these and the client refuses a caller that names them, so the
-# argmax pin is checked against the *composed* body: what generation_sent asks
-# for, plus what the manager forces.
-MANAGER_FORCED: Final[Mapping[str, Any]] = {"temperature": 0, "seed": 0}
+
+def sealed_forced_generation(chair: str) -> dict[str, Any]:
+    """What the client adds to a chair's body: its sealed sampling row and the seed.
+
+    The client refuses a caller that names either, so the sampling values are
+    checked against the *composed* body: what generation_sent asks for, plus
+    what the client adds.
+    """
+    policy, _digest = load_decoding_policy()
+    return {**chair_decoding(policy, chair), "seed": 0}
 
 
 def vendor_generation_bound(
@@ -587,7 +594,7 @@ def refuse_unless_vendor_request_shape(
     max_model_len: int,
     image_tokens: int,
     prompt_tokens: int,
-    forced_generation: Mapping[str, Any] = MANAGER_FORCED,
+    forced_generation: Mapping[str, Any] | None = None,
 ) -> None:
     """Refuse a wire body that is not the vendor system this chair runs.
 
@@ -668,11 +675,13 @@ def refuse_unless_vendor_request_shape(
             f"{bound} its ceiling ({spec['ceiling_source']}) and this row allow"
         )
 
-    composed = {**sent, **dict(forced_generation)}
-    if composed.get("top_k") == 1 and composed.get("temperature") != 0:
+    forced = sealed_forced_generation(chair) if forced_generation is None else forced_generation
+    composed = {**sent, **dict(forced)}
+    sampling = {key: value for key, value in composed.items() if key in SAMPLING_FIELDS}
+    policy, _digest = load_decoding_policy()
+    if sampling != chair_decoding(policy, chair):
         raise VendorRequestShapeRefusal(
-            f"{chair} sends top_k=1 without temperature 0; a top-1 sample at a "
-            "nonzero temperature is not the argmax reading of record"
+            f"{chair} sends sampling values {sampling!r}, not its makers' sealed row"
         )
 
 
@@ -696,10 +705,6 @@ def _conforming_request(chair: str, *, max_tokens: int | None) -> ChairRequest:
         )
     messages.append({"role": "user", "content": user_content})
     generation_sent: dict[str, Any] = {} if max_tokens is None else {"max_tokens": max_tokens}
-    if chair == "attestator_2":
-        generation_sent.update({"repetition_penalty": 1.05, "top_k": 1, "top_p": 0.001})
-    if chair == "attestator_3":
-        generation_sent["repetition_penalty"] = 1.05
     return ChairRequest(
         kind="chat-completions",
         messages=tuple(messages),
@@ -973,8 +978,8 @@ def test_every_way_of_departing_from_the_vendor_system_is_refused(chair: str):
         )
 
 
-def test_a_top_one_sample_at_a_nonzero_temperature_is_refused():
-    """DAI ships `top_k 1`; that is argmax only while temperature is 0."""
+def test_sampling_values_that_are_not_the_makers_row_are_refused():
+    """DAI ships `temperature 0.1, top_k 1`; a body at temperature 0 is not that."""
     chair = "attestator_2"
     row = _serving_rows()[(chair, ROW_TIER)]
     bound = vendor_generation_bound(
@@ -985,19 +990,19 @@ def test_a_top_one_sample_at_a_nonzero_temperature_is_refused():
     )
     request = _conforming_request(chair, max_tokens=bound)
 
-    with pytest.raises(VendorRequestShapeRefusal, match="argmax reading of record"):
+    with pytest.raises(VendorRequestShapeRefusal, match="not its makers' sealed row"):
         refuse_unless_vendor_request_shape(
             chair,
             request,
             max_model_len=row["max_model_len"],
             image_tokens=SAMPLE_IMAGE_TOKENS,
             prompt_tokens=SAMPLE_PROMPT_TOKENS,
-            forced_generation={"temperature": 0.1, "seed": 0},
+            forced_generation={**sealed_forced_generation(chair), "temperature": 0},
         )
 
 
 def test_a_caller_that_names_a_manager_owned_field_is_refused_by_the_client():
-    """The argmax pin is checked on the composed body because of exactly this."""
+    """The sampling values are checked on the composed body because of exactly this."""
     chair = "attestator_3"
     # attestator_3's row governs at this sample cost (`_bound_is_owed` is
     # false), so the conforming body sends no `max_tokens` -- unrelated to
@@ -1011,7 +1016,7 @@ def test_a_caller_that_names_a_manager_owned_field_is_refused_by_the_client():
         generation_sent={**dict(base.generation_sent), "temperature": 0},
     )
 
-    with pytest.raises(ChairRequestRefusal, match="manager-owned"):
+    with pytest.raises(ChairRequestRefusal, match="sealed decoding table"):
         _refuse_unbuildable_request(request)
 
 
@@ -1405,7 +1410,8 @@ def test_the_carried_bytes_and_ports_equal_the_pinned_vendor_sources(request):
         assert _name_of(profile["template"]) == "CHURRO_3B_XML_TEMPLATE"
         assert "transport" not in profile and "huggingface" not in profile, (
             "the vendor now overrides transport or generation for churro-3B; the "
-            "no-max_tokens, no-temperature reading is no longer its own"
+            "sealed Churro row carries generation_config.json only because the vendor "
+            "sends no sampling of its own, and that is no longer so"
         )
         assert "churro_3b_profile()" in payloads["churro_specs.py"].decode("utf-8"), (
             "churro_3b_profile is no longer built into the profile registry"

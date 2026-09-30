@@ -4058,10 +4058,8 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         client_factory=serving_factory
         or partial(
             stage_chair_client,
+            decoding_policy=decoding_policy,
             decoding_config_sha256=decoding_sha256,
-            # The sealed reading-of-record temperature; `ChairClient` refuses anything
-            # but 0 rather than coercing it.
-            record_temperature=decoding_policy["reading_of_record"]["temperature"],
         ),
         chair=chair,
         serving_mode=serving_mode,

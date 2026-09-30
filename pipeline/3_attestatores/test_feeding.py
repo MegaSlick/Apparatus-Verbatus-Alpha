@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from types import SimpleNamespace
@@ -34,6 +33,7 @@ from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, writing_directory
+from common.decoding import chair_decoding, load_decoding_policy
 from common.native_witness import CHURRO_MAX_RESPONSE_BYTES, validate_vendor_identity
 from common.runtree.store import BLOBS_DIR
 from common.stage import StageContext
@@ -909,15 +909,25 @@ def test_dai_v2_model_view_retains_the_auto_generation_ledger_and_v1_stays_reada
     current = dai_model_view(**kwargs, generation_accounting=ledger)
     assert current["adapter"] == "dai-atr.v2"
     assert current["generation_accounting"] == ledger
-    assert ledger["vendor_keys_intentionally_overridden"] == ["do_sample", "temperature"]
+    assert ledger["schema"] == "dai-generation-accounting.v2"
+    assert ledger["vendor_keys_sent_by_sealed_decoding"] == [
+        "repetition_penalty",
+        "temperature",
+        "top_k",
+        "top_p",
+    ]
+    assert ledger["vendor_keys_without_request_field"] == ["do_sample"]
     carried_generation = dai_generation()
-    assert ledger["vendor_temperature_decimal"] == json.dumps(carried_generation["temperature"])
     assert ledger["vendor_do_sample"] is carried_generation["do_sample"]
-    assert ledger["governed_temperature"] == 0
     assert validate_dai_generation_accounting(ledger) is ledger
     assert validate_dai_model_view(current) is current
+    # The sealed DAI row sends exactly the carried file's sampling values.
+    policy, _digest = load_decoding_policy()
+    assert chair_decoding(policy, "attestator_2") == {
+        key: carried_generation[key] for key in ledger["vendor_keys_sent_by_sealed_decoding"]
+    }
 
-    forged = {**ledger, "governed_temperature": 1}
+    forged = {**ledger, "vendor_keys_without_request_field": []}
     with pytest.raises(SchemaRefusal, match="generation accounting differs"):
         validate_dai_generation_accounting(forged)
     with pytest.raises(SchemaRefusal, match="generation_config='auto'"):

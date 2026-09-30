@@ -70,6 +70,7 @@ from operations.serving.fakes import (  # noqa: E402
     FakePublisher,
     FakeRegistry,
     ScriptedAnswer,
+    shipped_chair_decoding,
 )
 from operations.serving.manager import ServingManager  # noqa: E402
 from operations.serving.residency import FileResidencyLease  # noqa: E402
@@ -234,15 +235,13 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
     declared = feeding.dai_generation()
     assert request.generation_declared == declared
     capacity = act_request.capacity
+    # Sampling values are the sealed table's, added by the client, never the builder's.
     assert dict(request.generation_sent) == {
-        "repetition_penalty": declared["repetition_penalty"],
-        "top_k": declared["top_k"],
-        "top_p": declared["top_p"],
         # DAI's own model card runs it at `max_new_tokens=1024`, and this crop
         # leaves the row far more room than that, so the declared bound wins.
         "max_tokens": DECLARED_ANSWER_BOUND_TOKENS["attestator_2"],
-        # The second EOS id in the carried config, which the engine never
-        # reads because every row pins `generation_config = "vllm"`.
+        # The second EOS id in the carried config, sent as well as resolved
+        # under the row's `generation_config = "auto"`.
         "stop_token_ids": [151643],
     }
     assert declared["eos_token_id"] == [feeding.DAI_TOKENIZER_EOS_TOKEN_ID, 151643]
@@ -302,12 +301,8 @@ def test_page_chair_request_builds_churros_system_only_framing_and_declares_the_
     # The row holds the vendor's whole 25,000-token bound beside the page, so
     # the bound is what binds and it goes on the wire.
     assert CHURRO_OUTPUT_TOKENS < row.max_model_len
-    assert dict(request.generation_sent) == {
-        "max_tokens": CHURRO_OUTPUT_TOKENS,
-        # Churro's own shipped penalty, which `generation_config = "vllm"`
-        # would otherwise replace with vLLM's default 1.0.
-        "repetition_penalty": 1.05,
-    }
+    # Sampling values are the sealed table's, added by the client, never the builder's.
+    assert dict(request.generation_sent) == {"max_tokens": CHURRO_OUTPUT_TOKENS}
 
 
 def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends():
@@ -325,8 +320,7 @@ def test_every_sealed_churro_row_at_every_tier_takes_the_bound_this_seam_sends()
         request, _ = _churro_page_request(row)
         assert request.generation_declared == {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
         sent = dict(request.generation_sent)
-        assert set(sent) <= {"max_tokens", "repetition_penalty"}
-        assert "repetition_penalty" in sent
+        assert set(sent) <= {"max_tokens"}
         capacity = request.capacity
         assert capacity is not None
         prompt = capacity["image_prompt_tokens"] + capacity["prompt_tokens"]
@@ -1014,7 +1008,7 @@ def _world(tmp_path: Path, *, chair: ChairIdentity | None = None):
         tier=TIER,
         retain=blob_store.retain,
         decoding_config_sha256=DECODING_SHA,
-        record_temperature=0,
+        chair_decoding=shipped_chair_decoding(chair.role),
         read_receipt=read_receipt,
     )
     return client, endpoint, blob_store

@@ -43,7 +43,7 @@ from common.contracts.serving import (
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
-from common.decoding import load_decoding_policy
+from common.decoding import chair_decoding, load_decoding_policy
 from common.fixture_identity import page_identity
 from common.imaging import dimensions
 from common.imaging_ports import scale_to_fit_chandra
@@ -325,7 +325,7 @@ def _serving_factory(
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
-            record_temperature=structure_pass.executable_temperature(policy),
+            chair_decoding=chair_decoding(policy, chair.role),
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
         )
 
@@ -543,7 +543,8 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert DECLARED_ANSWER_BOUND_TOKENS["designator_structure"] > 4096 - 48 - 593
         assert "max_tokens" not in request
         assert request["chat_template_kwargs"] == {"enable_thinking": False}
-        assert request["temperature"] == 1
+        # Chandra's own first-request sampling, from the chair's sealed row.
+        assert (request["temperature"], request["top_p"]) == (0.0, 0.1)
     tree = RunTree(root, RUN_ID)
     request_images = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_REQUEST_IMAGE_KIND))
     assert set(request_images) == {1, 2}
@@ -565,7 +566,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         ]
         assert payload["findings"] == []
         assert payload["decoding"]["policy"] == "structure"
-        assert payload["decoding"]["temperature"] == 1
+        assert payload["decoding"]["temperature"] == {"schema": "wire-decimal.v1", "decimal": "0.0"}
         assert payload["prompt_version"] == "verbatus-structure-prompt.v3"
         assert payload["block_count"] == len(expected)
         assert payload["blocks_without_proposal"] == []
@@ -721,10 +722,11 @@ def test_the_attestatores_read_a_live_seal_under_their_own_fixture_rows(
         provenance = record["payload"]["provenance"]
         assert provenance["chair"] != "designator_structure"
         assert "engine_call" not in provenance
-    # The Attestatores' production client still binds reading_of_record, not
-    # the structure section, pinned at the source.
+    # The Attestatores' production client binds each chair's own sealed row
+    # through the shared assembly, never the structure section, pinned at the
+    # source.
     source = ATTESTATORES_CLI.read_text(encoding="utf-8")
-    assert 'record_temperature=policy["reading_of_record"]["temperature"]' in source
+    assert "decoding_policy=policy," in source
     assert '["structure"]' not in source
 
 
@@ -1923,23 +1925,15 @@ def test_a_real_recovery_requires_the_same_explicit_request_identity(
     assert not (root / RUN_ID / "2_designator").exists()
 
 
-def test_a_non_zero_sealed_structure_temperature_is_admitted_for_the_serving_seam(
-    tmp_path, monkeypatch
-):
-    """The serving seam owns and sends the sealed structural posture."""
-    catalogue = _live_catalogue(tmp_path)
-    decoding = tmp_path / "decoding.toml"
-    source = (ROOT / "config" / "decoding.toml").read_text(encoding="utf-8")
-    decoding.write_text(
-        source.replace("temperature = 1\n", "temperature = 0.7\n", 1), encoding="utf-8"
-    )
-    policy, _digest = load_decoding_policy(decoding)
-    assert policy["structure"]["temperature"] == 0.7
-    root = tmp_path / "runs"
-    _chain(root, catalogue, "--decoding-config", str(decoding))
-
-    assert designator.structure_pass.executable_temperature(policy) == 0.7
-    assert not (root / RUN_ID / "2_designator" / "artifacts").exists()
+def test_the_structure_chair_reads_at_chandras_own_first_request_settings(tmp_path):
+    """The structure chair's sealed row is Chandra's own pipeline's first request."""
+    policy, _digest = load_decoding_policy()
+    assert chair_decoding(policy, "designator_structure") == {"temperature": 0.0, "top_p": 0.1}
+    # Recorded in the call record's own form, so the two can be compared as written.
+    assert designator.structure_pass.executable_temperature(policy) == {
+        "schema": "wire-decimal.v1",
+        "decimal": "0.0",
+    }
 
 
 _ABSENT_SECONDARY = """[chairs.secondary_proposer]

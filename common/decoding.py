@@ -6,12 +6,36 @@ import math
 from pathlib import Path
 from typing import Any, Mapping
 
-from common.chandra_native_retry import validate_policy_record
+from common.chandra_native_retry import validate_policy_record, wire_parameters
 from common.contracts.errors import ContractError
 from common.sealed_config import read_sealed_toml
 
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
 _PERLECTOR_BOUNDS = ("reading_max_tokens", "reproof_max_tokens")
+# Every sampling field a chair's row may carry: the fields an OpenAI-compatible
+# vLLM request accepts for them. The serving client refuses any of them from a
+# caller, so these values reach the wire only through the sealed table.
+SAMPLING_FIELDS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "presence_penalty",
+        "frequency_penalty",
+        "repetition_penalty",
+    }
+)
+# vLLM admits a negative presence or frequency penalty, which rewards repetition.
+_SIGNED_FIELDS = frozenset({"presence_penalty", "frequency_penalty"})
+_PROVENANCE_FIELDS = frozenset({"source", "revision", "verification"})
+READING_CHAIRS = frozenset(
+    {"designator_structure", "attestator_1", "attestator_2", "attestator_3", "perlector"}
+)
+# The chairs Chandra fills; their rows must be the first request of the pinned
+# Chandra recipe, so the structure chair and a plain Attestator 1 read cannot
+# drift from the maker's own pipeline.
+_CHANDRA_CHAIRS = ("designator_structure", "attestator_1")
 _LOAD_RECOVERY = (
     " No run or stage artifact was written. Restore or correct the decoding file and retry"
 )
@@ -33,24 +57,26 @@ def _validate_decoding_policy(policy: Any) -> None:
     """Close every section before its values can mint provenance identities.
 
     The exact, closed Chandra native inference recipe is required for Attestator 1.
-    `reading_of_record` is pinned to temperature 0, the posture every
-    Attestator and the Perlector read under. `structure` is the Designator's
-    own posture and is admitted at any finite, non-negative temperature since
-    that pass may vary, sealed and recorded -- whether a value can actually be
-    executed is the pass's own refusal to make, not this loader's. The section
-    is required: `common/stage.py` binds the name `structure` to the sealed
-    seal of this configuration on every structural seal.
+    `chair_decoding` holds one row per reading chair with its makers' sampling
+    values and where they were read. `structure` is the Designator's coverage
+    recovery policy. The section is required: `common/stage.py` binds the name
+    `structure` to the sealed seal of this configuration on every structural seal.
     """
     if not isinstance(policy, dict):
         raise ContractError("decoding configuration is not a table")
     schema = policy.get("schema")
-    if isinstance(schema, str) and schema in {"decoding.v1", "decoding.v2", "decoding.v3"}:
+    if isinstance(schema, str) and schema in {
+        "decoding.v1",
+        "decoding.v2",
+        "decoding.v3",
+        "decoding.v4",
+    }:
         raise ContractError(f"sealed under {schema}, which this build no longer reads; re-run")
-    if schema != "decoding.v4":
+    if schema != "decoding.v5":
         raise ContractError("decoding configuration has an unsupported schema")
     expected_sections = {
         "schema",
-        "reading_of_record",
+        "chair_decoding",
         "variance_experiment",
         "structure",
         "perlector_generation",
@@ -58,19 +84,13 @@ def _validate_decoding_policy(policy: Any) -> None:
     }
     if set(policy) != expected_sections:
         raise ContractError("decoding configuration has the wrong closed schema")
-    record = policy["reading_of_record"]
     variance = policy["variance_experiment"]
     structure = policy["structure"]
-    expected_structure_fields = {"temperature", "recovery_seed_schedule", "recovery_max_attempts"}
-    if (
-        not isinstance(structure, dict)
-        or set(structure) != expected_structure_fields
-        or isinstance(structure["temperature"], bool)
-        or not isinstance(structure["temperature"], (int, float))
-        or not math.isfinite(structure["temperature"])
-        or structure["temperature"] < 0
-    ):
-        raise ContractError("decoding structure must declare one finite, non-negative temperature")
+    if not isinstance(structure, dict) or set(structure) != {
+        "recovery_seed_schedule",
+        "recovery_max_attempts",
+    }:
+        raise ContractError("decoding structure must declare only its coverage recovery")
     if (
         structure["recovery_seed_schedule"] != "base-plus-attempt-ordinal-minus-one"
         or not isinstance(structure["recovery_max_attempts"], int)
@@ -98,14 +118,7 @@ def _validate_decoding_policy(policy: Any) -> None:
         validate_policy_record(policy["chandra_native_inference"])
     except ContractError as error:
         raise ContractError(str(error)) from error
-    if (
-        not isinstance(record, dict)
-        or set(record) != {"temperature"}
-        or isinstance(record["temperature"], bool)
-        or not isinstance(record["temperature"], (int, float))
-        or record["temperature"] != 0
-    ):
-        raise ContractError("decoding reading_of_record must declare temperature 0")
+    _validate_chair_decoding(policy["chair_decoding"])
     if not isinstance(variance, dict) or set(variance) != {"label", "seed", "passes"}:
         raise ContractError("decoding variance_experiment has the wrong closed schema")
     if not isinstance(variance["label"], str) or not variance["label"].strip():
@@ -122,6 +135,71 @@ def _validate_decoding_policy(policy: Any) -> None:
         or variance["passes"] < 2
     ):
         raise ContractError("decoding variance_experiment passes must be an integer of at least 2")
+
+
+def _validate_chair_decoding(table: Any) -> None:
+    """Close the per-chair sampling table: known chairs, known fields, finite values."""
+    if not isinstance(table, dict) or set(table) != READING_CHAIRS:
+        raise ContractError(
+            f"decoding chair_decoding must hold exactly one row per reading chair "
+            f"{sorted(READING_CHAIRS)}"
+        )
+    for chair, row in table.items():
+        if not isinstance(row, dict) or not _PROVENANCE_FIELDS <= set(row):
+            raise ContractError(
+                f"decoding chair_decoding.{chair} must name its source, revision and verification"
+            )
+        unknown = sorted(set(row) - SAMPLING_FIELDS - _PROVENANCE_FIELDS)
+        if unknown:
+            raise ContractError(
+                f"decoding chair_decoding.{chair} has unknown field(s) {unknown}; an unread "
+                "sampling field cannot be sent"
+            )
+        if any(
+            not isinstance(row[field], str) or not row[field].strip()
+            for field in _PROVENANCE_FIELDS
+        ):
+            raise ContractError(
+                f"decoding chair_decoding.{chair} source, revision and verification must be "
+                "nonblank text"
+            )
+        for field in SAMPLING_FIELDS & set(row):
+            value = row[field]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or (value < 0 and field not in _SIGNED_FIELDS)
+                or (field == "top_k" and not isinstance(value, int))
+            ):
+                raise ContractError(
+                    f"decoding chair_decoding.{chair}.{field} must be a finite number, "
+                    "non-negative unless it is a presence or frequency penalty, and an "
+                    "integer for top_k"
+                )
+    first_chandra_request = wire_parameters(1)
+    for chair in _CHANDRA_CHAIRS:
+        if _sampling_values(table[chair]) != first_chandra_request:
+            raise ContractError(
+                f"decoding chair_decoding.{chair} must equal the first request of the pinned "
+                f"Chandra recipe, {first_chandra_request!r}"
+            )
+
+
+def _sampling_values(row: Mapping[str, Any]) -> dict[str, int | float]:
+    return {field: value for field, value in row.items() if field in SAMPLING_FIELDS}
+
+
+def chair_decoding(policy: Mapping[str, Any], chair: str) -> dict[str, int | float]:
+    """Return the sampling values sealed for one reading chair, exactly as sent."""
+    _validate_decoding_policy(policy)
+    table = policy["chair_decoding"]
+    if chair not in table:
+        raise ContractError(
+            f"decoding chair_decoding has no row for chair {chair!r}; only reading chairs "
+            f"{sorted(READING_CHAIRS)} have sampling values"
+        )
+    return _sampling_values(table[chair])
 
 
 def structure_recovery_policy(policy: Mapping[str, Any]) -> dict[str, Any]:

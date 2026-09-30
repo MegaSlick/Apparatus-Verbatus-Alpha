@@ -29,14 +29,20 @@ from common.contracts.serving import (
     CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS,
     CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
 )
+from common.decoding import (
+    READING_CHAIRS,
+    SAMPLING_FIELDS,
+    chair_decoding,
+    load_decoding_policy,
+)
 
 from .client import (
-    _FORBIDDEN_GENERATION_SENT_KEYS,
     ChairClient,
     ChairRequest,
     ReceiptDriftRefusal,
     ServingModeRefusal,
     _plain_capacity,
+    recorded_generation,
     serving_mode_for,
 )
 from .config import (
@@ -177,7 +183,7 @@ def _built(
     chair: ChairIdentity | None = None,
     row: dict[str, object] | None = None,
     read_receipt=None,
-    record_temperature: int = 0,
+    chair_decoding: Mapping[str, object] | None = None,
     chandra_native_policy=None,
 ):
     chair = chair or _identity()
@@ -208,7 +214,7 @@ def _built(
         tier=TIER,
         retain=blob_store.retain,
         decoding_config_sha256=DECODING_SHA,
-        record_temperature=record_temperature,
+        chair_decoding={"temperature": 0} if chair_decoding is None else chair_decoding,
         read_receipt=read_receipt or _default_read_receipt(chair),
         chandra_native_policy=chandra_native_policy,
     )
@@ -261,26 +267,68 @@ def _request(**overrides: object) -> ChairRequest:
     return ChairRequest(**fields)  # type: ignore[arg-type]
 
 
-# --- construction refuses a policy that is not the sealed 0 ------------------
+# --- construction refuses sampling values that are not a sealed chair row ---
 
 
-def test_construction_refuses_an_invalid_record_temperature(tmp_path: Path) -> None:
-    with pytest.raises(ServingConfigurationError):
-        _built(tmp_path, record_temperature=-1)
+@pytest.mark.parametrize(
+    "chair_decoding",
+    [
+        {"temperature": float("nan")},
+        {"temperature": True},
+        {"temperature": "0.7"},
+        {"seed": 3},
+        {"max_tokens": 10},
+        [("temperature", 0)],
+    ],
+    ids=["nan", "bool", "text", "seed", "not-sampling", "not-a-mapping"],
+)
+def test_construction_refuses_an_invalid_chair_decoding(tmp_path: Path, chair_decoding) -> None:
+    with pytest.raises(ServingConfigurationError, match="sealed sampling values"):
+        _built(tmp_path, chair_decoding=chair_decoding)
 
 
-def test_a_nonzero_sealed_temperature_and_seed_are_sent_and_retained(tmp_path: Path) -> None:
-    client, endpoint, blob_store, _ = _built(tmp_path, record_temperature=0.2)
+def test_each_sealed_chair_row_is_sent_exactly_and_retained(tmp_path: Path) -> None:
+    """Every reading chair sends its row of the shipped table, and nothing else."""
+
+    policy, _digest = load_decoding_policy()
+    for chair in sorted(READING_CHAIRS):
+        sampling = chair_decoding(policy, chair)
+        client, endpoint, blob_store, _ = _built(
+            tmp_path / chair,
+            chair=_identity(role=chair),
+            chair_decoding=sampling,
+        )
+        with client:
+            endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
+            response = client.read(_request(generation_sent={"max_tokens": 10}))
+        posted = endpoint.requests[0]
+        record = json.loads(
+            next(data for data in blob_store.written if data != response.raw_response)
+        )
+        assert {key: posted[key] for key in SAMPLING_FIELDS if key in posted} == sampling
+        assert posted["seed"] == 7
+        assert record["generation_sent"] == recorded_generation(
+            {"max_tokens": 10, **sampling, "seed": 7}
+        )
+
+
+def test_a_sampled_temperature_and_seed_are_sent_and_retained(tmp_path: Path) -> None:
+    client, endpoint, blob_store, _ = _built(
+        tmp_path, chair_decoding={"temperature": 0.7, "top_p": 0.8, "top_k": 20}
+    )
     with client:
         endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
         response = client.read(_request())
     record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
-    assert endpoint.requests[0]["temperature"] == 0.2
+    assert endpoint.requests[0]["temperature"] == 0.7
+    assert endpoint.requests[0]["top_p"] == 0.8
+    assert endpoint.requests[0]["top_k"] == 20
     assert endpoint.requests[0]["seed"] == 7
     assert record["generation_sent"]["temperature"] == {
         "schema": "wire-decimal.v1",
-        "decimal": "0.2",
+        "decimal": "0.7",
     }
+    assert record["generation_sent"]["top_k"] == 20
     assert record["generation_sent"]["seed"] == 7
 
 
@@ -465,9 +513,9 @@ def test_forbidden_generation_sent_keys_refused(tmp_path: Path) -> None:
         for key, value in (
             ("model", "x"),
             ("stream", True),
-            ("temperature", 0),
             ("seed", 1),
             ("n", 2),
+            *((field, 0) for field in sorted(SAMPLING_FIELDS)),
         ):
             with pytest.raises(ChairRequestRefusal) as excinfo:
                 client.read(_request(generation_sent={key: value}))
@@ -476,41 +524,29 @@ def test_forbidden_generation_sent_keys_refused(tmp_path: Path) -> None:
     assert len(blob_store) == 0
 
 
-def test_a_top_k_of_one_never_reaches_the_wire_without_temperature_zero(tmp_path: Path) -> None:
-    """DAI's decoding equivalence, pinned where the wire body is actually built.
+def test_a_caller_cannot_move_a_sealed_sampling_value(tmp_path: Path) -> None:
+    """The sealed row is the only source of sampling fields on the wire.
 
-    DAI's carried `generation_config.json` is `do_sample: true, temperature:
-    0.1, top_k: 1, top_p: 0.001` -- deterministic greedy, because `top_k = 1`
-    leaves the argmax as the entire candidate set. This pipeline sends
-    `top_k`/`top_p`/`repetition_penalty` and lets this client put `temperature:
-    0` on the wire, where vLLM takes its greedy path over the same
-    repetition-penalised logits: the same token, every step.
-
-    **That equivalence rests on the two fields travelling together, and nothing
-    said so until now.** Drop `top_k` and leave `temperature: 0` and decoding
-    is still greedy; drop `temperature` as well and vLLM's own defaults --
-    `temperature 1.0`, `top_k 0` -- make it full random sampling on a
-    handwriting reader. So this asserts the pairing on the posted body, and
-    asserts that a caller cannot separate them: `temperature` is manager-owned
-    and refused in `generation_sent`.
+    A caller that names any sampling field -- to change one the row sets, or to
+    add one it leaves to the engine -- is refused before a byte is sent.
     """
 
-    client, endpoint, _, _ = _built(tmp_path)
+    sealed = {"temperature": 0.1, "top_k": 1, "top_p": 0.001, "repetition_penalty": 1.05}
+    client, endpoint, _, _ = _built(tmp_path, chair_decoding=sealed)
     with client:
         endpoint.script(ScriptedAnswer(content="read", finish_reason="stop"))
-        client.read(
-            _request(generation_sent={"top_k": 1, "top_p": 0.001, "repetition_penalty": 1.05})
-        )
-        # Not a coincidence of this call site: no caller can say otherwise --
-        # the client itself refuses a caller that names a manager-owned field,
-        # proven here rather than only asserted of the forbidden-set
-        # membership.
-        assert "temperature" in _FORBIDDEN_GENERATION_SENT_KEYS
-        with pytest.raises(ChairRequestRefusal):
-            client.read(_request(generation_sent={"top_k": 1, "temperature": 0.7}))
+        client.read(_request())
+        for smuggled in (
+            {"temperature": 0},
+            {"top_k": 20},
+            {"min_p": 0.05},
+            {"presence_penalty": 1.5},
+        ):
+            with pytest.raises(ChairRequestRefusal, match="sealed decoding table"):
+                client.read(_request(generation_sent=smuggled))
+    assert len(endpoint.requests) == 1
     posted = endpoint.requests[0]
-    assert posted["top_k"] == 1
-    assert posted["temperature"] == 0
+    assert {key: posted[key] for key in SAMPLING_FIELDS if key in posted} == sealed
 
 
 def test_image_digest_drift_refused_before_any_request_is_sent(tmp_path: Path) -> None:
@@ -820,7 +856,7 @@ def test_response_as_arrival_raw_bytes_exist_before_the_next_request(tmp_path: P
         tier=TIER,
         retain=blob_store.retain,
         decoding_config_sha256=DECODING_SHA,
-        record_temperature=0,
+        chair_decoding={"temperature": 0},
         read_receipt=_default_read_receipt(chair),
     )
     with client:
@@ -1018,11 +1054,11 @@ def test_a_vendors_float_generation_values_are_recorded_as_the_wire_carried_them
     Python values.
     """
 
-    client, endpoint, blob_store, _ = _built(tmp_path)
     sent = {"repetition_penalty": 1.05, "top_k": 1, "top_p": 0.001}
+    client, endpoint, blob_store, _ = _built(tmp_path, chair_decoding=sent)
     with client:
         endpoint.script(ScriptedAnswer(content="texte transcrit", finish_reason="stop"))
-        response = client.read(_request(generation_sent=sent, generation_declared=_DAI_GENERATION))
+        response = client.read(_request(generation_declared=_DAI_GENERATION))
 
     record_bytes = next(data for data in blob_store.written if data != response.raw_response)
     record = json.loads(record_bytes)
@@ -1060,10 +1096,9 @@ def test_a_vendors_float_generation_values_are_recorded_as_the_wire_carried_them
 def test_a_declared_float_that_is_never_sent_is_still_recorded_exactly(tmp_path: Path) -> None:
     """`generation_declared` is evidence, not traffic, and gets the same care.
 
-    DAI's `temperature` 0.1 never reaches the wire — the sealed reading-of-
-    record posture is 0 and the client refuses to be built against anything
-    else — but the record must still say what the vendor declared, to the
-    digit, or the two halves of the reading-of-record account disagree.
+    A declared value never reaches the wire by being declared -- only the
+    sealed row does -- but the record must still say what the vendor declared,
+    to the digit.
     """
 
     client, endpoint, blob_store, _ = _built(tmp_path)
@@ -1074,10 +1109,7 @@ def test_a_declared_float_that_is_never_sent_is_still_recorded_exactly(tmp_path:
     assert record["generation_declared"] == {
         "temperature": {"schema": "wire-decimal.v1", "decimal": "0.1"}
     }
-    # The posted body carries the sealed 0, never the declared 0.1 — asserted
-    # strictly, since a client that stopped pinning temperature at all would
-    # silently drop the reading-of-record posture and this
-    # weaker form (`not in ... or ... == 0`) would not catch it.
+    # The posted body carries the sealed row's 0, never the declared 0.1.
     assert endpoint.requests[0]["temperature"] == 0
 
 
@@ -1302,7 +1334,7 @@ def test_receipt_drift_refusal_survives_an_unverifiable_shutdown(tmp_path: Path)
         tier=TIER,
         retain=blob_store.retain,
         decoding_config_sha256=DECODING_SHA,
-        record_temperature=0,
+        chair_decoding={"temperature": 0},
         read_receipt=wrong_receipt,
     )
     with pytest.raises(ReceiptDriftRefusal) as excinfo:

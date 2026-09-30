@@ -62,7 +62,7 @@ from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import attempt_id
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
-from common.decoding import load_decoding_policy, structure_recovery_policy
+from common.decoding import chair_decoding, load_decoding_policy, structure_recovery_policy
 from common.imaging import dimensions
 from common.runtree.store import RunTree
 from common.stage import (
@@ -84,6 +84,7 @@ from common.stage import (
     validate_serving_provenance,
 )
 from common.stage import _verify_structure_attempt_chain as real_verify_structure_attempt_chain
+from operations.serving.client import recorded_generation
 from operations.submit import gate, submit
 
 
@@ -394,7 +395,9 @@ class _StructureDesignator:
         )
         presentation_ref = self.context.input_ref(presentation.relative_path)
         decoding_policy, _ = load_decoding_policy()
-        temperature = decoding_policy["structure"]["temperature"]
+        temperature = recorded_generation(
+            {"temperature": chair_decoding(decoding_policy, DESIGNATOR_CHAIR)["temperature"]}
+        )["temperature"]
         capacity = {"images": [{"width": target[0], "height": target[1]}]}
         raw_ref = self.context.retain(b"{}")
         record = (
@@ -1103,7 +1106,7 @@ def test_an_absent_chair_may_not_carry_a_call(real_root):
     [
         ({"schema": "structure-chair-call.v0"}, "must declare schema"),
         ({"call_kind": "completions"}, "is served through 'chat-completions'"),
-        ({"decoding_policy": "reading_of_record"}, "a posture it did not run under"),
+        ({"decoding_policy": "chair_decoding"}, "a posture it did not run under"),
         ({"decoding_config_sha256": "not-a-digest"}, "lowercase SHA-256"),
         ({"decoding_config_sha256": "0" * 64}, "decoding configuration changed"),
     ],
@@ -1113,10 +1116,10 @@ def test_the_engine_call_is_a_closed_record_bound_to_the_runs_sealed_decoding(
 ):
     """Each field is load-bearing, and each names its own refusal.
 
-    `reading_of_record` is the interesting one: it is a perfectly valid sealed
-    decoding section — the one every Attestator reads under — and naming it here
-    would report a posture the structure pass did not run under, confusing a
-    claim with a measurement rather than naming a malformed field.
+    `chair_decoding` is the interesting one: it is a perfectly valid sealed
+    decoding section — the one every chair's sampling values come from — and
+    naming it here would report a posture the structure pass did not run under,
+    confusing a claim with a measurement rather than naming a malformed field.
     """
     designator = _real_designator(real_root)
 

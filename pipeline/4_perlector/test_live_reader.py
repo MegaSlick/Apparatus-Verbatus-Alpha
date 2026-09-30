@@ -48,7 +48,7 @@ from common.request_capacity import (
     perlector_prompt_tokens,
     request_fits,
 )
-from operations.serving.client import ChairClient
+from operations.serving.client import ChairClient, recorded_generation
 from operations.serving.config import (
     ServingConfigInputs,
     chair_preflight_identity_digest,
@@ -66,6 +66,7 @@ from operations.serving.fakes import (
     FakeRegistry,
     ScriptedAnswer,
     scripted_prompt_too_long,
+    shipped_chair_decoding,
 )
 from operations.serving.http import request_body
 from operations.serving.manager import ServingManager
@@ -191,7 +192,7 @@ def _built(tmp_path: Path, *, chair: ChairIdentity | None = None, **row_override
         tier=TIER,
         retain=blob_store.retain,
         decoding_config_sha256=DECODING_SHA,
-        record_temperature=0,
+        chair_decoding=shipped_chair_decoding(chair.role),
         read_receipt=_read_receipt(chair),
     )
     return client, endpoint, blob_store, chair
@@ -1303,12 +1304,15 @@ def test_max_tokens_always_rides_generation_sent(tmp_path: Path) -> None:
         if isinstance(record, dict) and record.get("schema") == CHAIR_CALL_RECORD_SCHEMA
     )
     assert call_record["generation_declared"] == {}
-    assert call_record["generation_sent"] == {
-        "chat_template_kwargs": {"enable_thinking": False},
-        "max_tokens": 256,
-        "seed": 7,
-        "temperature": 0,
-    }
+    # The Perlector's sealed sampling row rides beside the bound and the seed.
+    assert call_record["generation_sent"] == recorded_generation(
+        {
+            "chat_template_kwargs": {"enable_thinking": False},
+            "max_tokens": 256,
+            **shipped_chair_decoding("perlector"),
+            "seed": 7,
+        }
+    )
 
 
 @pytest.mark.parametrize(
@@ -1394,14 +1398,15 @@ def test_a_page_fallback_reading_and_reproof_are_admitted_on_the_real_row(
 def test_retained_float_generation_rebuilds_exact_wire_bytes_and_exposes_tampering() -> None:
     messages = [{"role": "user", "content": "prompt"}]
     expected = request_body(
-        {"top_p": 0.001, "messages": messages},
+        {"messages": messages},
         model_id=SERVED_MODEL_ID,
         seed=17,
-        deterministic=True,
+        deterministic=False,
+        sampling={"temperature": 0.7, "top_p": 0.001},
     )
     recorded = {
         "top_p": {"schema": "wire-decimal.v1", "decimal": "0.001"},
-        "temperature": 0,
+        "temperature": {"schema": "wire-decimal.v1", "decimal": "0.7"},
         "seed": 17,
     }
     assert (
@@ -1432,13 +1437,15 @@ def test_retained_float_generation_rebuilds_exact_wire_bytes_and_exposes_tamperi
             model_id=SERVED_MODEL_ID,
             seed=17,
         )
-    with pytest.raises(SchemaRefusal, match="another temperature"):
+    assert (
         _rebuild_chair_request_bytes(
             recorded_generation={**recorded, "temperature": 1},
             messages=messages,
             model_id=SERVED_MODEL_ID,
             seed=17,
         )
+        != expected
+    )
 
 
 # --- FixtureReader carries no engine, so it must never publish engine_call ----

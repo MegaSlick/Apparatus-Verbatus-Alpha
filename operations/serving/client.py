@@ -44,6 +44,7 @@ from common.contracts.serving import (
     WIRE_DECIMAL_FIELDS,
     WIRE_DECIMAL_SCHEMA,
 )
+from common.decoding import SAMPLING_FIELDS
 
 from .config import FixtureProfile, ServingProfile, ServingRecipes, UnsupportedProfile
 from .errors import (
@@ -63,10 +64,10 @@ from .http import (
 )
 from .manager import AdapterCalibration, ServiceHandle, ServingManager, _immutable_json_value
 
-# Never on the wire: these are the manager's/decoding policy's to set, not an
-# adapter's or a stage's. A caller that names one is refused before anything
-# is built or sent.
-_FORBIDDEN_GENERATION_SENT_KEYS = frozenset({"model", "stream", "temperature", "seed", "n"})
+# Never on the wire from a caller: these are the manager's and the sealed
+# decoding table's to set, not an adapter's or a stage's. A caller that names
+# one is refused before anything is built or sent.
+_FORBIDDEN_GENERATION_SENT_KEYS = frozenset({"model", "stream", "seed", "n"}) | SAMPLING_FIELDS
 
 # One JSON serialization, used for both halves of the generation round-trip
 # check below, so the comparison is between two texts rather than between two
@@ -93,6 +94,12 @@ def _recorded_generation(view: Mapping[str, object]) -> dict[str, object]:
     """
 
     return {key: _recorded_value(item) for key, item in view.items()}
+
+
+def recorded_generation(view: Mapping[str, object]) -> dict[str, object]:
+    """The form a call record holds a generation view in, for a record beside it."""
+
+    return _recorded_generation(view)
 
 
 def _recorded_value(value: object) -> object:
@@ -361,8 +368,17 @@ class ChairClient:
 
     ``read_receipt`` is the tree's own receipt reader (production:
     ``context.tree.read_run_receipt``); the client never reads run-tree bytes
-    itself. ``record_temperature`` is checked once, at construction and sent
-    on each request under the same manager-owned rule as the seed.
+    itself. ``chair_decoding`` is this chair's row of the sealed decoding table
+    (``common.decoding.chair_decoding``): it is checked once, at construction,
+    and sent unchanged on each request with the manager-owned seed, and both are
+    on every call record's ``generation_sent``.
+
+    The seed makes a sampled reading repeatable where the engine allows: vLLM
+    draws a seeded request's samples from that request's own generator, so the
+    same request on the same engine build, model and hardware draws the same
+    samples. It does not promise bitwise-equal logits across batch compositions
+    or kernels, so a repeat is reproducible in intent, and the call record keeps
+    what this call received.
     """
 
     def __init__(
@@ -373,20 +389,25 @@ class ChairClient:
         tier: str,
         retain: RetainBytes,
         decoding_config_sha256: str,
-        record_temperature: int | float,
+        chair_decoding: Mapping[str, int | float],
         read_receipt: Callable[[Mapping[str, str]], Mapping[str, object]],
         adapter_calibration: AdapterCalibration | None = None,
         chandra_native_policy: Mapping[str, object] | None = None,
     ) -> None:
         if (
-            isinstance(record_temperature, bool)
-            or not isinstance(record_temperature, (int, float))
-            or not math.isfinite(record_temperature)
-            or record_temperature < 0
+            not isinstance(chair_decoding, Mapping)
+            or not set(chair_decoding) <= SAMPLING_FIELDS
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in chair_decoding.values()
+            )
         ):
             raise ServingConfigurationError(
-                "ChairClient requires a finite, non-negative sealed temperature; "
-                f"the caller supplied record_temperature={record_temperature!r}"
+                "ChairClient requires the chair's sealed sampling values: finite numbers "
+                f"under {sorted(SAMPLING_FIELDS)}; the caller supplied "
+                f"chair_decoding={chair_decoding!r}"
             )
         if not is_sha256(decoding_config_sha256):
             raise ServingConfigurationError(
@@ -397,7 +418,7 @@ class ChairClient:
         self._tier = tier
         self._retain = retain
         self._decoding_config_sha256 = decoding_config_sha256
-        self._record_temperature = record_temperature
+        self._chair_decoding = dict(chair_decoding)
         self._read_receipt = read_receipt
         self._adapter_calibration = adapter_calibration
         self._chandra_native_policy = (
@@ -529,11 +550,6 @@ class ChairClient:
                 "CHAIR_REQUEST_INVALID",
                 "a Chandra native witness request cannot carry a Designator recovery seed",
             )
-        if "top_p" in request.generation_sent:
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID",
-                "a Chandra native request may not override the pinned top_p schedule",
-            )
         expected_wire = chandra_wire_fields()
         if request.generation_sent.get("chat_template_kwargs") != expected_wire[
             "chat_template_kwargs"
@@ -652,7 +668,7 @@ class ChairClient:
             )
             actual_generation_sent = {
                 **request.generation_sent,
-                "temperature": self._record_temperature,
+                **self._chair_decoding,
                 "seed": actual_seed,
             }
             actual_generation_record = _recorded_generation(actual_generation_sent)
@@ -660,8 +676,8 @@ class ChairClient:
                 {**request.generation_sent, "messages": list(request.messages)},
                 model_id=handle.profile.served_model_id,
                 seed=actual_seed,
-                deterministic=self._record_temperature == 0,
-                temperature=self._record_temperature,
+                deterministic=False,
+                sampling=self._chair_decoding,
             )
         else:
             if native_intent_ref is None:
@@ -873,7 +889,8 @@ def _refuse_unbuildable_request(request: ChairRequest) -> None:
     if forbidden:
         raise ChairRequestRefusal(
             "CHAIR_REQUEST_INVALID",
-            f"generation_sent must not name {forbidden}; those fields are manager-owned",
+            f"generation_sent must not name {forbidden}; those fields are the manager's "
+            "and the sealed decoding table's to set",
         )
     for field, view in (
         ("generation_sent", request.generation_sent),

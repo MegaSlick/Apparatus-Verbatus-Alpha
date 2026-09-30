@@ -3761,8 +3761,8 @@ def default_serving_factory(context, identity: ChairIdentity, tier: str) -> Chai
         context,
         identity,
         tier,
+        decoding_policy=policy,
         decoding_config_sha256=decoding_sha256,
-        record_temperature=policy["reading_of_record"]["temperature"],
         chandra_native_policy=policy["chandra_native_inference"],
     )
 

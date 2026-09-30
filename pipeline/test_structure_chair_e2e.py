@@ -106,7 +106,7 @@ from common.contracts.identities import act_bindings  # noqa: E402
 from common.contracts.identities import verify as verify_identity  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
-from common.decoding import load_decoding_policy  # noqa: E402
+from common.decoding import chair_decoding, load_decoding_policy  # noqa: E402
 from common.runtree.store import RECEIPTS_DIR, RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -118,7 +118,7 @@ from common.stage import (  # noqa: E402
     verify_final_seal,
 )
 from operations.serving.assembly import retain_chair_bytes  # noqa: E402
-from operations.serving.client import ChairClient  # noqa: E402
+from operations.serving.client import ChairClient, recorded_generation  # noqa: E402
 from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
     chair_preflight_identity_digest,
@@ -274,7 +274,7 @@ class StructureWorld:
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
-            record_temperature=structure_pass.executable_temperature(policy),
+            chair_decoding=chair_decoding(policy, identity.role),
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
         )
 
@@ -572,8 +572,8 @@ def test_the_retained_answer_is_what_the_downstream_verifier_reads(marked_out):
     assert sorted(row["act_key"] for row in acts) == sorted(ACT_KEYS)
 
 
-def test_the_sealed_structure_temperature_is_recorded_on_every_call(marked_out):
-    """The executed decoding posture, per call, from the sealed `[structure]` table.
+def test_the_sealed_structure_sampling_is_sent_and_recorded_on_every_call(marked_out):
+    """The executed sampling values, per call, from the structure chair's sealed row.
 
     A number reported on a record and a number put on the wire are two
     different claims, so both are read here: the request the
@@ -581,12 +581,13 @@ def test_the_sealed_structure_temperature_is_recorded_on_every_call(marked_out):
     the answer.
     """
     policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
-    sealed = policy["structure"]["temperature"]
+    sampling = chair_decoding(policy, "designator_structure")
+    sealed = recorded_generation(sampling)["temperature"]
     endpoint = marked_out.world.endpoint
     assert endpoint is not None
     assert len(endpoint.requests) == 2
     for request in endpoint.requests:
-        assert request["temperature"] == sealed
+        assert {key: request[key] for key in sampling} == sampling
         assert "max_tokens" not in request
 
     tree = RunTree(marked_out.run_root, RUN_ID)
@@ -598,6 +599,9 @@ def test_the_sealed_structure_temperature_is_recorded_on_every_call(marked_out):
         call = json.loads(tree.read_bytes(record["payload"]["call_record_ref"]["relative_path"]))
         assert call["chair"] == "designator_structure"
         assert call["decoding_config_sha256"] == decoding_sha256
+        assert {key: call["generation_sent"][key] for key in sampling} == recorded_generation(
+            sampling
+        )
         # The bytes the record names are the bytes the endpoint served.
         assert tree.read_bytes(record["payload"]["raw_response_ref"]["relative_path"]) in (
             endpoint.served
@@ -945,12 +949,12 @@ def test_a_second_attempt_at_the_same_pages_may_answer_differently_and_seals_wha
 ):
     """Runs are attempts, never reproductions.
 
-    The Attestatores read at the fixed reading-of-record posture; the
-    Designator's `[structure]` pass may vary, sealed and recorded per run, so
-    its re-run variance is a clue beside the witnesses. That ruling only means
-    anything if a second attempt whose rectangles moved is an ordinary run
-    rather than a refusal, so both attempts are made here over copies of one
-    Ink Map tree and each is asked to stand on its own.
+    Every chair reads at its sealed sampling values, and an engine need not
+    repeat an answer bit for bit, so the Designator's structure answer may
+    differ between runs, sealed and recorded per run. That only means anything
+    if a second attempt whose rectangles moved is an ordinary run rather than a
+    refusal, so both attempts are made here over copies of one Ink Map tree and
+    each is asked to stand on its own.
 
     What varies is *visible as acts*, because act identity is derived from the
     page and the rectangle rather than from the order a run happened to mint

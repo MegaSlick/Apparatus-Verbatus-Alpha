@@ -117,14 +117,16 @@
 # `eos_token_id`s: `try_get_generation_config` loads the file under both
 # settings and `SamplingParams.update_from_generation_config` adds the ids as
 # stop tokens, so the Designator keeps Chandra's 248044 and the Perlector its
-# second id 248044 either way.  `"auto"` additionally applies the sampling
-# defaults, which is what the witnesses want (Churro's `repetition_penalty:
-# 1.05`) and the Designator and Perlector must not have (the Perlector's file
-# ships temperature 1.0, top_k 20, top_p 0.95; the manager forces temperature 0
-# regardless).  `"auto"` also makes the manager receipt record the digest of the
-# chair's own `generation_config.json`.  Chandra-2's file
-# (`designator_structure` serves the same checkpoint) carries only the EOS id
-# and `use_cache`; the Perlector's carries the sampling values above.
+# second id 248044 either way.  `"auto"` additionally applies the file's
+# sampling defaults to any field a request leaves out, which is what the
+# witnesses' makers intend, and the Perlector must not have: its file ships the
+# thinking-mode values (temperature 1.0, top_k 20, top_p 0.95), and it reads in
+# non-thinking mode.  Every chair's request carries its makers' sampling values
+# explicitly from `config/decoding.toml`'s `chair_decoding` table, so the file
+# decides nothing a request names.  `"auto"` also makes the manager receipt
+# record the digest of the chair's own `generation_config.json`.  Chandra-2's
+# file (`designator_structure` serves the same checkpoint) carries only the EOS
+# id and `use_cache`.
 #
 # `min_pixels` ON THE PERLECTOR (65,536) is the vendor default: Qwen3.8-27B's
 # `preprocessor_config.json` says `shortest_edge = 65536`; the 3,136 this row

@@ -300,8 +300,7 @@ STRUCTURE_CALL_FIELDS: Final = frozenset(
     {"schema", "call_kind", "decoding_policy", "decoding_config_sha256"}
 )
 STRUCTURE_CALL_KIND: Final = "chat-completions"
-# The structure pass may run at a sampled temperature, unlike the witnesses'
-# `reading_of_record`, so its section is named explicitly.
+# The decoding section that governs the structure pass's coverage recovery.
 STRUCTURE_DECODING_POLICY: Final = "structure"
 
 # Named once for the Designator, which writes them, and the verifier here.

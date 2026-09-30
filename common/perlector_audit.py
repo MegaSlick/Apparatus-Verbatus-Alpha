@@ -793,21 +793,16 @@ def _rebuild_chair_request_bytes(
     if not isinstance(recorded_generation, dict):
         raise SchemaRefusal("an audit re-proof call has no recorded generation object")
     generation = _decode_recorded_generation(recorded_generation)
-    retained_temperature = generation.pop("temperature", 0)
-    retained_seed = generation.pop("seed", seed)
-    if type(retained_temperature) is not int or retained_temperature != 0:
-        raise SchemaRefusal("an audit re-proof call retained another temperature")
+    retained_seed = generation.get("seed")
     if type(retained_seed) is not int or retained_seed != seed:
         raise SchemaRefusal("an audit re-proof call retained another seed")
-    if set(generation) & {"model", "stream", "n"}:
+    if set(generation) & {"model", "stream", "n", "messages"}:
         raise SchemaRefusal("an audit re-proof call puts a manager-owned field in generation_sent")
     body = {
         **generation,
         "messages": messages,
         "model": model_id,
         "stream": False,
-        "temperature": 0,
-        "seed": seed,
     }
     try:
         return json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
