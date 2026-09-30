@@ -30,45 +30,29 @@ when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
 
-A refused Door is that second case: it publishes its refusal report and its
-duplicate report, announces both, and only then do `require_no_duplicate_sources`
-and `require_some_admitted` raise — so the evidence is on disk and no `stage-seal`
-is, and the Exemplar's "predecessor door has no stage-seal" names a refused
-submission rather than a missing file.
+A refused Door is that second case: it publishes its refusal, duplicate and
+re-shoot cluster reports, announces the first two, and only then do
+`require_no_duplicate_sources`, `require_confirmed_re_shoots` and
+`require_some_admitted` raise, in that order — so the evidence is on disk and no
+`stage-seal` is, and the Exemplar's "predecessor door has no stage-seal" names a
+refused submission rather than a missing file.
 
-**That sentence now holds on a real submission too, and it was a gap before it
-did.** Until the shared constructor landed, `run.py` built its real-ingress
-`StageContext` by hand instead of going through `common.stage.open_context` —
-the fixture/scenario binding it exists to check has nothing to compare on a real
-run — and `verify_predecessor_seal` was called from `open_context` alone, so a
-real run whose Door refused still sealed its Exemplar pages when the programs
-were driven one at a time; only `pipeline/orchestrator/run.py::invoke`, which
-refuses any stage exit outside complete/held/halted, stood between a refused
-Door and a sealed corpus. The gap is closed here: the Exemplar, the Ink Map and
-the Designator all open through `common.stage.open_stage_context`, which decides
-the route from one read of the run authority and asks for the predecessor's
-completion seal on both routes, in the same order, before anything writes. A
-hand-driven Exemplar over a Door that never sealed its boundary now refuses with
-"predecessor door has no stage-seal" and leaves the tree byte-identical
-(`test_exemplar_seal.py`'s
+This holds on both routes. The Exemplar, the Ink Map and the Designator all open
+through `common.stage.open_stage_context`, which decides the route from one read
+of the run authority and asks for the predecessor's completion seal on both
+routes, in the same order, before anything writes. A hand-driven Exemplar over a
+Door that never sealed its boundary refuses with "predecessor door has no
+stage-seal" and leaves the tree byte-identical (`test_exemplar_seal.py`'s
 `test_a_real_ingress_run_whose_door_refused_seals_no_exemplar_page` and
 `test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar` pin both,
 and `test_door.py`'s
 `test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_completes`
-drives the refusing Door that leaves that state). Two consequences ride the same
-change: the real Exemplar's `scenario` is `REAL_SCENARIO`, never the unchecked
-argv value it used to store, and its context carries the roster and the sealed
-digest map like every later stage's, checked name by name against the run before
-the seal check.
-
-**A second, unpinned ordering moved with the same commit.** The deleted real-route
-`_open` verified the corpus register and read the sealed snapshot before doing
-anything else — ahead of the fixture/scenario/registry/binding work `open_context`
-does first on the fixture route. `open_context` runs those two checks last, so
-opening through the shared constructor moved that ordering onto the real route too:
-a run with both register drift and an unloadable fixture now names the fixture
-first. Nothing pinned depends on the old order — the drift test's fixture is sound —
-so this is recorded rather than reverted.
+drives the refusing Door that leaves that state). The real Exemplar's `scenario`
+is `REAL_SCENARIO`, and its context carries the roster and the sealed digest map
+like every later stage's, checked name by name against the run before the seal
+check. The register check and the sealed-snapshot read run after the
+fixture/scenario/registry/binding checks on both routes, so a run with both
+register drift and an unloadable fixture names the fixture first.
 
 **The Door seals three names on a real run alone, and they are what stands in
 for the whole-digest check downstream.** `_real_bindings` adds `models`,
@@ -97,10 +81,7 @@ build.** `_refuse_incompatible_real_reuse` names an absent digest apart from a
 moved one — "run 'r1' sealed no digest for the … configuration, so a stage
 cannot prove which bytes it is bound to" — because the two need different
 operator actions: restore the file, versus start the run again on a build that
-seals the name. That is correct and cheap today, and only today: nothing real
-has ever gone past the Designator, so no corpus is stranded. It stops being
-cheap the moment a real corpus is in flight, which is why this landed before the
-first live pod rather than after it.
+seals the name.
 
 Door and Exemplar share `1_exemplar/` for evidence but retain separate producer
 inventories (`manifest-door.json` and `manifest.json`), so neither can erase the
@@ -142,7 +123,10 @@ or source digest. Real pages keep the first ordinals; canary pages receive the
 last ordinals and carry their own ledger hash in `source_manifest`. Only the
 Door's `sealed_config_digests["canary-ledger"]` marks those rows as canaries.
 The canary ledger also enters `config_digest`; without it, neither the digest
-input nor the sealed run authority gains a canary field.
+input nor the sealed run authority gains a canary field. Canaries are controls,
+never the submission: the Door counts real and canary admissions apart and
+refuses a run in which no real page admitted, and the Exemplar refuses to seal a
+run whose only sealable pages are canaries.
 
 ## Decoder routes and alarms
 
@@ -153,14 +137,24 @@ decision to decline it:
   sealed unchanged, as its own original bytes. If its decoder reports multiple
   frames, every frame fans out to its own ordinal and is sealed as one lossless PNG
   page. This is every raster format, TIFF included.
-- `render-pages`: a format that is always a document of pages — PDF alone, enforced
-  by the code-owned route. The door assigns stable ordinals and seals one
-  lossless PNG per page.
+- `render-pages`: a format that is always a document of pages — PDF alone, by
+  construction of the code-owned route table. The door assigns stable ordinals and
+  seals one lossless PNG per page.
+
+A raster that reaches admission without a page index must hold exactly one frame;
+a multi-frame one is refused `unsupported-variant` rather than sealed whole, so
+no route can seal frame one as the entire source. A page the Door renders itself
+is bounded by `MAX_RENDERED_PAGE_BYTES` (the size every later stage can read back
+from the run tree), not by the 64 MiB limit on submitted files, and a rendered
+page that fails its own check keeps that check's reason code. A source that
+source expansion could not read or recheck is refused `unreadable` with the
+expansion's error, never re-read under checks meant for a source whose pages
+were counted.
 
 PNG, JPEG, TIFF, PDF, GIF, BMP, WebP, HEIC and an unknown signature all receive a
 decoder attempt by bytes, not extension. A valid image the installed readers do not
 yet understand becomes a named `unsupported-variant` or `unrecognized-format`
-pipeline alarm, not `refused-format`—that enum member no longer exists. JPEG bytes
+pipeline alarm; the closed vocabulary has no format-policy refusal. JPEG bytes
 after EOI are retained. TIFF, including ordinary multi-page TIFF, BigTIFF, and the
 LZW, Deflate, PackBits and CCITT compressions flatbed scanners produce, fans out; a
 single-page TIFF keeps its own bytes and is never re-encoded.

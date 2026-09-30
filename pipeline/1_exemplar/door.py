@@ -47,6 +47,7 @@ from admission import RefusalReason  # noqa: E402
 from image_formats import (  # noqa: E402
     MAX_DIMENSION,
     MAX_PIXELS,
+    MAX_RENDERED_PAGE_BYTES,
     MAX_SOURCE_BYTES,
     FormatRefusal,
     count_raster_pages,
@@ -137,10 +138,13 @@ class SourceEntry(NamedTuple):
     detected_format: str | None = None
     triage_row: dict[str, Any] | None = None
     triage_part_index: int | None = None
-    source_frame_index: int | None = None
     # Set during expansion so membership binds inspected bytes before the run
     # seals; None for unreadable and oversized sources.
     computed_sha256: str | None = None
+    # Why expansion could not read this source. Its page count was never
+    # established, so admission refuses it as unreadable rather than re-reading
+    # it under checks meant for a source whose pages were counted.
+    expansion_refusal: str | None = None
 
 
 def _membership_sha256(source: SourceEntry) -> str | None:
@@ -195,6 +199,9 @@ MAX_TRIAGE_DOCUMENT_BYTES: Final = 64 * 1024 * 1024
 MAX_TRIAGE_DERIVATIVE_PAGES: Final = 1_000
 # `REAL_DOOR_ADAPTER_REVISION` lives in `common/stage.py` because every later
 # stage rechecks it and `common/` may not import this file.
+# A triage row describes one single-frame raster (expansion refuses any other),
+# so its derivative is always cut from frame zero.
+_TRIAGE_FRAME_INDEX: Final = 0
 
 
 def _is_positive_int(value: Any) -> bool:
@@ -508,8 +515,16 @@ def decide(
             raise ValueError("a triage-derived page needs bytes and an exact split-part index")
         try:
             triage_manifest.verify_submitted_frame(source.triage_row, data)
-            frame_index = source.source_frame_index or 0
+            frame_index = _TRIAGE_FRAME_INDEX
             decoded = decode_raster(data, page_index=frame_index)
+            if decoded.frame_count != 1:
+                return _refused_for(
+                    RefusalReason.UNSUPPORTED_VARIANT,
+                    f"a triage row names a {decoded.format} holding {decoded.frame_count} "
+                    "frames; one frame-space recipe cannot describe every page, so no "
+                    "page of it was cut",
+                    whole_digest,
+                )
             frame = source.triage_row["frame"]
             if (decoded.width, decoded.height) != (frame["width"], frame["height"]):
                 raise ContractError(
@@ -560,7 +575,7 @@ def decide(
                 },
             },
         }
-        checked = admission.inspect_source(page_bytes, declared_sha256=None, policy=policy)
+        checked = admission.inspect_rendered_page(page_bytes, policy=policy)
         if checked.outcome != "admitted":
             return _refused(checked.reason)
         return _Decision(
@@ -626,11 +641,13 @@ def decide(
     except FormatRefusal as error:
         return _format_refused(error)
 
-    checked = admission.inspect_source(page_bytes, declared_sha256=None, policy=policy)
+    checked = admission.inspect_rendered_page(page_bytes, policy=policy)
     if checked.outcome != "admitted":
-        return _refused_for(
-            RefusalReason.CORRUPT, f"the rendered page did not itself admit: {checked.reason}"
-        )
+        # The check's own code stands: a rendered page over its byte bound is
+        # too large, not damaged.
+        code = admission.reason_code(checked.reason)
+        detail = checked.reason.split(":", 1)[1].strip()
+        return _refused_for(code, f"the rendered page did not itself admit: {detail}")
     return _Decision("admitted", None, checked.digest, page_bytes, checked.geometry, rendered_from)
 
 
@@ -697,6 +714,7 @@ def expand_sources(
             bound_triage_row: dict[str, Any] | None = triage_row,
             triage_part_index: int | None = None,
             computed_sha256: str | None = None,
+            expansion_refusal: str | None = None,
         ) -> None:
             """Bind row fields before the next loop iteration can reassign them."""
             nonlocal ordinal
@@ -712,8 +730,8 @@ def expand_sources(
                     detected_format,
                     bound_triage_row,
                     triage_part_index,
-                    0 if bound_triage_row is not None else None,
                     computed_sha256,
+                    expansion_refusal,
                 )
             )
 
@@ -721,10 +739,16 @@ def expand_sources(
             detected_format: str | None,
             bound_triage_row: dict[str, Any] | None = triage_row,
             computed_sha256: str | None = None,
+            expansion_refusal: str | None = None,
         ) -> None:
             """One ordinal, or one per declared triage part, whether or not it can be read."""
             if bound_triage_row is None:
-                append(None, detected_format, computed_sha256=computed_sha256)
+                append(
+                    None,
+                    detected_format,
+                    computed_sha256=computed_sha256,
+                    expansion_refusal=expansion_refusal,
+                )
                 return
             for part_index in range(len(bound_triage_row["split"]["parts"])):
                 append(
@@ -732,6 +756,7 @@ def expand_sources(
                     detected_format,
                     triage_part_index=part_index,
                     computed_sha256=computed_sha256,
+                    expansion_refusal=expansion_refusal,
                 )
 
         data: bytes | None = None
@@ -761,8 +786,8 @@ def expand_sources(
                     continue
                 data = read_bytes(path)
                 detected = sniff(data)
-        except (OSError, inventory.SubmissionInputError):
-            append_declared_pages(None)
+        except (OSError, inventory.SubmissionInputError) as error:
+            append_declared_pages(None, expansion_refusal=str(error))
             continue
         route = admission.classify_detected_format(detected, policy)
         if data is not None and len(data) > MAX_SOURCE_BYTES:
@@ -988,6 +1013,11 @@ def process_sources(
                 active_pdf.close()
                 active_pdf_key = active_pdf_digest = None
                 active_pdf_document = active_opened_source = None
+            if source.expansion_refusal is not None:
+                _publish_refusal(
+                    context, source, RefusalReason.UNREADABLE, source.expansion_refusal
+                )
+                continue
             if (
                 source.declared_size is not None
                 and source.declared_size > MAX_SOURCE_BYTES
@@ -1033,7 +1063,12 @@ def process_sources(
                     continue
                 actual_digest, actual_size = digest_bytes(data), len(data)
 
-            mismatch = _source_mismatch(source, actual_digest, actual_size)
+            mismatch = _source_mismatch(
+                source,
+                actual_digest,
+                actual_size,
+                truncated=not streamed_pdf and actual_size > MAX_SOURCE_BYTES,
+            )
             if mismatch is not None:
                 _publish_refusal(context, source, RefusalReason.DIGEST_MISMATCH, mismatch)
                 continue
@@ -1124,7 +1159,7 @@ def _publish_admission(
         extra["parent_frame"] = {
             "sha256": actual_digest,
             "stored_at": parent.relative_path,
-            "source_frame_index": source.source_frame_index or 0,
+            "source_frame_index": _TRIAGE_FRAME_INDEX,
         }
         # A no-op `keep` over a deterministic PNG makes derivative and
         # master one blob; envelope inputs may not repeat.
@@ -1135,11 +1170,18 @@ def _publish_admission(
     _publish(context, source, outcome="admitted", payload_extra=extra, inputs=inputs)
 
 
-def _source_mismatch(source: SourceEntry, actual_digest: str, actual_size: int) -> str | None:
-    """Why the bytes read now are not the bytes this source was declared and sealed with."""
+def _source_mismatch(
+    source: SourceEntry, actual_digest: str, actual_size: int, *, truncated: bool = False
+) -> str | None:
+    """Why the bytes read now are not the bytes this source was declared and sealed with.
+
+    `truncated` marks a bounded read that stopped past the in-memory limit, whose
+    length is a lower bound rather than the file's size.
+    """
     if source.declared_size is not None and actual_size != source.declared_size:
+        now = f"more than {MAX_SOURCE_BYTES}" if truncated else str(actual_size)
         return (
-            f"the source now has {actual_size} bytes, but {source.declared_size} bytes "
+            f"the source now has {now} bytes, but {source.declared_size} bytes "
             "were recorded in its filename ledger"
         )
     if source.computed_sha256 is not None and actual_digest != source.computed_sha256:
@@ -1476,14 +1518,32 @@ def require_confirmed_re_shoots(context: StageContext, cluster_report: Report | 
         )
 
 
-def require_some_admitted(admitted: int, refusal_report: Report | None) -> None:
+def require_some_admitted(
+    admitted: int, refusal_report: Report | None, *, canary_admitted: int = 0
+) -> None:
     """An empty or wholly refused input set is a loud failure.
+
+    `admitted` counts the submission's own pages. Canary pages are controls
+    sealed beside it, so admitted canaries never make a wholly refused
+    submission pass.
 
     The error carries counts and the private report location; only the report
     names files.
     """
     if admitted != 0:
         return
+    if canary_admitted:
+        location = (
+            f" Private named refusal report: {refusal_report.path}."
+            if refusal_report is not None
+            else ""
+        )
+        raise ContractError(
+            "the door admitted no page of the real submission: only "
+            f"{canary_admitted} canary page(s) admitted, and canaries are controls, "
+            f"not the submission.{location} A run holding no real page is a loud "
+            "failure, never a green run"
+        )
     if refusal_report is None:
         raise ContractError("the door admitted nothing: no source was submitted")
     census = _refusal_census(refusal_report)
@@ -1615,11 +1675,11 @@ def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
     )
 
 
-def _finish_door_run(context: StageContext, admitted: int) -> int:
+def _finish_door_run(context: StageContext, admitted: int, *, canary_admitted: int = 0) -> int:
     """The shared close for both entry points: reports, then the loud checks.
 
-    Reports seal first so a refused run still leaves its evidence; both refusals
-    fire before `seal_boundary` writes anything else.
+    Reports seal first so a refused run still leaves its evidence; every refusal
+    fires before `seal_boundary` writes anything else.
     """
     refusal_report = publish_refusal_report(context)
     duplicate_report = publish_duplicate_report(context)
@@ -1628,7 +1688,7 @@ def _finish_door_run(context: StageContext, admitted: int) -> int:
     _announce_duplicate_report(duplicate_report)
     require_no_duplicate_sources(duplicate_report)
     require_confirmed_re_shoots(context, cluster_report)
-    require_some_admitted(admitted, refusal_report)
+    require_some_admitted(admitted, refusal_report, canary_admitted=canary_admitted)
     context.seal_boundary()
     context.finish(DOOR)
     return EXIT_COMPLETE
@@ -1894,6 +1954,7 @@ def real_submission(args, registry) -> int:
         triage_rows=triage_rows,
         triage_clusters=triage_clusters,
     )
+    canary_sources: list[SourceEntry] = []
     if canary_ledger is not None:
         canary_sources = expand_sources(
             [
@@ -1909,10 +1970,11 @@ def real_submission(args, registry) -> int:
             format_policy,
             open_source=open_source,
         )
-        real_count = len(sources)
-        sources.extend(
-            source._replace(ordinal=source.ordinal + real_count) for source in canary_sources
-        )
+        canary_sources = [
+            source._replace(ordinal=source.ordinal + len(sources)) for source in canary_sources
+        ]
+    real_sources = sources
+    sources = [*real_sources, *canary_sources]
     require_corpus_frame_shard(len(sources), bindings["sealed_config_digests"])
     tree = _create_run(
         args,
@@ -1938,16 +2000,20 @@ def real_submission(args, registry) -> int:
     context.require_sealed_config("pdf-render", pdf_render_binding.config_sha256)
     # So a reader can tell which data-handling policy admitted the corpus.
     context.require_sealed_config("data-handling", data_policy_binding.config_sha256)
-    admitted = process_sources(
-        context,
-        tree,
-        sources,
-        read_bytes,
-        policy=format_policy,
-        pdf_settings=pdf_settings,
-        open_source=open_source,
-    )
-    return _finish_door_run(context, admitted)
+    # Counted apart, so admitted canaries cannot stand in for the submission.
+    admitted, canary_admitted = [
+        process_sources(
+            context,
+            tree,
+            ledger_sources,
+            read_bytes,
+            policy=format_policy,
+            pdf_settings=pdf_settings,
+            open_source=open_source,
+        )
+        for ledger_sources in (real_sources, canary_sources)
+    ]
+    return _finish_door_run(context, admitted, canary_admitted=canary_admitted)
 
 
 def _refuse_inside_submission(location: Path, submission_folder: Path, label: str) -> None:
@@ -2177,6 +2243,7 @@ def _door_execution_recipe(pdf_settings) -> dict[str, Any]:
         "raster": raster_renderer_recipe(),
         "limits": {
             "max_source_bytes": MAX_SOURCE_BYTES,
+            "max_rendered_page_bytes": MAX_RENDERED_PAGE_BYTES,
             "max_dimension": MAX_DIMENSION,
             "max_pixels": MAX_PIXELS,
         },

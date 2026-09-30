@@ -15,7 +15,7 @@ import pypdfium2.internal
 import pytest
 import render_config
 from admission import RefusalReason
-from image_formats import MAX_DIMENSION, MAX_PIXELS, validate_png
+from image_formats import MAX_DIMENSION, MAX_PIXELS, MAX_PNG_DECODED_BYTES, validate_png
 from pdf_render import PdfRefusal, close_document, count_pages, open_document
 from PIL import Image
 from synthetic_sources import (
@@ -214,6 +214,19 @@ def test_an_oversized_page_is_an_alarm_before_a_bitmap_is_returned():
 
     assert caught.value.reason is RefusalReason.UNSUPPORTED_VARIANT
     assert "floor" in str(caught.value)
+
+
+def test_the_floor_refusal_names_the_pixel_bound_it_actually_applied():
+    """A page under `MAX_PIXELS` at the floor can still pass the RGB decoded-page
+    bound, and the refusal must name that tighter bound, not the looser one."""
+    side = 7_000
+    assert side * side < MAX_PIXELS and side < MAX_DIMENSION
+    with pytest.raises(PdfRefusal) as caught:
+        pdf_render._render_dimensions(side, side, PDF_SETTINGS.target_dpi)
+
+    message = str(caught.value)
+    assert f"{MAX_PNG_DECODED_BYTES // 3}-pixel RGB page bound" in message
+    assert f"{MAX_PIXELS}-pixel" not in message
 
 
 def test_a_large_legitimate_page_renders_at_reduced_resolution_rather_than_refusing():

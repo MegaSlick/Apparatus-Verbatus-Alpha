@@ -48,6 +48,12 @@ MAX_DIMENSION: Final = 100_000
 MAX_PIXELS: Final = 100_000_000
 MAX_PNG_CHUNKS: Final = 10_000
 MAX_PNG_DECODED_BYTES: Final = 128 * 1024 * 1024
+# A page the Door renders itself (a PDF page, one frame of a multi-frame raster)
+# is not a submitted file, so `MAX_SOURCE_BYTES` does not bound it: a lossless
+# page of a large-format scan can encode past 64 MiB. It must still be readable
+# by every later stage, whose run-tree page-blob read ceiling
+# (`common/runtree/store.py`) is sized to hold exactly this bound.
+MAX_RENDERED_PAGE_BYTES: Final = MAX_PNG_DECODED_BYTES * 3 // 2
 MAX_TIFF_DATA_SEGMENTS: Final = 100_000
 # A declared page count must fit in the bytes that arrived; a reel's own page count
 # is still the document's to declare. Pillow's smallest real page costs ~128 bytes,

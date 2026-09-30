@@ -361,15 +361,18 @@ def _render_dimensions(
     and height independently, so a scale chosen to land exactly
     on the analytic limit can still produce a bitmap a pixel over it; and the render
     is always RGB, so the PNG it becomes is bound by `MAX_PNG_DECODED_BYTES` at
-    three bytes a pixel, which is tighter. `admission.inspect_source` re-checks
-    exactly that PNG one step later, and a page that passed here only to refuse
-    there would be a worse answer than choosing the smaller resolution up front.
+    three bytes a pixel, which is tighter. `admission.inspect_rendered_page`
+    decodes exactly that PNG one step later, and a page that passed here only to
+    refuse there would be a worse answer than choosing the smaller resolution up
+    front. The encoded size needs no budget of its own: a PNG of at most
+    `MAX_PNG_DECODED_BYTES` of samples stays under `MAX_RENDERED_PAGE_BYTES`.
     """
     if not isinstance(points_wide, (int, float)) or not isinstance(points_high, (int, float)):
         raise PdfRefusal(RefusalReason.CORRUPT, "the PDF page has no numeric dimensions")
     if points_wide <= 0 or points_high <= 0:
         raise PdfRefusal(RefusalReason.CORRUPT, "the PDF page has a zero or negative dimension")
-    budget = min(MAX_PIXELS, MAX_PNG_DECODED_BYTES // 3) * 0.99
+    pixel_bound = min(MAX_PIXELS, MAX_PNG_DECODED_BYTES // 3)
+    budget = pixel_bound * 0.99
     # Keep the configured integer out of floating-point conversion. An arbitrarily
     # large positive TOML integer must still cap downward to what this page can
     # hold, not overflow before the code-owned pixel limits get a say.
@@ -390,7 +393,8 @@ def _render_dimensions(
             RefusalReason.UNSUPPORTED_VARIANT,
             f"the PDF page is {points_wide}x{points_high} points; even at the "
             f"{MIN_RENDER_DPI}-DPI floor it would exceed the {MAX_DIMENSION}-per-side "
-            f"and {MAX_PIXELS}-pixel limits",
+            f"limit or the {pixel_bound}-pixel RGB page bound (the "
+            f"{MAX_PNG_DECODED_BYTES}-byte decoded-page limit at three bytes a pixel)",
         )
     scale = dpi / POINTS_PER_INCH
     return dpi, ceil(points_wide * scale), ceil(points_high * scale)

@@ -79,7 +79,11 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     sources = _submitted_sources(context.run)
     admissions = _checked_admissions(tree, context.run, sources)
 
-    sealed = 0
+    sealed = submission_sealed = 0
+    sealed_digests = context.run.get("sealed_config_digests")
+    canary_ledger = (
+        sealed_digests.get("canary-ledger") if isinstance(sealed_digests, dict) else None
+    )
     page_refs: list[dict[str, str]] = []
     census: list[dict[str, Any]] = []
     admitted_by_page: dict[str, list[tuple[int, dict, dict[str, str], dict[str, str]]]] = {}
@@ -142,9 +146,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 )
             )
         sealed += 1
+        if canary_ledger is None or any(
+            row.get("ledger_sha256") != canary_ledger for row in submission_rows
+        ):
+            submission_sealed += 1
 
     if sealed == 0:
         raise ContractError("every admitted source failed to seal")
+    if submission_sealed == 0:
+        # Canary pages are controls sealed beside the submission, never a
+        # substitute for it.
+        raise ContractError(
+            "only canary pages were admitted; no page of the real submission can be sealed"
+        )
 
     seal_payload: dict[str, Any] = {
         "page_count": len(census),

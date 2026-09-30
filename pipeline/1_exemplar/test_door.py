@@ -20,6 +20,7 @@ from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from textwrap import dedent
+from types import SimpleNamespace
 
 import door
 import pytest
@@ -1359,7 +1360,6 @@ def test_triage_digest_mismatch_is_a_named_door_refusal(tmp_path):
         container_page_index=0,
         triage_row=row,
         triage_part_index=0,
-        source_frame_index=0,
     )
     tree, context = open_door(tmp_path, [source])
     assert (
@@ -4553,7 +4553,6 @@ def _triage_decision(master: bytes, row: dict):
         0,
         triage_row=row,
         triage_part_index=0,
-        source_frame_index=0,
     )
     return door.decide(master, source, POLICY, pdf_settings=PDF_SETTINGS)
 
@@ -5174,3 +5173,197 @@ def test_admission_refuses_bytes_that_differ_from_sealed_membership(tmp_path):
     refusal = admissions(tree)[1]
     assert reason_code(refusal["payload"]["reason"]) is RefusalReason.DIGEST_MISMATCH
     assert "shard membership was sealed" in refusal["payload"]["reason"]
+
+
+# --- rendered pages, frame counts and expansion refusals -------------------------
+
+
+def test_a_rendered_pdf_page_is_not_held_to_the_submitted_file_limit(monkeypatch):
+    """A page the Door renders is bounded by the rendered-page limit, so a lossless
+    render larger than the submitted-file limit still admits."""
+    data = single_gray_page_pdf()
+    source = SourceEntry(1, "reel.pdf", digest_bytes(data), container_page_index=0)
+    monkeypatch.setattr(door.admission, "MAX_SOURCE_BYTES", 1)
+
+    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+
+    assert decision.outcome == "admitted"
+
+
+def test_a_rendered_page_past_its_byte_bound_is_too_large_not_corrupt(monkeypatch):
+    data = single_gray_page_pdf()
+    source = SourceEntry(1, "reel.pdf", digest_bytes(data), container_page_index=0)
+    monkeypatch.setattr(door.admission, "MAX_RENDERED_PAGE_BYTES", 1)
+
+    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+
+    assert decision.outcome == "refused"
+    assert reason_code(decision.reason) is RefusalReason.TOO_LARGE
+    assert "rendered-page limit" in decision.reason
+
+
+def test_a_multi_frame_raster_reaching_decide_without_a_page_index_is_not_sealed_whole():
+    data = multipage_tiff()
+    source = SourceEntry(1, "scan.tif", digest_bytes(data))
+
+    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+
+    assert decision.outcome == "refused"
+    assert reason_code(decision.reason) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "2 frames" in decision.reason
+
+
+def test_a_triage_row_on_a_multi_frame_raster_cuts_no_page_from_it():
+    master = multipage_tiff()
+    row = _single_part_triage_row(master, frame=(4, 3), colour_mode="keep")
+
+    decision = _triage_decision(master, row)
+
+    assert decision.outcome == "refused"
+    assert reason_code(decision.reason) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "2 frames" in decision.reason
+
+
+def test_a_source_expansion_could_not_read_is_refused_unreadable_not_re_read(tmp_path):
+    """A read that failed during expansion never counted the source's pages, so a
+    later successful read must not seal it as one page under another reason."""
+    data = multipage_tiff()
+    calls = 0
+
+    def flaky_reader(path: str) -> bytes:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("the transfer was still settling")
+        return data
+
+    files = [{"relative_path": "scan.tif", "sha256": digest_bytes(data), "bytes": len(data)}]
+    sources = expand_sources(files, flaky_reader, POLICY)
+    assert [(source.ordinal, source.container_page_index) for source in sources] == [(1, None)]
+
+    tree, context = open_door(tmp_path, sources)
+    assert (
+        process_sources(
+            context, tree, sources, flaky_reader, policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 0
+    )
+    context.finish(DOOR)
+    reason = admissions(tree)[1]["payload"]["reason"]
+    assert reason_code(reason) is RefusalReason.UNREADABLE
+    assert "the transfer was still settling" in reason
+    assert calls == 1
+
+
+def test_a_source_grown_past_the_read_bound_does_not_report_a_capped_size(tmp_path, monkeypatch):
+    """A bounded read that stops at the limit knows only a lower bound on the size."""
+    data = png(4, 3)
+    monkeypatch.setattr(door, "MAX_SOURCE_BYTES", 8)
+    source = SourceEntry(1, "grown.png", digest_bytes(data), declared_size=5)
+    tree, context = open_door(tmp_path, [source])
+
+    assert (
+        process_sources(
+            context,
+            tree,
+            [source],
+            reader({"grown.png": data[:9]}),
+            policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
+        )
+        == 0
+    )
+    context.finish(DOOR)
+    reason = admissions(tree)[1]["payload"]["reason"]
+    assert reason_code(reason) is RefusalReason.DIGEST_MISMATCH
+    assert "now has more than 8 bytes" in reason
+    assert "now has 9 bytes" not in reason
+
+
+def test_admitted_canaries_do_not_stand_in_for_a_wholly_refused_submission(tmp_path, monkeypatch):
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"real.png": png(4, 3)[:-4]}
+    )
+    birds = approved / "birds"
+    birds.mkdir()
+    (birds / "bird.png").write_bytes(png(3, 2))
+    bird_ledger_path = approved / "birds-ledger.json"
+    submit.submit(birds, bird_ledger_path, policy_path=policy_path)
+
+    with pytest.raises(ContractError, match="no page of the real submission") as refused:
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="canaries-only",
+            extra=("--canary-folder", str(birds), "--canary-manifest", str(bird_ledger_path)),
+        )
+    assert "1 canary page(s)" in str(refused.value)
+
+
+# --- untrusted triage document guards --------------------------------------------
+
+
+@pytest.mark.hostile_local
+def test_a_triage_document_that_is_a_fifo_is_not_read(tmp_path):
+    fifo = tmp_path / "manifest.json"
+    os.mkfifo(fifo)
+
+    with pytest.raises(ContractError, match="triage decision manifest is not a regular file"):
+        door.load_triage_decisions(fifo)
+
+
+def test_a_triage_document_changed_during_its_read_is_refused(tmp_path, monkeypatch):
+    path = tmp_path / "manifest.json"
+    path.write_text(
+        json.dumps(
+            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "a", "records": []}
+        ),
+        encoding="utf-8",
+    )
+    real_fstat = os.fstat
+    calls = 0
+
+    def moving_fstat(descriptor):
+        """The second look at the open file sees a newer modification time."""
+        nonlocal calls
+        calls += 1
+        status = real_fstat(descriptor)
+        if calls == 1:
+            return status
+        fields = {name: getattr(status, name) for name in dir(status) if name.startswith("st_")}
+        return SimpleNamespace(**{**fields, "st_mtime_ns": status.st_mtime_ns + 1})
+
+    monkeypatch.setattr(door.os, "fstat", moving_fstat)
+    with pytest.raises(ContractError, match="changed while it was being read"):
+        door.load_triage_decisions(path)
+
+
+def test_triage_cluster_records_that_are_not_an_object_are_refused(tmp_path, empty_triage_manifest):
+    clusters_path = tmp_path / "clusters.json"
+    clusters_path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ContractError, match="not an object keyed by cluster id"):
+        door.load_triage_decisions(empty_triage_manifest, clusters_path)
+
+
+def test_triage_clusters_without_a_manifest_are_refused_at_the_real_door(tmp_path, monkeypatch):
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1.png": png(4, 3)}
+    )
+    clusters_path = approved / "clusters.json"
+    clusters_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ContractError, match="cluster records require a triage decision manifest"):
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="clusters-without-manifest",
+            extra=["--triage-clusters", str(clusters_path)],
+        )
+    assert not (approved / "runs").exists()

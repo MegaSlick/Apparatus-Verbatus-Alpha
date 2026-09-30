@@ -835,6 +835,87 @@ def test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar(tmp_path)
     assert (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
 
 
+def test_the_exemplar_seals_nothing_when_only_canary_pages_were_admitted(tmp_path):
+    """Canary pages are controls: a run whose real submission was wholly refused
+    has no page to seal, however many canaries admitted beside it."""
+    from admission import load_format_policy
+
+    real = {"real.png": b"not an image"}
+    canary = {"bird.png": png(3, 2)}
+    files = real | canary
+    ledgers = {
+        name: submit.build_manifest(
+            [
+                {"relative_path": path, "sha256": digest_bytes(data), "bytes": len(data)}
+                for path, data in group.items()
+            ]
+        )["self_hash"]
+        for name, group in (("real", real), ("canary", canary))
+    }
+    sources = [
+        SourceEntry(
+            ordinal,
+            path,
+            digest_bytes(data),
+            declared_size=len(data),
+            ledger_sha256=ledgers["real" if path in real else "canary"],
+        )
+        for ordinal, (path, data) in enumerate([*real.items(), *canary.items()], start=1)
+    ]
+    bindings = sealed_bindings() | real_sealed_bindings()
+    tree = RunTree.create(
+        tmp_path / "runs",
+        "r1",
+        source_manifest=[
+            {
+                "relative_path": entry.declared_path,
+                "sha256": entry.declared_sha256,
+                "ordinal": entry.ordinal,
+                "ledger_sha256": entry.ledger_sha256,
+                "bytes": entry.declared_size,
+            }
+            for entry in sources
+        ],
+        config_digest=bindings["config_digest"],
+        adapter_recipes=bindings["adapter_recipes"],
+        witness_chairs=bindings["witness_chairs"],
+        ingress=real_ingress_record(),
+        sealed_config_digests={
+            **bindings["sealed_config_digests"],
+            "canary-ledger": ledgers["canary"],
+        },
+    )
+    context = StageContext(
+        tree=tree,
+        run=tree.read_run(),
+        fixture={},
+        scenario="happy",
+        stage=DOOR,
+        adapter_revision=bindings["adapter_recipes"][DOOR],
+        args=None,
+        registry=None,
+    )
+    assert (
+        process_sources(
+            context,
+            tree,
+            sources,
+            lambda path: files[path],
+            policy=load_format_policy(),
+            pdf_settings=PDF_SETTINGS,
+        )
+        == 1
+    )
+    context.seal_boundary()
+    context.finish(DOOR)
+
+    result = run_exemplar(tmp_path / "runs")
+
+    assert result.returncode != 0
+    assert "only canary pages were admitted" in result.stderr
+    assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
+
+
 def test_the_exemplar_refuses_a_sealed_door_boundary_that_admitted_nothing(
     tmp_path, rebind_stage_seal
 ):

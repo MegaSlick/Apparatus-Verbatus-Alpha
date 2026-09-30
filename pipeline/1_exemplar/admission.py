@@ -14,13 +14,14 @@ JPEG are the same shape.  So a raster source is admitted **or** fanned out, and 
 decoder's own frame count decides which: one frame is sealed as its own original
 bytes, unmodified, and more than one is fanned out to per-page ordinals and rendered.
 
-That is why there is no bare `admit`.  An action that seals a source without ever
-asking how many frames it holds is the door defect that lost every page after the
-first of a multi-page TIFF; removing the action removes the failure rather than
-testing for it.  `render-pages` is restricted at load time to PDF alone for the
-mirror-image reason: routing a raster format through it would re-encode every
-ordinary single-page file for nothing, and a single-page TIFF that seals cleanly as
-its own bytes must keep them — the Exemplar is the immutable source.
+So there is no bare `admit`: every raster is frame-counted before it is sealed,
+because sealing a source whole without asking how many frames it holds would keep
+page one of a multi-page scan and lose the rest.  `inspect_source` refuses a
+multi-frame raster that reaches it without a page index for the same reason.
+`render-pages` is PDF alone, by construction of `FORMAT_ROUTES`: routing a raster
+format through it would re-encode every ordinary single-page file for nothing, and
+a single-page TIFF that seals cleanly as its own bytes must keep them — the
+Exemplar is the immutable source.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from typing import Final, NamedTuple
 
 import image_formats
 from image_formats import (
+    MAX_RENDERED_PAGE_BYTES,
     MAX_SOURCE_BYTES,
     FormatRefusal,
     FormatVerdict,
@@ -42,10 +44,9 @@ from common.contracts.stages import RefusalReason
 
 # A raster format: decoded, and then admitted as its own unmodified bytes when the
 # decoder reports one frame, or fanned out to one ordinal per frame when it reports
-# more.  Named for both halves because both really happen; a name that said only
-# "raster" hid the fan-out that keeps page two of a scan.
+# more.
 ADMIT_OR_FAN_OUT: Final = "admit-or-fan-out"
-# A format that is always a container of pages.  PDF alone, enforced at load.
+# A format that is always a container of pages: PDF alone.
 RENDER_PAGES: Final = "render-pages"
 ALWAYS_A_CONTAINER: Final = frozenset({"pdf"})
 ACTIONS: Final = frozenset({ADMIT_OR_FAN_OUT, RENDER_PAGES})
@@ -123,7 +124,7 @@ def classify_detected_format(detected: str | None, policy: dict[str, str]) -> st
 def inspect_source(
     data: bytes, *, declared_sha256: str | None, policy: dict[str, str]
 ) -> AdmissionOutcome:
-    """Decode one single-raster source and compare its declared digest.
+    """Decode one single-raster submitted source and compare its declared digest.
 
     The order below is the contract, and the container check is not first.  Empty
     input, a digest mismatch and an oversized source are refused ahead of any
@@ -133,8 +134,44 @@ def inspect_source(
     that gets that far was never fanned out by the door, and raising says so
     rather than filing a refusal the door would record as an artifact.  A source
     that is neither refused earlier nor a container is decoded into pixels before
-    admission; extension spelling is never read.
+    admission, and must hold exactly one frame; extension spelling is never read.
     """
+    return _inspect(
+        data,
+        declared_sha256=declared_sha256,
+        policy=policy,
+        byte_limit=MAX_SOURCE_BYTES,
+        too_large=too_large_detail(len(data)),
+    )
+
+
+def inspect_rendered_page(data: bytes, *, policy: dict[str, str]) -> AdmissionOutcome:
+    """Decode one page the Door rendered, under the rendered-page byte bound.
+
+    The same checks as `inspect_source`, except that a rendered page is bounded
+    by `MAX_RENDERED_PAGE_BYTES`, the size every later stage can read back, not by
+    the limit on submitted files.
+    """
+    return _inspect(
+        data,
+        declared_sha256=None,
+        policy=policy,
+        byte_limit=MAX_RENDERED_PAGE_BYTES,
+        too_large=(
+            f"the rendered page is {len(data)} bytes, above the "
+            f"{MAX_RENDERED_PAGE_BYTES}-byte rendered-page limit"
+        ),
+    )
+
+
+def _inspect(
+    data: bytes,
+    *,
+    declared_sha256: str | None,
+    policy: dict[str, str],
+    byte_limit: int,
+    too_large: str,
+) -> AdmissionOutcome:
     if not data:
         return AdmissionOutcome(
             "refused", reason(RefusalReason.EMPTY, "the source is empty"), None, None, None
@@ -155,13 +192,9 @@ def inspect_source(
             digest,
             None,
         )
-    if len(data) > MAX_SOURCE_BYTES:
+    if len(data) > byte_limit:
         return AdmissionOutcome(
-            "refused",
-            reason(RefusalReason.TOO_LARGE, too_large_detail(len(data))),
-            sniff(data),
-            digest,
-            None,
+            "refused", reason(RefusalReason.TOO_LARGE, too_large), sniff(data), digest, None
         )
     detected = sniff(data)
     if classify_detected_format(detected, policy) == RENDER_PAGES:
@@ -174,6 +207,19 @@ def inspect_source(
     except FormatRefusal as error:
         return AdmissionOutcome(
             "refused", reason(_refusal_code(error), str(error)), detected, digest, None
+        )
+    if decoded.frame_count != 1:
+        # Sealing these bytes whole would admit frame one as the entire source.
+        return AdmissionOutcome(
+            "refused",
+            reason(
+                RefusalReason.UNSUPPORTED_VARIANT,
+                f"{decoded.format} holds {decoded.frame_count} frames but reached admission "
+                "without a page index, so the door did not fan it out",
+            ),
+            decoded.format,
+            digest,
+            None,
         )
     return AdmissionOutcome(
         "admitted", None, decoded.format, digest, (decoded.width, decoded.height)
