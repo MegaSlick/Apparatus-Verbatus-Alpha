@@ -57,14 +57,9 @@ def _declarations(*, empty=(), ordinal=1):
     }
 
 
-def _resolve(context, act_key, declarations, *, reread=False):
+def _resolve(context, act_key, declarations):
     return attestatores.resolve_attempt(
-        context,
-        {"act_key": act_key},
-        CHAIR,
-        CHAIR_IDENTITY,
-        declarations,
-        reread=reread,
+        context, {"act_key": act_key}, CHAIR, CHAIR_IDENTITY, declarations
     )
 
 
@@ -132,16 +127,6 @@ def test_a_fallback_shaped_key_never_blanks_an_ordinary_act():
 
     assert attempt.outcome == "read"
     assert attempt.native_payload == "real ink"
-
-
-def test_an_undeclared_fallback_reread_is_failed_rather_than_empty():
-    """A reread names one chair on one act, so silence is an attempt that
-    produced nothing -- still never an empty report."""
-    attempt = _resolve(_Context(), FALLBACK_KEY, _declarations(), reread=True)
-
-    assert attempt.outcome == "failed"
-    assert attempt.native_payload is None
-    assert attempt.reason == "the reread reached this chair and it returned no response"
 
 
 def test_a_scenario_empty_response_overrides_the_base_table():

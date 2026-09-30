@@ -774,7 +774,7 @@ def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
             ],
         },
     )
-    index = attestatores.AttemptIndex(False, {}, {})
+    index = attestatores.AttemptIndex(False, {})
 
     with pytest.raises(attestatores.SchemaRefusal, match="different model boundary"):
         attestatores.preflight_appendable_ordinals(

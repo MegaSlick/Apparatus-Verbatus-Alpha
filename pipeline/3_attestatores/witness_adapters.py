@@ -146,15 +146,15 @@ def _retain_dai_model_view(
 def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     """Cut and resize DAI's view of one region from its sealed source page.
 
-    Page-scoped, the region is one record DAI's own project's detector found
-    (a Designator `detector-region`); act-scoped, it is the act's proposal. The
-    crop is the region's axis-aligned bounds, never rotated. Its presentation is
+    The region is one record DAI's own project's detector found (a Designator
+    `detector-region`). The crop is the region's axis-aligned bounds, never
+    rotated. Its presentation is
     an ``adapter-crop`` so the complete crop→resize recipe remains executable in
     sealed-page space.
     """
     validate_presented(presentation)
     if presentation["kind"] != "region":
-        raise SchemaRefusal("DAI accepts an act proposal region, not a page presentation")
+        raise SchemaRefusal("DAI accepts a region crop, not a page presentation")
     source_transform = presentation["transform"]
     page_id = source_transform["source_page_id"]
     _, page_bytes = read_sealed_page(context.tree, page_id, what="DAI")
@@ -300,7 +300,7 @@ def validate_adapter_presentation(
             "here beside its runnable binding"
         )
     if source["kind"] != "region":
-        raise SchemaRefusal("DAI accepts an act proposal region, not a page presentation")
+        raise SchemaRefusal("DAI accepts a region crop, not a page presentation")
     bounds = source["transform"]["bounds"]
     target_width, target_height = feeding.dai_dimensions(bounds["w"], bounds["h"])
     transform: dict[str, Any] = {
@@ -394,6 +394,7 @@ def declared_quantization_rules() -> frozenset[str]:
 def validate_runnable_adapter_bindings(models: ModelsConfig) -> None:
     """Refuse shared declarations that have no stage-local callable route.
 
+    Every witness reads whole pages, so a chair scoped any other way is refused.
     Also checks the roster's declared framings, since only the stage knows
     which framings an adapter declares; refused before a run opens rather than
     at the first request on a billing card.
@@ -403,6 +404,11 @@ def validate_runnable_adapter_bindings(models: ModelsConfig) -> None:
         identity = models.chairs[chair]
         if isinstance(identity, AbsentChair):
             continue
+        if identity.witness_scope != "page":
+            raise SchemaRefusal(
+                f"chair {chair!r} is scoped {identity.witness_scope!r}; every witness reads "
+                "whole pages, so set its witness_scope to 'page'"
+            )
         adapter = resolve_runnable_adapter(identity.witness_adapter)
         if reads_detector_records(identity) and not isinstance(
             models.chairs.get(SECONDARY_PROPOSER_CHAIR), ChairIdentity
@@ -410,8 +416,7 @@ def validate_runnable_adapter_bindings(models: ModelsConfig) -> None:
             raise SchemaRefusal(
                 f"chair {chair!r} reads the page as {identity.witness_adapter!r} does, one "
                 f"record at a time as its own detector finds them, and the {SECONDARY_PROPOSER_CHAIR!r} "
-                "chair that runs that detector is not configured; configure it, or scope "
-                "this chair 'act'"
+                "chair that runs that detector is not configured; configure it"
             )
         declared = models.witness_framings.get(chair)
         if declared is None:
