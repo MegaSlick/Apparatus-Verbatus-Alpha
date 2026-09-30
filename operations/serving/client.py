@@ -45,7 +45,13 @@ from common.contracts.serving import (
     WIRE_DECIMAL_SCHEMA,
 )
 
-from .config import FixtureProfile, ServingProfile, ServingRecipes, UnsupportedProfile
+from .config import (
+    FixtureProfile,
+    ServingProfile,
+    ServingRecipes,
+    SubprocessProfile,
+    UnsupportedProfile,
+)
 from .errors import (
     ChairRequestRefusal,
     ChairResponseRefusal,
@@ -1022,7 +1028,7 @@ def _other_tiers_posture(
 
 
 def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str | None) -> str:
-    """``"fixture"`` or ``"live"`` by the sealed serving-recipe row kind alone.
+    """``"fixture"``, ``"live"`` or ``"subprocess"`` by the sealed row kind alone.
 
     Three-name lookup, never a ranking: every row for this ``(recipe, chair)``
     is collected first. If every one of them is a fixture row, the chair is
@@ -1061,6 +1067,8 @@ def serving_mode_for(recipes: ServingRecipes, identity: ChairIdentity, tier: str
         raise ServingModeRefusal("SERVING_MODE_UNRESOLVED", str(error)) from error
     if isinstance(profile, ServingProfile):
         return "live"
+    if isinstance(profile, SubprocessProfile):
+        return "subprocess"
     if isinstance(profile, FixtureProfile):
         raise ServingModeRefusal(
             "SERVING_MODE_UNRESOLVED",

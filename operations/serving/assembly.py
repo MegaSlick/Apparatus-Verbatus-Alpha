@@ -163,6 +163,7 @@ def assemble_serving_preflight_callback(
         cache_verifier,
         reader,
         fixture,
+        serving_recipes=recipes,
     )
 
     def run_preflight() -> dict[str, object]:

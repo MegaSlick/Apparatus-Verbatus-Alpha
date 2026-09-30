@@ -39,6 +39,7 @@ from .config import (
     ServingConfigInputs,
     ServingProfile,
     ServingRecipes,
+    SubprocessProfile,
     UnsupportedProfile,
     chair_preflight_identity_digest,
     model_and_tokenizer_pins,
@@ -1381,6 +1382,12 @@ def _launchable(
             f"at tier {profile.tier!r} ({profile.description}); a fixture profile is never "
             "launched, and the offline walking skeleton answers it from declared serving "
             "details instead"
+        )
+    if isinstance(profile, SubprocessProfile):
+        raise ServingConfigurationError(
+            f"chair {identity.role!r} resolves to subprocess profile {profile.recipe!r} at "
+            f"tier {profile.tier!r}; its own stage runs it on the {profile.device} in "
+            f"{profile.environment}, and no serving process is ever started for it"
         )
     if isinstance(profile, UnsupportedProfile):
         raise ServingConfigurationError(
