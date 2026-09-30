@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 from decimal import ROUND_HALF_EVEN, Decimal
-from typing import Any
+from typing import Any, Callable
 
 import geometry_layer
 from no_text import refuse_text_fields
@@ -42,6 +42,11 @@ from operations.serving.surya_detector import (
     fixture_surya_run,
     run_surya_subprocess,
 )
+
+# `(profile, bundle_root, page_bytes, sizes, identity) -> SuryaRun`: how a
+# subprocess row is answered. Production runs Surya's runner process; tests
+# inject an in-process stand-in (`operations.serving.fakes.InProcessSurya`).
+SuryaRunner = Callable[..., SuryaRun]
 
 SURYA_PROVENANCE_KIND = "surya-provenance"
 SURYA_PAGE_KIND = "surya-page"
@@ -141,7 +146,7 @@ def _fixture_rows(context) -> dict[str, list[dict]]:
 
 
 def _run_surya(
-    context, identity: ChairIdentity, mode: str, pages: dict[int, dict]
+    context, identity: ChairIdentity, mode: str, pages: dict[int, dict], runner: SuryaRunner
 ) -> tuple[SuryaRun, dict[int, bytes]]:
     page_bytes = {
         ordinal: sealed_page_bytes(context.tree, record, refusal=ContractError)
@@ -162,9 +167,7 @@ def _run_surya(
         identity, context.args.placement_tier
     )
     try:
-        run = run_surya_subprocess(
-            profile, context.registry.ensure(identity).root, page_bytes, sizes, identity
-        )
+        run = runner(profile, context.registry.ensure(identity).root, page_bytes, sizes, identity)
     except ServingError as error:
         raise ContractError(f"Surya did not run: {error}") from error
     return run, page_bytes
@@ -238,7 +241,13 @@ def _publish(context, kind: str, subject: str, inputs: list, payload: dict) -> N
     )
 
 
-def publish_surya_detections(context, pages: dict[int, dict], *, live: bool) -> None:
+def publish_surya_detections(
+    context,
+    pages: dict[int, dict],
+    *,
+    live: bool,
+    runner: SuryaRunner = run_surya_subprocess,
+) -> None:
     """Run Surya over every sealed page and publish what it found, page by page.
 
     A page with no detection still gets its `surya-page`, with zero counts, so
@@ -249,7 +258,7 @@ def publish_surya_detections(context, pages: dict[int, dict], *, live: bool) -> 
     if identity is None:
         return
     mode = surya_mode(context, identity, live=live)
-    run, page_bytes = _run_surya(context, identity, mode, pages)
+    run, page_bytes = _run_surya(context, identity, mode, pages, runner)
     provenance = _provenance(context, identity, run)
     for ordinal, page_record in sorted(pages.items()):
         page_id = page_record["subject_id"]

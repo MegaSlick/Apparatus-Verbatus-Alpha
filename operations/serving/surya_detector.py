@@ -272,6 +272,67 @@ def _fixture_polygon(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def declared_page_documents(
+    lines: Sequence[Mapping[str, Any]],
+    blocks: Sequence[Mapping[str, Any]],
+    pages: Mapping[int, tuple[int, int]],
+    run_facts: Mapping[str, Any],
+) -> dict[int, bytes]:
+    """Each page's document in the runner's shape, built from declared rows.
+
+    `pages` maps each page ordinal to its (width, height); the documents are
+    numbered by input order, as the runner numbers the pages it is given.
+    """
+    documents = {}
+    for input_ordinal, (ordinal, (width, height)) in enumerate(sorted(pages.items()), start=1):
+        page_blocks = sorted(
+            (row for row in blocks if row["page_ordinal"] == ordinal),
+            key=lambda row: row["position"],
+        )
+        documents[ordinal] = _page_bytes(
+            {
+                "schema": PAGE_SCHEMA,
+                "input_ordinal": input_ordinal,
+                "image_size": [width, height],
+                "run": dict(run_facts),
+                "text_detection": {
+                    "bboxes": [
+                        _fixture_polygon(row) for row in lines if row["page_ordinal"] == ordinal
+                    ],
+                    "image_bbox": [0.0, 0.0, float(width), float(height)],
+                },
+                "layout": {
+                    "bboxes": [
+                        {
+                            **_fixture_polygon(row),
+                            "label": row["label"],
+                            "raw_label": row["raw_label"],
+                            "position": row["position"],
+                            "count": row["count"],
+                        }
+                        for row in page_blocks
+                    ],
+                    "image_bbox": [0.0, 0.0, float(width), float(height)],
+                    "raw": None,
+                    "error": False,
+                },
+            }
+        )
+    return documents
+
+
+def _parsed(written: Mapping[int, bytes], sizes: Mapping[int, tuple[int, int]]) -> dict:
+    return {
+        ordinal: parse_page_document(
+            written[ordinal],
+            width=sizes[ordinal][0],
+            height=sizes[ordinal][1],
+            input_ordinal=input_ordinal,
+        )
+        for input_ordinal, ordinal in enumerate(sorted(written), start=1)
+    }
+
+
 def fixture_surya_run(
     lines: Sequence[Mapping[str, Any]],
     blocks: Sequence[Mapping[str, Any]],
@@ -286,42 +347,7 @@ def fixture_surya_run(
     same reader the real detector feeds.
     """
     run_facts = {"engine": FIXTURE_ENGINE, "declared_by": _FIXTURE_DECLARATION}
-    documents = {}
-    for input_ordinal, (ordinal, (width, height)) in enumerate(sorted(pages.items()), start=1):
-        page_blocks = sorted(
-            (row for row in blocks if row["page_ordinal"] == ordinal),
-            key=lambda row: row["position"],
-        )
-        document = {
-            "schema": PAGE_SCHEMA,
-            "input_ordinal": input_ordinal,
-            "image_size": [width, height],
-            "run": run_facts,
-            "text_detection": {
-                "bboxes": [
-                    _fixture_polygon(row) for row in lines if row["page_ordinal"] == ordinal
-                ],
-                "image_bbox": [0.0, 0.0, float(width), float(height)],
-            },
-            "layout": {
-                "bboxes": [
-                    {
-                        **_fixture_polygon(row),
-                        "label": row["label"],
-                        "raw_label": row["raw_label"],
-                        "position": row["position"],
-                        "count": row["count"],
-                    }
-                    for row in page_blocks
-                ],
-                "image_bbox": [0.0, 0.0, float(width), float(height)],
-                "raw": None,
-                "error": False,
-            },
-        }
-        documents[ordinal] = parse_page_document(
-            _page_bytes(document), width=width, height=height, input_ordinal=input_ordinal
-        )
+    documents = _parsed(declared_page_documents(lines, blocks, pages, run_facts), pages)
     return SuryaRun(run_facts=run_facts, serving_details=details, pages=documents)
 
 
@@ -441,16 +467,31 @@ def run_surya_subprocess(
             raise ServingConfigurationError(
                 f"Surya's runner failed (exit {result.returncode}): {result.stderr.strip()[-800:]}"
             )
-        documents = {}
+        written = {}
         for input_ordinal, ordinal in enumerate(ordinals, start=1):
-            written = output / f"page-{input_ordinal}.json"
-            if not written.is_file():
+            document = output / f"page-{input_ordinal}.json"
+            if not document.is_file():
                 raise SuryaOutputRefusal(f"Surya's runner wrote no document for page {ordinal}")
-            width, height = sizes[ordinal]
-            documents[ordinal] = parse_page_document(
-                written.read_bytes(), width=width, height=height, input_ordinal=input_ordinal
-            )
-    run_facts = documents[ordinals[0]].document["run"]
+            written[ordinal] = document.read_bytes()
+    return surya_run(profile, identity, versions, started_at, written, sizes)
+
+
+def surya_run(
+    profile: SubprocessProfile,
+    identity: ChairIdentity,
+    versions: Mapping[str, str],
+    started_at: str,
+    written: Mapping[int, bytes],
+    sizes: Mapping[int, tuple[int, int]],
+) -> SuryaRun:
+    """The run the parent records from what Surya's runner wrote, page by page.
+
+    `written` maps each page ordinal to its document's bytes; `versions` is
+    what the environment reported. Every document is checked against the
+    closed shape, and all must name the one run this row asked for.
+    """
+    documents = _parsed(written, sizes)
+    run_facts = documents[min(documents)].document["run"]
     if any(page.document["run"] != run_facts for page in documents.values()):
         raise SuryaOutputRefusal("Surya's page documents disagree about the run that wrote them")
     if run_facts["engine"] != "surya" or run_facts["threads"] != profile.threads:

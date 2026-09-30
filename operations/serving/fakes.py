@@ -28,8 +28,10 @@ from common.chairs.models import ChairIdentity, ServingDetails, VerifiedSnapshot
 from common.chairs.receipts import build_receipt
 
 from .client import ChairClient, RetainBytes
+from .config import SubprocessProfile
 from .http import EndpointUnavailable, HttpResponse
 from .manager import AdapterCalibration, ReceiptPublication, ServingManager
+from .surya_detector import SuryaRun, contract, declared_page_documents, surya_run
 
 
 class _Absent:
@@ -687,3 +689,63 @@ def fake_serving_factory(
         )
 
     return factory
+
+
+class InProcessSurya:
+    """Stands in for Surya's runner process: a live pass's `surya_runner`.
+
+    It answers from declared rows, in the surya-engine page shape the runner
+    writes, and hands those bytes to the same `surya_detector.surya_run` the
+    real subprocess path does, so the page documents are checked and the
+    receipt is built exactly as they would be for a real run. Its run facts
+    list the chair snapshot's own files as the weights. `calls` records each
+    run's page ordinals and thread count.
+    """
+
+    STARTED_AT = "2026-01-01T00:00:00Z"
+
+    def __init__(
+        self, lines: Sequence[Mapping[str, Any]], blocks: Sequence[Mapping[str, Any]]
+    ) -> None:
+        self.lines = list(lines)
+        self.blocks = list(blocks)
+        self.calls: list[tuple[tuple[int, ...], int]] = []
+
+    def __call__(
+        self,
+        profile: SubprocessProfile,
+        bundle_root: Path,
+        pages: Mapping[int, bytes],
+        sizes: Mapping[int, tuple[int, int]],
+        identity: ChairIdentity,
+    ) -> SuryaRun:
+        self.calls.append((tuple(sorted(pages)), profile.threads))
+        versions = {
+            "surya_ocr": profile.required_packages["surya-ocr"],
+            "torch": profile.required_packages["torch"],
+        }
+        weights = [
+            {
+                "path": path.relative_to(bundle_root).as_posix(),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "size": path.stat().st_size,
+            }
+            for path in sorted(bundle_root.rglob("*"))
+            if path.is_file()
+        ]
+        run_facts = {
+            "engine": "surya",
+            **versions,
+            "python": "in-process fake",
+            "device": profile.device,
+            "threads": profile.threads,
+            "deterministic_algorithms": True,
+            "settings": {name: "in-process fake" for name in contract.OUTPUT_SETTINGS},
+            "checkpoints": {
+                name: {"source": "in-process fake", "revision": None, "path": "."}
+                for name in contract.CHECKPOINT_SETTINGS
+            },
+            "weights": weights,
+        }
+        written = declared_page_documents(self.lines, self.blocks, sizes, run_facts)
+        return surya_run(profile, identity, versions, self.STARTED_AT, written, sizes)

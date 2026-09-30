@@ -570,6 +570,9 @@ verified weight bundle. Any other row is refused. On the fixture pass Surya
 runs before the structure decisions; on the live pass the row is checked
 before the structure chair starts, and Surya runs once that chair has closed,
 so it never shares the card or the pod's attention with a served model.
+The fixture roster configures the chair against fixture rows; the real roster
+records it absent until Surya's weight bundle has been fetched and its digest
+manifest measured (`operations/serving/surya/README.md`, "On the pod").
 
 **What runs.** Surya's own `DetectionPredictor.local()` for text lines and the
 `LayoutEngine.run_batch` call its fast-layout server makes (rf-detr layout and
