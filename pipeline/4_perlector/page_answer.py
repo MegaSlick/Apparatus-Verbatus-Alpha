@@ -1,0 +1,212 @@
+"""The page answer grammar: one JSON object, read deterministically, never repaired.
+
+    parse_state, answer, problems = parse_page_answer(raw_text)
+
+`parse_state` is `"parsed"` or `"malformed"`. On `parsed`, `answer` is the
+object exactly as the model gave it and `problems` is empty; on `malformed`
+`answer` is `None`, the whole page is held, and `problems` is every reason the
+reply is not the grammar, each `{"code", "detail"}`.
+
+The grammar:
+
+    {"acts": [{"n", "kind", "label"?, "cites", "text",
+               "continues_from_previous_page", "continues_to_next_page"}, ...],
+     "set_aside": [{"id", "reason"}, ...]}
+
+* both top-level keys required, no others;
+* each act: `n` an integer, `1..k` contiguous in the order given; `kind`
+  `"act"` or `"other"`; `label` absent, `null`, or a non-blank string of at
+  most 80 characters; `cites` a list of strings; `text` a string; both
+  continuation flags present as booleans, and `true` only on an edge act --
+  `continues_from_previous_page` on the first, `continues_to_next_page` on the
+  last;
+* each set-aside entry: `id` and `reason`, both strings.
+
+Whether an id exists, whether a range is well formed and the set-aside rules
+are checked against the page feed by the accounting (`common/page_accounting.py`),
+not here.
+
+## What surrounds the object
+
+The reply is one JSON object and nothing else. JSON whitespace before and
+after it carries no content and is accepted. Anything else outside the object
+-- prose, a second object, a Markdown code fence -- is `malformed`: the model
+was asked for bare JSON, and taking the object out of a wrapper would be
+reading a reply the grammar does not admit (a fence is named
+`fenced-answer`, so a proof run can count how often it happens). Duplicate
+keys, `NaN`/`Infinity` and nesting too deep to read are `malformed` too: each
+would make the parsed object say something the bytes do not.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, Final
+
+PARSED: Final = "parsed"
+MALFORMED: Final = "malformed"
+PARSE_STATES: Final = frozenset({PARSED, MALFORMED})
+
+ACT_KINDS: Final = frozenset({"act", "other"})
+LABEL_MAX_CHARACTERS: Final = 80
+FENCED_ANSWER: Final = "fenced-answer"
+
+_TOP_FIELDS: Final = frozenset({"acts", "set_aside"})
+_ACT_REQUIRED: Final = frozenset(
+    {"n", "kind", "cites", "text", "continues_from_previous_page", "continues_to_next_page"}
+)
+_ACT_FIELDS: Final = _ACT_REQUIRED | {"label"}
+_SET_ASIDE_FIELDS: Final = frozenset({"id", "reason"})
+_JSON_WHITESPACE: Final = " \t\n\r"
+_FENCE: Final = re.compile(r"\A\s*```(?:json)?\s*(?P<body>.*?)\s*```\s*\Z", re.S)
+
+
+class _DuplicateKey(ValueError):
+    pass
+
+
+def _refuse_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    keys = [key for key, _value in pairs]
+    duplicated = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicated:
+        raise _DuplicateKey(f"duplicate key(s) {duplicated}")
+    return dict(pairs)
+
+
+def _refuse_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not a JSON number")
+
+
+def _problem(code: str, detail: str) -> dict[str, str]:
+    return {"code": code, "detail": detail}
+
+
+def _decode(body: str) -> tuple[Any, list[dict[str, str]]]:
+    """Exactly one JSON value spanning `body` (surrounding whitespace aside), or problems."""
+    decoder = json.JSONDecoder(
+        object_pairs_hook=_refuse_duplicates, parse_constant=_refuse_constant
+    )
+    stripped = body.strip(_JSON_WHITESPACE)
+    try:
+        value, end = decoder.raw_decode(stripped)
+    except _DuplicateKey as error:
+        return None, [_problem("duplicate-key", str(error))]
+    except RecursionError:
+        return None, [_problem("not-json", "nested too deeply to read")]
+    except ValueError as error:
+        return None, [_problem("not-json", str(error))]
+    if end != len(stripped):
+        return None, [
+            _problem("content-outside-object", f"{len(stripped) - end} characters follow the value")
+        ]
+    return value, []
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _act_problems(index: int, act: Any, count: int) -> list[dict[str, str]]:
+    where = f"acts[{index}]"
+    if not isinstance(act, dict):
+        return [_problem("act-not-object", f"{where} is not an object")]
+    problems = []
+    missing = sorted(_ACT_REQUIRED - set(act))
+    extra = sorted(set(act) - _ACT_FIELDS)
+    if missing:
+        problems.append(_problem("act-field-missing", f"{where} lacks {missing}"))
+    if extra:
+        problems.append(_problem("act-field-unknown", f"{where} carries {extra}"))
+    if "n" in act and not _is_int(act["n"]):
+        problems.append(_problem("n-not-integer", f"{where}.n is {act['n']!r}"))
+    elif "n" in act and act["n"] != index + 1:
+        problems.append(
+            _problem("n-not-contiguous", f"{where}.n is {act['n']}, expected {index + 1}")
+        )
+    if "kind" in act and act["kind"] not in ACT_KINDS:
+        problems.append(_problem("kind-unknown", f"{where}.kind is {act['kind']!r}"))
+    label = act.get("label")
+    if label is not None and (
+        not isinstance(label, str) or not label.strip() or len(label) > LABEL_MAX_CHARACTERS
+    ):
+        problems.append(
+            _problem(
+                "label-invalid",
+                f"{where}.label is not a non-blank string of at most {LABEL_MAX_CHARACTERS} "
+                "characters",
+            )
+        )
+    cites = act.get("cites")
+    if "cites" in act and (
+        not isinstance(cites, list) or not all(isinstance(cite, str) for cite in cites)
+    ):
+        problems.append(_problem("cites-invalid", f"{where}.cites is not a list of strings"))
+    if "text" in act and not isinstance(act["text"], str):
+        problems.append(_problem("text-invalid", f"{where}.text is not a string"))
+    for flag, edge in (
+        ("continues_from_previous_page", 0),
+        ("continues_to_next_page", count - 1),
+    ):
+        if flag not in act:
+            continue
+        if not isinstance(act[flag], bool):
+            problems.append(_problem("flag-invalid", f"{where}.{flag} is not true or false"))
+        elif act[flag] and index != edge:
+            problems.append(
+                _problem("continuation-not-at-edge", f"{where}.{flag} is true on a non-edge act")
+            )
+    return problems
+
+
+def _set_aside_problems(index: int, entry: Any) -> list[dict[str, str]]:
+    where = f"set_aside[{index}]"
+    if not isinstance(entry, dict) or set(entry) != _SET_ASIDE_FIELDS:
+        return [_problem("set-aside-invalid", f"{where} is not exactly {{id, reason}}")]
+    if not isinstance(entry["id"], str) or not isinstance(entry["reason"], str):
+        return [_problem("set-aside-invalid", f"{where} id and reason are not both strings")]
+    return []
+
+
+def grammar_problems(answer: Any) -> list[dict[str, str]]:
+    """Every way a decoded value departs from the page answer grammar."""
+    if not isinstance(answer, dict):
+        return [_problem("not-object", "the answer is not a JSON object")]
+    if set(answer) != _TOP_FIELDS:
+        return [
+            _problem(
+                "top-fields",
+                f"the answer's keys are {sorted(answer)}, not exactly {sorted(_TOP_FIELDS)}",
+            )
+        ]
+    acts, set_aside = answer["acts"], answer["set_aside"]
+    problems = []
+    if not isinstance(acts, list):
+        problems.append(_problem("acts-not-list", "acts is not a list"))
+    else:
+        for index, act in enumerate(acts):
+            problems.extend(_act_problems(index, act, len(acts)))
+    if not isinstance(set_aside, list):
+        problems.append(_problem("set-aside-not-list", "set_aside is not a list"))
+    else:
+        for index, entry in enumerate(set_aside):
+            problems.extend(_set_aside_problems(index, entry))
+    return problems
+
+
+def parse_page_answer(raw_text: str) -> tuple[str, dict[str, Any] | None, list[dict[str, str]]]:
+    """`(parse_state, answer | None, problems)` for one page reading's reply text."""
+    if not isinstance(raw_text, str):
+        return MALFORMED, None, [_problem("not-text", "the reply is not text")]
+    if _FENCE.match(raw_text) is not None:
+        return (
+            MALFORMED,
+            None,
+            [_problem(FENCED_ANSWER, "the reply wraps its object in a Markdown code fence")],
+        )
+    value, problems = _decode(raw_text)
+    if not problems:
+        problems = grammar_problems(value)
+    if problems:
+        return MALFORMED, None, problems
+    return PARSED, value, []

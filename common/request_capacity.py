@@ -257,18 +257,22 @@ PROMPT_TOKENS_MEASURED_FLOOR: Final = "measured-floor-for-this-prompt-shape"
 PROMPT_TOKENS_MEASURED_RATE: Final = "measured-tokens-per-word-extrapolation"
 # The only basis a dossier-built prompt may be admitted on.
 PROMPT_TOKENS_MEASURED_BOUND: Final = "measured-upper-bound-for-this-prompt-shape"
+# The act prompt's measured bound applied to the page prompt, which no tokenizer
+# has measured yet (`perlector_page_prompt_bound`).
+PROMPT_TOKENS_CARRIED_BOUND: Final = "upper-bound-carried-from-the-act-prompt-measurement"
 PROMPT_TOKENS_BASES: Final = frozenset(
     {
         PROMPT_TOKENS_MEASURED_CONSTANT,
         PROMPT_TOKENS_MEASURED_FLOOR,
         PROMPT_TOKENS_MEASURED_RATE,
         PROMPT_TOKENS_MEASURED_BOUND,
+        PROMPT_TOKENS_CARRIED_BOUND,
     }
 )
 
 # A floor may explain a refusal but never admit a request.
 PROMPT_TOKENS_ADMITTING_BASES: Final = frozenset(
-    {PROMPT_TOKENS_MEASURED_CONSTANT, PROMPT_TOKENS_MEASURED_BOUND}
+    {PROMPT_TOKENS_MEASURED_CONSTANT, PROMPT_TOKENS_MEASURED_BOUND, PROMPT_TOKENS_CARRIED_BOUND}
 )
 
 
@@ -610,7 +614,6 @@ def perlector_prompt_bound(
             "against the token cost of text nobody renders any more. Re-measure the rate and "
             "update common/request_capacity.py"
         )
-    margin_numerator, margin_denominator = PERLECTOR_BOUND_SAFETY_MARGIN
     spans = 0
     for span, ceiling in capped_spans:
         if span not in text:
@@ -624,13 +627,160 @@ def perlector_prompt_bound(
             if ceiling is None
             else min(_text_bytes(span), _positive(ceiling, "a capped span's ceiling"))
         )
-    body = spans - (
-        -len(text)
+    body = spans + _rate_bound_tokens(len(text))
+    return PERLECTOR_PROMPT_OVERHEAD_TOKENS + body, PROMPT_TOKENS_MEASURED_BOUND
+
+
+def _rate_bound_tokens(characters: int) -> int:
+    """The act prompt's measured tokens-per-character bound, margin included, rounded up."""
+    margin_numerator, margin_denominator = PERLECTOR_BOUND_SAFETY_MARGIN
+    return -(
+        -characters
         * PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS
         * margin_numerator
         // (10_000 * margin_denominator)
     )
-    return PERLECTOR_PROMPT_OVERHEAD_TOKENS + body, PROMPT_TOKENS_MEASURED_BOUND
+
+
+# --- the whole-page Perlector request -------------------------------------------
+#
+# One call reads a whole page (`reading_unit = "page"`): the page image, the text
+# `pipeline/4_perlector/page_prompt.py` renders from the page feed, and one JSON
+# answer covering every act on the page.
+#
+# No tokenizer has measured the page prompt. Its text is the kind the act
+# prompt's rate was measured over -- register French witness readings in a thin
+# scaffold -- so that measured bound (`PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS`
+# with its margin) is carried to it and the record names it as carried
+# (`PROMPT_TOKENS_CARRIED_BOUND`). It is sealed against the page builder's own
+# digest, so editing the builder expires it. To be re-measured on the first pod:
+# the proof run compares admitted tokens with the engine's `usage.prompt_tokens`.
+PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST: Final = (
+    "b37105e533f473d7a774e22d0e1ae9adecd1c8603a96ef8c07f62b05f84aab01"
+)
+# Chat-template cost: 52 for the one turn plus 2 per image, charged at the most a
+# page request sends -- the page render and its overlay (`[feed] page_overlay`).
+PERLECTOR_PAGE_MAX_IMAGES: Final = 2
+PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS: Final = 52 + 2 * PERLECTOR_PAGE_MAX_IMAGES
+
+# The page answer's reserve. The answer transcribes the same ink the witnesses
+# read, so its text is reserved at the page's longest witness text, and each act
+# entry adds its JSON scaffold: this skeleton, one entry with an empty text, a
+# three-word label and five cites. Both are charged at the carried rate. The
+# reserve decides admission only: the `max_tokens` sent is the page cap or the
+# context the prompt leaves, whichever is smaller, so a reply longer than the
+# reserve still has every token the row can give it, and one longer than that
+# stops as a visible length cut-off.
+PAGE_ANSWER_ENTRY_SKELETON: Final = (
+    '{"n": 99, "kind": "other", "label": "baptism of a child", '
+    '"cites": ["A99", "B99", "C99", "L100-L199", "S99"], "text": "", '
+    '"continues_from_previous_page": false, "continues_to_next_page": false}, '
+)
+PAGE_ANSWER_WRAPPER: Final = '{"acts": [], "set_aside": []}'
+
+
+def perlector_page_prompt_bound(text: str, *, template_digest: str) -> tuple[int, str]:
+    """``(tokens, basis)`` for one rendered page prompt: the carried upper bound."""
+
+    if template_digest != PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST:
+        raise RequestCapacityRefusal(
+            f"the Perlector page prompt builder digests to {template_digest}, but the "
+            f"tokens-per-character bound carried to it was sealed against "
+            f"{PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST}; the page template changed after the "
+            "bound was carried to it, and a request is never admitted against the token cost "
+            "of text nobody renders any more. Re-check the carried rate against the new "
+            "builder and update common/request_capacity.py"
+        )
+    return (
+        PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS + _rate_bound_tokens(len(text)),
+        PROMPT_TOKENS_CARRIED_BOUND,
+    )
+
+
+def page_answer_bound(
+    *, longest_witness_characters: int, act_entries: int, page_max_tokens: int
+) -> int:
+    """The tokens reserved for one page's answer.
+
+    ``(longest_witness_characters + act_entries * len(PAGE_ANSWER_ENTRY_SKELETON)
+    + len(PAGE_ANSWER_WRAPPER))`` at the carried rate. A page with neither a
+    witness text nor a unit to count (every witness switched off or unread) has
+    nothing that measures its ink, so it reserves the whole page cap.
+    """
+
+    longest = _nonnegative(longest_witness_characters, "longest_witness_characters")
+    entries = _nonnegative(act_entries, "act_entries")
+    cap = _positive(page_max_tokens, "page_max_tokens")
+    if longest == 0 and entries == 0:
+        return cap
+    return _rate_bound_tokens(
+        longest + entries * len(PAGE_ANSWER_ENTRY_SKELETON) + len(PAGE_ANSWER_WRAPPER)
+    )
+
+
+def page_request_capacity(
+    row: Any,
+    *,
+    image_sizes: Sequence[tuple[int, int]],
+    prompt_text: str,
+    template_digest: str,
+    answer_measure: Mapping[str, int],
+    page_max_tokens: int,
+) -> dict[str, Any]:
+    """Admit one whole-page request against its sealed row, or refuse it whole.
+
+    ``image_sizes`` are the ``(width, height)`` of each image embedded, in
+    order (``page_feed.request_image_sizes``: the page render when shown, then
+    its overlay when drawn); ``prompt_text`` the text
+    ``page_prompt.build_page_prompt`` rendered; ``template_digest`` its
+    ``BUILDER_SHA256``; ``answer_measure`` the feed's own ``answer_measure``
+    (``longest_witness_characters``, ``act_entries``); ``page_max_tokens`` the
+    sealed ``[perlector_generation] page_max_tokens``.
+
+    Returns ``{"capacity": <request-capacity record>, "answer_reserve":
+    {longest_witness_characters, act_entries, tokens, page_max_tokens},
+    "max_tokens": min(page_max_tokens, context the prompt leaves)}``.  Raises
+    :class:`RequestCapacityRefusal` carrying the record when the row cannot
+    hold image + prompt + reserve, or when the reserve is above the page cap
+    (such a reply would be cut off by the cap). Nothing is trimmed, split or
+    downscaled to fit.
+    """
+
+    if not isinstance(answer_measure, Mapping) or set(answer_measure) != {
+        "longest_witness_characters",
+        "act_entries",
+    }:
+        raise RequestCapacityRefusal(
+            "a page request's answer measure is not exactly its longest witness text and its "
+            "act entries, so no answer reserve can be derived for it"
+        )
+    images = list(image_sizes)
+    if len(images) > PERLECTOR_PAGE_MAX_IMAGES:
+        raise RequestCapacityRefusal(
+            f"a page request embeds {len(images)} images, more than the "
+            f"{PERLECTOR_PAGE_MAX_IMAGES} its chat-template overhead is charged for"
+        )
+    prompt_tokens, basis = perlector_page_prompt_bound(prompt_text, template_digest=template_digest)
+    cap = _positive(page_max_tokens, "page_max_tokens")
+    reserve = page_answer_bound(**answer_measure, page_max_tokens=cap)
+    record = request_fits(row, images, prompt_tokens, reserve, prompt_tokens_basis=basis)
+    answer_reserve = {**answer_measure, "tokens": reserve, "page_max_tokens": cap}
+    what = "the Perlector page request"
+    if not record["fits"]:
+        raise RequestCapacityRefusal(
+            f"{what} does not fit the sealed serving row ({_row_name(row)}): {record['reason']}. "
+            "Nothing was sent; the page is held whole, never trimmed, split or downscaled",
+            capacity=record,
+        )
+    if reserve > cap:
+        raise RequestCapacityRefusal(
+            f"{what} reserves {reserve} tokens for the page's answer, above the sealed page cap "
+            f"of {cap}; the reply would be cut off by the cap, so nothing was sent and the page "
+            "is held whole",
+            capacity=record,
+        )
+    room = record["max_model_len"] - record["image_prompt_tokens"] - record["prompt_tokens"]
+    return {"capacity": record, "answer_reserve": answer_reserve, "max_tokens": min(cap, room)}
 
 
 # What a dense page's answer costs, per chair, in the chair's own response
