@@ -1,5 +1,7 @@
 # Pod runtime — handoff (U6's record, on `work/pod-runtime`, over units 1–5 and U4)
 
+> A historical record. `operations/pod/README.md` holds the current serving stack.
+
 This branch's own job (U6) is the record, not new code: `README.md` above and this
 file. Everything it describes was built and tested by earlier units on this branch;
 this file's claims are checked against that code, not against the plan that preceded

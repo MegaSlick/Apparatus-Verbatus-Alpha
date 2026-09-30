@@ -76,10 +76,13 @@ from .http import (
 from .process import ProcessLauncher, ServerProcess
 from .residency import ResidencyHandle, ResidencyLease
 
-# Hybrid Mamba/attention checkpoints: prefix caching over recurrent state
-# costs extra memory for no measured benefit (vLLM leaves it opt-in for
-# hybrids), so a row for one of these with it on is refused at launch. Keyed
-# by repository, not role, since tests reuse role names for fixture chairs.
+# Hybrid Mamba/attention checkpoints: with prefix caching on, the pinned vLLM
+# reserves two recurrent-state pages per sequence instead of one
+# (`MambaSpec.max_memory_usage_bytes`, "align" mode), memory these rows need
+# for KV and concurrency. It turns prefix caching on by default for hybrids as
+# for any model, so only the row's explicit `--no-enable-prefix-caching` keeps
+# it off. A row for one of these with it on is refused at launch. Keyed by
+# repository, not role, since tests reuse role names for fixture chairs.
 _HYBRID_ATTENTION_REPOSITORIES = frozenset({"datalab-to/chandra-ocr-2", "Qwen/Qwen3.8-27B"})
 
 # Two launch-purpose tokens admit an `unproven` row; every other check still
@@ -1485,8 +1488,8 @@ def _refuse_hybrid_prefix_caching(
     ):
         raise ServingConfigurationError(
             f"chair {role!r} serves {weights.repo!r}, a hybrid Mamba/attention "
-            "(qwen3_5) checkpoint; vLLM keeps prefix caching over recurrent state opt-in "
-            f"for hybrid models, and it only costs recurrent-state memory here -- "
+            "(qwen3_5) checkpoint; prefix caching over recurrent state only costs "
+            "recurrent-state memory here, and vLLM would enable it by default -- "
             f"enable_prefix_caching must be false for this chair"
         )
 
@@ -1614,7 +1617,8 @@ def _fatal_log_signature(tail: str) -> str | None:
         return "CUDA out of memory"
     if "does not support lora" in normalized:
         return "LORA_UNSUPPORTED"
-    if "unknown model:" in normalized:
+    # vLLM's registry refusal for an architecture it cannot serve.
+    if "are not supported for now. supported architectures:" in normalized:
         return "UNKNOWN_MODEL"
     return None
 

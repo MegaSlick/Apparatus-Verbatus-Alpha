@@ -310,22 +310,19 @@ class VLLMReader:
             )
 
         # Page render first, then the prompt text, then the act's own region
-        # crops. The page render is the one image shared, byte-identical,
-        # across every act on the same page; the region crop is the one image
-        # unique to this act.
-        # A chat template that renders a message's content parts in list order
-        # sees the shared block first and the act-unique block last, which is
-        # what gives vLLM's automatic prefix cache the longest run of
-        # identical leading tokens across the acts on one page; putting it
-        # after the act's own text would invalidate the cache on every act's
-        # own rendered dossier even though the page pixels never moved.
+        # crops: one fixed order for every act. The request must open with an
+        # image (`operations/serving/http.py`, `assert_wire_part_order`
+        # refuses an image-bearing user message that opens with text), and
+        # the page render is the context the text and the act's own crops are
+        # read against. The order is not for cache reuse: the Perlector's row
+        # serves with prefix caching off.
         # **Whether the engine's chat template actually
         # renders content in list order, rather than falling back to a
         # string convention that would re-order it regardless, is a fact
         # about the launch argument `common/chair_wire.py` documents
         # (`--chat-template-content-format`, `operations/serving/manager.py`)
         # and cannot be pinned from a request builder** (verified against the
-        # pinned `vllm==0.27.1` source: it is resolved once at server
+        # pinned `vllm==0.30.0` source: it is resolved once at server
         # construction, never read from the request body). This reorder is
         # therefore a necessary but not sufficient fix; the launch argument is
         # the other half, out of this module's reach.

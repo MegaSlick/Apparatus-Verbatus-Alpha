@@ -594,7 +594,7 @@ catalogue ships that is the case for DAI alone; Chandra's 12,384 is above what i
 wherever one was sent and the context wherever none was, and the retained
 chair-call record's `generation_sent` says which.
 
-*Unknowns to verify on the next pod.* (1) Whether vLLM 0.27.1 honours
+*Unknowns to verify on the next pod.* (1) Whether vLLM 0.30.0 honours
 `--mm-processor-kwargs` `min_pixels`/`max_pixels` for Qwen3-VL (Chandra, the
 Perlector): compare `usage.prompt_tokens_details` image-token counts with
 `request_capacity`'s count for the same image. (2) vLLM's default

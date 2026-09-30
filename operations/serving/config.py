@@ -484,7 +484,7 @@ def model_and_tokenizer_pins(identity: ChairIdentity) -> tuple[str, str] | None:
     stop vLLM resolving a *mutable* Hub ref, so they mean something for a Hub
     identity and nothing for a directory that has already been verified.
 
-    Refusing every non-Hub identity here would make the Perlector chair
+    Refusing every non-Hub identity here would make a locally trained chair
     unservable: ARCHITECTURE requires a locally trained checkpoint to be
     "*called* like any other model, from its own model repository".
     """

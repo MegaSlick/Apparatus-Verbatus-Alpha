@@ -130,12 +130,12 @@ class ServedHandle:
     class Receipt:
         class Details:
             engine = "vllm"
-            engine_version = "0.27.1"
+            engine_version = "0.30.0"
 
         details = Details()
 
         def to_record(self) -> dict[str, object]:
-            return {"engine": "vllm", "engine_version": "0.27.1"}
+            return {"engine": "vllm", "engine_version": "0.30.0"}
 
     receipt = Receipt()
     receipt_reference = {"path": "service-receipt.json"}
@@ -425,13 +425,13 @@ def test_a_real_card_and_a_served_chair_prove_the_assembly(fixture_page: Path) -
     # The note names the chairs and the card, so a reader of the receipt alone
     # can tell what was proven from what merely ran.
     assert record["assembly_note"] == (
-        f"real assembly measured on {MEASURED_CARD}: attestator_3 via vllm 0.27.1 "
+        f"real assembly measured on {MEASURED_CARD}: attestator_3 via vllm 0.30.0 "
         "smoke-read the golden page through a served engine"
     )
     assert record["assembly_note"] != FIXTURE_ONLY_ASSEMBLY_NOTE
     smoke = report.smoke_receipts[0]
     assert smoke["chair"] == "attestator_3"
-    assert smoke["served_engine"] == "vllm 0.27.1"
+    assert smoke["served_engine"] == "vllm 0.30.0"
 
 
 def test_two_served_chairs_are_named_in_the_assembly_note(fixture_page: Path) -> None:
@@ -445,8 +445,8 @@ def test_two_served_chairs_are_named_in_the_assembly_note(fixture_page: Path) ->
 
     assert report.assembly_proven is True
     assert report.to_record()["assembly_note"] == (
-        f"real assembly measured on {MEASURED_CARD}: attestator_3 via vllm 0.27.1, "
-        "designator_structure via vllm 0.27.1 smoke-read the golden page through a "
+        f"real assembly measured on {MEASURED_CARD}: attestator_3 via vllm 0.30.0, "
+        "designator_structure via vllm 0.30.0 smoke-read the golden page through a "
         "served engine"
     )
 
@@ -518,7 +518,7 @@ def test_an_invalid_page_read_through_a_real_engine_proves_no_assembly(
     assert report.assembly_proven is False
     # The engine that served the invalid read is still recorded: the read
     # happened, and only the claim about it is withheld.
-    assert report.smoke_receipts[0]["served_engine"] == "vllm 0.27.1"
+    assert report.smoke_receipts[0]["served_engine"] == "vllm 0.30.0"
 
 
 def test_a_smoke_adapter_cannot_write_the_runtime_owned_served_engine_field(
@@ -534,7 +534,7 @@ def test_a_smoke_adapter_cannot_write_the_runtime_owned_served_engine_field(
             self, chair: ChairIdentity, fixture: Path, placement: PlacementTier
         ) -> SmokeResult:
             result = super().read(chair, fixture, placement)
-            result.receipt["served_engine"] = "vllm 0.27.1"
+            result.receipt["served_engine"] = "vllm 0.30.0"
             return result
 
     report = runner(fixture_page, roles=("attestator_3",), reader=Forger(served=False)).run(
@@ -620,9 +620,9 @@ def test_a_caller_built_smoke_result_cannot_name_its_own_engine(fixture_page: Pa
     """
 
     with pytest.raises(ValueError, match="cannot name its own engine"):
-        SmokeResult(True, True, True, {}, (), served_by="vllm 0.27.1")
+        SmokeResult(True, True, True, {}, (), served_by="vllm 0.30.0")
     with pytest.raises(ValueError, match="minted by the serving runtime"):
-        SmokeResult(True, True, True, {}, (), served_by="vllm 0.27.1", provenance="vllm 0.27.1")
+        SmokeResult(True, True, True, {}, (), served_by="vllm 0.30.0", provenance="vllm 0.30.0")
 
     # A reader that returns an unserved result on a genuinely measured card
     # proves the card and not the assembly -- the honest third case, and the
