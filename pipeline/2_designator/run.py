@@ -2316,13 +2316,11 @@ def _publish_detector_records(
 
     One `detector-page` per page says how many records were found, so a page
     with none reads differently from a page never asked. Each record keeps its
-    oriented box, score, class and its overlap with every act proposal on the
-    page, recorded and never acted on: records hold nothing, rescue nothing and
-    enter no act. They are the units DAI reads.
+    oriented box, score and class: records hold nothing and enter no act. They
+    are the units DAI reads.
     """
     geometry_policy = geometry_layer.load_geometry_policy(context.args.designator_geometry_config)
     context.require_sealed_config("designator-geometry", geometry_policy["config_sha256"])
-    claimed_by_page = _claimed_regions_by_page(context)
     for ordinal, page_record in pages.items():
         page_id = page_record["subject_id"]
         page_bytes = _read_checked_page_bytes(context, page_record)
@@ -2393,15 +2391,6 @@ def _publish_detector_records(
                 "cut": proposal is not None,
                 "authoritative": False,
                 "authority_effect": "none",
-                "act_overlaps": sorted(
-                    (
-                        {"act_id": entry["act_id"], "overlap_px": area}
-                        for entry in claimed_by_page.get(ordinal, [])
-                        if bounds is not None
-                        and (area := _overlap_area(entry["bounds"], bounds)) > 0
-                    ),
-                    key=lambda row: row["act_id"],
-                ),
                 "region_ref": (
                     context.input_ref(region.relative_path) if region is not None else None
                 ),

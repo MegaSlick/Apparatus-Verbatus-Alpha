@@ -119,8 +119,8 @@ def _published_secondary_provenance(designator, context):
 
 
 def test_declared_detections_become_page_evidence_that_decides_nothing(tmp_path):
-    """Every record is kept with its oriented box, hull, score, class and act
-    overlaps; none holds or enters an act; a collapsed box is kept uncut.
+    """Every record is kept with its oriented box, hull, score and class; none
+    holds or enters an act; a collapsed box is kept uncut.
     """
     designator = load_stage("2_designator")
     context = _prepared_context(
@@ -139,7 +139,6 @@ def test_declared_detections_become_page_evidence_that_decides_nothing(tmp_path)
         record["payload"]["detector_ordinal"]: record
         for record in _records(context, designator, "detector-record")
     }
-    claimed = designator._claimed_regions_by_page(context)[1]
     inside, straddling, collapsed = (records[index]["payload"] for index in range(3))
     # Corners floored to their pixels, the hull reaching one pixel past the last centre.
     assert inside["bounds"] == {"x": 30, "y": 30, "w": 141, "h": 32}
@@ -157,22 +156,7 @@ def test_declared_detections_become_page_evidence_that_decides_nothing(tmp_path)
         assert payload["authoritative"] is False
         assert payload["authority_effect"] == "none"
         assert payload["quantization"] == designator.DETECTOR_QUANTIZATION
-    # Overlap with every act proposal is recorded, never acted on.
-    expected_overlaps = {
-        name: sorted(
-            (
-                {"act_id": entry["act_id"], "overlap_px": area}
-                for entry in claimed
-                if (area := designator._overlap_area(entry["bounds"], payload["bounds"])) > 0
-            ),
-            key=lambda row: row["act_id"],
-        )
-        for name, payload in (("inside", inside), ("straddling", straddling))
-    }
-    assert len(expected_overlaps["inside"]) == 1
-    assert len(expected_overlaps["straddling"]) == 2
-    assert inside["act_overlaps"] == expected_overlaps["inside"]
-    assert straddling["act_overlaps"] == expected_overlaps["straddling"]
+    assert all("act_overlaps" not in payload for payload in (inside, straddling, collapsed))
     assert collapsed["cut"] is False
     assert collapsed["bounds"] is None and collapsed["region_ref"] is None
 

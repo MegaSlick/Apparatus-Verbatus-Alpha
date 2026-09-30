@@ -532,10 +532,9 @@ the engine's order: `page_ordinal`, `detector_ordinal` (`n`), `raw_output_ref`,
 `quantization`, `score_quantization`, `score_bp`, `class_id`, `class_name`,
 `raw_proposal` (the `yolo-obb` record `geometry_layer.yolo_obb` builds, which
 keeps the oriented polygon), `bounds` (its axis-aligned hull), `cut`,
-`authoritative: false`, `authority_effect: "none"`, `act_overlaps`,
-`region_ref` and `provenance`. `act_overlaps` lists every act proposal on the
-page the hull overlaps, as `{act_id, overlap_px}` sorted by `act_id`. Text
-fields are refused on both record kinds; a detector reports boxes, not words.
+`authoritative: false`, `authority_effect: "none"`, `region_ref` and
+`provenance`. A record names no act: it is page evidence, not a claim about
+any act's coverage. Text fields are refused on both record kinds; a detector reports boxes, not words.
 
 **`detector-region`**, same subject, one per record that was cut: the hull's
 pixels, cut by the stage's one crop path, with `origin: "detector"`,
@@ -563,8 +562,7 @@ page gives the same boxes. A resumed pass re-derives the same records, and a
 difference meets the RunTree's immutable publish boundary and refuses.
 
 **They decide nothing.** No detector record holds or enters an act, an
-`act-group`, a `region` or the proposal seal, and `act_overlaps` is recorded,
-never acted on. Leaving the chair absent publishes none of the three kinds and changes no
+`act-group`, a `region` or the proposal seal. Leaving the chair absent publishes none of the three kinds and changes no
 authoritative outcome (`pipeline/2_designator/test_secondary_proposer.py`).
 ## `kind="surya-provenance"`, `kind="surya-page"`, `kind="surya-line"` and `kind="surya-block"`
 
