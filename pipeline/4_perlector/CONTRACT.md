@@ -1177,8 +1177,8 @@ whole pages instead of Designator acts (`page_run.py`, called from `run.py`'s
 `_read_the_acts` before the act loop, which it replaces). Stages 2 and 3 run as
 usual; this stage reads every Exemplar page (`common.stage.exemplar_page_ids`),
 not only pages with a Designator act, once, and the Perlector establishes the acts
-on it. The Recensor refuses a tree sealed this way at open, by name ("page-read
-trees are not yet counted downstream").
+on it. The Recensor reviews each unit it established
+(`pipeline/5_recensor/CONTRACT.md`, "Page-read review").
 
 **Refused at stage open, by name:** a sealed `blind_read` other than `off`, and a
 non-zero `nuda_per_mille` or `perlector_instrument_per_mille`. **Recorded, not

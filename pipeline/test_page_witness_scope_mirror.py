@@ -1,6 +1,6 @@
 """Keep the independent producer and consumer scope readers in agreement.
 
-Neither stage may trust the other's boundary check, so the implementations stay
+No stage may trust another's boundary check, so the implementations stay
 separate. They must still derive identical answers and refusals from the same
 sealed authority.
 """
@@ -15,9 +15,11 @@ from conftest import load_stage
 
 ATTESTATORES = load_stage("3_attestatores")
 PERLECTOR = load_stage("4_perlector")
+RECENSOR = load_stage("5_recensor", "page_review")
 READERS = (
     ATTESTATORES.declared_page_witness_chairs,
     PERLECTOR.declared_page_witness_chairs,
+    RECENSOR.declared_page_witness_chairs,
 )
 
 
@@ -78,15 +80,15 @@ AGREED = (
 
 
 @pytest.mark.parametrize(("context", "expected"), AGREED, ids=range(len(AGREED)))
-def test_both_stages_derive_the_same_page_scoped_set(context, expected):
+def test_every_stage_derives_the_same_page_scoped_set(context, expected):
     answers = [reader(context) for reader in READERS]
-    assert answers[0] == answers[1], (
-        "the Attestatores and the Perlector disagree about which occupants are "
-        "page-scoped; the page join and the attachment it is validated against "
-        "would then be built on two different rosters"
+    assert all(answer == answers[0] for answer in answers), (
+        "the Attestatores, the Perlector and the Recensor disagree about which "
+        "occupants are page-scoped; the page join, the attachment it is validated "
+        "against and the page witness floor would then be built on different rosters"
     )
     assert answers[0] == expected, (
-        "both stages agree on a set the sealed roster does not imply; agreement "
+        "the stages agree on a set the sealed roster does not imply; agreement "
         "between two readers is not evidence that either read the roster right"
     )
 
@@ -100,13 +102,13 @@ REFUSED = (
 
 
 @pytest.mark.parametrize("context", REFUSED, ids=range(len(REFUSED)))
-def test_both_stages_refuse_the_same_rosters_with_the_same_words(context):
+def test_every_stage_refuses_the_same_rosters_with_the_same_words(context):
     messages = []
     for reader in READERS:
         with pytest.raises(SchemaRefusal) as caught:
             reader(context)
         messages.append(str(caught.value))
-    assert messages[0] == messages[1], (
-        "both stages refuse, but say different things about the same sealed "
+    assert all(message == messages[0] for message in messages), (
+        "the stages refuse, but say different things about the same sealed "
         "roster; an operator reading one refusal would be told a different fact"
     )

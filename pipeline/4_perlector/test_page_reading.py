@@ -424,16 +424,6 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, r
     ]
 
 
-def test_the_recensor_refuses_a_page_read_tree_by_name(page_tree, tmp_path):
-    root, protocol = page_tree
-    copy = tmp_path / "runs"
-    shutil.copytree(root, copy)
-    result = _run("pipeline/5_recensor/run.py", copy, protocol)
-    assert result.returncode != 0
-    assert "page-read trees are not yet counted downstream" in result.stderr
-    assert not (copy / "r" / "5_recensor" / "artifacts").exists()
-
-
 def test_a_page_read_pass_refuses_to_read_one_act_by_name(page_tree, tmp_path):
     root, protocol = page_tree
     copy = tmp_path / "runs"
@@ -443,33 +433,6 @@ def test_a_page_read_pass_refuses_to_read_one_act_by_name(page_tree, tmp_path):
     assert result.returncode != 0
     assert "run the pass without --act" in result.stderr
     assert file_bytes_snapshot(copy) == before
-
-
-def test_the_orchestrator_reads_the_pages_and_stops_at_the_recensor(tmp_path):
-    protocol = _page_protocol(tmp_path / "config")
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline" / "orchestrator" / "run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "happy",
-            "--run-id",
-            "r",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--perlector-protocol-config",
-            str(protocol),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode != 0
-    assert "page-read trees are not yet counted downstream" in result.stdout + result.stderr
-    assert len(_records(tmp_path / "runs", "page-reading")) == 2
-    assert (tmp_path / "runs" / "r" / "4_perlector" / "artifacts" / "stage-seal").exists()
 
 
 def test_the_page_path_refuses_a_blind_read_or_a_sampled_control_by_name():
