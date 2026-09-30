@@ -49,7 +49,10 @@ timer report, so after a full ``complete`` or ``held`` run this process holds to
 shared hard deadline exactly as ``bootstrap_main`` does, re-journaling a
 liveness line beside the run report.  That hold is paid idle time between a
 finished run and the deadline, because ``pod_timer`` reads any earlier exit as
-``completed-early``.
+``completed-early``.  The pod guard deletes an idle pod after its idle window
+and nothing here touches its keep-alive, so the guard ends the hold early:
+``held_to_hard_deadline`` records the choice to hold, and the hold journal's
+last tick records when the hold actually ended.
 
 A selected range ending before Armarium records ``selection-complete`` when it
 completes, and returns at once when it holds. The pod timer closes the card;
@@ -1175,12 +1178,13 @@ def _run(
                 "after the orchestrator exited: a descendant it left behind still holds its "
                 "output pipe, and the transcript was closed without that text"
             )
-        # A close that fails (a full volume at the fsync) is a transcript
-        # failure, not a start failure: the orchestrator has already run, and
-        # its exit code must still reach the report.
+        # A close that fails (a full volume at the fsync, or a reader still
+        # attached closing it first) is a transcript failure, not a start
+        # failure: the orchestrator has already run, and its exit code must
+        # still reach the report.
         try:
             writer.close()
-        except OSError as error:
+        except Exception as error:  # noqa: BLE001 -- recorded; the report must still be written
             failure.append(
                 f"the transcript close failed ({type(error).__name__}: {error}); its tail "
                 "may not have reached the volume"
@@ -1413,8 +1417,9 @@ def main(
     holding = exit_code in _HOLD_AFTER_EXITS and not plan.ends_before_armarium
     if holding:
         hold_detail = (
-            f"the run ended {state}; holding to the hard deadline so the pod timer does not "
-            "read this as completed-early"
+            f"the run ended {state}; holding toward the hard deadline so the pod timer does "
+            "not read this as completed-early. The pod guard deletes an idle pod, which ends "
+            "the hold early; the hold journal's last tick says when it ended"
         )
     elif exit_code == EXIT_SELECTION_COMPLETE:
         hold_detail = (

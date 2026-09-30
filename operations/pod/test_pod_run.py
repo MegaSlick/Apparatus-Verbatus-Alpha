@@ -342,6 +342,7 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
     # Then it held: the run finished at once, and the process still ticked to
     # the shared hard deadline rather than exiting into `completed-early`.
     assert report["held_to_hard_deadline"] is True
+    assert "pod guard deletes an idle pod" in report["hold_detail"]
     assert clock.seconds == 4.0
     hold = _report(ws, "pod-run-report-hold.json")
     assert hold["state"] == "holding-after-complete"
@@ -1574,8 +1575,13 @@ def test_the_real_runner_tees_the_child_output_into_the_transcript(tmp_path: Pat
     assert seen[-1][0] > 0
 
 
+@pytest.mark.parametrize(
+    "close_error",
+    [OSError(28, "No space left on device"), ValueError("I/O operation on closed file")],
+    ids=["full-volume", "closed-under-the-reader"],
+)
 def test_a_transcript_close_failure_keeps_the_orchestrator_exit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, close_error: Exception
 ) -> None:
     """A close that fails after the child ran is a transcript failure, not a failed start."""
 
@@ -1583,7 +1589,7 @@ def test_a_transcript_close_failure_keeps_the_orchestrator_exit(
 
     def close_then_fail(self: pod_run.BoundedTranscript) -> None:
         real_close(self)
-        raise OSError(28, "No space left on device")
+        raise close_error
 
     monkeypatch.setattr(pod_run.BoundedTranscript, "close", close_then_fail)
     completed = pod_run._run(
@@ -1598,6 +1604,7 @@ def test_a_transcript_close_failure_keeps_the_orchestrator_exit(
     assert completed.returncode == 3
     assert completed.transcript_failure is not None
     assert "transcript close failed" in completed.transcript_failure
+    assert type(close_error).__name__ in completed.transcript_failure
 
 
 def test_a_transcript_past_its_head_bound_keeps_the_tail_and_says_what_it_dropped(

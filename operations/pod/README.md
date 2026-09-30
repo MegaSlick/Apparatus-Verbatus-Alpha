@@ -308,8 +308,11 @@ stage on the volume before bootstrap. The two model toggles use the same range v
 **It holds only for a finished full run.** A selection ending before Armarium records
 `selection-complete` and returns at once so the pod timer closes the card. A held
 selection ending before Armarium also closes promptly. A full `complete` or terminal
-`held` holds to the hard deadline (paid idle time), because the pod timer
-treats an early exit as non-green. After
+`held` holds toward the hard deadline (paid idle time), because the pod timer
+treats an early exit as non-green. The hold does no work and touches no keep-alive, so the
+pod guard deletes the pod once its idle window passes and the hold ends there;
+`held_to_hard_deadline` records the choice to hold, and the last tick in the `-hold.json`
+record below says when the hold ended. After
 `halted`, `failed` or a failed start it returns at once and lets the timer close the pod:
 holding a card for a run that will produce nothing more is paying for nothing. Everything
 stays on the volume. `held_to_hard_deadline` in the report says which way it went.
