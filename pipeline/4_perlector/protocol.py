@@ -25,17 +25,15 @@ from common.sealed_config import read_sealed_toml
 SELECTION_RULE: Final = "digest-threshold-over-frame-page-seed-act.v1"
 PAGE_SHARED_PREFIX_POLICY: Final = "page-shared-prefix-first.v1"
 
-# The only text the pipeline puts in front of the reader about its own prior
-# draft. Pinned rather than a free-text config field: a phrase blacklist alone
-# cannot stop wording that forces a change or picks a side. The sealed bytes
-# still ride on every record so a run says which exact form ran.
+# The sealed prior-draft fragment's one accepted form. Pinned rather than a free-text
+# config field: a phrase blacklist alone cannot stop wording that forces a change or
+# picks a side.
 PASS_B_FRAGMENT: Final = (
     "This is a prior reading. It may be correct, incomplete, or wrong. Independently reread "
     "the image, preserve what the ink supports, and change only what the image justifies."
 )
-# What the reader is told about the neighbouring acts' readings, pinned like the
-# Pass-B fragment: wording that invited copying across the boundary would make
-# the neighbours a source of text rather than clues.
+# The sealed neighbour fragment's one accepted form, pinned like the prior-draft
+# fragment: wording that invited copying across the boundary is refused.
 NEIGHBOUR_FRAGMENT: Final = (
     "The neighbouring acts are the acts written just before and just after this one, as "
     "the witnesses read them; (tail) marks only the end of a reading and (head) only its "

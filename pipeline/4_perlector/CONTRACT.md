@@ -150,7 +150,7 @@ every Testimonium of the sealed page-witness roster -- a witness the `witnesses`
 switch hides included, since the accounting measures it -- every Surya record, the
 page render and the sealed page it names, each re-derived from the bytes on disk.
 
-`kind="reader-sent"` (subject page_id, live only): the existing closed record with
+`kind="reader-sent"` (subject page_id, live only): the closed record ("Live reading", below) with
 `act_key = "page-<ordinal>"`, `attempt_ordinal = 1`, `pass = "page-reading"`, and
 `image_sha256s` the page render then the overlay, in the order sent.
 

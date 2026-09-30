@@ -199,6 +199,8 @@ def test_perlector_and_archetypus_have_no_direct_sum_call_over_a_chair_expressio
     """
     sources = [
         ROOT / "pipeline" / "4_perlector" / "run.py",
+        ROOT / "pipeline" / "4_perlector" / "page_run.py",
+        ROOT / "common" / "page_path.py",
         ROOT / "pipeline" / "6_archetypus" / "run.py",
     ]
     offenders = []
@@ -246,8 +248,7 @@ def test_a_non_reading_outcome_is_recorded_as_no_opinion_not_agreement():
 def test_a_witness_whose_format_can_express_uncertainty_is_unknown_not_guessed():
     """A capability-declared chair with no act-anchored comparison view (R4's
     alignment) stays honestly unmeasurable -- forged directly onto a bare
-    record, the same technique `test_testimonia_latest_attempt.py` already
-    uses to exercise a boundary no live act-scoped producer reaches."""
+    record, to exercise a boundary no live producer reaches."""
     testimonia = [
         {
             "outcome": "read",
@@ -304,8 +305,7 @@ def test_a_bracket_marker_view_lifts_the_exemption_for_an_act_scoped_chair():
     `[UNCERTAIN]`. An act-scoped chair declaring `can_express_uncertainty`
     therefore had no safe view at all and stayed `compared: "unknown"` forever
     -- the parroting instrument dark on the one chair whose grammar says most
-    about uncertain ink. `common/alignment.py::bracket_marker_view`, wired in by
-    `pipeline/4_perlector/run.py::dissent_testimonia`, is the view that lifts
+    about uncertain ink. `common/alignment.py::bracket_marker_view` is the view that lifts
     it, and the counterfactual below is why the strip has to happen at all.
     """
     raw = "Marie [UNCERTAIN] Dupont"

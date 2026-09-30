@@ -151,8 +151,7 @@ def is_comparable(record: dict[str, Any]) -> bool:
     act-scoped one. A chair with one rejoins the instrument through that safe
     view; one without -- a page witness whose alignment failed -- stays
     honestly unknown with its reason recorded rather than folded into a
-    coverage count. An act-scoped chair always gets the bracket view
-    (`run.py::comparison_views`), so a future chair whose notation is not
+    coverage count. A chair given the bracket view whose notation is not
     brackets would rejoin as comparable anyway, its own markers surviving as
     false disagreement; nothing here reads a notation field to catch that.
     """

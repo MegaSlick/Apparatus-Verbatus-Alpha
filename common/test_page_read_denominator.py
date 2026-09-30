@@ -1220,6 +1220,7 @@ def test_a_page_read_tree_holding_an_act_reading_is_refused_as_mixed(happy_tree,
         reading_denominator(_context(tree))
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize("kind", ["audit-draft", "audit-finding"])
 def test_a_page_read_tree_holding_any_act_path_record_is_refused_as_mixed(
     act_tree, happy_tree, tmp_path, kind
@@ -1238,6 +1239,7 @@ def test_a_page_read_tree_holding_any_act_path_record_is_refused_as_mixed(
         reading_denominator(_context(tree))
 
 
+@pytest.mark.act_path
 @pytest.mark.parametrize(
     "kind", ["page-feed", "page-reading", "page-accounting", "act-region", "perlectio"]
 )

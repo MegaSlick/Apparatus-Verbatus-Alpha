@@ -154,9 +154,7 @@ def test_the_no_order_bearing_sweep_walks_a_pathological_dossier_instead_of_the_
     there were six, and this was the one still recursing -- missed because it
     lives in dossier assembly and is not *called* a preference screen. It does
     the same forbidden-vocabulary walk over the same class of witness-derived
-    data -- a dossier carries every Testimonium verbatim -- and it runs on the
-    production path, before the digest, on every dossier this build produces.
-    Recursing over a deep one raised `RecursionError`: a crash naming nothing,
+    data -- a payload can carry every Testimonium verbatim. Recursing over a deep one raised `RecursionError`: a crash naming nothing,
     from the guard that keeps a witness preference out of the dossier.
     """
     nested: object = {"leaf": 1}

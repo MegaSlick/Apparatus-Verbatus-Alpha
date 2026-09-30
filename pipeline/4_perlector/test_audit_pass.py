@@ -348,36 +348,13 @@ def test_a_legacy_v2_declaration_cannot_start_a_new_exact_edit_execution(tmp_pat
         audit.load(legacy)
 
 
-def test_raised_cap_needs_the_project_leads_reference_and_exhaustion_routes_review(tmp_path):
+def test_a_raised_cap_needs_the_project_leads_reference(tmp_path):
     raised = tmp_path / "raised.toml"
     raised.write_text(
         'schema = "perlector-audit.v3"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 2\napproval_ref = ""\n'
     )
     with pytest.raises(ContractError, match="the project lead's approval reference"):
         audit.load(raised)
-
-    exhausted = tmp_path / "exhausted.toml"
-    exhausted.write_text(
-        'schema = "perlector-audit.v3"\ndefault_round_cap = 1\nabsolute_round_cap = 2\nround_cap = 0\napproval_ref = ""\n'
-    )
-    result = _run(tmp_path / "exhausted-runs", "--perlector-audit-config", str(exhausted))
-    assert result.returncode == 3, result.stderr
-    tree = RunTree(tmp_path / "exhausted-runs", "r")
-    findings = _records(tree, "audit-finding")
-    assert all(record["payload"]["unresolved"] for record in findings)
-    finals = {record["subject_id"]: record for record in _records(tree, "perlectio")}
-    for finding in findings:
-        spans = finding["payload"]["uncertain_spans"]
-        assert all(span["reason"] == "audit-round-cap-exhausted" for span in spans)
-        assert finals[finding["subject_id"]]["payload"]["uncertain_spans"] == [
-            {
-                "start": span["start"],
-                "end": span["end"],
-                "alternatives": [],
-                "confidence": "low",
-            }
-            for span in spans
-        ]
 
 
 def test_a_zero_width_exhausted_flag_stays_unresolved_without_inventing_a_span():

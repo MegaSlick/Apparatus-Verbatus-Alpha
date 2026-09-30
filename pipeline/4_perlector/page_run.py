@@ -1,7 +1,7 @@
 """The Perlector's page path: each sealed page read whole, its answer made into act records.
 
-Under the sealed `reading_unit = "page"` (`protocol.py`) stage 4 does not read
-the Designator's acts. It reads every sealed Exemplar page in one call, shown
+Stage 4 does not read the Designator's acts (`reading_unit = "page"`,
+`protocol.py`). It reads every sealed Exemplar page in one call, shown
 the page image and every witness's page broken into that witness's own units,
 and the Perlector establishes the acts itself (`common/page_feed.py`,
 `common/page_prompt.py`, `common/page_answer.py`). Per page, in the order published:

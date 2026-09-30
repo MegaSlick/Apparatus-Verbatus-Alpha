@@ -67,19 +67,15 @@ def _walk_position(trail: _Trail) -> str:
 
 
 def assert_no_order_bearing_field(value: Any, path: str = "$") -> None:
-    """A durable sweep: no key anywhere in a dossier may name a preference.
+    """A durable sweep: no key anywhere in a witness payload may name a preference.
 
-    Cheap enough to run on every dossier this build produces, so a future edit
-    that reintroduces a trust/order/preferred field is caught immediately
-    rather than argued about at review.
+    No production path calls it; `test_page_feed.py` runs it over the page feed.
 
-    Iterative, not recursive: a dossier carries every Testimonium verbatim,
-    model-authored JSON whose depth this build does not choose, and a
-    recursive walk over a deep one raised `RecursionError` -- a crash naming
-    nothing, from the guard standing over the rule, on the production path,
-    before the digest is taken.
+    Iterative, not recursive: a payload can carry model-authored JSON whose depth
+    this build does not choose, and a recursive walk over a deep one would raise
+    `RecursionError` -- a crash naming nothing.
 
-    The path is assembled only when a field is refused, so a deep dossier costs
+    The path is assembled only when a field is refused, so a deep payload costs
     this walk its own list rather than the square of its depth in string bytes.
     A cycle is refused rather than looped on: the recursive form ended a cycle
     by exhausting itself, and a walk with no stack to exhaust would hang.

@@ -55,6 +55,7 @@ from common.page_testimonia import sealed_proposal_regions  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     PERLECTOR_CHAIR,
+    expected_acts,
     fixture_serving_details,
     is_real_ingress,
     open_stage_context,
@@ -113,8 +114,8 @@ def fixture_reader_for(context, chair: ChairIdentity | AbsentChair, serving_mode
     """Refuse a non-live row on a real submission, before anything is published.
 
     A declared text cannot stand in for real ink. An absent chair reads nothing and
-    live mode starts its chair on first use, so both return `None`; the fixture route
-    returns the fixture's reader.
+    live mode starts its chair on first use, so both return `None`. The fixture route
+    returns the fixture's reader, which the page path does not use.
     """
     if serving_mode == "live":
         return None
@@ -651,6 +652,8 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
     context.require_sealed_config("perlector-protocol", protocol_sha256)
     audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
     context.require_sealed_config("perlector-audit", audit_sha256)
+    # The Designator's proposal seal is checked whole before anything is published.
+    expected_acts(context)
     if args.act:
         raise ContractError(
             f"asked to read act {args.act}, but the Perlector reads every sealed page whole "
