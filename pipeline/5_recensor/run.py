@@ -73,9 +73,9 @@ from common.imaging import grayscale_rows  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
     unrouted_observations,
+    validate_capture_text_view,
     validate_page_testimonium_payload,
     validate_partition_disagreement,
-    validate_capture_text_view,
     validate_reportable_observations,
     verify_native_capture_blob,
 )
