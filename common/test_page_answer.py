@@ -69,7 +69,8 @@ def test_a_code_fenced_answer_is_malformed_and_named(opening):
         (json.dumps(GOOD)[:-5], "not-json"),
         ('{"acts": [], "acts": [], "set_aside": []}', "duplicate-key"),
         ('{"acts": [{"n": NaN}], "set_aside": []}', "not-json"),
-        ("[" * 100_000 + "]" * 100_000, "not-json"),
+        ("[" * 100_000 + "]" * 100_000, "too-deep"),
+        ('{"acts": [' + "[" * 64 + "]" * 64 + '], "set_aside": []}', "too-deep"),
         ("[]", "not-object"),
         ('{"acts": []}', "top-fields"),
         ('{"acts": [], "set_aside": [], "notes": ""}', "top-fields"),
@@ -240,3 +241,12 @@ def test_fence_detection_reads_a_long_near_fence_in_linear_time():
     state, _parsed, problems = page_answer.parse_page_answer(near)
     assert time.perf_counter() - started < 1.0
     assert (state, _codes(problems)) == ("malformed", ["not-json"])
+
+
+def test_nesting_is_counted_by_its_own_limit_and_never_inside_a_string():
+    """64 deep reaches the grammar on every interpreter; brackets in a string are text."""
+    limit = page_answer.MAX_NESTING_DEPTH
+    at_limit = "[" * limit + "]" * limit
+    assert _codes(page_answer.parse_page_answer(at_limit)[2]) == ["not-object"]
+    quoted = _with(lambda a: a["acts"][0].update(text="[" * 1_000 + '\\"{'))
+    assert page_answer.parse_page_answer(quoted)[0] == "parsed"
