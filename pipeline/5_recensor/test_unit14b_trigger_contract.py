@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.background import DEFAULT_BACKGROUND_CONFIG_PATH
+from common.background import DEFAULT_INK_MAP_CONFIG_PATH
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.stages import ATTESTATORES
 from common.contracts.stages import RECENSOR as RECENSOR_STAGE
@@ -35,7 +35,7 @@ MINIMUM_INK_PIXELS = load_coverage_audit_config()["coverage_audit"]["minimum_ink
 
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR = ROOT / "pipeline/5_recensor/run.py"
-EXPECTED_BACKGROUND_SHA256 = read_sealed_toml(DEFAULT_BACKGROUND_CONFIG_PATH, "config")[1]
+EXPECTED_BACKGROUND_SHA256 = read_sealed_toml(DEFAULT_INK_MAP_CONFIG_PATH, "config")[1]
 
 
 _RECENSOR_MODULE = load_stage("5_recensor")
@@ -142,12 +142,12 @@ class _FakeTree:
         ordinal = int(artifact_id.split("-")[1])
         evidence = self._maps[ordinal]
         try:
-            config = load_coverage_audit_config(DEFAULT_BACKGROUND_CONFIG_PATH)
+            config = load_coverage_audit_config(DEFAULT_INK_MAP_CONFIG_PATH)
             policy = resolve_coverage_audit_policy(config, evidence["width"], evidence["height"])
             measured = edge_ink_from_runs(evidence, [], coverage_policy=policy)
         except (ContractError, KeyError, TypeError, ValueError):
             valid = {"schema": "ink-runs.v2", "width": 1, "height": 1, "rows": [[]]}
-            config = load_coverage_audit_config(DEFAULT_BACKGROUND_CONFIG_PATH)
+            config = load_coverage_audit_config(DEFAULT_INK_MAP_CONFIG_PATH)
             policy = resolve_coverage_audit_policy(config, 1, 1)
             measured = edge_ink_from_runs(valid, [], coverage_policy=policy)
         edge = {
@@ -186,8 +186,8 @@ class _FakeTree:
 class _FakeContext:
     def __init__(self, maps_by_ordinal: dict[int, dict]):
         self.tree = _FakeTree(maps_by_ordinal)
-        self.run = {"sealed_config_digests": {"designator-grouping": EXPECTED_BACKGROUND_SHA256}}
-        self.args = SimpleNamespace(designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH))
+        self.run = {"sealed_config_digests": {"ink-map": EXPECTED_BACKGROUND_SHA256}}
+        self.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
 
     def require_sealed_config(self, name, observed_sha256):
         if self.run["sealed_config_digests"].get(name) != observed_sha256:

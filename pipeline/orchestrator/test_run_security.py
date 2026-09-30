@@ -33,6 +33,7 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         designator_grouping_config="config/designator_grouping.toml",
         alignment_config="config/alignment.toml",
         page_accounting_config="config/page_accounting.toml",
+        ink_map_config="config/ink_map.toml",
         formats_config="config/formats.toml",
         recovery_config="config/recovery.toml",
         hard_failure_config="config/hard_failure.toml",

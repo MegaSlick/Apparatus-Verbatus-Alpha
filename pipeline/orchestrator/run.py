@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH  # noqa: E402
 from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa: E402
+from common.background import DEFAULT_INK_MAP_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
 from common.contracts.prior_draft import BLIND_READ_MODES  # noqa: E402
@@ -392,6 +393,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
                 ("--designator-grouping-config", args.designator_grouping_config),
                 ("--alignment-config", args.alignment_config),
                 ("--page-accounting-config", args.page_accounting_config),
+                ("--ink-map-config", args.ink_map_config),
                 ("--formats-config", args.formats_config),
                 ("--recovery-config", args.recovery_config),
                 ("--hard-failure-config", args.hard_failure_config),
@@ -769,6 +771,11 @@ def main() -> int:
         "--alignment-config",
         default=str(DEFAULT_ALIGNMENT_CONFIG_PATH),
         help="the sealed limits for page-witness alignment",
+    )
+    parser.add_argument(
+        "--ink-map-config",
+        default=str(DEFAULT_INK_MAP_CONFIG_PATH),
+        help="the sealed ink-measurement policy: background, page-spanning bound, coverage audit",
     )
     parser.add_argument(
         "--page-accounting-config",

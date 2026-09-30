@@ -109,6 +109,7 @@ class _RecordingContext:
             designator_padding_config=config / "designator_padding.toml",
             designator_geometry_config=config / "designator_geometry.toml",
             designator_grouping_config=config / "designator_grouping.toml",
+            ink_map_config=config / "ink_map.toml",
             perlector_protocol_config=config / "perlector_protocol.toml",
         )
         self.perlector_audit_config_path = config / "perlector_audit.toml"
@@ -126,6 +127,7 @@ class _RecordingContext:
             "designator-grouping": read_sealed_toml(self.args.designator_grouping_config, "config")[
                 1
             ],
+            "ink-map": read_sealed_toml(self.args.ink_map_config, "config")[1],
             "perlector-audit": read_sealed_toml(self.perlector_audit_config_path, "config")[1],
             "perlector-protocol": read_sealed_toml(self.args.perlector_protocol_config, "config")[
                 1
@@ -139,8 +141,8 @@ class _RecordingContext:
         width, height = 8, 2
         self.sealed_page_dimensions = (width, height)
         rows = [bytearray([230] * width) for _ in range(height)]
-        background_config = load_background_config(self.args.designator_grouping_config)
-        coverage_config = load_coverage_audit_config(self.args.designator_grouping_config)
+        background_config = load_background_config(self.args.ink_map_config)
+        coverage_config = load_coverage_audit_config(self.args.ink_map_config)
         background_policy = resolve_background_policy(background_config, width, height)
         coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
         ink_measure = residual_ink(
@@ -200,7 +202,7 @@ class _RecordingContext:
                     "ink_measurable": True,
                     "background": {
                         **ink_measure["background"],
-                        "config_sha256": self.sealed_config_digests["designator-grouping"],
+                        "config_sha256": self.sealed_config_digests["ink-map"],
                     },
                     "ink": INK_MAP_RUN.artifact_finding(ink_measure),
                     "edge": INK_MAP_RUN.artifact_finding(edge_measure),

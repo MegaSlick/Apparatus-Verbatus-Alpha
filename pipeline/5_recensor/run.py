@@ -1464,11 +1464,11 @@ def page_coverage_findings(context, sealed_pages: dict[int, dict] | None = None)
     regions = regions_by_source_page(context)
     if not regions:
         return {}
-    background_config = load_background_config(context.args.designator_grouping_config)
-    context.require_sealed_config("designator-grouping", background_config["config_sha256"])
+    background_config = load_background_config(context.args.ink_map_config)
+    context.require_sealed_config("ink-map", background_config["config_sha256"])
     # Set aside the page-spanning component already accounted for by Designator.
-    coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
-    context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
+    coverage_config = load_coverage_audit_config(context.args.ink_map_config)
+    context.require_sealed_config("ink-map", coverage_config["config_sha256"])
     pages = sealed_page_images(context) if sealed_pages is None else sealed_pages
     findings: dict[int, dict] = {}
     for ordinal, bounds in regions.items():
@@ -1568,9 +1568,7 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
             # same `None` as an honest one.
             try:
                 refusal = validate_ink_not_measurable_payload(payload)
-                context.require_sealed_config(
-                    "designator-grouping", refusal["background_config_sha256"]
-                )
+                context.require_sealed_config("ink-map", refusal["background_config_sha256"])
             except ContractError as error:
                 raise FatalAccounting(
                     f"ink-map page {ordinal} has an invalid sealed ink-not-measurable "
@@ -1589,9 +1587,7 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
             measured = validate_measured_ink_map_payload(
                 payload, audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
             )
-            context.require_sealed_config(
-                "designator-grouping", measured["background_config_sha256"]
-            )
+            context.require_sealed_config("ink-map", measured["background_config_sha256"])
         except ContractError as error:
             raise FatalAccounting(
                 f"ink-map page {ordinal} has an invalid sealed measured payload. Restore the "
@@ -1601,9 +1597,7 @@ def ink_map_by_page(context) -> dict[int, dict | None]:
             if not isinstance(evidence, dict):
                 raise ContractError("the measured payload has no ink-run evidence object")
             if coverage_config is None:
-                coverage_config = load_coverage_audit_config(
-                    context.args.designator_grouping_config
-                )
+                coverage_config = load_coverage_audit_config(context.args.ink_map_config)
             if coverage_config["config_sha256"] != measured["background_config_sha256"]:
                 raise ContractError(
                     "the background and coverage instruments did not read the same sealed bytes"
@@ -3440,8 +3434,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     geometry_inputs = geometry_coverage_inputs(context)
     content_findings = testimony_content_findings(context)
     ink_maps = ink_map_by_page(context)
-    coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
-    context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
+    coverage_config = load_coverage_audit_config(context.args.ink_map_config)
+    context.require_sealed_config("ink-map", coverage_config["config_sha256"])
     minimum_ink_pixels = coverage_config["coverage_audit"]["minimum_ink_pixels"]
     occlusions = occlusion_records_by_page(context)
     proposal_geometry: dict[str, dict] = {}

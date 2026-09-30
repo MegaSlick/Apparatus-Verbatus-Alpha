@@ -374,8 +374,8 @@ photographed opening is the bezel, so the check computed approximately zero
 residual ink over a page full of writing and reported every such page clean:
 an independent audit that passed by construction rather than by measurement.
 It now infers through `common.background` under the sealed
-`[grouping.background]` policy resolved for that page's dimensions, proved
-against the run's own `designator-grouping` seal — the same call the Designator
+`[background]` policy of `config/ink_map.toml` resolved for that page's
+dimensions, proved against the run's own `ink-map` seal — the same call the Designator
 and the Ink Map make on the same bytes. The **contrast** stays this module's own
 `MINIMUM_CONTRAST_BELOW_BACKGROUND = 40` and is not shared: a check that took
 the Designator's derived margin as well would be a restatement of the stage it

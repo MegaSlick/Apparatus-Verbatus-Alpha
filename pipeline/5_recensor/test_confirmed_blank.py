@@ -153,7 +153,7 @@ def test_confirmed_blank_discloses_each_unavailable_ink_instrument(
         def page_findings_with_unavailable_audit(context, sealed_pages=None):
             findings = measured_page_findings(context, sealed_pages)
             assert findings[1]["flagged"] is False
-            config = RECENSOR_RUN.load_background_config(context.args.designator_grouping_config)
+            config = RECENSOR_RUN.load_background_config(context.args.ink_map_config)
             findings[1] = {
                 "ink_measurable": False,
                 "named_finding": RECENSOR_RUN.INK_NOT_MEASURABLE,

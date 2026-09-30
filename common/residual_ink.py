@@ -8,8 +8,9 @@ every proposal and recovery region. This module invents no act, requests no
 recovery and holds no run.
 
 The paper value comes from `common.background.infer_background_evidence`
-under the Designator's sealed `[grouping.background]` policy, so the audit and
-the stage it audits threshold against the same paper. The
+under the sealed `[background]` policy of `config/ink_map.toml`, the one the
+Designator's structure pass reads too, so the audit and the stage it audits
+threshold against the same paper. The
 contrast stays this module's own: an audit sharing the Designator's margin
 would restate it rather than check it.
 
@@ -35,10 +36,13 @@ from typing import Any, Final, TypedDict
 
 from common.background import (
     BASIS_POINTS,
+    DEFAULT_INK_MAP_CONFIG_PATH,
+    INK_MAP_TABLES,
     BackgroundInferenceRefusal,  # noqa: F401  (re-exported: the refusal callers catch)
     BackgroundPolicy,
     _ink_threshold,
     infer_background_evidence,
+    load_background_config,
     round_half_up_bp,
 )
 from common.calibration import calibrated_claim_has_sample_evidence
@@ -102,12 +106,10 @@ class CoverageAuditPolicy(TypedDict):
     minimum_fraction_outside_bp: int
 
 
-#: Beside `[grouping.background]` under the one `designator-grouping` seal: the
-#: component this audit removes must be the one the Designator withheld, which
-#: holds only while both read one `page_spanning_area_bp`.
-DEFAULT_COVERAGE_AUDIT_CONFIG_PATH: Final = (
-    Path(__file__).resolve().parents[1] / "config" / "designator_grouping.toml"
-)
+#: Beside `[background]` under the one `ink-map` seal: the component this audit
+#: removes must be the one the Designator withheld, which holds only while both
+#: read one `page_spanning_area_bp` and one `gap_tolerance_px`, from this file.
+DEFAULT_COVERAGE_AUDIT_CONFIG_PATH: Final = DEFAULT_INK_MAP_CONFIG_PATH
 
 COVERAGE_AUDIT_BP_FIELDS: Final = (SUBSTANTIAL_INK_AREA_BP_FIELD, EDGE_BAND_BP_FIELD)
 
@@ -136,42 +138,42 @@ _TYPED_PROVENANCE_FIELDS: Final = frozenset({"sample_count", "calibrated_for_thi
 def validate_provenance_block(provenance: Any, *, where: str) -> dict[str, Any]:
     """One declared provenance block, held to the closed schema.
 
-    Needed here because the Ink Map publishes under this policy before the
-    Designator, which owns the file, ever validates it.
+    Needed here because the Ink Map publishes under this policy before any
+    later stage reads it.
     """
 
     if not isinstance(provenance, dict):
         raise ContractError(
-            f"the grouping configuration has no {where} table; a policy value with no "
+            f"the ink-map configuration has no {where} table; a policy value with no "
             "declared source may not be shipped as a default"
         )
     unexpected = sorted(set(provenance) - _PROVENANCE_FIELDS)
     if unexpected:
         raise ContractError(
-            f"the grouping configuration's {where} carries unknown field(s) {unexpected}; "
+            f"the ink-map configuration's {where} carries unknown field(s) {unexpected}; "
             "provenance is a closed schema so an unread field cannot be trusted"
         )
     missing = sorted(_PROVENANCE_FIELDS - set(provenance))
     if missing:
-        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
+        raise ContractError(f"the ink-map configuration's {where} is missing field(s) {missing}")
     for field in sorted(_PROVENANCE_FIELDS - _TYPED_PROVENANCE_FIELDS):
         if not isinstance(provenance[field], str) or not provenance[field].strip():
             raise ContractError(
-                f"the grouping configuration's {where} field {field!r} is not a non-empty string"
+                f"the ink-map configuration's {where} field {field!r} is not a non-empty string"
             )
     if not is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
         raise ContractError(
-            f"the grouping configuration's {where} sample_count is not a non-negative integer"
+            f"the ink-map configuration's {where} sample_count is not a non-negative integer"
         )
     if not isinstance(provenance["calibrated_for_this_corpus"], bool):
         raise ContractError(
-            f"the grouping configuration's {where} calibrated_for_this_corpus is not a boolean"
+            f"the ink-map configuration's {where} calibrated_for_this_corpus is not a boolean"
         )
     if not calibrated_claim_has_sample_evidence(
         provenance["calibrated_for_this_corpus"], provenance["sample_count"]
     ):
         raise ContractError(
-            f"the grouping configuration's {where} says calibrated_for_this_corpus but "
+            f"the ink-map configuration's {where} says calibrated_for_this_corpus but "
             "sample_count is zero"
         )
     return dict(provenance)
@@ -180,22 +182,22 @@ def validate_provenance_block(provenance: Any, *, where: str) -> dict[str, Any]:
 def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]") -> dict[str, int]:
     """The two sealed values, checked against their bounds and returned.
 
-    Here rather than in the Designator's loader: three stages run under this
-    block, and a value one would refuse all three must.
+    One validator for every stage that runs under this block, so a value one
+    would refuse all must.
     """
     if not isinstance(table, dict):
-        raise ContractError(f"the grouping configuration has no {where} table")
+        raise ContractError(f"the ink-map configuration has no {where} table")
     unexpected = sorted(
         set(table) - set(COVERAGE_AUDIT_BP_FIELDS) - {"provenance", COVERAGE_NOISE_FLOOR_TABLE}
     )
     if unexpected:
         raise ContractError(
-            f"the grouping configuration's {where} carries unknown field(s) "
+            f"the ink-map configuration's {where} carries unknown field(s) "
             f"{unexpected}; an unread policy field cannot be applied"
         )
     missing = sorted((set(COVERAGE_AUDIT_BP_FIELDS) | {COVERAGE_NOISE_FLOOR_TABLE}) - set(table))
     if missing:
-        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
+        raise ContractError(f"the ink-map configuration's {where} is missing field(s) {missing}")
     values = {name: table[name] for name in COVERAGE_AUDIT_BP_FIELDS}
     values.update(
         validate_coverage_noise_floor_table(
@@ -206,7 +208,7 @@ def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]"
         0 < values[SUBSTANTIAL_INK_AREA_BP_FIELD] <= BASIS_POINTS
     ):
         raise ContractError(
-            f"the grouping configuration's {where} {SUBSTANTIAL_INK_AREA_BP_FIELD} is not a "
+            f"the ink-map configuration's {where} {SUBSTANTIAL_INK_AREA_BP_FIELD} is not a "
             f"basis-point integer in 1..{BASIS_POINTS}; a gate of zero "
             "flags every page that carries a single unclaimed pixel and says nothing"
         )
@@ -214,7 +216,7 @@ def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]"
         0 < values[EDGE_BAND_BP_FIELD] < BASIS_POINTS // 2
     ):
         raise ContractError(
-            f"the grouping configuration's {where} {EDGE_BAND_BP_FIELD} is not a basis-point "
+            f"the ink-map configuration's {where} {EDGE_BAND_BP_FIELD} is not a basis-point "
             f"integer strictly between 0 and {BASIS_POINTS // 2}; a band of zero has no strip "
             "to measure and a band of half the shorter side leaves the page no centre, so "
             "the perimeter measure would be a whole-page measure under another name"
@@ -227,27 +229,27 @@ def validate_coverage_noise_floor_table(
 ) -> dict[str, int]:
     """The two sealed noise-floor values, checked against their bounds and returned."""
     if not isinstance(table, dict):
-        raise ContractError(f"the grouping configuration has no {where} table")
+        raise ContractError(f"the ink-map configuration has no {where} table")
     unexpected = sorted(set(table) - set(COVERAGE_NOISE_FLOOR_FIELDS) - {"provenance"})
     if unexpected:
         raise ContractError(
-            f"the grouping configuration's {where} carries unknown field(s) "
+            f"the ink-map configuration's {where} carries unknown field(s) "
             f"{unexpected}; an unread policy field cannot be applied"
         )
     missing = sorted(set(COVERAGE_NOISE_FLOOR_FIELDS) - set(table))
     if missing:
-        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
+        raise ContractError(f"the ink-map configuration's {where} is missing field(s) {missing}")
     values = {name: table[name] for name in COVERAGE_NOISE_FLOOR_FIELDS}
     if not is_plain_int(values[MINIMUM_INK_PIXELS_FIELD]) or values[MINIMUM_INK_PIXELS_FIELD] <= 0:
         raise ContractError(
-            f"the grouping configuration's {where} {MINIMUM_INK_PIXELS_FIELD} is not a positive "
+            f"the ink-map configuration's {where} {MINIMUM_INK_PIXELS_FIELD} is not a positive "
             "integer; a floor of zero flags every page that carries a single stray pixel"
         )
     if not is_plain_int(values[MINIMUM_FRACTION_OUTSIDE_BP_FIELD]) or not (
         0 < values[MINIMUM_FRACTION_OUTSIDE_BP_FIELD] <= BASIS_POINTS
     ):
         raise ContractError(
-            f"the grouping configuration's {where} {MINIMUM_FRACTION_OUTSIDE_BP_FIELD} is not a "
+            f"the ink-map configuration's {where} {MINIMUM_FRACTION_OUTSIDE_BP_FIELD} is not a "
             f"basis-point integer in 1..{BASIS_POINTS}; a fraction of zero fires on every page "
             "that clears the noise floor"
         )
@@ -262,30 +264,8 @@ def load_coverage_audit_config(
     Refused loudly rather than defaulted: a gate silently taken as unlimited
     would change which pages are held with no config line saying so.
     """
-    config, digest = read_sealed_toml(path, "coverage-audit configuration")
-    grouping = config.get("grouping")
-    if not isinstance(grouping, dict):
-        raise ContractError("the coverage-audit configuration has no [grouping] table")
-    page_area = grouping.get("page_area_bp")
-    absolute = grouping.get("absolute")
-    if not isinstance(page_area, dict) or not isinstance(absolute, dict):
-        raise ContractError(
-            "the coverage-audit configuration is missing [grouping.page_area_bp] or "
-            "[grouping.absolute]; this audit takes the page-spanning bound and the "
-            "stroke-connectivity radius from the same file the Designator withheld under"
-        )
-    spanning = page_area.get("page_spanning_area_bp")
-    gap = absolute.get("gap_tolerance_px")
-    if not is_plain_int(spanning) or not 0 < spanning <= BASIS_POINTS:
-        raise ContractError(
-            "the coverage-audit configuration's [grouping.page_area_bp] page_spanning_area_bp "
-            f"is not a basis-point integer in 1..{BASIS_POINTS}"
-        )
-    if not is_plain_int(gap) or gap < 0:
-        raise ContractError(
-            "the coverage-audit configuration's [grouping.absolute] gap_tolerance_px is not a "
-            "non-negative integer"
-        )
+    config, digest = read_sealed_toml(path, "ink-map configuration", INK_MAP_TABLES)
+    spanning, gap = page_spanning_policy(config)
     audit = config.get("coverage_audit")
     values = validate_coverage_audit_table(audit)
     # Only a shipped file must declare provenance; the table validators also
@@ -301,6 +281,53 @@ def load_coverage_audit_config(
         "page_spanning_area_bp": spanning,
         "gap_tolerance_px": gap,
     }
+
+
+def ink_map_config_digest(path: str | Path = DEFAULT_INK_MAP_CONFIG_PATH) -> str:
+    """The seal of an ink-map configuration every reader would accept, read whole."""
+    background = load_background_config(path)
+    coverage = load_coverage_audit_config(path)
+    if background["config_sha256"] != coverage["config_sha256"]:
+        raise ContractError("the ink-map configuration changed while it was being read")
+    return coverage["config_sha256"]
+
+
+def page_spanning_policy(config: dict[str, Any]) -> tuple[int, int]:
+    """`(page_spanning_area_bp, gap_tolerance_px)` from a loaded ink-map configuration.
+
+    The bound above which one connected component is page-spanning, and the
+    stroke-connectivity radius it is found at; each table carries its own
+    provenance.
+    """
+    page_spanning = config.get("page_spanning")
+    connectivity = config.get("connectivity")
+    if not isinstance(page_spanning, dict) or not isinstance(connectivity, dict):
+        raise ContractError(
+            "the ink-map configuration is missing [page_spanning] or [connectivity]; this "
+            "audit takes the page-spanning bound and the stroke-connectivity radius from them"
+        )
+    for table, name, where in (
+        (page_spanning, "page_spanning_area_bp", "[page_spanning]"),
+        (connectivity, "gap_tolerance_px", "[connectivity]"),
+    ):
+        if set(table) != {name, "provenance"}:
+            raise ContractError(
+                f"the ink-map configuration's {where} is not exactly {name} and its provenance"
+            )
+        validate_provenance_block(table["provenance"], where=f"{where[:-1]}.provenance]")
+    spanning = page_spanning["page_spanning_area_bp"]
+    gap = connectivity["gap_tolerance_px"]
+    if not is_plain_int(spanning) or not 0 < spanning <= BASIS_POINTS:
+        raise ContractError(
+            "the ink-map configuration's [page_spanning] page_spanning_area_bp "
+            f"is not a basis-point integer in 1..{BASIS_POINTS}"
+        )
+    if not is_plain_int(gap) or gap < 0:
+        raise ContractError(
+            "the ink-map configuration's [connectivity] gap_tolerance_px is not a "
+            "non-negative integer"
+        )
+    return spanning, gap
 
 
 def resolve_coverage_audit_policy(

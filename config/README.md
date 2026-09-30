@@ -20,6 +20,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `corpus_frame.toml` | R0's sealed shard boundary: how many pages one bounded failure and accounting unit may hold |
 | `designator_geometry.toml` | the sealed tiling and crop-policy geometry the Designator's proposal adapters are built against |
 | `designator_grouping.toml` | which marks the Designator joins into one act, and how many residual components one page may enumerate before the page itself is held |
+| `ink_map.toml` | the ink measurement's sealed policy: background inference, the page-spanning bound and connectivity radius, and the outside-coverage audit's gates, read by the Ink Map, the Designator, the Perlector's page accounting, the Recensor and the Armarium |
 | `perlector_audit.toml` | the sealed Pass-C audit policy: flag classes and the round cap the audit refuses to exceed |
 | `witness_context.toml` | the factual per-witness context the Perlector's dossier may carry: identity, provenance, training domain, and nothing evaluative |
 | `witness_context-real.toml` | the same declaration for the real roster's three chairs, each training domain stated as far as this repository can cite it and named as unknown where it cannot; selected with the full trio `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml --witness-context-config config/witness_context-real.toml`; published witness identities paired with a known fixture declaration are refused |
@@ -244,7 +245,7 @@ policy a stage needs the *values* of is carried already parsed rather than reope
 `StageContext.armarium_formats`.
 
 Sealed names today: `designator-padding`, `designator-geometry`, `designator-grouping`,
-`alignment`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
+`ink-map`, `page-accounting`, `alignment`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
 `pdf-render`, `recovery`, `hard-failure` and `triage-modes` on every run (Unit 6's
 pre-door producer/door seam must call `require_triage_modes` before using its
 vocabulary). Real ingress adds `data-handling`, `serving-recipes`, `pod-placement`,
@@ -288,8 +289,8 @@ scales instead). Two more values do not enter the file at all.
 `common/test_designator_recensor_ink_calibration.py` pins `SECONDARY_MARGIN` against the
 Recensor's own contrast constant. A per-run value for either
 would make that cross-stage invariant unenforceable statically, so the file's closed
-schema refuses both names outright. `[grouping.background] ink_margin_bp` is not one of
-them: it is the fraction of the distance between a page's own two grey-level population
+schema refuses both names outright. `ink_map.toml`'s `[background] ink_margin_bp` is not
+one of them: it is the fraction of the distance between a page's own two grey-level population
 modes that derives the margin the primary scan runs at, floored at `PRIMARY_MARGIN`,
 and it carries no grey level of its own.
 
@@ -308,6 +309,19 @@ then proves it read the bound policy through
 out. A malformed policy is refused there by name, and a policy rewritten after the door
 bound it refuses as drift naming both digests. The sealed name has a reader, so it is
 no longer a closed window that nothing shuts.
+
+### `ink_map.toml`
+
+The policy every ink measurement runs under, sealed as `ink-map`: `[background]`
+(`common/background.py`), `[page_spanning]` and `[connectivity]` (the component the
+coverage audit takes out of its counts, and the radius it is found at), and
+`[coverage_audit]` with its `noise_floor` (`common/residual_ink.py`). Each table carries
+its own provenance. The Ink Map, the Perlector's page accounting, the Recensor and the
+Armarium read it through `load_background_config` and `load_coverage_audit_config`,
+and every record measured under it names its digest as `background_config_sha256`.
+The Designator's structure pass reads it too, and refuses a run whose
+`designator_grouping.toml` states a different `page_spanning_area_bp` or
+`gap_tolerance_px`, so the component it withholds is the one the audit takes out.
 
 ## Pre-door triage instrument
 

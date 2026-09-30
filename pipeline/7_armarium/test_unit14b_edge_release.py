@@ -25,8 +25,8 @@ from common.sealed_config import read_sealed_toml
 from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
-GROUPING_CONFIG = ROOT / "config/designator_grouping.toml"
-GROUPING_CONFIG_DIGEST = read_sealed_toml(GROUPING_CONFIG, "config")[1]
+INK_MAP_CONFIG = ROOT / "config/ink_map.toml"
+INK_MAP_CONFIG_DIGEST = read_sealed_toml(INK_MAP_CONFIG, "config")[1]
 
 
 _RUNS = {"schema": "ink-runs.v2", "width": 40, "height": 2, "rows": [[], []]}
@@ -46,12 +46,12 @@ _BACKGROUND = {
     "ink_margin": 73,
     "contrast_below_background": 40,
     "ink_threshold": 180,
-    "config_sha256": GROUPING_CONFIG_DIGEST,
+    "config_sha256": INK_MAP_CONFIG_DIGEST,
 }
 
 
 def _edge_for_runs(evidence: dict) -> dict:
-    config = load_coverage_audit_config(GROUPING_CONFIG)
+    config = load_coverage_audit_config(INK_MAP_CONFIG)
     policy = resolve_coverage_audit_policy(config, evidence["width"], evidence["height"])
     measured = edge_ink_from_runs(evidence, [], coverage_policy=policy)
     return {
@@ -119,11 +119,11 @@ class _Context(SimpleNamespace):
             raise ContractError(f"sealed {name} digest does not match the Ink Map payload")
 
 
-def _context(records: dict[str, list[dict]], digest=GROUPING_CONFIG_DIGEST):
+def _context(records: dict[str, list[dict]], digest=INK_MAP_CONFIG_DIGEST):
     return _Context(
         tree=_Tree(records),
-        run={"sealed_config_digests": {"designator-grouping": digest}},
-        args=SimpleNamespace(designator_grouping_config=str(GROUPING_CONFIG)),
+        run={"sealed_config_digests": {"ink-map": digest}},
+        args=SimpleNamespace(ink_map_config=str(INK_MAP_CONFIG)),
     )
 
 
@@ -207,8 +207,8 @@ def test_same_outcome_run_loss_is_refused_before_a_crop_can_release_it():
     width = height = 100
     rows = [bytearray([230] * width) for _ in range(height)]
     rows[0][:80] = bytearray([0] * 80)
-    background_config = load_background_config(GROUPING_CONFIG)
-    coverage_config = load_coverage_audit_config(GROUPING_CONFIG)
+    background_config = load_background_config(INK_MAP_CONFIG)
+    coverage_config = load_coverage_audit_config(INK_MAP_CONFIG)
     background_policy = resolve_background_policy(background_config, width, height)
     coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
     producer_finding = ink_map.artifact_finding(
@@ -329,8 +329,8 @@ def test_a_structural_component_may_contain_no_ink_at_the_audits_stricter_contra
     rows = [bytearray([230] * width) for _ in range(height)]
     for coordinate in range(width):
         rows[coordinate][coordinate] = 205
-    background_config = load_background_config(GROUPING_CONFIG)
-    coverage_config = load_coverage_audit_config(GROUPING_CONFIG)
+    background_config = load_background_config(INK_MAP_CONFIG)
+    coverage_config = load_coverage_audit_config(INK_MAP_CONFIG)
     background_policy = resolve_background_policy(background_config, width, height)
     coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
     producer_finding = edge_ink(
@@ -363,7 +363,7 @@ def test_a_structural_component_may_contain_no_ink_at_the_audits_stricter_contra
     )
     record["payload"]["background"] = {
         **producer_finding["background"],
-        "config_sha256": GROUPING_CONFIG_DIGEST,
+        "config_sha256": INK_MAP_CONFIG_DIGEST,
     }
     assert armarium.ink_map_page_rows(
         _context({INK_MAP: [record]}), _sealed_census(width, height), {}
@@ -514,7 +514,7 @@ def test_an_unmeasurable_page_stays_in_the_denominator_and_can_never_be_held():
             "page_ordinal": 1,
             "ink_measurable": False,
             "background_refusal": "the page is majority ink",
-            "background_config_sha256": GROUPING_CONFIG_DIGEST,
+            "background_config_sha256": INK_MAP_CONFIG_DIGEST,
         },
     }
     rows = armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})

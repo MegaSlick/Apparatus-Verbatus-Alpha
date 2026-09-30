@@ -2244,10 +2244,7 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
         }
         assert payload["ink_measurable"] is False
         assert payload["background_refusal"]
-        assert (
-            payload["background_config_sha256"]
-            == run["sealed_config_digests"]["designator-grouping"]
-        )
+        assert payload["background_config_sha256"] == run["sealed_config_digests"]["ink-map"]
 
     before_designator = tree.build_manifest(DESIGNATOR)
     boundary = subprocess.run(

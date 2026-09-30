@@ -613,7 +613,7 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
     assert rows != sealed_rows
     assert page_bytes != sealed_page_bytes
     page_digest = digest_bytes(page_bytes)
-    grouping_path = ROOT / "config" / "designator_grouping.toml"
+    grouping_path = ROOT / "config" / "ink_map.toml"
     grouping_digest = read_sealed_toml(grouping_path, "config")[1]
     background_config = load_background_config(grouping_path)
     coverage_config = load_coverage_audit_config(grouping_path)
@@ -723,7 +723,7 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
 
     class Context(SimpleNamespace):
         def require_sealed_config(self, name, observed_sha256):
-            assert name == "designator-grouping"
+            assert name == "ink-map"
             assert observed_sha256 == grouping_digest
 
     real_seal = real_tree.read_artifact(
@@ -740,7 +740,7 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
         return Context(
             tree=tree,
             run=run,
-            args=SimpleNamespace(designator_grouping_config=str(grouping_path)),
+            args=SimpleNamespace(ink_map_config=str(grouping_path)),
         )
 
     def claims_for(tree):
@@ -4018,6 +4018,8 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
     grouping_digest = read_sealed_toml(grouping_path, "config")[1]
     grouping_policy = designator.grouping_config.load_grouping_config(grouping_path)
     assert grouping_policy["config_sha256"] == grouping_digest
+    ink_map_path = ROOT / "config" / "ink_map.toml"
+    ink_map_digest = read_sealed_toml(ink_map_path, "config")[1]
     analysis = designator._analyze_page({}, designator_context, 1, page_record, grouping_policy)
     assert analysis["background"] == 30
     assert analysis["ink_margin"] == 20
@@ -4040,7 +4042,7 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
     class InkMapContext:
         def __init__(self):
             self.tree = object()
-            self.args = SimpleNamespace(designator_grouping_config=str(grouping_path))
+            self.args = SimpleNamespace(ink_map_config=str(ink_map_path))
             self.run = {"ingress": synthetic_fixture_ingress_record()}
             self.published = []
             self.required_configs = []
@@ -4081,7 +4083,7 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
     assert ink_record["payload"]["background_refusal"]
     # Ink Map reads the background and coverage-audit views independently from
     # the same sealed file; both readers must prove those bytes against the run.
-    assert ink_map_context.required_configs == [("designator-grouping", grouping_digest)] * 2
+    assert ink_map_context.required_configs == [("ink-map", ink_map_digest)] * 2
 
     armarium_config_checks = []
     armarium_context = SimpleNamespace(
@@ -4094,7 +4096,7 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
         require_sealed_config=lambda name, observed: armarium_config_checks.append(
             (name, observed)
         ),
-        args=SimpleNamespace(designator_grouping_config=str(grouping_path)),
+        args=SimpleNamespace(ink_map_config=str(ink_map_path)),
     )
     (ink_map_page,) = armarium.ink_map_page_rows(armarium_context, {1: {"outcome": "sealed"}}, {})
     assert ink_map_page == {
@@ -4104,7 +4106,7 @@ def test_a_low_paper_ink_map_refusal_is_visible_without_unmeasuring_conservation
     }
     # Armarium proves the loaded coverage policy, then independently proves the
     # refusal envelope's recorded configuration before accepting no measurement.
-    assert armarium_config_checks == [("designator-grouping", grouping_digest)] * 2
+    assert armarium_config_checks == [("ink-map", ink_map_digest)] * 2
 
     conservation_manifest = {
         DESIGNATOR: {"artifacts": [{"kind": "conservation", "artifact_id": "low-paper"}]}

@@ -182,12 +182,16 @@ def _coverage_evidence_case():
         },
     }
     config = ROOT / "config/designator_grouping.toml"
+    ink_map_config = ROOT / "config/ink_map.toml"
     context = SimpleNamespace(
         tree=_EvidenceTree(testimony, ink_map),
-        args=SimpleNamespace(designator_grouping_config=str(config)),
+        args=SimpleNamespace(
+            designator_grouping_config=str(config), ink_map_config=str(ink_map_config)
+        ),
         run={
             "sealed_config_digests": {
-                "designator-grouping": read_sealed_toml(config, "grouping")[1]
+                "designator-grouping": read_sealed_toml(config, "grouping")[1],
+                "ink-map": read_sealed_toml(ink_map_config, "ink map")[1],
             }
         },
     )

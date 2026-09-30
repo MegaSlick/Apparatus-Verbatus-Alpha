@@ -14,13 +14,13 @@ file's own directory on `sys.path` before collecting it.
 import dataclasses
 from pathlib import Path
 
+import grouping_config
 import pytest
 from grouping_config import (
     _PROVENANCE_FIELDS,
     _STRING_PROVENANCE_FIELDS,
     _TYPED_PROVENANCE_FIELDS,
     DEFAULT_GROUPING_CONFIG_PATH,
-    load_grouping_config,
     resolve_background_policy,
     resolve_thresholds,
 )
@@ -158,9 +158,52 @@ def test_resolve_thresholds_refuses_non_positive_dimensions():
 # --- closed schema: unknown / missing / forbidden ---------------------------
 
 
+def load_grouping_config(path: Path | None = None) -> dict:
+    """The loader over a written grouping file and the ink-map file written beside it."""
+    if path is None:
+        return grouping_config.load_grouping_config()
+    return grouping_config.load_grouping_config(path, path.with_name("ink_map.toml"))
+
+
+_INK_MAP_HEADS = ("[background", "[coverage_audit")
+
+
 def _write(tmp_path, body: str) -> Path:
+    """Write a synthetic document as the two files the stage reads.
+
+    The `[background]` and `[coverage_audit]` tables go to an ink-map file,
+    with the `[page_spanning]` and `[connectivity]` tables it also carries
+    stating the grouping document's own two values, so a test that changes
+    one of those exercises the grouping loader's refusal, not the guard
+    between the files.
+    """
+    grouping, ink_map, target = [], [], None
+    for line in body.split("\n"):
+        if line.startswith("["):
+            target = ink_map if line.startswith(_INK_MAP_HEADS) else grouping
+        (target if target is not None else grouping).append(line)
+    values = {}
+    for name in ("page_spanning_area_bp", "gap_tolerance_px"):
+        found = [line for line in grouping if line.startswith(f"{name} = ")]
+        values[name] = (
+            found[0].split(" = ", 1)[1]
+            if found
+            else {"page_spanning_area_bp": "5000", "gap_tolerance_px": "3"}[name]
+        )
+    ink_map += [
+        "",
+        "[page_spanning]",
+        f"page_spanning_area_bp = {values['page_spanning_area_bp']}",
+        "[page_spanning.provenance]",
+        _VALID_PROVENANCE,
+        "[connectivity]",
+        f"gap_tolerance_px = {values['gap_tolerance_px']}",
+        "[connectivity.provenance]",
+        _VALID_PROVENANCE,
+    ]
+    (tmp_path / "ink_map.toml").write_text("\n".join(ink_map))
     path = tmp_path / "grouping.toml"
-    path.write_text(body)
+    path.write_text("\n".join(grouping))
     return path
 
 
@@ -231,7 +274,7 @@ caveat = "cv"
 """
 
 
-# [grouping.background]'s own provenance block, deliberately spelled with
+# [background]'s own provenance block, deliberately spelled with
 # different literal values than _VALID_PROVENANCE's in every field: the tests
 # below mutate one block by string replacement, and a shared spelling would
 # make that replacement hit whichever block came first.
@@ -241,7 +284,7 @@ max_interior_dark_bp = 5000
 max_ink_bp = 7000
 ink_margin_bp = 3333
 
-[grouping.background.provenance]
+[background.provenance]
 source = 's'
 corpus = 'c'
 sample_unit = 'u'
@@ -289,7 +332,7 @@ def _valid_toml() -> str:
         "[grouping.absolute]\n"
         "gap_tolerance_px = 3\n\n"
         "[grouping.page_area_bp]\n" + _VALID_PAGE_AREA + "\n"
-        "[grouping.background]\n" + _VALID_BACKGROUND + "\n"
+        "[background]\n" + _VALID_BACKGROUND + "\n"
         "[grouping.provenance]\n" + _VALID_PROVENANCE
     )
 
@@ -495,7 +538,7 @@ def test_background_provenance_refuses_calibrated_claim_with_zero_samples(tmp_pa
     path = _write(tmp_path, body)
     with pytest.raises(
         ContractError,
-        match=r"\[grouping\.background\.provenance\].*calibrated_for_this_corpus.*sample_count is zero",
+        match=r"\[background\.provenance\].*calibrated_for_this_corpus.*sample_count is zero",
     ):
         load_grouping_config(path)
 
@@ -597,7 +640,7 @@ def test_non_table_top_level_refused(tmp_path):
         load_grouping_config(path)
 
 
-# --- [grouping.background]: the one measured block, and its own closed schema ----
+# --- [background]: the one measured block, and its own closed schema ----
 
 
 def test_background_resolves_both_bands_from_the_page_it_is_given():
@@ -633,21 +676,21 @@ def test_background_is_not_a_field_of_the_published_resolved_thresholds():
     )
 
 
-def test_missing_background_table_refused_as_missing_field(tmp_path):
-    body = _valid_toml().replace("[grouping.background]\n" + _VALID_BACKGROUND + "\n", "")
+def test_missing_background_table_refused_by_name(tmp_path):
+    body = _valid_toml().replace("[background]\n" + _VALID_BACKGROUND + "\n", "")
     path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match="missing field"):
+    with pytest.raises(ContractError, match=r"no \[background\] table"):
         load_grouping_config(path)
 
 
 def test_background_field_present_but_not_a_table_refused(tmp_path):
     body = (
         _valid_toml()
-        .replace("[grouping.background]\n" + _VALID_BACKGROUND + "\n", "")
+        .replace("[background]\n" + _VALID_BACKGROUND + "\n", "")
         .replace("max_residual_components = 2000", "max_residual_components = 2000\nbackground = 1")
     )
     path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match="no \\[grouping.background\\] table"):
+    with pytest.raises(ContractError, match="unknown field"):
         load_grouping_config(path)
 
 
@@ -670,7 +713,7 @@ def test_background_missing_its_own_provenance_refused(tmp_path):
     unmeasured defaults, this one describes measured real-page values, and
     one block could not say both truthfully."""
     body = _valid_toml().replace(
-        "[grouping.background.provenance]\nsource = 's'\n", "[grouping.background.provenance]\n"
+        "[background.provenance]\nsource = 's'\n", "[background.provenance]\n"
     )
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="missing field"):
@@ -855,3 +898,21 @@ def test_the_noise_floor_sub_table_must_carry_its_own_provenance(tmp_path):
     assert claimed != body
     with pytest.raises(ContractError, match=r"noise_floor.provenance\] says calibrated"):
         load_grouping_config(_write(tmp_path, claimed))
+
+
+@pytest.mark.parametrize(
+    ("name", "line"),
+    [
+        ("page_spanning_area_bp", "page_spanning_area_bp = 5000"),
+        ("gap_tolerance_px", "gap_tolerance_px = 3"),
+    ],
+)
+def test_a_grouping_file_disagreeing_with_the_ink_map_is_refused(tmp_path, name, line):
+    """The component this pass withholds must be the one the coverage audit takes out."""
+    path = _write(tmp_path, _valid_toml())
+    ink_map = path.with_name("ink_map.toml")
+    text = ink_map.read_text()
+    assert line in text
+    ink_map.write_text(text.replace(line, line[:-1] + "4"))
+    with pytest.raises(ContractError, match=f"grouping configuration's {name} is"):
+        load_grouping_config(path)

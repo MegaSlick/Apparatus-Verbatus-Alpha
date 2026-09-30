@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.background import DEFAULT_BACKGROUND_CONFIG_PATH
+from common.background import DEFAULT_INK_MAP_CONFIG_PATH
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify, terminal_category
@@ -139,7 +139,7 @@ def test_the_measured_and_unmeasured_ink_thresholds_are_told_apart_by_name():
     assert MINIMUM_CONTRAST_IS_MEASURED is False
     assert "proposed, not yet measured" in handoff
 
-    config = tomllib.loads((ROOT / "config/designator_grouping.toml").read_bytes().decode("utf-8"))
+    config = tomllib.loads((ROOT / "config/ink_map.toml").read_bytes().decode("utf-8"))
     provenance = config["coverage_audit"]["provenance"]
     assert provenance["calibrated_for_this_corpus"] is True
     assert provenance["sample_count"] == 44
@@ -331,7 +331,7 @@ class _PublishingContext:
         # Designator does. A stub without these two would be testing a stage
         # that skipped both, which is the drift this stub's own comment warns
         # about.
-        self.args = SimpleNamespace(designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH))
+        self.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
         self.required_configs = []
 
     def require_sealed_config(self, name, observed_sha256):
@@ -645,13 +645,13 @@ def test_the_stage_proves_the_background_policy_bytes_against_the_runs_own_seal(
         monkeypatch.setattr(INK_MAP_RUN, "measured_page_bytes", lambda *_args: blank)
         assert INK_MAP_RUN.main(registry_factory=None) == INK_MAP_RUN.EXIT_COMPLETE
 
-    # Twice, and deliberately: the stage reads `[grouping.background]` and
+    # Twice, and deliberately: the stage reads `[background]` and
     # `[coverage_audit]` through two loaders, and each one proves the bytes IT
     # read against the run's seal. One check standing for both would leave the
     # second loader's read unproved on a file that had changed between them.
     assert context.required_configs == [
-        ("designator-grouping", load_background_config()["config_sha256"]),
-        ("designator-grouping", load_coverage_audit_config()["config_sha256"]),
+        ("ink-map", load_background_config()["config_sha256"]),
+        ("ink-map", load_coverage_audit_config()["config_sha256"]),
     ]
     background = context.published[0]["payload"]["background"]
     assert background["config_sha256"] == load_background_config()["config_sha256"]

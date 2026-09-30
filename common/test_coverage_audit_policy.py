@@ -61,9 +61,9 @@ def test_the_shipped_block_loads_with_the_seal_of_its_own_file():
     assert config["gap_tolerance_px"] == 3
 
 
-def test_the_block_is_read_from_the_file_the_designator_is_sealed_under():
-    """One file, one digest, one seal -- not a second sealed name for two gates."""
-    assert DEFAULT_COVERAGE_AUDIT_CONFIG_PATH == ROOT / "config" / "designator_grouping.toml"
+def test_the_block_is_read_from_the_sealed_ink_map_policy():
+    """One file, one digest, one seal: the ink map's, beside the background policy."""
+    assert DEFAULT_COVERAGE_AUDIT_CONFIG_PATH == ROOT / "config" / "ink_map.toml"
     raw = tomllib.loads(DEFAULT_COVERAGE_AUDIT_CONFIG_PATH.read_bytes().decode("utf-8"))
     assert set(raw["coverage_audit"]) == set(COVERAGE_AUDIT_BP_FIELDS) | {
         "provenance",
@@ -198,14 +198,14 @@ def test_a_missing_table_is_refused_rather_than_defaulted():
         validate_coverage_audit_table(None)
 
 
-def test_a_file_without_the_designator_bounds_is_refused_by_name(tmp_path):
-    """This audit cannot resolve its own policy without the two it borrows."""
+def test_a_file_without_the_page_spanning_bounds_is_refused_by_name(tmp_path):
+    """This audit cannot resolve its own policy without the page-spanning bound and radius."""
     path = tmp_path / "partial.toml"
     path.write_text(
-        "[grouping]\n[coverage_audit]\nsubstantial_ink_area_bp = 4\nedge_band_bp = 100\n"
+        "[coverage_audit]\nsubstantial_ink_area_bp = 4\nedge_band_bp = 100\n"
         "[coverage_audit.noise_floor]\nminimum_ink_pixels = 24\nminimum_fraction_outside_bp = 200\n"
     )
-    with pytest.raises(ContractError, match=r"page_area_bp.*absolute|absolute.*page_area_bp"):
+    with pytest.raises(ContractError, match=r"missing \[page_spanning\] or \[connectivity\]"):
         load_coverage_audit_config(path)
 
 

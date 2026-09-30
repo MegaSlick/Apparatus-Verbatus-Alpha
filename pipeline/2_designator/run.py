@@ -2319,9 +2319,18 @@ def _sealed_designator_policies(context) -> tuple[dict, dict]:
     context.require_sealed_config("designator-padding", padding["config_sha256"])
     geometry_policy = geometry_layer.load_geometry_policy(context.args.designator_geometry_config)
     context.require_sealed_config("designator-geometry", geometry_policy["config_sha256"])
-    grouping_policy = grouping_config.load_grouping_config(context.args.designator_grouping_config)
-    context.require_sealed_config("designator-grouping", grouping_policy["config_sha256"])
+    grouping_policy = _sealed_grouping_policy(context)
     return padding, grouping_policy
+
+
+def _sealed_grouping_policy(context) -> dict:
+    """The grouping policy and the ink-map policy beside it, each proven against its seal."""
+    grouping_policy = grouping_config.load_grouping_config(
+        context.args.designator_grouping_config, context.args.ink_map_config
+    )
+    context.require_sealed_config("designator-grouping", grouping_policy["config_sha256"])
+    context.require_sealed_config("ink-map", grouping_policy["ink_map_config_sha256"])
+    return grouping_policy
 
 
 def _initial_pages_and_policies(context) -> tuple[dict, dict, dict, dict]:
@@ -3332,9 +3341,7 @@ def _verify_coverage_recovery_evidence(
         or evidence.get("height") != page_height
     ):
         raise ContractError("the recovery request's Ink Map does not bind this sealed page")
-    grouping_policy = grouping_config.load_grouping_config(context.args.designator_grouping_config)
-    context.require_sealed_config("designator-grouping", grouping_policy["config_sha256"])
-    minimum = grouping_policy["coverage_audit"]["minimum_ink_pixels"]
+    minimum = _sealed_grouping_policy(context)["coverage_audit"]["minimum_ink_pixels"]
     covered = _coverage_on_page(_regions_of(context), page_ordinal, page_id)
     measured = _ink_outside_cut_union(evidence, bounds, covered)
     if (

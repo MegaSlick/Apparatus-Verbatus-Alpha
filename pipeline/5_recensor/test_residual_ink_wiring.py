@@ -32,7 +32,7 @@ from types import SimpleNamespace
 import pytest
 
 from common.background import (
-    DEFAULT_BACKGROUND_CONFIG_PATH,
+    DEFAULT_INK_MAP_CONFIG_PATH,
     load_background_config,
     resolve_background_policy,
 )
@@ -95,7 +95,7 @@ class _FakeContext:
         # own parsed argv names and proves those bytes against the run's seal,
         # the way the Designator and the Ink Map do. A stub without these two
         # would exercise a stage that did neither.
-        self.args = SimpleNamespace(designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH))
+        self.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
         self.required_configs = []
 
     def require_sealed_config(self, name, observed_sha256):
@@ -572,17 +572,15 @@ def test_ink_map_by_page_accepts_the_actual_refusal_record_from_the_ink_map(monk
         "subject_id": "page-1",
         "payload": {"image_path": "page.png", "source_sha256": "0" * 64},
     }
-    expected_digest = read_sealed_toml(DEFAULT_BACKGROUND_CONFIG_PATH, "config")[1]
+    expected_digest = read_sealed_toml(DEFAULT_INK_MAP_CONFIG_PATH, "config")[1]
 
     class ProducerContext:
         def __init__(self):
             self.tree = object()  # The checked-byte storage boundary is supplied below.
             self.run = {"ingress": {"mode": "synthetic-fixture"}}
-            self.args = SimpleNamespace(
-                designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH)
-            )
+            self.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
             self.published = []
-            self.sealed_config_digests = {"designator-grouping": expected_digest}
+            self.sealed_config_digests = {"ink-map": expected_digest}
             self.required_configs = []
 
         def require_sealed_config(self, name, observed_sha256):
@@ -621,7 +619,7 @@ def test_ink_map_by_page_accepts_the_actual_refusal_record_from_the_ink_map(monk
     assert record["payload"]["background_config_sha256"] == expected_digest
     # Ink Map reads the background and coverage-audit views independently from
     # the same sealed file; both readers must prove those bytes against the run.
-    assert producer.required_configs == [("designator-grouping", expected_digest)] * 2
+    assert producer.required_configs == [("ink-map", expected_digest)] * 2
 
     class ConsumerTree:
         def build_manifest(self, _stage):
@@ -632,11 +630,11 @@ def test_ink_map_by_page_accepts_the_actual_refusal_record_from_the_ink_map(monk
 
     context = _FakeContext.__new__(_FakeContext)
     context.tree = ConsumerTree()
-    context.run = {"sealed_config_digests": {"designator-grouping": expected_digest}}
-    context.args = SimpleNamespace(designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH))
+    context.run = {"sealed_config_digests": {"ink-map": expected_digest}}
+    context.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
     context.required_configs = []
     assert RUN.ink_map_by_page(context) == {1: None}
-    assert context.required_configs == [("designator-grouping", expected_digest)]
+    assert context.required_configs == [("ink-map", expected_digest)]
 
 
 def test_ink_map_by_page_accepts_the_actual_measured_record_from_the_ink_map(monkeypatch):
@@ -649,17 +647,15 @@ def test_ink_map_by_page_accepts_the_actual_measured_record_from_the_ink_map(mon
         "subject_id": "page-1",
         "payload": {"image_path": "page.png", "source_sha256": "0" * 64},
     }
-    expected_digest = read_sealed_toml(DEFAULT_BACKGROUND_CONFIG_PATH, "config")[1]
+    expected_digest = read_sealed_toml(DEFAULT_INK_MAP_CONFIG_PATH, "config")[1]
 
     class ProducerContext:
         def __init__(self):
             self.tree = object()
             self.run = {"ingress": {"mode": "synthetic-fixture"}}
-            self.args = SimpleNamespace(
-                designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH)
-            )
+            self.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
             self.published = []
-            self.sealed_config_digests = {"designator-grouping": expected_digest}
+            self.sealed_config_digests = {"ink-map": expected_digest}
             self.required_configs = []
 
         def require_sealed_config(self, name, observed_sha256):
@@ -707,11 +703,11 @@ def test_ink_map_by_page_accepts_the_actual_measured_record_from_the_ink_map(mon
 
     context = _FakeContext.__new__(_FakeContext)
     context.tree = ConsumerTree()
-    context.run = {"sealed_config_digests": {"designator-grouping": expected_digest}}
-    context.args = SimpleNamespace(designator_grouping_config=str(DEFAULT_BACKGROUND_CONFIG_PATH))
+    context.run = {"sealed_config_digests": {"ink-map": expected_digest}}
+    context.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
     context.required_configs = []
     assert RUN.ink_map_by_page(context) == {1: record["payload"]["edge_findings"]}
-    assert context.required_configs == [("designator-grouping", expected_digest)]
+    assert context.required_configs == [("ink-map", expected_digest)]
 
     # The same outcome is not enough: shorten one retained edge run while the
     # producer's published count remains intact. Both versions still flag, but
@@ -741,7 +737,7 @@ def test_ink_map_by_page_refuses_an_unmeasurable_payload_with_a_wrong_seal():
 
     context = _FakeContext.__new__(_FakeContext)
     context.tree = RefusalTree()
-    context.run = {"sealed_config_digests": {"designator-grouping": "0" * 64}}
+    context.run = {"sealed_config_digests": {"ink-map": "0" * 64}}
     context.required_configs = []
     with pytest.raises(FatalAccounting, match="invalid sealed ink-not-measurable payload"):
         RUN.ink_map_by_page(context)
@@ -788,7 +784,7 @@ def test_ink_map_by_page_refuses_a_measured_payload_without_current_background_p
 
     context = _FakeContext.__new__(_FakeContext)
     context.tree = MeasuredTree()
-    context.run = {"sealed_config_digests": {"designator-grouping": "0" * 64}}
+    context.run = {"sealed_config_digests": {"ink-map": "0" * 64}}
     context.required_configs = []
     with pytest.raises(FatalAccounting, match="invalid sealed measured payload"):
         RUN.ink_map_by_page(context)

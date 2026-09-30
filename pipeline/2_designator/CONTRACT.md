@@ -1666,13 +1666,14 @@ an empty set into a real containment —
 `test_the_containment_is_not_vacuous_on_a_photographed_page` proves it on a
 photographed-shaped page where the three ink sets nest strictly.
 
-The sealed `[grouping.background]` block did **not** move to a shared config. All
-three stages read `config/designator_grouping.toml`, validate it through one
-function (`common.background.validate_background_table`) and prove the bytes
-against the run's own `designator-grouping` seal, so each record names the policy
-it ran under. The cost is stated where it is paid: a file named for this stage is
-read by three, and that is a naming debt for whichever unit splits `config/` by
-concern, not a reason to seal one calibration twice.
+The background policy lives in `config/ink_map.toml`'s `[background]`, sealed as
+`ink-map`. Every stage that infers paper reads it, validates it through one
+function (`common.background.validate_background_table`) and proves the bytes
+against the run's own `ink-map` seal, so each record names the policy it ran
+under. This stage also refuses a run whose `page_spanning_area_bp` or
+`gap_tolerance_px` differs from the ink map's `[page_spanning]` and
+`[connectivity]`, so the component it withholds is the one the coverage audit
+takes out.
 
 A page this inference refuses is now refused by name at all three: this stage
 records `background_source: "not-inferable"` and `ink_measurable: false`, the Ink

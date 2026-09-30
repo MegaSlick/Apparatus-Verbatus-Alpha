@@ -26,6 +26,7 @@ from common.armarium_formats import (
     ArmariumFormats,
     bind_armarium_formats,
 )
+from common.background import DEFAULT_INK_MAP_CONFIG_PATH
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails, is_sha256
 from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
@@ -122,6 +123,7 @@ from common.recovery import (
     reconcile_recovery_requests,
     recovery_kind_budget,
 )
+from common.residual_ink import ink_map_config_digest
 from common.runtree.store import PublishResult, RunTree, _inode_identity
 from common.sealed_config import read_sealed_toml, require_seal_method, require_sealed_config
 from common.witness_adapters import validate_witness_adapter_bindings
@@ -1365,6 +1367,11 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     )
     parser.add_argument("--alignment-config", default=str(DEFAULT_ALIGNMENT_CONFIG_PATH))
     parser.add_argument(
+        "--ink-map-config",
+        default=str(DEFAULT_INK_MAP_CONFIG_PATH),
+        help="the sealed ink-measurement policy: background, page-spanning bound, coverage audit",
+    )
+    parser.add_argument(
         "--page-accounting-config",
         default=str(DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH),
         help="the sealed thresholds of the check that a page reading missed nothing",
@@ -1614,6 +1621,7 @@ def run_config_bindings(
     designator_grouping_config_path: str | Path = DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
     alignment_config_path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
     page_accounting_config_path: str | Path = DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
+    ink_map_config_path: str | Path = DEFAULT_INK_MAP_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     armarium_formats_config_path: str | Path = DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
@@ -1673,6 +1681,7 @@ def run_config_bindings(
     )[1]
     _, alignment_config_digest = load_alignment_limits(alignment_config_path)
     page_accounting_config_digest = load_page_accounting_policy(page_accounting_config_path).sha256
+    ink_map_digest = ink_map_config_digest(ink_map_config_path)
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
     )
@@ -1716,6 +1725,7 @@ def run_config_bindings(
                 "designator_grouping_config_sha256": grouping_config_digest,
                 "alignment_config_sha256": alignment_config_digest,
                 "page_accounting_config_sha256": page_accounting_config_digest,
+                "ink_map_config_sha256": ink_map_digest,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_digest,
                 "decoding_config_sha256": decoding_config_digest,
@@ -1751,6 +1761,7 @@ def run_config_bindings(
             "designator-grouping": grouping_config_digest,
             "alignment": alignment_config_digest,
             "page-accounting": page_accounting_config_digest,
+            "ink-map": ink_map_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
             "decoding": decoding_config_digest,
             "perlector-protocol": perlector_protocol_config_digest,
@@ -1825,6 +1836,7 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
             )[1],
             "alignment": alignment_config_digest,
             "page-accounting": load_page_accounting_policy(args.page_accounting_config).sha256,
+            "ink-map": ink_map_config_digest(args.ink_map_config),
             "corpus-frame-shard": corpus_frame_config_digest,
             "decoding": decoding_config_digest,
             "perlector-protocol": read_sealed_toml(
@@ -4565,6 +4577,7 @@ def open_context(
         designator_grouping_config_path=args.designator_grouping_config,
         alignment_config_path=args.alignment_config,
         page_accounting_config_path=args.page_accounting_config,
+        ink_map_config_path=args.ink_map_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,

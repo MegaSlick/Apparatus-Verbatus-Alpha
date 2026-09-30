@@ -8,10 +8,10 @@ The ink map runs after the Exemplar seal and before the Designator. It writes on
 
 The background every count here is taken below comes from
 `common.background::infer_background_evidence`, under the sealed
-`[grouping.background]` block of `config/designator_grouping.toml` resolved for
-this page's own dimensions — the same inference, the same policy and the same
-bytes the Designator's structure pass runs under, proved against the run's
-`designator-grouping` seal at the point of use.
+`[background]` block of `config/ink_map.toml` resolved for this page's own
+dimensions — the same inference, the same policy and the same bytes the
+Designator's structure pass runs under, proved against the run's `ink-map` seal
+at the point of use.
 
 **What that repaired.** This stage used to take the page's single most common
 pixel as paper. On a photographed register opening that is the bezel — 0 or near
@@ -83,10 +83,10 @@ an unproposed cross-page half act.**
 flat 64 pixels and the flat 2,000 outside-coverage pixels, both
 PROPOSED-NOT-MEASURED and both reasoned against a 200x260 fixture. They are
 `[coverage_audit] edge_band_bp = 100` and `substantial_ink_area_bp = 4` in
-`config/designator_grouping.toml`, `sample_count = 44`, resolved per page against
+`config/ink_map.toml`, `sample_count = 44`, resolved per page against
 its own shorter side and its own area; the block's caveat carries what the
 sample does and does not establish. This stage proves that file's bytes against
-the run's `designator-grouping` seal exactly as it does for the background
+the run's `ink-map` seal exactly as it does for the background
 policy, and every finding it publishes carries the resolved gate beside the
 counts it decided.
 

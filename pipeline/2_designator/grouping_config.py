@@ -10,10 +10,13 @@ in the wrong one is a schema refusal rather than a misread comment:
 `page_fraction_bp` values are basis points of page WIDTH (`margin_bp`) or
 HEIGHT (everything else); `absolute` values are raw pixel counts never scaled
 by page size; `page_area_bp` is a basis point of page AREA, a fraction of both
-dimensions at once; `background` (real-material-measured) mixes a `band_bp`
-that resolves against both dimensions (a frame) with population fractions
-(`max_interior_dark_bp`, `max_ink_bp`, `ink_margin_bp`) that never resolve to
-pixels at all.
+dimensions at once.
+
+The pass also reads the sealed ink-map policy (`config/ink_map.toml`): its
+`[background]` inference policy and its coverage audit's noise floor. The
+page-spanning bound and connectivity radius it withholds a component under
+must be the ink map's own, so the audit takes out the same component; a
+grouping file whose copies differ is refused.
 
 `primary_margin`/`secondary_margin` are refused by name everywhere in this
 policy: they are `structure.PRIMARY_MARGIN`/`SECONDARY_MARGIN`, absolute 8-bit
@@ -45,13 +48,16 @@ from common.background import (
     BASIS_POINTS as _BASIS_POINTS,
 )
 from common.background import (  # noqa: F401
+    DEFAULT_INK_MAP_CONFIG_PATH,
+    INK_MAP_TABLES,
+    load_background_config,
     resolve_background_policy,
     validate_background_table,
 )
 from common.calibration import calibrated_claim_has_sample_evidence
 from common.contracts.canonical import is_plain_int
 from common.contracts.errors import ContractError
-from common.residual_ink import validate_coverage_audit_table
+from common.residual_ink import load_coverage_audit_config
 from common.sealed_config import read_sealed_toml
 
 DEFAULT_GROUPING_CONFIG_PATH = (
@@ -100,16 +106,11 @@ _GROUPING_TOP_FIELDS: Final = _GROUPING_COUNT_FIELDS + (
     "continuation",
     "absolute",
     "page_area_bp",
-    "background",
     "residual_presentation",
     "provenance",
 )
 
-# `coverage_audit` isn't the Designator's own policy -- it's the Ink Map,
-# Recensor and Armarium's shared outside-coverage audit -- but it's validated
-# here (via the audit's own validator) so a malformed table is refused at the
-# earliest stage a run reaches. The Designator itself does nothing with it.
-_TOP_LEVEL_TABLES: Final = ("grouping", "coverage_audit")
+_TOP_LEVEL_TABLES: Final = ("grouping",)
 
 
 def _refuse_forbidden_names(fields: dict, where: str) -> None:
@@ -128,9 +129,13 @@ def _refuse_forbidden_names(fields: dict, where: str) -> None:
 
 def load_grouping_config(
     path: str | Path = DEFAULT_GROUPING_CONFIG_PATH,
+    ink_map_path: str | Path = DEFAULT_INK_MAP_CONFIG_PATH,
 ) -> dict[str, Any]:
-    """Read the grouping/reconciliation policy, with the digest that seals it.
+    """Read the grouping/reconciliation policy and the ink-map policy it runs beside.
 
+    Returns the grouping values with their digest (`config_sha256`), and the
+    ink map's `background` and `coverage_audit` with its digest
+    (`ink_map_config_sha256`); a caller proves each against its own seal.
     Every field is refused loudly rather than defaulted, matching
     `load_padding_config`.
     """
@@ -173,38 +178,61 @@ def load_grouping_config(
     continuation = _load_continuation(grouping.get("continuation"))
     page_area_bp = _load_page_area_bp(grouping.get("page_area_bp"))
     residual_presentation = _load_residual_presentation(grouping.get("residual_presentation"))
-    # Validated but not applied (see _TOP_LEVEL_TABLES): only the Designator
-    # itself refuses a run whose calibration block lost its provenance.
-    coverage_audit = {
-        **validate_coverage_audit_table(config.get("coverage_audit")),
-        "provenance": _load_provenance(
-            (config.get("coverage_audit") or {}).get("provenance")
-            if isinstance(config.get("coverage_audit"), dict)
-            else None,
-            "[coverage_audit.provenance]",
-        ),
-        # A separate provenance block: it must not be read as covering the
-        # unmeasured noise-floor pair too.
-        "noise_floor_provenance": _load_provenance(
-            config["coverage_audit"]["noise_floor"].get("provenance"),
-            "[coverage_audit.noise_floor.provenance]",
-        ),
-    }
-    background = _load_background(grouping.get("background"))
     provenance = _load_provenance(grouping.get("provenance"), "[grouping.provenance]")
+    ink_map = _load_ink_map(ink_map_path)
+    for name, value in (
+        ("page_spanning_area_bp", page_area_bp["page_spanning_area_bp"]),
+        ("gap_tolerance_px", absolute["gap_tolerance_px"]),
+    ):
+        if value != ink_map[name]:
+            raise ContractError(
+                f"the grouping configuration's {name} is {value}, but the sealed ink-map "
+                f"policy's is {ink_map[name]}; the component this pass withholds must be the "
+                "one the coverage audit takes out, so the two must read one number"
+            )
 
     return {
         "config_sha256": digest,
+        "ink_map_config_sha256": ink_map["config_sha256"],
         **counts,
         **{name: residual_presentation[name] for name in _RESIDUAL_PRESENTATION_FIELDS},
         "residual_presentation": residual_presentation,
         "page_fraction_bp": page_fraction_bp,
         "continuation": continuation,
-        "coverage_audit": coverage_audit,
+        "coverage_audit": ink_map["coverage_audit"],
         "absolute": absolute,
         "page_area_bp": page_area_bp,
-        "background": background,
+        "background": ink_map["background"],
         "provenance": provenance,
+    }
+
+
+def _load_ink_map(path: str | Path) -> dict[str, Any]:
+    """The ink-map policy this pass reads, each value block with its provenance.
+
+    Values are validated by the shared loaders every other reader uses; this
+    pass also refuses a block that has lost its provenance.
+    """
+    background = load_background_config(path)
+    coverage = load_coverage_audit_config(path)
+    config, digest = read_sealed_toml(path, "ink-map configuration", INK_MAP_TABLES)
+    if {background["config_sha256"], coverage["config_sha256"]} != {digest}:
+        raise ContractError("the ink-map configuration changed while it was being read")
+    audit = config["coverage_audit"]
+    return {
+        "config_sha256": digest,
+        "background": _load_background(config.get("background")),
+        "coverage_audit": {
+            **coverage["coverage_audit"],
+            "provenance": _load_provenance(audit.get("provenance"), "[coverage_audit.provenance]"),
+            # A separate provenance block: it must not be read as covering the
+            # unmeasured noise-floor pair too.
+            "noise_floor_provenance": _load_provenance(
+                audit["noise_floor"].get("provenance"), "[coverage_audit.noise_floor.provenance]"
+            ),
+        },
+        "page_spanning_area_bp": coverage["page_spanning_area_bp"],
+        "gap_tolerance_px": coverage["gap_tolerance_px"],
     }
 
 
@@ -400,36 +428,31 @@ def _load_page_area_bp(table: Any) -> dict[str, Any]:
 
 
 def _load_background(table: Any) -> dict[str, Any]:
-    """Read `[grouping.background]` and its own provenance.
+    """Read the ink map's `[background]` and its own provenance.
 
     Its own provenance block because these four values are measured on 127
-    real pages, one of several such blocks in this file (continuation is
-    measured on 44, and page-area and the coverage audit carry their own
-    too). The values themselves are
-    validated by `common.background.validate_background_table`, shared with
-    the Ink Map and the Recensor's residual-ink audit so all three refuse the
-    same malformed value; this function adds only the forbidden-name refusal,
-    the closed field set, and the provenance schema.
+    real pages. The values themselves are validated by
+    `common.background.validate_background_table`, shared with every other
+    reader so all refuse the same malformed value; this function adds only the
+    forbidden-name refusal, the closed field set, and the provenance schema.
     """
     if not isinstance(table, dict):
-        raise ContractError("the grouping configuration has no [grouping.background] table")
-    _refuse_forbidden_names(table, "[grouping.background]")
+        raise ContractError("the ink-map configuration has no [background] table")
+    _refuse_forbidden_names(table, "[background]")
     expected = set(_BACKGROUND_BP_FIELDS) | {"provenance"}
     unexpected = sorted(set(table) - expected)
     if unexpected:
         raise ContractError(
-            f"the grouping configuration's [grouping.background] carries unknown field(s) "
+            f"the ink-map configuration's [background] carries unknown field(s) "
             f"{unexpected}; an unread policy field cannot be applied"
         )
     missing = sorted(expected - set(table))
     if missing:
         raise ContractError(
-            f"the grouping configuration's [grouping.background] is missing field(s) {missing}"
+            f"the ink-map configuration's [background] is missing field(s) {missing}"
         )
     values = validate_background_table(table)
-    values["provenance"] = _load_provenance(
-        table.get("provenance"), "[grouping.background.provenance]"
-    )
+    values["provenance"] = _load_provenance(table.get("provenance"), "[background.provenance]")
     return values
 
 

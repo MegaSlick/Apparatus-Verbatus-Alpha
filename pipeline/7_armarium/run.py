@@ -723,14 +723,14 @@ def ink_map_page_rows(
     set, independently of the later re-measurement against Designator cuts.
 
     The sealed `[coverage_audit]` policy is read here, out of the same file and
-    under the same `designator-grouping` seal every other reader of it proves
+    under the same `ink-map` seal every other reader of it proves
     its bytes against, and resolved for each page's own dimensions: the band
     this stage re-measures in and the gate it releases by have to be the ones
     the Ink Map's own finding was taken under, and a policy resolved for another
     page would make this a second detector rather than the same one.
     """
-    coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
-    context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
+    coverage_config = load_coverage_audit_config(context.args.ink_map_config)
+    context.require_sealed_config("ink-map", coverage_config["config_sha256"])
     found: dict[int, dict] = {}
     for entry in context.tree.build_manifest(INK_MAP)["artifacts"]:
         if entry["kind"] != "ink-map":
@@ -770,9 +770,7 @@ def ink_map_page_rows(
             # page's ink was unavailable to measure.
             try:
                 refusal = validate_ink_not_measurable_payload(payload)
-                context.require_sealed_config(
-                    "designator-grouping", refusal["background_config_sha256"]
-                )
+                context.require_sealed_config("ink-map", refusal["background_config_sha256"])
             except ContractError as error:
                 raise FatalAccounting(
                     f"ink-map page {ordinal} has an invalid sealed ink-not-measurable "
@@ -785,9 +783,7 @@ def ink_map_page_rows(
             measured = validate_measured_ink_map_payload(
                 payload, audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
             )
-            context.require_sealed_config(
-                "designator-grouping", measured["background_config_sha256"]
-            )
+            context.require_sealed_config("ink-map", measured["background_config_sha256"])
         except ContractError as error:
             raise FatalAccounting(
                 f"ink-map page {ordinal} has an invalid sealed measured payload. Restore the "
