@@ -1216,7 +1216,7 @@ run (committed `round_cap = 1`) can read pages.
   order, not a reading order. Each line's and block's `confidence_bp` is recorded on the feed and never
   rendered into the prompt.
 - The page image at the sealed `[feed] page_image`: `legible` is
-  `dossier.build_page_render` at `[page_context] maximum_edge` (reason
+  `common.page_render.build_page_render` at `[page_context] maximum_edge` (reason
   `legible-ink`); `full` is the sealed page at its own size (reason `full-page`,
   resampler `identity`); `off` is none.
 - On a synthetic run only, a Chandra page joined from the fixture's act placeholders

@@ -21,7 +21,7 @@ import pytest
 
 from common import page_path
 from common import stage as stage_module
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
 from common.contracts.errors import ContractError, FatalAccounting, IdentityRefusal
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import artifact_id, attempt_id
@@ -155,6 +155,41 @@ def _forge(root: Path, kind: str, ordinal: int, n: int | None, change: Callable)
     _rewitness(root)
 
 
+def _forge_through(root: Path, kind: str, ordinal: int, n: int | None, change: Callable) -> None:
+    """Rewrite one Perlector record and carry its new digest into every record naming it.
+
+    Each record that names a rewritten one is rewritten in turn, so the forgery
+    reaches the denominator with every reference and self-hash consistent.
+    """
+    path, record = _one(root, kind, ordinal, n)
+    forged = copy.deepcopy(record)
+    change(forged)
+    before = digest_bytes(path.read_bytes())
+    _write(path, forged)
+    swaps = [(before, digest_bytes(path.read_bytes()))]
+    artifacts = root / RUN_ID / "4_perlector" / "artifacts"
+    while swaps:
+        old, new = swaps.pop()
+        for other in artifacts.glob("*/*.json"):
+            text = other.read_text(encoding="utf-8")
+            if old in text:
+                was = digest_bytes(other.read_bytes())
+                _write(other, json.loads(text.replace(old, new)))
+                swaps.append((was, digest_bytes(other.read_bytes())))
+    _rewitness(root)
+
+
+def _with_feed_digest(change: Callable) -> Callable:
+    """`change` applied to a page feed, its `feed_digest` then made that of the changed feed."""
+
+    def changed(record):
+        feed = record["payload"]
+        change(feed)
+        feed["feed_digest"] = digest_of({k: v for k, v in feed.items() if k != "feed_digest"})
+
+    return changed
+
+
 def _drop_act_records(root: Path, ordinal: int) -> None:
     for kind in ("act-region", "perlectio"):
         for path, record in _records(root, kind):
@@ -188,8 +223,19 @@ def _reaccount(tree: tuple[Path, Path, str], ordinal: int) -> list[str]:
         if payload["disposition"] == "read"
         else []
     )
+    witnesses = stage_module._verify_feed(
+        context, index, "test", ordinal, reading["subject_id"], feed
+    )
     measured, inputs = stage_module._measure_page_accounting(
-        context, index, "test", feed, payload["feed_ref"], payload, index.ref(reading), plans
+        context,
+        index,
+        "test",
+        feed["payload"],
+        payload["feed_ref"],
+        witnesses,
+        payload,
+        index.ref(reading),
+        plans,
     )
     holds = measured["holds"]
     path, accounting = _one(root, "page-accounting", ordinal)
@@ -801,6 +847,47 @@ def test_answer_entries_that_cannot_be_planned_refuse_as_accounting(happy_tree, 
 def test_malformed_accounting_inputs_refuse_as_accounting(inputs):
     with pytest.raises(FatalAccounting, match="not a list of path references"):
         stage_module._refs_by_path(inputs, "page 1's page accounting")
+
+
+def _swap_render_for_a_crop(root: Path) -> Callable:
+    _path, region = _one(root, "act-region", 1, 1)
+    crop = region["payload"]
+
+    def swap(feed):
+        feed["page_render"].update(image_path=crop["image_path"], image_sha256=crop["image_sha256"])
+
+    return swap
+
+
+@pytest.mark.parametrize(
+    "forgery",
+    [
+        lambda root: (
+            lambda feed: feed["witnesses"][0]["units"][0].update(
+                text=feed["witnesses"][0]["units"][0]["text"] + " and a line no witness wrote"
+            )
+        ),
+        lambda root: lambda feed: feed["witnesses"][0]["units"].pop(),
+        _swap_render_for_a_crop,
+        lambda root: lambda feed: feed["page_render"]["transform"].update(maximum_edge=1),
+        lambda root: lambda feed: feed.update(prompt=None),
+    ],
+    ids=[
+        "shown-unit-text",
+        "shown-unit-dropped",
+        "page-render-image",
+        "render-transform",
+        "prompt",
+    ],
+)
+def test_a_forged_page_feed_is_refused_against_the_feed_its_inputs_build(
+    happy_tree, tmp_path, forgery
+):
+    tree = _copy(happy_tree, tmp_path)
+    root = tree[0]
+    _forge_through(root, "page-feed", 1, None, _with_feed_digest(forgery(root)))
+    with pytest.raises(FatalAccounting, match="page feed is not the feed its sealed inputs build"):
+        reading_acts(_context(tree))
 
 
 def test_a_reading_naming_another_feed_than_its_inputs_is_refused(happy_tree, tmp_path):

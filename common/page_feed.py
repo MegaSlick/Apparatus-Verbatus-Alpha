@@ -4,7 +4,7 @@ Under `reading_unit = "page"` the Perlector reads one page per call and
 establishes the acts itself. What it is shown is this feed: the page image
 (carried beside the text, not in it), each witness's page text broken into
 that witness's own units, and Surya's detected lines and blocks. Every input
-has a switch in the sealed `[feed]` table (`protocol.validate_feed_table`); a
+has a switch in the sealed `[feed]` table (`validate_feed_table`); a
 switched-off input is absent from the prompt and the feed records the
 switches it was built under.
 
@@ -60,7 +60,7 @@ Churro's section names -- are part of its report and are shown as given.
         surya={"census_ref", "block_sequence", "block_sequence_reason",
                "lines": [{"box_px", "confidence_bp", "ref"}],
                "blocks": [{"box_px", "label", "position", "confidence_bp", "ref"}]} | None,
-        page_render=dossier.build_page_render(...) | None,
+        page_render=page_render.build_page_render(...) | None,
         serving_recipe=chair.serving_recipe,
         read_bytes=context.tree.read_bytes,
     )
@@ -110,13 +110,10 @@ import json
 from fractions import Fraction
 from typing import Any, Callable, Final
 
-import page_overlay
-import page_prompt
-import protocol
-
+from common import page_overlay, page_prompt
 from common.contracts.canonical import digest_of, is_plain_int
 from common.contracts.envelope import digest_ref, read_verified
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.native_witness import REPETITION_FINDING_KINDS
 from common.page_witness_units import (
     NO_ANSWER_HEALTH,
@@ -132,6 +129,33 @@ from operations.serving.surya_detector import contract as surya_contract
 SCHEMA: Final = "perlector-page-feed.v1"
 READING_UNIT: Final = "page"
 BOX_SCALE: Final = 1000
+
+# The Perlector protocol's table holding the feed switches.
+FEED_TABLE: Final = "feed"
+# The sealed `[feed]` table's switches. Closed: every key required,
+# every value one of the listed ones, so a run cannot read under a switch this
+# build does not apply.
+PAGE_IMAGE_SETTINGS: Final = frozenset({"legible", "full", "off"})
+WITNESS_UNIT_SETTINGS: Final = frozenset({"own", "flat"})
+ALL_WITNESSES: Final = "all"
+# Crops: off is the only setting this build applies.
+CROP_SETTINGS: Final = frozenset({"off"})
+# "boxes" adds a second image: a copy of the page render with every shown boxed
+# candidate outlined and labelled with its id (`page_overlay.py`).
+PAGE_OVERLAY_SETTINGS: Final = frozenset({"off", "boxes"})
+_FEED_FIELDS: Final = frozenset(
+    {
+        "page_image",
+        "witnesses",
+        "witness_units",
+        "witness_coordinates",
+        "surya_lines",
+        "surya_blocks",
+        "crops",
+        "page_overlay",
+    }
+)
+_FEED_BOOLEAN_FIELDS: Final = ("witness_coordinates", "surya_lines", "surya_blocks")
 
 PAGE_TESTIMONIUM_KIND: Final = "page-testimonium"
 # The unit kinds about one act in size (`UNIT_KINDS`); the answer reserve counts
@@ -177,6 +201,58 @@ TESTIMONY_NONE: Final = "none"
 # --- geometry -------------------------------------------------------------------
 
 
+def validate_feed_table(table: Any) -> dict[str, Any]:
+    """The sealed `[feed]` table, checked closed and returned as a copy.
+
+    `witnesses` is `"all"` or a list of distinct chair names; whether each name
+    is in the run's sealed roster is checked where the roster is known
+    (`build_page_feed`).
+    """
+    where = f"the Perlector protocol declaration's [{FEED_TABLE}]"
+    if not isinstance(table, dict) or set(table) != _FEED_FIELDS:
+        raise ContractError(
+            f"{where} is not its closed schema {sorted(_FEED_FIELDS)}; a feed switch this "
+            "build does not read cannot be applied"
+        )
+    if table["page_image"] not in PAGE_IMAGE_SETTINGS:
+        raise ContractError(
+            f"{where} page_image {table['page_image']!r} is not one of "
+            f"{sorted(PAGE_IMAGE_SETTINGS)}"
+        )
+    if table["witness_units"] not in WITNESS_UNIT_SETTINGS:
+        raise ContractError(
+            f"{where} witness_units {table['witness_units']!r} is not one of "
+            f"{sorted(WITNESS_UNIT_SETTINGS)}"
+        )
+    if table["crops"] not in CROP_SETTINGS:
+        raise ContractError(
+            f"{where} crops {table['crops']!r} is not accepted; only {sorted(CROP_SETTINGS)} "
+            "is applied by this build"
+        )
+    if table["page_overlay"] not in PAGE_OVERLAY_SETTINGS:
+        raise ContractError(
+            f"{where} page_overlay {table['page_overlay']!r} is not one of "
+            f"{sorted(PAGE_OVERLAY_SETTINGS)}"
+        )
+    if table["page_overlay"] != "off" and table["page_image"] == "off":
+        raise ContractError(
+            f"{where} page_overlay draws on a copy of the page render, but page_image is off"
+        )
+    for field in _FEED_BOOLEAN_FIELDS:
+        if not isinstance(table[field], bool):
+            raise ContractError(f"{where} {field} is not true or false")
+    witnesses = table["witnesses"]
+    if witnesses != ALL_WITNESSES and (
+        not isinstance(witnesses, list)
+        or not all(isinstance(chair, str) and chair.strip() for chair in witnesses)
+        or len(set(witnesses)) != len(witnesses)
+    ):
+        raise ContractError(
+            f"{where} witnesses is neither {ALL_WITNESSES!r} nor a list of distinct chair names"
+        )
+    return {**table, "witnesses": witnesses if witnesses == ALL_WITNESSES else list(witnesses)}
+
+
 def box_1000(box_px: dict[str, int], page_size: tuple[int, int]) -> list[int]:
     """`[x0, y0, x1, y1]` on a 0-1000 grid of the page, rounded half to even.
 
@@ -206,7 +282,7 @@ def _checked_roster(roster: Any) -> list[str]:
 
 
 def _shown_chairs(switch: Any, roster: list[str]) -> set[str]:
-    if switch == protocol.ALL_WITNESSES:
+    if switch == ALL_WITNESSES:
         return set(roster)
     unknown = sorted(set(switch) - set(roster))
     if unknown:
@@ -538,7 +614,7 @@ def build_page_feed(
     the retained bytes of the shown witnesses only; the rest is
     `assemble_page_feed`.
     """
-    switches = protocol.validate_feed_table(feed_switches)
+    switches = validate_feed_table(feed_switches)
     roster = _checked_roster(roster)
     witnesses = _checked_witnesses(
         witnesses, _WITNESS_FIELDS, witness_regime, roster, no_testimony=no_testimony
@@ -623,7 +699,7 @@ def assemble_page_feed(
     block_sequence_reason: None, lines: [], blocks: []}`. `no_testimony`
     states that the page has no page Testimonium at all (`witnesses` is then
     empty). `page_render` is what
-    `dossier.build_page_render` returned for the `page_image` switch, or `None`
+    `common.page_render.build_page_render` returned for the `page_image` switch, or `None`
     when it is off. `page_render_bytes` are the render's bytes, needed only
     when `page_overlay` is on, to draw the overlay and seal its digest.
 
@@ -636,7 +712,7 @@ def assemble_page_feed(
     renderer_sha256, image_sha256}`; `feed_digest` is the digest of every other
     field.
     """
-    switches = protocol.validate_feed_table(feed_switches)
+    switches = validate_feed_table(feed_switches)
     if witness_regime not in REGIMES:
         raise SchemaRefusal(f"witness regime {witness_regime!r} is not one of {sorted(REGIMES)}")
     width, height = page_size

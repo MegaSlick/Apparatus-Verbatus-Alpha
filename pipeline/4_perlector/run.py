@@ -49,8 +49,8 @@ from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 from throughput import PLANNED_SECONDS_PER_CALL  # noqa: E402
 
 import operations.serving.errors as serving_errors  # noqa: E402
+from common import page_render, truncation  # noqa: E402
 from common import reading_annotations as annotations  # noqa: E402
-from common import truncation  # noqa: E402
 from common.alignment import bracket_marker_view, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -124,6 +124,7 @@ from common.native_witness import (  # noqa: E402
     validate_presented_page_binding,
     verify_native_capture_blob,
 )
+from common.page_path import declared_page_witness_chairs  # noqa: E402
 from common.perlector_failure import (  # noqa: E402
     PRE_PERLECTIO_ARTIFACTS,
     validate_failed_payload,
@@ -848,43 +849,6 @@ def testimonia_of(context, act_id: str, proposal_regions: list[dict]) -> list[di
             "run was not sealed with"
         )
     return current
-
-
-def declared_page_witness_chairs(context) -> set[str]:
-    """Read page scope from the sealed model configuration, not from upstream records.
-
-    A consumer may not inherit trust across a stage boundary. The uniqueness and roster
-    checks stop a duplicate or a nonexistent chair from silently erasing page coverage.
-    """
-    roster = context.witness_chairs
-    # Exact `str`, not `isinstance`: set construction and refusal formatting would run
-    # subclass code.
-    if (
-        not isinstance(roster, list)
-        or any(type(chair) is not str for chair in roster)
-        or len(roster) != len(set(roster))
-    ):
-        raise SchemaRefusal(
-            "the sealed witness roster is not a unique list of chair names. Page-witness scope "
-            "cannot be derived from this run authority. Start a new run from the sealed models "
-            "configuration; do not edit the existing run"
-        )
-    configured = context.registry.config.chairs
-    unknown = set(roster) - set(configured)
-    if unknown:
-        raise SchemaRefusal(
-            "the sealed witness roster names chair(s) absent from the current models "
-            "configuration: "
-            f"{sorted(unknown)} not in {sorted(configured)}. The run authority and current models "
-            "configuration do not describe the same witness set. Reopen the run with its original "
-            "models configuration or start a new run; do not edit sealed evidence"
-        )
-    return {
-        chair
-        for chair in roster
-        if isinstance(configured[chair], ChairIdentity)
-        and configured[chair].witness_scope == "page"
-    }
 
 
 ATTACHMENT_FIELDS: Final = frozenset(
@@ -2122,7 +2086,7 @@ def _page_renders_for(context, bases: list[dict], *, page_context: dict[str, int
     for basis in bases:
         by_page.setdefault(basis["source_page_id"], []).append(basis)
     return [
-        dossier_module.build_page_render(
+        page_render.build_page_render(
             context,
             source_page_id=page_id,
             source_page_ordinal=on_page[0]["source_page_ordinal"],
@@ -2170,7 +2134,7 @@ def _region_pixels(bases: list[dict]) -> int:
         by_page.setdefault(basis["source_page_id"], []).append(
             (bounds["x"], bounds["y"], bounds["x"] + bounds["w"], bounds["y"] + bounds["h"])
         )
-    return sum(dossier_module.union_area(rectangles) for rectangles in by_page.values())
+    return sum(page_render.union_area(rectangles) for rectangles in by_page.values())
 
 
 def _page_pixels(page_renders: list[dict]) -> int:
@@ -4008,7 +3972,6 @@ def _read_the_pages(run: "_Pass") -> int:
     page_run.read_the_pages(
         run,
         page_run.StageHooks(
-            declared_page_witness_chairs=declared_page_witness_chairs,
             validate_page_testimonium_record=validate_page_testimonium_record,
             verify_page_native_capture=_verify_page_native_capture,
             provenance_for=provenance_for,

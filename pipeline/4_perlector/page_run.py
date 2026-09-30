@@ -3,8 +3,8 @@
 Under the sealed `reading_unit = "page"` (`protocol.py`) stage 4 does not read
 the Designator's acts. It reads every sealed Exemplar page in one call, shown
 the page image and every witness's page broken into that witness's own units,
-and the Perlector establishes the acts itself (`page_feed.py`,
-`page_prompt.py`, `common/page_answer.py`). Per page, in the order published:
+and the Perlector establishes the acts itself (`common/page_feed.py`,
+`common/page_prompt.py`, `common/page_answer.py`). Per page, in the order published:
 
     page-feed       (subject page_id)  what the reading is shown, every id it may cite
     reader-sent     (subject page_id)  live only, before the call leaves
@@ -47,21 +47,24 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Callable, Final
 
-import dossier
-import page_feed
-import page_overlay
-import page_prompt
 from dissent import dissent_against
 from live_reader import EngineSignalRefusal, send_page_request
 from throughput import planned_seconds_per_page
 
 import operations.serving.errors as serving_errors
-from common import page_accounting, page_answer, page_path
+from common import (
+    page_accounting,
+    page_answer,
+    page_feed,
+    page_overlay,
+    page_path,
+    page_prompt,
+)
 from common.alignment import bracket_marker_view
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.envelope import read_verified
-from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
+from common.contracts.errors import ContractError
 from common.contracts.identities import (
     artifact_id,
     region_id,
@@ -97,7 +100,6 @@ from common.stage import (
     latest_per_chair,
     stage_manifest,
 )
-from common.witness_regime import witness_label
 from operations.serving.assembly import bound_serving_recipes
 from operations.serving.errors import ChairResponseRefusal
 from operations.serving.http import EndpointUnavailable
@@ -123,7 +125,6 @@ _PAGE_LOCAL_CALL_FAILURES: Final = (
 class StageHooks:
     """The helpers of the act path's `run.py` the page path reads its evidence through."""
 
-    declared_page_witness_chairs: Callable[..., set[str]]
     validate_page_testimonium_record: Callable[..., None]
     verify_page_native_capture: Callable[..., None]
     provenance_for: Callable[..., dict[str, Any]]
@@ -200,104 +201,6 @@ def current_page_testimonia(context, hooks: StageHooks, proposal_regions) -> dic
         page_id: latest_per_chair(records, f"page Testimonium for page {page_id}")
         for page_id, records in by_page.items()
     }
-
-
-def _page_witnesses(
-    context, page_id: str, current: list[dict[str, Any]], page_chairs: set[str]
-) -> list[dict[str, Any]]:
-    """Every configured page witness's current Testimonium for one page, as the feed takes it.
-
-    Called only for a page some witness testified to: a page with none is read
-    as `no-witness-testimony`, but a roster chair missing beside others that
-    testified is a shortened roster and refuses.
-    """
-    by_chair = {record["payload"]["chair"]: record for record in current}
-    missing = page_chairs - set(by_chair)
-    if missing:
-        raise FatalAccounting(
-            f"page {page_id} has no current page Testimonium for configured page witness(es) "
-            f"{sorted(missing)}; the page cannot be read over a shortened witness roster"
-        )
-    unsealed = set(by_chair) - page_chairs
-    if unsealed:
-        raise FatalAccounting(
-            f"page {page_id} carries page Testimonia from chair(s) {sorted(unsealed)}, which "
-            "this run did not seal as page witnesses"
-        )
-    return [
-        {
-            "chair": chair,
-            "witness_label": witness_label(
-                chair,
-                regime=context.witness_context,
-                run_id=context.tree.run_id,
-                config_digest=context.config_digest,
-            ),
-            "adapter": context.registry.resolve(chair).witness_adapter,
-            "testimonium": by_chair[chair],
-            "testimonium_ref": context.artifact_ref(
-                ATTESTATORES, "page-testimonium", by_chair[chair]["artifact_id"]
-            ),
-        }
-        for chair in sorted(page_chairs)
-    ]
-
-
-def _surya_for(census: dict[str, dict[str, Any]] | None, page_id: str) -> Any:
-    if census is None:
-        return page_feed.SURYA_ABSENT
-    if page_id not in census:
-        raise FatalAccounting(
-            f"this run seals Surya censuses, but none for page {page_id}; the page cannot be "
-            "shown its detections"
-        )
-    return census[page_id]
-
-
-def _page_render(context, protocol_config: dict[str, Any], page_id: str, ordinal: int):
-    """The page image the sealed `page_image` switch shows, or `None` when it is off."""
-    setting = protocol_config["feed"]["page_image"]
-    if setting == "off":
-        return None
-    return dossier.build_page_render(
-        context,
-        source_page_id=page_id,
-        source_page_ordinal=ordinal,
-        page_context=protocol_config["page_context"],
-        crop_bounds=[],
-        full_page=setting == "full",
-    )
-
-
-def feed_inputs(
-    context, feed: dict[str, Any], witnesses: list[dict[str, Any]]
-) -> list[dict[str, str]]:
-    """Every record and image the feed names or was built from, digest-checked on disk.
-
-    `witnesses` is every page witness of the sealed roster, shown or hidden:
-    a hidden witness's Testimonium is an input too, since the accounting
-    measures it.
-    """
-    named: list[dict[str, str] | None] = [
-        witness["testimonium_ref"] for witness in feed["witnesses"]
-    ] + [witness["testimonium_ref"] for witness in witnesses]
-    render = feed["page_render"]
-    if render is not None:
-        named += [
-            dict(render["source"]),
-            {"relative_path": render["image_path"], "sha256": render["image_sha256"]},
-        ]
-    surya = feed["surya"]
-    if surya is not None:
-        named.append(surya["census_ref"])
-        named += [row["ref"] for row in surya["lines"] + surya["blocks"]]
-    references = page_path.distinct_refs(named)
-    for reference in references:
-        if context.input_ref(reference["relative_path"]) != reference:
-            raise SchemaRefusal(
-                f"the page feed names {reference!r}, but the bytes at that path differ"
-            )
-    return references
 
 
 # --- one page ---------------------------------------------------------------------
@@ -409,28 +312,23 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
     page.page_size = (width, height)
     current = state.testimonia.get(page_id, [])
     no_testimony = not current
-    if not no_testimony:
-        page.witnesses = _page_witnesses(context, page_id, current, state.page_chairs)
-    feed = page_feed.build_page_feed(
+    feed, page.witnesses, inputs = page_path.page_feed_of(
+        context,
         page_id=page_id,
-        page_ordinal=ordinal,
+        ordinal=ordinal,
         page_size=(width, height),
-        feed_switches=run.protocol_config["feed"],
-        witness_regime=context.witness_context,
-        roster=sorted(state.page_chairs),
-        witnesses=page.witnesses,
-        surya=_surya_for(state.surya, page_id),
-        page_render=_page_render(context, run.protocol_config, page_id, ordinal),
+        protocol_config=run.protocol_config,
+        page_chairs=state.page_chairs,
+        current=current,
+        surya_census=state.surya,
         serving_recipe=run.chair.serving_recipe if state.chair_present else None,
-        read_bytes=context.tree.read_bytes,
         fixture_placeholders=not state.hooks.real_ingress(context),
-        no_testimony=no_testimony,
     )
     published = context.publish(
         kind=PAGE_FEED_KIND,
         subject_id=page_id,
         outcome="read",
-        inputs=feed_inputs(context, feed, page.witnesses),
+        inputs=inputs,
         payload=feed,
     )
     page.feed, page.feed_ref = feed, context.input_ref(published.relative_path)
@@ -1059,7 +957,7 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         run=run,
         hooks=hooks,
         audit=audit_not_run(run.audit_policy, run.audit_sha256),
-        page_chairs=hooks.declared_page_witness_chairs(context),
+        page_chairs=page_path.declared_page_witness_chairs(context),
         testimonia=current_page_testimonia(context, hooks, run.all_proposal_regions),
         surya=page_path.sealed_surya_census(
             context, stage_manifest(context, DESIGNATOR)["artifacts"]

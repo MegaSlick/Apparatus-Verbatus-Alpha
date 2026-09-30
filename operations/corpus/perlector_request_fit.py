@@ -38,11 +38,10 @@ if str(_PERLECTOR_DIR) not in sys.path:
     sys.path.insert(0, str(_PERLECTOR_DIR))
 
 import live_reader  # noqa: E402
-import page_feed  # noqa: E402
-import page_prompt  # noqa: E402
 import prompts  # noqa: E402
 import protocol  # noqa: E402
 
+from common import page_feed, page_prompt  # noqa: E402
 from common.background import round_half_up_bp  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
@@ -139,7 +138,7 @@ def _rendered(page: tuple[int, int], edge: int) -> tuple[int, int]:
 
 
 def _covered(page: tuple[int, int], crops: list[tuple[int, int, int, int]]) -> bool:
-    # One full-page crop is the case that occurs; `dossier.union_area` decides it in
+    # One full-page crop is the case that occurs; `common.page_render.union_area` decides it in
     # the pipeline for any union.
     return any(crop == (0, 0, page[0], page[1]) for crop in crops)
 

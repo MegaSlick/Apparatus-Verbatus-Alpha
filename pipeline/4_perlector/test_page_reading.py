@@ -21,7 +21,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import page_feed
 import page_run
 import pytest
 from test_live_perlector import (
@@ -34,7 +33,7 @@ from test_live_perlector import (
     _TreeBlobs,
 )
 
-from common import page_path
+from common import page_feed, page_path
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import act_bindings, artifact_id, region_id, verify

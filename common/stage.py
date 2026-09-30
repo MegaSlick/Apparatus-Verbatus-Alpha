@@ -2512,6 +2512,7 @@ class _PageReadRecords:
                     "the Designator cut; one run's acts are counted one way, never both"
                 )
         _unit, protocol = _sealed_perlector_protocol(context)
+        self.protocol = protocol
         self.truncation_policy = protocol.get("truncation")
         self.accounting_policy = page_accounting.require_page_accounting_policy(
             context, context.page_accounting_config_path
@@ -2697,11 +2698,8 @@ def _verify_page_reading(
         )
     except ContractError as error:
         raise FatalAccounting(f"{what}'s page feed does not verify: {error}") from error
+    witnesses = _verify_feed(context, index, what, ordinal, page_id, feed_record)
     feed = _payload_of(feed_record)
-    _require(
-        feed.get("page_id") == page_id and feed.get("page_ordinal") == ordinal,
-        f"{what}'s page feed is not this page's",
-    )
     accounting = _one(
         index.by_subject(page_path.PAGE_ACCOUNTING_KIND, page_id),
         f"{what}'s page accounting",
@@ -2725,7 +2723,7 @@ def _verify_page_reading(
             f"{what}'s answer entries cannot be planned against its feed: {error!r}"
         ) from error
     page_holds = _verify_accounting(
-        context, index, what, accounting, feed_record, feed_ref, payload, reading_ref, plans
+        context, index, what, accounting, feed, feed_ref, witnesses, payload, reading_ref, plans
     )
     accounting_ref = index.ref(accounting)
     row = {
@@ -2811,15 +2809,16 @@ def _verify_accounting(
     index: _PageReadRecords,
     what: str,
     accounting: Mapping[str, Any],
-    feed_record: Mapping[str, Any],
+    feed: Mapping[str, Any],
     feed_ref: dict[str, str],
+    witnesses: list[dict[str, Any]],
     reading: Mapping[str, Any],
     reading_ref: dict[str, str],
     plans: list[dict[str, Any]],
 ) -> list[str]:
     """The page accounting measured again must be exactly the sealed one; return its holds."""
     recomputed, inputs = _measure_page_accounting(
-        context, index, what, feed_record, feed_ref, reading, reading_ref, plans
+        context, index, what, feed, feed_ref, witnesses, reading, reading_ref, plans
     )
     holds = recomputed["holds"]
     _require(
@@ -2837,8 +2836,9 @@ def _measure_page_accounting(
     context,
     index: _PageReadRecords,
     what: str,
-    feed_record: Mapping[str, Any],
+    feed: Mapping[str, Any],
     feed_ref: dict[str, str],
+    witnesses: list[dict[str, Any]],
     reading: Mapping[str, Any],
     reading_ref: dict[str, str],
     plans: list[dict[str, Any]],
@@ -2846,17 +2846,17 @@ def _measure_page_accounting(
     """The page accounting of one reading and its inputs, measured as stage 4 measured it.
 
     Every input is read as stage 4 read it (`page_path.accounting_inputs`):
-    the feed, the reading and its entry plans, each chair's current page
-    Testimonium, the Designator's Surya and detector records and the Ink Map's
+    the feed (built again by `_verify_feed`), the reading and its entry plans,
+    each page witness's current page Testimonium (`witnesses`, as the feed
+    took them), the Designator's Surya and detector records and the Ink Map's
     runs, under the sealed policy. Rule (e)'s alignment is bounded by the
     policy's sealed work budget, counted rather than timed, so the same inputs
     measure the same way here as in stage 4.
     """
-    witnesses = _accounting_page_witnesses(context, index, what, feed_record)
     try:
         measured, inputs = page_path.accounting_inputs(
             context,
-            feed=_payload_of(feed_record),
+            feed=feed,
             feed_ref=feed_ref,
             reading=reading,
             reading_ref=reading_ref,
@@ -2876,44 +2876,64 @@ def _measure_page_accounting(
     return recomputed, inputs
 
 
-def _accounting_page_witnesses(
-    context, index: _PageReadRecords, what: str, feed_record: Mapping[str, Any]
+def _verify_feed(
+    context,
+    index: _PageReadRecords,
+    what: str,
+    ordinal: int,
+    page_id: str,
+    feed_record: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    """Each chair's current page Testimonium of the page, as the accounting measures it.
+    """The page feed built again from the sealed inputs stage 4 built it from.
 
-    The page feed was built from exactly these (each is among its inputs); the
-    accounting's own inputs are then held to them by `_verify_accounting`.
+    Built by stage 4's own builder (`page_path.page_feed_of`) from the sealed
+    page, protocol, witness roster, each chair's current page Testimonium, the
+    Surya census and the Perlector chair; its page render must be the bytes
+    stage 4 retained. The sealed feed, `feed_digest` included, and the feed
+    record's inputs must be exactly these. Returns the page witnesses, as the
+    feed took them, for the accounting.
     """
-    # `witness_regime` reads this module's regime names, so it is imported here.
-    from common.witness_regime import witness_label
-
-    page_id = feed_record["subject_id"]
-    current = latest_per_chair(
-        index.testimonia.get(page_id, []), f"page Testimonium for page {page_id}"
+    chair = context.registry.resolve(PERLECTOR_CHAIR)
+    try:
+        _page, page_bytes = read_sealed_page(context.tree, page_id)
+        feed, witnesses, inputs = page_path.page_feed_of(
+            context,
+            page_id=page_id,
+            ordinal=ordinal,
+            page_size=dimensions(page_bytes),
+            protocol_config=index.protocol,
+            page_chairs=page_path.declared_page_witness_chairs(context),
+            current=latest_per_chair(
+                index.testimonia.get(page_id, []), f"page Testimonium for page {page_id}"
+            ),
+            surya_census=index.surya_census,
+            serving_recipe=chair.serving_recipe if isinstance(chair, ChairIdentity) else None,
+            fixture_placeholders=index.fixture_placeholders,
+            retain=_already_retained(context, PERLECTOR),
+        )
+    except (ContractError, OSError) as error:
+        raise FatalAccounting(f"{what}'s page feed cannot be built again: {error}") from error
+    _require(
+        _payload_of(feed_record) == feed
+        and _refs_by_path(feed_record.get("inputs"), f"{what}'s page feed")
+        == page_path.refs_by_path(inputs),
+        f"{what}'s page feed is not the feed its sealed inputs build: what the reading was "
+        "shown is rebuilt, never taken from the record",
     )
-    witnesses = []
-    for record in current:
-        chair = record["payload"]["chair"]
-        reference = context.artifact_ref(ATTESTATORES, "page-testimonium", record["artifact_id"])
-        _require(
-            reference in feed_record.get("inputs", []),
-            f"{what}'s page feed was not built from chair {chair!r}'s current page Testimonium",
-        )
-        witnesses.append(
-            {
-                "chair": chair,
-                "witness_label": witness_label(
-                    chair,
-                    regime=context.witness_context,
-                    run_id=context.tree.run_id,
-                    config_digest=context.config_digest,
-                ),
-                "adapter": context.registry.resolve(chair).witness_adapter,
-                "testimonium": record,
-                "testimonium_ref": reference,
-            }
-        )
     return witnesses
+
+
+def _already_retained(context, stage: str):
+    """A `retain` for a rebuilt record: the bytes must already be `stage`'s blob."""
+
+    def retained(data: bytes, label: str = "a blob") -> dict[str, str]:
+        digest = digest_bytes(data)
+        reference = {"relative_path": context.tree.blob_path(stage, digest), "sha256": digest}
+        if context.input_ref(reference["relative_path"]) != reference:
+            raise SchemaRefusal(f"{label} rebuilt from the sealed evidence is not {stage}'s blob")
+        return reference
+
+    return retained
 
 
 def _page_row(
