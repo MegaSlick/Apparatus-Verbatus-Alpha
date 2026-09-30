@@ -737,7 +737,7 @@ def test_condition_and_pairwise_deltas_expose_witness_only_advantage_without_ver
 
 
 def test_a_gapped_reference_is_scored_against_its_readable_ink_only():
-    """Ruling 3's common case, carried through the whole matrix.
+    """A gapped checked reference, the common case, carried through the whole matrix.
 
     An act with unread ink in the middle of it is a checked reference with a gap,
     not an unreadable crop. A candidate that reproduces the readable ink exactly

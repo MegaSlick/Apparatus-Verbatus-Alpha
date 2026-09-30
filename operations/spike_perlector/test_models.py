@@ -7,7 +7,6 @@ from operations.spike_perlector.errors import MatrixRefusal, MeasurementRefusal
 from operations.spike_perlector.models import (
     CandidateResponse,
     Condition,
-    DeliveryMode,
     DissentSummary,
     DossierTestimonium,
     OutputStatus,
@@ -42,31 +41,6 @@ def test_testimonium_refuses_stray_text_on_a_non_reading_status(status):
             delivery_attempted=True,
             delivery_confirmed=True,
         )
-
-
-def test_a_testimonium_retains_the_act_crop_and_delivery_provenance_it_was_given():
-    """Named for what it checks: retention, not a requirement.
-
-    Its previous name promised that a Testimonium *requires* its exact act crop
-    and delivery provenance, and the body asserted only that four supplied
-    values came back unchanged — it stayed green with every crop and delivery
-    rule deleted. Those rules are covered below and at the act level.
-    """
-
-    testimonium = models.Testimonium(
-        private_source_id="w1",
-        public_source_index=1,
-        text=None,
-        status=OutputStatus.UNAVAILABLE,
-        opaque_act_id="act-1",
-        crop_sha256=digest("crop"),
-        delivery_attempted=True,
-        delivery_confirmed=False,
-    )
-    assert testimonium.opaque_act_id == "act-1"
-    assert testimonium.crop_sha256 == digest("crop")
-    assert testimonium.delivery_attempted is True
-    assert testimonium.delivery_confirmed is False
 
 
 def test_testimonium_refuses_a_claim_of_confirmation_without_an_attempt():
@@ -314,18 +288,6 @@ def test_resolved_identity_refuses_a_delivery_mode_that_is_not_a_delivery_mode()
         )
 
 
-def test_resolved_identity_accepts_a_genuine_delivery_mode():
-    resolved = ResolvedIdentity(
-        candidate_key="k",
-        public_slot=1,
-        source_ref="ref",
-        revision="rev",
-        artifact_digest=digest("artifact"),
-        delivery=DeliveryMode.LOCAL,
-    )
-    assert resolved.delivery is DeliveryMode.LOCAL
-
-
 def _witness_primed_perlectio(**overrides):
     fields = dict(
         identity=identity("candidate", 1),
@@ -361,6 +323,6 @@ def test_a_perlectio_testimonia_count_must_be_a_count_before_it_is_read_as_a_fla
 
 
 def test_a_real_testimonia_count_is_still_accepted():
-    """Invariant #14: a valid count is retained unchanged, not only accepted."""
+    """A valid count is retained unchanged, not only accepted."""
 
     assert _witness_primed_perlectio(testimonia_count=3).testimonia_count == 3

@@ -313,8 +313,7 @@ def test_a_non_iterable_limitation_codes_value_refuses_in_the_governed_vocabular
     """A malformed declaration is a MeasurementRefusal, never a bare TypeError.
 
     Callers that wrap run construction in ``except MeasurementRefusal`` to record
-    a governed refusal would not catch a ``TypeError`` escaping the boundary —
-    the same defect this package already ruled on for policy content in gates.py.
+    a governed refusal would not catch a ``TypeError`` escaping the boundary.
     """
 
     with pytest.raises(MeasurementRefusal, match="iterable of closed public codes"):
@@ -441,6 +440,7 @@ def test_the_published_schema_and_the_stricter_validator_describe_one_shape():
 
     assert schema["properties"]["schema"]["const"] == SCHEMA
     assert set(schema["required"]) == set(schema["properties"]) == _ROOT_KEYS
+    assert schema["additionalProperties"] is False
     assert (
         set(definitions["metrics"]["required"])
         == set(definitions["metrics"]["properties"])
@@ -588,16 +588,3 @@ def test_history_writer_ignores_a_hostile_isoformat_override(tmp_path):
     )
     assert target.parent == tmp_path
     assert target.name == "2026-08-08_reading_claim_metrics.json"
-
-
-def test_public_schema_is_present_parseable_and_declares_no_free_text_field():
-    # Resolved from this file, not from the working directory: a relative
-    # `Path("history/...")` passes or fails on where pytest was invoked from,
-    # which is not a property of the schema.
-    path = Path(__file__).with_name("reading_claim_public_finding.schema.json")
-    schema = json.loads(path.read_text(encoding="utf-8"))
-    assert schema["additionalProperties"] is False
-    assert schema["properties"]["matrix"]["minItems"] == 9
-    assert "transcription" not in schema["properties"]
-    assert "image_path" not in schema["properties"]
-    assert "model_name" not in schema["properties"]

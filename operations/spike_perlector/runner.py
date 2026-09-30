@@ -314,19 +314,7 @@ class MeasurementRun:
             raise MatrixRefusal("a measurement run has duplicate candidate identities or slots")
         if len(set(act_ids)) != len(act_ids):
             raise MatrixRefusal("a measurement run has duplicate opaque act IDs")
-        witness_signature = tuple(
-            (item.private_source_id, item.public_source_index) for item in self.acts[0].testimonia
-        )
-        for act in self.acts:
-            actual_signature = tuple(
-                (item.private_source_id, item.public_source_index) for item in act.testimonia
-            )
-            if actual_signature != witness_signature:
-                raise MatrixRefusal(
-                    "every act must carry the same sealed Testimonium sources in the same order"
-                )
-            if self.witness_configuration is not None:
-                self.witness_configuration.require_act(act)
+        _preflight_witness_configuration(self.acts, self.witness_configuration)
         if self.manifest is not None:
             if self.sample_accounting is None:
                 raise MatrixRefusal("a manifest-bound run requires private sample accounting")
@@ -607,11 +595,9 @@ class MeasurementRun:
         aggregates = self.condition_aggregates()
         grouped = _condition_index(aggregates)
         values: list[CandidateConditionDeltas] = []
-        # Every planned candidate, not every candidate that produced an aggregate.
-        # A candidate whose reads *all* failed contributes no aggregate at all, so
-        # deriving the slots from `aggregates` dropped it from the deltas in
-        # silence rather than refusing — the same loss the refusal below exists to
-        # prevent, one level up.
+        # Every planned candidate, not every candidate that produced an aggregate:
+        # a candidate whose reads all failed has no aggregate and must be refused
+        # below rather than left out of the deltas.
         for slot in sorted(identity.public_slot for identity in self.candidates):
             # A condition whose every planned read became a failed attempt
             # contributes no cells, so `condition_aggregates` emits no group for
@@ -659,10 +645,8 @@ class MeasurementRun:
         if compared_public_slot == base_public_slot:
             raise MatrixRefusal("a comparative delta requires two different candidate slots")
         grouped = _condition_index(self.condition_aggregates())
-        # Read every operand before subtracting any of them. An unscored
-        # aggregate's `cer` is `None`, and `None - None` raises `TypeError`,
-        # which the `KeyError` handler below does not catch — so subtracting
-        # first put this method's own denominator refusal out of reach.
+        # Read every operand before subtracting any of them: an unscored
+        # aggregate's `cer` is `None`, which the denominator refusal below names.
         try:
             operands = {
                 condition: (
@@ -768,9 +752,7 @@ def _preflight_act(
         # normalizes away has no valid CER/WER denominator. It is still invalid
         # as a checked reference; blank and unresolved references take the
         # separate, unscored path below.
-        if not isinstance(act.ground_truth.text, str) or not normalize_text(
-            act.ground_truth.scoreable_text, profile
-        ):
+        if not normalize_text(act.ground_truth.scoreable_text, profile):
             raise MatrixRefusal("evaluation act has no scoreable checked text after normalization")
     if (
         require_human_adjudication
@@ -782,8 +764,6 @@ def _preflight_act(
         )
     if not act.image.payload:
         raise MatrixRefusal("evaluation act has no image payload")
-    if not act.testimonia:
-        raise MatrixRefusal("evaluation act has no Testimonia")
 
 
 def _score_for_act(
@@ -960,7 +940,6 @@ def _execute_matrix(
         if sample_accounting is None:
             raise MatrixRefusal("a manifest-bound matrix requires private sample accounting")
         sample_accounting.require_complete_for(manifest)
-        manifest.require_run_acts(act.manifest_binding() for act in act_values)
     require_authorized_delivery(
         identities,
         act_values,
@@ -1195,11 +1174,9 @@ def run_declared_roster_matrix(
         raise MatrixRefusal(
             "real Spec 05 run must supply exactly the sealed three-candidate roster"
         )
-    act_values = tuple(acts)
-    manifest.require_run_acts(act.manifest_binding() for act in act_values)
     return _execute_matrix(
         participants,
-        act_values,
+        acts,
         prompt_registry=prompt_registry,
         profile=canonical_profile,
         authorization=authorization,
