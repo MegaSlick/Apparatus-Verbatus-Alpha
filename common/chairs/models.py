@@ -14,6 +14,8 @@ from typing import Mapping
 from common.contracts.canonical import digest_of
 from common.contracts.canonical import is_sha256 as is_sha256  # re-exported to this package
 
+RECEIPT_SCHEMA = "chair-serving-receipt.v1"
+
 
 def is_hf_revision(value: object) -> bool:
     return (
@@ -170,7 +172,7 @@ class ServingReceipt:
     def to_record(self) -> dict[str, object]:
         adapter = self.details.adapter_identity
         return {
-            "schema": "chair-serving-receipt.v1",
+            "schema": RECEIPT_SCHEMA,
             "chair": self.identity.role,
             "source": self.identity.source,
             "resolved": self.identity.source_reference,

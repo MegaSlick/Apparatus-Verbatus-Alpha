@@ -12,6 +12,7 @@ from typing import Any
 
 from .errors import ReceiptRefusal
 from .models import (
+    RECEIPT_SCHEMA,
     ChairIdentity,
     ServingDetails,
     ServingReceipt,
@@ -20,7 +21,6 @@ from .models import (
     is_witness_role,
 )
 
-RECEIPT_SCHEMA = "chair-serving-receipt.v1"
 _REQUIRED = {
     "schema",
     "chair",
@@ -223,10 +223,10 @@ def _validate_tokenizer_revision(value: object, chair: str) -> None:
 
 
 def _validate_started_at(value: object, chair: str) -> None:
-    """The serving moment has to be readable as a moment (#41).
+    """The serving moment has to be readable as a moment.
 
-    A non-blank string was the whole of the check, so `"not-a-timestamp"` recorded
-    a serving moment nothing could ever recover. UTC is required rather than merely
+    A string that does not parse as an ISO 8601 timestamp records a serving moment
+    nothing could ever recover. UTC is required rather than merely
     offered: receipts from two machines are compared, and a naive timestamp is only
     a moment if you already know which clock wrote it.
     """
