@@ -454,6 +454,19 @@ def test_a_chandra_capture_whose_findings_differ_from_its_bytes_is_refused():
         feed_for(blobs, rows=rows)
 
 
+def test_a_chandra_capture_recorded_unrecognized_whose_bytes_now_parse_is_refused():
+    blobs = _Blobs()
+    rows = witnesses(blobs)
+    capture = rows[0]["testimonium"]["payload"]["native_capture"]
+    capture["parse"] = {"state": "unrecognized-shape", "parser": "html", "outcome": "no-blocks"}
+    capture["stop_reason"] = "partial-parse-unrecognized-shape"
+    with pytest.raises(
+        SchemaRefusal,
+        match="records its parse as 'unrecognized-shape', but its retained raw response parses",
+    ):
+        feed_for(blobs, rows=rows)
+
+
 @pytest.mark.parametrize(
     ("witness", "retired"),
     [

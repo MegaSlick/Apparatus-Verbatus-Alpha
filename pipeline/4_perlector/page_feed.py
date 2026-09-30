@@ -345,10 +345,14 @@ def _chandra_reading(
             "a Chandra page Testimonium read as `read` retains a response with no layout "
             f"blocks ({parsed['parse_outcome']})"
         )
-    if (
-        capture["parse"].get("state") == "parsed"
-        and capture["parse"]["text"] != parsed["page_text"]
-    ):
+    # The bytes parse, so the capture must say so: one recorded as another state
+    # was not read by this parser from these bytes.
+    if capture["parse"].get("state") != "parsed":
+        raise SchemaRefusal(
+            f"a Chandra page capture records its parse as {capture['parse'].get('state')!r}, "
+            "but its retained raw response parses"
+        )
+    if capture["parse"]["text"] != parsed["page_text"]:
         raise SchemaRefusal(
             "a Chandra page capture's parsed text differs from its retained raw response"
         )
