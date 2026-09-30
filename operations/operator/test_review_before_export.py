@@ -1350,6 +1350,19 @@ def test_a_delivered_fed_act_with_null_self_revisions_displays_the_budget_stop()
     assert "self-revisions not" not in "\n".join(review_text.render(act))
 
 
+def test_a_delivered_fed_act_missing_self_revisions_is_not_read_as_the_budget_stop():
+    """Only a present null is the stop; a layer without the key recorded nothing."""
+    uncertainty = {
+        "uncertain_spans": [],
+        "gaps": [],
+        "assessment": {"state": "assessed", "problem": None},
+        "lectio_kind": "primed-with-prior",
+    }
+    text = "\n".join(review_text.render(_delivered_act(uncertainty)))
+    assert "self-revisions not recorded (the reading carries no such field)" in text
+    assert "ran out of its step budget" not in text
+
+
 def test_a_delivered_act_with_no_uncertainty_layer_still_says_so():
     """An absent or damaged layer printed nothing at all after the export.
 

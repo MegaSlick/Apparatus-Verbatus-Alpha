@@ -13,7 +13,7 @@ out, since this is the surface where a run tree's own bytes meet a screen.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 from common.contracts.prior_draft import is_unmeasured_comparison
 
@@ -180,6 +180,10 @@ def _uncertainty_alternatives(span: dict[str, Any], label: str) -> list[str]:
 _UNCERTAINTY_STATES = ("assessed", "not-assessed", "malformed")
 
 
+# Stands for a `self_revisions` key the layer does not carry, which a null would hide.
+_FIELD_ABSENT: Final = object()
+
+
 def _uncertainty_lines(
     assessment: Any,
     *,
@@ -198,8 +202,8 @@ def _uncertainty_lines(
 
     `canonical` says the layer is the canonical one, where a fed reading's null
     `self_revisions` has one meaning: its comparison ran out of the sealed step
-    budget. On the Perlectio row that stop is the explicit non-verdict, and a
-    missing field is only a field not recorded.
+    budget. On the Perlectio row that stop is the explicit non-verdict. On either,
+    a missing field is only a field not recorded.
 
     `outcome` is the record's own word for whether a reading exists: only a
     `not-run` record carries no text, and any other outcome with no string
@@ -228,10 +232,13 @@ def _uncertainty_lines(
     gaps = _uncertainty_entries(gaps, f"{label}.gaps")
     withheld = lectio_kind == "primed-draft-withheld"
     fed = lectio_kind == "primed-with-prior"
+    absent = revisions is _FIELD_ABSENT
+    if absent:
+        revisions = None
     budget_stopped = fed and (
-        is_unmeasured_comparison(revisions) or (canonical and revisions is None)
+        is_unmeasured_comparison(revisions) or (canonical and not absent and revisions is None)
     )
-    unrecorded = fed and not canonical and revisions is None
+    unrecorded = fed and revisions is None and (absent or not canonical)
     if withheld:
         if revisions is not None:
             raise ProjectionShapeError(
@@ -510,7 +517,7 @@ def render(projection: dict[str, Any]) -> list[str]:
                     uncertainty.get("assessment"),
                     spans=uncertainty.get("uncertain_spans"),
                     gaps=uncertainty.get("gaps"),
-                    revisions=uncertainty.get("self_revisions"),
+                    revisions=uncertainty.get("self_revisions", _FIELD_ABSENT),
                     lectio_kind=uncertainty.get("lectio_kind"),
                     text=row.get("text"),
                     label="acts[].row.uncertainty",
