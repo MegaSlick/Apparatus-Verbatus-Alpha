@@ -142,10 +142,10 @@ def require_measurable_text(value: str, field: str) -> None:
 
     Both arrive from an ordinary vendor JSON body: ``json.loads`` decodes
     ``"\\ud800"`` into a perfectly valid ``str``, and a model may emit any number
-    of combining marks.  Refused at the boundary where a response is built, so an
-    adapter can record the predeclared ``malformed`` state for that cell;
-    discovered later, inside a digest or a score, either one takes the whole
-    matrix down with an error naming neither the act nor the reason.
+    of combining marks.  Checked before any digest or score, so the runner can
+    record the predeclared ``malformed`` state for that one cell; inside a digest
+    or a score, either would take the whole matrix down with an error naming
+    neither the act nor the reason.
     """
 
     try:
@@ -201,7 +201,18 @@ def repository_of(source_ref: object) -> str:
     return source_ref.strip().split("@", 1)[0].strip().casefold()
 
 
-def _require_status_conditioned_text(status: OutputStatus, text: str | None, label: str) -> None:
+def require_bounded_text(text: str, label: str) -> None:
+    """Refuse text over the one-act length bound or that cannot be hashed or segmented."""
+
+    if len(text) > MAX_TEXT_LENGTH:
+        raise MeasurementRefusal(
+            f"a {label} of {len(text)} characters exceeds the {MAX_TEXT_LENGTH}-character "
+            "bound for one act"
+        )
+    require_measurable_text(text, label)
+
+
+def _require_status_text_shape(status: OutputStatus, text: str | None, label: str) -> None:
     """Text is present and non-blank exactly when status is complete or truncated.
 
     Every other status is a non-answer under the response-state table (README
@@ -212,14 +223,16 @@ def _require_status_conditioned_text(status: OutputStatus, text: str | None, lab
     if status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
         if not isinstance(text, str) or not text.strip():
             raise MeasurementRefusal(f"a complete or truncated {label} must carry non-blank text")
-        if len(text) > MAX_TEXT_LENGTH:
-            raise MeasurementRefusal(
-                f"a {label} of {len(text)} characters exceeds the {MAX_TEXT_LENGTH}-character "
-                "bound for one act"
-            )
-        require_measurable_text(text, label)
     elif text is not None:
         raise MeasurementRefusal(f"a non-reading {label} carries status, not text")
+
+
+def _require_status_conditioned_text(status: OutputStatus, text: str | None, label: str) -> None:
+    """The status/text shape above, with any text also inside the measurable bounds."""
+
+    _require_status_text_shape(status, text, label)
+    if text is not None:
+        require_bounded_text(text, label)
 
 
 def _require_finite_nonnegative_or_none(value: float | None, field: str, label: str) -> None:
@@ -858,7 +871,9 @@ class CandidateResponse:
     def __post_init__(self) -> None:
         if not isinstance(self.status, OutputStatus):
             raise MeasurementRefusal("candidate response status must be an OutputStatus")
-        _require_status_conditioned_text(self.status, self.text, "candidate response")
+        # The text bounds are deliberately not checked here: an over-bound text is a
+        # delivered response the runner scores `malformed` with these receipts.
+        _require_status_text_shape(self.status, self.text, "candidate response")
         for field, value in (("elapsed_ms", self.elapsed_ms), ("cost_usd", self.cost_usd)):
             _require_finite_nonnegative_or_none(value, field, "candidate response")
         for name, value in (

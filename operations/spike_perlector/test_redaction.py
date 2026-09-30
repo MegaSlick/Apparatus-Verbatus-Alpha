@@ -377,7 +377,7 @@ def test_public_validator_refuses_partial_or_arithmetically_false_matrix():
     unmeasured = deepcopy(finding)
     unmeasured["matrix"][0]["elapsed_observed_cells"] = 0
     unmeasured["matrix"][0]["mean_elapsed_ms"] = None
-    with pytest.raises(PublicSafetyRefusal, match="every measurable act"):
+    with pytest.raises(PublicSafetyRefusal, match="every act"):
         validate_public_finding(unmeasured)
 
 
@@ -405,6 +405,21 @@ def test_a_run_missing_wall_time_or_cost_cannot_become_a_finding(elapsed_ms, cos
     """
 
     run = declared_fixture_run(elapsed_ms=elapsed_ms, cost_usd=cost_usd)
+    with pytest.raises(PublicSafetyRefusal, match="wall time and cost"):
+        project_public_finding(run)
+
+
+def test_a_malformed_cell_still_needs_wall_time_and_cost_to_publish():
+    """A `malformed` cell is a delivered response, so its adapter timed and costed it."""
+
+    run = declared_fixture_run(
+        candidate_status=OutputStatus.MALFORMED,
+        elapsed_ms=None,
+        limitations=RunLimitations(
+            disclosure_state=LimitationDisclosureState.CODED,
+            codes=(PublicLimitationCode.MALFORMED_CANDIDATE_RESPONSES_PRESENT,),
+        ),
+    )
     with pytest.raises(PublicSafetyRefusal, match="wall time and cost"):
         project_public_finding(run)
 

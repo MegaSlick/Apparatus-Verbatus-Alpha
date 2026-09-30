@@ -152,24 +152,15 @@ def test_perlectio_refuses_stray_text_on_a_non_reading_status(status):
         )
 
 
-def test_candidate_response_refuses_text_over_the_one_act_bound():
+def test_response_text_over_the_one_act_bound_is_unmeasurable():
     """scoring.py's Levenshtein.editops is worse-than-linear in the product of its
-
     two input lengths; an unbounded adapter response is a denial-of-service
     surface the same way an unbounded transcription draft is (adjudication.py).
     """
 
     oversized = "x" * (models.MAX_TEXT_LENGTH + 1)
     with pytest.raises(MeasurementRefusal, match="exceeds"):
-        CandidateResponse(
-            status=OutputStatus.COMPLETE,
-            text=oversized,
-            elapsed_ms=None,
-            cost_usd=None,
-            observed_prompt_sha256=digest("prompt"),
-            observed_dossier_sha256=digest("dossier"),
-            observed_delivery_sha256=digest("delivery"),
-        )
+        models.require_bounded_text(oversized, "candidate response")
 
 
 def test_ground_truth_refuses_text_over_the_one_act_bound():
@@ -187,26 +178,17 @@ def test_ground_truth_refuses_text_over_the_one_act_bound():
 LONE_SURROGATE = "alpha " + chr(0xD800) + " beta"
 
 
-def test_candidate_response_refuses_text_python_cannot_encode():
+def test_response_text_python_cannot_encode_is_unmeasurable():
     """A vendor JSON body can carry an unpaired surrogate, and this one does.
 
-    It passes every "is it a non-blank string" check, then raises a bare
-    UnicodeEncodeError inside the first digest or score -- losing every cell
-    already measured, with an error naming neither the act nor the reason.
-    Refused at the boundary, an adapter can record `malformed` for that cell
-    and the matrix survives.
+    It passes every "is it a non-blank string" check, then would raise a bare
+    UnicodeEncodeError inside the first digest or score, naming neither the act
+    nor the reason. The bound check names it, so the runner can score the cell
+    `malformed` and the matrix survives.
     """
 
     with pytest.raises(MeasurementRefusal, match="unpaired surrogate"):
-        CandidateResponse(
-            status=OutputStatus.COMPLETE,
-            text=LONE_SURROGATE,
-            elapsed_ms=None,
-            cost_usd=None,
-            observed_prompt_sha256=digest("prompt"),
-            observed_dossier_sha256=digest("dossier"),
-            observed_delivery_sha256=digest("delivery"),
-        )
+        models.require_bounded_text(LONE_SURROGATE, "candidate response")
 
 
 def test_ground_truth_refuses_a_reference_python_cannot_encode():
@@ -228,35 +210,18 @@ def test_a_stack_of_combining_marks_is_bounded_where_segmentation_is_quadratic()
     Greek, so nothing a transcriber writes comes near it.
     """
 
-    def response(text):
-        return CandidateResponse(
-            status=OutputStatus.COMPLETE,
-            text=text,
-            elapsed_ms=None,
-            cost_usd=None,
-            observed_prompt_sha256=digest("prompt"),
-            observed_dossier_sha256=digest("dossier"),
-            observed_delivery_sha256=digest("delivery"),
-        )
-
     at_the_cap = "a" + "́" * models.MAX_COMBINING_RUN
-    assert response(at_the_cap).text == at_the_cap
+    models.require_bounded_text(at_the_cap, "candidate response")
     with pytest.raises(MeasurementRefusal, match="combining marks"):
-        response("a" + "́" * (models.MAX_COMBINING_RUN + 1))
+        models.require_bounded_text("a" + "́" * (models.MAX_COMBINING_RUN + 1), "candidate response")
 
 
 def test_combining_mark_bound_uses_the_pinned_unicode_table_across_python_versions():
     """U+0897 is a Unicode-16 combining mark but unassigned in Python 3.13's UCD."""
 
     with pytest.raises(MeasurementRefusal, match="combining marks"):
-        CandidateResponse(
-            status=OutputStatus.COMPLETE,
-            text="a" + chr(0x0897) * (models.MAX_COMBINING_RUN + 1),
-            elapsed_ms=None,
-            cost_usd=None,
-            observed_prompt_sha256=digest("prompt"),
-            observed_dossier_sha256=digest("dossier"),
-            observed_delivery_sha256=digest("delivery"),
+        models.require_bounded_text(
+            "a" + chr(0x0897) * (models.MAX_COMBINING_RUN + 1), "candidate response"
         )
 
 
