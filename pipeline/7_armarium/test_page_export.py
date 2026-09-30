@@ -323,19 +323,17 @@ def test_a_page_read_as_blank_is_confirmed_blank_only_when_the_recensor_confirms
     assert page_two["category"] == category
 
 
-def test_an_agreed_continuation_is_a_labelled_reconstruction_and_keeps_the_run_partial(
-    happy, tmp_path
-):
+def test_an_agreed_continuation_is_joined_by_no_code_and_keeps_the_run_partial(happy, tmp_path):
     root, options = _copy(happy, tmp_path)
     result = _export(root, options, "happy")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
-    [reconstruction] = [
-        json.loads(line) for line in bundle["members"]["reconstructions.jsonl"].splitlines()
-    ]
-    assert reconstruction["head_page_ordinal"] == 1 and reconstruction["tail_page_ordinal"] == 2
+    assert "reconstructions.jsonl" not in bundle["members"]
+    [join] = json.loads(bundle["members"]["sources.json"])["continuation_joins"]
+    assert (join["head_page_ordinal"], join["tail_page_ordinal"]) == (1, 2)
+    assert join["not_reconstructed_reason"] == "no-code-join"
     [reason] = bundle["manifest"]["aggregate"]["reasons"]
-    assert reason.startswith("continuation join") and "(reconstructed)" in reason
+    assert reason.startswith("continuation join") and "(no-code-join)" in reason
 
 
 # --- the verifier recomputes every claim from the package's own sources ------------

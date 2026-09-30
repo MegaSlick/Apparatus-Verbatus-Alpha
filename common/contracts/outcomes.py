@@ -865,16 +865,10 @@ def run_aggregate(
             f"continuation join {join['join_id']} ({join['status']}): an act may cross the "
             f"break from page {join['head_page_ordinal']} to page {join['tail_page_ordinal']}; "
         )
-        if join["status"] == "reconstructed":
-            reasons.append(
-                crossing + "each side is delivered as its own literal beside a labelled, "
-                "unconfirmed reconstruction"
-            )
-        else:
-            reasons.append(
-                crossing + f"no reconstruction was made ({join['not_reconstructed_reason']}), "
-                "and no act was joined"
-            )
+        reasons.append(
+            crossing + f"no reconstruction was made ({join['not_reconstructed_reason']}), "
+            "and no act was joined"
+        )
 
     for act, flag in sorted(set(unpaired_continuations)):
         if act not in act_categories or flag not in _CONTINUATION_SAYS:

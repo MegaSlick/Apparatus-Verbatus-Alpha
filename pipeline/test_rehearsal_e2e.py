@@ -246,7 +246,8 @@ def test_combined_rehearsal_accounts_for_every_act_and_verifies_export(tmp_path,
     }
     assert len(aggregate["reasons"]) == 3
     assert any(
-        reason.startswith("continuation join join-1-2-0 (reconstructed)")
+        reason.startswith("continuation join join-1-2-0 (not-reconstructed)")
+        and "(no-code-join)" in reason
         for reason in aggregate["reasons"]
     )
     assert {reason for reason in aggregate["reasons"] if reason.startswith("act proposal:")} == {
@@ -258,6 +259,7 @@ def test_combined_rehearsal_accounts_for_every_act_and_verifies_export(tmp_path,
     assert manifest["claims"]["status"] == "partial"
     with ZipFile(BytesIO(bundle)) as archive:
         (readings,) = [name for name in archive.namelist() if name.endswith("readings.txt")]
-        lines = archive.read(readings).decode("utf-8").split("\n")
-    reconstructed = json.loads(lines[lines.index("reconstructed_text:") + 1])
-    assert reconstructed == delivered[HEAD] + "\n" + delivered[TAIL]
+        text = archive.read(readings).decode("utf-8")
+    # Each side is delivered as its own literal; no code joins them.
+    assert "reconstructed_text:" not in text
+    assert json.dumps(delivered[HEAD] + "\n" + delivered[TAIL], ensure_ascii=False) not in text

@@ -429,8 +429,8 @@ def test_a_continuation_join_forces_partial_over_two_delivered_acts():
         continuation_joins=[
             {
                 "join_id": "join-1-2-0",
-                "status": "reconstructed",
-                "not_reconstructed_reason": None,
+                "status": "not-reconstructed",
+                "not_reconstructed_reason": "no-code-join",
                 "head_page_ordinal": 1,
                 "tail_page_ordinal": 2,
             }
@@ -439,7 +439,8 @@ def test_a_continuation_join_forces_partial_over_two_delivered_acts():
     assert aggregate["status"] == "partial"
     assert aggregate["by_category"] == {"delivered": 2}
     (reason,) = aggregate["reasons"]
-    assert reason.startswith("continuation join join-1-2-0 (reconstructed)")
+    assert reason.startswith("continuation join join-1-2-0 (not-reconstructed)")
+    assert "no reconstruction was made (no-code-join)" in reason
 
 
 def test_an_unaddressed_chair_is_named_once_however_often_it_is_supplied():
