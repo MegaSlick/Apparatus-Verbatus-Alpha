@@ -190,7 +190,8 @@ projection configuration. The bundle may contain these plainly specified formats
   assessment state and a count of its uncertain spans, gaps and self-revisions (the
   offsets stay on each half's own literal). A `primed-draft-withheld` reading carries
   `self_revisions: null` and its lectio kind: the reader did not see Pass A, so a
-  self-revision count was not measured. V2 permits null head/tail doubt counts
+  self-revision count was not measured. So does a fed reading whose self-revision
+  comparison ran out of its sealed step budget. V2 permits null head/tail doubt counts
   and carries each half's `lectio_kind` in `armarium-reconstructed-join.v2`.
   It is written to `reconstructions.jsonl` (with `jsonl`) and as a
   `## RECONSTRUCTED <join_id> (not an act)` section, with mirrored
@@ -284,7 +285,7 @@ bundle. Counting damage is this stage's business; showing it is not.
 
 Required on every bundle (it is what took the manifest to `.v5`/`.v6`) and
 derived, never constant. `DELIVERED` and `aggregate.status == "complete"` are
-reachable over five things this build does not fully measure, each recorded somewhere
+reachable over six things this build does not fully measure, each recorded somewhere
 and none of them, before this, qualifying the word on the deliverable:
 
 | instrument | what is unmeasured | where the record lives |
@@ -294,6 +295,7 @@ and none of them, before this, qualifying the word on the deliverable:
 | `act-visibility-survey` | the Designator occlusion instrument, which no stage publishes, so every capture row carries a named absence code | each act's Recensor review, `cross_capture_coverage` |
 | `perlector-uncertain-spans` | `round_cap = 1` blocks exhausted-cap audit spans but still permits reader-supplied doubt spans; a cap of zero can add exhausted-cap spans. Status follows the recorded assessment and spans | `config/perlector_audit.toml` and each act's uncertainty layer |
 | `designator-geometry-calibration` | every crop's `calibrated_for_this_corpus = false`, the grouping thresholds' `sample_count = 0`, and the truncation instrument's length floor, reasoned and never measured against real ink | the `provenance` blocks of the three sealed Designator configurations and of `config/perlector_protocol.toml`'s `[truncation]` table. The instrument's name is older than its list: the truncation floor is not Designator geometry, and it is surveyed here because this row is the only surface on which a bundle discloses a threshold nobody calibrated |
+| `comparison-bounds` | comparisons a sealed bound stopped: delivered readings' self-revisions and dissent rows past `[dissent] max_comparison_steps`, and chairs the aligner left unmeasured on its own bound (`act_witness_chairs_unmeasured`: one per chair per act, after the chair's pages are merged, the `unmeasured` shortfall). Counted run-wide, with one row per delivered act naming its stops; the status is `measured` only when all three counts are zero | each delivered act's established Perlectio (`self_revision`, `dissent`), each delivered act's exported witness rows (`dissent_stopped`), and each act's coverage record in the aggregate basis |
 
 Every instrument appears on every bundle with its own `status`
 (`measured` | `not-measured` | `declared-unproduced`), because an omitted row and
@@ -304,9 +306,15 @@ invites the reading that a measurement was attempted and came back empty.
 `count` is how many instruments did not measure, and the verifier recomputes it.
 
 `pipeline/7_armarium/run.py::not_measured_basis` derives the basis from retained-run
-records and sealed configurations before the export is sealed. The standalone verifier
-checks the packaged block's closure and internal consistency only; the publisher then
-binds its exact ZIP to the immutable export artifact and run. A self-hash alone is not
+records and sealed configurations before the export is sealed; it refuses a stopped
+self-revision or dissent row naming a budget other than the one the run sealed. The
+standalone verifier checks the packaged block's closure and internal consistency, and
+recomputes the `comparison-bounds` counts from the package itself: the unmeasured
+chairs from the aggregate basis's coverage records, each delivered act's stopped dissent
+rows from the `dissent_stopped` flags of its exported witness rows, and, with `jsonl` or
+`acts-database`, each row's self-revision stop against that act's exported uncertainty
+layer in every such format present. For the other
+instruments it checks only the block; the publisher then binds its exact ZIP to the immutable export artifact and run. A self-hash alone is not
 an external authenticity proof.
 
 ### The terminal ledger

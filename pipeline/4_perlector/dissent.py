@@ -31,87 +31,25 @@ from wholesale disagreement.
 
 from __future__ import annotations
 
-import signal
-import threading
 import unicodedata
-from difflib import SequenceMatcher
 from typing import Any, Final
 
-from common.alignment import markup_text_view
+from common.alignment import AlignmentStepLimit, StepCountedMatcher, markup_text_view
 from common.contracts.errors import SchemaRefusal
+from common.contracts.prior_draft import unmeasured_comparison
 from common.stage import WITNESS_READING_OUTCOMES
 
 # `SequenceMatcher`'s alignment cost is not simply the product of the two
 # lengths: a reading and a report that differ in many scattered places --
 # exactly what a systematically-mistaken witness produces, the case this
-# instrument exists to catch -- costs close to the *cube* of the length, not
-# the square. Measured in this chamber: a 6,800-character reading against an
-# equally long, scattered-difference report is 46.2M pairs, comfortably under
-# the bound below, and took 127 seconds. This constant is kept as a cheap
-# prefilter for a witness stuck in a repetition loop until its token cap --
-# the witness stage puts no ceiling on report length, and Churro's own
-# 24,000-token cap can run well over a hundred thousand characters -- but it
-# no longer bounds wall-clock time on its own -- `MAX_COMPARISON_SECONDS`
-# below does that. Both numbers are untuned; alpha testing over real reports
-# would tune them.
+# instrument exists to catch -- can cost far more than the square. This
+# constant is a cheap prefilter for a witness stuck in a repetition loop until
+# its token cap -- the witness stage puts no ceiling on report length, and
+# Churro's own 24,000-token cap can run well over a hundred thousand
+# characters. It does not bound the matcher's work on its own; the sealed
+# `[dissent] max_comparison_steps` in `config/alignment.toml`, which every
+# caller passes in, does that.
 MAX_COMPARISON_CHARACTER_PAIRS: Final = 100_000_000
-
-# The real backstop. `SequenceMatcher.get_opcodes()` is pure Python, so a
-# `SIGALRM` fired while it is running interrupts it cleanly -- verified in this
-# chamber. Where `SIGALRM` does not exist (non-Unix), the comparison runs to
-# completion exactly as it did before this bound existed; there is no silent
-# narrowing, only a platform on which this particular backstop cannot fire.
-MAX_COMPARISON_SECONDS: Final = 5
-
-
-class _ComparisonTimedOut(Exception):
-    """Raised only inside `_aligned_within_deadline`, never let escape it."""
-
-
-def _deadline_handler(signum: int, frame: Any) -> None:
-    raise _ComparisonTimedOut()
-
-
-def _aligned_within_deadline(reading: str, reported: str, *, seconds: int) -> list | None:
-    """`departures(reading, reported)`, abandoned rather than awaited past `seconds`.
-
-    Returns `None` on timeout. Nothing about `reading` or `reported` is
-    touched either way -- the alignment simply does not finish, exactly as
-    the pair-count bound already declares of itself.
-    """
-    # The same ownership rule `common/alignment.py::align_to_anchor` carries:
-    # `SIGALRM` and `ITIMER_REAL` are process-global, so arming unconditionally
-    # would replace a caller's own real-time timer and then cancel it in
-    # `finally`, destroying a deadline this module never owned. From a
-    # non-main thread `signal.signal` raises outright. Arm only where nothing
-    # else owns the timer; otherwise run without installing a timeout -- a
-    # caller deadline applies only when the caller provides one, as in the
-    # missing-SIGALRM branch below.
-    if (
-        not hasattr(signal, "SIGALRM")
-        or not hasattr(signal, "ITIMER_REAL")
-        or threading.current_thread() is not threading.main_thread()
-        or signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0)
-    ):
-        return departures(reading, reported)
-    previous_handler = signal.signal(signal.SIGALRM, _deadline_handler)
-    signal.alarm(seconds)
-    try:
-        result = departures(reading, reported)
-        # Cancelled inside the `try`, not only in `finally`: an alarm that
-        # fires after `departures` returns but before `finally` runs would
-        # otherwise raise `_ComparisonTimedOut` past the `except` above and
-        # propagate a timeout out of a function whose contract is to return
-        # `None` instead. A firing in the remaining instructions is still
-        # caught below and understates a finished comparison rather than
-        # crashing one -- the safe direction of the two.
-        signal.alarm(0)
-        return result
-    except _ComparisonTimedOut:
-        return None
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def comparison_view(text: str) -> dict[str, object]:
@@ -138,29 +76,43 @@ def comparison_view(text: str) -> dict[str, object]:
     return {"normalized": normalized, "dropped_characters": len(composed) - len(normalized)}
 
 
-def departures(reading: str, reported: str) -> list[dict[str, dict[str, int]]]:
+def departures(
+    reading: str, reported: str, max_comparison_steps: int
+) -> list[dict[str, dict[str, int]]] | dict[str, Any]:
     """Every span where the established reading and one witness's report differ.
 
-    `autojunk=False` is load-bearing rather than stylistic: with it on,
-    `SequenceMatcher` treats any element appearing in more than 1% of a
-    sequence longer than 200 characters as junk, which on French prose means
-    spaces and common letters stop counting as matches. The alignment would
-    then change shape purely because the act was long, and a dissent record
-    that means something different on long acts than on short ones is not a
-    structural record.
+    `autojunk=False` (the `StepCountedMatcher` default) is load-bearing rather
+    than stylistic: with it on, `SequenceMatcher` treats any element appearing
+    in more than 1% of a sequence longer than 200 characters as junk, which on
+    French prose means spaces and common letters stop counting as matches. The
+    alignment would then change shape purely because the act was long, and a
+    dissent record that means something different on long acts than on short
+    ones is not a structural record.
+
+    The matcher's work is counted against `max_comparison_steps`, the sealed
+    dissent budget. A comparison that would pass it returns the explicit
+    non-verdict `unmeasured_comparison` instead of spans: nothing about either
+    text is touched, the comparison simply did not finish, and whether it
+    finishes depends only on the two texts and the budget.
 
     An equal reading and report produce no departures at all -- the correct
     output on the easy line every witness agrees about (ARCHITECTURE: "a metric
     that rewards disagreement rewards hallucination").
     """
+    try:
+        opcodes = StepCountedMatcher(reading, reported, max_comparison_steps).get_opcodes()
+    except AlignmentStepLimit:
+        return unmeasured_comparison(max_comparison_steps)
+    return _departure_spans(opcodes)
+
+
+def _departure_spans(opcodes: list) -> list[dict[str, dict[str, int]]]:
     return [
         {
             "reading_span": {"start": reading_start, "end": reading_end},
             "testimonium_span": {"start": witness_start, "end": witness_end},
         }
-        for tag, reading_start, reading_end, witness_start, witness_end in SequenceMatcher(
-            a=reading, b=reported, autojunk=False
-        ).get_opcodes()
+        for tag, reading_start, reading_end, witness_start, witness_end in opcodes
         if tag != "equal"
     ]
 
@@ -191,7 +143,9 @@ def is_comparable(record: dict[str, Any]) -> bool:
     return isinstance(payload.get("comparison_reported"), str)
 
 
-def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
+def dissent_against(
+    reading: str, testimonia: list[dict], *, max_comparison_steps: int
+) -> list[dict]:
     """Where the reading departed from each witness that actually reported.
 
     Computed after the reading is fixed. A chair that failed or never ran has
@@ -201,9 +155,10 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
     retained testimony that is not text, a declared format that cannot be reduced
     to a comparison view, a page witness unattached to this act and carrying no
     `comparison_reported`, a report large enough to refuse outright
-    (`MAX_COMPARISON_CHARACTER_PAIRS`), and an alignment that did not finish
-    within `MAX_COMPARISON_SECONDS`. Never guessed at, and never silently dropped
-    from the record either.
+    (`MAX_COMPARISON_CHARACTER_PAIRS`), and an alignment that would pass
+    `max_comparison_steps`, the sealed dissent budget, which that row records
+    beside its reason. Never guessed at, and never silently dropped from the
+    record either.
     """
     reading_view = comparison_view(reading)
     rows = []
@@ -277,18 +232,19 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
                 }
             )
             continue
-        spans = _aligned_within_deadline(reading, reported, seconds=MAX_COMPARISON_SECONDS)
-        if spans is None:
+        spans = departures(reading, reported, max_comparison_steps)
+        if not isinstance(spans, list):
             rows.append(
                 {
                     "chair": chair,
                     "compared": "unknown",
                     "reason": (
                         f"a {len(reading)}-character reading against a {len(reported)}-"
-                        f"character report did not align within this module's "
-                        f"{MAX_COMPARISON_SECONDS}-second bound; neither text is clipped and "
-                        "neither is changed, the alignment simply did not run"
+                        f"character report did not align within the sealed "
+                        f"{max_comparison_steps}-step dissent budget; neither text is clipped "
+                        "and neither is changed, the alignment simply did not finish"
                     ),
+                    "max_comparison_steps": max_comparison_steps,
                 }
             )
             continue
@@ -322,13 +278,23 @@ def dissent_against(reading: str, testimonia: list[dict]) -> list[dict]:
     return rows
 
 
-def validate_dissent(rows: Any, *, text: str, basis_testimonia: list[dict]) -> None:
+def validate_dissent(
+    rows: Any,
+    *,
+    text: str,
+    basis_testimonia: list[dict],
+    max_comparison_steps: int | None = None,
+) -> None:
     """Refuse a dissent record that loses or duplicates a witness.
 
     Agreement is represented by one row with an empty ``departures`` list, not
     by omitting the row.  Otherwise an empty dissent list makes "all witnesses
     agreed" indistinguishable from "the instrument did not run" -- exactly the
     silent loss this record exists to prevent.
+
+    Given `max_comparison_steps`, the run's sealed dissent budget, a row the
+    budget stopped must name exactly that budget: any other is one the run
+    never sealed.
     """
     if not isinstance(rows, list):
         raise SchemaRefusal("a Perlector reading carries no dissent record")
@@ -415,11 +381,26 @@ def validate_dissent(rows: Any, *, text: str, basis_testimonia: list[dict]) -> N
                             f"dissent[{index}].departures[{span_index}].{name} has invalid bounds"
                         )
         elif compared is False or compared == "unknown":
+            # Only a row the step budget stopped carries the budget it ran out of.
+            budget = row.get("max_comparison_steps")
             if (
-                set(row) != {"chair", "compared", "reason"}
+                set(row) - {"max_comparison_steps"} != {"chair", "compared", "reason"}
                 or not isinstance(row.get("reason"), str)
                 or not row["reason"]
+                or (
+                    "max_comparison_steps" in row
+                    and (compared != "unknown" or type(budget) is not int or budget <= 0)
+                )
             ):
                 raise SchemaRefusal(f"dissent[{index}] is not the closed uncomputed-row schema")
+            if (
+                "max_comparison_steps" in row
+                and max_comparison_steps is not None
+                and budget != max_comparison_steps
+            ):
+                raise SchemaRefusal(
+                    f"dissent[{index}] records a {budget}-step dissent budget, but this run "
+                    f"sealed {max_comparison_steps}"
+                )
         else:
             raise SchemaRefusal(f"dissent[{index}] has an invalid comparison state")

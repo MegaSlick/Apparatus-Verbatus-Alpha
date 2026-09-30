@@ -237,8 +237,12 @@ def _autopsia(
     )
 
 
+# Every coverage record a Recensor writes names its four shortfall buckets.
+_NO_SHORTFALLS = {"failed": 0, "truncated": 0, "unaligned": 0, "unmeasured": 0}
+
+
 def _not_measured_basis(
-    armarium_export, *, acts_total: int = 1, pages_sealed: int = 2
+    armarium_export, *, acts_total: int = 1, pages_sealed: int = 2, delivered: tuple[str, ...] = ()
 ) -> dict[str, Any]:
     """The declared shape a hand-built projection carries.
 
@@ -295,6 +299,15 @@ def _not_measured_basis(
                     "sample_count": 0,
                 },
             ]
+        },
+        "comparison-bounds": {
+            "delivered_self_revisions_stopped": 0,
+            "delivered_dissent_rows_stopped": 0,
+            "act_witness_chairs_unmeasured": 0,
+            "delivered_acts": [
+                {"act_key": key, "self_revision_stopped": False, "dissent_chairs_stopped": []}
+                for key in sorted(delivered)
+            ],
         },
     }
 
@@ -703,7 +716,7 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
         established,
         category="delivered",
         source_regions=source_regions,
-        witnesses=[{"chair": "attestator_1"}],
+        witnesses=[{"chair": "attestator_1", "dissent_stopped": False}],
     )
     with pytest.raises(SchemaRefusal, match="source regions do not equal.*no crop may vanish"):
         armarium.logical_act_projection_entry(
@@ -712,7 +725,13 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
             source_regions=source_regions[:-1],
             witnesses=[{"chair": "attestator_1"}],
         )
-    coverage = {"configured": 1, "floor": 1, "under_witnessed": False, "unresolved_chairs": 0}
+    coverage = {
+        "configured": 1,
+        "floor": 1,
+        "under_witnessed": False,
+        "unresolved_chairs": 0,
+        "shortfalls": dict(_NO_SHORTFALLS),
+    }
     pages = (
         {
             "ordinal": source_a["page_ordinal"],
@@ -751,7 +770,9 @@ def test_composed_two_capture_path_establishes_one_logical_record_and_projects_o
         act_text_status=aggregate_basis["act_text_status"],
     )
     projection = ArmariumProjection(
-        not_measured_basis=_not_measured_basis(armarium_export, acts_total=1, pages_sealed=2)
+        not_measured_basis=_not_measured_basis(
+            armarium_export, acts_total=1, pages_sealed=2, delivered=(key,)
+        )
         | {
             "perlector-uncertain-spans": {
                 "sealed_audit_round_cap": 1,
@@ -1220,6 +1241,7 @@ def test_an_occlusion_finding_cannot_hide_inside_a_review_labelled_accepted(tmp_
         "floor": 1,
         "under_witnessed": False,
         "unresolved_chairs": 0,
+        "shortfalls": dict(_NO_SHORTFALLS),
     }
     altered_review = {
         **held_review,

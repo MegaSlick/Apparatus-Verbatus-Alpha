@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.canonical import digest_bytes
+from common.contracts.prior_draft import unmeasured_comparison
 from common.runtree.store import RunTree
 from operations.operator import cli, review, review_text
 from operations.operator.errors import ErrorCode, OperatorError
@@ -1307,6 +1308,59 @@ def test_withheld_reading_displays_unmeasured_self_revisions():
     assert "self-revisions not measured (primed-draft-withheld)" in text
     with pytest.raises(review_text.ProjectionShapeError, match="null for a withheld draft"):
         review_text.render(_reading_act({**reading, "self_revision": []}))
+
+
+def test_a_fed_reading_whose_comparison_ran_out_displays_unmeasured_self_revisions():
+    """Only the Perlectio's explicit non-verdict reads as a budget stop there.
+    A missing field is labelled not recorded, never passed off as the stop,
+    and an empty list is a measurement with no revisions."""
+    reading = {
+        "outcome": "read",
+        "text": "alpha beta",
+        "lectio_kind": "primed-with-prior",
+        "self_revision": unmeasured_comparison(10),
+        "uncertain_spans": [],
+        "gaps": [],
+        "uncertainty_assessment": {"state": "assessed", "problem": None},
+    }
+    stopped = "self-revisions not measured (the comparison ran out of its step budget)"
+    unrecorded = "self-revisions not recorded (the reading carries no such field)"
+    text = "\n".join(review_text.render(_reading_act(reading)))
+    assert stopped in text and unrecorded not in text
+    text = "\n".join(review_text.render(_reading_act({**reading, "self_revision": None})))
+    assert unrecorded in text and stopped not in text
+    text = "\n".join(review_text.render(_reading_act({**reading, "self_revision": []})))
+    assert "self-revisions not" not in text
+
+
+def test_a_delivered_fed_act_with_null_self_revisions_displays_the_budget_stop():
+    """On the canonical layer a fed reading's null has one meaning, the budget
+    stop, since canonical validation admits null for a fed kind for nothing else."""
+    uncertainty = {
+        "uncertain_spans": [],
+        "gaps": [],
+        "self_revisions": None,
+        "assessment": {"state": "assessed", "problem": None},
+        "lectio_kind": "primed-with-prior",
+    }
+    act = _delivered_act(uncertainty)
+    text = "\n".join(review_text.render(act))
+    assert "self-revisions not measured (the comparison ran out of its step budget)" in text
+    act = _delivered_act({**uncertainty, "self_revisions": []})
+    assert "self-revisions not" not in "\n".join(review_text.render(act))
+
+
+def test_a_delivered_fed_act_missing_self_revisions_is_not_read_as_the_budget_stop():
+    """Only a present null is the stop; a layer without the key recorded nothing."""
+    uncertainty = {
+        "uncertain_spans": [],
+        "gaps": [],
+        "assessment": {"state": "assessed", "problem": None},
+        "lectio_kind": "primed-with-prior",
+    }
+    text = "\n".join(review_text.render(_delivered_act(uncertainty)))
+    assert "self-revisions not recorded (the reading carries no such field)" in text
+    assert "ran out of its step budget" not in text
 
 
 def test_a_delivered_act_with_no_uncertainty_layer_still_says_so():
