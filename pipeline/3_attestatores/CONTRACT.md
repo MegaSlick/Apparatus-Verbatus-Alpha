@@ -480,7 +480,7 @@ is part of the record because each turned on a choice about what a record may
 say.
 
 1. **A vendor's float decoding value is recorded as the exact decimal the wire
-   carried.** `feeding.dai_generation()` carries floats — DAI's shipped
+   carried.** DAI's sampling values are floats — its shipped
    `repetition_penalty` 1.05 and `top_p` 0.001 — and the shared canonical
    writer refuses floats outright, so a live `dai.v1` request could not be
    recorded and was therefore never made. The canonical refusal stands: a
@@ -578,13 +578,15 @@ carries Churro's `max_new_tokens` and DAI's whole carried
 bound. `test_live_witness.py` walks every Churro row in the shipped catalogue at
 every tier and asserts the sum this seam would send is one that row can take.
 
-*And the values `generation_config = "vllm"` discards.* That flag makes vLLM
-return an empty sampling diff instead of the model's own file, so every shipped
-default is replaced by vLLM's. Three are sent back deliberately: Churro's
-`repetition_penalty` 1.05 (`feeding.churro_wire_decoding`; the paper documents
-this model's own degeneration loops, and at temperature 0 the penalty is
-applied before the argmax, so determinism is untouched), DAI's second EOS id
-151643 as `stop_token_ids` (`feeding.dai_wire_stop_token_ids`, derived from the
+*Sampling is the sealed table's, never a builder's.* Each chair reads at its
+makers' recommended sampling values, sealed per chair in
+`config/decoding.toml`'s `chair_decoding` table with the source and revision
+they were read from: Chandra's own first request (`temperature` 0.0, `top_p`
+0.1), DAI's and Churro's `generation_config.json` (the makers publish nothing
+beyond it, and their own pipelines send nothing else). `ChairClient` sends
+exactly that row with the seed and refuses a builder that names any sampling
+field. The builders send only non-sampling fields: DAI's second EOS id 151643
+as `stop_token_ids` (`feeding.dai_wire_stop_token_ids`, derived from the
 carried config rather than re-typed), and `chat_template_kwargs:
 {"enable_thinking": false}` on both Chandra chairs (`common/chair_wire.py`,
 which carries the evidence that the revision ships two disagreeing chat

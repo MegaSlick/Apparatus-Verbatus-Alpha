@@ -230,10 +230,10 @@ Three static assertions keep `proven` from resting on a smoke string alone:
 - `assert_generation_config_key_coverage(...)` — refuses a vendor `generation_config.json`
   key neither sent nor named as withheld with a reason. **Wired only for DAI**
   (`attestator_2`), the one chair whose full vendor file is carried. Under DAI's `"auto"`
-  posture, `repetition_penalty`, `top_k` and `top_p` are also sent verbatim; token ids are
-  delegated to the pinned snapshot (the secondary EOS sent redundantly); the vendor's
-  `temperature = 0.1` and `do_sample = true` are superseded by temperature-zero reading;
-  `transformers_version` is metadata. This accounts for configuration and request
+  posture, `repetition_penalty`, `temperature`, `top_k` and `top_p` are sent verbatim from
+  the sealed decoding table's DAI row; token ids are delegated to the pinned snapshot (the
+  secondary EOS sent redundantly); `do_sample = true` has no request field and is what the
+  nonzero temperature does; `transformers_version` is metadata. This accounts for configuration and request
   construction, not for what the engine applied; the audit's `generation_config_digest`
   records the file vLLM read.
 
@@ -330,19 +330,24 @@ sends them unchanged.
   (`common/request_capacity.py::sendable_max_tokens`): our own count of the remainder could
   earn an HTTP 400 the engine's count would not, while the declared bound, sent only when
   smaller, stops a chair generating far past its publisher's length.
-- The few explicit decoding values — Churro's `repetition_penalty`, DAI's redundant second
-  EOS in `stop_token_ids`, both Chandra chairs' `chat_template_kwargs` — ride
-  `generation_sent`, so the call record shows exactly what went out.
+- The few explicit non-sampling values — DAI's redundant second EOS in `stop_token_ids`,
+  both Chandra chairs' `chat_template_kwargs` — ride `generation_sent`; the sampling values
+  are the chair's sealed row (below). The call record shows exactly what went out.
 
 **`ChairClient.read(ChairRequest) -> ChairResponse` issues exactly one request:**
 
 1. Refuse an unbuildable request before building anything: a `kind` other than
-   `chat-completions`; `generation_sent` naming `model`, `stream`, `temperature`, `seed` or
-   `n` (the manager's and decoding policy's alone); image digests that do not match
-   `image_sha256s` exactly and in order.
-2. Build the body with the sealed decoding temperature and the profile's seed (except the
-   Designator structure chair's sealed recovery-seed override), and POST through
-   `ServiceHandle.request_reading`.
+   `chat-completions`; `generation_sent` naming `model`, `stream`, `seed`, `n` or any
+   sampling field (`common.decoding.SAMPLING_FIELDS`; the manager's and the sealed decoding
+   table's alone); image digests that do not match `image_sha256s` exactly and in order.
+2. Build the body with the chair's sealed sampling row (`config/decoding.toml`'s
+   `chair_decoding`, the chair's makers' recommendation, chosen by the identity the client
+   serves) and the profile's seed (except the Designator structure chair's sealed
+   recovery-seed override), and POST through `ServiceHandle.request_reading`. Both are on
+   the call record's `generation_sent`. vLLM samples a seeded request from that request's
+   own generator, so the same request on the same engine build, model and hardware draws
+   the same samples; batching and kernels can still move low-order logits, so a repeat is
+   reproducible in intent, not guaranteed bit for bit.
 3. **Retain the raw response through the caller's `retain` callable before checking
    anything**: when vLLM refuses a request it says why in the body of a non-200, and that
    sentence must reach disk before any refusal can discard it.
@@ -366,7 +371,7 @@ rather than repeat a request whose engine-side completion is unknown.
 
 **Chandra native calls.** `prepare_chandra_native` / `read_chandra_native` is the one narrow
 exception, for page-scoped `attestator_1` with adapter `chandra.v1` under the exact
-`decoding.v4` recipe. Each prepared dispatch fixes one of seven declared temperature/top-p
+`decoding.v5` recipe. Each prepared dispatch fixes one of seven declared temperature/top-p
 pairs, and the stage must publish and pass a durable attempt-intent reference before the
 POST; `chandra-native-call-record.v1` binds it, so the three identical 0.8/0.95 attempts stay
 distinct. These calls send no per-request seed because the pinned upstream client sends

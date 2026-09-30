@@ -956,20 +956,16 @@ must be absent; a configured row is refused by name before
 any chair starts, because nothing serves it and no fixture receipt may be
 written for it.
 
-**Decoding.** The pass runs under `config/decoding.toml`'s `[structure]`
-section and never under `reading_of_record`: the Attestatores keep the fixed
-posture, while the structure pass may vary, sealed and recorded per run, so its
-re-run variance is a clue beside the witnesses. The
-value is read from the sealed bytes, rechecked by digest at the point of use,
-and recorded on every page's answer record. **The limit, stated plainly:** the
-live reading seam records the reading-of-record temperature and puts 0 on the
-wire for every call (`ChairClient`, `request_body(deterministic=True)`), so
-today a sealed `[structure]` temperature other than 0 is refused by name before
-any chair starts (`structure_pass.executable_temperature`) — running at 0 under
-a record that says otherwise would be a posture reported rather than executed.
-Widening the seam to carry a per-call temperature is what unlocks a non-zero
-value; the section, the loader, the recheck and the record are already in
-place for it.
+**Decoding.** The structure chair reads at its row of `config/decoding.toml`'s
+`chair_decoding` table: Chandra's own page pipeline's first request
+(`temperature` 0.0, `top_p` 0.1, `chandra/model/vllm.py` at the pinned
+revision), which the loader holds equal to the pinned native recipe's first
+request. `ChairClient` sends exactly that row with the seed and records both on
+every call record; the temperature is also recorded on every page's answer
+record, in the call record's own form. `[structure]` holds only coverage
+recovery, which keeps the row and advances the seed. At temperature 0 the
+engine decodes greedily, so a recovery attempt differs from the first only by
+what the engine does not repeat bit for bit.
 
 **Every witness runs its own pass.** SPEC_D §3's "captured" kind — filing the
 structure chair's transcription as Attestator 1's Testimonium instead of
@@ -986,8 +982,8 @@ three live witness chairs, a live Perlector, and the Recensor, Archetypus and
 Armarium as real programs over acts no fixture declared. It asserts that each
 minted region's `raw_bounds` are the chair's own rectangle and its `act_id`
 recomputes from them, that the seal verifies at the Attestatores' own
-boundary, that the sealed `[structure]` temperature is both on the wire and on
-every answer record, that no Designator artifact carries a byte of the chair's
+boundary, that the structure chair's sealed sampling values are on the wire and
+on every call record and its temperature on every answer record, that no Designator artifact carries a byte of the chair's
 transcription, and that a second attempt whose rectangles moved is an ordinary
 run — different acts on the page that changed, the same act on the page that
 did not, because identity is content-addressed rather than positional. The

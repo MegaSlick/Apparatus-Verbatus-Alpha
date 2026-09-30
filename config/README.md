@@ -24,7 +24,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `witness_context.toml` | the factual per-witness context the Perlector's dossier may carry: identity, provenance, training domain, and nothing evaluative |
 | `witness_context-real.toml` | the same declaration for the real roster's three chairs, each training domain stated as far as this repository can cite it and named as unknown where it cannot; selected with the full trio `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml --witness-context-config config/witness_context-real.toml`; published witness identities paired with a known fixture declaration are refused |
 | `triage_modes.toml` | the three pipeline-wide triage modes and their closed-ordinal review thresholds |
-| `decoding.toml` | temperature-zero record readings and the labelled variance experiment's seed and pass count |
+| `decoding.toml` | each reading chair's sampling values as its makers recommend them, with source and revision; the Perlector's output bounds; the Designator's coverage recovery; Chandra's native recipe; and the labelled variance experiment's seed and pass count |
 
 ## R4 toggle register
 

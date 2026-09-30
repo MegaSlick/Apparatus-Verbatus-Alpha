@@ -1094,7 +1094,7 @@ therefore at most those calls, which overlap: about the slowest one (40 s on the
 estimate, `PLANNED_SECONDS_PER_CALL`), and never longer than one request's hard limit,
 `request_timeout_seconds` in the serving recipe (600 s on the real rows). That time is
 billed. A batched reply
-at temperature 0 can differ from an unbatched one in low-order bits; each record holds
+can differ from an unbatched one in low-order bits, so its sampled tokens can too; each record holds
 the reply its call received, and each `reader-sent` record carries the width its call
 was sent under as `concurrency`, so two runs' readings can be told apart from the tree
 alone. It is the window's width, the most calls this pass kept in flight; the batch the
