@@ -602,11 +602,9 @@ def test_genuinely_empty_text_with_stop_is_reported_empty_not_refused(tmp_path: 
 def test_images_are_page_renders_then_regions_with_the_text_between_them(
     tmp_path: Path,
 ) -> None:
-    """Page render, text, region crops -- hostile-review item M
-    (SPEC_FINDINGS 2026-09-06): the page render is the one image shared,
-    byte-identical, across every act on the same page, so it goes first for
-    vLLM's automatic prefix cache to have a chance at a hit; the act's own
-    region crop is unique to this act, so it goes last.
+    """Page render, text, region crops: the request opens with the page
+    render, the image every act on the page is read against, and the act's
+    own region crop follows the text.
     """
 
     client, endpoint, _blobs, chair = _built(tmp_path)

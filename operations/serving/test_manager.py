@@ -1178,14 +1178,17 @@ def test_an_endpoint_answering_as_a_different_model_never_becomes_ready(tmp_path
         ("CUDA out of memory", "CUDA out of memory"),
         ("EngineDeadError", "EngineDeadError"),
         ("VLLM_ERROR: fatal engine startup failure", "VLLM_ERROR"),
-        # The two the old pipeline's own launch scripts grepped for, and the
-        # two vLLM prints when it rejects an adapter loudly rather than
-        # ignoring one silently.
+        # What vLLM prints when it rejects an adapter or an architecture
+        # loudly rather than ignoring it silently.
         (
             "ValueError: Qwen3VLForConditionalGeneration does not support LoRA yet.",
             "LORA_UNSUPPORTED",
         ),
-        ("Unknown model: example/reader", "UNKNOWN_MODEL"),
+        (
+            "ValueError: Model architectures ['ExampleForCausalLM'] are not supported for now. "
+            "Supported architectures: dict_keys(['Qwen3_5ForConditionalGeneration'])",
+            "UNKNOWN_MODEL",
+        ),
     ],
 )
 def test_named_fatal_log_signatures_refuse_and_clean_up(
@@ -1583,16 +1586,16 @@ def test_a_benign_startup_traceback_does_not_abort_a_start_that_would_succeed(
     handle.stop()
 
 
-def test_bare_unknown_model_prose_without_a_colon_does_not_abort_a_start(
+def test_unsupported_architecture_prose_without_vllms_form_does_not_abort_a_start(
     tmp_path: Path,
 ) -> None:
-    """Only vLLM's own 'Unknown model:' rejection form is fatal, not the words."""
+    """Only vLLM's own registry refusal is fatal, not the words."""
 
     chair = identity("reader", "reader-v1")
     manager, _, _, _, registry, publisher = reader_manager(
         tmp_path,
         chair=chair,
-        log_tail="INFO: this is an unknown model type warning, continuing anyway\n",
+        log_tail="INFO: some architectures are not supported for now, continuing anyway\n",
     )
 
     handle = manager.start(chair, TIER)

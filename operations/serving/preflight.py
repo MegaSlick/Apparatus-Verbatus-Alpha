@@ -260,8 +260,9 @@ class UsageReconciliation:
 def _observed_image_tokens(usage: Mapping[str, object]) -> int | None:
     """Read the engine's own image-token count from ``prompt_tokens_details``.
 
-    ``None`` whenever the shape is not exactly the OpenAI
-    ``prompt_tokens_details.multimodal_tokens.image`` int vLLM 0.30.0 sends
+    ``None`` whenever the shape is not exactly the
+    ``prompt_tokens_details.multimodal_tokens.image`` int vLLM 0.30.0 adds to
+    the OpenAI usage block
     when ``--enable-prompt-tokens-details`` is set and the request carried
     multimodal input -- a build or a text-only request that omits it is not
     an error here, only a missing precision the caller falls back without.

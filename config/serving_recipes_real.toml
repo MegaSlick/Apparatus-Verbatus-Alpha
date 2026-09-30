@@ -90,17 +90,19 @@
 # context, and each chair's is now sized to what its own trained geometry
 # needs.
 #
-# `enable_prefix_caching = false` ON THE TWO HYBRID-ATTENTION CHAIRS.
-# Chandra-2 (`designator_structure`, `attestator_1`) has only 8 full-attention
-# layers of 32, and the Perlector's Qwen3.8-27B only 16 of 64; the rest are
-# linear/recurrent layers whose per-sequence state is not a cache of tokens
-# the way a full-attention layer's KV is, so a prefix hit that reuses another
-# sequence's recurrent state would not be reusing that sequence's *prompt* --
-# it would be reusing state computed for a different one (measured in the
-# VRAM arithmetic: "Chandra-2 is a hybrid
-# stack with only 8 full-attention layers... Qwen3.8 are hybrid -- 8 of 32 and
-# 16 of 64 layers are full attention").  DAI and Churro are ordinary
-# Qwen2.5-VL (full attention throughout) and keep prefix caching on.
+# `enable_prefix_caching = false` FOR THE TWO HYBRID-ATTENTION CHECKPOINTS,
+# WHICH SERVE THREE CHAIRS.  Chandra-2 (`designator_structure`, `attestator_1`)
+# has only 8 full-attention layers of 32, and the Perlector's Qwen3.8-27B only
+# 16 of 64; the rest are linear/recurrent layers that keep per-sequence state
+# rather than per-token KV.  vLLM 0.30.0 supports prefix caching on these and
+# turns it on when no flag says otherwise; with it on, the recurrent layers
+# run in `mamba_cache_mode = "align"`, which reserves two state pages per
+# sequence instead of one (`vllm/v1/kv_cache_interface.py`,
+# `MambaSpec.max_memory_usage_bytes`).  That memory comes out of what these
+# rows budget for KV and concurrent sequences.  So these seven rows set it false, the argv carries
+# `--no-enable-prefix-caching`, and `manager.start` refuses a hybrid row with
+# it on.  DAI and Churro are ordinary Qwen2.5-VL (full attention throughout)
+# and keep prefix caching on.
 #
 # THE PERLECTOR'S `generic-24gb` AND `generic-48gb` ROWS PROMISE A SHAPE NO
 # CARD OF THAT CLASS CAN SERVE.  Its Qwen3.8-27B weights

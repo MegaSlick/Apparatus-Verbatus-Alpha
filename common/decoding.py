@@ -58,7 +58,8 @@ VLLM_REQUEST_DEFAULTS: dict[str, int | float] = {
 # The ranges the pinned vLLM 0.30.0 `SamplingParams._verify_args` accepts, so a
 # row the engine would refuse is refused when the policy loads. Each is
 # (low, high, low inclusive); presence and frequency penalties may be negative,
-# which rewards repetition. top_k is an integer, 0 meaning "off".
+# which rewards repetition. top_k is an integer, 0 meaning "off"; vLLM also
+# still accepts -1 for "off", which the policy refuses so a row names one form.
 _SAMPLING_RANGES: dict[str, tuple[float, float, bool]] = {
     "temperature": (0.0, 2.0, True),
     "top_p": (0.0, 1.0, False),

@@ -87,10 +87,10 @@ card). `operations/pod/README.md`, "The serving stack, re-planned and locked", e
 versions. No real row has been served yet.
 
 The command uses the verified base snapshot, a stable `--served-model-name`, and the typed
-profile flags. A Hugging Face chair gets its exact commit in `--revision` and
-`--tokenizer-revision`, which stop vLLM resolving a mutable Hub ref. A local-repository
-chair (the Perlector, a locally trained checkpoint "called like any other model") gets
-neither: its pin is the digest manifest, and naming a revision it lacks would invent
+profile flags. A Hugging Face chair, which is every vLLM chair in the real roster including the Perlector,
+gets its exact commit in `--revision` and `--tokenizer-revision`, which stop vLLM resolving
+a mutable Hub ref. A local-repository chair (a locally trained checkpoint "called like any
+other model") gets neither: its pin is the digest manifest, and naming a revision it lacks would invent
 provenance. Adapters are static: one `--lora-modules` entry, `--max-loras 1`, a supported
 `--max-lora-rank`; the dynamic adapter-update endpoint is never called. The manager always
 passes `--no-enable-log-requests`, because golden-page bytes and transcriptions are not
@@ -106,7 +106,8 @@ cleanup; it cannot launch another chair around it.
 
 Readiness is a bounded poll of the exact child and its fresh launch log. It fails early on
 an exited child or a named log signature: `CUDA out of memory`, `EngineDeadError`,
-`LORA_UNSUPPORTED` (`does not support LoRA`), `UNKNOWN_MODEL`, or `VLLM_ERROR` (reserved for
+`LORA_UNSUPPORTED` (`does not support LoRA`), `UNKNOWN_MODEL` (the registry's
+`are not supported for now. Supported architectures:`), or `VLLM_ERROR` (reserved for
 a launch wrapper that writes to this log; vLLM never prints it). Broad words like
 `RuntimeError` are deliberately not matched: the poll re-reads the whole tail, so one benign
 line would abort a good start. Success requires all of:
@@ -178,15 +179,21 @@ tokens; the file's bytes are pinned by the chair's verified snapshot manifest.
 
 Chandra-2 (`datalab-to/chandra-ocr-2`, serving `attestator_1` and `designator_structure`)
 and the Perlector (`Qwen/Qwen3.8-27B`) are hybrid Mamba/attention (`qwen3_5`) checkpoints.
-`manager.start` refuses either with `enable_prefix_caching` on: prefix caching over
-recurrent state costs memory, and this catalogue's rows run up to four sequences. vLLM
-0.30.0 enables it by default for hybrid models as for any other (`arg_utils.py`,
+`manager.start` refuses either with `enable_prefix_caching` on, because of memory: with
+it on, vLLM 0.30.0 runs the recurrent layers in `mamba_cache_mode = "align"`, which
+reserves two recurrent-state pages per sequence instead of one
+(`vllm/v1/kv_cache_interface.py`, `MambaSpec.max_memory_usage_bytes`), and this
+catalogue's rows spend that memory on KV and up to four sequences. vLLM 0.30.0 enables
+prefix caching by default for hybrid models as for any other (`arg_utils.py`,
 `_set_default_chunked_prefill_and_prefix_caching_args`: `default_prefix_caching =
-model_config.is_prefix_caching_supported`), so the rendered `--no-enable-prefix-caching`
-and this refusal are what keep it off. The check keys on the exact `repo`, never the role,
-because test fixtures reuse role names under `example/...` repositories.
-`config/serving_recipes_real.toml` sets `enable_prefix_caching = false` for those three
-rows, so the refusal guards against a future edit.
+model_config.is_prefix_caching_supported`, which is true for a generative hybrid), so the
+rendered `--no-enable-prefix-caching` and this refusal are what keep it off. The check
+keys on the exact `repo`, never the role, because test fixtures reuse role names under
+`example/...` repositories. `config/serving_recipes_real.toml` sets
+`enable_prefix_caching = false` on all seven live rows for those two checkpoints (the
+Designator's and Attestator 1's three tiers each, and the Perlector's 80 GB tier), and
+`operations/serving/test_manager.py` checks that in CI, so the refusal guards against a
+future edit.
 
 `manager.assert_processor_geometry` also checks a row's `patch_size`/`merge_size` against
 the chair's own `processor_config.json`/`preprocessor_config.json` at launch, offline.
