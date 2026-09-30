@@ -175,12 +175,12 @@ class FakeProcess:
 
     def terminate(self) -> None:
         self.terminate_calls += 1
-        if not self.ignore_terminate:
+        if not self.ignore_terminate and self.exit_code is None:
             self.exit_code = 0
 
     def kill(self) -> None:
         self.kill_calls += 1
-        if not self.ignore_kill:
+        if not self.ignore_kill and self.exit_code is None:
             self.exit_code = -9
 
     def wait(self, timeout_seconds: float) -> int:
@@ -1610,7 +1610,10 @@ def test_process_exit_before_readiness_has_its_own_named_refusal(tmp_path: Path)
     with pytest.raises(ServingRecipeRefusal, match="VLLM_PROCESS_EXITED.*23"):
         manager.start(chair, TIER)
 
-    assert launcher.processes[0].terminate_calls == 0
+    # The exited child's process group is still signalled: another member may
+    # outlive it.
+    assert launcher.processes[0].terminate_calls == 1
+    assert launcher.processes[0].poll() == 23
     assert publisher.calls == []
 
 
@@ -2057,8 +2060,8 @@ def test_interrupt_during_start_stops_the_child_and_preserves_the_interrupt(
 class SilentPollFailure:
     """A ``ServerProcess`` whose observation raises with no message at all.
 
-    ``_stop_process`` calls ``process.poll()`` outside its own ``try``, so this
-    arrives at the wrapping handlers exactly as raised. ``str()`` of an
+    ``_stop_process`` checks ``process.poll()`` after its signalling ``try``, so
+    this arrives at the wrapping handlers exactly as raised. ``str()`` of an
     exception constructed without arguments is the empty string, which is what
     makes a type-less wrapper visible.
     """
@@ -2068,14 +2071,15 @@ class SilentPollFailure:
     def poll(self) -> int | None:
         raise RuntimeError()
 
-    def terminate(self) -> None:  # pragma: no cover - never reached past poll
-        raise AssertionError("an unobservable child must not be signalled")
+    def terminate(self) -> None:
+        pass
 
-    def kill(self) -> None:  # pragma: no cover - never reached past poll
-        raise AssertionError("an unobservable child must not be signalled")
+    def kill(self) -> None:  # pragma: no cover - the group is already empty
+        pass
 
-    def wait(self, timeout_seconds: float) -> int:  # pragma: no cover - never reached
-        raise AssertionError("an unobservable child must not be waited on")
+    def wait(self, timeout_seconds: float) -> int:
+        del timeout_seconds
+        return 0
 
     def read_tail(self, maximum_bytes: int = 16_384) -> str:  # pragma: no cover - never reached
         return ""
@@ -2454,6 +2458,63 @@ def test_terminate_reaches_a_grandchild_in_the_same_owned_session(tmp_path: Path
             process.kill()
         with suppress(ProcessLookupError):
             os.kill(grandchild_pid, signal.SIGKILL)
+
+
+@pytest.mark.skipif(
+    not Path("/proc").is_dir(),
+    reason="distinguishing a running grandchild from a zombie needs /proc",
+)
+def test_cleanup_after_the_direct_child_exited_stops_its_group_before_releasing_the_lease(
+    tmp_path: Path,
+) -> None:
+    """A group member that outlives the direct child is stopped before the lease goes.
+
+    vLLM's engine process holds the GPU memory and can outlive the API server
+    this manager launched. Cleanup must still reach it, and must not hand the
+    card to the next start while it runs.
+    """
+
+    pidfile = tmp_path / "grandchild.pid"
+    script = (
+        "import subprocess, sys\n"
+        "grandchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "with open(sys.argv[1], 'w') as handle:\n"
+        "    handle.write(str(grandchild.pid))\n"
+    )
+    process = SubprocessLauncher().launch(
+        (sys.executable, "-c", script, str(pidfile)),
+        tmp_path / "child.log",
+    )
+    grandchild_pid = 0
+    try:
+        _wait_until(lambda: process.poll() is not None)
+        grandchild_pid = int(pidfile.read_text())
+
+        def _grandchild_alive() -> bool:
+            return _proc_status_is_live(Path(f"/proc/{grandchild_pid}/status").read_text)
+
+        assert _grandchild_alive(), "the grandchild must outlive the direct child"
+
+        released_while_alive: list[bool] = []
+
+        class RecordingHandle:
+            def inheritable_fd(self) -> int:  # pragma: no cover - not launched here
+                raise AssertionError("cleanup does not launch")
+
+            def release(self) -> None:
+                released_while_alive.append(_grandchild_alive())
+
+        chair = identity("reader", "reader-v1")
+        manager, _, _, _, _, _ = reader_manager(tmp_path / "manager", chair=chair)
+        manager._residency_handle = RecordingHandle()  # type: ignore[assignment]
+
+        assert manager._attempt_cleanup(process, "") is None
+        assert released_while_alive == [False]
+        assert not _grandchild_alive()
+    finally:
+        if grandchild_pid:
+            with suppress(ProcessLookupError):
+                os.kill(grandchild_pid, signal.SIGKILL)
 
 
 def test_read_tail_returns_only_the_bounded_tail_of_a_real_log(tmp_path: Path) -> None:

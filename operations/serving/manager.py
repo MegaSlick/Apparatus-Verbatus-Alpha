@@ -1186,22 +1186,23 @@ class ServingManager:
         self._residency_handle = None
 
     def _stop_process(self, process: ServerProcess) -> None:
-        if process.poll() is None:
+        # Signalled even when the direct child has already exited: another
+        # member of its process group may still hold the card.
+        try:
+            process.terminate()
+            process.wait(self.shutdown_timeout_seconds)
+        except TimeoutError:
+            process.kill()
             try:
-                process.terminate()
                 process.wait(self.shutdown_timeout_seconds)
-            except TimeoutError:
-                process.kill()
-                try:
-                    process.wait(self.shutdown_timeout_seconds)
-                except TimeoutError as error:
-                    raise ServiceStopError(
-                        f"owned process pid={process.pid} did not exit after TERM and KILL"
-                    ) from error
-            except Exception as error:
+            except TimeoutError as error:
                 raise ServiceStopError(
-                    f"could not stop owned process pid={process.pid}: {error}"
+                    f"owned process pid={process.pid} did not exit after TERM and KILL"
                 ) from error
+        except Exception as error:
+            raise ServiceStopError(
+                f"could not stop owned process pid={process.pid}: {error}"
+            ) from error
         if process.poll() is None:
             raise ServiceStopError(f"owned process pid={process.pid} remains live after stop")
 

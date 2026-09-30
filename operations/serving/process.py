@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +34,11 @@ class ServerProcess(Protocol):
         """Force shutdown of this launch's process group."""
 
     def wait(self, timeout_seconds: float) -> int:
-        """Wait for this exact child and return its exit code."""
+        """Wait until this launch's process group has no running member.
+
+        Return the direct child's exit code. A member that outlives the direct
+        child (vLLM's engine process holds the GPU memory) keeps the wait open.
+        """
 
     def read_tail(self, maximum_bytes: int = 16_384) -> str:
         """Return only this launch's bounded diagnostic tail."""
@@ -77,13 +82,21 @@ class PopenServerProcess:
         self._signal_group(signal.SIGKILL)
 
     def wait(self, timeout_seconds: float) -> int:
+        deadline = time.monotonic() + timeout_seconds
         try:
-            return self.process.wait(timeout=timeout_seconds)
+            exit_code = self.process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as error:
             raise TimeoutError(f"owned process pid={self.pid} did not exit") from error
         finally:
             if self.process.poll() is not None:
                 self._close_log()
+        while _group_has_running_member(self.pid):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"process group of owned process pid={self.pid} still has a running member"
+                )
+            time.sleep(_GROUP_POLL_SECONDS)
+        return exit_code
 
     def read_tail(self, maximum_bytes: int = 16_384) -> str:
         try:
@@ -95,16 +108,14 @@ class PopenServerProcess:
             return f"VLLM_LOG_UNREADABLE: could not read launch log {self.log_path}: {error}"
 
     def _signal_group(self, signal_number: int) -> None:
+        # start_new_session=True makes the child's pid the id of a group created
+        # for this exact Popen instance, so no model name/PID-pattern search can
+        # reach an unrelated service. The group is signalled whether or not the
+        # direct child is still running: its other members may outlive it.
+        with suppress(ProcessLookupError):
+            os.killpg(self.pid, signal_number)
         if self.process.poll() is not None:
             self._close_log()
-            return
-        try:
-            # start_new_session=True makes this a group created for this exact
-            # Popen instance.  No model name/PID-pattern search can reach an
-            # unrelated service.
-            os.killpg(os.getpgid(self.process.pid), signal_number)
-        except ProcessLookupError:
-            pass
 
     def _close_log(self) -> None:
         handle = self._log_handle
@@ -149,6 +160,40 @@ class SubprocessLauncher:
                     handle.close()
             raise ProcessLaunchError(f"could not launch vLLM argv: {error}") from error
         return PopenServerProcess(process, log_path, handle)
+
+
+_GROUP_POLL_SECONDS: float = 0.02
+
+
+def _group_has_running_member(group_id: int) -> bool:
+    """Whether any process in this group is still running.
+
+    A zombie holds no memory and cannot be signalled away; only its parent can
+    reap it, and an orphan's new parent may never do so. Where ``/proc`` exists
+    zombies are therefore not counted; elsewhere any member counts.
+    """
+
+    try:
+        os.killpg(group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return True
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        # Fields after the parenthesised command name: state, ppid, pgrp, ...
+        fields = stat.rsplit(")", 1)[-1].split()
+        if len(fields) >= 3 and fields[2] == str(group_id) and fields[0] not in {"Z", "X"}:
+            return True
+    return False
 
 
 def _create_owner_only_directories(directory: Path) -> None:
