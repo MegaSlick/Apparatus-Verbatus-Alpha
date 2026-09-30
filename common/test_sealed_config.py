@@ -19,6 +19,7 @@ SEALED_FILES = {
     "designator_geometry_config_path": "designator_geometry.toml",
     "designator_grouping_config_path": "designator_grouping.toml",
     "alignment_config_path": "alignment.toml",
+    "page_accounting_config_path": "page_accounting.toml",
     "armarium_formats_config_path": "formats.toml",
     "recovery_config_path": "recovery.toml",
     "hard_failure_config_path": "hard_failure.toml",

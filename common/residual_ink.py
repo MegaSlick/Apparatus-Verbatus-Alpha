@@ -29,6 +29,7 @@ A page whose background the shared inference refuses raises
 publishing a zero nobody measured.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
@@ -609,6 +610,73 @@ def edge_ink_from_runs(
     retained runs; only the coverage mask may change. `coverage_policy` must be
     resolved for this page's own dimensions.
     """
+    width, height, rows = _validated_evidence(evidence)
+    band = _edge_band(width, height, coverage_policy)
+
+    def edge_intervals(y: int) -> list[tuple[int, int]]:
+        # On a page this narrow the side bands touch, so the row is one interval
+        # rather than two that would count a run twice.
+        if y < band or y >= height - band or width <= 2 * band:
+            return [(0, width)]
+        return [(0, band), (width - band, width)]
+
+    total_ink, outside_ink = _ink_outside(width, rows, covered, edge_intervals)
+    fraction_outside, flagged = _policy_flag(total_ink, outside_ink, coverage_policy)
+    return {
+        "total_ink_pixels": total_ink,
+        "outside_ink_pixels": outside_ink,
+        "fraction_outside": fraction_outside,
+        "flagged": flagged,
+        "edge_band_pixels": band,
+        "substantial_ink_pixels": coverage_policy["substantial_ink_pixels"],
+        "named_finding": "unclaimed-edge-ink",
+    }
+
+
+def residual_ink_from_runs(
+    evidence: dict[str, Any], covered: list[Bounds], *, coverage_policy: CoverageAuditPolicy
+) -> dict[str, Any]:
+    """`residual_ink`'s counts and gate over retained ink runs instead of pixels.
+
+    The runs are the Ink Map's audited ink, already without the page-spanning
+    component, so `total_ink_pixels` and `outside_ink_pixels` answer the same
+    question `residual_ink` answers from the page bytes. `coverage_policy` must be
+    resolved for this page's own dimensions.
+    """
+    width, _height, rows = _validated_evidence(evidence)
+    total_ink, outside_ink = _ink_outside(width, rows, covered, lambda _y: [(0, width)])
+    fraction_outside, flagged = _policy_flag(total_ink, outside_ink, coverage_policy)
+    return {
+        "total_ink_pixels": total_ink,
+        "outside_ink_pixels": outside_ink,
+        "fraction_outside": fraction_outside,
+        "flagged": flagged,
+        "substantial_ink_pixels": coverage_policy["substantial_ink_pixels"],
+    }
+
+
+def _ink_outside(
+    width: int,
+    rows: list[Any],
+    covered: list[Bounds],
+    counted: Callable[[int], list[tuple[int, int]]],
+) -> tuple[int, int]:
+    """All retained ink, and the ink in each row's `counted` intervals outside `covered`."""
+    total_ink = 0
+    outside_ink = 0
+    for y, row in enumerate(rows):
+        runs = _validated_runs(row, width)
+        total_ink += sum(end - start for start, end in runs)
+        merged_coverage = _row_coverage(covered, y, width)
+        for run_start, run_end in runs:
+            for interval_start, interval_end in counted(y):
+                start, end = max(run_start, interval_start), min(run_end, interval_end)
+                if start < end:
+                    outside_ink += _uncovered_length(start, end, merged_coverage)
+    return total_ink, outside_ink
+
+
+def _validated_evidence(evidence: Any) -> tuple[int, int, list[Any]]:
     if not isinstance(evidence, dict) or evidence.get("schema") != INK_RUNS_SCHEMA:
         raise ValueError("ink-run evidence has the wrong schema")
     if set(evidence) != {"schema", "width", "height", "rows"}:
@@ -623,37 +691,7 @@ def edge_ink_from_runs(
         or len(rows) != height
     ):
         raise ValueError("ink-run evidence has invalid dimensions")
-
-    band = _edge_band(width, height, coverage_policy)
-    total_ink = 0
-    outside_ink = 0
-    for y, row in enumerate(rows):
-        runs = _validated_runs(row, width)
-        total_ink += sum(end - start for start, end in runs)
-        # On a page this narrow the side bands touch, so the row is one interval
-        # rather than two that would count a run twice.
-        edge_intervals = (
-            [(0, width)]
-            if y < band or y >= height - band or width <= 2 * band
-            else [(0, band), (width - band, width)]
-        )
-        merged_coverage = _row_coverage(covered, y, width)
-        for run_start, run_end in runs:
-            for edge_start, edge_end in edge_intervals:
-                start, end = max(run_start, edge_start), min(run_end, edge_end)
-                if start < end:
-                    outside_ink += _uncovered_length(start, end, merged_coverage)
-
-    fraction_outside, flagged = _policy_flag(total_ink, outside_ink, coverage_policy)
-    return {
-        "total_ink_pixels": total_ink,
-        "outside_ink_pixels": outside_ink,
-        "fraction_outside": fraction_outside,
-        "flagged": flagged,
-        "edge_band_pixels": band,
-        "substantial_ink_pixels": coverage_policy["substantial_ink_pixels"],
-        "named_finding": "unclaimed-edge-ink",
-    }
+    return width, height, rows
 
 
 def _validated_runs(row: Any, width: int) -> list[tuple[int, int]]:

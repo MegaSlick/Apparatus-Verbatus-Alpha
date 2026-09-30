@@ -1210,9 +1210,12 @@ it names, each re-derived from the bytes on disk.
   `not-run` (the Exemplar refused the page, `page-not-sealed`, or the chair is
   absent, `chair-absent`; `feed_ref` null when no feed could be built).
 - `disposition` is `read` only for `parsed` with no problem; outcome is `read` or
-  `held` accordingly. A parsed answer that disagrees with its feed is held with its
-  answer and problems: `unknown-id`, `malformed-range`, `cited-and-set-aside`,
-  `set-aside-twice`, `set-aside-without-reason` (`page_run.validate_answer`).
+  `held` accordingly. A parsed answer is read by `common/page_accounting.py`'s
+  `validate_answer` against the feed's ids (checked by `feed_candidates`) placed by
+  `page_feed.placement_boxes`; any problem but `duplicate-region` holds it with its
+  answer and problems (`unknown-id`, `malformed-range`, `cited-and-set-aside`,
+  `set-aside-twice`, `set-aside-without-reason`, ...). Two entries sharing a union
+  box are published, both held.
 - `request_digest` = digest of `{image_sha256s, text_sha256}` of what was (or, in
   fixture mode, would be) sent; null when nothing was.
 - `capacity`: live only, `common.request_capacity.page_request_capacity`'s
@@ -1270,6 +1273,29 @@ Per entry `n` of a `read` page's answer, in answer order:
 - Outcome: `truncated` for a truncated classification, `no-readable-text` for blank
   text, `held` with any hold, else `read`. `holds` repeats the act-region's plus
   these.
+
+`kind="page-accounting"` (subject page_id, no attempt), last for every page that has
+a feed, whatever its reading's disposition: `common.page_accounting.page_accounting`'s
+`page-accounting.v1` payload under the sealed `page-accounting` policy (read at stage
+open through `require_page_accounting_policy`). Outcome `held` when its `holds` is
+non-empty, else `read`. Its inputs are the feed, the page reading and every sealed
+detection and ink-map record it measured. It is given:
+
+- the feed with boxes as `[x0, y0, x1, y1]`;
+- every page witness: a shown one as its feed row, a hidden one read by
+  `page_feed.witness_reading` and lettered with the next letter the feed did not use,
+  in sorted `witness_label` order; `blank` is its content health's `blank` when it
+  read;
+- Surya's census (`null` when the run has none), with feed ids on what the feed
+  showed; the record detector as `configured` when the sealed `secondary_proposer`
+  is a chair, its page's `detector-record` boxes (a record with no crop has no box and
+  is not given) and census `{detection_count, max_det, max_det_reached}` with
+  `max_det` from the detector's retained run facts, both `null` when either is
+  missing;
+- the reading's `parse_state`, `finish_reason` and `answer`, and each placed entry's
+  truncation classification by `n`;
+- the Ink Map's retained runs and the coverage policy resolved for the page, or
+  `null` when the page's ink was not measurable.
 
 ### Resume
 

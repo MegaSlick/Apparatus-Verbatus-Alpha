@@ -178,7 +178,12 @@ def test_each_placed_act_region_is_the_union_of_its_cited_boxes_cut_from_the_ink
         cited_boxes = [
             boxes[identifier] for identifier in payload["cited_ids"] if boxes[identifier]
         ]
-        assert payload["union_box_px"] == page_run._union(cited_boxes)
+        assert page_run.corners(payload["union_box_px"]) == [
+            min(box["x"] for box in cited_boxes),
+            min(box["y"] for box in cited_boxes),
+            max(box["x"] + box["w"] for box in cited_boxes),
+            max(box["y"] + box["h"] for box in cited_boxes),
+        ]
         attempt = readings[payload["page_id"]]["attempt_id"]
         verify(
             region["subject_id"],
@@ -251,6 +256,27 @@ def test_a_second_pass_and_a_fresh_run_leave_the_same_bytes_and_act_ids(page_tre
     assert file_bytes_snapshot(fresh / "r" / "4_perlector") == file_bytes_snapshot(
         root / "r" / "4_perlector"
     )
+
+
+def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree):
+    """Page 1 is read whole and placed; it holds only because this tree has no
+    Surya census, so rule (d) cannot be measured. Page 2's one entry cites no
+    boxed id: it is unplaced, has no region to measure truncation over, and the
+    page's ink lies outside every reading region."""
+    root, _protocol = page_tree
+    accounts = {r["payload"]["page_ordinal"]: r for r in _records(root, "page-accounting")}
+    assert set(accounts) == {1, 2}
+    first = accounts[1]["payload"]
+    assert first["schema"] == "page-accounting.v1" and accounts[1]["outcome"] == "held"
+    assert first["holds"] == ["unread-line-not-measured"]
+    assert {unit["disposition"] for unit in first["units"]} == {"cited"}
+    assert first["rules"]["i"]["status"] == "not-applicable"
+    assert accounts[2]["payload"]["holds"] == [
+        "reading-incomplete",
+        "reading-unplaced",
+        "unread-ink",
+        "unread-line-not-measured",
+    ]
 
 
 def test_the_recensor_refuses_a_page_read_tree_by_name(page_tree, tmp_path):
@@ -341,65 +367,27 @@ def test_each_feed_switch_changes_the_sealed_feed(page_tree, tmp_path, feed, pro
         assert (render["reason"], render["transform"]["resampler"]) == ("full-page", "identity")
 
 
-# --- the answer's checks against its feed ------------------------------------------
+# --- the answer's entries -----------------------------------------------------------
 
 
-def _feed() -> dict[str, Any]:
-    unit = {"box_px": None}
-    return {
-        "switches": {"witness_units": "own"},
-        "witnesses": [
-            {"units": [{**unit, "id": f"A{n}"} for n in range(1, 4)]},
-            {"units": [{**unit, "id": "B1"}]},
-        ],
-        "surya": {"lines": [{"id": f"L{n}", "box_px": None} for n in range(1, 6)], "blocks": []},
-    }
-
-
-def _answer(cites: list[str], set_aside: list[dict[str, str]] | None = None) -> dict[str, Any]:
-    return {
-        "acts": [{"n": 1, "cites": cites}],
-        "set_aside": set_aside or [],
-    }
-
-
-def test_a_range_expands_inclusive_and_a_valid_answer_has_no_problem():
-    ids, problems = page_run.expand_cites(["A1", "L2-L4", "A1"], page_feed.placement_boxes(_feed()))
-    assert (ids, problems) == (["A1", "L2", "L3", "L4"], [])
-    answer = _answer(["A1-A3"], [{"id": "B1", "reason": "printed page number"}])
-    assert page_run.validate_answer(answer, _feed()) == []
-
-
-@pytest.mark.parametrize(
-    ("answer", "code"),
-    [
-        (_answer(["A9"]), "unknown-id"),
-        (_answer(["L4-L7"]), "unknown-id"),
-        (_answer(["Z"]), "unknown-id"),
-        (_answer(["L4-L2"]), "malformed-range"),
-        (_answer(["A1-L3"]), "malformed-range"),
-        (_answer(["A1"], [{"id": "A1", "reason": "x"}]), "cited-and-set-aside"),
-        (
-            _answer([], [{"id": "B1", "reason": "x"}, {"id": "B1", "reason": "y"}]),
-            "set-aside-twice",
-        ),
-        (_answer([], [{"id": "B1", "reason": "  "}]), "set-aside-without-reason"),
-    ],
-)
-def test_an_answer_that_disagrees_with_its_feed_is_named(answer, code):
-    assert code in {problem["code"] for problem in page_run.validate_answer(answer, _feed())}
-
-
-def test_entries_with_one_union_box_are_both_held_and_keep_their_own_ids():
+def test_entries_with_one_union_box_are_held_and_keep_their_own_ids():
     box = {"x": 1, "y": 2, "w": 3, "h": 4}
     feed = {
         "switches": {"witness_units": "own"},
-        "witnesses": [{"units": [{"id": "A1", "box_px": box}]}],
+        "witnesses": [{"units": [{"id": "A1", "box_px": box, "text": "x"}]}],
         "surya": None,
     }
-    answer = {"acts": [{"n": 1, "cites": ["A1"]}, {"n": 2, "cites": ["A1"]}], "set_aside": []}
+    entry = {
+        "kind": "act",
+        "cites": ["A1"],
+        "text": "x",
+        "continues_from_previous_page": False,
+        "continues_to_next_page": False,
+    }
+    answer = {"acts": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
     entries = page_run.answer_entries(answer, feed)
     assert [entry["holds"] for entry in entries] == [["duplicate-region"]] * 2
+    assert [entry["union_box_px"] for entry in entries] == [box, box]
     attempt = page_run.page_reading_attempt("pg_0000000000000001")
     ids = {
         digest_of(
@@ -412,6 +400,16 @@ def test_entries_with_one_union_box_are_both_held_and_keep_their_own_ids():
         for n in (1, 2)
     }
     assert len(ids) == 2
+
+
+def test_a_shared_union_box_does_not_hold_the_page_but_an_unknown_id_does():
+    validated = {
+        "problems": [
+            {"code": "duplicate-region", "ns": [1, 2]},
+            {"code": "unknown-id", "id": "Q7"},
+        ]
+    }
+    assert [p["code"] for p in page_run.page_problems(validated)] == ["unknown-id"]
 
 
 # --- live serving, against the fakes ------------------------------------------------
@@ -563,6 +561,39 @@ def test_an_answer_citing_an_id_the_feed_never_showed_is_held_with_its_answer(
     assert (reading["parse_state"], reading["disposition"]) == ("parsed", "held")
     assert reading["answer"] == answer
     assert {problem["code"] for problem in reading["problems"]} == {"unknown-id"}
+
+
+def test_a_real_act_set_aside_is_published_but_its_page_holds(live_tree, tmp_path, monkeypatch):
+    root = live_tree[0]
+    answer = json.loads(PAGE_ANSWERS[1])
+    answer["acts"] = answer["acts"][:1]
+    answer["set_aside"] = [
+        {"id": "A2", "reason": "not an entry"},
+        {"id": "B2", "reason": "not an entry"},
+    ]
+    scripted = ScriptedAnswer(content=json.dumps(answer), finish_reason="stop")
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, scripted, _answers()[1])
+    assert exit_code == 0
+    reading = _records(root, "page-reading")[0]
+    assert reading["payload"]["disposition"] == "read"
+    account = next(
+        r["payload"] for r in _records(root, "page-accounting") if r["payload"]["page_ordinal"] == 1
+    )
+    dispositions = {unit["id"]: unit["disposition"] for unit in account["units"]}
+    assert dispositions["A2"] == dispositions["B2"] == "set-aside"
+    assert "unread-ink" in account["holds"]
+
+
+def test_a_held_page_reading_is_still_accounted(live_tree, tmp_path, monkeypatch):
+    root = live_tree[0]
+    scripted = ScriptedAnswer(content="not json", finish_reason="stop")
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, scripted, scripted)
+    assert exit_code == 0
+    accounts = _records(root, "page-accounting")
+    assert len(accounts) == 2
+    for account in accounts:
+        assert account["outcome"] == "held"
+        assert account["payload"]["rules"]["a"]["status"] == "hold"
 
 
 def test_a_page_over_the_rows_capacity_is_held_whole_and_never_sent(tmp_path, monkeypatch):

@@ -21,6 +21,7 @@ SEALED_CONFIG_FLAGS = (
     "--designator-geometry-config",
     "--designator-grouping-config",
     "--alignment-config",
+    "--page-accounting-config",
     "--perlector-protocol-config",
     "--perlector-audit-config",
     "--serving-recipes-config",

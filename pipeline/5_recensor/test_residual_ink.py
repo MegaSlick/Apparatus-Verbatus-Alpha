@@ -29,10 +29,12 @@ from common.residual_ink import (
     edge_ink,
     edge_ink_from_runs,
     ink_runs,
+    ink_runs_from_rows,
     load_coverage_audit_config,
     page_residual_ink,
     page_spanning_components,
     residual_ink,
+    residual_ink_from_runs,
 )
 from proof.synthetic_pages import PAGES, page_bytes
 
@@ -584,3 +586,41 @@ def test_a_one_pixel_wide_page_does_not_double_count_a_middle_row():
     assert remeasured["total_ink_pixels"] == initial["total_ink_pixels"] == 13
     assert remeasured["outside_ink_pixels"] == initial["outside_ink_pixels"] == 13
     assert remeasured["flagged"] == initial["flagged"]
+
+
+def test_residual_ink_from_runs_agrees_with_the_pixel_measure():
+    """The page accounting counts retained ink runs; they must give the pixel counts.
+
+    Random background-dominant pages and coverage, including regions past the
+    page edge and none at all.
+    """
+    rng = random.Random(20260930)
+    for case in range(40):
+        width, height = rng.randint(1, 40), rng.randint(1, 40)
+        rows = [
+            bytearray(rng.choice((BACKGROUND, BACKGROUND, BACKGROUND, INK)) for _ in range(width))
+            for _ in range(height)
+        ]
+        covered = [
+            {
+                "x": rng.randint(-5, width),
+                "y": rng.randint(-5, height),
+                "w": rng.randint(0, width + 5),
+                "h": rng.randint(0, height + 5),
+            }
+            for _ in range(rng.randint(0, 4))
+        ]
+        try:
+            pixels = _measure(width, height, [bytearray(row) for row in rows], covered)
+        except BackgroundInferenceRefusal:
+            continue
+        runs = ink_runs_from_rows(
+            width,
+            height,
+            [bytearray(row) for row in rows],
+            background_policy=_policy(width, height),
+            coverage_policy=_coverage(width, height),
+        )
+        from_runs = residual_ink_from_runs(runs, covered, coverage_policy=_coverage(width, height))
+        for field in ("total_ink_pixels", "outside_ink_pixels", "flagged", "fraction_outside"):
+            assert from_runs[field] == pixels[field], f"case {case}: {field}"

@@ -1,0 +1,123 @@
+# Page accounting: the model-free check that a page reading missed nothing
+# (common/page_accounting.py). Sealed at run creation; the stage that publishes
+# a page accounting reads it through `require_page_accounting_policy`, which
+# refuses bytes other than the ones the run sealed. Every value below is a
+# starting value, set on synthetic pages and to be measured on the proof run
+# (operations/corpus/exactly_once.py).
+
+[inside]
+# A box is inside the reading regions when at least this share of its area
+# (basis points) lies inside their union. Starting value: half, the design's
+# one rule for "inside"; to be measured on the proof run.
+min_area_bp = 5000
+
+[witness_text]
+# Longest run of a witness unit's normalized text (letters and digits only)
+# the readings citing it may leave unaccounted for; also the most one reading
+# gap or one `[[?]]` mark may account for. Starting value: about one written
+# line of a register (50-70 letters). On synthetic register entries whose
+# reading and witnesses disagree on 15% to 30% of characters, the longest run a
+# correct reading left was 14. To be measured on the proof run.
+max_unread_characters = 60
+
+# Most normalized text a set-aside witness unit may carry before it holds as a
+# set-aside act: a folio number or a short running header, not an index row
+# or a one-line burial. Starting value; to be measured on the proof run.
+max_set_aside_characters = 20
+
+# Largest share of a unit's normalized text (basis points) the readings citing
+# it may leave unaccounted for in all, however short each run: a short unit
+# read as nothing leaves all of it. On the same synthetic entries a correct
+# reading left at most 1,192. Starting value; to be measured on the proof run.
+max_unread_share_bp = 3000
+
+# Shortest matched run that counts as the reading holding witness text. Below
+# four, common letter pairs of French prose match anywhere. Starting value;
+# to be measured on the proof run.
+min_block_characters = 4
+
+[alignment]
+# Length of the k-grams that, occurring once in each text, anchor a long
+# alignment. Six was the length with no false run over the threshold on a
+# synthetic 20-entry flat page at 15% and 30% error. Starting value; to be
+# measured on the proof run.
+anchor_characters = 6
+
+# An anchor is kept when its offset between the texts is within
+# `anchor_offset_tolerance` characters of the median offset of the
+# `anchor_neighbours` anchors either side of it. A dropped anchor only splits
+# the alignment less. Starting values: three either side, and sixteen letters,
+# under which a name the entry repeats no longer anchors out of place on the
+# synthetic entries (at sixty the longest correct run was 56). To be measured
+# on the proof run.
+anchor_neighbours = 3
+anchor_offset_tolerance = 16
+
+# A directly matched run is accepted only when its offset between the texts
+# lies between the offsets at the corners of the range it is found in, widened
+# by this many characters either side. Four, eight and sixteen measured alike
+# on synthetic entries. Starting value; to be measured on the proof run.
+band_slack = 8
+
+# Ranges up to this many character pairs (about 200 x 200) are matched
+# directly; larger ones are split at anchors first, because a direct match
+# over several entries pairs one entry's formula with another's. Starting
+# value; to be measured on the proof run.
+direct_alignment_max_pairs = 40000
+
+# A range with no anchor is matched directly only up to this many pairs;
+# beyond it the unit is not measured, which holds. Starting value; to be
+# measured on the proof run.
+max_alignment_pairs = 4000000
+
+# A unit or its readings longer than this many normalized characters is not
+# measured, which holds. Starting value; to be measured on the proof run.
+max_characters = 200000
+
+# Wall-clock budget for one page's witness-text rule; running out is not
+# measured, which holds. A dense synthetic page (20 entries, 12,000 characters
+# per witness, three witnesses) took well under a second. Starting value; to
+# be measured on the proof run.
+deadline_milliseconds = 30000
+
+[identity]
+# A unit's distinctive pieces are its normalized pieces of this many letters
+# that are not the register's formula (no other unit of the same witness holds
+# them within one edit, and no two readings do) and that the page corroborates
+# (another witness holds them, or a reading does). Six letters is about one
+# name. Starting value; to be measured on the proof run.
+piece_characters = 6
+
+# A distinctive piece is held when the reading, where the alignment puts it and
+# `window_slack` letters either side, holds it within `piece_edits` edits. Two
+# edits in six letters is what a 30% character error leaves of most names; the
+# window is kept narrow so a neighbouring record's names cannot lend
+# themselves. Starting values; to be measured on the proof run.
+piece_edits = 2
+window_slack = 3
+
+# A unit with fewer distinctive pieces than this is not measured by identity,
+# which is recorded: a share over fewer pieces is mostly chance. Starting
+# value; to be measured on the proof run.
+min_pieces = 5
+
+# Least share (basis points) of a unit's distinctive pieces its citing
+# readings must hold. On synthetic three-entry pages (30 per case) a correct
+# reading held at least 7,741 at 15% character error or 30% on the witnesses'
+# side, and 4,680 at 30% on the reading's side; on six-entry pages a reading
+# that garbled at 30% fell to 1,111, holding 4 of 20 correct pages. A reading
+# of the neighbouring record was held on 28 of 30 three-entry pages and 17 of
+# 20 six-entry pages with clean witnesses: the ones it missed shared their
+# names with the neighbour. Starting value; to be measured on the proof run.
+min_distinctive_share_bp = 3500
+
+# A unit with fewer than `min_pieces` distinctive pieces is held when the
+# fewest edits turning its normalized text into some stretch of its citing
+# readings exceed this share (basis points) of its length: a short unit the
+# reading does not transcribe (a burial folded into the next act, a marginal
+# name). On synthetic 19-letter names read correctly at 15% character error
+# on one side the largest share was 2,777 on 30 pages, and 4,117 over 200
+# draws; a 7-letter name reached 6,250. A 50-letter burial that is not read
+# was at least 4,800 from each of 900 synthetic baptism readings. Starting
+# value; to be measured on the proof run.
+max_short_unit_distance_bp = 4000

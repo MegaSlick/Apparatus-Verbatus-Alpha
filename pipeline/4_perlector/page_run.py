@@ -11,6 +11,7 @@ and the Perlector establishes the acts itself (`page_feed.py`,
     page-reading  (subject page_id)  the answer as given: parsed, or held whole
     act-region    (subject act_id)   one per entry of a parsed, valid answer
     perlectio     (subject act_id)   `perlectio.v2`, one per entry
+    page-accounting (subject page_id) rules a-i over the reading (`common/page_accounting.py`)
 
 An answer that is not the grammar, is cut off at the output cap, cites an id
 the feed does not define, or could not be asked is held whole on its
@@ -29,6 +30,8 @@ The record shapes are in CONTRACT.md, "Page reading".
 
 from __future__ import annotations
 
+import copy
+import json
 import math
 import re
 import sys
@@ -47,7 +50,9 @@ from dissent import dissent_against
 from live_reader import EngineSignalRefusal, send_page_request
 
 import operations.serving.errors as serving_errors
-from common.chairs.models import AbsentChair
+from common import page_accounting
+from common.background import validate_measured_ink_map_payload
+from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.envelope import read_verified
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
@@ -58,11 +63,23 @@ from common.contracts.identities import (
     perlector_attempt_id,
     region_id,
 )
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, INK_MAP, PERLECTOR
 from common.exemplar_boundary import cut_exemplar_crop, read_sealed_page
 from common.imaging import dimensions
+from common.page_accounting import feed_candidates
 from common.request_capacity import RequestCapacityRefusal, page_request_capacity
-from common.stage import exemplar_page_ids, latest_per_chair, stage_manifest
+from common.residual_ink import (
+    INK_NOT_MEASURABLE,
+    MINIMUM_CONTRAST_BELOW_BACKGROUND,
+    load_coverage_audit_config,
+    resolve_coverage_audit_policy,
+)
+from common.stage import (
+    SECONDARY_PROPOSER_CHAIR,
+    exemplar_page_ids,
+    latest_per_chair,
+    stage_manifest,
+)
 from common.witness_regime import witness_label
 from operations.serving.assembly import bound_serving_recipes
 from operations.serving.errors import ChairResponseRefusal
@@ -369,75 +386,56 @@ def feed_inputs(context, feed: dict[str, Any]) -> list[dict[str, str]]:
     return references
 
 
-# --- the answer's checks against its feed -----------------------------------------
+# --- the answer's ids ---------------------------------------------------------------
 #
-# `common/page_accounting.py` owns the shared form of these two checks; the page
-# path calls them through `expand_cites` and `validate_answer` alone.
-
-_ID: Final = re.compile(r"^[A-Z][1-9][0-9]*$")
-_RANGE: Final = re.compile(r"^(?P<a>[A-Z])(?P<i>[1-9][0-9]*)-(?P<b>[A-Z])(?P<j>[1-9][0-9]*)$")
+# The answer is read by `common/page_accounting.py`'s `validate_answer`, the one
+# reading of its ids the accounting uses too. Boxes there are `[x0, y0, x1, y1]`;
+# the feed records `{x, y, w, h}`, converted here and back.
 
 
-def expand_cites(cites: list[str], known: dict[str, Any]) -> tuple[list[str], list[dict]]:
-    """The ids `cites` names, a range expanded inclusive, in order; and every problem."""
-    ids: list[str] = []
-    problems: list[dict[str, str]] = []
-    for cite in cites:
-        match = _RANGE.match(cite)
-        if match is not None:
-            start, end = int(match["i"]), int(match["j"])
-            if match["a"] != match["b"] or start >= end:
-                problems.append(
-                    {"code": "malformed-range", "detail": f"{cite!r} is not one letter ascending"}
-                )
-                continue
-            named = [f"{match['a']}{number}" for number in range(start, end + 1)]
-        elif _ID.match(cite):
-            named = [cite]
-        else:
-            problems.append({"code": "unknown-id", "detail": f"{cite!r} is not an id or a range"})
-            continue
-        for identifier in named:
-            if identifier not in known:
-                problems.append(
-                    {"code": "unknown-id", "detail": f"{identifier!r} is not in the page feed"}
-                )
-            elif identifier not in ids:
-                ids.append(identifier)
-    return ids, problems
+def corners(box: dict[str, int] | None) -> list[int] | None:
+    """A feed box as the accounting's `[x0, y0, x1, y1]`, or `None`."""
+    if box is None:
+        return None
+    return [box["x"], box["y"], box["x"] + box["w"], box["y"] + box["h"]]
 
 
-def validate_answer(answer: dict[str, Any], feed: dict[str, Any]) -> list[dict[str, str]]:
-    """Every way a parsed answer's ids disagree with its feed; empty when it is valid."""
-    known = page_feed.placement_boxes(feed)
-    problems: list[dict[str, str]] = []
-    cited: set[str] = set()
-    for act in answer["acts"]:
-        ids, found = expand_cites(act["cites"], known)
-        problems += found
-        cited.update(ids)
-    set_aside: set[str] = set()
-    for entry in answer["set_aside"]:
-        ids, found = expand_cites([entry["id"]], known)
-        problems += found
-        if not entry["reason"].strip():
-            problems.append(
-                {"code": "set-aside-without-reason", "detail": f"{entry['id']!r} has no reason"}
-            )
-        for identifier in ids:
-            if identifier in set_aside:
-                problems.append(
-                    {"code": "set-aside-twice", "detail": f"{identifier!r} is set aside twice"}
-                )
-            if identifier in cited:
-                problems.append(
-                    {
-                        "code": "cited-and-set-aside",
-                        "detail": f"{identifier!r} is both cited and set aside",
-                    }
-                )
-            set_aside.add(identifier)
-    return problems
+def rectangle(box: list[int] | None) -> dict[str, int] | None:
+    """An accounting box as the feed's `{x, y, w, h}`, or `None`."""
+    if box is None:
+        return None
+    return {"x": box[0], "y": box[1], "w": box[2] - box[0], "h": box[3] - box[1]}
+
+
+def accounting_feed(feed: dict[str, Any]) -> dict[str, Any]:
+    """The page feed with every box as the accounting reads it."""
+    view = copy.deepcopy(feed)
+    for witness in view["witnesses"]:
+        for unit in witness["units"]:
+            unit["box_px"] = corners(unit["box_px"])
+    if view["surya"] is not None:
+        for row in view["surya"]["lines"] + view["surya"]["blocks"]:
+            row["box_px"] = corners(row["box_px"])
+    return view
+
+
+def answer_candidates(feed: dict[str, Any]) -> dict[str, list[int] | None]:
+    """Every id the feed defines, with the box it places an entry by.
+
+    The id set is checked by `feed_candidates`; the boxes are
+    `page_feed.placement_boxes`', so a witness shown flat places nothing.
+    """
+    feed_candidates(accounting_feed(feed))
+    return {identifier: corners(box) for identifier, box in page_feed.placement_boxes(feed).items()}
+
+
+def page_problems(validated: dict[str, Any]) -> list[dict[str, Any]]:
+    """The problems that hold the page reading whole; a shared union box holds its entries."""
+    return [
+        problem
+        for problem in validated["problems"]
+        if problem["code"] != page_accounting.DUPLICATE_REGION
+    ]
 
 
 # --- one page ---------------------------------------------------------------------
@@ -460,6 +458,8 @@ class _Page:
     adopted: dict[str, Any] | None = None
     fixture_row: dict[str, Any] | None = None
     not_run: dict[str, str] | None = None
+    page_size: tuple[int, int] | None = None
+    witnesses: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -472,6 +472,7 @@ class _PagePass:
     page_chairs: set[str]
     testimonia: dict[str, list[dict[str, Any]]]
     surya: dict[str, dict[str, Any]] | None
+    accounting_policy: Any
     row: Any = None
 
     @property
@@ -542,6 +543,10 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
         return page
     page_record, page_bytes = read_sealed_page(context.tree, page_id, refusal=ContractError)
     width, height = dimensions(page_bytes)
+    page.page_size = (width, height)
+    page.witnesses = _page_witnesses(
+        context, page_id, state.testimonia.get(page_id, []), state.page_chairs
+    )
     feed = page_feed.build_page_feed(
         page_id=page_id,
         page_ordinal=ordinal,
@@ -549,9 +554,7 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
         feed_switches=run.protocol_config["feed"],
         witness_regime=context.witness_context,
         roster=sorted(state.page_chairs),
-        witnesses=_page_witnesses(
-            context, page_id, state.testimonia.get(page_id, []), state.page_chairs
-        ),
+        witnesses=page.witnesses,
         surya=_surya_for(state.surya, page_id),
         page_render=_page_render(context, run.protocol_config, page_id, ordinal),
         serving_recipe=run.chair.serving_recipe,
@@ -682,7 +685,7 @@ def _read_reply(content: str, stop_reason: str | None, feed: dict[str, Any]):
         )
     state, answer, problems = page_answer.parse_page_answer(content)
     if state == PARSED:
-        problems = validate_answer(answer, feed)
+        problems = page_problems(page_accounting.validate_answer(answer, answer_candidates(feed)))
     return state, answer, problems
 
 
@@ -693,8 +696,11 @@ def _finish(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | 
         _check_adopted(state, page, record)
     else:
         record = _publish_reading(state, page, result)
-    if record["payload"]["disposition"] == READ:
-        publish_act_records(state, page, record)
+    truncations = (
+        publish_act_records(state, page, record) if record["payload"]["disposition"] == READ else {}
+    )
+    if page.feed is not None:
+        publish_page_accounting(state, page, record, truncations)
 
 
 def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
@@ -798,35 +804,24 @@ def _check_adopted(state: _PagePass, page: _Page, record: dict[str, Any]) -> Non
 # --- the answer's entries as act records --------------------------------------------
 
 
-def _union(boxes: list[dict[str, int]]) -> dict[str, int] | None:
-    if not boxes:
-        return None
-    x0 = min(box["x"] for box in boxes)
-    y0 = min(box["y"] for box in boxes)
-    x1 = max(box["x"] + box["w"] for box in boxes)
-    y1 = max(box["y"] + box["h"] for box in boxes)
-    return {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
-
-
 def answer_entries(answer: dict[str, Any], feed: dict[str, Any]) -> list[dict[str, Any]]:
-    """Each entry of a valid answer with its expanded ids, union box and entry holds."""
-    known = page_feed.placement_boxes(feed)
+    """Each entry of a valid answer: the entry, its expanded ids, union box and entry holds."""
+    validated = page_accounting.validate_answer(answer, answer_candidates(feed))
+    shared = {
+        n
+        for problem in validated["problems"]
+        if problem["code"] == page_accounting.DUPLICATE_REGION
+        for n in problem["ns"]
+    }
     entries = []
-    for act in answer["acts"]:
-        cited_ids, _problems = expand_cites(act["cites"], known)
-        union = _union([known[identifier] for identifier in cited_ids if known[identifier]])
+    for act, entry in zip(answer["acts"], validated["entries"], strict=True):
+        union = rectangle(entry["union_box_px"])
+        holds = [] if union is not None else [UNPLACED]
+        if entry["n"] in shared:
+            holds.append(DUPLICATE_REGION)
         entries.append(
-            {
-                "act": act,
-                "cited_ids": cited_ids,
-                "union_box_px": union,
-                "holds": [] if union is not None else [UNPLACED],
-            }
+            {"act": act, "cited_ids": entry["cited_ids"], "union_box_px": union, "holds": holds}
         )
-    boxes = [digest_of(entry["union_box_px"]) for entry in entries if entry["union_box_px"]]
-    for entry in entries:
-        if entry["union_box_px"] and boxes.count(digest_of(entry["union_box_px"])) > 1:
-            entry["holds"].append(DUPLICATE_REGION)
     return entries
 
 
@@ -873,8 +868,13 @@ def _dissent(text: str, feed: dict[str, Any], cited_ids: list[str]) -> list[dict
     return rows
 
 
-def publish_act_records(state: _PagePass, page: _Page, reading: dict[str, Any]) -> None:
-    """One `act-region` and one `perlectio` per entry of a read page's answer."""
+def publish_act_records(state: _PagePass, page: _Page, reading: dict[str, Any]) -> dict[int, str]:
+    """One `act-region` and one `perlectio` per entry of a read page's answer.
+
+    Returns each placed entry's truncation classification by `n`, for the
+    page accounting; an unplaced entry has none.
+    """
+    truncations: dict[int, str] = {}
     run, hooks, context = state.run, state.hooks, state.context
     payload = reading["payload"]
     feed = page.feed
@@ -950,6 +950,8 @@ def publish_act_records(state: _PagePass, page: _Page, reading: dict[str, Any]) 
             if union is not None
             else None
         )
+        if record is not None:
+            truncations[act["n"]] = record["classification"]
         if record is not None and truncation.holds_as_failure(record["classification"]):
             holds.append(READING_INCOMPLETE)
         if record is not None and record["classification"] == truncation.TRUNCATED:
@@ -988,6 +990,189 @@ def publish_act_records(state: _PagePass, page: _Page, reading: dict[str, Any]) 
                 "provenance": payload["provenance"],
             },
         )
+    return truncations
+
+
+# --- the page accounting -----------------------------------------------------------
+
+
+PAGE_ACCOUNTING_KIND: Final = "page-accounting"
+
+
+def _accounting_witnesses(state: _PagePass, page: _Page) -> list[dict[str, Any]]:
+    """Every sealed page witness as the accounting measures it, shown or hidden.
+
+    A shown witness is its feed row. A hidden one is read by the feed's own
+    extraction and takes the next letter the feed did not use, in sorted
+    `witness_label` order, so its ids never collide with a shown one's.
+    """
+    shown = {row["witness_label"]: row for row in accounting_feed(page.feed)["witnesses"]}
+    used = {row["letter"] for row in shown.values()}
+    free = iter(letter for letter in page_feed.WITNESS_LETTERS if letter not in used)
+    rows = []
+    for witness in sorted(page.witnesses, key=lambda item: item["witness_label"]):
+        testimonium = witness["testimonium"]
+        outcome = testimonium["outcome"]
+        health = testimonium["payload"].get("content_health")
+        blank = health.get("blank") if outcome == "read" and isinstance(health, dict) else None
+        row = shown.get(witness["witness_label"])
+        if row is not None:
+            letter = row["letter"]
+            units = [
+                {"id": unit["id"], "box_px": unit["box_px"], "text": unit["text"]}
+                for unit in row["units"]
+            ]
+        else:
+            letter = next(free)
+            reading = page_feed.witness_reading(
+                testimonium,
+                adapter=witness["adapter"],
+                page_size=page.page_size,
+                read_bytes=state.context.tree.read_bytes,
+                fixture_placeholders=not state.hooks.real_ingress(state.context),
+            )
+            units = [
+                {"id": f"{letter}{number}", "box_px": corners(unit["box_px"]), "text": unit["text"]}
+                for number, unit in enumerate(reading["units"], start=1)
+            ]
+        rows.append({"letter": letter, "outcome": outcome, "blank": blank, "units": units})
+    return rows
+
+
+def _record_detections(context, page_id: str) -> tuple[Any, Any, list[dict[str, str]]]:
+    """The record detector's records and census for one page, or `(None, None, [])`.
+
+    Both are `None` when the detector published no `detector-page` for the page
+    or its run facts state no `max_det`, so whether it stopped at its cap is
+    unknown; the accounting then holds rule (i) as not measured. A record whose
+    corners enclose no crop has no box and is not given.
+    """
+    entries = stage_manifest(context, DESIGNATOR)["artifacts"]
+    pages = [e for e in entries if e["kind"] == "detector-page" and e["subject_id"] == page_id]
+    if not pages:
+        return None, None, []
+    [entry] = pages
+    census_record = context.tree.read_artifact(DESIGNATOR, "detector-page", entry["artifact_id"])
+    payload = census_record["payload"]
+    output = json.loads(
+        read_verified(context.tree.read_bytes, payload["raw_output_ref"], "a detector output")
+    )
+    max_det = output.get("run", {}).get("max_det")
+    if not isinstance(max_det, int) or isinstance(max_det, bool):
+        return None, None, []
+    references = [context.artifact_ref(DESIGNATOR, "detector-page", entry["artifact_id"])]
+    records = []
+    for subject in payload["record_subjects"]:
+        [row] = [
+            e for e in entries if e["kind"] == "detector-record" and e["subject_id"] == subject
+        ]
+        record = context.tree.read_artifact(DESIGNATOR, "detector-record", row["artifact_id"])
+        reference = context.artifact_ref(DESIGNATOR, "detector-record", row["artifact_id"])
+        references.append(reference)
+        if record["payload"]["bounds"] is not None:
+            records.append({"box_px": corners(record["payload"]["bounds"]), "ref": reference})
+    census = {
+        "detection_count": payload["detection_count"],
+        "max_det": max_det,
+        "max_det_reached": payload["detection_count"] >= max_det,
+    }
+    return records, census, references
+
+
+def _accounting_detections(state: _PagePass, page: _Page) -> tuple[dict[str, Any], list]:
+    """The page's sealed detections as the accounting takes them, and their references."""
+    context, feed = state.context, accounting_feed(page.feed)
+    surya = None
+    if state.surya is not None:
+        census = state.surya[page.page_id]
+        shown = feed["surya"] or {"lines": [], "blocks": []}
+        surya = {
+            kind: [
+                {"id": row["id"], "box_px": row["box_px"], "ref": row["ref"]} for row in shown[kind]
+            ]
+            if shown[kind]
+            else [{"box_px": corners(row["box_px"]), "ref": row["ref"]} for row in census[kind]]
+            for kind in ("lines", "blocks")
+        }
+    configured = isinstance(context.registry.resolve(SECONDARY_PROPOSER_CHAIR), ChairIdentity)
+    records, record_census, references = (
+        _record_detections(context, page.page_id) if configured else (None, None, [])
+    )
+    return {
+        "surya": surya,
+        "records": records,
+        "record_detector": "configured" if configured else "absent",
+        "record_census": record_census,
+    }, references
+
+
+def _accounting_ink(context, page: _Page) -> tuple[dict[str, Any] | None, list]:
+    """The page's retained ink runs and resolved coverage policy, or `None` when unmeasured."""
+    for entry in stage_manifest(context, INK_MAP)["artifacts"]:
+        if entry["kind"] != "ink-map":
+            continue
+        record = context.tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
+        if record["payload"].get("page_ordinal") != page.ordinal:
+            continue
+        reference = context.artifact_ref(INK_MAP, "ink-map", entry["artifact_id"])
+        if record["outcome"] == INK_NOT_MEASURABLE:
+            return None, [reference]
+        measured = validate_measured_ink_map_payload(
+            record["payload"], audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
+        )
+        coverage = load_coverage_audit_config(context.args.designator_grouping_config)
+        context.require_sealed_config("designator-grouping", coverage["config_sha256"])
+        if coverage["config_sha256"] != measured["background_config_sha256"]:
+            raise ContractError(
+                f"page {page.page_id}'s ink map and the coverage policy read different sealed bytes"
+            )
+        runs = record["payload"]["edge_findings"]
+        return {
+            "runs": runs,
+            "coverage_policy": resolve_coverage_audit_policy(
+                coverage, runs["width"], runs["height"]
+            ),
+        }, [reference]
+    return None, []
+
+
+def publish_page_accounting(
+    state: _PagePass, page: _Page, reading: dict[str, Any], truncations: dict[int, str]
+) -> None:
+    """The page's `page-accounting`: rules a-i over its reading, witnesses and detections."""
+    context = state.context
+    reading_ref = context.artifact_ref(PERLECTOR, PAGE_READING_KIND, reading["artifact_id"])
+    payload = reading["payload"]
+    detections, detection_refs = _accounting_detections(state, page)
+    ink, ink_refs = _accounting_ink(context, page)
+    accounting = page_accounting.page_accounting(
+        feed=accounting_feed(page.feed),
+        witnesses=_accounting_witnesses(state, page),
+        detections=detections,
+        reading={
+            "parse_state": payload["parse_state"],
+            "finish_reason": payload["finish_reason"],
+            "answer": payload["answer"],
+        },
+        entry_truncation=truncations,
+        ink=ink,
+        policy=state.accounting_policy,
+        feed_ref=page.feed_ref,
+        page_reading_ref=reading_ref,
+    )
+    surya_refs = []
+    if state.surya is not None:
+        census = state.surya[page.page_id]
+        surya_refs = [census["census_ref"]] + [
+            row["ref"] for row in census["lines"] + census["blocks"]
+        ]
+    context.publish(
+        kind=PAGE_ACCOUNTING_KIND,
+        subject_id=page.page_id,
+        outcome=HELD if accounting["holds"] else READ,
+        inputs=_distinct([page.feed_ref, reading_ref, *surya_refs, *detection_refs, *ink_refs]),
+        payload=accounting,
+    )
 
 
 # --- the pass ---------------------------------------------------------------------
@@ -1037,6 +1222,9 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         page_chairs=hooks.declared_page_witness_chairs(context),
         testimonia=current_page_testimonia(context, hooks, run.all_proposal_regions),
         surya=sealed_surya_census(context),
+        accounting_policy=page_accounting.require_page_accounting_policy(
+            context, context.page_accounting_config_path
+        ),
     )
     if state.live and not isinstance(run.chair, AbsentChair):
         left = _pages_left(state, pages)
