@@ -902,6 +902,24 @@ def test_a_page_read_tree_holding_an_act_reading_is_refused_as_mixed(happy_tree,
         reading_denominator(_context(tree))
 
 
+@pytest.mark.parametrize("kind", ["audit-draft", "audit-finding"])
+def test_a_page_read_tree_holding_any_act_path_record_is_refused_as_mixed(
+    act_tree, happy_tree, tmp_path, kind
+):
+    tree = _copy(happy_tree, tmp_path)
+    source = sorted((act_tree[0] / RUN_ID / "4_perlector" / "artifacts" / kind).glob("*.json"))[0]
+    run = RunTree(tree[0], RUN_ID)
+    record = json.loads(source.read_text(encoding="utf-8"))
+    # Written by this page-read run, with no input it could not have read.
+    record.update(config_digest=run.read_run()["config_digest"], inputs=[])
+    directory = tree[0] / RUN_ID / "4_perlector" / "artifacts" / kind
+    directory.mkdir(exist_ok=True)
+    _write(directory / source.name, record)
+    rebind_stage_seal_artifact(run, PERLECTOR)
+    with pytest.raises(FatalAccounting, match=f"published an act-path {kind}"):
+        reading_denominator(_context(tree))
+
+
 @pytest.mark.parametrize(
     "kind", ["page-feed", "page-reading", "page-accounting", "act-region", "perlectio"]
 )

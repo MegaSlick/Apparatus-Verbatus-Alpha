@@ -2474,6 +2474,17 @@ def _verify_page_read_denominator(
     return rows, acts
 
 
+# Every kind a page-read Perlector publishes: the page path's own, its
+# `perlectio.v2`, the `reader-sent` marker of a live page call and the stage
+# boundary records every stage writes. Any other kind is the act path's.
+_PAGE_READ_TREE_KINDS: Final = page_path.PAGE_PATH_KINDS | {
+    page_path.PERLECTIO_KIND,
+    "reader-sent",
+    "stage-seal",
+    "decode-environment",
+}
+
+
 class _PageReadRecords:
     """The page-read run's sealed evidence, read once and grouped for the denominator."""
 
@@ -2484,6 +2495,13 @@ class _PageReadRecords:
         _verify_stage_seal(
             tree, PERLECTOR, "the page-read denominator", "reading", manifest=manifest
         )
+        for entry in manifest["artifacts"]:
+            if entry["kind"] not in _PAGE_READ_TREE_KINDS:
+                raise FatalAccounting(
+                    f"the sealed Perlector protocol reads whole pages, but the Perlector "
+                    f"published an act-path {entry['kind']} ({entry['artifact_id']}); one run's "
+                    "acts are counted one way, never both"
+                )
         self.by_kind: dict[str, list[dict[str, Any]]] = {
             kind: _stage_records(tree, PERLECTOR, kind, manifest=manifest)
             for kind in (
