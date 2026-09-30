@@ -12,6 +12,7 @@ from typing import Any
 
 from .errors import ReceiptRefusal
 from .models import (
+    RECEIPT_SCHEMA,
     ChairIdentity,
     ServingDetails,
     ServingReceipt,
@@ -20,7 +21,6 @@ from .models import (
     is_witness_role,
 )
 
-RECEIPT_SCHEMA = "chair-serving-receipt.v1"
 _REQUIRED = {
     "schema",
     "chair",
@@ -138,7 +138,8 @@ def _validate_identity(identity: ChairIdentity) -> None:
     witness_adapter = identity.witness_adapter
     witness_scope = identity.witness_scope
     if witness_adapter is None and witness_scope is None:
-        # Older fixtures carry neither; a real run requires both before pixels.
+        # Neither is a complete receipt identity; the witness-adapter binding check
+        # requires both on an Attestator chair before a run starts.
         return
     if not is_witness_role(identity.role):
         raise ReceiptRefusal(
@@ -162,7 +163,7 @@ def _validate_details(identity: ChairIdentity, details: ServingDetails) -> None:
     Deliberately not by building a throwaway `ChairIdentity` and reading the
     assembled record back: a stand-in identity constructed to satisfy a
     validator is the one shape this package exists to keep out of its own code,
-    and it also made the refusal name a chair whose fields were invented here.
+    and a refusal must name the real chair, not one with invented fields.
     """
     chair = identity.role
     if not isinstance(details, ServingDetails):
@@ -223,10 +224,10 @@ def _validate_tokenizer_revision(value: object, chair: str) -> None:
 
 
 def _validate_started_at(value: object, chair: str) -> None:
-    """The serving moment has to be readable as a moment (#41).
+    """The serving moment has to be readable as a moment.
 
-    A non-blank string was the whole of the check, so `"not-a-timestamp"` recorded
-    a serving moment nothing could ever recover. UTC is required rather than merely
+    A string that does not parse as an ISO 8601 timestamp records a serving moment
+    nothing could ever recover. UTC is required rather than merely
     offered: receipts from two machines are compared, and a naive timestamp is only
     a moment if you already know which clock wrote it.
     """

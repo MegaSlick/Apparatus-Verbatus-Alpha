@@ -1,13 +1,13 @@
-"""Spec 02, test 1 — Resolution.
-
-"Every role in a fixture `models.toml` resolves to an exact identity or fails
-naming the missing field. Non-40-hex and branch-name revisions are refused. A
-role the schema has never seen resolves without a schema change."
+"""Resolution: every role in a fixture `models.toml` resolves to an exact
+identity or fails naming the missing field. Non-40-hex and branch-name revisions
+are refused. A role the schema has never seen resolves without a schema change.
 
 Resolution is pure and offline: it reads the configuration and returns an
 identity, an explicit absence, or a refusal. Nothing here touches a filesystem
 beyond the one config file, and nothing here reaches a network.
 """
+
+import unicodedata
 
 import pytest
 
@@ -203,9 +203,9 @@ def test_adapter_of_naming_a_real_sibling_chair_resolves(tmp_path):
 
 
 def test_a_role_the_schema_has_never_seen_resolves_without_a_schema_change(tmp_path):
-    """Spec 02: "The registry accepts a role added later without a schema
-    change — that is test 1's real requirement." Nothing in `common/chairs/`
-    holds a list of role names to add to, which is what makes this pass."""
+    """The registry accepts a role added later without a schema change. Nothing
+    in `common/chairs/` holds a list of role names to add to, which is what makes
+    this pass."""
     chairs = {
         "attestator_1": hf_chair("attestator_1", DIGEST),
         "haruspex_of_the_marginalia": hf_chair("haruspex_of_the_marginalia", DIGEST),
@@ -217,6 +217,28 @@ def test_a_role_the_schema_has_never_seen_resolves_without_a_schema_change(tmp_p
     assert identity.role == "haruspex_of_the_marginalia"
     # And it is not mistaken for a witness merely by being new.
     assert config.witness_chairs == ("attestator_1",)
+
+
+@pytest.mark.parametrize("role", [".", "..", "..x", ".hidden", "a/b", "a\\b"])
+def test_a_role_that_is_not_one_visible_directory_name_is_refused_by_the_config(tmp_path, role):
+    """A role becomes a cache directory name, so a separator or a leading dot is
+    refused where the configuration is read, before it reaches a digest."""
+    with pytest.raises(ConfigurationRefusal, match="plain configuration key"):
+        config_of(tmp_path, {role: hf_chair(role, DIGEST)})
+
+
+def test_two_roles_that_differ_only_in_unicode_normalization_are_refused(tmp_path):
+    """Default APFS ignores normalization as well as case, so the NFC and NFD
+    spellings of one role would share one cache directory."""
+    composed = unicodedata.normalize("NFC", "attestator_café")
+    decomposed = unicodedata.normalize("NFD", "attestator_café")
+    assert composed != decomposed
+
+    with pytest.raises(ConfigurationRefusal, match="chair roles alias on default APFS"):
+        config_of(
+            tmp_path,
+            {composed: hf_chair(composed, DIGEST), decomposed: hf_chair(decomposed, DIGEST)},
+        )
 
 
 def test_a_role_with_no_table_at_all_refuses_naming_the_role(tmp_path):

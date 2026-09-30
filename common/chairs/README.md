@@ -11,29 +11,32 @@ in code.
 | `models.py` | the typed values: `ChairIdentity`, `AbsentChair`, the digest manifest, `VerifiedSnapshot`, `ServingDetails`, `ServingReceipt`, `ModelsConfig` |
 | `config.py` | the one schema `config/models.toml` must match, and every refusal a malformed pin earns |
 | `manifests.py` | building, writing, reading and verifying the per-file digest manifest |
-| `model_store.py` | validation of the host's durable model store, its derived seven-chair inventory, licence snapshots, and carried DAI prompts; versions canonical download records immutably and publishes derived inventories and promoted manifests once, never overwriting evidence |
+| `model_store.py` | validation of the host's durable model store, its derived seven-chair inventory, licence snapshots, and carried DAI prompts; versions canonical download records immutably and publishes promoted manifests once, never overwriting evidence |
 | `registry.py` | resolution and verification against the filesystem and Hugging Face |
 | `receipts.py` | what a serving receipt must carry before it is one |
-| `errors.py` | the closed refusal taxonomy — one member per door "Resolution refuses; it never substitutes" names |
+| `filesystem.py` | the bounded control-file read and the APFS name key (case and Unicode normalization folded) the other modules share |
+| `errors.py` | the closed refusal taxonomy: every refusal the package raises, each naming the chair |
 | `protocol.py` | the caller-visible shape, and the contract exerciser that names the clause a broken implementation breaks |
 
 ## Four things worth knowing before you change anything here
 
 **Nothing here substitutes.** Every refusal names the chair and the concrete
 difference, and stops. No code path fetches or receipts a chair other than the one
-asked for, and the one place another chair is *resolved* is `_cache_descriptor`
-reading an adapter's configured `adapter_of` base — a configuration lookup, so that
-an old adapter cache cannot masquerade as compatible with a repinned base. It never
+asked for. Another chair is *resolved* only where `_cache_descriptor` and
+`receipt` read an adapter's configured `adapter_of` base — a configuration lookup,
+so that an old adapter cache or receipt cannot pass as compatible with a repinned
+base. It never
 fetches, serves, ranks or substitutes that base. A registry that fell back from one
 chair to a close-enough one would be a picker wearing an ops hat,
-and the closed taxonomy plus `test_chairs_no_substitution.py`
-are what keep one out. That test drives all seven doors through the *real* registry
+and the closed taxonomy (every `raise` in the package is checked against it) plus
+`test_chairs_no_substitution.py` are what keep one out. That test drives each of the seven ways a chair can
+fail to be served through the *real* registry
 and asserts, on a call log kept *inside* the registry rather than in front of it,
 that no other configured chair was resolved, fetched or receipted while each refusal
 was handled.
 
 **A pin is a constant the artifact must match.** Never a value the artifact
-supplies (harvest #43). A cache that holds a different revision than the pin is
+supplies. A cache that holds a different revision than the pin is
 refused rather than believed; the pin is never quietly updated to agree with
 whatever turned up. `digest_manifest` is the digest of the *manifest artifact's
 exact canonical bytes*, not of a structure that happens to parse the same way,
@@ -52,8 +55,8 @@ under the run root through `RunTree.write_run_receipt`, content-addressed, and
 `StageContext.publish` refuses one outright. A stage payload carries the
 receipt's digest-checked reference plus the immutable resolved identity and
 revision, never the timestamp or the endpoint. That is what keeps provenance
-travelling with every record without breaking spec 01's guarantee that
-repeating an identical command leaves every byte unchanged.
+travelling with every record without breaking the guarantee that repeating an
+identical command leaves every stage byte unchanged.
 
 ## Absence is a value, not a gap
 
@@ -67,12 +70,12 @@ witness is therefore visibly short one, all the way into the export.
 
 ## What this system does not own
 
-Lifecycle and health belong to the serving manager (spec 04). This package
+Lifecycle and health belong to the serving manager (`operations/serving/`). This package
 produces identity and verification; it does not start a process. `receipt()`
 accepts the serving details the serving manager observed, and
 `refuse_recipe_start()` is how a failed start is represented — as a refusal
 naming the chair, never as a second route under the same role name. Both are
-integration doors for spec 04's manager; neither chooses how a stage obtains
+integration doors for that manager; neither chooses how a stage obtains
 its serving details.
 
 The durable host model store is intentionally outside this repository. Its
@@ -94,19 +97,17 @@ differently: a store directory is per **artifact** (chandra-ocr-2 fills two
 chairs at one revision and is stored once), a `cache_root` entry is per **role**.
 Each present snapshot and manifest is held to its artifact-keyed canonical path,
 so one roster row cannot claim another artifact's verified directory and pin.
-`pod_materialization_plan` re-verifies the complete source store, then states
-which chairs a pod materializes into `cache_root` and which into `model_root` —
-the local-repository half, resolved relative to `config/models.toml` and never a
-second cache. It is explicitly a source-only plan, not proof that a pod served
-those weights; only a serving receipt can make that claim. `verify_store`
-refuses a store snapshot used as a cache entry directly, naming that cause
-rather than reporting an extra file.
+`model_root` is the local-repository half, resolved relative to
+`config/models.toml` and never a second cache. `verify_store` refuses a store
+snapshot used as a cache entry directly, naming that cause rather than reporting
+an extra file.
 
 Each configured Hugging Face role is bound to its exact repository, revision and
 manifest when its stage fills its cache. `StoreRoleFetcher` copies these sources
 into separate role caches, and `ChairRegistry` verifies and publishes each cache
 with its own identity descriptor. When making room, the registry may remove a
-configured role's unused cache and abandoned `.<role>.candidate-*` directories;
+configured role's unused cache and abandoned `.<role>.candidate-*` and
+`.<role>.prior-*` directories;
 it leaves all other entries under `cache_root` alone. Cache preparation and
 preflight do not fall back to network downloads when retained bytes are missing
 or invalid.
@@ -115,9 +116,8 @@ A store is materialized one snapshot at a time, so a record entry is either
 `present` — snapshot, manifest, pin, licence and carried content — or
 `pending-fetch`, which names the artifact, its roster origin, and the reason its
 bytes are not there yet. `verify_store` proves what exists and marks the derived
-inventory `complete: false` with every pending artifact named;
-`require_complete_store` is the door for a consumer that needs the whole roster
-on disk. A half-fetched store is therefore recordable and visibly partial rather
+inventory `complete: false` with every pending artifact named, and
+`StoreRoleFetcher` refuses to fill a chair whose artifact is not present. A half-fetched store is therefore recordable and visibly partial rather
 than unrepresentable. A pending entry also refuses if its
 artifact-keyed snapshot or manifest exists, so replaying an older pending record
 cannot relabel acquired or lost bytes as “not yet fetched.”

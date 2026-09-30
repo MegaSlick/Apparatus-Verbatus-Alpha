@@ -1,7 +1,5 @@
-"""Spec 02, test 4 — Absence.
-
-"A `state = "absent"` chair produces the explicit absence record — not an
-exception, not a silent skip — and counts against the witness floor."
+"""Absence: a `state = "absent"` chair produces the explicit absence record —
+not an exception, not a silent skip — and counts against the witness floor.
 
 Both halves matter and they pull in opposite directions. An absence that raised
 would be indistinguishable from a broken configuration; an absence that was
