@@ -12,9 +12,15 @@ an export after pixels changed between stages.
 """
 
 import json
-from typing import Any, Final
+from typing import Any, Callable, Final
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256, verify_self_hash
+from common.contracts.canonical import (
+    canonical_bytes,
+    digest_bytes,
+    digest_of,
+    is_sha256,
+    verify_self_hash,
+)
 from common.contracts.envelope import read_verified, validate_envelope
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import PROPOSAL_SEAL_ID, artifact_id, page_id, region_id
@@ -165,6 +171,43 @@ def sealed_page_bytes(
         raise refusal(f"{subject} has no image path")
     ref = {"relative_path": image_path, "sha256": payload.get("source_sha256")}
     return read_verified(tree.read_bytes, ref, subject, refusal)
+
+
+def exemplar_crop_transform(page_ordinal: int, page_id: str, bounds: dict) -> dict[str, Any]:
+    """The one construction of a crop transform, as `verify_exemplar_crop_lineage` reads it.
+
+    Region identity derives from this shape, so every stage that cuts a crop
+    from a sealed page builds it here.
+    """
+    return {
+        "operation": "crop",
+        "source_page_ordinal": page_ordinal,
+        "source_page_id": page_id,
+        "bounds": bounds,
+    }
+
+
+def cut_exemplar_crop(
+    retain: Callable[[bytes], dict[str, str]],
+    page_bytes: bytes,
+    page_ordinal: int,
+    page_id: str,
+    bounds: dict,
+) -> dict[str, Any]:
+    """Cut one crop from a sealed page's checked bytes and store it through `retain`.
+
+    Returns the fields that describe it: `transform`, `transform_digest`,
+    `image_path` and `image_sha256`. The crop is `crop_png` over the sealed
+    pixels, so the stored bytes are reproducible from the page and transform.
+    """
+    transform = exemplar_crop_transform(page_ordinal, page_id, bounds)
+    stored = retain(crop_png(page_bytes, bounds))
+    return {
+        "transform": transform,
+        "transform_digest": digest_of(transform),
+        "image_path": stored["relative_path"],
+        "image_sha256": stored["sha256"],
+    }
 
 
 def read_sealed_page(

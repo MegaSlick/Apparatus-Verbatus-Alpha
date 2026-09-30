@@ -26,10 +26,14 @@ from common import chandra_layout, structure_answer
 from common.chairs.errors import ServingRecipeRefusal
 from common.chairs.models import ChairIdentity, ServingDetails, VerifiedSnapshot
 from common.chairs.receipts import build_receipt
+from common.decoding import chair_decoding as sealed_chair_decoding
+from common.decoding import load_decoding_policy
 
 from .client import ChairClient, RetainBytes
+from .config import SubprocessProfile
 from .http import EndpointUnavailable, HttpResponse
 from .manager import AdapterCalibration, ReceiptPublication, ServingManager
+from .surya_detector import SuryaRun, contract, declared_page_documents, surya_run
 
 
 class _Absent:
@@ -656,13 +660,22 @@ class FakePublisher:
         )
 
 
+def shipped_decoding_policy() -> tuple[dict[str, Any], str]:
+    """The shipped decoding policy and its seal, as a stage's ``main`` loads them."""
+    return load_decoding_policy()
+
+
+def shipped_chair_decoding(chair: str) -> dict[str, int | float]:
+    """One chair's sampling values from the shipped decoding policy."""
+    policy, _digest = load_decoding_policy()
+    return sealed_chair_decoding(policy, chair)
+
+
 def fake_serving_factory(
     *,
     manager: ServingManager,
     retain: RetainBytes,
-    decoding_config_sha256: str,
     read_receipt: Callable[[Mapping[str, str]], Mapping[str, object]],
-    record_temperature: int = 0,
     adapter_calibration: AdapterCalibration | None = None,
 ) -> Callable[[Any, ChairIdentity, str], ChairClient]:
     """Build the ``serving_factory(context, chair, tier) -> ChairClient`` a
@@ -670,8 +683,10 @@ def fake_serving_factory(
 
     ``context`` is accepted and ignored: production factories close over a
     real ``StageContext`` to build ``retain``/``read_receipt``, but this fake
-    factory already has both, supplied directly by the test.
+    factory already has both, supplied directly by the test. Each chair sends
+    its row of the shipped decoding policy.
     """
+    policy, digest = load_decoding_policy()
 
     def factory(context: object, identity: ChairIdentity, tier: str) -> ChairClient:
         del context
@@ -680,10 +695,117 @@ def fake_serving_factory(
             identity=identity,
             tier=tier,
             retain=retain,
-            decoding_config_sha256=decoding_config_sha256,
-            record_temperature=record_temperature,
+            decoding_config_sha256=digest,
+            decoding_policy=policy,
             read_receipt=read_receipt,
             adapter_calibration=adapter_calibration,
         )
 
     return factory
+
+
+class InProcessSurya:
+    """Stands in for Surya's runner process: a live pass's `surya_runner`.
+
+    It answers from declared rows, in the surya-engine page shape the runner
+    writes, and hands those bytes to the same `surya_detector.surya_run` the
+    real subprocess path does, so the page documents are checked, the weights
+    are cross-checked against the chair's manifest, and the receipt is built
+    exactly as they would be for a real run. Its run facts name Surya's own
+    checkpoint sources at the pinned commit and list the chair snapshot's own
+    files as the weights. `reading_orders` gives a page a raster fallback, as
+    `surya_detector.declared_page_documents` takes it. `calls` records each
+    run's page ordinals and thread count; `checked` each environment check.
+    """
+
+    STARTED_AT = "2026-01-01T00:00:00Z"
+    CPU_CAPABILITY = "in-process fake"
+
+    def __init__(
+        self,
+        lines: Sequence[Mapping[str, Any]],
+        blocks: Sequence[Mapping[str, Any]],
+        *,
+        reading_orders: Mapping[int, tuple[str, str | None]] | None = None,
+    ) -> None:
+        self.lines = list(lines)
+        self.blocks = list(blocks)
+        self.reading_orders = dict(reading_orders or {})
+        self.cpu_capability = self.CPU_CAPABILITY
+        self.calls: list[tuple[tuple[int, ...], int]] = []
+        self.checked: list[str] = []
+
+    @staticmethod
+    def _versions(profile: SubprocessProfile) -> dict[str, str]:
+        return {
+            "surya_ocr": profile.required_packages["surya-ocr"],
+            "torch": profile.required_packages["torch"],
+        }
+
+    def check(self, profile: SubprocessProfile) -> dict[str, str]:
+        self.checked.append(profile.environment)
+        return self._versions(profile)
+
+    def __call__(
+        self,
+        profile: SubprocessProfile,
+        bundle_root: Path,
+        pages: Mapping[int, bytes],
+        sizes: Mapping[int, tuple[int, int]],
+        identity: ChairIdentity,
+        *,
+        manifest_rows: Sequence[Mapping[str, Any]] | None = None,
+    ) -> SuryaRun:
+        self.calls.append((tuple(sorted(pages)), profile.threads))
+        versions = self._versions(profile)
+        weights = [
+            {
+                "path": path.relative_to(bundle_root).as_posix(),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "size": path.stat().st_size,
+            }
+            for path in sorted(bundle_root.rglob("*"))
+            if path.is_file() and path.name != contract.BUNDLE_FILE
+        ]
+        pin = contract.LAYOUT_REPOSITORY_REVISION
+        run_facts = {
+            "engine": "surya",
+            **versions,
+            "python": "in-process fake",
+            "device": profile.device,
+            "cpu_capability": self.cpu_capability,
+            "machine": "in-process fake",
+            "threads": profile.threads,
+            "deterministic_algorithms": True,
+            "settings": {name: "in-process fake" for name in contract.OUTPUT_SETTINGS},
+            "checkpoints": {
+                "text_detection": {
+                    "source": "s3://text_detection/2025_05_07",
+                    "revision": None,
+                    "path": "text_detection/2025_05_07",
+                },
+                "layout": {
+                    "source": "hf://datalab-to/surya_layout2",
+                    "revision": pin,
+                    "path": "surya_layout2",
+                },
+                "order": {
+                    "source": "hf://datalab-to/surya_layout2/order",
+                    "revision": pin,
+                    "path": "surya_layout2/order",
+                },
+            },
+            "weights": weights,
+        }
+        written = declared_page_documents(
+            self.lines, self.blocks, sizes, run_facts, reading_orders=self.reading_orders
+        )
+        return surya_run(
+            profile,
+            identity,
+            versions,
+            self.STARTED_AT,
+            written,
+            sizes,
+            manifest_rows=manifest_rows,
+        )

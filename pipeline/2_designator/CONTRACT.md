@@ -506,7 +506,11 @@ in `initial_pass` regardless of scenario or configuration), which is what makes
 the optional *chair* possible without a mandatory *code path* ever being
 skippable: the chair is optional, its resolution is not.
 
-`secondary-proposal` exists only when the chair is configured, one held record
+`secondary-proposal` exists only when the chair is answered by the fixture: the
+pixel-scan rescue is the fixture pass's offline stand-in for a model proposer
+and runs under that fixture's receipt. An in-process record detector never
+switches it on and never lends it its provenance, so a real run publishes
+neither kind. When it runs there is one held record
 per rescue candidate the secondary scan finds outside authoritative coverage —
 `authoritative: false`, always, at the schema level and in fact. A candidate
 wholly contained by one claimed act is ordinary coverage and is not published;
@@ -548,6 +552,208 @@ terminal review disposition that prevents an additive proposal from existing
 only as inert metadata while the stage exits complete. Removing the proposer
 changes no `region`, `act-group`, or `proposal-seal` outcome; only the secondary
 evidence and held exit disappear.
+
+## `kind="detector-page"`, `kind="detector-record"`, and `kind="detector-region"`
+
+When `secondary_proposer` is configured it is DAI's own project's record
+detector (Teklia's YOLOv26 OBB model, one class, `record`), and these three
+kinds are what it found. They are the units DAI reads in the Attestatores and
+nothing else: page evidence that decides nothing.
+
+**Where the detector runs.** This stage runs it itself and never launches an
+engine for it. Its catalogue row is `in-process` (the verified weights, loaded
+on the CPU by `operations/serving/detector.py`) or `fixture`; a `vllm` row is
+refused, and a `fixture` row answers only the fixture pass. The fixture
+detector answers each page with the fixture's `[[detector_record]]` rows for
+that page (`page_ordinal`, four `corners`, `score_bp`, optional `class_id`);
+the shipped fixture declares none, so tests declare them on the stage context.
+On the live path the row is checked before the structure chair starts and the
+detector is loaded only after that chair has closed, so one model is resident
+at a time; a resumed pass reuses the `secondary-provenance` it already sealed.
+Every sealed page is asked once, after the act proposals and page fallbacks
+are published and before conservation.
+
+**The raw output.** One retained blob per page, schema
+`record-detector-output.v1`: the page, the run facts (engine, repository,
+revision, manifest digest, and for the in-process engine the weights file and
+digest, package versions, device, input size and thresholds), and every
+detection exactly as the engine gave it — four float corners in page pixels, a
+float score, a class.
+
+**`detector-page`**, subject the page identity, one per sealed page:
+`page_ordinal`, `detection_count`, `record_subjects` (in the engine's order),
+`raw_output_ref` and `provenance` (the sealed `secondary-provenance`). A page
+the detector found nothing on has `detection_count: 0`, which reads
+differently from a page never asked.
+
+**`detector-record`**, subject `<page_id>-detector-<n>`, one per detection in
+the engine's order: `page_ordinal`, `detector_ordinal` (`n`), `raw_output_ref`,
+`quantization`, `score_quantization`, `score_bp`, `class_id`, `class_name`,
+`raw_proposal` (the `yolo-obb` record `geometry_layer.yolo_obb` builds, which
+keeps the oriented polygon), `bounds` (its axis-aligned hull), `cut`,
+`authoritative: false`, `authority_effect: "none"`, `act_overlaps`,
+`region_ref` and `provenance`. `act_overlaps` lists every act proposal on the
+page the hull overlaps, as `{act_id, overlap_px}` sorted by `act_id`. Text
+fields are refused on both record kinds; a detector reports boxes, not words.
+
+**`detector-region`**, same subject, one per record that was cut: the hull's
+pixels, cut by the stage's one crop path, with `origin: "detector"`,
+`padding: null`, `raw_bounds` equal to the transform's bounds, `record_key`,
+`region_id`, the image digests and `provenance`. It is its own kind, not
+`region`, because every reader of `region` treats its subject as an act and its
+bounds as act coverage, and a detector box is neither.
+
+**Quantization.** `obb-corner-floor-clamp.v1`: each float corner is floored to
+the pixel it falls in and clamped into the page, and the crop is the
+axis-aligned hull of those four points (`aabb-enclose`;
+`config/designator_geometry.toml` keeps `rectify = false`). A rotated record is
+not rectified before DAI reads it, because nothing states that DAI's own
+pipeline does so. The score is recorded in basis points, rounded half to even
+(`score-round-half-even-bp.v1`). A detection whose corners collapse to fewer
+than three distinct pixels encloses no crop: its record is kept with
+`cut: false`, `bounds: null`, `raw_proposal: null` and `region_ref: null`,
+never dropped. Two detections that quantize to the same box share one geometry
+proposal and still keep a record and a crop each.
+
+**Determinism.** The in-process detector loads only weights whose SHA-256
+matches the pin, only under the exact package versions its catalogue row names,
+on the CPU with deterministic algorithms and one thread, so the same sealed
+page gives the same boxes. A resumed pass re-derives the same records, and a
+difference meets the RunTree's immutable publish boundary and refuses.
+
+**They decide nothing.** No detector record holds, rescues, or enters an act, an
+`act-group`, a `region` or the proposal seal, and `act_overlaps` is recorded,
+never acted on. The pixel-scan rescue above is not the detector: it runs only
+beside the fixture detector, as the offline stand-in it has always been, and a
+real run's in-process detector leaves it off (`_pixel_rescue_provenance`).
+Leaving the chair absent publishes none of the three kinds and changes no
+authoritative outcome (`pipeline/2_designator/test_secondary_proposer.py`).
+## `kind="surya-provenance"`, `kind="surya-page"`, `kind="surya-line"` and `kind="surya-block"`
+
+Surya (`datalab-to/surya`) runs beside the structure chair as an independent,
+deterministic text-line and layout detector: a check that no ink goes unseen.
+Its records are evidence for later stages to account against. None carries
+text (`no_text.refuse_text_fields` walks every payload), none cuts a crop, holds
+an act, enters an act or the proposal seal, and every one says
+`authoritative: false`. Removing the chair changes no `region`, `act-group`,
+`hold` or `proposal-seal` outcome. The records are written by
+`pipeline/2_designator/surya_detection.py`.
+
+**The chair.** `designator_surya` is resolved every run. Absent, nothing is
+published and the sealed roster says why. Configured, its serving row decides
+how it answers, and each row answers one pass only, so a run's receipts are
+never a mix of declared and real ones: a `fixture` row answers from the
+fixture's `[[surya_line]]` and `[[surya_block]]` rows, on the fixture pass
+only; a `subprocess` row runs Surya's runner
+(`operations/serving/surya/runner.py`) in Surya's own locked environment, on
+the CPU, with the row's thread count, over the chair's verified weight bundle,
+on the live pass only. Any other row, or a row on the other pass, is refused.
+On the fixture pass Surya runs before the structure decisions. On the live pass
+the row, the versions Surya's environment reports and the chair's weights are
+checked before the structure chair starts, and Surya runs once that chair has
+closed, so it never shares the card or the pod's attention with a served model.
+One runner process reads every page, so its timeout is the row's
+`startup_timeout_seconds` plus `seconds_per_page` for each page; a timeout, a
+runner that cannot start, and an empty page set are each refused by name. A
+fixture row declared for a page the Exemplar refused is left out, since the
+door already records that loss by name; a fixture row for any other page that
+is not sealed is refused by name.
+The fixture roster configures the chair against fixture rows; the real roster
+records it absent until Surya's weight bundle has been fetched and its digest
+manifest measured (`operations/serving/surya/README.md`, "On the pod").
+
+**What runs.** Surya's own `DetectionPredictor.local()` for text lines and the
+`LayoutEngine.run_batch` call its fast-layout server makes (rf-detr layout and
+the learned reading-order head), each on the whole sealed page, one page per
+call, as Surya's own image loader opens it. Surya chunks a tall page itself
+(`DETECTOR_IMAGE_CHUNK_HEIGHT`); nothing here tiles or rescales a page.
+Surya's output-shaping settings must hold Surya's defaults, no `local.env`
+settings file may sit where Surya would read it, and the reading-order head
+must have loaded from the bundle; the runner refuses rather than record a run
+that differs.
+
+**Reading order.** Surya orders a page's blocks with its learned reading-order
+head, but raster-sorts them (top to bottom, then left to right) on a page with
+more detections than the head takes (`MAX_BOXES`, 128), or when the layout
+detector returned no feature map for the head to read. Surya only logs either
+fallback. The detections are kept either way, and each page records which
+ordering its block positions come from: `reading_order` is `surya-order-head`
+or `raster-fallback`, and `reading_order_reason` says why a page fell back, or
+is null. A page with no detection, or one, is `surya-order-head`: Surya's head
+path returns its trivial order.
+
+**Determinism.** CPU only, a fixed torch thread count, one interop thread,
+`torch.use_deterministic_algorithms(True)`, models in eval mode, batch size one
+page, and no network at run time. No network rests on two things: every
+checkpoint is handed to Surya as a local directory in the bundle, which Surya's
+loaders use before any fetch, and the Hugging Face libraries run with
+`HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE` set. Surya has no offline switch of
+its own. Two runs with the same weight bundle, the same locked environment, the
+same thread count and the same CPU instruction set produce byte-identical page
+documents; `operations/serving/test_surya_environment.py` checks this on the
+synthetic pages with stand-in weights wherever Surya's environment is synced.
+What is not guaranteed: identical floats across CPUs whose vector instruction
+sets differ, since torch picks kernels by instruction set. The run facts and
+the receipt's `engine_version` therefore name the instruction set torch chose
+(`torch.backends.cpu.get_cpu_capability()`) and the machine. A resumed run whose
+engine or instruction set differs from the sealed receipt's is refused before it
+reuses that provenance, and a resumed run that re-derives a different document
+refuses at publication rather than overwrite what was sealed.
+
+`surya-provenance` (subject `"surya-provenance"`) is published once per run:
+the resolved chair and its serving receipt, in the shape every chair's
+provenance takes. A resumed pass reads it back and reuses it, since a second
+receipt would name a second serving moment. The receipt names no token context
+or pixel cap (both 0) on either pass: a detector has neither.
+
+`surya-page` (subject: the page id) is one census per sealed page, including a
+page Surya found nothing on (`line_count` and `block_count` zero), so a page
+found empty reads differently from a page never asked:
+
+| field | meaning |
+|---|---|
+| `schema` | `surya-page.v1` |
+| `page_id`, `page_ordinal`, `page_width_px`, `page_height_px` | the sealed page |
+| `line_count`, `block_count` | how many lines and blocks Surya returned |
+| `line_subjects`, `block_subjects` | the records below, in Surya's order |
+| `reading_order`, `reading_order_reason` | `surya-order-head` with a null reason, or `raster-fallback` with the reason Surya fell back |
+| `raw_output_ref` | the retained page document, exactly as the runner wrote it |
+| `run` | what ran: Surya, torch and Python versions, device, the CPU instruction set torch used and the machine, threads, the settings it ran with (as text), the three checkpoints with their sources and revisions, and every weight file's digest; or, for a fixture row, the fixture declaration |
+| `quantization`, `confidence_quantization` | as below |
+| `authoritative` | `false` |
+| `provenance` | the `surya-provenance` payload |
+
+`surya-line` (subject `<page_id>-surya-line-<n>`) and `surya-block` (subject
+`<page_id>-surya-block-<n>`) are one per detection, `n` counting from 1 in
+Surya's own order: text lines as the detector returned them, blocks in Surya's
+reading order. Both carry `schema` (`surya-line.v1` / `surya-block.v1`),
+`page_id`, `page_ordinal`, `n`, `polygon_px`, `bounds`, `quantization`,
+`confidence_bp`, `confidence_quantization`, `raw_output_ref`, `authoritative`
+and `provenance`. A block adds Surya's `label` and `raw_label`, its 0-based
+`reading_order_position` (equal to `n - 1`, since Surya returns blocks in
+reading order), and `reading_order`, the page's ordering that position comes
+from: the head's order, or a raster sort.
+
+`quantization` is `surya-corner-floor-clamp.v1`: each of Surya's four float
+corners is floored to the pixel it falls in and clamped to the page, giving
+`polygon_px`; `bounds` is the half-open hull of those pixels
+(`geometry_layer.enclosing_aabb`), so a box never excludes a pixel a corner
+touches. Surya's float corners stay in the retained document.
+`confidence_quantization` is `confidence-round-half-even-bp.v1`: the confidence
+in basis points, rounded half to even from its shortest decimal form, or null
+where Surya gives none.
+
+The runner's page document (`verbatus-surya-page.v1`) is checked against a
+closed shape by `operations/serving/surya_detector.py` before anything reads
+it: Surya's own `TextDetectionResult` and `LayoutResult` dumps, the page's size
+and `image_bbox`, block positions equal to their order, finite coordinates,
+confidences in [0, 1], a layout `error` of false, a block `count` of 0 (Surya's
+fast layout never sets it, so no record carries it), the reading order and its
+reason, and run facts with no floats whose checkpoints and weight rows pass the
+bundle lock's own checks (`contract.check_checkpoints`, `contract.check_file_rows`).
+The parent also refuses run facts that name other versions than the environment
+reported, and weights that are not exactly the files the chair's digest
+manifest pins, less the bundle's own lock. Anything else is refused by name.
 
 ## `kind="structure-status"`
 
@@ -782,7 +988,7 @@ a card to be refused. The page is never downscaled to make it fit: 300 dpi is
 what `config/pdf_render.toml` argues is needed to read the ink, and trading a
 measurable refusal for an unmeasurable misreading is not this pass's decision.
 Every live page record carries its `capacity` block, held or not, and the same
-record travels on the request onto the retained `chair-call-record.v1`.
+record travels on the request onto the retained `chair-call-record.v3`.
 
 A cut-off answer is held even though it parsed: a truncated act list is a
 missed act. Under the layout grammar that row states itself: an
@@ -852,13 +1058,16 @@ mints no act, and seals a denominator missing a page whose crops are on disk —
 which the immutable seal would then make permanent. A `held` page cut nothing
 and has nothing to reproduce. All three dispositions are resumed under test.
 
-What a resume does **not** check is that the build asking for the remaining
-pages is the build that answered the earlier ones. `_sealed_structure_answer`
-re-validates the reused serving provenance — the chair pin, the adapter recipe
-and the sealed decoding config all refuse if they moved — but not the answer's
-`prompt_sha256`, `prompt_version`, `text_view` or `vendor`. A resume across a
-prompt-version or vendor-pin bump therefore marks one run out under two
-prompts. Each answer record names the prompt it was given, so the mixture is
+What a resume checks of the build that answered the earlier pages is narrow.
+`_sealed_structure_answer` re-validates the reused serving provenance — the
+chair pin, the adapter recipe and the sealed decoding config all refuse if they
+moved — and the pass refuses, before any chair starts, a sealed answer whose
+`text_view` is not this build's `chandra-layout-text.v2`: a retired view by
+name, an unknown or missing one as such. The block texts behind every
+`text_digest` were read under that view, so an answer under another cannot be
+mixed with this build's. It does not check the answer's `prompt_sha256`,
+`prompt_version` or `vendor`. A resume across a prompt-version or vendor-pin
+bump therefore marks one run out under two prompts. Each answer record names the prompt it was given, so the mixture is
 visible per page and nothing is lost; nothing refuses it or reports it at run
 level. The Perlector's own resume guard has the same shape, so closing this is
 a cross-stage decision rather than a Designator one.
@@ -903,11 +1112,11 @@ told from "drew one nobody could read") with `data_bbox_truncated` saying
 whether that digest covers the whole value:
 
 ```text
-schema = "designator-structure-answer.v3"
+schema = "designator-structure-answer.v4"
 attempt_ordinal, attempt_seed, attempt_policy, attempts, presentation_ref
 page_id, page_ordinal, page_w, page_h
 prompt_version, prompt_sha256, answer_schema = "chandra-layout-html.v1"
-text_view = "chandra-layout-text.v1"
+text_view = "chandra-layout-text.v2"
 vendor = {repository, commit, licence, prompt_source, parser_source,
           prompt_sha256}
 call_record_ref, raw_response_ref | null, custody_ref | null,
@@ -925,12 +1134,22 @@ blocks_without_proposal = [{ordinal, reason, blank_page, label_vocabulary | null
                             nested_bbox_count}]
 findings = [{kind, ...}]
 quantization, page_text_rule
-decoding = {policy = "structure", temperature, decoding_config_sha256}
+decoding = {policy = "structure",
+            sampling = {temperature, top_p, top_k, min_p, repetition_penalty},
+            decoding_config_sha256}
 provenance (the served chair, its real receipt, and `engine_call`)
 ```
 
-Structure answers sealed as `designator-structure-answer.v1` or `.v2` are
-refused by name; a new run produces the current request-image evidence.
+Structure answers sealed as `designator-structure-answer.v1`, `.v2` or `.v3`
+are refused by name; a new run produces the current request-image evidence and
+the complete sealed sampling of every attempt. An answer or attempt whose
+`text_view` is not `chandra-layout-text.v2` is refused the same way, by this
+stage and by every reader in `common/stage.py`
+(`refuse_structure_answer_text_view`): the retired `chandra-layout-text.v1`,
+which dropped a `Blank-Page` block's text, by name, and an unknown or missing
+view as such. Both refusals say to re-run the submission from the Door: the run
+tree is immutable and a resumed Designator reuses its sealed answers, so only a
+fresh run asks the chair again.
 
 The raw response is retained twice under one digest: by the client before it
 is parsed, and under `common/chandra_custody.py`'s one-receipt binding
@@ -942,8 +1161,11 @@ itself lives only in that blob. `common/stage.py::_verify_proposal_act_row`
 holds every structural row of a served seal to this record: the page's status
 must say `scanned` and name it, it must have parsed under the same
 `engine_call` the seal records, its `call_record_ref` must resolve to a genuine
-`chair-call-record.v1` for this chair under the run's sealed decoding digest,
-and it must list the row's exact rectangle — no nearest match.
+`chair-call-record.v3` for this chair under the run's sealed decoding digest,
+whose sampling is its attempt's sealed values and whose seed is its serving
+receipt's (`common.stage.verify_retained_call_sampling`), and it must list the
+row's exact rectangle — no nearest match. A call record written under a retired
+schema is refused by name.
 
 **Provenance on the live path** is `structure_pass.live_chair_record`: the
 chair's real serving receipt (never `_configured_chair_record`'s `fixture://`
@@ -951,25 +1173,33 @@ value — a declared moment on a path that called the chair would be a fabricate
 one) plus `engine_call`, the closed `structure-chair-call.v1`
 posture `{schema, call_kind, decoding_policy = "structure",
 decoding_config_sha256}` that `validate_serving_provenance` binds to the run's
-sealed decoding digest. The secondary proposer is resolved on this path too and
-must be absent; a configured row is refused by name before
-any chair starts, because nothing serves it and no fixture receipt may be
-written for it.
+sealed decoding digest. The secondary proposer is resolved on this path too:
+absent, or DAI's own record detector on an `in-process` row, whose catalogue
+row, pinned package versions and weights digest are checked before the
+structure chair starts and which loads only once that chair has closed. A
+`fixture` or `vllm` row is refused by name before any chair starts.
 
-**Decoding.** The pass runs under `config/decoding.toml`'s `[structure]`
-section and never under `reading_of_record`: the Attestatores keep the fixed
-posture, while the structure pass may vary, sealed and recorded per run, so its
-re-run variance is a clue beside the witnesses. The
-value is read from the sealed bytes, rechecked by digest at the point of use,
-and recorded on every page's answer record. **The limit, stated plainly:** the
-live reading seam records the reading-of-record temperature and puts 0 on the
-wire for every call (`ChairClient`, `request_body(deterministic=True)`), so
-today a sealed `[structure]` temperature other than 0 is refused by name before
-any chair starts (`structure_pass.executable_temperature`) — running at 0 under
-a record that says otherwise would be a posture reported rather than executed.
-Widening the seam to carry a per-call temperature is what unlocks a non-zero
-value; the section, the loader, the recheck and the record are already in
-place for it.
+**Decoding.** The structure chair reads at its row of `config/decoding.toml`'s
+`chair_decoding` table: Chandra's own page pipeline's first request
+(`temperature` 0.0, `top_p` 0.1, `chandra/model/vllm.py` at the pinned
+revision) over vLLM's defaults for the fields Chandra does not send (`top_k` 0,
+`min_p` 0, `repetition_penalty` 1), which the loader holds equal to the pinned
+native recipe's first request. `[structure]` holds only coverage recovery, and
+recovery follows Chandra's own retry schedule (`recovery_schedule =
+"chandra-native-retry"`): attempt n sends the row with the pinned recipe's
+request n temperature and top_p (0.2/0.95, then 0.4/0.95, up to the sealed
+ceiling of three), which is the maker's own
+recovery from a degenerate page. The trigger stays this stage's (a structural
+loop or an invalid layout); only the sampling is Chandra's. Every attempt runs
+under the serving row's one seed, recorded as `attempt_seed`: at temperature 0
+a reseeded greedy request would be the first request again. `ChairClient`
+selects the attempt's values from the sealed policy by its own chair and the
+request's `structure_attempt_ordinal`, sends them with the seed, and records
+both on the call record beside `sampling_effective`, the values the pinned
+vLLM samples under (its greedy first request runs at `top_p` 1). Each
+attempt's answer record carries every sampling value it sent under
+`decoding.sampling`, in the call record's own form; `common/stage.py` holds
+each attempt's record and call to the sealed values for its ordinal.
 
 **Every witness runs its own pass.** SPEC_D §3's "captured" kind — filing the
 structure chair's transcription as Attestator 1's Testimonium instead of
@@ -986,8 +1216,8 @@ three live witness chairs, a live Perlector, and the Recensor, Archetypus and
 Armarium as real programs over acts no fixture declared. It asserts that each
 minted region's `raw_bounds` are the chair's own rectangle and its `act_id`
 recomputes from them, that the seal verifies at the Attestatores' own
-boundary, that the sealed `[structure]` temperature is both on the wire and on
-every answer record, that no Designator artifact carries a byte of the chair's
+boundary, that the structure chair's sealed sampling values are on the wire,
+on every call record and on every answer record, that no Designator artifact carries a byte of the chair's
 transcription, and that a second attempt whose rectangles moved is an ordinary
 run — different acts on the page that changed, the same act on the page that
 did not, because identity is content-addressed rather than positional. The
@@ -1286,8 +1516,14 @@ those declared witness reports and the Perlector's observed-empty reading exist.
 
 `continuation-candidate` is read by the Recensor, which cites it on every act it names,
 and by the Armarium, which projects it as a continuation join.
-`act-group`, `secondary-provenance`, `secondary-proposal`, `rescue-crop` and
-`structure-status` have no consumer downstream of this stage today.
+`detector-page`, `detector-record` and `detector-region` are read by the
+Attestatores, and only for a page-scoped chair that reads its page one detector
+record at a time (DAI): they are its units. The Perlector's whole-page reading
+reads `detector-record`, `surya-page`, `surya-line` and `surya-block` as the
+page's candidate units and layout evidence (`pipeline/4_perlector/CONTRACT.md`).
+`act-group`, `secondary-provenance`, `secondary-proposal`, `rescue-crop`,
+`structure-status` and `surya-provenance` have no consumer downstream of this
+stage today.
 `structure-status` is the exception in one direction only: it is not *read* by a
 later stage, but `common/stage.py::_verify_page_fallback_act_row` reads it back
 within this stage's own denominator check, as the independent evidence that a
@@ -1932,7 +2168,7 @@ adjacency rule, not of how the rule is computed.)
 The secondary proposer is optional, but its declared sensitivity is still the
 most inclusive threshold this stage has. Reconciliation therefore counts the
 faint band that `primary_scan` does not propose and mints it as residual held
-evidence when no crop claims it. A configured secondary chair may additionally
+evidence when no crop claims it. A fixture-answered secondary chair may additionally
 publish a review-only rescue crop over the same area; that changes no authority
 decision and no pixel escapes the conservation denominator when the chair is
 absent. This closes a silent `EXIT_COMPLETE` path found by manual review; the

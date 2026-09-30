@@ -294,6 +294,11 @@ class VisionSmokeCall:
 
     page_witness: str
     utilization: Callable[[], tuple[UtilizationSample, ...]] = lambda: ()
+    # Each reading chair's row of the decoding policy the pod's pinned checkout
+    # ships (`common.decoding.chair_decoding`), by chair. A chair's smoke sends
+    # its row with the profile seed, as its run will; a smoke with no row for
+    # the chair can check a witness but refuses to read a page.
+    chair_sampling: Mapping[str, Mapping[str, int | float]] | None = None
     page_witness_reference: Mapping[str, str] | None = None
     raw_exchange_publisher: (
         Callable[[bytes, bytes], tuple[Mapping[str, str], Mapping[str, str]]] | None
@@ -371,11 +376,18 @@ class VisionSmokeCall:
                 # the same exact wire evidence behind.
                 exchange_references = self.raw_exchange_publisher(request, response.body)
 
+        sampling = (self.chair_sampling or {}).get(identity.role)
+        if sampling is None:
+            raise ServingConfigurationError(
+                f"the smoke has no sealed sampling values for {identity.role}, so it cannot "
+                "read the page the way the run will"
+            )
         try:
             answer = handle.request_fixture_image(
                 "chat-completions",
                 payload,
                 fixture=fixture,
+                sampling=sampling,
                 exchange_observer=retain_exchange,
             )
         except ServingError as error:

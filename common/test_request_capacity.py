@@ -687,8 +687,9 @@ def test_every_configured_real_chair_that_sends_a_request_carries_a_measurement(
     would be refused at run time by `sealed_prompt_tokens` for want of a
     measurement. That is the right refusal and the wrong moment -- it happens
     on a pod. The roster's own configured reading chairs are checked here
-    instead. `secondary_proposer` and `annotator` are absent from the roster by
-    ruling, and an absent chair sends nothing.
+    instead. `annotator` is absent from the roster by ruling, and an absent
+    chair sends nothing; `secondary_proposer` is the record detector, which
+    runs in-process and sends no prompt at all.
     """
 
     roster = load_models_toml(ROOT / "config" / "models-real.toml").chairs
@@ -699,7 +700,7 @@ def test_every_configured_real_chair_that_sends_a_request_carries_a_measurement(
     configured = {
         chair for chair, identity in roster.items() if isinstance(identity, ChairIdentity)
     }
-    measured = set(MEASURED_PROMPT_TOKENS) | {"perlector"}
+    measured = set(MEASURED_PROMPT_TOKENS) | {"perlector", "secondary_proposer"}
     assert configured == measured
 
 

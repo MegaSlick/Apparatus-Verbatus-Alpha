@@ -20,21 +20,21 @@ import inspect
 import json
 import math
 import re
-from typing import Any, Final
+from typing import Any, Final, Mapping
 
 from common.contracts import uncertainty
 from common.contracts.canonical import code_digest, digest_bytes, digest_of, is_plain_int, is_sha256
 from common.contracts.envelope import read_verified, validate_input_refs
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_SCHEMA,
-    CHAIR_CALL_RECORD_SCHEMAS,
     WIRE_DECIMAL_FIELDS,
     WIRE_DECIMAL_SCHEMA,
 )
 from common.contracts.stages import PERLECTOR
 from common.corpus_register import refuse_capture_preference
 from common.cross_capture_autopsia import presented_image_refs, presented_image_sha256s
+from common.decoding import refuse_retired_call_record, verify_call_sampling
 
 SCHEMA: Final = "perlector-audit.v3"
 LEGACY_SCHEMA: Final = "perlector-audit.v2"
@@ -698,8 +698,10 @@ def _validate_live_reproof_request(
     reading: dict[str, Any],
     call_evidence: dict[str, Any],
     request: dict[str, Any],
+    decoding_policy: Mapping[str, Any] | None,
 ) -> None:
-    """Rebuild the exact Perlector request body that carried the audit prompt."""
+    """Rebuild the exact Perlector request body that carried the audit prompt, and
+    hold its sampling to the Perlector's row of the sealed decoding policy."""
     prompt = validate_audit_prompt_evidence(call_evidence["audit_prompt"], request=request)
     if call_evidence["request_sha256"] != prompt["request_sha256"]:
         raise SchemaRefusal("an audit re-proof call and prompt name different requests")
@@ -713,15 +715,19 @@ def _validate_live_reproof_request(
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SchemaRefusal("an audit re-proof call record is not JSON") from error
     read_verified(tree.read_bytes, raw_ref, "an audit re-proof raw response")
+    if isinstance(call, dict):
+        refuse_retired_call_record(
+            call.get("schema"), subject="an audit re-proof call record", error_type=SchemaRefusal
+        )
     if (
         not isinstance(call, dict)
-        or call.get("schema") not in CHAIR_CALL_RECORD_SCHEMAS
+        or call.get("schema") != CHAIR_CALL_RECORD_SCHEMA
         or call.get("request_sha256") != prompt["request_sha256"]
         or call.get("raw_response_ref") != call_evidence["raw_response_ref"]
         or call.get("served_model_id") != call_evidence["served_model_id"]
         or call.get("parse_problem") is not None
         or call.get("response_model") != call_evidence["served_model_id"]
-        or (call.get("schema") == CHAIR_CALL_RECORD_SCHEMA and call.get("response_status") != 200)
+        or call.get("response_status") != 200
     ):
         raise SchemaRefusal("an audit re-proof prompt is not bound to its successful chair call")
     dossier = reading["payload"].get("dossier")
@@ -756,6 +762,14 @@ def _validate_live_reproof_request(
     )
     if call.get("image_sha256s") != image_sha256s or digest_bytes(body) != prompt["request_sha256"]:
         raise SchemaRefusal("an audit re-proof prompt does not reproduce its retained request")
+    if decoding_policy is None:
+        raise SchemaRefusal(
+            "an audit re-proof call cannot be verified without the run's sealed decoding policy"
+        )
+    try:
+        verify_call_sampling(call, decoding_policy, "perlector", expected_seed=receipt["seed"])
+    except ContractError as error:
+        raise SchemaRefusal(f"an audit re-proof call's sampling is off: {error}") from error
 
 
 def _decode_recorded_generation(value: Any) -> Any:
@@ -793,21 +807,16 @@ def _rebuild_chair_request_bytes(
     if not isinstance(recorded_generation, dict):
         raise SchemaRefusal("an audit re-proof call has no recorded generation object")
     generation = _decode_recorded_generation(recorded_generation)
-    retained_temperature = generation.pop("temperature", 0)
-    retained_seed = generation.pop("seed", seed)
-    if type(retained_temperature) is not int or retained_temperature != 0:
-        raise SchemaRefusal("an audit re-proof call retained another temperature")
+    retained_seed = generation.get("seed")
     if type(retained_seed) is not int or retained_seed != seed:
         raise SchemaRefusal("an audit re-proof call retained another seed")
-    if set(generation) & {"model", "stream", "n"}:
+    if set(generation) & {"model", "stream", "n", "messages"}:
         raise SchemaRefusal("an audit re-proof call puts a manager-owned field in generation_sent")
     body = {
         **generation,
         "messages": messages,
         "model": model_id,
         "stream": False,
-        "temperature": 0,
-        "seed": seed,
     }
     try:
         return json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
@@ -1354,12 +1363,15 @@ def validate_chain(
     *,
     length_floor_characters_per_page: int | None = None,
     legible_page_pixels: int | None = None,
+    decoding_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate the exact draft/finding/Perlectio relationship once for every reader.
 
     `length_floor_characters_per_page` and `legible_page_pixels` are the sealed
     `[truncation]` terms, from a caller that holds the protocol bytes; `None` is a
     caller that does not (the Recensor, the fixture chamber), a declared absence.
+    `decoding_policy` is the run's sealed decoding policy; a live re-proof call is
+    refused without it, since its sampling could not be checked.
 
     Known limit: under an `assessed` uncertainty state this proves only that the
     exhausted-cap projection leads `uncertain_spans`. The tail is the reader's
@@ -1445,7 +1457,7 @@ def validate_chain(
             )
         if finding_payload["reproof_call"] is not None:
             _validate_live_reproof_request(
-                tree, reading, finding_payload["reproof_call"], expected_request
+                tree, reading, finding_payload["reproof_call"], expected_request, decoding_policy
             )
             if (
                 finding_payload["change_record"]

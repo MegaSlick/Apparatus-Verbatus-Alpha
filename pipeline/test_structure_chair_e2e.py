@@ -106,7 +106,11 @@ from common.contracts.identities import act_bindings  # noqa: E402
 from common.contracts.identities import verify as verify_identity  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
-from common.decoding import load_decoding_policy  # noqa: E402
+from common.decoding import (  # noqa: E402
+    chair_decoding,
+    engine_effective_sampling,
+    load_decoding_policy,
+)
 from common.runtree.store import RECEIPTS_DIR, RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -118,7 +122,7 @@ from common.stage import (  # noqa: E402
     verify_final_seal,
 )
 from operations.serving.assembly import retain_chair_bytes  # noqa: E402
-from operations.serving.client import ChairClient  # noqa: E402
+from operations.serving.client import ChairClient, recorded_generation  # noqa: E402
 from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
     chair_preflight_identity_digest,
@@ -128,6 +132,7 @@ from operations.serving.config import (  # noqa: E402
 from operations.serving.fakes import (  # noqa: E402
     FakeLauncher,
     FakePackages,
+    InProcessSurya,
     ScriptedAnswer,
     scriptable_structure_refusals,
     scripted_structure_answer,
@@ -138,6 +143,7 @@ from operations.serving.fakes import (  # noqa: E402
 )
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
 from operations.serving.residency import FileResidencyLease  # noqa: E402
+from proof.build_fixture import SURYA_BLOCKS, SURYA_LINES  # noqa: E402
 from proof.synthetic_pages import PAGE_BREAK_PAGES, render_page  # noqa: E402
 
 designator = load_stage("2_designator")
@@ -186,7 +192,8 @@ def labelled(page_acts, labels):
 
 
 def write_catalogue(path: Path, registry) -> Path:
-    """Every configured chair live at every tier, the structure chair included.
+    """Every configured chair live at every tier, the structure chair included,
+    and Surya on its subprocess rows.
 
     The live-seam suite writes the same file with `designator_structure` left
     on its fixture rows; the one difference is the whole point of this module,
@@ -217,6 +224,24 @@ def write_catalogue(path: Path, registry) -> Path:
             row["preflight_identity_digest"] = identity_digest
             row["preflight_digest"] = profile_preflight_digest(row)
             rows.append(row)
+    # Surya runs beside the structure chair, as a subprocess on the CPU.
+    surya = registry.resolve("designator_surya")
+    rows.extend(
+        {
+            "kind": "subprocess",
+            "recipe": surya.serving_recipe,
+            "chair": "designator_surya",
+            "tier": tier,
+            "engine": "surya",
+            "environment": "operations/serving/surya",
+            "device": "cpu",
+            "threads": 2,
+            "startup_timeout_seconds": 300,
+            "seconds_per_page": 60,
+            "required_packages": {"surya-ocr": "0.22.1", "torch": "2.14.0"},
+        }
+        for tier in TIERS
+    )
     path.write_text(
         'schema = "serving-recipes.v1"\n\n' + "\n".join(_toml_profile(row) for row in rows),
         encoding="utf-8",
@@ -233,19 +258,27 @@ def write_catalogue(path: Path, registry) -> Path:
 class StructureWorld:
     """A serving factory over one scripted endpoint for the structure chair.
 
-    Deliberately close to `structure_pass.default_serving_factory`: the same
+    Deliberately close to production's `stage_chair_client`: the same
     manager, the same real `StageContextReceiptPublisher`, the same
     `retain_chair_bytes` into the Designator's own blob area, the same receipt
     re-read through the tree. The launcher, the transport and the package
     inspector are the fakes; nothing else is.
     """
 
-    def __init__(self, catalogue: Path, work: Path, answers: list[ScriptedAnswer]) -> None:
+    def __init__(
+        self,
+        catalogue: Path,
+        work: Path,
+        answers: list[ScriptedAnswer],
+        surya: InProcessSurya | None = None,
+    ) -> None:
         self.catalogue = catalogue
         self.work = work
         self.work.mkdir(parents=True, exist_ok=True)
         self.answers = answers
         self.endpoint: RecordingEndpoint | None = None
+        # Surya's subprocess, answered here from the fixture's declared rows.
+        self.surya = InProcessSurya(SURYA_LINES, SURYA_BLOCKS) if surya is None else surya
 
     def factory(self, context, identity, tier: str) -> ChairClient:
         policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
@@ -274,7 +307,7 @@ class StructureWorld:
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
-            record_temperature=structure_pass.executable_temperature(policy),
+            decoding_policy=policy,
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
         )
 
@@ -314,6 +347,7 @@ def mark_out(designated: SimpleNamespace, run_root: Path, work: Path, answers=No
         designated.catalogue,
         placement_tier=TIER,
         serving_factory=world.factory,
+        surya_runner=world.surya,
     )
     return world, exit_code
 
@@ -572,8 +606,8 @@ def test_the_retained_answer_is_what_the_downstream_verifier_reads(marked_out):
     assert sorted(row["act_key"] for row in acts) == sorted(ACT_KEYS)
 
 
-def test_the_sealed_structure_temperature_is_recorded_on_every_call(marked_out):
-    """The executed decoding posture, per call, from the sealed `[structure]` table.
+def test_the_sealed_structure_sampling_is_sent_and_recorded_on_every_call(marked_out):
+    """The executed sampling values, per call, from the structure chair's sealed row.
 
     A number reported on a record and a number put on the wire are two
     different claims, so both are read here: the request the
@@ -581,23 +615,28 @@ def test_the_sealed_structure_temperature_is_recorded_on_every_call(marked_out):
     the answer.
     """
     policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
-    sealed = policy["structure"]["temperature"]
+    sampling = chair_decoding(policy, "designator_structure")
+    sealed = recorded_generation(sampling)
     endpoint = marked_out.world.endpoint
     assert endpoint is not None
     assert len(endpoint.requests) == 2
     for request in endpoint.requests:
-        assert request["temperature"] == sealed
+        assert {key: request[key] for key in sampling} == sampling
         assert "max_tokens" not in request
 
     tree = RunTree(marked_out.run_root, RUN_ID)
     for record in artifacts(marked_out.run_root, DESIGNATOR, STRUCTURE_ANSWER_KIND):
         decoding = record["payload"]["decoding"]
         assert decoding["policy"] == "structure"
-        assert decoding["temperature"] == sealed
+        assert decoding["sampling"] == sealed
         assert decoding["decoding_config_sha256"] == decoding_sha256
         call = json.loads(tree.read_bytes(record["payload"]["call_record_ref"]["relative_path"]))
         assert call["chair"] == "designator_structure"
         assert call["decoding_config_sha256"] == decoding_sha256
+        assert {key: call["generation_sent"][key] for key in sampling} == sealed
+        assert call["sampling_effective"] == recorded_generation(
+            engine_effective_sampling(sampling)
+        )
         # The bytes the record names are the bytes the endpoint served.
         assert tree.read_bytes(record["payload"]["raw_response_ref"]["relative_path"]) in (
             endpoint.served
@@ -633,13 +672,16 @@ def test_no_designator_artifact_carries_the_chair_s_transcription(marked_out):
 
 
 def test_no_fixture_receipt_is_written_on_the_live_path(marked_out):
-    """The one receipt is the moment the chair really served."""
+    """The two receipts are the moment the chair really served and Surya's
+    subprocess run; neither is a fixture's."""
     directory = marked_out.run_root / RUN_ID / RECEIPTS_DIR
     receipts = [
         json.loads(path.read_text(encoding="utf-8")) for path in sorted(directory.rglob("*.json"))
     ]
-    assert [receipt["chair"] for receipt in receipts] == ["designator_structure"]
-    assert not receipts[0]["endpoint"].startswith("fixture://")
+    by_chair = {receipt["chair"]: receipt for receipt in receipts}
+    assert len(receipts) == len(by_chair) == 2
+    assert by_chair["designator_structure"]["endpoint"].startswith("http://")
+    assert by_chair["designator_surya"]["endpoint"] == "subprocess://cpu/threads-2"
 
 
 # ============================ the roster over those acts =========================
@@ -945,12 +987,12 @@ def test_a_second_attempt_at_the_same_pages_may_answer_differently_and_seals_wha
 ):
     """Runs are attempts, never reproductions.
 
-    The Attestatores read at the fixed reading-of-record posture; the
-    Designator's `[structure]` pass may vary, sealed and recorded per run, so
-    its re-run variance is a clue beside the witnesses. That ruling only means
-    anything if a second attempt whose rectangles moved is an ordinary run
-    rather than a refusal, so both attempts are made here over copies of one
-    Ink Map tree and each is asked to stand on its own.
+    Every chair reads at its sealed sampling values, and an engine need not
+    repeat an answer bit for bit, so the Designator's structure answer may
+    differ between runs, sealed and recorded per run. That only means anything
+    if a second attempt whose rectangles moved is an ordinary run rather than a
+    refusal, so both attempts are made here over copies of one Ink Map tree and
+    each is asked to stand on its own.
 
     What varies is *visible as acts*, because act identity is derived from the
     page and the rectangle rather than from the order a run happened to mint
@@ -1182,6 +1224,7 @@ def test_an_interrupted_live_pass_keeps_its_answers_and_asks_only_for_the_rest(
             designated.catalogue,
             placement_tier=TIER,
             serving_factory=interrupted.factory,
+            surya_runner=interrupted.surya,
         )
     first_receipts = answer_receipts(run_root)
     assert sorted(first_receipts) == [1], "an interrupted pass published no answer it had"
@@ -1296,6 +1339,7 @@ def test_a_pass_interrupted_after_its_fallback_tiles_seals_them_on_the_resume(
             designated.catalogue,
             placement_tier=TIER,
             serving_factory=world.factory,
+            surya_runner=world.surya,
         )
     monkeypatch.undo()
     (fallback,) = artifacts(run_root, DESIGNATOR, "page-fallback")
@@ -1369,11 +1413,11 @@ def _real_argv(run_root: Path, catalogue: Path) -> list[str]:
     ]
 
 
-def _run_real_in_process(module, run_root: Path, catalogue: Path, serving_factory) -> int:
+def _run_real_in_process(module, run_root: Path, catalogue: Path, serving_factory, **seams) -> int:
     original = sys.argv
     sys.argv = [module.__file__, *_real_argv(run_root, catalogue)]
     try:
-        return module.main(serving_factory=serving_factory)
+        return module.main(serving_factory=serving_factory, **seams)
     finally:
         sys.argv = original
 
@@ -1395,8 +1439,13 @@ def page_break_run(work: Path) -> SimpleNamespace:
         scripted_structure_answer(PAGE_BREAK_ACTS[ordinal], PAGE_WIDTH, PAGE_HEIGHT)
         for ordinal in sorted(PAGE_BREAK_ACTS)
     ]
-    structure = StructureWorld(catalogue, work / "structure-world", answers)
-    designator_exit = _run_real_in_process(designator, run_root, catalogue, structure.factory)
+    # The fixture declares no Surya detections for these pages, so Surya finds none.
+    structure = StructureWorld(
+        catalogue, work / "structure-world", answers, surya=InProcessSurya((), ())
+    )
+    designator_exit = _run_real_in_process(
+        designator, run_root, catalogue, structure.factory, surya_runner=structure.surya
+    )
 
     _policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
     page_acts = [PAGE_BREAK_ACTS[ordinal] for ordinal in sorted(PAGE_BREAK_ACTS)]

@@ -1,19 +1,12 @@
 # R2 Designator geometry policy.  This file is sealed into a run by its SHA-256.
 #
-# The `role` values below name geometry-policy blocks, NOT chairs. No chair
-# called `designator_surya` or `designator_yolo_obb` exists in
-# `config/models.toml`, in its live fixture roster or its commented real one,
-# and none is proposed. `config/models.toml` is the only place a model is bound
-# to a chair; this file only says what shape a proposal adapter cuts.
+# The `role` values below name geometry-policy blocks, NOT chairs.
+# `config/models.toml` is the only place a model is bound to a chair; this file
+# only says what shape a proposal adapter cuts. Surya is not a proposal
+# adapter: it runs on the whole page, as its makers wrote it, and its lines and
+# blocks are evidence records (`pipeline/2_designator/surya_detection.py`).
 [geometry]
 schema = "designator-geometry-policy.v1"
-
-[geometry.surya]
-role = "designator_surya"
-tile_width_px = 1400
-tile_height_px = 1400
-half_tile_vertical_offset_px = 700
-horizontal_overlap_px = 700
 
 [geometry.yolo_obb]
 role = "designator_yolo_obb"

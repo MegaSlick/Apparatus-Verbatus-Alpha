@@ -111,9 +111,20 @@ REQUIRED_ARTIFACTS = (
         "ca2150ea465d5a3d67818c50e234b9422619c75d",
         "other: qwen-research",
     ),
-    # No `secondary_proposer` row: the real roster configures no such chair, and
-    # requiring its bytes would leave the store permanently incomplete.
-    RequiredArtifact("proposer_surya2", "surya2-detection", "local-repository", None, None),
+    # DAI's own project's record detector, read so DAI sees the page as it was
+    # trained to: on crops of the records this detector finds.
+    RequiredArtifact(
+        "secondary_proposer",
+        "yolov26-record-detection",
+        "huggingface",
+        "Teklia/YOLOv26-DAI-CReTDHI-Record-Detection",
+        "0c57f057391113579e7af170b864542f049e67aa",
+        "agpl-3.0",
+    ),
+    # Surya's detection and layout weight bundle: fetched by its own prefetch from
+    # Datalab's model host and the Hub, so it has no single Hub pin and is kept
+    # as a local repository (operations/serving/surya/README.md).
+    RequiredArtifact("designator_surya", "surya2-detection", "local-repository", None, None),
     RequiredArtifact(
         "perlector",
         "qwen3.8-27B",
@@ -122,18 +133,6 @@ REQUIRED_ARTIFACTS = (
         "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
         "apache-2.0",
     ),
-)
-# `chair` is a `config/models.toml` role key. Surya 2 is the sole store-only
-# artifact because the Designator adapter depends on it but the settled roster
-# names no Surya chair; the reconciliation test fixes that exception at one.
-CHAIRS_WITHOUT_ROSTER_ROLE = MappingProxyType(
-    {
-        "proposer_surya2": (
-            "config/models.toml configures no Surya detection chair, in its live "
-            "fixture roster or its commented real roster, and the project "
-            "lead's roster ruling named none"
-        )
-    }
 )
 SURYA_OCR_2_REFUSAL = MappingProxyType(
     {
@@ -148,7 +147,7 @@ DAI_PROMPT_CITATION = (
     "system.txt and query.txt"
 )
 MODEL_PAYLOAD_SUFFIXES = frozenset({".bin", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"})
-# Generous for a five-artifact record, yet bounds a forged control document.
+# Generous for a six-artifact record, yet bounds a forged control document.
 MAX_DOWNLOAD_RECORD_BYTES = 1_048_576
 # Repository-controlled JSON may not claim unbounded memory.
 MAX_SHARD_INDEX_BYTES = 16_777_216
@@ -284,7 +283,12 @@ def _materialize_real_roster_locked(root: Path, fetcher: MaterializationFetcher)
     record = _initial_materialization_record()
     active = root / "download_record.json"
     if active.exists():
-        record = load_download_record(root)
+        previous = _load_custodied(root, _validate_upgradable_record)
+        record = _with_new_requirements(previous)
+        if record != previous:
+            # A store written before the roster gained an artifact: the new
+            # version adds it as pending-fetch, and the loop below fetches it.
+            write_download_record(record, root)
         # Joined before indexing, so a missing artifact is a named refusal.
         derived_inventory(record)
     else:
@@ -327,7 +331,7 @@ def _materialize_real_roster_locked(root: Path, fetcher: MaterializationFetcher)
         # could have moved.
         "download_record_sha256": inventory["download_record_sha256"],
         "complete": inventory["complete"],
-        # Narrower than `complete`, which includes the non-roster Surya adapter.
+        # Narrower than `complete`, which includes the Surya bundle no Hub pin fetches.
         "real_roster_complete": real_roster_complete,
         "unattributed_staging_entries": _unattributed_staging_entries(root),
     }
@@ -583,6 +587,51 @@ def _indexed_shards(snapshot: Path, artifact: str) -> list[str]:
     return sorted(found)
 
 
+def _pending_entry(item: RequiredArtifact) -> dict[str, Any]:
+    return {
+        "artifact": item.artifact,
+        "state": "pending-fetch",
+        "source": item.source,
+        "repo": item.repo,
+        "revision": item.revision,
+        "reason": "awaiting pinned pod-launch materialization",
+    }
+
+
+def _with_new_requirements(record: Mapping[str, Any]) -> dict[str, Any]:
+    """The record with each roster artifact it does not name added as pending-fetch."""
+    artifacts = record.get("artifacts")
+    if not isinstance(artifacts, list):
+        return dict(record)
+    named = {item.get("artifact") for item in artifacts if isinstance(item, Mapping)}
+    required = {item.artifact: item for item in REQUIRED_ARTIFACTS}
+    added = [_pending_entry(required[name]) for name in sorted(set(required) - named)]
+    if not added:
+        return dict(record)
+    return {
+        **record,
+        "artifacts": sorted(
+            [dict(item) for item in artifacts] + added, key=lambda item: item["artifact"]
+        ),
+    }
+
+
+def _validate_upgradable_record(raw: Mapping[str, Any]) -> None:
+    """A valid record, or one valid once the roster artifacts it lacks are added.
+
+    Every entry it does name must still match the roster; any other shape is
+    refused exactly as :func:`load_download_record` refuses it.
+    """
+    record = raw
+    if isinstance(raw, Mapping) and isinstance(raw.get("artifacts"), list):
+        named = {item.get("artifact") for item in raw["artifacts"] if isinstance(item, Mapping)}
+        # An entry the roster no longer names is read strictly and refused.
+        if named <= {item.artifact for item in REQUIRED_ARTIFACTS}:
+            record = _with_new_requirements(raw)
+    _validate_record(record)
+    derived_inventory(record)
+
+
 def _initial_materialization_record() -> dict[str, Any]:
     return {
         "schema": STORE_SCHEMA,
@@ -594,14 +643,7 @@ def _initial_materialization_record() -> dict[str, Any]:
             "staging": "staging",
         },
         "artifacts": [
-            {
-                "artifact": item.artifact,
-                "state": "pending-fetch",
-                "source": item.source,
-                "repo": item.repo,
-                "revision": item.revision,
-                "reason": "awaiting pinned pod-launch materialization",
-            }
+            _pending_entry(item)
             for item in sorted(
                 {item.artifact: item for item in REQUIRED_ARTIFACTS}.values(),
                 key=lambda item: item.artifact,
@@ -1291,7 +1333,9 @@ def _current_record(root: Path, raw_bytes: bytes) -> dict[str, Any]:
     if isinstance(raw, Mapping) and raw.get("schema") == STORE_SCHEMA:
         # This also proves canonical bytes and the immutable archived version. A
         # damaged current record is not silently treated as legacy and replaced.
-        return load_download_record(root)
+        # A record lacking only newly required artifacts may be superseded; the
+        # transition check then keeps every entry it names.
+        return _load_custodied(root, _validate_upgradable_record)
     if isinstance(raw, Mapping) and raw.get("schema") == V1_STORE_SCHEMA:
         raise DigestMismatchRefusal(
             "model-store",

@@ -115,6 +115,44 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   exactly as if those acts had been misread. `denominators.exported_acts_by_category`
   and `reference_records_scored_by_export_category` are where a reader separates the
   two.
+- `exactly_once.py` — the proof metric of a run read by page (`reading_unit =
+  "page"`). It reads the Perlector's `page-feed`, `page-reading`, `act-region`,
+  `perlectio` and `page-accounting` records beside the admitted records of an
+  admission ledger and their `gold.jsonl` text, and gives each gold record one
+  outcome: **exactly once** (one `act` region holds at least half of it, holds no
+  other gold record, and its text is read there), **merged** (a region holding it
+  holds half of another gold record too), **duplicated** (two or more hold it) or
+  **lost** (no act region holds it, or its text is not read in any that does).
+  "Inside" is `common/page_accounting.py`'s rule under the policy the run sealed;
+  a policy other than the sealed one, or an accounting sealed under another, is
+  refused (`policy-mismatch`), and a perlectio that is not `perlectio.v2` is
+  refused (`not-page-read`); so is an admitted gold record with no text to
+  measure. "Text read" is this tool's own measure, stricter than the accounting's
+  rule (e): the gold text's character error rate against a holding act's reading
+  is at most 20%, and no other gold record on the page is closer to that reading.
+  A lost or merged record is **caught** only by a held finding located on it
+  (names a placed region or a box overlapping it, or a unit such a region cites);
+  a hold elsewhere on the page does not catch it. Page-wide catches (a hold naming
+  no region, box or unit) and unplaced-only catches (one reaching the record only
+  through an unplaced region) are reported beside it and not credited. A page
+  with no accounting is **unchecked**, a failure of its own. Beside the outcomes: records split by merge case (a detector record or
+  another witness's boxed unit holding two gold records), how often rule (i)
+  `merged-detection` fired on regions that truly hold two gold records and on
+  those that hold one, which rules caught each failure, hold codes, admitted
+  prompt tokens against the engine's `usage.prompt_tokens`, the `length` finish
+  rate, the pages that would fit a 65,536-token context, and seconds per page when
+  `--seconds-per-page` names a `{page_id: seconds}` file (the tree records no
+  durations). Rule (i) cannot see a detector record that itself merged two
+  entries the reader read as one act; the merged outcome here measures it. The
+  gate is at least 95% of records exactly once, no failure without a located catch
+  and no page unchecked; the exit status is 0 only when it passes. The JSON report and the
+  printed summary carry counts and identifiers, never text.
+
+  ```sh
+  .venv/bin/python -m operations.corpus.exactly_once --run-root runs --run-id <run> \
+    --gold /path/to/set/gold.jsonl --ledger /path/to/admission-ledger.json \
+    --out /path/outside/the/tree/exactly-once.json
+  ```
 
 All four units exist as of this commit; the fetch protocol, comparator, and
 hold-out sections below describe behaviour that runs, not a shape still to be
@@ -285,20 +323,16 @@ limit, not an oversight, and a ledger built without the snapshot says so in
 
 ## The DAI contamination risk
 
-The drafted real roster puts two Teklia repositories in these chairs —
-`attestator_2` = `Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR` and
-`secondary_proposer` = `Teklia/YOLOv26-DAI-CReTDHI-Record-Detection` — named
-live in `common/chairs/model_store.py`'s materialization inventory and
-drafted in `config/models.toml`'s commented roster. Neither is bound today:
-the live `attestator_2` row is a local fixture identity (`source =
-"local-repository"`, `license_note = "fixture identity only; no model weights
-or model license apply"`) and `secondary_proposer` is `state = "absent"`. The
-contamination bites the day that roster is activated, and the belief behind
-it is inference, not a read of Teklia's training config: both repositories
-share the `DAI-CReTDHI` lineage in their names, and `attestator_2`'s
-dataset/model card carries its own fine-tuned-Qwen benchmark row against a
-DAI test split (CER 9.24 / WER 21.25) — `secondary_proposer` does not even
-carry `RecordGold` in its name, so the case against it is weaker still.
+The real roster (`config/models-real.toml`) puts two Teklia repositories in
+these chairs — `attestator_2` = `Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR`
+and `secondary_proposer` = `Teklia/YOLOv26-DAI-CReTDHI-Record-Detection`, DAI's
+own record detector — both configured and both named in
+`common/chairs/model_store.py`'s materialization inventory. The fixture roster
+(`config/models.toml`) binds neither. `attestator_2`'s dataset/model card
+carries its own fine-tuned-Qwen benchmark row against a DAI test split (CER
+9.24 / WER 21.25), and the detector's card at its pinned revision
+(`0c57f057…`) declares `datasets: Teklia/DAI-CReTDHI-RecordGold-ATR` in its
+own metadata and reports train/val/test figures of 1132/136/139 images.
 Whether either chair actually trained or validated on this corpus's exact
 splits was never verified against Teklia's own training configuration; that
 gap is recorded, not glossed over. If the inference holds, a box or text

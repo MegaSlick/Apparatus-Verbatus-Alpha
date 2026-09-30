@@ -11,11 +11,14 @@ reads its truncation classification -- is unchanged by which reader answered.
 docstring on ``reader.py`` explains why: ``lectio-nuda`` and ``lectio-prior``
 are built from identical dossier arguments and carry the same
 ``dossier_digest`` and ``rendered_sha256``, so a reader that let its
-generation vary with the label rather than the evidence would make
+request vary with the label rather than the evidence would make
 the witness-dependence contrast measure the pipeline's own routing instead of the
-model. ``read`` below reads ``pass_kind`` in exactly two places: the closed
-membership check, and the delivery hand-off to ``validate_audit_delivery``.
-Nothing else in this module ever inspects it.
+model. ``read`` below reads ``pass_kind`` in exactly three places: the closed
+membership check, the delivery hand-off to ``validate_audit_delivery``, and
+naming the sampling-variance arm, whose only effect is the arm's own sealed
+seed (``common.decoding.variance_arm_seed``), recorded on its call record. The
+two arms are the same request drawn twice; under one seed they would be one
+draw. Nothing else in this module ever inspects it.
 The output bound follows the same rule: a reading's bound is one value for every
 reading kind, and only a delivered re-proof instrument selects the re-proof's own.
 
@@ -68,9 +71,11 @@ import prompts
 from reader import PASS_KINDS, DeliveredPixels, LectioResult, validate_audit_delivery
 
 from common.chairs.models import ChairIdentity
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
 from common.cross_capture_autopsia import presented_image_sha256s
+from common.decoding import VARIANCE_ARMS
 from common.perlector_audit import render_reproof_instruction
 from common.request_capacity import (
     act_answer_budget,
@@ -383,9 +388,9 @@ class VLLMReader:
                 page_render_sizes=page_render_sizes,
             ),
             # The pass label is deliberately absent from this message: this
-            # module may read it in exactly two places (the closed membership
-            # check and the audit hand-off) so that nothing about a request can
-            # vary with which pass it is. A refusal message is no exception.
+            # module reads it only in the three places the module docstring
+            # names, so that nothing else about a request can vary with which
+            # pass it is. A refusal message is no exception.
             what=f"the Perlector request for act {dossier.get('act_key')!r}",
             prompt_tokens_basis=bound_basis,
             prompt_tokens_floor=prompt_floor,
@@ -415,6 +420,7 @@ class VLLMReader:
                 "max_tokens": max_tokens,
             },
             capacity=capacity,
+            variance_arm=pass_kind if pass_kind in VARIANCE_ARMS else None,
         )
         response = self._client.read(request)
 
@@ -461,3 +467,69 @@ class VLLMReader:
             result["rendered_prompt"] = text
             result["request_sha256"] = response.request_sha256
         return result
+
+
+def send_page_request(
+    client: ChairClient,
+    *,
+    images: list[bytes],
+    text: str,
+    capacity: Mapping[str, Any],
+    max_tokens: int,
+    what: str,
+) -> dict[str, Any]:
+    """Send one whole-page reading request and return what the engine answered.
+
+    `images` are the page render and then, when drawn, its overlay, in that
+    order; `text` is `page_prompt.build_page_prompt`'s rendered text, sent after
+    them; `capacity` is the request-capacity record the request was admitted on
+    (`common.request_capacity.page_request_capacity`), copied onto the retained
+    call record; `max_tokens` is the admitted output cap. The caller's
+    generation is the one a reading sends, thinking off and the cap; the client
+    adds the Perlector's sealed sampling row and the serving receipt's seed, as
+    for an act reading (attempt 1, no variance arm).
+
+    Returns `{content, stop_reason, finish_reason, request_sha256, engine_call}`:
+    `stop_reason` is the engine's word mapped as a reading's (`"stop"`,
+    `"length"` or `None`), and an unrecognized word or an unparsed body is
+    refused as `EngineSignalRefusal` with the retained bytes named, as a
+    reading's is.
+    """
+    content: list[dict[str, Any]] = _image_content_blocks(images)
+    content.append({"type": "text", "text": text})
+    request = ChairRequest(
+        kind="chat-completions",
+        messages=({"role": "user", "content": content},),
+        image_sha256s=tuple(digest_bytes(image) for image in images),
+        generation_declared={},
+        generation_sent={
+            "chat_template_kwargs": {"enable_thinking": False},
+            "max_tokens": max_tokens,
+        },
+        capacity=capacity,
+    )
+    response = client.read(request)
+    if response.parse_problem is not None:
+        raise EngineSignalRefusal(
+            response.parse_problem,
+            f"the response to {what} is not a reading ({response.parse_problem}); the raw "
+            f"response bytes are retained at {dict(response.raw_response_ref)!r}",
+            raw_response_ref=response.raw_response_ref,
+            call_record_ref=response.call_record_ref,
+            request_sha256=response.request_sha256,
+            receipt_ref=response.receipt_ref,
+            served_model_id=response.served_model_id,
+        )
+    return {
+        "content": response.content,
+        "stop_reason": _mapped_stop_reason(response.finish_reason, act_key=what, response=response),
+        "finish_reason": response.finish_reason,
+        "request_sha256": response.request_sha256,
+        "engine_call": {
+            "call_record_ref": dict(response.call_record_ref),
+            "raw_response_ref": dict(response.raw_response_ref),
+            "response_sha256": response.response_sha256,
+            "finish_reason": response.finish_reason,
+            "served_model_id": response.served_model_id,
+        },
+    }

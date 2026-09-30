@@ -20,12 +20,12 @@ names which of the two a given record holds. A wire body that could not be
 parsed at all produces ``native_capture = None``: no adapter ever ran, so
 there is no adapter-shaped capture to retain.
 
-**The generation split** (DAI, act-scoped): DAI's carried
-``generation_config.json`` includes fields vLLM's endpoint does not accept as
-extra decoding parameters. ``generation_declared`` retains the whole carried
-view as evidence; ``generation_sent`` allow-lists only the three fields vLLM
-does accept, so an unnamed carried key defaults to not being sent rather than
-leaking onto the wire.
+**The generation split** (DAI, act-scoped): ``generation_declared`` retains
+DAI's whole carried ``generation_config.json`` as evidence. Its sampling
+values reach the wire only through the sealed decoding table
+(``config/decoding.toml``'s ``chair_decoding``), which ``ChairClient`` applies
+to every chair; ``generation_sent`` carries the answer bound and the secondary
+EOS id.
 
 **Every chair's generation bound is decided by one rule, against the sealed
 row**: ``common/request_capacity.py::sendable_max_tokens`` -- ``min(the
@@ -89,11 +89,6 @@ from common.request_capacity import (
     sendable_max_tokens,
 )
 from operations.serving.client import ChairRequest, ChairResponse
-
-# The subset of `feeding.dai_generation()` vLLM's endpoint accepts as extra
-# decoding parameters. Everything else is retained evidence but never sent
-# (never silently substitute our own reading of a vendor field).
-_DAI_GENERATION_SENT_KEYS = ("repetition_penalty", "top_k", "top_p")
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,18 +288,8 @@ def act_chair_request(
         {"role": "user", "content": _user_content(prompt["user"], image_bytes)},
     )
     generation_declared = feeding.dai_generation()
-    # Sealed fixture/live-test profiles still name the historical `vllm`
-    # posture and keep the truthful legacy dai-atr.v1 shape; production
-    # profiles are `auto` and get the versioned closed ledger.
-    generation_accounting = (
-        feeding.dai_generation_accounting("auto") if profile.generation_config == "auto" else None
-    )
-    generation_sent = {
-        key: generation_declared[key]
-        for key in _DAI_GENERATION_SENT_KEYS
-        if key in generation_declared
-    }
-    generation_sent.update(generation_bound_sent(_ADAPTER_CHAIRS["dai.v1"], capacity))
+    generation_accounting = feeding.dai_generation_accounting()
+    generation_sent = generation_bound_sent(_ADAPTER_CHAIRS["dai.v1"], capacity)
     generation_sent.update(feeding.dai_wire_stop_token_ids())
     request = ChairRequest(
         kind="chat-completions",
@@ -422,14 +407,15 @@ def page_chair_request(
         what=f"the {adapter_name} request for page {presentation.get('source_page_ordinal')!r}",
     )
     # Each page chair carries its own declared generation view as evidence,
-    # plus the wire fields `generation_config = "vllm"` would otherwise decide
-    # for it (Churro's repetition penalty, Chandra's thinking-mode flag).
+    # plus its own non-sampling wire fields (Chandra's thinking-mode flag); the
+    # sampling values are the sealed decoding table's, applied by `ChairClient`.
     # Dispatched by name and total, so a third page adapter is refused rather
     # than quietly handed the other one's vendor fields.
     generation_declared: dict[str, Any]
+    wire_fields: dict[str, Any]
     if adapter_name == "churro.v1":
         generation_declared = dict(feeding.churro_generation())
-        wire_fields: dict[str, Any] = dict(feeding.churro_wire_decoding())
+        wire_fields = {}
     elif adapter_name == "chandra.v1":
         generation_declared = dict(feeding.chandra_generation())
         wire_fields = chandra_wire_fields()

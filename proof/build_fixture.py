@@ -437,6 +437,49 @@ STOP_REASONS = (
 )
 
 
+def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=False):
+    return {
+        "n": n,
+        "kind": "act",
+        "label": f"synthetic act {act_key}",
+        "cites": cites,
+        "text": TESTIMONY[act_key]["attestator_1"] if text is None else text,
+        "continues_from_previous_page": from_previous,
+        "continues_to_next_page": to_next,
+    }
+
+
+# What the fake Perlector answers when it reads a page whole (`reading_unit =
+# "page"`). The ids are the page feed's: A is attestator_1 (Chandra, one boxed
+# unit per declared act on page 1, one unboxed unit of page text on page 2), B
+# is attestator_3 (Churro, one unit per line, no boxes). Page 1's entries are
+# placed by Chandra's boxes; page 2's cites no boxed id, so it is held unplaced.
+# Proves wiring only, never reading ink.
+PAGE_ANSWERS = (
+    {
+        "scenario": "happy",
+        "page_ordinal": 1,
+        "answer": {
+            "acts": [
+                _page_entry(
+                    1, "a1", ["A1", "B1"], text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]"
+                ),
+                _page_entry(2, "a2", ["A2", "B2"], to_next=True),
+            ],
+            "set_aside": [],
+        },
+    },
+    {
+        "scenario": "happy",
+        "page_ordinal": 2,
+        "answer": {
+            "acts": [_page_entry(1, "a2", ["A1", "B1"], from_previous=True)],
+            "set_aside": [],
+        },
+    },
+)
+
+
 # Page responses derive from the act declarations so they cannot drift.
 # config/models.toml owns page scope; tests reconcile the two.
 _PAGE_ACTS = {1: ("a1", "a2"), 2: ("a2",)}
@@ -509,6 +552,53 @@ CHURRO_PAGE_RESPONSES = tuple(
         "raw_xml": churro_xml(_churro_native_page_text(2, "attestator_3")),
         "transport_stop_reason": "length",
     },
+)
+
+
+# What Surya's two detectors report on the synthetic pages, for a run that
+# configures the Surya chair against a fixture row: a text line over every
+# 20-row band of each act's ink, and one `Text` layout block per act, in reading
+# order down the page. Page 3 carries no ink, so Surya reports nothing there.
+# Corners are whole pixels, because the sealed fixture carries no floats; the
+# right and bottom corners sit on the act's far edge, as Surya's do.
+SURYA_LINE_BAND_PX = 20
+
+
+def _surya_polygon(x0: int, y0: int, x1: int, y1: int) -> list[list[int]]:
+    return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+
+
+SURYA_LINES = tuple(
+    {
+        "page_ordinal": page["ordinal"],
+        "polygon": _surya_polygon(
+            act["bounds"]["x"],
+            act["bounds"]["y"] + band,
+            act["bounds"]["x"] + act["bounds"]["w"],
+            act["bounds"]["y"] + min(band + SURYA_LINE_BAND_PX, act["bounds"]["h"]),
+        ),
+        "confidence_bp": 9000 + 100 * act["ordinal"] + band // SURYA_LINE_BAND_PX,
+    }
+    for page in ALL_PAGES
+    for act in page["acts"]
+    for band in range(0, act["bounds"]["h"], SURYA_LINE_BAND_PX)
+)
+SURYA_BLOCKS = tuple(
+    {
+        "page_ordinal": page["ordinal"],
+        "polygon": _surya_polygon(
+            act["bounds"]["x"],
+            act["bounds"]["y"],
+            act["bounds"]["x"] + act["bounds"]["w"],
+            act["bounds"]["y"] + act["bounds"]["h"],
+        ),
+        "label": "Text",
+        "raw_label": "Text",
+        "position": position,
+        "confidence_bp": 9500 - position,
+    }
+    for page in ALL_PAGES
+    for position, act in enumerate(sorted(page["acts"], key=lambda act: act["bounds"]["y"]))
 )
 
 
@@ -683,6 +773,14 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
                 continue
             value = observation[key]
             lines.append(f"{key} = {toml_string(value) if isinstance(value, str) else value}")
+
+    for row in SURYA_LINES:
+        lines += ["", "[[surya_line]]"]
+        lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
+
+    for row in SURYA_BLOCKS:
+        lines += ["", "[[surya_block]]"]
+        lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
 
     for prior in PRIOR_READINGS:
         lines += [
@@ -1112,6 +1210,19 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         if "pass_kind" in row:
             lines.append(f"pass_kind = {toml_string(row['pass_kind'])}")
         lines.append("")
+    lines += [
+        "# The fake Perlector's answer to a whole-page reading, one per scenario and page,",
+        '# read only under reading_unit = "page". `answer` is the reply text exactly.',
+        "",
+    ]
+    for row in PAGE_ANSWERS:
+        lines += [
+            "[[page_answer]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"page_ordinal = {row['page_ordinal']}",
+            "answer = " + toml_string(json.dumps(row["answer"], separators=(",", ":"))),
+            "",
+        ]
     lines += [
         "# One declared provider RESPONSE per row: an empty body from that chair on",
         "# that act. The Attestatores derives `genuinely-empty` from the retained",

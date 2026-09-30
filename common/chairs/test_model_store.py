@@ -18,7 +18,6 @@ from common.chairs.config import load_models_toml, parse_models_config
 from common.chairs.errors import DigestMismatchRefusal, DiskSpaceRefusal
 from common.chairs.manifests import build_manifest, write_manifest
 from common.chairs.model_store import (
-    CHAIRS_WITHOUT_ROSTER_ROLE,
     DAI_PROMPT_CITATION,
     REQUIRED_ARTIFACTS,
     STORE_SCHEMA,
@@ -94,7 +93,7 @@ def _store(tmp_path):
     return record
 
 
-def test_host_download_record_fixture_derives_six_chair_inventory_and_verifies_bytes(tmp_path):
+def test_host_download_record_fixture_derives_seven_chair_inventory_and_verifies_bytes(tmp_path):
     record = _store(tmp_path)
 
     inventory = verify_store(tmp_path)
@@ -104,7 +103,7 @@ def test_host_download_record_fixture_derives_six_chair_inventory_and_verifies_b
         item.chair for item in REQUIRED_ARTIFACTS
     ]
     assert inventory["refusals"] == [SURYA_OCR_2_REFUSAL]
-    assert len({row["artifact"] for row in inventory["artifacts"]}) == 5
+    assert len({row["artifact"] for row in inventory["artifacts"]}) == 6
 
 
 def test_derived_inventory_cannot_restate_divergent_store_facts(tmp_path):
@@ -650,7 +649,7 @@ def test_validate_record_refuses_a_four_artifact_record(tmp_path):
     record = _store(tmp_path)
     record["artifacts"] = record["artifacts"][:4]
 
-    with pytest.raises(DigestMismatchRefusal, match="exactly 5 unique roster"):
+    with pytest.raises(DigestMismatchRefusal, match="exactly 6 unique roster"):
         derived_inventory(record)
 
 
@@ -715,12 +714,12 @@ def test_a_store_whose_surya_bundle_has_not_landed_verifies_and_says_so(tmp_path
     assert inventory["complete"] is False
     assert inventory["pending"] == ["surya2-detection"]
     rows = {row["chair"]: row for row in inventory["artifacts"]}
-    assert len(rows) == 6
-    assert rows["proposer_surya2"]["state"] == "pending-fetch"
-    assert rows["proposer_surya2"]["reason"] == "s3 bundle not yet fetched by the host"
-    assert "snapshot" not in rows["proposer_surya2"]
-    # The four artifacts that did land are verified exactly as before.
-    assert all(rows[chair]["state"] == "present" for chair in rows if chair != "proposer_surya2")
+    assert len(rows) == 7
+    assert rows["designator_surya"]["state"] == "pending-fetch"
+    assert rows["designator_surya"]["reason"] == "s3 bundle not yet fetched by the host"
+    assert "snapshot" not in rows["designator_surya"]
+    # The artifacts that did land are verified exactly as before.
+    assert all(rows[chair]["state"] == "present" for chair in rows if chair != "designator_surya")
     assert inventory == derived_inventory(record)
 
 
@@ -790,7 +789,7 @@ def test_write_download_record_can_express_a_partial_store(tmp_path):
 # --- O2: the inventory's chair column is a roster role, not a label -------------
 
 
-def test_every_store_chair_is_a_models_toml_role_or_one_recorded_exception():
+def test_every_store_chair_is_a_models_toml_role():
     """A chair name the roster does not know cannot be joined to anything.
 
     The store exists to be bound to `config/models.toml` when the real roster is
@@ -802,9 +801,7 @@ def test_every_store_chair_is_a_models_toml_role_or_one_recorded_exception():
     store_chairs = {item.chair for item in REQUIRED_ARTIFACTS}
     assert store_chairs, "meta-invariant 88: the roster policy is not empty"
 
-    assert store_chairs - set(config.chairs) == set(CHAIRS_WITHOUT_ROSTER_ROLE)
-    assert set(CHAIRS_WITHOUT_ROSTER_ROLE) <= store_chairs
-    assert all(reason.strip() for reason in CHAIRS_WITHOUT_ROSTER_ROLE.values())
+    assert store_chairs <= set(config.chairs)
 
 
 def _artifact_disagreements(chairs) -> list[str]:
@@ -979,6 +976,61 @@ def test_materializer_joins_a_loaded_record_to_the_roster_before_indexing_it(tmp
         materialize_real_roster(tmp_path, _FakeMaterializationFetcher())
 
 
+def _materialized_before_the_detector_joined(tmp_path, monkeypatch):
+    """A real store written while the roster did not yet require the record detector."""
+    earlier = tuple(item for item in REQUIRED_ARTIFACTS if item.chair != "secondary_proposer")
+    fetcher = _FakeMaterializationFetcher()
+    with monkeypatch.context() as patch:
+        patch.setattr(model_store, "REQUIRED_ARTIFACTS", earlier)
+        materialize_real_roster(tmp_path, fetcher)
+    return fetcher
+
+
+def test_a_store_written_before_an_artifact_joined_the_roster_is_upgraded_then_fetched(
+    tmp_path, monkeypatch
+):
+    fetcher = _materialized_before_the_detector_joined(tmp_path, monkeypatch)
+    earlier_bytes = (tmp_path / "download_record.json").read_bytes()
+    with pytest.raises(DigestMismatchRefusal, match="exactly 6 unique roster"):
+        load_download_record(tmp_path)
+    calls = list(fetcher.calls)
+
+    receipt = materialize_real_roster(tmp_path, fetcher)
+
+    detector = next(item for item in REQUIRED_ARTIFACTS if item.chair == "secondary_proposer")
+    assert fetcher.calls == [*calls, (detector.repo, detector.revision)]
+    assert receipt["real_roster_complete"] is True
+    record = load_download_record(tmp_path)
+    [entry] = [item for item in record["artifacts"] if item["artifact"] == detector.artifact]
+    assert entry["state"] == "present"
+    # Every version stays: the earlier record, and the one that added the artifact pending.
+    versions = {path.read_bytes() for path in (tmp_path / "records").glob("*.json")}
+    assert earlier_bytes in versions
+    assert any(
+        {item["artifact"]: item["state"] for item in json.loads(version)["artifacts"]}.get(
+            detector.artifact
+        )
+        == "pending-fetch"
+        for version in versions
+    )
+
+
+def test_an_older_store_whose_entries_left_the_roster_is_not_upgraded(tmp_path, monkeypatch):
+    fetcher = _materialized_before_the_detector_joined(tmp_path, monkeypatch)
+    record = json.loads((tmp_path / "download_record.json").read_bytes())
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "churro-3B")
+    entry["revision"] = "1" * 40
+    payload = canonical_bytes(record)
+    (tmp_path / "download_record.json").write_bytes(payload)
+    (tmp_path / "records" / f"{digest_bytes(payload)}.json").write_bytes(payload)
+    calls = list(fetcher.calls)
+
+    with pytest.raises(DigestMismatchRefusal, match="diverges from roster policy"):
+        materialize_real_roster(tmp_path, fetcher)
+    assert fetcher.calls == calls
+    assert (tmp_path / "download_record.json").read_bytes() == payload
+
+
 def test_materializer_clears_leftover_staging_before_fetch(tmp_path):
     staging = tmp_path / "staging"
     staging.mkdir()
@@ -1089,7 +1141,7 @@ def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_p
     present = {item["artifact"] for item in load_download_record(tmp_path)["artifacts"]} - {
         "surya2-detection"
     }
-    assert len(present) == 4
+    assert len(present) == 5
 
     calls = []
     real = model_store.verify_store
@@ -1491,7 +1543,7 @@ def test_the_real_roster_carries_the_licence_notes_it_was_drafted_with():
         "notes were not compared"
     )
     assert carried == {role: drafted[role] for role in carried}
-    assert len(carried) == 5
+    assert len(carried) == 6
 
 
 def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothing():
@@ -1533,19 +1585,20 @@ def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
 
     plan = pod_materialization_plan(tmp_path)
 
-    # Five Hugging Face chairs over four snapshots: the two chandra chairs each
+    # Six Hugging Face chairs over five snapshots: the two chandra chairs each
     # need their own role-keyed cache entry, both made from the one stored
     # snapshot, because a cache entry is keyed by role and a store is not.
     assert {chair: row["snapshot"] for chair, row in plan["cache_root_entries"].items()} == {
         "designator_structure": "hf/chandra-ocr-2",
+        "secondary_proposer": "hf/yolov26-record-detection",
         "attestator_1": "hf/chandra-ocr-2",
         "attestator_2": "hf/dai-recordgold-atr",
         "attestator_3": "hf/churro-3B",
         "perlector": "hf/qwen3.8-27B",
     }
-    assert len({row["snapshot"] for row in plan["cache_root_entries"].values()}) == 4
+    assert len({row["snapshot"] for row in plan["cache_root_entries"].values()}) == 5
     # model_root is local-repository only; it is not a second cache.
-    assert plan["model_root_entries"]["proposer_surya2"]["snapshot"] == ("local/surya2-detection")
+    assert plan["model_root_entries"]["designator_surya"]["snapshot"] == ("local/surya2-detection")
     assert plan["download_record_sha256"] == derived_inventory(record)["download_record_sha256"]
     assert plan["provenance_scope"] == "verified-store-source-only"
 
@@ -1571,7 +1624,7 @@ def test_pod_materialization_plan_reverifies_source_bytes(tmp_path):
 def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(
     tmp_path, monkeypatch
 ):
-    """Five cache roles are supplied locally, including both Chandra roles."""
+    """Six cache roles are supplied locally, including both Chandra roles."""
 
     record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "local bundle pending")
     real = load_models_toml(ROOT / "config" / "models-real.toml")

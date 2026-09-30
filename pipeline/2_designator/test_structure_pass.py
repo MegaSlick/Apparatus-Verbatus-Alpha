@@ -30,6 +30,7 @@ import pytest
 import common.stage as stage_contract
 from common import chandra_layout, structure_answer
 from common.chairs.registry import ChairRegistry
+from common.chandra_native_retry import wire_parameters as chandra_wire_parameters
 from common.chandra_presentation import (
     STRUCTURE_REQUEST_IMAGE_KIND,
     STRUCTURE_REQUEST_IMAGE_SCHEMA,
@@ -43,7 +44,7 @@ from common.contracts.serving import (
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
-from common.decoding import load_decoding_policy
+from common.decoding import chair_decoding, load_decoding_policy, recorded_sampling
 from common.fixture_identity import page_identity
 from common.imaging import dimensions
 from common.imaging_ports import scale_to_fit_chandra
@@ -53,8 +54,9 @@ from common.sealed_config import read_sealed_toml
 from common.stage import (
     EXIT_COMPLETE,
     EXIT_HELD,
+    RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS,
     STRUCTURE_ANSWER_KIND,
-    STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+    STRUCTURE_ANSWER_RECORD_SCHEMA,
     expected_acts,
     load_fixture,
     open_stage_context,
@@ -74,6 +76,7 @@ from operations.serving.fakes import (
     FakeLauncher,
     FakePackages,
     FakeRegistry,
+    InProcessSurya,
     ScriptedAnswer,
     scripted_prompt_too_long,
     scripted_structure_answer,
@@ -85,6 +88,7 @@ from operations.serving.fakes import (
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.residency import FileResidencyLease
 from operations.submit import gate, submit
+from proof.build_fixture import SURYA_BLOCKS, SURYA_LINES
 
 ROOT = Path(__file__).resolve().parents[2]
 DOOR_CLI = ROOT / "pipeline" / "1_exemplar" / "door.py"
@@ -175,10 +179,31 @@ def _live_row(identity) -> dict[str, Any]:
     return row
 
 
+SURYA_TIERS = ("generic-24gb", "generic-48gb", "generic-80gb-plus")
+
+
+def surya_subprocess_rows(recipe: str) -> str:
+    """Subprocess rows for the Surya chair at every tier, as a live catalogue carries."""
+    return "".join(
+        f'\n[[profiles]]\nkind = "subprocess"\nrecipe = "{recipe}"\nchair = "designator_surya"\n'
+        f'tier = "{tier}"\nengine = "surya"\nenvironment = "operations/serving/surya"\n'
+        'device = "cpu"\nthreads = 2\nstartup_timeout_seconds = 300\nseconds_per_page = 60\n'
+        'required_packages = { "surya-ocr" = "0.22.1", torch = "2.14.0" }\n'
+        for tier in SURYA_TIERS
+    )
+
+
+def in_process_surya() -> InProcessSurya:
+    """Surya answering a live pass in this process, from the fixture's declared rows."""
+    return InProcessSurya(SURYA_LINES, SURYA_BLOCKS)
+
+
 def _live_catalogue(destination: Path) -> Path:
-    """The committed fixture catalogue with its structure-chair rows made
-    live: the three `designator_structure` fixture rows are replaced by one
-    live row at `TIER`; every other chair's rows follow unchanged.
+    """The committed fixture catalogue made live for stage 2: the three
+    `designator_structure` fixture rows are replaced by one live row at `TIER`,
+    and the Surya chair's fixture rows by subprocess rows (a live pass runs
+    Surya as a subprocess, never from the fixture). Every other chair's rows
+    follow unchanged.
     """
     source = FIXTURE_CATALOGUE.read_text(encoding="utf-8")
     marker = '[[profiles]]\nkind = "fixture"\nrecipe = "fake-designator-v0"'
@@ -186,6 +211,14 @@ def _live_catalogue(destination: Path) -> Path:
     assert len(designator_rows) == 3, "the fixture catalogue no longer carries three structure rows"
     tail = designator_rows[-1]
     tail = tail[tail.index("\n[[profiles]]") :]
+    surya_fixture_rows = "".join(
+        f'\n[[profiles]]\nkind = "fixture"\nrecipe = "fake-surya-v0"\nchair = "designator_surya"\n'
+        f'tier = "{tier}"\n'
+        'description = "offline walking-skeleton fixture for the Surya detector chair"\n'
+        for tier in SURYA_TIERS
+    )
+    assert surya_fixture_rows in tail, "the fixture catalogue no longer carries its Surya rows"
+    tail = tail.replace(surya_fixture_rows, surya_subprocess_rows("fake-surya-v0"))
     row = _live_row(_structure_identity())
     body = "\n".join(f"{key} = {_toml_value(value)}" for key, value in row.items())
     path = destination / "serving_recipes_live_designator.toml"
@@ -300,7 +333,7 @@ def _serving_factory(
 ):
     """The `(context, chair, tier) -> ChairClient` seam `main` injects against.
 
-    Deliberately close to `structure_pass.default_serving_factory`; only the
+    Deliberately close to production's `stage_chair_client`; only the
     launcher, transport and package inspector are fakes, since those are the
     only three things that would otherwise need a card.
     """
@@ -325,7 +358,7 @@ def _serving_factory(
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
-            record_temperature=structure_pass.executable_temperature(policy),
+            decoding_policy=policy,
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
         )
 
@@ -373,7 +406,7 @@ def _run_designator(
         "argv",
         _argv(root, catalogue, *argv, "--decoding-config", str(decoding)),
     )
-    return endpoint, designator.main(serving_factory=factory)
+    return endpoint, designator.main(serving_factory=factory, surya_runner=in_process_surya())
 
 
 def _answer(acts, page_w: int = 200, page_h: int = 260, **fields: Any) -> ScriptedAnswer:
@@ -543,7 +576,8 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         assert DECLARED_ANSWER_BOUND_TOKENS["designator_structure"] > 4096 - 48 - 593
         assert "max_tokens" not in request
         assert request["chat_template_kwargs"] == {"enable_thinking": False}
-        assert request["temperature"] == 1
+        # Chandra's own first-request sampling, from the chair's sealed row.
+        assert (request["temperature"], request["top_p"]) == (0.0, 0.1)
     tree = RunTree(root, RUN_ID)
     request_images = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_REQUEST_IMAGE_KIND))
     assert set(request_images) == {1, 2}
@@ -552,7 +586,7 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
     assert set(answers) == {1, 2}
     for ordinal, expected in ((1, PAGE_ONE_ACTS), (2, PAGE_TWO_ACTS)):
         payload = answers[ordinal]["payload"]
-        assert payload["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA_V3
+        assert payload["schema"] == STRUCTURE_ANSWER_RECORD_SCHEMA
         assert payload["parse_state"] == "parsed"
         assert payload["parse_outcome"] is None
         assert payload["disposition"] == "detected"
@@ -565,12 +599,18 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
         ]
         assert payload["findings"] == []
         assert payload["decoding"]["policy"] == "structure"
-        assert payload["decoding"]["temperature"] == 1
+        assert payload["decoding"]["sampling"] == {
+            "temperature": {"schema": "wire-decimal.v1", "decimal": "0.0"},
+            "top_p": {"schema": "wire-decimal.v1", "decimal": "0.1"},
+            "top_k": 0,
+            "min_p": {"schema": "wire-decimal.v1", "decimal": "0.0"},
+            "repetition_penalty": {"schema": "wire-decimal.v1", "decimal": "1.0"},
+        }
         assert payload["prompt_version"] == "verbatus-structure-prompt.v3"
         assert payload["block_count"] == len(expected)
         assert payload["blocks_without_proposal"] == []
         assert payload["answer_schema"] == "chandra-layout-html.v1"
-        assert payload["text_view"] == "chandra-layout-text.v1"
+        assert payload["text_view"] == "chandra-layout-text.v2"
         assert payload["vendor"]["repository"] == "github.com/datalab-to/chandra"
         assert payload["vendor"]["commit"] == "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
         presentation = tree.read_artifact_reference(
@@ -667,10 +707,13 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
     assert {row["outcome"] for row in rows} == {"proposed"}
     assert seal["payload"]["provenance"]["engine_call"]["call_kind"] == "chat-completions"
 
-    # No fixture:// receipt anywhere: the one receipt is the served chair's.
+    # No fixture:// receipt anywhere: one is the served chair's, one Surya's subprocess.
     receipts = _receipts(root)
-    assert [receipt["chair"] for receipt in receipts] == ["designator_structure"]
-    assert not receipts[0]["endpoint"].startswith("fixture://")
+    assert sorted(receipt["chair"] for receipt in receipts) == [
+        "designator_structure",
+        "designator_surya",
+    ]
+    assert not any(receipt["endpoint"].startswith("fixture://") for receipt in receipts)
 
     # No act text in any Designator artifact; the custody blob is the one
     # permitted home for it.
@@ -721,10 +764,11 @@ def test_the_attestatores_read_a_live_seal_under_their_own_fixture_rows(
         provenance = record["payload"]["provenance"]
         assert provenance["chair"] != "designator_structure"
         assert "engine_call" not in provenance
-    # The Attestatores' production client still binds reading_of_record, not
-    # the structure section, pinned at the source.
+    # The Attestatores' production client binds each chair's own sealed row
+    # through the shared assembly, never the structure section, pinned at the
+    # source.
     source = ATTESTATORES_CLI.read_text(encoding="utf-8")
-    assert 'record_temperature=policy["reading_of_record"]["temperature"]' in source
+    assert "decoding_policy=decoding_policy," in source
     assert '["structure"]' not in source
 
 
@@ -1053,8 +1097,19 @@ def test_an_invalid_structure_answer_gets_one_bounded_coverage_retry(
     ]
     assert len(attempts) == 2
     attempts.sort(key=lambda row: row["payload"]["attempt_ordinal"])
-    assert [request["seed"] for request in endpoint.requests] == [0, 0, 1]
-    assert [row["payload"]["attempt_seed"] for row in attempts] == [0, 1]
+    # Recovery follows Chandra's own retry schedule under the one serving seed:
+    # the second attempt is Chandra's second request, not the first one reseeded.
+    assert [request["seed"] for request in endpoint.requests] == [0, 0, 0]
+    assert [(request["temperature"], request["top_p"]) for request in endpoint.requests] == [
+        (0.0, 0.1),
+        (0.0, 0.1),
+        (0.2, 0.95),
+    ]
+    assert [row["payload"]["attempt_seed"] for row in attempts] == [0, 0]
+    assert [row["payload"]["decoding"]["sampling"]["temperature"] for row in attempts] == [
+        {"schema": "wire-decimal.v1", "decimal": "0.0"},
+        {"schema": "wire-decimal.v1", "decimal": "0.2"},
+    ]
     assert len({row["payload"]["request_sha256"] for row in attempts}) == 2
     assert attempts[0]["payload"]["attempts"] == []
     final = _by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))[2]["payload"]
@@ -1062,7 +1117,7 @@ def test_an_invalid_structure_answer_gets_one_bounded_coverage_retry(
     assert attempts[1]["payload"]["attempts"] == final["attempts"][:1]
 
 
-def test_resume_keeps_the_published_attempt_and_uses_its_next_deterministic_seed(
+def test_resume_keeps_the_published_attempt_and_sends_the_next_scheduled_request(
     live_run, tmp_path, monkeypatch
 ):
     root, catalogue = live_run
@@ -1098,7 +1153,9 @@ def test_resume_keeps_the_published_attempt_and_uses_its_next_deterministic_seed
         root, catalogue, tmp_path, monkeypatch, [_answer(PAGE_TWO_ACTS)]
     )
     assert exit_code == EXIT_COMPLETE
-    assert [request["seed"] for request in endpoint.requests] == [1]
+    assert [
+        (request["seed"], request["temperature"], request["top_p"]) for request in endpoint.requests
+    ] == [(0, 0.2, 0.95)]
     attempts = [
         row
         for row in _artifacts(root, DESIGNATOR, "structure-attempt")
@@ -1106,7 +1163,7 @@ def test_resume_keeps_the_published_attempt_and_uses_its_next_deterministic_seed
     ]
     attempts.sort(key=lambda row: row["payload"]["attempt_ordinal"])
     assert attempts[0] == before[0]
-    assert [row["payload"]["attempt_seed"] for row in attempts] == [0, 1]
+    assert [row["payload"]["attempt_seed"] for row in attempts] == [0, 0]
 
 
 def test_resume_terminalizes_a_retained_nonretryable_attempt_without_starting_a_chair(
@@ -1151,36 +1208,33 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
     current_policy, _digest = load_decoding_policy()
     monkeypatch.setattr(
         stage_contract,
-        "load_decoding_policy",
-        lambda _path: (current_policy, "d" * 64),
+        "sealed_decoding_policy",
+        lambda _context: (current_policy, "d" * 64),
     )
     page_id = "page_" + "1" * 16
-    policy = {
-        "max_attempts": 3,
-        "seed_schedule": "base-plus-attempt-ordinal-minus-one",
-    }
-    decoding = {
-        "policy": "structure",
-        "temperature": 1,
-        "decoding_config_sha256": "d" * 64,
-    }
+    policy = {"max_attempts": 3, "sampling_schedule": "chandra-native-retry"}
+
+    def decoding(ordinal: int) -> dict:
+        return stage_contract.structure_attempt_decoding(current_policy, ordinal, "d" * 64)
+
     first_ref = {"relative_path": "2_designator/a1.json", "sha256": "1" * 64}
     second_ref = {"relative_path": "2_designator/a2.json", "sha256": "2" * 64}
     first = {
-        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+        "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
+        "text_view": chandra_layout.LAYOUT_TEXT_VIEW,
         "page_id": page_id,
         "page_ordinal": 1,
         "attempt_ordinal": 1,
         "attempt_seed": 7,
         "attempt_policy": policy,
         "attempts": [],
-        "decoding": decoding,
+        "decoding": decoding(1),
     }
     second = {
         **first,
         "attempt_ordinal": 2,
-        "attempt_seed": 8,
         "attempts": [first_ref],
+        "decoding": decoding(2),
     }
     rows = {
         first_ref["relative_path"]: {
@@ -1223,8 +1277,8 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
             "payload": {
                 **second,
                 "attempt_ordinal": 3,
-                "attempt_seed": 9,
                 "attempts": [first_ref, second_ref],
+                "decoding": decoding(3),
             },
         }
 
@@ -1235,7 +1289,13 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
 def test_real_denominator_indexes_structure_attempts_and_decoding_once(monkeypatch):
     pages = ["page_" + "1" * 16, "page_" + "2" * 16]
     answers = [
-        {"subject_id": page_id, "payload": {"schema": STRUCTURE_ANSWER_RECORD_SCHEMA_V3}}
+        {
+            "subject_id": page_id,
+            "payload": {
+                "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
+                "text_view": chandra_layout.LAYOUT_TEXT_VIEW,
+            },
+        }
         for page_id in pages
     ]
     attempt_rows = [{"subject_id": page_id, "payload": {}} for page_id in pages]
@@ -1361,17 +1421,20 @@ def test_v3_attempt_refuses_a_digest_valid_call_with_wrong_image_or_temperature(
         assert call["image_sha256s"] != [source_ref["sha256"]]
         call["image_sha256s"] = [source_ref["sha256"]]
     else:
-        expected_temperature = target["payload"]["decoding"]["temperature"]
+        expected_temperature = target["payload"]["decoding"]["sampling"]["temperature"]
         assert call["generation_sent"]["temperature"] == expected_temperature
         # Keep the forged call inside the canonical wire vocabulary: floats
         # are refused before the attempt verifier can test the mismatch.
-        call["generation_sent"]["temperature"] = 0 if expected_temperature != 0 else 1
+        call["generation_sent"]["temperature"] = 1
     digest, blob = tree.put_blob(DESIGNATOR, canonical_bytes(call))
     forged = {
         **target["payload"],
         "call_record_ref": {"relative_path": blob.relative_path, "sha256": digest},
     }
-    with pytest.raises(ContractError, match="disagrees with its retained call record"):
+    expected_refusal = (
+        "disagrees with its retained call record" if mismatch == "image" else "not the sealed"
+    )
+    with pytest.raises(ContractError, match=expected_refusal):
         stage_contract.verify_structure_attempt_call(
             context,
             forged,
@@ -1467,8 +1530,17 @@ def test_an_answer_the_grammar_refuses_holds_the_page_by_its_outcome(
         if row["subject_id"] == answers[2]["subject_id"]
     ]
     attempts.sort(key=lambda row: row["payload"]["attempt_ordinal"])
-    assert [row["payload"]["attempt_seed"] for row in attempts] == [0, 1, 2]
+    assert [row["payload"]["attempt_seed"] for row in attempts] == [0, 0, 0]
     assert [row["payload"]["attempt_ordinal"] for row in attempts] == [1, 2, 3]
+    assert [row["payload"]["decoding"]["sampling"] for row in attempts] == [
+        recorded_sampling(
+            {
+                **chair_decoding(load_decoding_policy()[0], "designator_structure"),
+                **chandra_wire_parameters(ordinal),
+            }
+        )
+        for ordinal in (1, 2, 3)
+    ]
     assert payload["attempt_ordinal"] == len(payload["attempts"]) == 3
     last_reference = payload["attempts"][-1]
     tree = RunTree(root, RUN_ID)
@@ -1923,23 +1995,28 @@ def test_a_real_recovery_requires_the_same_explicit_request_identity(
     assert not (root / RUN_ID / "2_designator").exists()
 
 
-def test_a_non_zero_sealed_structure_temperature_is_admitted_for_the_serving_seam(
-    tmp_path, monkeypatch
-):
-    """The serving seam owns and sends the sealed structural posture."""
-    catalogue = _live_catalogue(tmp_path)
-    decoding = tmp_path / "decoding.toml"
-    source = (ROOT / "config" / "decoding.toml").read_text(encoding="utf-8")
-    decoding.write_text(
-        source.replace("temperature = 1\n", "temperature = 0.7\n", 1), encoding="utf-8"
-    )
-    policy, _digest = load_decoding_policy(decoding)
-    assert policy["structure"]["temperature"] == 0.7
-    root = tmp_path / "runs"
-    _chain(root, catalogue, "--decoding-config", str(decoding))
-
-    assert designator.structure_pass.executable_temperature(policy) == 0.7
-    assert not (root / RUN_ID / "2_designator" / "artifacts").exists()
+def test_the_structure_chair_reads_at_chandras_own_first_request_settings(tmp_path):
+    """The structure chair's sealed row is Chandra's own pipeline's first request."""
+    policy, _digest = load_decoding_policy()
+    assert chair_decoding(policy, "designator_structure") == {
+        "temperature": 0.0,
+        "top_p": 0.1,
+        "top_k": 0,
+        "min_p": 0.0,
+        "repetition_penalty": 1.0,
+    }
+    # Recorded on the answer in the call record's own form, so the two compare as written.
+    assert stage_contract.structure_attempt_decoding(policy, 1, "d" * 64) == {
+        "policy": "structure",
+        "sampling": {
+            "temperature": {"schema": "wire-decimal.v1", "decimal": "0.0"},
+            "top_p": {"schema": "wire-decimal.v1", "decimal": "0.1"},
+            "top_k": 0,
+            "min_p": {"schema": "wire-decimal.v1", "decimal": "0.0"},
+            "repetition_penalty": {"schema": "wire-decimal.v1", "decimal": "1.0"},
+        },
+        "decoding_config_sha256": "d" * 64,
+    }
 
 
 _ABSENT_SECONDARY = """[chairs.secondary_proposer]
@@ -1958,8 +2035,12 @@ license_note = \"fixture identity only; no model weights or model license apply\
 """
 
 
-def test_a_configured_secondary_proposer_is_refused_on_the_live_path(tmp_path, monkeypatch):
-    """Absent by ruling; a live run writes no fixture receipt for one."""
+def test_a_record_detector_the_live_pass_cannot_run_is_refused_before_any_request(
+    tmp_path, monkeypatch
+):
+    """The live pass runs the record detector in-process once its structure chair
+    has closed; a detector with no runnable row refuses before the chair starts,
+    and no receipt is written for a call that was never made."""
     import tomllib
 
     config_root = tmp_path / "chair-config"
@@ -1988,10 +2069,64 @@ def test_a_configured_secondary_proposer_is_refused_on_the_live_path(tmp_path, m
         "argv",
         _argv(root, catalogue, "--placement-tier", TIER, "--models-config", str(models)),
     )
-    with pytest.raises(
-        ContractError, match="secondary proposer chair 'secondary_proposer' is configured"
-    ):
-        designator.main(serving_factory=factory)
+    with pytest.raises(ContractError, match="serving posture of the record detector"):
+        designator.main(serving_factory=factory, surya_runner=in_process_surya())
+    assert endpoint.requests == []
+    assert _receipts(root) == []
+
+
+@pytest.mark.parametrize(
+    ("installed", "refusal"),
+    [
+        (False, "needs torch==2.13.0, and it is not installed"),
+        (True, "record detector weights are not at"),
+    ],
+)
+def test_a_record_detector_that_could_not_load_is_refused_before_any_request(
+    tmp_path, monkeypatch, installed, refusal
+):
+    """Its pinned packages and weights are checked before the structure chair starts,
+    without loading the model; the fixture snapshot carries no detector weights."""
+    import tomllib
+
+    from operations.serving import detector
+
+    pins = {"torch": "2.13.0", "ultralytics": "8.4.14"}
+    if installed:
+        monkeypatch.setattr(detector, "metadata", SimpleNamespace(version=pins.__getitem__))
+    config_root = tmp_path / "chair-config"
+    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
+    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
+    live = MODELS_CONFIG.read_text(encoding="utf-8")
+    digest_manifest = tomllib.loads(live)["chairs"]["designator_structure"]["digest_manifest"]
+    models = config_root / "models.toml"
+    configured = _CONFIGURED_SECONDARY.format(digest_manifest=digest_manifest).replace(
+        'serving_recipe = "fake-designator-v0"', 'serving_recipe = "in-process-detector-test"'
+    )
+    models.write_text(live.replace(_ABSENT_SECONDARY, configured), encoding="utf-8")
+    catalogue = _live_catalogue(tmp_path)
+    catalogue.write_text(
+        catalogue.read_text(encoding="utf-8")
+        + '\n[[profiles]]\nkind = "in-process"\nrecipe = "in-process-detector-test"\n'
+        f'chair = "secondary_proposer"\ntier = "{TIER}"\nengine = "ultralytics"\n'
+        'task = "obb"\ndevice = "cpu"\nimgsz = 1024\nconf_bp = 2500\niou_bp = 7000\n'
+        'max_det = 300\nrequired_packages = { torch = "2.13.0", ultralytics = "8.4.14" }\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "runs"
+    _chain(root, catalogue, "--models-config", str(models))
+    endpoint = FakeEndpoint(served_model_id=SERVED_MODEL_ID)
+    factory = _serving_factory(
+        endpoint, catalogue, tmp_path / "logs", tmp_path / "lock", ROOT / "config" / "decoding.toml"
+    )
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _argv(root, catalogue, "--placement-tier", TIER, "--models-config", str(models)),
+    )
+    with pytest.raises(ContractError, match=f"record detector is not ready: .*{refusal}"):
+        designator.main(serving_factory=factory, surya_runner=in_process_surya())
     assert endpoint.requests == []
     assert _receipts(root) == []
 
@@ -2004,7 +2139,8 @@ def test_the_fixture_catalogue_runs_the_fixture_pass_with_no_answer_and_no_call(
 ):
     """Under the committed catalogue nothing of the live path appears on
     disk: the fixture pass writes no structure-answer, no engine call, no
-    answer reference, and the one `fixture://` receipt it always wrote.
+    answer reference, and only `fixture://` receipts: the structure chair's
+    and Surya's.
     """
     root = tmp_path / "runs"
     _chain(root, FIXTURE_CATALOGUE)
@@ -2023,8 +2159,11 @@ def test_the_fixture_catalogue_runs_the_fixture_pass_with_no_answer_and_no_call(
     assert "engine_call" not in seal["payload"]["provenance"]
     assert [row["act_key"] for row in seal["payload"]["expected_acts"]] == ["a1", "a2"]
     receipts = _receipts(root)
-    assert [receipt["chair"] for receipt in receipts] == ["designator_structure"]
-    assert receipts[0]["endpoint"].startswith("fixture://")
+    assert sorted(receipt["chair"] for receipt in receipts) == [
+        "designator_structure",
+        "designator_surya",
+    ]
+    assert all(receipt["endpoint"].startswith("fixture://") for receipt in receipts)
 
 
 # --- the record's own closed field set -----------------------------------------
@@ -2036,12 +2175,10 @@ def _minimal_answer_record() -> dict[str, Any]:
     which would drift from what the validator actually uses.
     """
     record: dict[str, Any] = dict.fromkeys(designator._STRUCTURE_ANSWER_V3_FIELDS)
-    record["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA_V3
+    record["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA
+    record["text_view"] = chandra_layout.LAYOUT_TEXT_VIEW
     record["presentation_ref"] = {"relative_path": "p", "sha256": "0" * 64}
-    record["attempt_policy"] = {
-        "max_attempts": 3,
-        "seed_schedule": "base-plus-attempt-ordinal-minus-one",
-    }
+    record["attempt_policy"] = {"max_attempts": 3, "sampling_schedule": "chandra-native-retry"}
     record["attempt_ordinal"] = 1
     record["attempt_seed"] = 7
     record["attempts"] = [{"relative_path": "a", "sha256": "1" * 64}]
@@ -2122,13 +2259,10 @@ def _ask(client, width: int, height: int, monkeypatch):
         1,
         b"",
         {"width": width, "height": height},
-        temperature=0,
+        decoding_policy=load_decoding_policy()[0],
         decoding_config_sha256="c" * 64,
         provenance={},
-        attempt_policy={
-            "max_attempts": 3,
-            "seed_schedule": "base-plus-attempt-ordinal-minus-one",
-        },
+        attempt_policy={"max_attempts": 3, "sampling_schedule": "chandra-native-retry"},
     )
 
 
@@ -2220,9 +2354,7 @@ def test_a_field_outside_the_structure_answer_contract_refuses_by_name():
         designator._validate_structure_answer_payload(record)
 
 
-@pytest.mark.parametrize(
-    "schema", ["designator-structure-answer.v1", "designator-structure-answer.v2"]
-)
+@pytest.mark.parametrize("schema", sorted(RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS))
 def test_retired_structure_answer_schema_is_refused_by_name(schema):
     record = _minimal_answer_record()
     record["schema"] = schema
@@ -2235,8 +2367,65 @@ def test_retired_structure_answer_schema_is_refused_by_name(schema):
 
 
 @pytest.mark.parametrize(
-    "schema", ["designator-structure-answer.v1", "designator-structure-answer.v2"]
+    ("text_view", "refusal"),
+    [
+        (
+            "chandra-layout-text.v1",
+            "read under chandra-layout-text.v1, which this build no longer reads; "
+            "re-run the submission from the Door",
+        ),
+        (
+            "chandra-layout-text.v9",
+            "names unknown text view 'chandra-layout-text.v9', not chandra-layout-text.v2; "
+            "re-run the submission from the Door",
+        ),
+        (
+            None,
+            "names no text view, not chandra-layout-text.v2; re-run the submission from the Door",
+        ),
+    ],
 )
+def test_a_structure_answer_not_read_under_this_builds_text_view_is_refused_by_name(
+    text_view, refusal
+):
+    """Blank-Page block text changed the view, so each block's text digest did too."""
+    record = _minimal_answer_record()
+    record["text_view"] = text_view
+
+    with pytest.raises(ContractError, match=refusal):
+        designator._validate_structure_answer_payload(record)
+
+
+def test_a_resumed_pass_refuses_an_answer_read_under_a_retired_text_view(monkeypatch):
+    context = SimpleNamespace(
+        args=SimpleNamespace(decoding_config=None),
+        tree=object(),
+        require_sealed_config=lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        designator, "_initial_pages_and_policies", lambda unused: ({}, {}, None, None)
+    )
+    monkeypatch.setattr(designator, "load_decoding_policy", lambda unused: ({}, "0" * 64))
+    monkeypatch.setattr(designator, "structure_recovery_policy", lambda unused: {})
+    monkeypatch.setattr(designator.structure_pass, "resolved_structure_chair", lambda unused: None)
+    record = _minimal_answer_record()
+    record["text_view"] = "chandra-layout-text.v1"
+    monkeypatch.setattr(
+        designator, "_stage_records", lambda *_args: [{"subject_id": "page-1", "payload": record}]
+    )
+    monkeypatch.setattr(
+        designator,
+        "_publish_secondary_provenance",
+        lambda *_args: pytest.fail("secondary provenance was published before refusal"),
+    )
+
+    with pytest.raises(
+        ContractError, match="page page-1's structure answer was read under chandra-layout-text.v1"
+    ):
+        designator.live_initial_pass(context, None, "small")
+
+
+@pytest.mark.parametrize("schema", sorted(RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS))
 def test_retired_answer_refuses_before_secondary_provenance_publish(monkeypatch, schema):
     context = SimpleNamespace(
         args=SimpleNamespace(decoding_config=None),
@@ -2247,7 +2436,6 @@ def test_retired_answer_refuses_before_secondary_provenance_publish(monkeypatch,
         designator, "_initial_pages_and_policies", lambda unused: ({}, {}, None, None)
     )
     monkeypatch.setattr(designator, "load_decoding_policy", lambda unused: ({}, "0" * 64))
-    monkeypatch.setattr(designator.structure_pass, "executable_temperature", lambda unused: 1)
     monkeypatch.setattr(designator, "structure_recovery_policy", lambda unused: {})
     monkeypatch.setattr(designator.structure_pass, "resolved_structure_chair", lambda unused: None)
     monkeypatch.setattr(
@@ -2426,6 +2614,24 @@ def test_one_region_covering_half_two_rectangles_is_still_shared_detection():
         "shared-detection",
     ]
     assert all(block["detected_bounds"] == band for block in blocks)
+
+
+def test_a_parsed_answer_records_the_text_view_its_parser_reports(live_run, tmp_path, monkeypatch):
+    """The record names the view the parser read under, not a fixed constant, so a
+    parser reporting a view this build does not read is refused by that name."""
+    root, catalogue = live_run
+    answers = [_answer(PAGE_ONE_ACTS), _answer(PAGE_TWO_ACTS)]
+    original = chandra_layout.parse_layout_html
+
+    def retired_view(raw):
+        result = original(raw)
+        if chandra_layout.is_refusal(result):
+            return result
+        return {**result, "text_view": "chandra-layout-text.v1"}
+
+    monkeypatch.setattr(chandra_layout, "parse_layout_html", retired_view)
+    with pytest.raises(ContractError, match="read under chandra-layout-text.v1"):
+        _run_designator(root, catalogue, tmp_path, monkeypatch, answers)
 
 
 # --- a custody refusal is one page's outcome ------------------------------------

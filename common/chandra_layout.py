@@ -35,9 +35,11 @@ grammar, `chandra/settings.py` for `BBOX_SCALE`.
   finding.** The vendor substitutes `[0, 0, 1, 1]` and only prints a warning
   to a stdout nobody retains, so a value the model never reported would be
   published as though it had been. `block_page_bounds` returns `None` for it.
-* **A `Blank-Page` block is retained**, with `blank_page: True`, empty text and
-  no page geometry, rather than dropped entirely as the vendor's `continue`
-  does -- indistinguishable from a page never answered otherwise.
+* **A `Blank-Page` block is retained**, with `blank_page: True` and no page
+  geometry, rather than dropped entirely as the vendor's `continue` does --
+  indistinguishable from a page never answered otherwise. Its text is its
+  content's text view like any block's: empty when it is empty, and never
+  emptied when the model wrote text into a block it labelled blank.
 * **Nested `data-bbox` attributes are recorded, not stripped** (the vendor
   deletes them "not needed in open source"). `nested_bboxes` lists them per
   block; nothing derives page geometry from them.
@@ -68,7 +70,7 @@ page-pixel mapping. The sealed page is the right denominator because the vendor
 uses the same one: `InferenceManager` runs `parse_chunks` against the original
 image, not the resized one it sent.
 
-## The text view `chandra-layout-text.v1`
+## The text view `chandra-layout-text.v2`
 
 The vendor's own text path is `parse_markdown`, which routes through
 `markdownify` and `BeautifulSoup`. Neither is a dependency here and neither
@@ -98,10 +100,13 @@ blocks in `<p>`. So the text view is ours, named, and stated in full:
 
 `page_text` is `common.structure_answer.join_delivered_texts` over the block
 texts -- a newline between delivered (non-empty) texts and nowhere else -- and
-`spans` locates each block in it, empty and blank blocks as a zero-width span.
-That is the same join and the same span rule the Designator's answer and the
-retired wire contract both used, so a span published against this page text
-lands where every other Chandra reading of the page puts it.
+`spans` locates each block in it, empty blocks as a zero-width span. A
+`Blank-Page` block's text is kept like any other block's. A record naming a
+view in `RETIRED_LAYOUT_TEXT_VIEWS` is refused by that name rather than re-read
+under this view, because its text differs from what this view reads.
+The Designator's answer uses the same join and the same span rule, so a span
+published against this page text lands where every other Chandra reading of the
+page puts it.
 """
 
 from __future__ import annotations
@@ -269,10 +274,12 @@ BBOX_SCALE: Final = 1000
 
 # The named rule this module's `page_text` and `spans` are produced by. It is
 # ours, not the vendor's; see the module docstring for the rule in full.
-LAYOUT_TEXT_VIEW: Final = "chandra-layout-text.v1"
+LAYOUT_TEXT_VIEW: Final = "chandra-layout-text.v2"
+# Views a retained record may name but this build no longer produces: a record
+# read under one is refused by that name, never re-derived under the current view.
+RETIRED_LAYOUT_TEXT_VIEWS: Final = frozenset({"chandra-layout-text.v1"})
 
-# The same operational ceilings the Chandra adapter has always applied to bytes
-# crossing the native model boundary: the byte bound matches the repository's
+# Operational ceilings on bytes crossing the native model boundary: the byte bound matches the repository's
 # RunPod response ceiling, and the block bound is a chosen ceiling rather than
 # a claim about Chandra's behaviour -- ten thousand layout blocks on one page
 # leaves ample headroom while keeping one compact answer from expanding into an
@@ -323,7 +330,7 @@ class LayoutBlock(TypedDict):
     # The block's inner HTML, exactly as the answer wrote it, nested
     # `data-bbox` attributes included.
     content: str
-    # `content` under `LAYOUT_TEXT_VIEW`. Empty for a `Blank-Page` block.
+    # `content` under `LAYOUT_TEXT_VIEW`, for a `Blank-Page` block too.
     text: str
     # Every `data-bbox` a descendant of this block carried, in document order.
     nested_bboxes: list[str]
@@ -610,6 +617,7 @@ class _TopLevelDivReader(HTMLParser):
         self.overflowed = False
         self.unclosed = False
         self.outside_characters = 0
+        self.outside_data: list[str] = []
 
     def _index(self) -> int:
         line, offset = self.getpos()
@@ -687,6 +695,7 @@ class _TopLevelDivReader(HTMLParser):
         """
         if self._open is None:
             self.outside_characters += len(_WHITESPACE_RUN.sub("", data))
+            self.outside_data.append(data)
 
     def _note_nested_bbox(self, attrs: list[tuple[str, str | None]]) -> None:
         if self._open is None:
@@ -748,6 +757,24 @@ def _count_top_level_divs(html: str) -> int:
     counter.feed(html)
     counter.close()
     return counter.count
+
+
+def outside_blocks_text(raw: bytes) -> str:
+    """The text Chandra's answer wrote outside every top-level block, for a reader to see.
+
+    The same character data `content-outside-blocks` counts, in answer order:
+    each run of it with every whitespace run made one space and its ends
+    stripped, the non-empty runs joined by a newline. Empty when the finding is
+    absent. Only for an answer `parse_layout_html` read without refusal; the
+    finding itself still publishes the count and never the text.
+    """
+    html = bytes(raw).decode("utf-8")
+    reader = _TopLevelDivReader(html)
+    reader.feed(html)
+    reader.close()
+    reader.finish()
+    runs = (_WHITESPACE_RUN.sub(" ", data).strip(" ") for data in reader.outside_data)
+    return "\n".join(run for run in runs if run)
 
 
 def parse_layout_html(raw: Any) -> ParsedLayout | dict[str, str]:
@@ -836,7 +863,7 @@ def parse_layout_html(raw: Any) -> ParsedLayout | dict[str, str]:
                 "blank_page": blank,
                 "bbox_1000": bbox,
                 "content": content,
-                "text": "" if blank else layout_block_text(content),
+                "text": layout_block_text(content),
                 "nested_bboxes": nested,
             }
         )

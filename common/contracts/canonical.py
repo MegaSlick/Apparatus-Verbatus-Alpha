@@ -28,6 +28,7 @@ import ast
 import hashlib
 import json
 from collections.abc import Iterator
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 from .errors import SchemaRefusal
@@ -257,6 +258,15 @@ def is_plain_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def half_even_bp(value: float) -> int:
+    """A score in [0, 1] as integer basis points, rounded half to even on its decimal text.
+
+    Records hold no floats, so a model's score enters one through this rule:
+    ``0.00015`` is 2 bp, where ``round(0.00015 * 10_000)`` gives 1.
+    """
+    return int((Decimal(repr(value)) * 10_000).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
+
+
 def is_sha256(value: Any) -> bool:
     """Whether a value is the lowercase hex shape every digest in this system uses."""
     return (
@@ -310,6 +320,9 @@ def _ast_value(value: Any) -> Any:
         return [_ast_value(item) for item in value]
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
+    if isinstance(value, bytes):
+        # Tagged, so a bytes literal never digests like a list of strings.
+        return ["bytes", value.hex()]
     raise TypeError(f"no canonical form for a {type(value).__name__} constant")
 
 

@@ -38,7 +38,7 @@ are fixture declarations, not measurements of a live model, and its bytes are
 the pinned acceptance path. Under a catalogue whose rows for those chairs are
 `kind = "vllm"`, the live boundary below runs instead: the serving response and
 body contract Spec 04 was waiting for is `common/contracts/serving.py`'s
-`chair-call-record.v1` plus `operations/serving/http.py::parse_openai_reading`,
+`chair-call-record.v3` plus `operations/serving/http.py::parse_openai_reading`,
 and the capture-as-Testimonium intake is `common/native_witness.py`'s retained
 model view, which the live pass records on every act attempt whose bytes reached
 an adapter parser.
@@ -81,7 +81,10 @@ naming no serving call, is refused rather than resumed over: a live pass cannot
 continue a fixture-posture run. A `dead`/`not-run` record is not that evidence
 — it names no serving call because no chair was ever shown pixels for it, which
 is an independent fact from a fixture-posture response, so it is skipped rather
-than raised on.
+than raised on. A sealed capture read under a text view this build no longer
+produces is refused by name at every point a resumed pass reuses one (the page
+record, the act record and a Chandra terminal record), before its bytes are
+read; see "The capture's text view" below.
 
 **Closed asymmetry: cut-off composition is shared.** A parse failure landing on
 a response the provider itself cut off at its bound now reads as an exhausted
@@ -115,7 +118,7 @@ could supply a page's resumed capture, every one of them is checked to agree
 sorts first; a disagreement is a named refusal, not a silent choice.
 
 **What a live record gains.** `native_capture` (the adapter's retained model
-view), `serving_call_ref` (the `chair-call-record.v1` blob for the one request)
+view), `serving_call_ref` (the `chair-call-record.v3` blob for the one request)
 and `raw_response_kind` (which sort of bytes `raw_response_ref` names) are
 admitted on an act Testimonium and written only in live mode, so a fixture
 record is byte-for-byte what it was. `provenance.receipt_ref` names the receipt
@@ -172,8 +175,9 @@ reading order, each carrying `data-bbox` (four integers normalized to
 `BBOX_SCALE = 1000`) and `data-label` from the vendor's own label vocabulary.
 Nothing is repaired: a malformed or out-of-range `data-bbox` becomes
 `bbox_1000: None` plus a `malformed-bbox` finding where the vendor prints a
-line and substitutes `[0, 0, 1, 1]`; a `Blank-Page` block is retained without
-text or geometry where the vendor drops it; a nested `data-bbox` is recorded
+line and substitutes `[0, 0, 1, 1]`; a `Blank-Page` block is retained where the
+vendor drops it, with no geometry and with its text kept like any other
+block's; a nested `data-bbox` is recorded
 rather than stripped; and the block count the reader returns is reconciled
 against the raw HTML's own top-level `div` count as a finding. Those findings
 travel on the capture beside the reading, because they are the
@@ -181,6 +185,30 @@ whole of what the vendor's parser would have printed to a stdout nobody
 retains. A body the reader can place in no shape at all lands in the
 `unrecognized-shape` state naming what it saw in `outcome`, with its bytes
 already retained.
+
+### The capture's text view
+
+A capture read under a vendor grammar records `text_view`, the named rule its
+parse text and findings were read under: `chandra-layout-text.v2` for Chandra
+under `html`, `churro-historical-document-text.v2` for Churro under `xml`
+(`common.native_witness.CAPTURE_TEXT_VIEWS`). The writer takes it from the
+parser's own result where the parser reports one and from that table where it
+does not (a Churro body that failed to parse, a Chandra body in no shape), so
+it is recorded whatever the parse state. A capture of any other adapter and
+parser — DAI's `text`, the fixture's `json`, no parse — records none, and one
+that names a view anyway is refused.
+
+`v1` of each view is retired: Chandra's dropped a `Blank-Page` block's text and
+Churro's did not report document text outside every page, so a capture read
+under either differs from what this build reads from the same bytes.
+`validate_capture_text_view` refuses a capture naming a retired view, or none
+where its grammar has one, by that name and whatever its parse state, before
+anything re-derives it: at the resume points above, in
+`verify_native_capture_bytes` (every reader's re-derivation) and at the writer
+itself. The refusal says to re-run the submission from the Door. A new
+Attestatores pass over the same run tree would resume the sealed capture and
+meet the same refusal, and no stage starts a run tree past the Door, so a fresh
+run is the only route that reads the page again.
 
 **Attestator 1 carries Chandra's pinned native inference loop.** New runs seal
 the decoding policy's exact `datalab-to/chandra@d4f7467` recipe: the initial
@@ -480,7 +508,7 @@ is part of the record because each turned on a choice about what a record may
 say.
 
 1. **A vendor's float decoding value is recorded as the exact decimal the wire
-   carried.** `feeding.dai_generation()` carries floats — DAI's shipped
+   carried.** DAI's sampling values are floats — its shipped
    `repetition_penalty` 1.05 and `top_p` 0.001 — and the shared canonical
    writer refuses floats outright, so a live `dai.v1` request could not be
    recorded and was therefore never made. The canonical refusal stands: a
@@ -578,13 +606,22 @@ carries Churro's `max_new_tokens` and DAI's whole carried
 bound. `test_live_witness.py` walks every Churro row in the shipped catalogue at
 every tier and asserts the sum this seam would send is one that row can take.
 
-*And the values `generation_config = "vllm"` discards.* That flag makes vLLM
-return an empty sampling diff instead of the model's own file, so every shipped
-default is replaced by vLLM's. Three are sent back deliberately: Churro's
-`repetition_penalty` 1.05 (`feeding.churro_wire_decoding`; the paper documents
-this model's own degeneration loops, and at temperature 0 the penalty is
-applied before the argmax, so determinism is untouched), DAI's second EOS id
-151643 as `stop_token_ids` (`feeding.dai_wire_stop_token_ids`, derived from the
+*Sampling is the sealed table's, never a builder's.* Each chair reads at its
+makers' recommended sampling values, sealed per chair in
+`config/decoding.toml`'s `chair_decoding` table with the source and revision
+they were read from: Chandra's own first request (`temperature` 0.0, `top_p`
+0.1), DAI's and Churro's `generation_config.json` (the makers publish nothing
+beyond it, and their own pipelines send nothing else). Each row also names every
+other sampling field vLLM would fill from a generation config, at the value the
+maker's own pipeline runs under: vLLM's defaults for Chandra, which Chandra's code
+serves with vLLM, and transformers' defaults for DAI and Churro, whose makers run
+`model.generate`. Every serving row is `generation_config = "vllm"`, so no file
+fills a field. `ChairClient` sends exactly that row with the seed and refuses a
+builder that names any sampling field. The tally holds every Testimonium's serving
+call record to its chair's row and seed (`common.stage.verify_retained_call_sampling`):
+the serving receipt's seed, or none for a Chandra native page read, whose record
+names its vendor-returned attempt. The builders send only non-sampling fields: DAI's second EOS id 151643
+as `stop_token_ids` (`feeding.dai_wire_stop_token_ids`, derived from the
 carried config rather than re-typed), and `chat_template_kwargs:
 {"enable_thinking": false}` on both Chandra chairs (`common/chair_wire.py`,
 which carries the evidence that the revision ships two disagreeing chat
@@ -1394,6 +1431,81 @@ did, the page outcome is `not-run`, with `presented={}` and no receipt. Thus
 `failed` never also means “never attempted,” and an absent or never-shown chair
 is never forced to invent a serving moment.
 
+### DAI: a page witness over its own detector's records
+
+DAI was trained on crops of the records its own project's detector finds, so a
+page-scoped `dai.v1` chair is shown its page that way and never the
+Designator's act crops. The adapter declares it (`RunnableAdapter.page_units =
+"detector-records"`), and a roster that scopes such a chair `page` without a
+configured `secondary_proposer` is refused before anything runs. The fixture
+posture has no per-record reading to declare, so such a chair must be served
+live; a fixture row for it is refused by name.
+
+**Units.** A page's units are the Designator's `detector-region` crops of that
+page, in the detector's own order, read from its `detector-page` census. A
+missing or out-of-order record, a census whose count disagrees with its
+records, or a crop that does not re-derive from its sealed page at its recorded
+bounds refuses. A record the Designator could not cut is not a unit. A page
+that carries acts and no census refuses: the chair cannot be shown the page as
+it was trained to read it.
+
+**One call per record.** Each unit is one request, with the unit crop as the
+presentation `dai.v1` resizes and sends; every response is retained as it
+arrives. A unit refused for capacity before it is sent is a `failed` unit with
+no capture. The page record is sealed only once every unit on the page has
+been answered, so a pass interrupted inside a page asks that page's units
+again, and a page record already sealed is resumed and never asked again. A
+page with no unit is sealed `not-run` without a request, with reason "DAI's own
+record detector found no record on this page, so DAI was shown nothing here",
+or, when the census counts records none of which enclosed a crop, a reason
+naming that count.
+
+**The page record.** One `page-testimonium` per page, in the closed page shape
+plus three fields. `presentations` lists every image the chair was shown, in
+unit order, each an `adapter-crop` of the one sealed page, and `presented` is
+its first. `unit_captures` holds one retained model view per presentation
+(`null` for a unit that never reached the chair), each naming a response the
+record retains in `raw_response_refs`. `unit_call_refs` holds each unit's
+retained call record (`null` for a unit refused before it was sent), held to
+the chair's sealed sampling row and its receipt's seed when the record is
+written and again when a resumed pass reads it back. `observed` has one `presented` box per
+unit: DAI reports no geometry, so each box is exactly the detector crop that
+unit was shown, checked against that unit's own presentation, with a `span`
+into the page text when that unit delivered a reading. Every
+presented image, retained response and unit call record is digest-bound in
+`inputs`. Both later
+readers take every presentation from `presentations`
+(`common/native_witness.py::record_presentations`).
+
+**The page text.** Unit readings join with `"\n"` in act order: each act's
+owned records together, in detector order, then the records no act owns. So
+one act's slice never reaches into another's. An empty reading adds no
+separator.
+
+**Ownership.** A record belongs to the act whose proposal regions on the page
+it overlaps most by area, and to no act on a tie or when it overlaps none. This
+decides where DAI's text sits, not what it says or whether an act exists.
+
+**The page outcome.** One failed unit fails the page, with a reason naming each
+failed record: an act then goes visibly under-witnessed by DAI rather than read
+from part of what DAI was shown. Otherwise the page is `read`, or
+`genuinely-empty` when every unit delivered an empty reading.
+
+**Act attachment.** On an act's primary page the entry's alignment comes from
+ownership, not from the Chandra anchor: `aligned` with
+`anchor_basis: "detector-record"`, `anchor_chair: null`, a zero-length
+`anchor_span`, a `witness_span` from the first to the last owned record's span,
+and one `line_geometry` box per owned record; `unaligned` with reason
+`no-detector-record-owned` when the act owns no record; and
+`non-reading-page-testimonium-<outcome>` when the page did not read. A
+continuation page stays `continuation-page-no-act-anchor`, as for every page
+witness. That alignment is recorded and attaches nothing: a `presented` box is
+not reported geometry, so it never counts as `geometric-overlap`, and a
+`detector-record` alignment is not a located anchor line. Every DAI entry is
+therefore `attached: false`, `attachment_basis: "unattached"`, `span: null`,
+and DAI reaches no act comparison until witnesses are read page-only. The act's own `testimonium` view keeps the act's Designator crop as
+its presentation, since the chair was never shown that crop.
+
 ## Act-attachment schema (R4)
 
 Written by the same stage invocation that writes page testimony, one
@@ -1441,6 +1553,8 @@ claim a page the ink does not support, or drop one the ink does.
   rectangle per anchor line -- exactly one on the fixture path, and on the
   live path every reported block that overlaps the act. `anchor_basis` is one of
   `act-anchor` (computed through Chandra's located anchor line),
+  `detector-record` (a chair read one detector record at a time, placed by the
+  records this act owns; see above),
   `no-page-anchor` (a genuinely-empty witness's trivial zero-length attach on
   a page with no Chandra anchor at all — the ink-free/fallback path; blank
   confirmation stays open), or `act-line-not-located` (the page's anchor
@@ -1471,7 +1585,9 @@ claim a page the ink does not support, or drop one the ink does.
   capture that produced no reading, `non-reading-act-attempt-<outcome>`
   where the page record is the legacy join and this act's own attempt is
   the non-reading fact (the page record itself may still read, on the
-  strength of another act), and `continuation-page-no-act-anchor` for a
+  strength of another act), `no-detector-record-owned` for an act that owns
+  none of the records a detector-record chair read, and
+  `continuation-page-no-act-anchor` for a
   contributing page that is not the act's primary one.
 
 For a page witness, `attached` is derived from one of two bases since Unit 12

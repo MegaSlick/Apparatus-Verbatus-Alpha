@@ -2,10 +2,10 @@
 submission builder, reference truth, comparator, local admission, and evaluation.
 
 RecordGold (`Teklia/DAI-CReTDHI-RecordGold-ATR`) is a third-party expert-annotated
-corpus this project's drafted real roster names two of its own chairs against
-(`config/models.toml`'s `attestator_2` and `secondary_proposer`); neither chair
-is bound in the live config today, and `README.md`'s "The DAI contamination
-risk" section states that as an unresolved inference, not a verified fact.
+corpus this project's real roster names two of its own chairs against
+(`config/models-real.toml`'s `attestator_2` and `secondary_proposer`); neither
+is bound in the fixture roster, and `README.md`'s "The DAI contamination risk"
+section states what is and is not known about their training data.
 `rows.py` reads the three parquets' facts (converted once, offline, to a
 self-hashed JSON snapshot outside this package) and seals them; `plan.py`
 derives, from that snapshot alone, which IIIF pages exist and how their

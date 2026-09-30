@@ -383,16 +383,17 @@ def test_a_finding_quotes_a_bounded_amount_of_what_the_model_wrote():
     assert short["data_bbox_truncated"] is False
 
 
-def test_a_blank_page_block_is_retained_without_text_or_geometry():
+def test_a_blank_page_block_is_retained_with_its_text_and_without_geometry():
     parsed = _read(
         '<div data-bbox="0 0 1000 1000" data-label="Blank-Page">nothing written here</div>'
     )
     (block,) = parsed["blocks"]
     assert block["label"] == BLANK_PAGE_LABEL
     assert block["blank_page"] is True
-    assert block["text"] == ""
-    assert parsed["page_text"] == ""
-    assert parsed["spans"] == [{"start": 0, "end": 0}]
+    # What the model wrote into a block it called blank is kept, never emptied.
+    assert block["text"] == "nothing written here"
+    assert parsed["page_text"] == "nothing written here"
+    assert parsed["spans"] == [{"start": 0, "end": 20}]
     assert block_page_bounds(block, page_size=(200, 260)) is None
     # Its declared box is still recorded rather than thrown away, and the
     # retention is itself a finding, because the vendor drops the block whole.
@@ -658,7 +659,7 @@ def test_every_finding_a_page_can_produce_is_a_declared_kind():
 
 
 # ---------------------------------------------------------------------------
-# The text view `chandra-layout-text.v1`
+# The text view `chandra-layout-text.v2`
 # ---------------------------------------------------------------------------
 
 
@@ -738,3 +739,15 @@ def test_spans_locate_every_delivered_block_in_the_page_text():
     for block, span in zip(parsed["blocks"], parsed["spans"], strict=True):
         assert parsed["page_text"][span["start"] : span["end"]] == block["text"]
     assert parsed["page_text"].count("\n") == 6
+
+
+def test_the_text_outside_blocks_is_what_the_finding_counts():
+    from common.chandra_layout import outside_blocks_text
+
+    raw = b'lead <div data-bbox="1 2 3 4">in</div>\n between \n<p>para  x</p>'
+    parsed = parse_layout_html(raw)
+    counted = _finding(parsed, "content-outside-blocks")["characters"]
+    text = outside_blocks_text(raw)
+    assert text == "lead\nbetween\npara x"
+    assert counted == len(text.replace("\n", "").replace(" ", ""))
+    assert outside_blocks_text(b'<div data-bbox="1 2 3 4">in</div>\n') == ""

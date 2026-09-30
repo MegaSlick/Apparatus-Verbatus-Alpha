@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable
 from typing import Any, Final
 
-from common import churro_document
+from common import chandra_layout, churro_document
 from common.chairs.models import is_hf_revision
 from common.chandra_native_retry import validate_trace as validate_chandra_native_trace
 from common.contracts.canonical import digest_bytes, is_plain_int, is_sha256
@@ -68,6 +68,13 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
         "adapter_metadata",
         "native_capture",
         "native_inference",
+        # A chair shown several images of one page (DAI, one per record its own
+        # detector found): every image in order, `presented` being the first,
+        # each unit's retained model view (null where no response arrived), and
+        # each unit's retained call record (null where no request was sent).
+        "presentations",
+        "unit_captures",
+        "unit_call_refs",
     }
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
@@ -375,18 +382,25 @@ def validate_observed(
     page_size: tuple[int, int] | None = None,
     retained_text: Any = None,
     presentation_is_witness_view: bool = True,
+    unit_presentations: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Validate dense witness order, source-page boxes, and non-overlapping text spans.
 
     A span addresses this Testimonium's exact retained string in code points,
     never the normalized alignment view. It may be null, but it may not name an
     offset the record cannot answer, so every span stays checkable against
-    the record.
+    the record. A record shown one image per unit passes `unit_presentations`,
+    and each box is checked against its own unit's image, not the first.
     """
     if not isinstance(value, list):
         raise SchemaRefusal("a Testimonium observed block is not a list")
+    if unit_presentations is not None and len(unit_presentations) != len(value):
+        raise SchemaRefusal(
+            "a page Testimonium shown several images does not report one box per image"
+        )
     spans: list[tuple[int, int]] = []
     for index, item in enumerate(value):
+        shown = presented if unit_presentations is None else unit_presentations[index]
         if not isinstance(item, dict) or set(item) != _OBSERVED_ENTRY_FIELDS:
             raise SchemaRefusal("a Testimonium observed entry is not its closed schema")
         if not is_plain_int(item["ordinal"]) or item["ordinal"] != index:
@@ -396,17 +410,14 @@ def validate_observed(
             or item["bounds_source"] not in BOUNDS_SOURCES
         ):
             raise SchemaRefusal("a Testimonium observed box has an unknown bounds_source")
-        if (
-            item["bounds_source"] == "presented"
-            and item["bounds"] != presented["transform"]["bounds"]
-        ):
+        if item["bounds_source"] == "presented" and item["bounds"] != shown["transform"]["bounds"]:
             raise SchemaRefusal(
                 "a presented-source observed box differs from the presented transform"
             )
         bounds = _bounds(item["bounds"], "a Testimonium observed box", page_size=page_size)
         # A page witness's act view restates page-level geometry, so its boxes
         # may exceed this record's crop; they stay bounded by the sealed page.
-        presented_bounds = presented["transform"]["bounds"]
+        presented_bounds = shown["transform"]["bounds"]
         if presentation_is_witness_view and not _contains(presented_bounds, bounds):
             raise SchemaRefusal(
                 "a Testimonium observed box falls outside the exact image presentation. "
@@ -443,6 +454,44 @@ def validate_observed(
     return value
 
 
+def record_presentations(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every image one Testimonium's chair was shown, in order.
+
+    A record shown several images lists them all in `presentations`; any other
+    record was shown its one `presented` image, or nothing.
+    """
+    if "presentations" in payload:
+        presentations = payload["presentations"]
+        if not isinstance(presentations, list):
+            raise SchemaRefusal("a Testimonium's presentations is not a list")
+        return list(presentations)
+    presented = payload.get("presented")
+    return [presented] if presented else []
+
+
+def _validate_presentations(
+    payload: dict[str, Any], *, page_size: tuple[int, int] | None
+) -> list[dict[str, Any]]:
+    """A several-image page record: first equals `presented`, all crops of one page."""
+    presentations = payload["presentations"]
+    if payload.get("scope") != "page" or not isinstance(presentations, list) or not presentations:
+        raise SchemaRefusal(
+            "a Testimonium's presentations belong only to a page record shown at least one image"
+        )
+    if presentations[0] != payload.get("presented"):
+        raise SchemaRefusal("a page Testimonium's presented image is not its first presentation")
+    for presentation in presentations:
+        validate_presented(presentation, page_size=page_size)
+        if (
+            presentation["kind"] != "adapter-crop"
+            or presentation["source_page_id"] != (presentations[0]["source_page_id"])
+        ):
+            raise SchemaRefusal(
+                "a page Testimonium's presentations are not adapter crops of its one page"
+            )
+    return presentations
+
+
 def validate_native_witness_geometry(
     payload: Any, *, page_size: tuple[int, int] | None = None
 ) -> dict[str, Any]:
@@ -457,10 +506,15 @@ def validate_native_witness_geometry(
     presented = payload.get("presented")
     observed = payload.get("observed")
     if presented == {}:
-        if observed != []:
+        if observed != [] or "presentations" in payload:
             raise SchemaRefusal("an unpresented Testimonium must carry an empty observed block")
         return payload
     presented = validate_presented(presented, page_size=page_size)
+    unit_presentations = (
+        _validate_presentations(payload, page_size=page_size)
+        if "presentations" in payload
+        else None
+    )
     validate_observed(
         observed,
         presented=presented,
@@ -473,6 +527,7 @@ def validate_native_witness_geometry(
         presentation_is_witness_view=(
             payload.get("scope") == "page" or payload.get("page_witness") is not True
         ),
+        unit_presentations=unit_presentations,
     )
     return payload
 
@@ -582,23 +637,30 @@ def validate_unpresented_regions(payload: Any) -> list[str]:
 
 
 def unpresented_region_ids(
-    presented: dict[str, Any], proposal_regions: list[dict[str, Any]]
+    presented: dict[str, Any] | list[dict[str, Any]], proposal_regions: list[dict[str, Any]]
 ) -> list[str]:
-    """Re-derive which bound proposal crops fall outside one presented image.
+    """Re-derive which bound proposal crops fall outside every presented image.
 
-    The list is inapplicable to an empty presentation. For a real presentation,
-    a proposal is expressible by this record exactly when it lies wholly inside
-    the presentation's page-space bounds; changing presentation kind must not
+    Takes one presented block or a record's whole list of presentations. The
+    list is inapplicable to an empty presentation. For a real presentation, a
+    proposal is expressible by this record exactly when it lies wholly inside
+    one presentation's page-space bounds; changing presentation kind must not
     change that disclosure rule.
     """
-    if presented == {}:
+    presentations = presented if isinstance(presented, list) else [presented]
+    presentations = [item for item in presentations if item != {}]
+    if not presentations:
         return []
-    if not isinstance(presented, dict):
-        raise SchemaRefusal("a Testimonium presented block is not an object")
-    page_id = presented.get("source_page_id")
-    presented_bounds = presented.get("transform", {}).get("bounds")
-    if not isinstance(page_id, str) or not isinstance(presented_bounds, dict):
-        raise SchemaRefusal("a Testimonium presentation cannot locate its page-space bounds")
+    boxes: list[tuple[str, dict[str, int]]] = []
+    for item in presentations:
+        if not isinstance(item, dict):
+            raise SchemaRefusal("a Testimonium presented block is not an object")
+        page_id = item.get("source_page_id")
+        transform = item.get("transform")
+        presented_bounds = transform.get("bounds") if isinstance(transform, dict) else None
+        if not isinstance(page_id, str) or not isinstance(presented_bounds, dict):
+            raise SchemaRefusal("a Testimonium presentation cannot locate its page-space bounds")
+        boxes.append((page_id, presented_bounds))
 
     unpresented: list[str] = []
     for region in proposal_regions:
@@ -608,7 +670,10 @@ def unpresented_region_ids(
         region_id = payload.get("region_id") if isinstance(payload, dict) else None
         if not isinstance(region_id, str) or not region_id or not isinstance(bounds, dict):
             raise SchemaRefusal("a bound proposal region has no page-space identity to compare")
-        if not (transform.get("source_page_id") == page_id and _contains(presented_bounds, bounds)):
+        if not any(
+            transform.get("source_page_id") == page_id and _contains(box, bounds)
+            for page_id, box in boxes
+        ):
             unpresented.append(region_id)
     return unpresented
 
@@ -675,8 +740,61 @@ def validate_page_testimonium_payload(
             _validate_churro_page_health(payload, capture)
     if "native_inference" in payload:
         _validate_chandra_native_inference(payload)
+    if "unit_captures" in payload:
+        _validate_unit_captures(payload)
+    elif "presentations" in payload:
+        raise SchemaRefusal("a page Testimonium shown several images names no unit captures")
+    if "unit_call_refs" in payload:
+        _validate_unit_call_refs(payload, read_bytes)
+    elif "presentations" in payload:
+        raise SchemaRefusal("a page Testimonium shown several images names no unit call records")
     validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated
+
+
+def _validate_unit_captures(payload: dict[str, Any]) -> None:
+    """One retained model view per presentation, each bound to a retained response."""
+    captures = payload["unit_captures"]
+    presentations = payload.get("presentations")
+    if (
+        not isinstance(presentations, list)
+        or not isinstance(captures, list)
+        or len(captures) != len(presentations)
+    ):
+        raise SchemaRefusal("a page Testimonium names unit captures that are not one per image")
+    retained = payload.get("raw_response_refs") or []
+    for capture in captures:
+        if capture is None:
+            continue
+        checked = validate_native_capture(capture)
+        if checked["raw_response_ref"] not in retained:
+            raise SchemaRefusal(
+                "a page Testimonium unit capture names a response the record does not retain"
+            )
+
+
+def _validate_unit_call_refs(
+    payload: dict[str, Any], read_bytes: Callable[[str], bytes] | None
+) -> None:
+    """One retained call record per presentation, each a closed Attestatores blob."""
+    references = payload["unit_call_refs"]
+    presentations = payload.get("presentations")
+    if (
+        not isinstance(presentations, list)
+        or not isinstance(references, list)
+        or len(references) != len(presentations)
+    ):
+        raise SchemaRefusal("a page Testimonium names unit call records that are not one per image")
+    for reference in references:
+        if reference is None:
+            continue
+        digest_ref(reference, "a page Testimonium unit call record reference")
+        if reference["relative_path"] != _attestatores_blob_path(reference["sha256"]):
+            raise SchemaRefusal(
+                "a page Testimonium unit call record reference is not a closed blob reference"
+            )
+        if read_bytes is not None:
+            read_verified(read_bytes, reference, "page Testimonium unit call record")
 
 
 def _validate_churro_page_health(payload: dict[str, Any], capture: dict[str, Any]) -> None:
@@ -1076,9 +1194,63 @@ _NATIVE_CAPTURE_FIELDS: Final = frozenset(
         "parse",
     }
 )
-# Optional so earlier records stay valid; each adapter's tests require it for
-# that chair.
-_NATIVE_CAPTURE_OPTIONAL_FIELDS: Final = frozenset({"vendor_identity"})
+# `vendor_identity` is the vendor pin a chair's request carried, where it
+# carries one. `text_view` names the view a vendor grammar's parse was read
+# under; only an adapter and parser in `CAPTURE_TEXT_VIEWS` has one, and there it
+# is required whenever the bytes are re-derived.
+_NATIVE_CAPTURE_OPTIONAL_FIELDS: Final = frozenset({"vendor_identity", "text_view"})
+# The text view each vendor grammar's capture must name, by (adapter, parser),
+# and the views it retires. A capture made before its view was recorded, or
+# under a retired one, is refused by name whatever its parse state: its text and
+# findings are not what this build's parser reads from the same bytes.
+CAPTURE_TEXT_VIEWS: Final = {
+    ("chandra.v1", "html"): (
+        chandra_layout.LAYOUT_TEXT_VIEW,
+        chandra_layout.RETIRED_LAYOUT_TEXT_VIEWS,
+    ),
+    ("churro.v1", churro_document.CHURRO_PARSER): (
+        churro_document.CHURRO_TEXT_VIEW,
+        churro_document.RETIRED_CHURRO_TEXT_VIEWS,
+    ),
+}
+
+
+def capture_text_view(adapter: str, parser: str | None) -> str | None:
+    """The text view a capture of this adapter and parser records, if it records one."""
+    views = CAPTURE_TEXT_VIEWS.get((adapter, parser))
+    return None if views is None else views[0]
+
+
+def validate_capture_text_view(capture: dict[str, Any]) -> dict[str, Any]:
+    """Refuse a capture not read under this build's text view for its grammar, by name.
+
+    Called wherever a retained capture is reused or re-derived, so a capture
+    read under a retired view, or before views were recorded, is refused as
+    that rather than as a capture that differs from its own bytes.
+    """
+    views = CAPTURE_TEXT_VIEWS.get((capture["adapter"], capture["parse"].get("parser")))
+    if views is None:
+        return capture
+    current, retired = views
+    named = capture.get("text_view")
+    if named == current:
+        return capture
+    if named is None or named in retired:
+        read_under = (
+            "records no text view"
+            if named is None
+            else f"was read under the retired text view {named}, which this build no longer reads"
+        )
+        raise SchemaRefusal(
+            f"a {capture['adapter']} page capture {read_under}; this build reads {current}; "
+            "its text and findings are not this parser's; re-run the submission from the Door"
+        )
+    raise SchemaRefusal(
+        f"a {capture['adapter']} page capture names unknown text view {named!r}, not {current}; "
+        "re-run the submission from the Door"
+    )
+
+
 _VENDOR_IDENTITY_FIELDS: Final = frozenset({"repository", "sha", "carried_strings"})
 #: One parser name per vendor grammar: Chandra `html`, Churro `xml`, DAI `text`.
 #: Closed because re-derivation dispatches on the recorded name.
@@ -1092,13 +1264,14 @@ _ADMITTED_CAPTURE_PARSERS: Final = NATIVE_CAPTURE_PARSERS | _TRANSITIONAL_CAPTUR
 _NATIVE_CAPTURE_PARSE_STATES: Final = frozenset(
     {"not-requested", "pending", "parsed", "failed", "unrecognized-shape"}
 )
-#: Kept apart from the grammar's findings: a capture carries at most one of these.
-_CHURRO_REPETITION_FINDING_KINDS: Final = frozenset(
+#: The repetition scan's findings, which any native capture may carry. Kept
+#: apart from the grammar's findings: a capture carries at most one of these.
+REPETITION_FINDING_KINDS: Final = frozenset(
     {"post-hoc-repetition", "post-hoc-repetition-uninspected"}
 )
 #: The grammar's half is imported, not restated, so the two cannot drift.
 _CHURRO_CAPTURE_FINDING_KINDS: Final = (
-    _CHURRO_REPETITION_FINDING_KINDS | churro_document.DOCUMENT_FINDING_KINDS
+    REPETITION_FINDING_KINDS | churro_document.DOCUMENT_FINDING_KINDS
 )
 _CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
 # `eos`/`stop`/`max_new_tokens` are the fixture transport's words, `length` is
@@ -1116,12 +1289,24 @@ CHURRO_PARSERS: Final = frozenset({churro_document.CHURRO_PARSER})
 def parse_churro_response(raw: bytes, *, system_prompt: str | None = None) -> dict[str, Any]:
     """One Churro body, read under the vendor's own grammar and its two fallbacks.
 
-    Adds only the intake ceiling to `churro_document.parse_churro_document`.
+    Adds the intake ceiling to `churro_document.parse_churro_document`, and
+    closes the record it returns, so the capture writer and the Perlector's
+    page feed index a record of the declared shape or refuse it by name.
     `system_prompt` must be the exact string sent: trimming an echo of a
     framing that was not sent could cut real transcription.
     """
 
-    return churro_document.parse_churro_document(
+    return churro_document.validate_churro_document_parse(
+        churro_document.parse_churro_document(
+            raw, system_prompt=system_prompt, max_bytes=CHURRO_MAX_RESPONSE_BYTES
+        )
+    )
+
+
+def churro_text_outside_sections(raw: bytes, *, system_prompt: str | None = None) -> str:
+    """`churro_document.text_outside_sections` under the intake ceiling."""
+
+    return churro_document.text_outside_sections(
         raw, system_prompt=system_prompt, max_bytes=CHURRO_MAX_RESPONSE_BYTES
     )
 
@@ -1229,12 +1414,14 @@ def derive_churro_capture(
 
     parse: dict[str, Any] = {"state": "not-requested", "parser": None}
     findings: list[dict[str, Any]] = []
+    text_view: str | None = None
     if parser is not None:
         document = document_parser(raw, system_prompt=system_prompt)
         # Copied: an injected parser may hand back records it keeps.
         findings.extend(dict(finding) for finding in document["findings"])
         if document["state"] == "parsed":
             parse = {"state": "parsed", "parser": parser, "text": document["text"]}
+            text_view = document["view"]
         elif document["state"] == "failed":
             parse = {"state": "failed", "parser": parser, "reason": document["reason"]}
         else:
@@ -1254,13 +1441,17 @@ def derive_churro_capture(
     if finding := repetition_detector(inspected):
         findings.append({**finding, "inspected": basis})
         repeated = finding["kind"] == "post-hoc-repetition"
-    return {
+    derived = {
         "parse": parse,
         "findings": findings,
         "stop_reason": _churro_stop_reason(
             transport_stop_reason, parse["state"], repeated=repeated
         ),
     }
+    # The view the parser says it read under, where it read the document at all.
+    if text_view is not None:
+        derived["text_view"] = text_view
+    return derived
 
 
 def _churro_stop_reason(transport_stop_reason: str, parse_state: str, *, repeated: bool) -> str:
@@ -1288,8 +1479,12 @@ def churro_capture_system_prompt(capture: dict[str, Any]) -> str | None:
 
 
 def verify_native_capture_bytes(value: Any, raw: bytes) -> dict[str, Any]:
-    """Verify one capture's derived record against raw bytes already digest-checked."""
-    capture = validate_native_capture(value)
+    """Verify one capture's derived record against raw bytes already digest-checked.
+
+    A capture read under a text view this build no longer produces is refused by
+    that name first, rather than reported as differing from its bytes.
+    """
+    capture = validate_capture_text_view(validate_native_capture(value))
     if capture["adapter"] != "churro.v1":
         return capture
     derived = derive_churro_capture(
@@ -1352,16 +1547,14 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
         )
     if state not in {"parsed", "failed", "unrecognized-shape"} or parser not in CHURRO_PARSERS:
         raise SchemaRefusal("a retained Churro page capture has no terminal parse record")
-    repetitions = [
-        finding for finding in findings if finding["kind"] in _CHURRO_REPETITION_FINDING_KINDS
-    ]
+    repetitions = [finding for finding in findings if finding["kind"] in REPETITION_FINDING_KINDS]
     if len(repetitions) > 1:
         raise SchemaRefusal("a Churro page capture carries more than one repetition finding")
     for finding in findings:
         kind = finding["kind"]
         if kind not in _CHURRO_CAPTURE_FINDING_KINDS:
             raise SchemaRefusal(f"a Churro page capture has unknown finding kind {kind!r}")
-        if kind not in _CHURRO_REPETITION_FINDING_KINDS:
+        if kind not in REPETITION_FINDING_KINDS:
             # Grammar findings are held exactly by `verify_native_capture_bytes`.
             continue
         if kind == "post-hoc-repetition":
@@ -1504,8 +1697,17 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         raise SchemaRefusal(
             "a page Testimonium native capture claims an unrecognized shape without naming it"
         )
+    if "text_view" in value and not (
+        isinstance(value["text_view"], str) and value["text_view"].strip()
+    ):
+        raise SchemaRefusal("a page Testimonium native capture names a blank text view")
     if value["adapter"] == "churro.v1":
         _validate_churro_capture(value)
+    if "text_view" in value and (value["adapter"], parser) not in CAPTURE_TEXT_VIEWS:
+        raise SchemaRefusal(
+            f"a {value['adapter']} page capture under parser {parser!r} names text view "
+            f"{value['text_view']!r}, but that grammar's parse is read under no text view"
+        )
     return value
 
 

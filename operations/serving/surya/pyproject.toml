@@ -1,0 +1,21 @@
+# Surya's own environment. Surya pins Pillow and OpenCV versions the project's
+# environment cannot share, so it runs here, apart, through `runner.py`, and the
+# Designator reads only the JSON the runner writes. `uv.lock` pins every package
+# byte; the pod syncs it with `uv sync --locked` (operations/pod/README.md).
+#
+# Licence record (CONTRIBUTING.md):
+#   surya-ocr==0.22.1   Apache-2.0 (code)   github.com/datalab-to/surya
+# Its weights are fetched at run setup, never stored in this tree.
+[project]
+name = "verbatus-surya"
+version = "0.0.0"
+description = "Surya text-line and layout detection, run apart for the Designator"
+requires-python = "==3.12.*"
+dependencies = ["surya-ocr==0.22.1"]
+
+[tool.uv]
+required-version = "==0.12.1"
+# Nothing here is a package to build: the runner is a script.
+package = false
+# The pod is the one place this environment runs.
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]

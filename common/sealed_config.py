@@ -41,6 +41,11 @@ def parse_sealed_toml(
                 f"the {what} has unknown top-level field(s) {unknown}; an unread policy "
                 "field cannot be applied"
             )
+    return table, table_seal(table, what)
+
+
+def table_seal(table: Mapping[str, Any], what: str = "configuration") -> str:
+    """The seal of a parsed configuration table: the digest of what it says."""
     try:
         # Not `canonical_bytes`, which refuses floats: a decoding temperature is one.
         sealed = json.dumps(
@@ -52,7 +57,7 @@ def parse_sealed_toml(
         raise ContractError(
             f"the {what} holds NaN or infinity, which has no sealed form"
         ) from error
-    return table, digest_bytes(sealed.encode("utf-8"))
+    return digest_bytes(sealed.encode("utf-8"))
 
 
 def read_sealed_toml(

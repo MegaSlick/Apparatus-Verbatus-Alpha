@@ -248,7 +248,7 @@ def request_body(
     model_id: str,
     seed: int,
     deterministic: bool,
-    temperature: int | float | None = None,
+    sampling: Mapping[str, int | float] | None = None,
 ) -> bytes:
     """Render one request without allowing callers to lie about its target model."""
 
@@ -272,12 +272,11 @@ def request_body(
                     f"deterministic probe {field}={supplied!r}, expected {expected!r}"
                 )
             value[field] = expected
-    elif temperature is not None:
-        # A structural pass is permitted to use its separately sealed
-        # posture.  It still sends the serving profile's seed: sampling without
-        # the seed that actually governed it would leave the retained request
-        # unable to reproduce the observed variation.
-        for field, expected in (("temperature", temperature), ("seed", seed)):
+    elif sampling is not None:
+        # A chair's sealed sampling values go out with the seed that governed
+        # them: sampling without it would leave the retained request unable to
+        # reproduce the observed variation.
+        for field, expected in (*sampling.items(), ("seed", seed)):
             supplied = value.get(field)
             if supplied is not None and supplied != expected:
                 raise ServingConfigurationError(
@@ -297,16 +296,16 @@ def chandra_native_request_body(
     payload: Mapping[str, object],
     *,
     model_id: str,
-    temperature: float,
-    top_p: float,
+    sampling: Mapping[str, int | float],
 ) -> bytes:
     """Render only the admitted Chandra native request shape.
 
-    This deliberately has no seed argument.  The pinned upstream client sends
-    ``temperature`` and ``top_p`` per request and omits a per-request seed; the
-    serving receipt still records the server launch seed.  Keeping this as a
-    separate function prevents the exception from becoming an ambient switch
-    on :func:`request_body`.
+    This deliberately has no seed argument.  The pinned upstream client omits a
+    per-request seed; the serving receipt still records the server launch seed.
+    ``sampling`` is the attempt's sealed sampling row: the recipe's temperature
+    and top_p over the vLLM defaults the upstream client reads under.  Keeping
+    this as a separate function prevents the exception from becoming an ambient
+    switch on :func:`request_body`.
     """
 
     value = dict(payload)
@@ -315,19 +314,12 @@ def chandra_native_request_body(
         raise ServingConfigurationError(
             f"request named model {supplied!r}, not this service's exact id {model_id!r}"
         )
-    forbidden = sorted({"stream", "temperature", "top_p", "seed"} & set(value))
+    forbidden = sorted(({"stream", "seed"} | set(sampling)) & set(value))
     if forbidden:
         raise ServingConfigurationError(
             f"Chandra native request payload may not predeclare manager-owned {forbidden}"
         )
-    value.update(
-        {
-            "model": model_id,
-            "stream": False,
-            "temperature": temperature,
-            "top_p": top_p,
-        }
-    )
+    value.update({"model": model_id, "stream": False, **sampling})
     rendered = _canonical_json(value)
     assert_wire_part_order(json.loads(rendered), label=f"Chandra native request for {model_id}")
     return rendered

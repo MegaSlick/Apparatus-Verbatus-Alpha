@@ -73,6 +73,7 @@ from common.imaging import grayscale_rows  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
     unrouted_observations,
+    validate_capture_text_view,
     validate_page_testimonium_payload,
     validate_partition_disagreement,
     validate_reportable_observations,
@@ -102,6 +103,7 @@ from common.residual_ink import (  # noqa: E402
     residual_ink,
     resolve_coverage_audit_policy,
 )
+from common.sealed_config import read_sealed_toml  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -122,6 +124,7 @@ from common.stage import (  # noqa: E402
     require_current_witness_basis,
     run_stage,
     scenario_for,
+    sealed_decoding_policy,
     sealed_residual_presentation_policy,
     stage_manifest,
     stage_parser,
@@ -211,7 +214,9 @@ def audit_state(
     if reading["outcome"] == "failed" and "failure" in reading["payload"]:
         validate_failed_perlectio(context, reading, act_id, expected_act_key=expected_act_key)
         return None
-    chain = validate_chain(context.tree, reading, act_id)
+    chain = validate_chain(
+        context.tree, reading, act_id, decoding_policy=sealed_decoding_policy(context)[0]
+    )
     return {
         "unresolved": chain["record"]["unresolved"],
         "examination": chain["record"]["examination"],
@@ -724,9 +729,12 @@ def _verify_page_witness_entry(
     native_capture = page_payload.get("native_capture")
     if native_capture is not None:
         _verify_native_capture(context, act_id, chair, page_testimonium, native_capture)
-    # Native page outcomes are independent; legacy joins derive from act attempts.
+    # Native page outcomes are independent; legacy joins derive from act attempts. A
+    # page read one record at a time is a native page reading too.
     attachment_outcome = (
-        page_testimonium["outcome"] if native_capture is not None else outcomes.get(chair)
+        page_testimonium["outcome"]
+        if native_capture is not None or "presentations" in page_payload
+        else outcomes.get(chair)
     )
     # The floor is counted from this derivation, never from the record's boolean.
     derived_basis = page_attachment_basis(
@@ -808,6 +816,9 @@ def _verify_native_capture(
             f"act {act_id} page witness {chair!r} attributes its native capture to "
             "an adapter other than that chair's configured boundary"
         )
+    # A capture read under a text view this build does not read is refused as
+    # that, with its remedy, not as a capture that differs from its bytes.
+    validate_capture_text_view(native_capture)
     try:
         verify_native_capture_blob(context.tree, native_capture)
     except ContractError as error:
@@ -831,7 +842,11 @@ _ALIGNED_KEYS = frozenset(
         "deadline_in_force",
     }
 )
-_ANCHOR_BASES = frozenset({"act-anchor", "no-page-anchor", "act-line-not-located"})
+# `detector-record`: the act's slice is the records a page witness's own detector
+# found and this act owns, placed by geometry rather than by another chair's text.
+_ANCHOR_BASES = frozenset(
+    {"act-anchor", "no-page-anchor", "act-line-not-located", "detector-record"}
+)
 
 
 def _require_alignment_shape(act_id: str, chair: str, alignment: dict) -> None:
@@ -3389,10 +3404,28 @@ def _verify_ink_recovery_request(
         )
 
 
+def refuse_a_page_read_tree(context) -> None:
+    """Refuse, by name, a run whose sealed Perlector protocol reads whole pages.
+
+    Such a run's Perlector publishes page readings and the acts it established
+    from them, not a reading per Designator act, and nothing here counts those.
+    """
+    protocol, digest = read_sealed_toml(
+        context.perlector_protocol_config_path, "Perlector protocol declaration"
+    )
+    context.require_sealed_config("perlector-protocol", digest)
+    if protocol.get("reading_unit") == "page":
+        raise ContractError(
+            'the sealed Perlector protocol reads whole pages (reading_unit = "page"): '
+            "page-read trees are not yet counted downstream, so the Recensor stops here"
+        )
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(DESCRIPTION).parse_args()
     context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
+    refuse_a_page_read_tree(context)
     # Re-reading policy could publish an allowance the run never sealed.
     budget = context.recovery_policy
     context.require_sealed_config("recovery", budget["config_sha256"])

@@ -92,7 +92,11 @@ from common.contracts.outcomes import (  # noqa: E402
     ArmariumCategory,
     witness_coverage,
 )
-from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA, STOP_REASON_UNREPORTED  # noqa: E402
+from common.contracts.serving import (  # noqa: E402
+    CHAIR_CALL_RECORD_SCHEMA,
+    CHANDRA_NATIVE_CALL_RECORD_SCHEMA,
+    STOP_REASON_UNREPORTED,
+)
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
 from common.native_witness import reported_geometry_overlaps  # noqa: E402
@@ -114,6 +118,7 @@ from operations.serving.fakes import (  # noqa: E402
     FakePackages,
     ScriptedAnswer,
     scripted_input_too_long,
+    shipped_decoding_policy,
 )
 from operations.serving.http import chat_image_bytes_all  # noqa: E402
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
@@ -316,7 +321,8 @@ def _toml_profile(row: dict[str, Any]) -> str:
 def write_live_catalogue(path: Path, registry) -> Path:
     """Every chair this seam can serve, live, at every tier the placement file names.
 
-    The Designator keeps its fixture rows: this module's subject is the reading
+    The Designator keeps its fixture rows, and its Surya detector with it
+    (fixture rows answer only a fixture pass): this module's subject is the reading
     seam, and a live row for `designator_structure` would start its structure
     pass instead (`pipeline/2_designator/structure_pass.py`, exercised end to end
     in `pipeline/test_structure_chair_e2e.py`). Every other configured
@@ -326,11 +332,15 @@ def write_live_catalogue(path: Path, registry) -> Path:
     rows: list[dict[str, Any]] = [
         {
             "kind": "fixture",
-            "recipe": "fake-designator-v0",
-            "chair": "designator_structure",
+            "recipe": recipe,
+            "chair": chair,
             "tier": tier,
             "description": "offline walking-skeleton fixture row",
         }
+        for chair, recipe in (
+            ("designator_structure", "fake-designator-v0"),
+            ("designator_surya", "fake-surya-v0"),
+        )
         for tier in TIERS
     ]
     for index, chair in enumerate(LIVE_CHAIRS):
@@ -447,8 +457,13 @@ def invoke_stage(program: str, run_root: Path, catalogue: Path, *, placement_tie
     return result.returncode
 
 
-def run_in_process(module, run_root: Path, catalogue: Path, *, placement_tier, serving_factory):
+def run_in_process(
+    module, run_root: Path, catalogue: Path, *, placement_tier, serving_factory, **seams
+):
     """Call one stage's own `main` here, with the serving seam injected.
+
+    `seams` are any further in-process seams that stage's `main` takes, such
+    as the Designator's `surya_runner`.
 
     `main(serving_factory=…)` is the sanctioned in-process injection point and
     is not what makes a run live: the sealed row kind decides that, and this
@@ -463,7 +478,7 @@ def run_in_process(module, run_root: Path, catalogue: Path, *, placement_tier, s
     original = sys.argv
     sys.argv = argv
     try:
-        return module.main(serving_factory=serving_factory)
+        return module.main(serving_factory=serving_factory, **seams)
     finally:
         sys.argv = original
 
@@ -660,7 +675,7 @@ class WitnessWorld:
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=self.decoding_sha256,
-            record_temperature=0,
+            decoding_policy=shipped_decoding_policy()[0],
             # Bare, not through a converter: `ChairClient.__enter__` normalizes
             # the manager's read-only receipt reference itself.
             read_receipt=context.tree.read_run_receipt,
@@ -717,7 +732,7 @@ class ReaderWorld:
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
-            record_temperature=policy["reading_of_record"]["temperature"],
+            decoding_policy=policy,
             read_receipt=context.tree.read_run_receipt,
         )
 
@@ -911,7 +926,12 @@ def test_the_whole_live_roster_answered_through_its_own_scope(live_seam):
             "chair was ever asked; a live pass may not publish a declared answer"
         )
         call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
-        assert call["schema"] == CHAIR_CALL_RECORD_SCHEMA
+        # Attestator 1 reads its page along Chandra's own native recipe.
+        assert call["schema"] == (
+            CHANDRA_NATIVE_CALL_RECORD_SCHEMA
+            if chair == "attestator_1"
+            else CHAIR_CALL_RECORD_SCHEMA
+        )
         assert call["chair"] == chair
         # The witness half of "every reading names the exact bytes its engine
         # sent": chain record -> adapter output -> wire content -> served

@@ -924,6 +924,7 @@ def _write_protocol(tmp_path, **overrides):
         "page_shared_prefix_policy": protocol.PAGE_SHARED_PREFIX_POLICY,
         "pass_b_fragment": protocol.PASS_B_FRAGMENT,
         "max_images": 32,
+        "reading_unit": "act",
     }
     fields.update(overrides)
     path = tmp_path / "perlector_protocol.toml"

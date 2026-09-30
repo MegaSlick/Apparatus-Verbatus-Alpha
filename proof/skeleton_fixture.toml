@@ -82,6 +82,90 @@ y = 200
 w = 10
 h = 40
 
+[[surya_line]]
+page_ordinal = 1
+polygon = [[20, 20], [180, 20], [180, 40], [20, 40]]
+confidence_bp = 9000
+
+[[surya_line]]
+page_ordinal = 1
+polygon = [[20, 40], [180, 40], [180, 60], [20, 60]]
+confidence_bp = 9001
+
+[[surya_line]]
+page_ordinal = 1
+polygon = [[20, 60], [180, 60], [180, 80], [20, 80]]
+confidence_bp = 9002
+
+[[surya_line]]
+page_ordinal = 1
+polygon = [[20, 80], [180, 80], [180, 100], [20, 100]]
+confidence_bp = 9003
+
+[[surya_line]]
+page_ordinal = 1
+polygon = [[20, 120], [180, 120], [180, 140], [20, 140]]
+confidence_bp = 9100
+
+[[surya_line]]
+page_ordinal = 1
+polygon = [[20, 140], [180, 140], [180, 160], [20, 160]]
+confidence_bp = 9101
+
+[[surya_line]]
+page_ordinal = 1
+polygon = [[20, 160], [180, 160], [180, 180], [20, 180]]
+confidence_bp = 9102
+
+[[surya_line]]
+page_ordinal = 1
+polygon = [[20, 180], [180, 180], [180, 200], [20, 200]]
+confidence_bp = 9103
+
+[[surya_line]]
+page_ordinal = 1
+polygon = [[20, 200], [180, 200], [180, 220], [20, 220]]
+confidence_bp = 9104
+
+[[surya_line]]
+page_ordinal = 2
+polygon = [[20, 20], [180, 20], [180, 40], [20, 40]]
+confidence_bp = 9100
+
+[[surya_line]]
+page_ordinal = 2
+polygon = [[20, 40], [180, 40], [180, 60], [20, 60]]
+confidence_bp = 9101
+
+[[surya_line]]
+page_ordinal = 2
+polygon = [[20, 60], [180, 60], [180, 80], [20, 80]]
+confidence_bp = 9102
+
+[[surya_block]]
+page_ordinal = 1
+polygon = [[20, 20], [180, 20], [180, 100], [20, 100]]
+label = "Text"
+raw_label = "Text"
+position = 0
+confidence_bp = 9500
+
+[[surya_block]]
+page_ordinal = 1
+polygon = [[20, 120], [180, 120], [180, 220], [20, 220]]
+label = "Text"
+raw_label = "Text"
+position = 1
+confidence_bp = 9499
+
+[[surya_block]]
+page_ordinal = 2
+polygon = [[20, 20], [180, 20], [180, 80], [20, 80]]
+label = "Text"
+raw_label = "Text"
+position = 0
+confidence_bp = 9500
+
 [[prior_reading]]
 scenario = "happy"
 act_key = "a1"
@@ -837,6 +921,19 @@ scenario = "audit-reproof-cutoff"
 act_key = "a1"
 stop_reason = "length"
 pass_kind = "audit-reproof"
+
+# The fake Perlector's answer to a whole-page reading, one per scenario and page,
+# read only under reading_unit = "page". `answer` is the reply text exactly.
+
+[[page_answer]]
+scenario = "happy"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "happy"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
 
 # One declared provider RESPONSE per row: an empty body from that chair on
 # that act. The Attestatores derives `genuinely-empty` from the retained

@@ -122,6 +122,13 @@ than unrepresentable. A pending entry also refuses if its
 artifact-keyed snapshot or manifest exists, so replaying an older pending record
 cannot relabel acquired or lost bytes as “not yet fetched.”
 
+When the roster gains an artifact, a store written before it is upgraded rather
+than refused: `materialize_real_roster` publishes a new record version that adds
+each newly required artifact as `pending-fetch`, then fetches it. It does so
+only when every entry the older record names still matches the roster; any
+other shape is refused, and every reader other than the materializer still
+refuses the older record until it is upgraded.
+
 Every `present` entry also names `required_files`. The digest manifest remains
 the exact allow-list used when a chair cache fills, while `required_files` is
 the non-negotiable subset that must be present and nonempty. It includes the

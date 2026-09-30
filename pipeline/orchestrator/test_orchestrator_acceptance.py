@@ -119,10 +119,10 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # the ink map must confirm ink under it before it may spend a recovery or hold
 # an act; here it cannot, so a2 goes straight to a hold without a
 # second recovery round.
-HAPPY_SNAPSHOT_FILES = 98
-REVIEW_SNAPSHOT_FILES = 108
-HAPPY_RUN_TREE_DIGEST = "ff93bf0546c8bce0b8b4dabbf42cfd16aa1c3d07a4157d0f6a9fed61608445ff"
-REVIEW_RUN_TREE_DIGEST = "4fa565f67dd6379f23a457889bb7b2d7bfd652462a9167dc600ef704a4a45bb0"
+HAPPY_SNAPSHOT_FILES = 119
+REVIEW_SNAPSHOT_FILES = 129
+HAPPY_RUN_TREE_DIGEST = "298b1685276ae469f2bd0072e5cf0479f4811194514b9840ba3a7942a93c383f"
+REVIEW_RUN_TREE_DIGEST = "a82402dee525b96c11d8b2f927a06b3e28815035e49247a9bddc58216776465f"
 
 
 def orchestrate(
@@ -343,6 +343,7 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
         designator_grouping_config=ROOT / "config" / "designator_grouping.toml",
         alignment_config=ROOT / "config" / "alignment.toml",
+        page_accounting_config=ROOT / "config" / "page_accounting.toml",
         # `config/armarium_formats.toml` until now, which is a file that has
         # never existed: the Armarium's formats policy is `config/formats.toml`
         # (`common/armarium_formats.DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH`, which
@@ -419,9 +420,9 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
     """The actual subprocess route seals the selected real pair, not the defaults.
 
     The real roster carries measured manifest pins, while its serving catalogue
-    remains deliberately unproven.  Reaching that preflight refusal proves the
-    real roster passed its native-adapter boundary and that the Door sealed the
-    caller-selected catalogue before any model could run.  Catalogue row
+    remains deliberately unproven.  Reaching the Designator's preflight refusal
+    proves the real roster passed its native-adapter boundary and that the Door
+    sealed the caller-selected catalogue before any model could run.  Catalogue row
     completeness and unproven state are checked against these same literal files
     in ``operations/serving/test_manager.py``.
     """
@@ -447,7 +448,9 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
     )
 
     assert result.returncode == 2
-    assert "preflight must prove this exact profile before launch" in result.stderr
+    # The Designator's first refusal is its in-process record detector, checked before
+    # the structure chair starts; this host installs none of its pinned packages.
+    assert "the record detector is not ready" in result.stderr
     assert "pre-materialization sentinel" not in result.stderr
     assert "has no witness_adapter" not in result.stderr
     run_record = json.loads((run_root / "r" / "run.json").read_text(encoding="utf-8"))

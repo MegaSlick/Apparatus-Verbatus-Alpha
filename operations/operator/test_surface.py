@@ -5592,7 +5592,7 @@ def test_verdict_save_failure_says_the_verdict_was_not_saved(tmp_path, monkeypat
 # chair client is built in. Read from source below rather than
 # imported, since a stage module pulls the whole serving stack in behind it.
 _SERVING_STAGE_SOURCES = {
-    "designator": "pipeline/2_designator/structure_pass.py",
+    "designator": "pipeline/2_designator/run.py",
     "attestatores": "pipeline/3_attestatores/run.py",
     "perlector": "pipeline/4_perlector/run.py",
 }

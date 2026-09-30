@@ -23,10 +23,14 @@ digest alone cannot notice it, and ``manager._launchable`` refuses the
 mismatch at launch instead.
 
 A profile declares its ``kind``. ``vllm`` is a complete launch shape;
-``fixture`` is the offline walking skeleton's stand-in; and ``unsupported``
-keeps a configured real chair covered without inventing launch flags for an
-engine this package does not implement. The latter two carry no vLLM flags and
-must refuse by their actual cause before runtime checks.
+``in-process`` is a model the calling stage loads and runs itself, on the CPU,
+with no server (the record detector); ``subprocess`` is a detector its stage
+runs as a child process in its own pinned environment, on the CPU (Surya);
+``fixture`` is the offline walking
+skeleton's stand-in; and ``unsupported`` keeps a configured real chair covered
+without inventing launch flags for an engine this package does not implement.
+Every kind but ``vllm`` carries no vLLM flags and must refuse by its actual cause
+before runtime checks.
 """
 
 from __future__ import annotations
@@ -45,7 +49,6 @@ from common.chairs.models import (
     ModelsConfig,
     is_hf_revision,
     is_sha256,
-    is_witness_role,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
@@ -57,17 +60,45 @@ from .errors import ServingConfigurationError
 
 SCHEMA = "serving-recipes.v1"
 _TOP_LEVEL = {"schema", "profiles"}
-_KINDS = {"vllm", "fixture", "unsupported"}
-# 'vllm' pins vLLM's own defaults, applied uniformly regardless of chair.
-# 'auto' is admitted only for a witness (Attestator) row: it defers to the
-# exact generation_config.json the chair's own pinned revision ships, which
-# `manager._launch_audit` then digests from the verified snapshot so 'auto'
-# is a value pinned by that revision rather than an unaudited default that
-# could silently change underneath the row.
-_GENERATION_CONFIG_VALUES = {"vllm", "auto"}
+_KINDS = {"vllm", "in-process", "subprocess", "fixture", "unsupported"}
+# 'vllm' only: vLLM's 'auto' would fill a sampling field a request leaves out
+# from the model's generation_config.json, unseen on the wire. Every chair's
+# request carries its full sealed sampling row (`common.decoding`), so nothing
+# a reading samples under is left to a file.
+_GENERATION_CONFIG_VALUES = {"vllm"}
 _PROFILE_COMMON = {"kind", "recipe", "chair", "tier"}
 _FIXTURE_FIELDS = _PROFILE_COMMON | {"description"}
 _UNSUPPORTED_FIELDS = _PROFILE_COMMON | {"reason"}
+_IN_PROCESS_FIELDS = _PROFILE_COMMON | {
+    "engine",
+    "task",
+    "device",
+    "imgsz",
+    "conf_bp",
+    "iou_bp",
+    "max_det",
+    "required_packages",
+}
+# The one engine and device an in-process row may name today: the Ultralytics
+# runtime its record detector was trained with, run on the CPU so it never
+# shares a card with a served chair and its output does not vary with a GPU kernel.
+_IN_PROCESS_ENGINES = {"ultralytics": frozenset({"ultralytics", "torch"})}
+_IN_PROCESS_DEVICES = {"cpu"}
+_SUBPROCESS_FIELDS = _PROFILE_COMMON | {
+    "engine",
+    "environment",
+    "device",
+    "threads",
+    "startup_timeout_seconds",
+    "seconds_per_page",
+    "required_packages",
+}
+# The one engine a subprocess row may name, the packages its row pins, and the
+# pinned environment it runs in. CPU only: no card is shared with a served chair,
+# and the output does not vary with a GPU kernel.
+_SUBPROCESS_ENGINES = {"surya": frozenset({"surya-ocr", "torch"})}
+_SUBPROCESS_ENVIRONMENTS = {"surya": "operations/serving/surya"}
+_SUBPROCESS_DEVICES = {"cpu"}
 _PROFILE_FIELDS = {
     "kind",
     "recipe",
@@ -174,6 +205,77 @@ class UnsupportedProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class InProcessProfile:
+    """A model the calling stage loads and runs itself, with no serving process.
+
+    The row states every inference setting the stage passes, so a run's sealed
+    catalogue says what the detector was asked with. Scores and thresholds are
+    integer basis points, because the canonical writer refuses floats.
+    """
+
+    recipe: str
+    chair: str
+    tier: str
+    engine: str
+    task: str
+    device: str
+    imgsz: int
+    conf_bp: int
+    iou_bp: int
+    max_det: int
+    required_packages: Mapping[str, str]
+    kind: str = "in-process"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "required_packages", MappingProxyType(dict(self.required_packages))
+        )
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.recipe, self.chair, self.tier)
+
+
+@dataclass(frozen=True, slots=True)
+class SubprocessProfile:
+    """A detector its own stage runs as a child process, in a pinned environment.
+
+    Never launched by the serving manager and never on the card: the stage
+    starts it, on the CPU, with the stated thread count, and reads the JSON it
+    writes. ``required_packages`` are the versions that environment's lock
+    installs, checked against the environment before a run.
+
+    One process runs every page, so the models load once: the version check
+    and the model load get ``startup_timeout_seconds``, and a run over ``n``
+    pages gets that plus ``n * seconds_per_page``.
+    """
+
+    recipe: str
+    chair: str
+    tier: str
+    engine: str
+    environment: str
+    device: str
+    threads: int
+    startup_timeout_seconds: int
+    seconds_per_page: int
+    required_packages: Mapping[str, str]
+    kind: str = "subprocess"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "required_packages", MappingProxyType(dict(self.required_packages))
+        )
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.recipe, self.chair, self.tier)
+
+    def run_timeout_seconds(self, pages: int) -> int:
+        return self.startup_timeout_seconds + pages * self.seconds_per_page
+
+
+@dataclass(frozen=True, slots=True)
 class ServingProfile:
     """One complete vLLM flag profile for one chair at one GPU tier.
 
@@ -234,13 +336,16 @@ class ServingProfile:
 class ServingRecipes:
     """The complete closed serving-profile catalogue."""
 
-    profiles: tuple["ServingProfile | FixtureProfile | UnsupportedProfile", ...]
+    profiles: tuple[
+        "ServingProfile | InProcessProfile | SubprocessProfile | FixtureProfile | UnsupportedProfile",
+        ...,
+    ]
     source_path: Path | None = None
     source_sha256: str | None = None
 
     def for_identity(
         self, identity: ChairIdentity, tier: str
-    ) -> "ServingProfile | FixtureProfile | UnsupportedProfile":
+    ) -> "ServingProfile | InProcessProfile | SubprocessProfile | FixtureProfile | UnsupportedProfile":
         """Return the only profile configured for this identity and tier.
 
         This is lookup, not a ranking or fallback: zero or multiple matches are
@@ -439,7 +544,9 @@ def profile_preflight_digest(raw: Mapping[str, Any]) -> str:
         ) from error
 
 
-def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedProfile":
+def _parse_profile(
+    raw: Any,
+) -> "ServingProfile | InProcessProfile | SubprocessProfile | FixtureProfile | UnsupportedProfile":
     if not isinstance(raw, dict):
         raise ServingConfigurationError("each serving profile must be a table")
     kind = raw.get("kind")
@@ -449,6 +556,10 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
         )
     if kind == "fixture":
         return _parse_fixture_profile(raw)
+    if kind == "in-process":
+        return _parse_in_process_profile(raw)
+    if kind == "subprocess":
+        return _parse_subprocess_profile(raw)
     if kind == "unsupported":
         unknown = sorted(set(raw) - _UNSUPPORTED_FIELDS)
         missing = sorted(_UNSUPPORTED_FIELDS - set(raw))
@@ -515,14 +626,6 @@ def _parse_profile(raw: Any) -> "ServingProfile | FixtureProfile | UnsupportedPr
         raise ServingConfigurationError(
             f"generation_config must be one of {sorted(_GENERATION_CONFIG_VALUES)}, not "
             f"{generation_config!r}"
-        )
-    if generation_config == "auto" and not is_witness_role(chair):
-        raise ServingConfigurationError(
-            f"generation_config='auto' is admitted only for witness (Attestator) rows; "
-            f"chair {chair!r} is not a witness role. A witness's vendor-shipped "
-            "generation_config.json is itself the pinned profile (by the chair's "
-            "revision); the Perlector and Designator rows carry no vendor generation "
-            "defaults to defer to and must stay 'vllm'"
         )
     preflight_state = _text(raw["preflight_state"], "preflight_state")
     if preflight_state not in {"unproven", "proven"}:
@@ -621,8 +724,113 @@ def _parse_fixture_profile(raw: Mapping[str, Any]) -> FixtureProfile:
     )
 
 
+def _parse_in_process_profile(raw: Mapping[str, Any]) -> InProcessProfile:
+    """An in-process row names its engine, device and every inference setting."""
+
+    unknown = sorted(set(raw) - _IN_PROCESS_FIELDS)
+    missing = sorted(_IN_PROCESS_FIELDS - set(raw))
+    if unknown or missing:
+        raise ServingConfigurationError(
+            f"in-process serving profile has unknown field(s) {unknown} or missing field(s) "
+            f"{missing}"
+        )
+    engine = _text(raw["engine"], "engine")
+    if engine not in _IN_PROCESS_ENGINES:
+        raise ServingConfigurationError(
+            f"in-process engine must be one of {sorted(_IN_PROCESS_ENGINES)}, not {engine!r}"
+        )
+    device = _text(raw["device"], "device")
+    if device not in _IN_PROCESS_DEVICES:
+        raise ServingConfigurationError(
+            f"in-process device must be one of {sorted(_IN_PROCESS_DEVICES)}, not {device!r}"
+        )
+    task = _text(raw["task"], "task")
+    if task != "obb":
+        raise ServingConfigurationError(f"in-process task must be 'obb', not {task!r}")
+    raw_packages = raw["required_packages"]
+    if not isinstance(raw_packages, dict) or set(raw_packages) != _IN_PROCESS_ENGINES[engine]:
+        raise ServingConfigurationError(
+            f"an in-process {engine} row pins exactly {sorted(_IN_PROCESS_ENGINES[engine])}"
+        )
+    packages = {
+        package: _text(version, f"required_packages.{package}")
+        for package, version in raw_packages.items()
+    }
+    basis_points = {}
+    for name in ("conf_bp", "iou_bp"):
+        value = _nonnegative_int(raw[name], name)
+        if value > 10_000:
+            raise ServingConfigurationError(f"{name} must be at most 10000 basis points")
+        basis_points[name] = value
+    return InProcessProfile(
+        recipe=_text(raw["recipe"], "recipe"),
+        chair=_text(raw["chair"], "chair"),
+        tier=_text(raw["tier"], "tier"),
+        engine=engine,
+        task=task,
+        device=device,
+        imgsz=_positive_int(raw["imgsz"], "imgsz"),
+        conf_bp=basis_points["conf_bp"],
+        iou_bp=basis_points["iou_bp"],
+        max_det=_positive_int(raw["max_det"], "max_det"),
+        required_packages=packages,
+    )
+
+
+def _parse_subprocess_profile(raw: Mapping[str, Any]) -> SubprocessProfile:
+    """A subprocess row names its engine, environment, device, threads and pins."""
+
+    unknown = sorted(set(raw) - _SUBPROCESS_FIELDS)
+    missing = sorted(_SUBPROCESS_FIELDS - set(raw))
+    if unknown or missing:
+        raise ServingConfigurationError(
+            f"subprocess serving profile has unknown field(s) {unknown} or missing field(s) "
+            f"{missing}"
+        )
+    engine = _text(raw["engine"], "engine")
+    if engine not in _SUBPROCESS_ENGINES:
+        raise ServingConfigurationError(
+            f"subprocess engine must be one of {sorted(_SUBPROCESS_ENGINES)}, not {engine!r}"
+        )
+    environment = _text(raw["environment"], "environment")
+    if environment != _SUBPROCESS_ENVIRONMENTS[engine]:
+        raise ServingConfigurationError(
+            f"the {engine} engine runs in {_SUBPROCESS_ENVIRONMENTS[engine]!r}, not {environment!r}"
+        )
+    device = _text(raw["device"], "device")
+    if device not in _SUBPROCESS_DEVICES:
+        raise ServingConfigurationError(
+            f"subprocess device must be one of {sorted(_SUBPROCESS_DEVICES)}, not {device!r}"
+        )
+    raw_packages = raw["required_packages"]
+    if not isinstance(raw_packages, dict) or set(raw_packages) != _SUBPROCESS_ENGINES[engine]:
+        raise ServingConfigurationError(
+            f"a subprocess {engine} row pins exactly {sorted(_SUBPROCESS_ENGINES[engine])}"
+        )
+    return SubprocessProfile(
+        recipe=_text(raw["recipe"], "recipe"),
+        chair=_text(raw["chair"], "chair"),
+        tier=_text(raw["tier"], "tier"),
+        engine=engine,
+        environment=environment,
+        device=device,
+        threads=_positive_int(raw["threads"], "threads"),
+        startup_timeout_seconds=_positive_int(
+            raw["startup_timeout_seconds"], "startup_timeout_seconds"
+        ),
+        seconds_per_page=_positive_int(raw["seconds_per_page"], "seconds_per_page"),
+        required_packages={
+            package: _text(version, f"required_packages.{package}")
+            for package, version in raw_packages.items()
+        },
+    )
+
+
 def _validate_catalogue(
-    profiles: tuple["ServingProfile | FixtureProfile | UnsupportedProfile", ...],
+    profiles: tuple[
+        "ServingProfile | InProcessProfile | SubprocessProfile | FixtureProfile | UnsupportedProfile",
+        ...,
+    ],
 ) -> None:
     keys = [profile.key for profile in profiles]
     if len(keys) != len(set(keys)):
@@ -630,8 +838,8 @@ def _validate_catalogue(
     endpoint_chairs: dict[tuple[str, int], set[str]] = {}
     served_chairs: dict[str, set[str]] = {}
     for profile in profiles:
-        # Fixture and unsupported rows own neither endpoint nor API alias;
-        # applying launch-only collision rules would invent serving claims.
+        # Only a vLLM row owns an endpoint and an API alias; applying these
+        # launch-only collision rules to any other kind would invent serving claims.
         if not isinstance(profile, ServingProfile):
             continue
         endpoint_chairs.setdefault((profile.host, profile.port), set()).add(profile.chair)

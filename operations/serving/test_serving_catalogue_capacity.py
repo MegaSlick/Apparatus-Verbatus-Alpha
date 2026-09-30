@@ -395,20 +395,20 @@ SHAPES = {
     "dense over a page turn, half-page crops, fed prior": (
         [(LETTER, [BOTTOM]), (LETTER, [TOP])],
         PRIOR,
-        (31514, True),
-        (31514, True),
+        (31515, True),
+        (31515, True),
     ),
     "dense over a page turn, a whole-page recovery crop, fed prior": (
         [(LETTER, [BOTTOM]), (LETTER, [TOP, WHOLE])],
         PRIOR,
-        (36617, False),
-        (36617, False),
+        (36618, True),
+        (36618, True),
     ),
     "three pages, whole-page crops": (
         [(LETTER, [WHOLE])] * 3,
         None,
-        (34967, False),
-        (34967, False),
+        (34967, True),
+        (34967, True),
     ),
 }
 
@@ -419,9 +419,10 @@ def test_each_pinned_request_shape_against_the_row_under_both_page_renders(name)
 
     A page the act's crops cover whole, and every page of an act spanning more than
     one page, is rendered at the layout edge, so each shape here costs exactly what
-    it did at 1,024: the page render refuses no act the old render admitted. The two
-    shapes the row does not hold were refused at 1,024 too. Every gold act fits
-    under both (`operations/corpus/perlector_request_fit.py`).
+    it did at 1,024: the page render refuses no act the old render admitted. The
+    row's 65,536-token context, sized for a whole-page reading, holds every shape
+    here, the whole-page recovery crop and the three-page act included. Every gold
+    act fits under both (`operations/corpus/perlector_request_fit.py`).
     """
     pages, prior, sealed_rule, old = SHAPES[name]
     row, sealed = fit.perlector_row(), fit.sealed_protocol()
@@ -435,7 +436,7 @@ def test_each_pinned_request_shape_against_the_row_under_both_page_renders(name)
     before = fit.request_record(row, sealed, edge=fit.OLD_EDGE, **arguments)
     assert (now["need"], now["fits"]) == sealed_rule
     assert (before["need"], before["fits"]) == old
-    assert row.max_model_len == 32768
+    assert row.max_model_len == 65536
 
 
 def test_a_legible_render_stays_inside_the_rows_pixel_bound():

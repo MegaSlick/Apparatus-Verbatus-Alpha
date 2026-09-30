@@ -448,7 +448,7 @@ class RunPlan:
         selected = set(self.selected_stages())
         roles: set[str] = set()
         if "designator" in selected:
-            roles.update(("designator_structure", "secondary_proposer"))
+            roles.update(("designator_structure", "secondary_proposer", "designator_surya"))
         if selected & {"perlector", "recovery"}:
             roles.add("perlector")
         try:
@@ -463,6 +463,18 @@ class RunPlan:
         if configured_only:
             roles = {role for role in roles if isinstance(configured.get(role), ChairIdentity)}
         return roles
+
+
+def _receipt_chairs(receipt: object, field: str, *, state: str | None = None) -> set[str]:
+    """The chairs one PREFLIGHT receipt list names, optionally in one placement state."""
+    rows = receipt.get(field) if isinstance(receipt, dict) else None
+    if not isinstance(rows, list):
+        return set()
+    return {
+        row.get("chair")
+        for row in rows
+        if isinstance(row, dict) and (state is None or row.get("state") == state)
+    }
 
 
 def _named(value: Path | None, flag: str) -> Path:
@@ -1221,10 +1233,23 @@ def main(
             if isinstance(smokes, list)
             else set()
         )
-        missing = plan.required_chairs(configured_only=True) - smoked
+        required = plan.required_chairs(configured_only=True)
+        # A chair its own stage runs has no engine to smoke-read. An in-process
+        # chair shows its verified cache; a subprocess chair (Surya) its verified
+        # cache and the receipt of its own runner reading the golden page.
+        in_process = required & _receipt_chairs(receipt, "placements", state="in-process")
+        subprocess_run = required & _receipt_chairs(receipt, "placements", state="subprocess")
+        cached = _receipt_chairs(receipt, "cache_receipts")
+        measured = _receipt_chairs(receipt, "subprocess_receipts")
+        missing = (
+            (required - in_process - subprocess_run - smoked)
+            | ((in_process | subprocess_run) - cached)
+            | (subprocess_run - measured)
+        )
         if missing:
             raise RunRefusal(
-                f"selection needs a chair without a green PREFLIGHT smoke receipt: {sorted(missing)}"
+                "selection needs a chair without green PREFLIGHT evidence (a smoke receipt, "
+                f"or a verified cache and, for a subprocess chair, its run): {sorted(missing)}"
             )
     except RunRefusal as refusal:
         refusal.report_path = plan.report_path

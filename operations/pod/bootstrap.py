@@ -97,6 +97,25 @@ PREFLIGHT and fails on a missing pin *after* the ten-gigabyte download.
 UV_CACHE_REQUIRED_BYTES = 12 * 1024**3
 REPOSITORY_VENV_REQUIRED_BYTES = 20 * 1024**3
 
+SURYA_ENVIRONMENT = "operations/serving/surya"
+"""Surya's own uv project, synced beside the project's environment when a
+subprocess serving row for a configured chair runs in it.
+
+Surya pins Pillow and OpenCV versions the project cannot share, so the
+Designator runs it through this environment's interpreter
+(``operations/serving/surya/README.md``); preflight runs that interpreter once
+on the golden page.
+"""
+# What syncing each subprocess environment adds to the container disk: its uv
+# cache and its installed venv. Surya's lock sums to 2.9 GiB of linux x86_64
+# wheels (torch 2.14.0 and its CUDA libraries are most of it), but uv's cache
+# keeps wheels unpacked, so both copies are about the installed size: 5.6 GiB,
+# measured on a synced environment on a development machine. The bounds allow
+# for no sharing with the project's own cache, like the two above.
+SUBPROCESS_ENVIRONMENT_REQUIRED_BYTES = {
+    SURYA_ENVIRONMENT: {"uv_cache": 7 * 1024**3, "venv": 7 * 1024**3},
+}
+
 
 def _existing_ancestor(path: Path) -> Path:
     """The nearest existing directory at or above ``path``.
@@ -886,8 +905,12 @@ class SubprocessBootstrapActions:
         environment: Mapping[str, str] = BOOTSTRAP_ENVIRONMENT,
         image_contract: Callable[[], dict[str, object]] | None = None,
         free_bytes: Callable[[Path], int] | None = None,
+        subprocess_environments: Callable[[], frozenset[str]] = frozenset,
     ) -> None:
         self.repository = Path(repository)
+        # Read after checkout, like the roster the stages read: the environments
+        # the checked-out catalogue's subprocess rows run in, for configured chairs.
+        self.subprocess_environments = subprocess_environments
         self.transfer = transfer
         self.configuration = configuration
         self.materialize = materialize_model_store
@@ -1067,7 +1090,27 @@ class SubprocessBootstrapActions:
                 f"lockfile {supplied_lockfile} is missing",
                 "Restore the pinned uv.lock before creating an environment.",
             )
-        self._require_container_disk()
+        environments = sorted(self.subprocess_environments())
+        unknown = [
+            name for name in environments if name not in SUBPROCESS_ENVIRONMENT_REQUIRED_BYTES
+        ]
+        if unknown:
+            raise BootstrapStepFailure(
+                BootstrapStep.UV_ENVIRONMENT,
+                f"subprocess environment(s) {unknown} have no disk bound in this bootstrap",
+                "Measure the environment and add its bound before syncing it on a pod.",
+            )
+        lockfiles = {name: self.repository / name / "uv.lock" for name in environments}
+        for name, environment_lockfile in lockfiles.items():
+            if not environment_lockfile.is_file():
+                raise BootstrapStepFailure(
+                    BootstrapStep.UV_ENVIRONMENT,
+                    f"the lockfile of subprocess environment {name}, {environment_lockfile}, "
+                    "is missing",
+                    "Restore the pinned checkout; a subprocess environment is synced from its "
+                    "own uv.lock.",
+                )
+        self._require_container_disk(environments)
         # `--group pod` is the serving stack: vLLM, transformers, qwen-vl-utils and
         # everything they drag in, including torch and the CUDA libraries. It is
         # named here and nowhere else, because the pod is the only machine that may
@@ -1088,14 +1131,29 @@ class SubprocessBootstrapActions:
             ["uv", "sync", "--locked", "--group", "pod"],
             BootstrapStep.UV_ENVIRONMENT,
         )
+        # Each subprocess environment, from its own committed lock, so preflight
+        # finds the interpreter its row runs.
+        for name in environments:
+            self._command(
+                ["uv", "sync", "--locked", "--project", name],
+                BootstrapStep.UV_ENVIRONMENT,
+            )
         return {
             "lockfile": str(supplied_lockfile),
             "sha256": hashlib.sha256(supplied_lockfile.read_bytes()).hexdigest(),
             "mode": "locked",
             "groups": ["pod"],
+            "subprocess_environments": [
+                {
+                    "environment": name,
+                    "lockfile": str(lockfiles[name]),
+                    "sha256": hashlib.sha256(lockfiles[name].read_bytes()).hexdigest(),
+                }
+                for name in environments
+            ],
         }
 
-    def _require_container_disk(self) -> None:
+    def _require_container_disk(self, environments: list[str]) -> None:
         """Refuse a sync the container-local disk cannot hold, before it starts.
 
         The create request states a container disk size, but nothing proves the
@@ -1122,6 +1180,12 @@ class SubprocessBootstrapActions:
         # this check cannot name. The venv is still checked, and it is the
         # larger of the two.
         wanted[venv_path] = wanted.get(venv_path, 0) + REPOSITORY_VENV_REQUIRED_BYTES
+        for name in environments:
+            bound = SUBPROCESS_ENVIRONMENT_REQUIRED_BYTES[name]
+            if cache_directory:
+                wanted[Path(cache_directory)] += bound["uv_cache"]
+            environment_venv = self.repository / name / REPOSITORY_VENV_DIRECTORY
+            wanted[environment_venv] = wanted.get(environment_venv, 0) + bound["venv"]
         shared: dict[int, int] = {}
         for path, required in wanted.items():
             try:
@@ -1143,7 +1207,8 @@ class SubprocessBootstrapActions:
                     f"container-local disk is too small for the serving stack: "
                     f"{_gib(free)} GiB free under {path}, and this sync needs about "
                     f"{_gib(shared[key])} GiB there (the wheel cache and the installed "
-                    f"{REPOSITORY_VENV_DIRECTORY} are two copies of it)",
+                    f"{REPOSITORY_VENV_DIRECTORY}, and those of any subprocess environment, "
+                    "are two copies of it)",
                     "Create the pod with a larger container disk (container_disk_gb in "
                     "the pod request) and boot again; uv would otherwise fill this disk "
                     "part way through the download and fail with no space left.",

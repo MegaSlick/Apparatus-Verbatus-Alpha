@@ -42,7 +42,7 @@ EXPECTED_VOCABULARY_SIZES = {
     "ink-map": 5,
     "designator": 6,
     "attestatores": 8,
-    "perlector": 7,
+    "perlector": 8,
     "recensor": 7,
     "archetypus": 4,
     "armarium": 7,

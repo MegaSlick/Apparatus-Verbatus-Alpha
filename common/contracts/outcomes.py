@@ -223,6 +223,9 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
         "truncated": _C.FAILED,
         "failed": _C.FAILED,
         "not-run": _C.UNRESOLVED,
+        # A whole-page reading, or one entry of it, kept for review: read, but
+        # not accepted as it stands (`pipeline/4_perlector/page_run.py`).
+        "held": _C.UNRESOLVED,
     },
     RECENSOR: {
         "accepted": _C.COMPLETED,
@@ -300,6 +303,7 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (PERLECTOR, "truncated"): None,
     (PERLECTOR, "failed"): None,
     (PERLECTOR, "not-run"): None,
+    (PERLECTOR, "held"): None,
     (RECENSOR, "accepted"): None,
     (RECENSOR, "recovery-requested"): None,
     (RECENSOR, "confirmed-blank"): _A.CONFIRMED_BLANK,

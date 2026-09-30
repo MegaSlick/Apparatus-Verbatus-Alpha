@@ -1,7 +1,7 @@
 """Unit 2: a run's decoding posture is sealed at creation and named if it moves.
 
-`config/decoding.toml` is the reading-of-record's temperature and the labelled
-variance experiment's seed and pass count. It joins the sealing family: its
+`config/decoding.toml` is every reading chair's sampling values and the
+labelled variance experiment's seed and pass count. It joins the sealing family: its
 exact bytes are digested into `config_digest`, filed under `decoding` in
 `sealed_config_digests`, and re-read at each point of use.
 
@@ -76,9 +76,9 @@ def test_a_run_seals_the_exact_decoding_bytes_it_was_created_under(tmp_path):
     [
         pytest.param("malformed", "is not valid TOML", id="not-toml"),
         pytest.param(
-            "temperature",
-            "decoding reading_of_record must declare temperature 0",
-            id="nonzero-temperature",
+            "sampling",
+            "decoding chair_decoding.perlector has unknown field(s) ['do_sample']",
+            id="unknown-sampling-field",
         ),
         pytest.param(
             "legacy",
@@ -101,8 +101,10 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, change:
     source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
     body = {
         "malformed": "temperature = ",
-        "temperature": source.replace("temperature = 0", "temperature = 0.7", 1),
-        "legacy": source.replace('schema = "decoding.v4"', 'schema = "decoding.v3"', 1),
+        "sampling": source.replace(
+            "[chair_decoding.perlector]\n", "[chair_decoding.perlector]\ndo_sample = true\n", 1
+        ),
+        "legacy": source.replace('schema = "decoding.v5"', 'schema = "decoding.v3"', 1),
     }[change]
     substitute.write_text(body, encoding="utf-8")
     run_root = tmp_path / "runs"
@@ -111,7 +113,7 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, change:
 
     assert refused.returncode != 0, what
     # The named cause, not merely a refusal: an unparseable file and a policy
-    # that parses but declares a temperature this build will not read are two
+    # that parses but declares a field this build will not read are two
     # different operator problems, and the message has to say which one it is.
     assert what in refused.stderr, refused.stderr
     assert "No run or stage artifact was written" in refused.stderr, refused.stderr

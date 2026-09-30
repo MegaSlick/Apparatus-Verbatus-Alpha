@@ -49,7 +49,6 @@ import feeding  # noqa: E402
 from common import chandra_layout  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.chandra_native_retry import recipe_record  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA  # noqa: E402
 from common.contracts.stages import ATTESTATORES  # noqa: E402
@@ -79,6 +78,7 @@ from operations.serving.fakes import (  # noqa: E402
     FakeRegistry,
     ScriptedAnswer,
     scripted_prompt_too_long,
+    shipped_decoding_policy,
 )
 from operations.serving.manager import (  # noqa: E402
     ServingManager,
@@ -245,13 +245,15 @@ def _toml_profile(row: dict[str, Any]) -> str:
 def write_live_catalogue(path: Path, registry, *, contexts: dict[str, int] | None = None) -> Path:
     """A serving catalogue whose witness rows are live, sealed into this run.
 
-    The two non-witness chairs keep fixture rows: this run's Designator and
-    Perlector are not what the Attestatores reads, and inventing live rows for
-    them would put figures nobody measured beside chairs nothing starts.
+    The non-witness chairs keep fixture rows: this run's Designator (with its
+    Surya detector) and Perlector are not what the Attestatores reads, and
+    inventing live rows for them would put figures nobody measured beside
+    chairs nothing starts.
     """
     rows: list[dict[str, Any]] = []
     for chair, recipe in (
         ("designator_structure", "fake-designator-v0"),
+        ("designator_surya", "fake-surya-v0"),
         ("perlector", "fake-perlector-v0"),
     ):
         rows.extend(
@@ -505,9 +507,8 @@ class LiveWorld:
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=self.live_run.decoding_sha256,
-            record_temperature=0,
+            decoding_policy=shipped_decoding_policy()[0],
             read_receipt=lambda reference: context.tree.read_run_receipt(dict(reference)),
-            chandra_native_policy=recipe_record(),
         )
 
     def requests(self, chair: str) -> list[dict[str, object]]:
@@ -1079,7 +1080,8 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
     payload = act_records(tree)[("a1", "attestator_2")]["payload"]
     view = payload["native_capture"]["view"]
     assert payload["native_capture"]["adapter"] == "dai.v1"
-    assert view["adapter"] == "dai-atr.v1"
+    assert view["adapter"] == "dai-atr.v2"
+    assert view["generation_accounting"] == feeding.dai_generation_accounting()
     # `feeding.dai_model_view` already refuses either mismatched state (a
     # resize whose digests still agree, or a claimed identity whose digests
     # differ -- feeding.py), so a persisted view's kind and digest relation
@@ -1104,15 +1106,16 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
     assert tree.read_bytes(view["prompts"]["system"]["relative_path"]).decode() == prompt["system"]
     assert tree.read_bytes(view["prompts"]["query"]["relative_path"]).decode() == prompt["user"]
     # And the call record carries the vendor's own declared values, floats
-    # included, beside everything that actually went on the wire: the three
-    # allow-listed decoding values, the bound derived from the sealed row, and
-    # the second EOS id `generation_config = "vllm"` never reads.
+    # included, beside everything that actually went on the wire: DAI's sealed
+    # sampling row, the bound derived from the sealed serving row, and the
+    # second EOS id sent as well as read by the engine from the pinned file.
     call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
     declared = feeding.dai_generation()
     assert set(call["generation_sent"]) == {
         "repetition_penalty",
         "top_k",
         "top_p",
+        "min_p",
         "max_tokens",
         "stop_token_ids",
         "seed",
@@ -1120,7 +1123,7 @@ def test_the_act_scoped_chair_records_its_own_crop_prompt_and_generation_view(li
     }
     assert call["generation_sent"]["stop_token_ids"] == [151643]
     assert call["generation_sent"]["seed"] == 7
-    assert call["generation_sent"]["temperature"] == 0
+    assert call["generation_sent"]["temperature"] == {"schema": "wire-decimal.v1", "decimal": "0.1"}
     # DAI's declared ceiling (1,024) is strictly below what any shipped row
     # leaves after its image and prompt tokens, so it is always the vendor
     # bound that binds here, exactly -- never merely an upper bound on it.
@@ -2096,6 +2099,63 @@ def test_a_damaged_native_capture_is_a_named_refusal_not_a_keyerror():
         )
 
 
+def _v1_chandra_capture() -> dict:
+    """A Chandra capture sealed under the retired text view, which dropped a
+    `Blank-Page` block's text."""
+    reference = {"relative_path": "3_attestatores/blobs/sha256/" + "a" * 64, "sha256": "a" * 64}
+    return {
+        "schema": "attestatores-model-view.v1",
+        "adapter": "chandra.v1",
+        "view": {},
+        "transport_stop_reason": "stop",
+        "stop_reason": "stop",
+        "findings": [],
+        "parse": {"state": "parsed", "parser": "html", "text": "read"},
+        "raw_response_ref": reference,
+        "text_view": "chandra-layout-text.v1",
+    }
+
+
+def _refuse_read(relative_path):
+    raise AssertionError(f"a retired capture's bytes must not be reused: {relative_path}")
+
+
+@pytest.mark.parametrize("resume_point", ["page record", "retained act record", "terminal"])
+def test_a_resumed_pass_refuses_a_capture_read_under_a_retired_text_view(resume_point):
+    """Every place a resumed live pass reuses a sealed capture refuses one read
+    under a view this build no longer produces, by name, before its bytes are
+    reused."""
+    capture = _v1_chandra_capture()
+    tree = SimpleNamespace(
+        read_run_receipt=lambda reference: {"endpoint": "https://live.example/chair"},
+        read_bytes=_refuse_read,
+    )
+    record = {
+        "outcome": "read",
+        "payload": {
+            "payload": "read",
+            "witness_reported": None,
+            "content_health": {},
+            "format_capabilities": attestatores.DEFAULT_FORMAT_CAPABILITIES,
+            "raw_response_ref": capture["raw_response_ref"],
+            "native_capture": capture,
+            "provenance": {"receipt_ref": {"relative_path": "receipts/x.json", "sha256": "a" * 64}},
+        },
+    }
+    refusal = "the retired text view chandra-layout-text.v1.*re-run the submission from the Door"
+    with pytest.raises(SchemaRefusal, match=refusal):
+        if resume_point == "page record":
+            attestatores._page_capture_from_record(
+                SimpleNamespace(tree=tree), record, "the page Testimonium"
+            )
+        elif resume_point == "retained act record":
+            attestatores._attempt_from_retained_testimonium(tree, record)
+        else:
+            evidence = dict.fromkeys(attestatores._CHANDRA_RESULT_FIELDS)
+            evidence["native_capture"] = capture
+            attestatores._attempt_from_evidence_record(SimpleNamespace(tree=tree), evidence)
+
+
 def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path):
     """DAI's shipped floats are recorded as the exact decimal text the wire carries.
 
@@ -2140,8 +2200,8 @@ def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path
         identity=identity,
         tier=TIER,
         retain=blob_store.retain,
-        decoding_config_sha256="c" * 64,
-        record_temperature=0,
+        decoding_config_sha256=shipped_decoding_policy()[1],
+        decoding_policy=shipped_decoding_policy()[0],
         read_receipt=lambda reference: {
             "chair": identity.role,
             "source": identity.source,
@@ -2157,7 +2217,7 @@ def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path
         messages=({"role": "user", "content": [{"type": "text", "text": "read this"}]},),
         image_sha256s=(),
         generation_declared=declared,
-        generation_sent={key: declared[key] for key in ("repetition_penalty", "top_k", "top_p")},
+        generation_sent={},
     )
     with client:
         endpoint.script(ScriptedAnswer(content="transcribed", finish_reason="stop"))
@@ -2172,16 +2232,17 @@ def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path
             "decimal": json.dumps(declared[key]),
         }
         assert float(record["generation_sent"][key]["decimal"]) == declared[key]
-    # `temperature` is declared by the vendor and never sent -- the sealed
-    # reading-of-record posture is 0 -- and is still recorded to the digit.
+    # The declared view is recorded to the digit as well, beside what was sent.
     assert record["generation_declared"]["temperature"] == {
         "schema": "wire-decimal.v1",
         "decimal": json.dumps(declared["temperature"]),
     }
-    assert "temperature" not in request.generation_sent
+    assert posted["temperature"] == declared["temperature"]
 
 
-def test_the_default_serving_factory_binds_the_run_that_will_record_the_reading(live_run, tmp_path):
+def test_the_production_serving_factory_binds_the_run_that_will_record_the_reading(
+    live_run, tmp_path
+):
     """Construction only: the registry, receipts and catalogue are the run's own.
 
     Nothing here starts a process or opens a socket -- building a `ChairClient`
@@ -2192,7 +2253,10 @@ def test_the_default_serving_factory_binds_the_run_that_will_record_the_reading(
     context = open_live_context(live_run, run_root)
     identity = context.registry.resolve("attestator_3")
 
-    client = attestatores.default_serving_factory(context, identity, TIER)
+    policy, decoding_sha256 = load_decoding_policy(ROOT / "config" / "decoding.toml")
+    client = attestatores.production_serving_factory(policy, decoding_sha256)(
+        context, identity, TIER
+    )
 
     assert isinstance(client, ChairClient)
     # Reaching into the client for its manager: the whole claim of this test is
@@ -3069,3 +3133,50 @@ def test_derived_chandra_anchor_assigns_largest_overlap_and_leaves_ties_unowned(
             "line_geometry": [{"bbox": {"x": 0, "y": 50, "w": 100, "h": 50}}],
         },
     }
+
+
+def _testimonium_call_world(
+    generation_sent: dict[str, Any], *, schema: str = CHAIR_CALL_RECORD_SCHEMA
+):
+    """A Testimonium naming one retained call record, and a context that reads it."""
+    from common.decoding import DEFAULT_DECODING_CONFIG_PATH
+
+    receipt_ref = {"relative_path": "receipts/sha256/r.json", "sha256": "a" * 64}
+    call = {"schema": schema, "receipt_ref": receipt_ref, "generation_sent": generation_sent}
+    call_ref = {"relative_path": "3_attestatores/blobs/call", "sha256": "b" * 64}
+    context = SimpleNamespace(
+        tree=SimpleNamespace(
+            read_bytes=lambda _path: json.dumps(call).encode(),
+            read_run_receipt=lambda reference: {"seed": 7} if reference == receipt_ref else {},
+        ),
+        args=SimpleNamespace(decoding_config=DEFAULT_DECODING_CONFIG_PATH),
+        require_sealed_config=lambda _name, _digest: None,
+    )
+    return context, call, {"serving_call_ref": call_ref}
+
+
+@pytest.mark.parametrize("chair", ["attestator_2", "attestator_3", "attestator_1"])
+def test_a_tallied_testimonium_s_serving_call_is_held_to_its_chair_s_row_and_seed(chair):
+    """The tally re-reads every Testimonium's serving call, not only its digest."""
+    from common.decoding import chair_decoding, engine_effective_sampling, recorded_sampling
+
+    policy, _digest = load_decoding_policy()
+    sampling = chair_decoding(policy, chair)
+    sent = {**recorded_sampling(sampling), "max_tokens": 64, "seed": 7}
+    context, call, payload = _testimonium_call_world(sent)
+    call["sampling_effective"] = recorded_sampling(engine_effective_sampling(sampling))
+    context.tree.read_bytes = lambda _path: json.dumps(call).encode()
+    attestatores._verify_testimonium_call_sampling(context, payload, chair)
+
+    for moved, message in (
+        ({**sent, "seed": 8}, "sent seed 8, not 7"),
+        ({**sent, "top_k": 3}, "not the sealed"),
+        ({**sent, "n": 2}, r"generation field\(s\) \['n'\]"),
+    ):
+        call["generation_sent"] = moved
+        with pytest.raises(SchemaRefusal, match=message):
+            attestatores._verify_testimonium_call_sampling(context, payload, chair)
+    call["generation_sent"] = sent
+    call["schema"] = "chair-call-record.v2"
+    with pytest.raises(SchemaRefusal, match="written as chair-call-record.v2"):
+        attestatores._verify_testimonium_call_sampling(context, payload, chair)

@@ -166,6 +166,13 @@ def page_id(origin: Any, transform: Any) -> str:
 
 
 ACT_CLASSES: Final = frozenset({"proposal", "residual", "page-fallback", "page-residual"})
+# The classes the Perlector's whole-page reading mints (`pipeline/4_perlector/
+# page_run.py`). An entry of a page reading is bound to that reading's attempt,
+# its number `n` in the answer and the union box of the ids it cites, so two
+# entries with one union box still get two identities. `reading-unplaced` is an
+# entry that cites no boxed id: its box is `None`.
+READING_ACT_CLASSES: Final = frozenset({"reading", "reading-unplaced"})
+_READING_BINDING_FIELDS: Final = frozenset({"page_reading", "n", "union_box_px"})
 
 
 def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
@@ -198,8 +205,12 @@ def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
     the minting path could never have produced, instead of hashing it and
     reporting a mismatch that says nothing about why.
     """
+    if act_class in READING_ACT_CLASSES:
+        _identity(page, "pg", "act page")
+        _reading_binding(bounds, act_class)
+        return {"page_id": page, "class": act_class, "bounds": bounds}
     if act_class not in ACT_CLASSES:
-        allowed = ", ".join(repr(name) for name in sorted(ACT_CLASSES))
+        allowed = ", ".join(repr(name) for name in sorted(ACT_CLASSES | READING_ACT_CLASSES))
         raise IdentityRefusal(f"act class must be one of {allowed}")
     _identity(page, "pg", "act page")
     _bounds(bounds, "act bounds")
@@ -208,6 +219,23 @@ def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
         "class": act_class,
         "bounds": bounds,
     }
+
+
+def _reading_binding(value: Any, act_class: str) -> None:
+    """A page-reading entry's binding: `{page_reading, n, union_box_px}`.
+
+    `page_reading` is the page reading's attempt identity, `n` the entry's
+    positive number in the answer, and `union_box_px` a rectangle for class
+    `reading` and `None` for `reading-unplaced`.
+    """
+    row = _closed(value, set(_READING_BINDING_FIELDS), "a page-reading act binding")
+    _identity(row["page_reading"], "att", "the page reading attempt")
+    if not isinstance(row["n"], int) or isinstance(row["n"], bool) or row["n"] < 1:
+        raise IdentityRefusal("a page-reading act's n must be a positive integer")
+    if act_class == "reading":
+        _bounds(row["union_box_px"], "a page-reading act's union box")
+    elif row["union_box_px"] is not None:
+        raise IdentityRefusal("an unplaced page-reading act binds no box")
 
 
 def act_id(page: str, act_class: str, bounds: Any) -> str:

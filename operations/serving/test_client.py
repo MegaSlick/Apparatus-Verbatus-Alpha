@@ -17,7 +17,6 @@ import pytest
 
 from common.chairs.models import ChairIdentity, ServingDetails
 from common.chairs.receipts import build_receipt, receipt_record
-from common.chandra_native_retry import recipe_record
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
@@ -29,14 +28,24 @@ from common.contracts.serving import (
     CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS,
     CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
 )
+from common.decoding import (
+    READING_CHAIRS,
+    SAMPLING_FIELDS,
+    chair_decoding,
+    engine_effective_sampling,
+    load_decoding_policy,
+    recorded_sampling,
+    variance_arm_seed,
+)
+from common.sealed_config import table_seal
 
 from .client import (
-    _FORBIDDEN_GENERATION_SENT_KEYS,
     ChairClient,
     ChairRequest,
     ReceiptDriftRefusal,
     ServingModeRefusal,
     _plain_capacity,
+    recorded_generation,
     serving_mode_for,
 )
 from .config import (
@@ -67,7 +76,15 @@ from .residency import FileResidencyLease
 TIER = "generic-48gb"
 REVISION = "a" * 40
 MANIFEST = "b" * 64
-DECODING_SHA = "c" * 64
+SHIPPED_POLICY, DECODING_SHA = load_decoding_policy()
+
+
+def _policy_with_row(chair: str, sampling: Mapping[str, object]) -> dict[str, object]:
+    """The shipped policy with some of one chair's sampling values changed."""
+
+    policy = copy.deepcopy(SHIPPED_POLICY)
+    policy["chair_decoding"][chair] = {**policy["chair_decoding"][chair], **sampling}
+    return policy
 
 
 def _identity(role: str = "attestator_1", recipe: str = "recipe-1") -> ChairIdentity:
@@ -177,8 +194,7 @@ def _built(
     chair: ChairIdentity | None = None,
     row: dict[str, object] | None = None,
     read_receipt=None,
-    record_temperature: int = 0,
-    chandra_native_policy=None,
+    sampling: Mapping[str, object] | None = None,
 ):
     chair = chair or _identity()
     row = _seal(
@@ -202,15 +218,15 @@ def _built(
         package_inspector=FakePackages({"vllm": "0.test"}),
         residency_lease=FileResidencyLease(tmp_path / "pod-gpu.lock"),
     )
+    policy = SHIPPED_POLICY if sampling is None else _policy_with_row(chair.role, sampling)
     client = ChairClient(
         manager=manager,
         identity=chair,
         tier=TIER,
         retain=blob_store.retain,
-        decoding_config_sha256=DECODING_SHA,
-        record_temperature=record_temperature,
+        decoding_config_sha256=table_seal(policy),
+        decoding_policy=policy,
         read_receipt=read_receipt or _default_read_receipt(chair),
-        chandra_native_policy=chandra_native_policy,
     )
     return client, endpoint, blob_store, chair
 
@@ -261,26 +277,102 @@ def _request(**overrides: object) -> ChairRequest:
     return ChairRequest(**fields)  # type: ignore[arg-type]
 
 
-# --- construction refuses a policy that is not the sealed 0 ------------------
+# --- construction takes the sealed policy and selects its own chair's row ---
 
 
-def test_construction_refuses_an_invalid_record_temperature(tmp_path: Path) -> None:
-    with pytest.raises(ServingConfigurationError):
-        _built(tmp_path, record_temperature=-1)
+def _client_over(tmp_path: Path, policy: object, digest: str) -> ChairClient:
+    client, *_ = _built(tmp_path)
+    return ChairClient(
+        manager=client._manager,
+        identity=_identity(),
+        tier=TIER,
+        retain=lambda data: {"relative_path": "x", "sha256": digest_bytes(data)},
+        decoding_config_sha256=digest,
+        decoding_policy=policy,  # type: ignore[arg-type]
+        read_receipt=_default_read_receipt(_identity()),
+    )
 
 
-def test_a_nonzero_sealed_temperature_and_seed_are_sent_and_retained(tmp_path: Path) -> None:
-    client, endpoint, blob_store, _ = _built(tmp_path, record_temperature=0.2)
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda policy: policy["chair_decoding"].pop("attestator_1"),
+        lambda policy: policy["chair_decoding"]["attestator_1"].update(temperature=0.5),
+        lambda policy: policy.update(schema="decoding.v4"),
+    ],
+    ids=["no-row", "moved-chandra-row", "legacy-schema"],
+)
+def test_construction_refuses_a_policy_that_is_not_a_sealed_decoding_policy(
+    tmp_path: Path, mutate
+) -> None:
+    policy = copy.deepcopy(SHIPPED_POLICY)
+    mutate(policy)
+    with pytest.raises(ServingConfigurationError, match="sealed decoding policy"):
+        _client_over(tmp_path, policy, DECODING_SHA)
+
+
+def test_construction_refuses_a_policy_that_does_not_seal_to_its_digest(tmp_path: Path) -> None:
+    policy = _policy_with_row("attestator_2", {"temperature": 0.2})
+    with pytest.raises(ServingConfigurationError, match="does not seal to the decoding digest"):
+        _client_over(tmp_path, policy, DECODING_SHA)
+
+
+def test_each_sealed_chair_row_is_sent_exactly_and_retained(tmp_path: Path) -> None:
+    """Every reading chair sends its row of the shipped table, selected by its own
+    role, and records what the pinned engine samples under beside it."""
+
+    for chair in sorted(READING_CHAIRS):
+        sampling = chair_decoding(SHIPPED_POLICY, chair)
+        client, endpoint, blob_store, _ = _built(tmp_path / chair, chair=_identity(role=chair))
+        with client:
+            endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
+            response = client.read(_request(generation_sent={"max_tokens": 10}))
+        posted = endpoint.requests[0]
+        record = json.loads(
+            next(data for data in blob_store.written if data != response.raw_response)
+        )
+        assert {key: posted[key] for key in SAMPLING_FIELDS if key in posted} == sampling
+        assert posted["seed"] == 7
+        assert record["generation_sent"] == recorded_generation(
+            {"max_tokens": 10, **sampling, "seed": 7}
+        )
+        assert record["sampling_effective"] == recorded_sampling(
+            engine_effective_sampling(sampling)
+        )
+
+
+def test_the_engine_effective_values_are_recorded_beside_the_sent_ones(tmp_path: Path) -> None:
+    """Churro's 1e-06 is sent as the maker wrote it; vLLM 0.27.1 samples at 0.01."""
+
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=_identity(role="attestator_3"))
     with client:
         endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
         response = client.read(_request())
     record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
-    assert endpoint.requests[0]["temperature"] == 0.2
+    assert endpoint.requests[0]["temperature"] == 1e-06
+    assert record["generation_sent"]["temperature"]["decimal"] == "1e-06"
+    assert record["sampling_effective"]["temperature"]["decimal"] == "0.01"
+
+
+def test_a_sampled_temperature_and_seed_are_sent_and_retained(tmp_path: Path) -> None:
+    client, endpoint, blob_store, _ = _built(
+        tmp_path,
+        chair=_identity(role="perlector"),
+        sampling={"temperature": 0.7, "top_p": 0.8, "top_k": 20},
+    )
+    with client:
+        endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
+        response = client.read(_request())
+    record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
+    assert endpoint.requests[0]["temperature"] == 0.7
+    assert endpoint.requests[0]["top_p"] == 0.8
+    assert endpoint.requests[0]["top_k"] == 20
     assert endpoint.requests[0]["seed"] == 7
     assert record["generation_sent"]["temperature"] == {
         "schema": "wire-decimal.v1",
-        "decimal": "0.2",
+        "decimal": "0.7",
     }
+    assert record["generation_sent"]["top_k"] == 20
     assert record["generation_sent"]["seed"] == 7
 
 
@@ -295,9 +387,7 @@ def test_chandra_native_capability_is_attestator_1_only_and_omits_request_seed(
             "witness_scope": "page",
         }
     )
-    client, endpoint, blob_store, _ = _built(
-        tmp_path, chair=chair, chandra_native_policy=recipe_record()
-    )
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=chair)
     intent_ref = {"relative_path": "3_attestatores/artifacts/intent.json", "sha256": "d" * 64}
     request = _request(
         generation_declared={"max_new_tokens": 12384},
@@ -312,13 +402,20 @@ def test_chandra_native_capability_is_attestator_1_only_and_omits_request_seed(
         monkeypatch.setattr(client, "prepare_chandra_native", unexpected_reprepare)
         endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
         response = client.read_chandra_native(dispatch, intent_ref=intent_ref)
-    assert endpoint.requests[0]["temperature"] == 0.6000000000000001
-    assert endpoint.requests[0]["top_p"] == 0.95
+    expected = {
+        "temperature": 0.6000000000000001,
+        "top_p": 0.95,
+        "top_k": 0,
+        "min_p": 0.0,
+        "repetition_penalty": 1.0,
+    }
+    assert {field: endpoint.requests[0][field] for field in expected} == expected
     assert "seed" not in endpoint.requests[0]
     record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
     assert record["schema"] == CHANDRA_NATIVE_CALL_RECORD_SCHEMA
     assert set(record) == CHANDRA_NATIVE_CALL_RECORD_FIELDS
     assert record["native_attempt_intent_ref"] == intent_ref
+    assert record["sampling_effective"] == recorded_sampling(expected)
 
 
 def test_chandra_native_dispatch_is_a_one_use_client_minted_capability(tmp_path: Path) -> None:
@@ -329,9 +426,7 @@ def test_chandra_native_dispatch_is_a_one_use_client_minted_capability(tmp_path:
             "witness_scope": "page",
         }
     )
-    client, endpoint, _blob_store, _ = _built(
-        tmp_path, chair=chair, chandra_native_policy=recipe_record()
-    )
+    client, endpoint, _blob_store, _ = _built(tmp_path, chair=chair)
     request = _request(
         generation_declared={"max_new_tokens": 12384},
         generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
@@ -357,17 +452,10 @@ def test_chandra_native_capability_refuses_a_different_chair(tmp_path: Path) -> 
             "witness_scope": "page",
         }
     )
-    client, endpoint, _blob_store, _ = _built(
-        tmp_path, chair=chair, chandra_native_policy=recipe_record()
-    )
+    client, endpoint, _blob_store, _ = _built(tmp_path, chair=chair)
     with client, pytest.raises(ChairRequestRefusal, match="only to Attestator 1"):
         client.prepare_chandra_native(_request(), attempt_ordinal=1)
     assert endpoint.requests == []
-
-
-def test_a_legacy_client_does_not_acquire_the_native_capability(tmp_path: Path) -> None:
-    client, _endpoint, _blob_store, _ = _built(tmp_path)
-    assert client.carries_chandra_native_recipe is False
 
 
 def test_chandra_native_call_refuses_without_durable_intent_before_http(tmp_path: Path) -> None:
@@ -378,9 +466,7 @@ def test_chandra_native_call_refuses_without_durable_intent_before_http(tmp_path
             "witness_scope": "page",
         }
     )
-    client, endpoint, blob_store, _ = _built(
-        tmp_path, chair=chair, chandra_native_policy=recipe_record()
-    )
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=chair)
     request = _request(
         generation_declared={"max_new_tokens": 12384},
         generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
@@ -403,9 +489,7 @@ def test_chandra_native_transport_failure_retains_intent_and_physical_request(
             "witness_scope": "page",
         }
     )
-    client, endpoint, blob_store, _ = _built(
-        tmp_path, chair=chair, chandra_native_policy=recipe_record()
-    )
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=chair)
     request = _request(
         generation_declared={"max_new_tokens": 12384},
         generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
@@ -426,24 +510,69 @@ def test_chandra_native_transport_failure_retains_intent_and_physical_request(
     assert record["transport_problem"]["request_delivery"] == "unknown"
 
 
-def test_only_the_structure_chair_can_use_the_bounded_recovery_seed(tmp_path: Path) -> None:
+def test_only_the_structure_chair_has_recovery_attempts(tmp_path: Path) -> None:
     client, endpoint, blob_store, _ = _built(tmp_path)
     with client:
         with pytest.raises(ChairRequestRefusal, match="only the Designator structure chair"):
-            client.read(_request(structure_recovery_seed=8))
+            client.read(_request(structure_attempt_ordinal=2))
     assert endpoint.requests == []
     assert len(blob_store) == 0
 
 
-def test_structure_recovery_seed_is_sent_and_retained_as_the_actual_seed(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("ordinal", "temperature", "top_p"), [(1, 0.0, 0.1), (2, 0.2, 0.95), (3, 0.4, 0.95)]
+)
+def test_a_structure_recovery_attempt_sends_chandras_own_retry_request(
+    tmp_path: Path, ordinal: int, temperature: float, top_p: float
+) -> None:
     chair = _identity(role="designator_structure")
     client, endpoint, blob_store, _ = _built(tmp_path, chair=chair)
     with client:
         endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
-        response = client.read(_request(structure_recovery_seed=8))
+        response = client.read(_request(structure_attempt_ordinal=ordinal))
     record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
-    assert endpoint.requests[0]["seed"] == 8
-    assert record["generation_sent"]["seed"] == 8
+    posted = endpoint.requests[0]
+    assert (posted["temperature"], posted["top_p"], posted["seed"]) == (temperature, top_p, 7)
+    assert record["generation_sent"] == recorded_generation(
+        {
+            **chair_decoding(SHIPPED_POLICY, "designator_structure"),
+            "temperature": temperature,
+            "top_p": top_p,
+            "seed": 7,
+        }
+    )
+
+
+def test_a_structure_attempt_past_the_sealed_ceiling_is_refused(tmp_path: Path) -> None:
+    client, endpoint, _blob_store, _ = _built(
+        tmp_path, chair=_identity(role="designator_structure")
+    )
+    with client, pytest.raises(ChairRequestRefusal, match="no attempt 4"):
+        client.read(_request(structure_attempt_ordinal=4))
+    assert endpoint.requests == []
+
+
+@pytest.mark.parametrize("arm", ["lectio-prior", "lectio-nuda"])
+def test_a_variance_arm_sends_its_own_sealed_seed(tmp_path: Path, arm: str) -> None:
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=_identity(role="perlector"))
+    with client:
+        endpoint.script(ScriptedAnswer(content="lectio", finish_reason="stop"))
+        response = client.read(_request(variance_arm=arm))
+    record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
+    expected = variance_arm_seed(SHIPPED_POLICY, arm)
+    assert endpoint.requests[0]["seed"] == record["generation_sent"]["seed"] == expected
+    assert variance_arm_seed(SHIPPED_POLICY, "lectio-prior") != variance_arm_seed(
+        SHIPPED_POLICY, "lectio-nuda"
+    )
+
+
+def test_only_the_perlector_reads_a_variance_arm(tmp_path: Path) -> None:
+    client, endpoint, _blob_store, _ = _built(tmp_path)
+    with client, pytest.raises(ChairRequestRefusal, match="only the Perlector"):
+        client.read(_request(variance_arm="lectio-nuda"))
+    with pytest.raises(ChairRequestRefusal, match="not one of"):
+        _request(variance_arm="perlectio")
+    assert endpoint.requests == []
 
 
 # --- pre-send refusals: nothing is built or sent ------------------------------
@@ -459,58 +588,56 @@ def test_kind_refusal_sends_nothing(tmp_path: Path) -> None:
     assert len(blob_store) == 0
 
 
-def test_forbidden_generation_sent_keys_refused(tmp_path: Path) -> None:
+def test_generation_sent_outside_the_caller_allow_list_is_refused_by_name(tmp_path: Path) -> None:
     client, endpoint, blob_store, _ = _built(tmp_path)
     with client:
         for key, value in (
             ("model", "x"),
             ("stream", True),
-            ("temperature", 0),
             ("seed", 1),
             ("n", 2),
+            ("max_completion_tokens", 10),
+            ("stop", ["</s>"]),
+            ("logit_bias", {"1": 5}),
+            ("tempreature", 0),
+            *((field, 0) for field in sorted(SAMPLING_FIELDS)),
         ):
-            with pytest.raises(ChairRequestRefusal) as excinfo:
+            with pytest.raises(ChairRequestRefusal, match=repr([key])) as excinfo:
                 client.read(_request(generation_sent={key: value}))
             assert excinfo.value.code == "CHAIR_REQUEST_INVALID"
     assert endpoint.requests == []
     assert len(blob_store) == 0
 
 
-def test_a_top_k_of_one_never_reaches_the_wire_without_temperature_zero(tmp_path: Path) -> None:
-    """DAI's decoding equivalence, pinned where the wire body is actually built.
+def test_a_caller_cannot_move_a_sealed_sampling_value(tmp_path: Path) -> None:
+    """The sealed row is the only source of sampling fields on the wire.
 
-    DAI's carried `generation_config.json` is `do_sample: true, temperature:
-    0.1, top_k: 1, top_p: 0.001` -- deterministic greedy, because `top_k = 1`
-    leaves the argmax as the entire candidate set. This pipeline sends
-    `top_k`/`top_p`/`repetition_penalty` and lets this client put `temperature:
-    0` on the wire, where vLLM takes its greedy path over the same
-    repetition-penalised logits: the same token, every step.
-
-    **That equivalence rests on the two fields travelling together, and nothing
-    said so until now.** Drop `top_k` and leave `temperature: 0` and decoding
-    is still greedy; drop `temperature` as well and vLLM's own defaults --
-    `temperature 1.0`, `top_k 0` -- make it full random sampling on a
-    handwriting reader. So this asserts the pairing on the posted body, and
-    asserts that a caller cannot separate them: `temperature` is manager-owned
-    and refused in `generation_sent`.
+    A caller that names any sampling field -- to change one the row sets, or to
+    add one it leaves to the engine -- is refused before a byte is sent.
     """
 
-    client, endpoint, _, _ = _built(tmp_path)
+    sealed = {
+        "temperature": 0.1,
+        "top_k": 1,
+        "top_p": 0.001,
+        "repetition_penalty": 1.05,
+        "min_p": 0.0,
+    }
+    client, endpoint, _, _ = _built(tmp_path, chair=_identity(role="attestator_2"))
     with client:
         endpoint.script(ScriptedAnswer(content="read", finish_reason="stop"))
-        client.read(
-            _request(generation_sent={"top_k": 1, "top_p": 0.001, "repetition_penalty": 1.05})
-        )
-        # Not a coincidence of this call site: no caller can say otherwise --
-        # the client itself refuses a caller that names a manager-owned field,
-        # proven here rather than only asserted of the forbidden-set
-        # membership.
-        assert "temperature" in _FORBIDDEN_GENERATION_SENT_KEYS
-        with pytest.raises(ChairRequestRefusal):
-            client.read(_request(generation_sent={"top_k": 1, "temperature": 0.7}))
+        client.read(_request())
+        for smuggled in (
+            {"temperature": 0},
+            {"top_k": 20},
+            {"min_p": 0.05},
+            {"presence_penalty": 1.5},
+        ):
+            with pytest.raises(ChairRequestRefusal, match="sealed decoding table"):
+                client.read(_request(generation_sent=smuggled))
+    assert len(endpoint.requests) == 1
     posted = endpoint.requests[0]
-    assert posted["top_k"] == 1
-    assert posted["temperature"] == 0
+    assert {key: posted[key] for key in SAMPLING_FIELDS if key in posted} == sealed
 
 
 def test_image_digest_drift_refused_before_any_request_is_sent(tmp_path: Path) -> None:
@@ -712,7 +839,9 @@ def test_transport_timeout_retains_the_known_request_and_explicit_response_uncer
     assert set(record) == CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS
     assert record["request_sha256"] == excinfo.value.request_sha256
     assert record["image_sha256s"] == []
-    assert record["generation_sent"] == {"seed": 7, "temperature": 0}
+    assert record["generation_sent"] == recorded_generation(
+        {**chair_decoding(SHIPPED_POLICY, "attestator_1"), "seed": 7}
+    )
     assert record["generation_declared"] == {}
     assert record["capacity"] is None
     assert record["receipt_ref"] == excinfo.value.receipt_ref
@@ -820,7 +949,7 @@ def test_response_as_arrival_raw_bytes_exist_before_the_next_request(tmp_path: P
         tier=TIER,
         retain=blob_store.retain,
         decoding_config_sha256=DECODING_SHA,
-        record_temperature=0,
+        decoding_policy=SHIPPED_POLICY,
         read_receipt=_default_read_receipt(chair),
     )
     with client:
@@ -888,7 +1017,12 @@ def test_call_record_has_the_exact_closed_field_set_and_canonical_bytes(tmp_path
     assert record["kind"] == "chat-completions"
     assert record["request_sha256"] == response.request_sha256
     assert record["image_sha256s"] == []
-    assert record["generation_sent"] == {"temperature": 0, "seed": 7}
+    assert record["generation_sent"] == recorded_generation(
+        {**chair_decoding(SHIPPED_POLICY, "attestator_1"), "seed": 7}
+    )
+    assert record["sampling_effective"] == recorded_sampling(
+        {**chair_decoding(SHIPPED_POLICY, "attestator_1"), "top_p": 1.0}
+    )
     assert record["generation_declared"] == {"top_k": 1}
     assert record["raw_response_ref"] == dict(response.raw_response_ref)
     assert record["response_sha256"] == response.response_sha256
@@ -1018,11 +1152,10 @@ def test_a_vendors_float_generation_values_are_recorded_as_the_wire_carried_them
     Python values.
     """
 
-    client, endpoint, blob_store, _ = _built(tmp_path)
-    sent = {"repetition_penalty": 1.05, "top_k": 1, "top_p": 0.001}
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=_identity(role="attestator_2"))
     with client:
         endpoint.script(ScriptedAnswer(content="texte transcrit", finish_reason="stop"))
-        response = client.read(_request(generation_sent=sent, generation_declared=_DAI_GENERATION))
+        response = client.read(_request(generation_declared=_DAI_GENERATION))
 
     record_bytes = next(data for data in blob_store.written if data != response.raw_response)
     record = json.loads(record_bytes)
@@ -1060,10 +1193,9 @@ def test_a_vendors_float_generation_values_are_recorded_as_the_wire_carried_them
 def test_a_declared_float_that_is_never_sent_is_still_recorded_exactly(tmp_path: Path) -> None:
     """`generation_declared` is evidence, not traffic, and gets the same care.
 
-    DAI's `temperature` 0.1 never reaches the wire — the sealed reading-of-
-    record posture is 0 and the client refuses to be built against anything
-    else — but the record must still say what the vendor declared, to the
-    digit, or the two halves of the reading-of-record account disagree.
+    A declared value never reaches the wire by being declared -- only the
+    sealed row does -- but the record must still say what the vendor declared,
+    to the digit.
     """
 
     client, endpoint, blob_store, _ = _built(tmp_path)
@@ -1074,10 +1206,7 @@ def test_a_declared_float_that_is_never_sent_is_still_recorded_exactly(tmp_path:
     assert record["generation_declared"] == {
         "temperature": {"schema": "wire-decimal.v1", "decimal": "0.1"}
     }
-    # The posted body carries the sealed 0, never the declared 0.1 — asserted
-    # strictly, since a client that stopped pinning temperature at all would
-    # silently drop the reading-of-record posture and this
-    # weaker form (`not in ... or ... == 0`) would not catch it.
+    # The posted body carries the sealed row's 0.0, never the declared 0.1.
     assert endpoint.requests[0]["temperature"] == 0
 
 
@@ -1302,7 +1431,7 @@ def test_receipt_drift_refusal_survives_an_unverifiable_shutdown(tmp_path: Path)
         tier=TIER,
         retain=blob_store.retain,
         decoding_config_sha256=DECODING_SHA,
-        record_temperature=0,
+        decoding_policy=SHIPPED_POLICY,
         read_receipt=wrong_receipt,
     )
     with pytest.raises(ReceiptDriftRefusal) as excinfo:

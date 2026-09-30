@@ -15,8 +15,11 @@ thresholds per page because page fractions cannot be fixed pixels across scans.
 """
 
 import dataclasses
+import json
+import math
 import sys
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -32,12 +35,15 @@ import grouping  # noqa: E402
 import grouping_config  # noqa: E402
 import structure  # noqa: E402
 import structure_pass  # noqa: E402
+import surya_detection  # noqa: E402
+from no_text import refuse_text_fields as _refuse_text_fields  # noqa: E402
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import (  # noqa: E402
     digest_of,
+    half_even_bp,
     is_plain_int,
     self_hash,
 )
@@ -51,14 +57,20 @@ from common.contracts.stages import (  # noqa: E402
     INK_MAP,
     RECENSOR,
 )
-from common.decoding import load_decoding_policy, structure_recovery_policy  # noqa: E402
+from common.decoding import (  # noqa: E402
+    STRUCTURE_RECOVERY_SCHEDULE,
+    load_decoding_policy,
+    structure_recovery_policy,
+)
 from common.exemplar_boundary import (  # noqa: E402
+    cut_exemplar_crop,
+    exemplar_crop_transform,
     sealed_page_bytes,
     verify_exemplar_corpus_seal,
     verify_sealed_page_pixels,
 )
 from common.fixture_identity import act_bounds, act_identity, page_identity  # noqa: E402
-from common.imaging import crop_png, dimensions, grayscale_rows  # noqa: E402
+from common.imaging import dimensions, grayscale_rows  # noqa: E402
 from common.recovery import FALLBACK_RECROP  # noqa: E402
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
@@ -69,7 +81,8 @@ from common.stage import (  # noqa: E402
     RESIDUAL_ENUMERATION_COMPLETE,
     SECONDARY_PROPOSER_CHAIR,
     STRUCTURE_ANSWER_KIND,
-    STRUCTURE_ANSWER_RECORD_SCHEMA_V3,
+    STRUCTURE_ANSWER_RECORD_SCHEMA,
+    STRUCTURE_ATTEMPT_KIND,
     StageContext,
     _stage_records,
     canary_ordinals,
@@ -81,12 +94,22 @@ from common.stage import (  # noqa: E402
     open_stage_context,
     page_residual_act_key,
     refuse_retired_structure_answer,
+    refuse_structure_answer_text_view,
     run_stage,
     stage_parser,
     validate_serving_provenance,
     verify_structure_attempt_call,
 )
-from operations.serving.client import ChairClient  # noqa: E402
+from operations.serving.assembly import bound_serving_recipes, stage_chair_client  # noqa: E402
+from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
+from operations.serving.detector import (  # noqa: E402
+    FIXTURE_ENGINE,
+    RecordDetector,
+    check_record_detector_runnable,
+    fixture_record_detector,
+    load_ultralytics_record_detector,
+)
+from operations.serving.errors import ServingError  # noqa: E402
 
 DESCRIPTION = "Designator: marks out the acts and cuts the crops. It establishes no text."
 
@@ -95,28 +118,6 @@ DESCRIPTION = "Designator: marks out the acts and cuts the crops. It establishes
 # equal to common/recovery.py's RULED_ABSOLUTE_CAP by hand: recovery restores
 # coverage, never quality, so the attempt ceiling must equal the absolute cap.
 ABSOLUTE_STRUCTURE_ATTEMPT_CEILING = 3
-STRUCTURE_ATTEMPT_KIND = "structure-attempt"
-
-# Fields a Designator artifact may never carry, at any depth: this stage
-# establishes no text, and a transcription would otherwise pass as geometry-shaped
-# JSON. "reason" and "rationale" describe which rule fired, not ink, so they stay.
-_FORBIDDEN_TEXT_KEYS = frozenset(
-    {
-        "text",
-        "reported",
-        "transcription",
-        "transcript",
-        "content",
-        "reading",
-        "literal",
-        "token",
-        "tokens",
-        # Not text: the retired picker's words for an elected witness
-        # (GLOSSARY, "Retired terms"). No stage elects a witness.
-        "chosen",
-        "pivot",
-    }
-)
 
 # How much of a page's secondary rescue pass its records enumerate. Kept here,
 # not in `common/`, because nothing outside this stage reads it.
@@ -136,21 +137,6 @@ HOLD_REASON_CODES = frozenset(
         PAGE_RESIDUAL_AGGREGATE_REASON_CODE,
     }
 )
-
-
-def _refuse_text_fields(value, path: str = "$", *, kind: str = "act-group") -> None:
-    """Walk a payload and refuse any forbidden content-bearing key, at any depth."""
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if isinstance(key, str) and key.lower() in _FORBIDDEN_TEXT_KEYS:
-                raise ContractError(
-                    f"payload at {path}.{key} carries a forbidden content field; a "
-                    f"Designator {kind} artifact carries no text at the schema boundary"
-                )
-            _refuse_text_fields(item, f"{path}.{key}", kind=kind)
-    elif isinstance(value, (list, tuple)):
-        for index, item in enumerate(value):
-            _refuse_text_fields(item, f"{path}[{index}]", kind=kind)
 
 
 # What an act-group's `detected_bounds` rests on, as a field so consumers can
@@ -356,9 +342,9 @@ _STRUCTURE_ANSWER_UNPROPOSED_FIELDS = frozenset(
 _STRUCTURE_ANSWER_VENDOR_FIELDS = frozenset(
     {"repository", "commit", "licence", "prompt_source", "parser_source", "prompt_sha256"}
 )
-_STRUCTURE_ANSWER_DECODING_FIELDS = frozenset({"policy", "temperature", "decoding_config_sha256"})
+_STRUCTURE_ANSWER_DECODING_FIELDS = frozenset({"policy", "sampling", "decoding_config_sha256"})
 _STRUCTURE_ATTEMPT_REFERENCE_FIELDS = frozenset({"relative_path", "sha256"})
-_STRUCTURE_ATTEMPT_POLICY_FIELDS = frozenset({"max_attempts", "seed_schedule"})
+_STRUCTURE_ATTEMPT_POLICY_FIELDS = frozenset({"max_attempts", "sampling_schedule"})
 # Finding kinds from this pass and `common/chandra_layout.py`, declared
 # independently of the producer so the validator cannot agree by construction.
 # `data_bbox` appears only as a digest: this stage publishes no string the chair wrote.
@@ -395,7 +381,10 @@ def _validate_structure_answer_payload(payload: object, *, terminal: bool = True
         raise ContractError("a Designator structure-answer payload is not an object")
     schema = payload.get("schema")
     refuse_retired_structure_answer(schema, subject="structure answer", error_type=ContractError)
-    if schema == STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+    if schema == STRUCTURE_ANSWER_RECORD_SCHEMA:
+        refuse_structure_answer_text_view(
+            payload.get("text_view"), subject="structure answer", error_type=ContractError
+        )
         record = _closed_object(payload, _STRUCTURE_ANSWER_V3_FIELDS, "v3 structure-answer payload")
         _closed_object(
             record["presentation_ref"],
@@ -417,14 +406,14 @@ def _validate_structure_answer_payload(payload: object, *, terminal: bool = True
     if (
         not is_plain_int(maximum)
         or not 1 <= maximum <= ABSOLUTE_STRUCTURE_ATTEMPT_CEILING
-        or policy["seed_schedule"] != "base-plus-attempt-ordinal-minus-one"
+        or policy["sampling_schedule"] != STRUCTURE_RECOVERY_SCHEDULE
     ):
         raise ContractError("a Designator structure answer has an invalid attempt policy")
     ordinal = record["attempt_ordinal"]
     if not is_plain_int(ordinal) or not 1 <= ordinal <= maximum:
         raise ContractError("a Designator structure attempt ordinal is outside the sealed range")
     if not is_plain_int(record["attempt_seed"]) or record["attempt_seed"] < 0:
-        raise ContractError("a Designator structure attempt has no non-negative derived seed")
+        raise ContractError("a Designator structure attempt has no non-negative seed")
     attempts = record["attempts"]
     expected_count = ordinal if terminal else ordinal - 1
     if not isinstance(attempts, list) or len(attempts) != expected_count:
@@ -528,21 +517,107 @@ def _publish_secondary_provenance(context, secondary: dict) -> dict:
     return secondary
 
 
-def secondary_provenance(context) -> dict:
-    """Resolve and record the secondary proposer chair, absent or configured.
+def secondary_provenance(context) -> tuple[dict, RecordDetector | None]:
+    """Resolve and record the secondary proposer chair, and open its detector.
 
     Absence is not a refusal, since the secondary proposer has no crop
     authority. The role is still resolved every run so
     `common/stage.py::unaddressed_chairs` stays accurate about it.
     """
-    resolved = context.registry.resolve(SECONDARY_PROPOSER_CHAIR)
+    resolved = _resolved_secondary(context)
     if isinstance(resolved, AbsentChair):
-        return _absent_chair_record(context, resolved)
-    if not isinstance(resolved, ChairIdentity):
+        return _absent_chair_record(context, resolved), None
+    return _open_record_detector(
+        context,
+        resolved,
+        fixture_allowed=True,
+        published=_published_secondary_provenance(context),
+    )
+
+
+def _resolved_secondary(context) -> ChairIdentity | AbsentChair:
+    resolved = context.registry.resolve(SECONDARY_PROPOSER_CHAIR)
+    if not isinstance(resolved, ChairIdentity | AbsentChair):
         raise ContractError(
             "secondary proposer resolution returned neither an identity nor an absence"
         )
-    return _configured_chair_record(context, resolved)
+    return resolved
+
+
+def _record_detector_mode(context, identity: ChairIdentity, *, fixture_allowed: bool) -> str:
+    """`fixture` or `in-process`, by the sealed catalogue row alone.
+
+    The record detector is never an engine this stage starts, so a `vllm` row
+    is refused; a fixture row answers only the fixture pass, which alone reads
+    the synthetic fixture's declared boxes.
+    """
+    try:
+        mode = serving_mode_for(
+            bound_serving_recipes(context, context.args.serving_recipes_config),
+            identity,
+            context.args.placement_tier,
+        )
+    except ServingError as error:
+        raise ContractError(
+            f"the serving posture of the record detector could not be resolved: {error}"
+        ) from error
+    if mode == "in-process" or (mode == "fixture" and fixture_allowed):
+        return mode
+    raise ContractError(
+        f"the record detector chair {identity.role!r} resolves to a {mode!r} row; it runs "
+        "in-process in this stage"
+        + ("" if fixture_allowed else ", and a fixture row answers only the fixture pass")
+    )
+
+
+def _open_record_detector(
+    context,
+    identity: ChairIdentity,
+    *,
+    fixture_allowed: bool,
+    published: dict | None = None,
+) -> tuple[dict, RecordDetector]:
+    """Load the detector and the provenance its records carry.
+
+    A fixture row answers from the fixture's `[[detector_record]]` rows under a
+    declared receipt. An in-process row loads the verified weights and writes a
+    receipt for this load, unless a resumed pass already published one: then
+    that provenance is reused and the deterministic detector re-derives the same
+    records, and any difference refuses at publication.
+    """
+    mode = _record_detector_mode(context, identity, fixture_allowed=fixture_allowed)
+    if mode == "fixture":
+        rows = [
+            row
+            for row in context.fixture.get("detector_record", [])
+            if row.get("scenario") in (None, context.scenario)
+        ]
+        detector = fixture_record_detector(rows, identity, fixture_serving_details(identity))
+        return _configured_chair_record(context, identity), detector
+    profile = bound_serving_recipes(context, context.args.serving_recipes_config).for_identity(
+        identity, context.args.placement_tier
+    )
+    detector = load_ultralytics_record_detector(
+        identity, profile, context.registry.ensure(identity).root
+    )
+    if published is not None:
+        provenance = published
+    else:
+        provenance = {
+            "chair": identity.role,
+            "chair_state": "configured",
+            "resolved_identity": identity.to_record(),
+            "resolved_revision": {
+                "kind": identity.receipt_revision_kind,
+                "value": identity.receipt_revision,
+            },
+            "receipt_ref": context.write_serving_receipt(identity, detector.serving_details),
+            "adapter_revision": context.adapter_revision,
+        }
+    validate_serving_provenance(
+        context, provenance, producer_stage=DESIGNATOR, require_receipt=True
+    )
+    return provenance, detector
 
 
 def _read_checked_page_bytes(context, page_record: dict) -> bytes:
@@ -767,32 +842,13 @@ def sealed_pages(records: dict[int, dict]) -> dict[int, dict]:
     }
 
 
-def _crop_transform(page_ordinal: int, page_id: str, bounds: dict) -> dict:
-    """The one construction of a crop transform, as `verify_exemplar_crop_lineage` reads it.
-
-    Region identity derives from this shape and `recovery_pass` predicts identities
-    with it, so a second copy would silently disable the duplicate-recrop check.
-    """
-    return {
-        "operation": "crop",
-        "source_page_ordinal": page_ordinal,
-        "source_page_id": page_id,
-        "bounds": bounds,
-    }
-
-
 def _stored_crop(
     context, page_bytes: bytes, page_ordinal: int, page_record: dict, final_bounds: dict
 ) -> dict:
     """Cut and store one crop, returned as the payload fields that describe it."""
-    transform = _crop_transform(page_ordinal, page_record["subject_id"], final_bounds)
-    stored = context.retain(crop_png(page_bytes, final_bounds))
-    return {
-        "transform": transform,
-        "transform_digest": geometry.transform_digest(transform),
-        "image_path": stored["relative_path"],
-        "image_sha256": stored["sha256"],
-    }
+    return cut_exemplar_crop(
+        context.retain, page_bytes, page_ordinal, page_record["subject_id"], final_bounds
+    )
 
 
 def cut_region(
@@ -1377,16 +1433,19 @@ def _publish_secondary_proposals(
     page_record: dict,
     analysis: dict,
     claimed: list[dict],
-    secondary: dict,
+    secondary: dict | None,
     grouping_policy: dict,
 ) -> bool:
     """Cut non-authoritative rescue candidates for review, up to the page bound.
+
+    `secondary` is the provenance the pixel-scan rescue runs under, or None
+    when it does not run (`_pixel_rescue_provenance`).
 
     A speckled page could otherwise mint thousands of crops. Beyond the bound,
     keep one held count and cut none; candidates are counted, never filtered.
     Enumeration distinguishes no candidate from counted but not cut.
     """
-    if secondary["chair_state"] != "configured":
+    if secondary is None:
         return False
     validate_serving_provenance(
         context,
@@ -1930,7 +1989,7 @@ def _publish_conservation_and_secondary(
     page_record: dict,
     analysis: dict,
     claimed: list[dict],
-    secondary: dict,
+    secondary: dict | None,
     grouping_policy: dict,
 ) -> tuple[list[dict], bool]:
     """Reconcile ink against crops, then publish conservation and rescue evidence.
@@ -2050,7 +2109,7 @@ def _publish_page_conservation(
     pages: dict[int, dict],
     failures: dict[int, str],
     page_cache: dict[int, dict],
-    secondary: dict,
+    secondary: dict | None,
     grouping_policy: dict,
 ) -> tuple[list[dict], bool, bool]:
     """Reconcile every sealed page and return rows plus named hold facts."""
@@ -2302,7 +2361,11 @@ def initial_pass(context) -> bool:
     """Mark out every act on every sealed page. True when anything was held."""
     records, pages, padding, grouping_policy = _initial_pages_and_policies(context)
     provenance = structure_provenance(context)
-    secondary = _publish_secondary_provenance(context, secondary_provenance(context))
+    secondary, detector = secondary_provenance(context)
+    secondary = _publish_secondary_provenance(context, secondary)
+    surya_detection.publish_surya_detections(
+        context, pages, live=False, refused_pages=frozenset(records) - frozenset(pages)
+    )
     # Decided once, before any crop is cut.
     failures = structure_failures(context, pages)
     page_cache: dict[int, dict] = {}
@@ -2358,10 +2421,17 @@ def initial_pass(context) -> bool:
     seal_inputs.extend(_evidence_of(fallback_rows))
     if not expected:
         raise ContractError("no declared act or page fallback was marked out on any sealed page")
+    if detector is not None:
+        _publish_detector_records(context, pages, secondary, detector)
 
     # Every sealed page, including pages no act touched; residuals join the seal.
     residual_rows, secondary_held, unmeasured = _publish_page_conservation(
-        context, pages, failures, page_cache, secondary, grouping_policy
+        context,
+        pages,
+        failures,
+        page_cache,
+        _pixel_rescue_provenance(secondary, detector),
+        grouping_policy,
     )
     expected.extend(residual_rows)
     seal_inputs.extend(_evidence_of(residual_rows))
@@ -2374,21 +2444,241 @@ def initial_pass(context) -> bool:
     )
 
 
-def _live_secondary_provenance(context) -> dict:
-    """The secondary proposer on the live path: recorded absent, or refused.
+def _pixel_rescue_provenance(secondary: dict, detector: RecordDetector | None) -> dict | None:
+    """The provenance the pixel-scan rescue runs under, or None when it does not run.
 
-    Resolved every run, as in `secondary_provenance`. A configured secondary
-    chair is refused: the live path serves none and may not write a receipt for
-    a call it did not make.
+    The rescue is the fixture pass's offline stand-in for a model proposer, so
+    it runs only when the secondary chair is answered by the fixture, under that
+    fixture's receipt. An in-process record detector never switches it on and
+    never lends it its provenance: a real run cuts no rescue crop.
     """
-    resolved = context.registry.resolve(SECONDARY_PROPOSER_CHAIR)
-    if isinstance(resolved, AbsentChair):
-        return _absent_chair_record(context, resolved)
-    raise ContractError(
-        f"the secondary proposer chair {SECONDARY_PROPOSER_CHAIR!r} is configured, but the "
-        "live structure pass serves no secondary chair and writes no fixture receipt for one, "
-        "so a live run must configure it absent"
+    if detector is None or detector.run_facts.get("engine") != FIXTURE_ENGINE:
+        return None
+    return secondary
+
+
+def _published_secondary_provenance(context) -> dict | None:
+    """The secondary provenance a resumed pass already sealed, if any."""
+    records = _stage_records(context.tree, DESIGNATOR, "secondary-provenance")
+    return records[0]["payload"] if records else None
+
+
+def _check_record_detector_runnable(context) -> None:
+    """Refuse a configured record detector the live pass could not load: its row,
+    its pinned package versions and its weights digest, without loading the model."""
+    identity = _resolved_secondary(context)
+    if not isinstance(identity, ChairIdentity):
+        return
+    _record_detector_mode(context, identity, fixture_allowed=False)
+    profile = bound_serving_recipes(context, context.args.serving_recipes_config).for_identity(
+        identity, context.args.placement_tier
     )
+    try:
+        check_record_detector_runnable(profile, lambda: context.registry.ensure(identity).root)
+    except ServingError as error:
+        raise ContractError(f"the record detector is not ready: {error}") from error
+
+
+def _live_secondary(context) -> tuple[dict, RecordDetector | None]:
+    """The secondary proposer on the live path: recorded absent, or run in-process.
+
+    Resolved every run, as in `secondary_provenance`. Called only once the
+    structure chair has closed, so the detector is never resident beside it.
+    """
+    resolved = _resolved_secondary(context)
+    if isinstance(resolved, AbsentChair):
+        return _absent_chair_record(context, resolved), None
+    return _open_record_detector(
+        context,
+        resolved,
+        fixture_allowed=False,
+        published=_published_secondary_provenance(context),
+    )
+
+
+# --- DAI's own record detector ------------------------------------------------
+
+DETECTOR_OUTPUT_SCHEMA = "record-detector-output.v1"
+# How a detection's float corners become the integer page geometry
+# `geometry_layer.yolo_obb` takes: each corner is floored to the pixel it falls
+# in and clamped to the page. The oriented box is kept as that polygon, and the
+# crop is its axis-aligned hull (`aabb-enclose`): whether DAI's own pipeline
+# rectifies a rotated record before reading it is not stated anywhere, so it is
+# not done. The float corners stay in the raw output blob.
+DETECTOR_QUANTIZATION = "obb-corner-floor-clamp.v1"
+# Scores are recorded in basis points, rounded half to even.
+DETECTOR_SCORE_QUANTIZATION = "score-round-half-even-bp.v1"
+DETECTOR_RECORD_KIND = "detector-record"
+DETECTOR_PAGE_KIND = "detector-page"
+# Its own kind, not `region`: every reader of `region` treats its subject as an
+# act and its bounds as act coverage, and a detector box is neither.
+DETECTOR_REGION_KIND = "detector-region"
+
+
+def detector_record_subject(page_id: str, detector_ordinal: int) -> str:
+    return f"{page_id}-detector-{detector_ordinal}"
+
+
+def _quantized_corners(corners: list, width: int, height: int) -> list[dict]:
+    return [
+        {
+            "x": min(width - 1, max(0, math.floor(x))),
+            "y": min(height - 1, max(0, math.floor(y))),
+        }
+        for x, y in corners
+    ]
+
+
+def _cut_detector_region(
+    context, subject: str, page_record: dict, page_bytes: bytes, bounds: dict, provenance: dict
+):
+    """Cut one record's crop by the stage's one crop path; it is never an act region."""
+    ordinal = page_record["payload"]["ordinal"]
+    width, height = dimensions(page_bytes)
+    geometry.validate_bounds(bounds, width, height, "detector record bounds")
+    crop = _stored_crop(context, page_bytes, ordinal, page_record, bounds)
+    return context.publish(
+        kind=DETECTOR_REGION_KIND,
+        subject_id=subject,
+        outcome="proposed",
+        inputs=[context.input_ref(page_record["payload"]["image_path"])],
+        payload={
+            "region_id": region_id(subject, crop["transform"]),
+            "record_key": subject,
+            "origin": "detector",
+            **crop,
+            "raw_bounds": bounds,
+            "padding": None,
+            "provenance": provenance,
+        },
+    )
+
+
+def _publish_detector_records(
+    context, pages: dict[int, dict], secondary: dict, detector: RecordDetector
+) -> None:
+    """Every sealed page's detector records: page evidence that decides nothing.
+
+    One `detector-page` per page says how many records were found, so a page
+    with none reads differently from a page never asked. Each record keeps its
+    oriented box, score, class and its overlap with every act proposal on the
+    page, recorded and never acted on: records hold nothing, rescue nothing and
+    enter no act. They are the units DAI reads.
+    """
+    geometry_policy = geometry_layer.load_geometry_policy(context.args.designator_geometry_config)
+    context.require_sealed_config("designator-geometry", geometry_policy["config_sha256"])
+    claimed_by_page = _claimed_regions_by_page(context)
+    for ordinal, page_record in pages.items():
+        page_id = page_record["subject_id"]
+        page_bytes = _read_checked_page_bytes(context, page_record)
+        width, height = dimensions(page_bytes)
+        detections = detector.detect(page_bytes, page_ordinal=ordinal)
+        raw_ref = context.retain(
+            json.dumps(
+                {
+                    "schema": DETECTOR_OUTPUT_SCHEMA,
+                    "page_ordinal": ordinal,
+                    "page_id": page_id,
+                    "run": dict(detector.run_facts),
+                    "detections": detections,
+                },
+                sort_keys=True,
+            ).encode("utf-8"),
+            "a record detector output",
+        )
+        quantized = [_quantized_corners(item["corners"], width, height) for item in detections]
+        cuttable = [
+            index
+            for index, points in enumerate(quantized)
+            if len({(point["x"], point["y"]) for point in points}) >= 3
+        ]
+        proposals = geometry_layer.yolo_obb(
+            page_id=page_id,
+            page_ordinal=ordinal,
+            page_w=width,
+            page_h=height,
+            policy=geometry_policy,
+            receipt_ref=secondary["receipt_ref"],
+            response_ref=raw_ref,
+            detections=[
+                {"obb": quantized[index], "score_bp": half_even_bp(detections[index]["score"])}
+                for index in cuttable
+            ],
+        )
+        by_ordinal = {
+            cuttable[position]: proposal
+            for proposal in proposals
+            for position in proposal["observed_ordinals"]
+        }
+        subjects = []
+        for index, detection in enumerate(detections):
+            subject = detector_record_subject(page_id, index)
+            proposal = by_ordinal.get(index)
+            region = (
+                _cut_detector_region(
+                    context, subject, page_record, page_bytes, proposal["aabb"], secondary
+                )
+                if proposal is not None
+                else None
+            )
+            bounds = proposal["aabb"] if proposal is not None else None
+            payload = {
+                "page_ordinal": ordinal,
+                "detector_ordinal": index,
+                "raw_output_ref": raw_ref,
+                "quantization": DETECTOR_QUANTIZATION,
+                "score_quantization": DETECTOR_SCORE_QUANTIZATION,
+                "score_bp": half_even_bp(detection["score"]),
+                "class_id": detection["class_id"],
+                "class_name": detection["class_name"],
+                "raw_proposal": proposal,
+                "bounds": bounds,
+                # A box whose corners collapse to fewer than three pixels encloses no
+                # crop; it is kept, uncut, rather than dropped.
+                "cut": proposal is not None,
+                "authoritative": False,
+                "authority_effect": "none",
+                "act_overlaps": sorted(
+                    (
+                        {"act_id": entry["act_id"], "overlap_px": area}
+                        for entry in claimed_by_page.get(ordinal, [])
+                        if bounds is not None
+                        and (area := _overlap_area(entry["bounds"], bounds)) > 0
+                    ),
+                    key=lambda row: row["act_id"],
+                ),
+                "region_ref": (
+                    context.input_ref(region.relative_path) if region is not None else None
+                ),
+                "provenance": secondary,
+            }
+            _refuse_text_fields(payload, kind=DETECTOR_RECORD_KIND)
+            inputs = [context.input_ref(page_record["payload"]["image_path"]), raw_ref]
+            if region is not None:
+                inputs.append(context.input_ref(region.relative_path))
+            context.publish(
+                kind=DETECTOR_RECORD_KIND,
+                subject_id=subject,
+                outcome="proposed",
+                inputs=inputs,
+                payload=payload,
+            )
+            subjects.append(subject)
+        page_payload = {
+            "page_ordinal": ordinal,
+            "detection_count": len(detections),
+            "record_subjects": subjects,
+            "raw_output_ref": raw_ref,
+            "provenance": secondary,
+        }
+        _refuse_text_fields(page_payload, kind=DETECTOR_PAGE_KIND)
+        context.publish(
+            kind=DETECTOR_PAGE_KIND,
+            subject_id=page_id,
+            outcome="proposed",
+            inputs=[context.input_ref(page_record["payload"]["image_path"]), raw_ref],
+            payload=page_payload,
+        )
 
 
 def _publish_live_act_groups(
@@ -2551,13 +2841,10 @@ def _published_structure_attempts(
             raise ContractError(
                 f"structure attempts for page {page_id} are not a contiguous sealed history"
             )
-        if result:
-            prior_seed = result[-1][0].record["attempt_seed"]
-            expected_seed = prior_seed + 1
-            if payload["attempt_seed"] != expected_seed:
-                raise ContractError(
-                    f"structure attempts for page {page_id} do not follow the sealed seed schedule"
-                )
+        if result and payload["attempt_seed"] != result[-1][0].record["attempt_seed"]:
+            raise ContractError(
+                f"structure attempts for page {page_id} do not share the serving row's seed"
+            )
         validate_serving_provenance(
             context, payload["provenance"], producer_stage=DESIGNATOR, require_receipt=True
         )
@@ -2710,8 +2997,8 @@ def _serve_unanswered_pages(
     page_cache: dict[int, dict],
     attempt_policy: Mapping[str, Any],
     identity: ChairIdentity,
+    decoding_policy: Mapping[str, Any],
     decoding_sha256: str,
-    temperature: float,
     serving_factory: Callable[[StageContext, ChairIdentity, str], ChairClient],
     tier: str,
 ) -> tuple[dict[int, structure_pass.PageAnswer], dict[int, dict[str, str]]]:
@@ -2754,7 +3041,7 @@ def _serve_unanswered_pages(
                         ordinal,
                         _read_checked_page_bytes(context, page_record),
                         page_cache[ordinal],
-                        temperature=temperature,
+                        decoding_policy=decoding_policy,
                         decoding_config_sha256=decoding_sha256,
                         provenance=provenance,
                         attempt_ordinal=len(history) + 1,
@@ -2782,18 +3069,30 @@ def _serve_unanswered_pages(
     return {ordinal: answers[ordinal] for ordinal in sorted(answers)}, answer_refs
 
 
-def live_initial_pass(context, serving_factory, tier: str) -> bool:
+def live_initial_pass(
+    context,
+    serving_factory,
+    tier: str,
+    surya_runner: surya_detection.SuryaRunner = surya_detection.SURYA_SUBPROCESS,
+) -> bool:
     """Mark out sealed pages through the served chair; return whether any were held.
 
     The live pass never reads context.fixture. Per page, the answer publishes
     before the status that cites it, then the crops; paid work survives resume.
+    ``serving_factory`` is a test's injected client factory; without one the
+    chair is read through ``stage_chair_client`` under the policy sealed here.
     """
     records, pages, padding, grouping_policy = _initial_pages_and_policies(context)
     # The sealed decoding posture is checked before any chair starts.
     decoding_policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
-    temperature = structure_pass.executable_temperature(decoding_policy)
     attempt_policy = structure_recovery_policy(decoding_policy)
+    if serving_factory is None:
+        serving_factory = partial(
+            stage_chair_client,
+            decoding_policy=decoding_policy,
+            decoding_config_sha256=decoding_sha256,
+        )
     identity = structure_pass.resolved_structure_chair(context)
     for row in _stage_records(context.tree, DESIGNATOR, STRUCTURE_ANSWER_KIND):
         payload = row.get("payload")
@@ -2803,7 +3102,17 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
                 subject=f"page {row.get('subject_id')}'s structure answer",
                 error_type=ContractError,
             )
-    secondary = _publish_secondary_provenance(context, _live_secondary_provenance(context))
+            if payload.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA:
+                refuse_structure_answer_text_view(
+                    payload.get("text_view"),
+                    subject=f"page {row.get('subject_id')}'s structure answer",
+                    error_type=ContractError,
+                )
+    # Checked before the structure chair starts, so a detector this stage cannot
+    # run refuses before any paid work; the detector itself loads only once the
+    # structure chair has closed, and Surya runs then too.
+    _check_record_detector_runnable(context)
+    surya_detection.check_surya_runnable(context, surya_runner)
 
     page_cache: dict[int, dict] = {}
     for ordinal, page_record in pages.items():
@@ -2815,11 +3124,15 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
         page_cache,
         attempt_policy,
         identity,
+        decoding_policy,
         decoding_sha256,
-        temperature,
         serving_factory,
         tier,
     )
+    surya_detection.publish_surya_detections(context, pages, live=True, runner=surya_runner)
+
+    secondary, detector = _live_secondary(context)
+    secondary = _publish_secondary_provenance(context, secondary)
 
     failures: dict[int, str] = {}
     status_answers: dict[int, tuple[str | None, dict[str, str]]] = {}
@@ -2861,9 +3174,16 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
     )
     if not expected and not failures:
         raise ContractError("no structural proposal or page fallback was marked out on any page")
+    if detector is not None:
+        _publish_detector_records(context, pages, secondary, detector)
 
     residual_rows, secondary_held, unmeasured = _publish_page_conservation(
-        context, pages, failures, page_cache, secondary, grouping_policy
+        context,
+        pages,
+        failures,
+        page_cache,
+        _pixel_rescue_provenance(secondary, detector),
+        grouping_policy,
     )
     expected.extend(residual_rows)
     if not expected:
@@ -3171,7 +3491,7 @@ def recovery_pass(context, act_id: str, request_id: str) -> None:
             page_h,
         )
     # The same builder `cut_region` uses, so the predicted identity matches.
-    transform = _crop_transform(page_ordinal, page_record["subject_id"], bounds)
+    transform = exemplar_crop_transform(page_ordinal, page_record["subject_id"], bounds)
     duplicate = region_id(act_id, transform)
     existing_regions = _regions_of(context, act_id)
     already_recovered = [
@@ -3248,15 +3568,19 @@ def _open(args, registry_factory) -> tuple[StageContext, bool]:
     return context, parse_ingress_record(context.run.get("ingress")) == REAL_INGRESS
 
 
-def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
+def main(registry_factory=ChairRegistry.from_toml, serving_factory=None, surya_runner=None) -> int:
     """Run through the explicitly supplied structure-chair implementation.
 
     `serving_factory(context, identity, tier) -> ChairClient` is the live seam;
-    tests inject a fake, production gets `structure_pass.default_serving_factory`.
-    The sealed catalogue, not this seam, decides which pass runs.
+    tests inject a fake, and production reads through `stage_chair_client` under
+    the decoding policy the live pass sealed. `surya_runner` is the same seam
+    for a Surya subprocess row, which only the live pass runs: production runs
+    Surya's runner process, tests an in-process stand-in. The sealed catalogue,
+    not either seam, decides which pass runs.
     """
     args = stage_parser(DESCRIPTION).parse_args()
     context, real_input = _open(args, registry_factory)
+    surya = surya_detection.SURYA_SUBPROCESS if surya_runner is None else surya_runner
 
     if args.operation == "recover":
         if not args.act:
@@ -3283,13 +3607,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
                 )
             held = initial_pass(context)
         elif mode == "live":
-            held = live_initial_pass(
-                context,
-                structure_pass.default_serving_factory
-                if serving_factory is None
-                else serving_factory,
-                args.placement_tier,
-            )
+            held = live_initial_pass(context, serving_factory, args.placement_tier, surya)
         else:  # pragma: no cover - serving_mode_for closes the vocabulary
             raise ContractError(f"unknown serving mode {mode!r} for the structure chair")
     else:

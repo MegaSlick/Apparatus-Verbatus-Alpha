@@ -29,7 +29,7 @@ _REPOSITORY = Path(__file__).resolve().parents[2]
 _SERVING_CALLERS = (
     "operations/pod/bootstrap_main.py",
     "operations/serving/assembly.py",
-    "pipeline/2_designator/structure_pass.py",
+    "pipeline/2_designator/run.py",
     "pipeline/3_attestatores/run.py",
     "pipeline/4_perlector/run.py",
 )

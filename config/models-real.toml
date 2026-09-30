@@ -66,7 +66,7 @@ manifest = "manifests/dai-recordgold-atr.json"
 serving_recipe = "unproven-real-attestatores"
 license_note = "No licence declared at all; accepted under the research track (2026-08-20) — weights are pulled from the repository at the pinned revision, never vendored, and a downstream operator fetches them and accepts whatever terms apply at the source"
 witness_adapter = "dai.v1"
-witness_scope = "act"
+witness_scope = "page"
 
 [chairs.attestator_3]
 state = "configured"
@@ -80,15 +80,31 @@ license_note = "Weights: Qwen research licence (research only); code incl. promp
 witness_adapter = "churro.v1"
 witness_scope = "page"
 
-# Absent by ruling of 2026-08-12: the optional YOLO secondary proposer
-# stays absent initially, and the Designator's structure chair proposes alone.
-# The drafted identity it would take (Teklia's YOLOv26 record detector,
-# AGPL-3.0) is still recorded in the commented real roster in
-# config/models.toml; configuring it here again is a roster change for the
-# project lead, not a config edit.
+# DAI's own project's record detector (Teklia, YOLOv26-m OBB, trained on the
+# same RecordGold corpus as DAI). Each witness sees the page the way it was
+# trained: DAI reads crops of the records this detector finds, never the
+# Designator's act crops. Its records are page-scoped evidence with no
+# authority over acts; they only give DAI its units.
 [chairs.secondary_proposer]
+state = "configured"
+source = "huggingface"
+repo = "Teklia/YOLOv26-DAI-CReTDHI-Record-Detection"
+revision = "0c57f057391113579e7af170b864542f049e67aa"
+digest_manifest = "f1ae7054f3964353cdda2c9655b7e9cb7dc9e33f5dbf0982c1d71009d60c43aa"
+manifest = "manifests/yolov26-record-detection.json"
+serving_recipe = "unproven-real-secondary-proposer"
+license_note = "AGPL-3.0. Accepted under the research track (2026-08-20)"
+
+# Surya (datalab-to/surya), run apart as an independent, deterministic text-line
+# and layout detector: a check that nothing is missed. Its weights are no single
+# Hub revision (text detection comes from Datalab's model host), so the chair is
+# the locked bundle `operations/serving/surya/prefetch.py` writes, pinned by its
+# digest manifest like any local repository. That manifest can only be measured
+# from a real fetch, and none has been made; the steps that configure this chair
+# are in operations/serving/surya/README.md.
+[chairs.designator_surya]
 state = "absent"
-reason = "the optional YOLO secondary proposer is not part of the first real roster"
+reason = "Surya's weight bundle has not been fetched, so there is no measured manifest to pin"
 
 [chairs.perlector]
 state = "configured"

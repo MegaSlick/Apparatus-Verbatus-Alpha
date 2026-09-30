@@ -51,6 +51,12 @@ def test_pins_come_from_configured_chairs_and_vendor_source_constants() -> None:
             "huggingface",
             "HEAD",
         ),
+        (
+            "Teklia/YOLOv26-DAI-CReTDHI-Record-Detection",
+            "0c57f057391113579e7af170b864542f049e67aa",
+            "huggingface",
+            "HEAD",
+        ),
         ("Qwen/Qwen3.8-27B", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0", "huggingface", "HEAD"),
         ("datalab-to/chandra", "d4f7467435aa4137d9539f000ddf0b7ced3eb43f", "github", "HEAD"),
         ("stanford-oval/Churro", "4abb17386d9656199c2776195926545fc527a691", "github", "v0.3.0"),

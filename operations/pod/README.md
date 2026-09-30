@@ -405,6 +405,22 @@ engine that served it (`SmokeResult.served_by`). Both carry an opaque module-pri
 minted only by the `nvidia-smi` probe and the serving evidence path and refused from any
 caller, so the claim cannot be set from outside.
 
+A chair whose serving row is `kind = "subprocess"` (Surya, run by stage 2 on the CPU) is
+never served through an engine: preflight verifies the chair's weights against the
+pinned manifest, then runs the chair's own runner once on the golden page, on the CPU
+(`preflight.check_subprocess_environment`). A broken environment or bundle goes red with
+the sync command as the remedy, and the versions, CPU instruction set and machine the
+run measured go in the report's `subprocess_receipts`. Bootstrap's UV_ENVIRONMENT step
+builds that environment right after the project's own, with
+`uv sync --locked --project operations/serving/surya`, only when the checked-out
+catalogue has a subprocess row for a chair the roster configures, and then counts its
+14 GiB in the container disk it checks first. Its weight bundle is fetched once onto the
+network volume by `operations/serving/surya/prefetch.py`
+(`operations/serving/surya/README.md`, "On the pod"). `pod_run` counts Surya among the
+Designator's chairs: a selection that runs the Designator with Surya configured is
+refused unless the preflight report places Surya as a subprocess, verified its cache and
+carries its golden-page run in `subprocess_receipts`.
+
 ## The pod guard: every pod deletes itself when idle or out of time
 
 `pod_guard.sh` runs on the pod and deletes that same pod when its approved time runs out
@@ -629,7 +645,11 @@ A kernel without working Landlock is a refusal: choose another host, never bypas
 
 Keep the repository, `.venv` and `UV_CACHE_DIR` on container-local disk. The serving stack
 keeps only the active model in its container-local cache. Keep inputs, outputs,
-evidence and the materialized model store on the network volume.
+evidence and the materialized model store on the network volume. A store on the volume
+written before the roster gained an artifact (the record detector, for one) is upgraded
+at boot: materialization adds each new artifact to its record as `pending-fetch` and
+fetches it, provided every artifact the store already names still matches the roster;
+any other record is refused (`common/chairs/README.md`).
 
 ### What the image must carry
 

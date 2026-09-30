@@ -386,6 +386,36 @@ def test_page_testimonium_consumer_reconciles_outcome_page_and_inputs(real_regio
         perlector.validate_page_testimonium_record(context, extra_input, proposals)
 
 
+def test_a_page_shown_several_times_is_read_once_and_binds_each_presentation(
+    real_region, monkeypatch
+):
+    """Every presentation names the one sealed page, which is read and sized once."""
+    context, _ = real_region
+    testimony = next(
+        context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium" and entry["outcome"] == "read"
+    )
+    payload = testimony["payload"]
+    reads = []
+    read_sealed_page = perlector.read_sealed_page
+    monkeypatch.setattr(
+        perlector,
+        "read_sealed_page",
+        lambda tree, page_id: reads.append(page_id) or read_sealed_page(tree, page_id),
+    )
+    shown = payload["presented"]
+    perlector._validate_presented_page(context, payload, [shown, shown, shown])
+    assert reads == [shown["source_page_id"]]
+
+    moved = {**shown, "image_sha256": "0" * 64}
+    with pytest.raises(SchemaRefusal):
+        perlector._validate_presented_page(context, payload, [shown, moved])
+    elsewhere = {**shown, "source_page_id": "another-page"}
+    with pytest.raises(SchemaRefusal, match="more than one sealed page"):
+        perlector._validate_presented_page(context, payload, [shown, elsewhere])
+
+
 @pytest.mark.parametrize("retained", ["native_capture", "raw_response_refs"])
 def test_a_page_testimonium_binds_every_retained_response_it_derived_from(real_region, retained):
     """Both retained-response shapes are inputs, not payload-only references.
@@ -776,7 +806,11 @@ def _replace_capture_projection(payload):
             "serving receipt",
         ),
         (
-            lambda payload: payload["native_capture"].update(adapter="another-adapter.v1"),
+            # Another adapter's capture carries no Churro text view.
+            lambda payload: (
+                payload["native_capture"].update(adapter="another-adapter.v1"),
+                payload["native_capture"].pop("text_view", None),
+            ),
             "configured boundary",
         ),
         (_replace_capture_projection, "parse.*retained raw response"),

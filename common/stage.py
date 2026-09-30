@@ -19,7 +19,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Final, Protocol
 
-from common import fixture_identity
+from common import chandra_layout, fixture_identity
 from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH, load_alignment_limits
 from common.armarium_formats import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
@@ -63,10 +63,7 @@ from common.contracts.outcomes import (
 from common.contracts.prior_draft import BLIND_READ_MODES
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
-    CHAIR_CALL_RECORD_FIELDS_V1,
     CHAIR_CALL_RECORD_SCHEMA,
-    CHAIR_CALL_RECORD_SCHEMA_V1,
-    CHAIR_CALL_RECORD_SCHEMAS,
     CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
     CHAIR_TRANSPORT_PROBLEM_FIELDS,
@@ -89,8 +86,14 @@ from common.contracts.stages import (
 from common.corpus_register import read_snapshot, verify_snapshot_is_current
 from common.decoding import (
     DEFAULT_DECODING_CONFIG_PATH,
+    STRUCTURE_RECOVERY_SCHEDULE,
+    chair_attempt_decoding,
     load_decoding_policy,
+    recorded_sampling,
+    refuse_retired_call_record,
     structure_recovery_policy,
+    variance_arm_seed,
+    verify_call_sampling,
 )
 from common.durability import is_unpublished_blob_temporary
 from common.exemplar_boundary import read_sealed_page, verify_sealed_page_pixels
@@ -101,6 +104,7 @@ from common.hard_failure import (
 )
 from common.imaging import dimensions
 from common.native_witness import validate_presented, validate_presented_page_binding
+from common.page_accounting import DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH, load_page_accounting_policy
 from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
     RECOVERY_KINDS,
@@ -300,19 +304,28 @@ STRUCTURE_CALL_FIELDS: Final = frozenset(
     {"schema", "call_kind", "decoding_policy", "decoding_config_sha256"}
 )
 STRUCTURE_CALL_KIND: Final = "chat-completions"
-# The structure pass may run at a sampled temperature, unlike the witnesses'
-# `reading_of_record`, so its section is named explicitly.
+# The decoding section that governs the structure pass's coverage recovery.
 STRUCTURE_DECODING_POLICY: Final = "structure"
 
 # Named once for the Designator, which writes them, and the verifier here.
 STRUCTURE_ANSWER_KIND: Final = "structure-answer"
-STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v1"
-STRUCTURE_ANSWER_RECORD_SCHEMA_V2: Final = "designator-structure-answer.v2"
-STRUCTURE_ANSWER_RECORD_SCHEMA_V3: Final = "designator-structure-answer.v3"
+# v4: each attempt's `decoding` carries its sealed sampling values, every
+# attempt keeps the serving row's seed, and its call record is chair-call-record.v3.
+STRUCTURE_ANSWER_RECORD_SCHEMA: Final = "designator-structure-answer.v4"
 RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS: Final = frozenset(
-    {STRUCTURE_ANSWER_RECORD_SCHEMA, STRUCTURE_ANSWER_RECORD_SCHEMA_V2}
+    {
+        "designator-structure-answer.v1",
+        "designator-structure-answer.v2",
+        "designator-structure-answer.v3",
+    }
 )
 RETIRED_RESIDUAL_ENUMERATION: Final = "withheld-page-held"
+
+
+# The remedy a retired structure answer's refusal names: the run tree is
+# immutable and a resumed Designator re-reads its sealed answers, so only a
+# fresh run of the submission re-asks the chair.
+_RERUN_FROM_THE_DOOR: Final = "re-run the submission from the Door"
 
 
 def refuse_retired_structure_answer(
@@ -320,8 +333,27 @@ def refuse_retired_structure_answer(
 ) -> None:
     if isinstance(schema, str) and schema in RETIRED_STRUCTURE_ANSWER_RECORD_SCHEMAS:
         raise error_type(
-            f"{subject} was sealed under {schema}, which this build no longer reads; re-run"
+            f"{subject} was sealed under {schema}, which this build no longer reads; "
+            f"{_RERUN_FROM_THE_DOOR}"
         )
+
+
+def refuse_structure_answer_text_view(
+    text_view: object, *, subject: str, error_type: type[Exception] = FatalAccounting
+) -> None:
+    """Refuse a structure answer whose block texts were not read under this build's
+    Chandra text view, naming the view it records or its absence."""
+    if text_view == chandra_layout.LAYOUT_TEXT_VIEW:
+        return
+    if isinstance(text_view, str) and text_view in chandra_layout.RETIRED_LAYOUT_TEXT_VIEWS:
+        raise error_type(
+            f"{subject} was read under {text_view}, which this build no longer reads; "
+            f"{_RERUN_FROM_THE_DOOR}"
+        )
+    named = "no text view" if text_view is None else f"unknown text view {text_view!r}"
+    raise error_type(
+        f"{subject} names {named}, not {chandra_layout.LAYOUT_TEXT_VIEW}; {_RERUN_FROM_THE_DOOR}"
+    )
 
 
 STRUCTURE_ATTEMPT_KIND: Final = "structure-attempt"
@@ -517,6 +549,10 @@ class StageContext:
     @property
     def perlector_audit_config_path(self) -> str:
         return self.args.perlector_audit_config
+
+    @property
+    def page_accounting_config_path(self) -> str:
+        return self.args.page_accounting_config
 
     def publish(
         self,
@@ -1343,6 +1379,11 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         ),
     )
     parser.add_argument("--alignment-config", default=str(DEFAULT_ALIGNMENT_CONFIG_PATH))
+    parser.add_argument(
+        "--page-accounting-config",
+        default=str(DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH),
+        help="the sealed thresholds of the check that a page reading missed nothing",
+    )
     parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
     parser.add_argument(
         "--designator-padding-config", default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH)
@@ -1587,6 +1628,7 @@ def run_config_bindings(
     designator_geometry_config_path: str | Path = DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     designator_grouping_config_path: str | Path = DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
     alignment_config_path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
+    page_accounting_config_path: str | Path = DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     armarium_formats_config_path: str | Path = DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
@@ -1645,6 +1687,7 @@ def run_config_bindings(
         designator_grouping_config_path, "Designator grouping configuration"
     )[1]
     _, alignment_config_digest = load_alignment_limits(alignment_config_path)
+    page_accounting_config_digest = load_page_accounting_policy(page_accounting_config_path).sha256
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
     )
@@ -1687,6 +1730,7 @@ def run_config_bindings(
                 "designator_geometry_config_sha256": geometry_config_digest,
                 "designator_grouping_config_sha256": grouping_config_digest,
                 "alignment_config_sha256": alignment_config_digest,
+                "page_accounting_config_sha256": page_accounting_config_digest,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_digest,
                 "decoding_config_sha256": decoding_config_digest,
@@ -1721,6 +1765,7 @@ def run_config_bindings(
             "designator-geometry": geometry_config_digest,
             "designator-grouping": grouping_config_digest,
             "alignment": alignment_config_digest,
+            "page-accounting": page_accounting_config_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
             "decoding": decoding_config_digest,
             "perlector-protocol": perlector_protocol_config_digest,
@@ -1794,6 +1839,7 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
                 args.designator_grouping_config, "Designator grouping configuration"
             )[1],
             "alignment": alignment_config_digest,
+            "page-accounting": load_page_accounting_policy(args.page_accounting_config).sha256,
             "corpus-frame-shard": corpus_frame_config_digest,
             "decoding": decoding_config_digest,
             "perlector-protocol": read_sealed_toml(
@@ -1891,6 +1937,10 @@ PERLECTOR_CHAIR = PERLECTOR
 # enabling a real detector must not silently turn every run `partial`.
 SECONDARY_PROPOSER_CHAIR = "secondary_proposer"
 
+# Surya's text-line and layout detector: the Designator runs it beside its
+# structure chair, as a check that no ink goes unseen. It decides nothing.
+DESIGNATOR_SURYA_CHAIR = "designator_surya"
+
 
 def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
     """Configured roles no stage in this pipeline will ever ask for.
@@ -1903,6 +1953,7 @@ def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
         DESIGNATOR_CHAIR,
         PERLECTOR_CHAIR,
         SECONDARY_PROPOSER_CHAIR,
+        DESIGNATOR_SURYA_CHAIR,
     }
     for role in list(addressed):
         value = models.chairs.get(role)
@@ -2280,11 +2331,14 @@ def _verify_real_act_denominator(
         refuse_retired_structure_answer(
             payload.get("schema"), subject=f"page {page_id}'s terminal structure answer"
         )
-        if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+        if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA:
             raise FatalAccounting(
                 f"page {page_id}'s terminal structure answer has unsupported schema "
                 f"{payload.get('schema')!r}"
             )
+        refuse_structure_answer_text_view(
+            payload.get("text_view"), subject=f"page {page_id}'s terminal structure answer"
+        )
         if attempts_by_page is None:
             attempts_by_page = _structure_attempts_by_page(context)
             sealed_decoding = load_decoding_policy(context.args.decoding_config)
@@ -2409,8 +2463,8 @@ def _verify_structure_attempt_chain(
     ordinal = payload.get("attempt_ordinal")
     if (
         not isinstance(policy, Mapping)
-        or set(policy) != {"max_attempts", "seed_schedule"}
-        or policy.get("seed_schedule") != "base-plus-attempt-ordinal-minus-one"
+        or set(policy) != {"max_attempts", "sampling_schedule"}
+        or policy.get("sampling_schedule") != STRUCTURE_RECOVERY_SCHEDULE
         or not is_plain_int(policy.get("max_attempts"))
         or not 1 <= policy["max_attempts"] <= 3
         or not is_plain_int(ordinal)
@@ -2422,7 +2476,7 @@ def _verify_structure_attempt_chain(
             f"page {page_id}'s terminal structure answer has no bounded exact attempt ledger"
         )
     if sealed_decoding is None:
-        sealed_decoding = load_decoding_policy(context.args.decoding_config)
+        sealed_decoding = sealed_decoding_policy(context)
     decoding_policy, decoding_digest = sealed_decoding
     decoding = payload.get("decoding")
     if (
@@ -2463,30 +2517,34 @@ def _verify_structure_attempt_chain(
                 attempt.get("schema"),
                 subject=f"page {page_id}'s structure attempt {expected_ordinal}",
             )
+            if attempt.get("schema") == STRUCTURE_ANSWER_RECORD_SCHEMA:
+                refuse_structure_answer_text_view(
+                    attempt.get("text_view"),
+                    subject=f"page {page_id}'s structure attempt {expected_ordinal}",
+                )
         prior = references[: expected_ordinal - 1]
         if (
             record.get("attempt_id") != attempt_id(page_id, "structure", expected_ordinal)
             or not isinstance(attempt, Mapping)
-            or attempt.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3
+            or attempt.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA
             or attempt.get("page_id") != page_id
             or attempt.get("page_ordinal") != payload.get("page_ordinal")
             or attempt.get("attempt_ordinal") != expected_ordinal
             or attempt.get("attempt_policy") != policy
             or attempt.get("attempts") != prior
             or not is_plain_int(attempt.get("attempt_seed"))
-            or attempt.get("decoding") != payload.get("decoding")
+            or attempt.get("decoding")
+            != structure_attempt_decoding(decoding_policy, expected_ordinal, decoding_digest)
         ):
             raise FatalAccounting(
                 f"page {page_id}'s structure attempt {expected_ordinal} does not bind its "
-                "identity, page, policy, config, and prior history"
+                "identity, page, policy, sealed sampling values, and prior history"
             )
-        if attempts:
-            expected_seed = attempts[-1]["attempt_seed"] + 1
-            if attempt["attempt_seed"] != expected_seed:
-                raise FatalAccounting(
-                    f"page {page_id}'s structure attempt {expected_ordinal} violates its "
-                    "sealed seed schedule"
-                )
+        if attempts and attempt["attempt_seed"] != attempts[-1]["attempt_seed"]:
+            raise FatalAccounting(
+                f"page {page_id}'s structure attempt {expected_ordinal} does not keep the "
+                "serving row's seed"
+            )
         try:
             validate_serving_provenance(
                 context,
@@ -2505,6 +2563,7 @@ def _verify_structure_attempt_chain(
                 attempt,
                 page_id,
                 attempt_inputs=record.get("inputs"),
+                sealed_decoding=sealed_decoding,
             )
         except (SchemaRefusal, ContractError) as error:
             raise FatalAccounting(
@@ -2630,21 +2689,97 @@ def _structure_source_page(
     return source_ref, page_bytes, page_size
 
 
+def structure_attempt_decoding(
+    policy: Mapping[str, Any], attempt_ordinal: int, decoding_config_sha256: str
+) -> dict[str, Any]:
+    """The decoding block a structure attempt must carry: its sealed sampling values."""
+    return {
+        "policy": STRUCTURE_DECODING_POLICY,
+        "sampling": recorded_sampling(
+            chair_attempt_decoding(policy, DESIGNATOR_CHAIR, attempt_ordinal)
+        ),
+        "decoding_config_sha256": decoding_config_sha256,
+    }
+
+
+def sealed_decoding_policy(context: StageContext) -> tuple[dict[str, Any], str]:
+    """The run's decoding policy, refused unless it is the one the run sealed."""
+    policy, digest = load_decoding_policy(context.args.decoding_config)
+    context.require_sealed_config("decoding", digest)
+    return policy, digest
+
+
+def verify_retained_call_sampling(
+    context: StageContext,
+    call: Mapping[str, Any],
+    chair: str,
+    *,
+    attempt_ordinal: int = 1,
+    variance_arm: str | None = None,
+    sends_seed: bool = True,
+) -> None:
+    """Hold one retained call record to its chair's sealed decoding row and seed.
+
+    The seed the call must have sent is `variance_arm`'s for a Perlector
+    sampling-variance arm, none when `sends_seed` is false (a Chandra native
+    request), and otherwise its serving receipt's. For a reader that holds only
+    the stage context and the parsed record; raises `ContractError`.
+    """
+    policy, _digest = sealed_decoding_policy(context)
+    expected_seed: int | None
+    if not sends_seed:
+        expected_seed = None
+    elif variance_arm is not None:
+        expected_seed = variance_arm_seed(policy, variance_arm)
+    else:
+        receipt_ref = call.get("receipt_ref")
+        if not isinstance(receipt_ref, Mapping):
+            raise ContractError(f"a {chair} call record names no serving receipt")
+        expected_seed = context.tree.read_run_receipt(dict(receipt_ref)).get("seed")
+    verify_call_sampling(
+        call, policy, chair, attempt_ordinal=attempt_ordinal, expected_seed=expected_seed
+    )
+
+
 def verify_structure_attempt_call(
     context: StageContext,
     payload: Mapping[str, Any],
     page_id: str,
     *,
     attempt_inputs: object = None,
+    sealed_decoding: tuple[Mapping[str, Any], str] | None = None,
 ) -> None:
-    """Bind one structure attempt to its retained response or transport call."""
+    """Bind one structure attempt to its retained response or transport call, and
+    both to the sealed sampling values of its attempt."""
     refuse_retired_structure_answer(
         payload.get("schema"),
         subject=f"structure attempt for page {page_id}",
         error_type=ContractError,
     )
-    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA:
         raise ContractError(f"structure attempt for page {page_id} has no supported schema")
+    refuse_structure_answer_text_view(
+        payload.get("text_view"),
+        subject=f"structure attempt for page {page_id}",
+        error_type=ContractError,
+    )
+    decoding_policy, decoding_digest = (
+        sealed_decoding_policy(context) if sealed_decoding is None else sealed_decoding
+    )
+    attempt_ordinal = payload.get("attempt_ordinal")
+    try:
+        expected_decoding = structure_attempt_decoding(
+            decoding_policy, attempt_ordinal, decoding_digest
+        )
+    except ContractError as error:
+        raise ContractError(
+            f"structure attempt for page {page_id} names no sealed attempt: {error}"
+        ) from error
+    if payload.get("decoding") != expected_decoding:
+        raise ContractError(
+            f"structure attempt for page {page_id} records decoding other than its attempt's "
+            "sealed sampling values"
+        )
     presented = _verify_structure_request_image(context, payload, page_id, attempt_inputs)
     expected_image_sha256 = presented["image_sha256"]
     reference = payload.get("call_record_ref")
@@ -2675,8 +2810,8 @@ def verify_structure_attempt_call(
     if not isinstance(call, Mapping):
         raise ContractError(f"structure attempt for page {page_id} call record is not an object")
     schema = call.get("schema")
+    refuse_retired_call_record(schema, subject=f"structure attempt for page {page_id} call record")
     expected_fields = {
-        CHAIR_CALL_RECORD_SCHEMA_V1: CHAIR_CALL_RECORD_FIELDS_V1,
         CHAIR_CALL_RECORD_SCHEMA: CHAIR_CALL_RECORD_FIELDS,
         CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
     }.get(schema)
@@ -2701,7 +2836,6 @@ def verify_structure_attempt_call(
         or call.get("request_sha256") != payload.get("request_sha256")
         or not isinstance(generation_sent, Mapping)
         or generation_sent.get("seed") != payload.get("attempt_seed")
-        or generation_sent.get("temperature") != decoding.get("temperature")
         or call.get("receipt_ref") != payload.get("receipt_ref")
         or call.get("receipt_ref") != provenance.get("receipt_ref")
         or call_identity != provenance.get("resolved_identity")
@@ -2716,6 +2850,17 @@ def verify_structure_attempt_call(
         raise ContractError(
             f"structure attempt for page {page_id} disagrees with its retained call record"
         )
+    receipt_ref = call.get("receipt_ref")
+    if not isinstance(receipt_ref, Mapping):
+        raise ContractError(f"structure attempt for page {page_id} call record names no receipt")
+    # Every recovery attempt keeps the serving row's seed.
+    verify_call_sampling(
+        call,
+        decoding_policy,
+        DESIGNATOR_CHAIR,
+        attempt_ordinal=attempt_ordinal,
+        expected_seed=context.tree.read_run_receipt(dict(receipt_ref)).get("seed"),
+    )
     if schema == CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA:
         problem = call.get("transport_problem")
         response_fields = (
@@ -2860,11 +3005,14 @@ def _verify_proposal_act_row(
     refuse_retired_structure_answer(
         payload.get("schema"), subject=f"act {act_id}'s page's structure answer"
     )
-    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA_V3:
+    if payload.get("schema") != STRUCTURE_ANSWER_RECORD_SCHEMA:
         raise FatalAccounting(
             f"act {act_id}'s page names a structure answer with unsupported schema "
             f"{payload.get('schema')!r}"
         )
+    refuse_structure_answer_text_view(
+        payload.get("text_view"), subject=f"act {act_id}'s page's structure answer"
+    )
     if row["page_id"] not in verified_structure_attempt_pages:
         _verify_structure_attempt_chain(context, payload, row["page_id"])
         verified_structure_attempt_pages.add(row["page_id"])
@@ -2918,9 +3066,15 @@ def _verify_proposal_act_row(
         raise FatalAccounting(
             f"act {act_id}'s structure answer names a call record that is not valid JSON: {error}"
         ) from error
+    if isinstance(call_record, Mapping):
+        refuse_retired_call_record(
+            call_record.get("schema"),
+            subject=f"act {act_id}'s structure answer call record",
+            error_type=FatalAccounting,
+        )
     if (
         not isinstance(call_record, Mapping)
-        or call_record.get("schema") not in CHAIR_CALL_RECORD_SCHEMAS
+        or call_record.get("schema") != CHAIR_CALL_RECORD_SCHEMA
         or call_record.get("chair") != DESIGNATOR_CHAIR
         or call_record.get("decoding_config_sha256") != structure_call["decoding_config_sha256"]
     ):
@@ -2930,6 +3084,17 @@ def _verify_proposal_act_row(
             "seal's own sealed decoding digest; a parsed answer naming a call record with no "
             "genuine reading behind it is a reading of nothing"
         )
+    try:
+        verify_retained_call_sampling(
+            context,
+            call_record,
+            DESIGNATOR_CHAIR,
+            attempt_ordinal=payload.get("attempt_ordinal"),
+        )
+    except ContractError as error:
+        raise FatalAccounting(
+            f"act {act_id}'s structure answer call record is not its sealed attempt: {error}"
+        ) from error
     answered = payload.get("acts")
     if not isinstance(answered, list):
         raise FatalAccounting(
@@ -3833,6 +3998,7 @@ def open_context(
         designator_geometry_config_path=args.designator_geometry_config,
         designator_grouping_config_path=args.designator_grouping_config,
         alignment_config_path=args.alignment_config,
+        page_accounting_config_path=args.page_accounting_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,

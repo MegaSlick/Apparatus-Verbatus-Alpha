@@ -112,6 +112,19 @@ license_note = "fixture identity only; no model weights or model license apply"
 state = "absent"
 reason = "no secondary proposer is configured for the offline walking skeleton"
 
+# Surya's text-line and layout detector, run on every page beside the structure
+# chair. Its fixture row answers the fixture pass from the synthetic fixture's
+# `[[surya_line]]` and `[[surya_block]]` rows; a live pass refuses a fixture row
+# and needs a `subprocess` row in its serving catalogue.
+[chairs.designator_surya]
+state = "configured"
+source = "local-repository"
+path = "designator_surya"
+digest_manifest = "4626138f0da77e3f0b6f9ce10d8c7376ae49397ecb52875d72a9b43b514b6e4f"
+manifest = "manifests/designator_surya.json"
+serving_recipe = "fake-surya-v0"
+license_note = "fixture identity only; no model weights or model license apply"
+
 # The real roster's membership was ruled on 2026-08-20, quoted here because the
 # ruling itself does not travel with this file: "For now we will have qwen 3.8
 # 27b as the perlector model and churro,dai and chandra as the first three."

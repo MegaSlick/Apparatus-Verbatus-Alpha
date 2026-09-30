@@ -163,15 +163,16 @@ authorized — is in `serving-launch-audit.v1`, a content-addressed stage blob w
 references return; they are exposed on the `ServiceHandle` and copied beside pod smoke
 evidence.
 
-## `generation_config`: `"vllm"` or `"auto"`
+## `generation_config`: `"vllm"` only
 
-`"vllm"` uses vLLM's uniform defaults. `"auto"` is admitted only for a witness (Attestator)
-row, refused at catalogue parse for any other chair: a witness's vendor-shipped
-`generation_config.json` is a pinned artifact of its revision, while the Perlector and
-Designator have no vendor defaults to defer to. For an `"auto"` row, `manager.start` reads
-that file from the verified snapshot before launching and records its SHA-256 as
-`generation_config_digest` in the audit's `profile` block (`null` for `"vllm"`); a missing
-or unreadable file refuses by name.
+Every row is `"vllm"`, and the catalogue parser refuses `"auto"`. Under `"auto"`, vLLM 0.27.1
+(`ModelConfig.get_diff_sampling_param`) fills any of `temperature`, `top_p`, `top_k`, `min_p`,
+`repetition_penalty` and `max_tokens` a request leaves out from the model's
+`generation_config.json`, unseen on the wire. Under `"vllm"` nothing is filled from the file,
+and every chair's sealed decoding row names every one of those sampling fields
+(`common.decoding.ENGINE_FILLED_SAMPLING_FIELDS`), so what a reading samples under is on its
+call record. vLLM still reads the file's `eos_token_id`s under `"vllm"` and adds them as stop
+tokens; the file's bytes are pinned by the chair's verified snapshot manifest.
 
 ## Hybrid-attention prefix caching
 
@@ -229,13 +230,12 @@ Three static assertions keep `proven` from resting on a smoke string alone:
   nothing. Carry the vendor ranges as cited data first (`cleanroom/README.md`).
 - `assert_generation_config_key_coverage(...)` — refuses a vendor `generation_config.json`
   key neither sent nor named as withheld with a reason. **Wired only for DAI**
-  (`attestator_2`), the one chair whose full vendor file is carried. Under DAI's `"auto"`
-  posture, `repetition_penalty`, `top_k` and `top_p` are also sent verbatim; token ids are
-  delegated to the pinned snapshot (the secondary EOS sent redundantly); the vendor's
-  `temperature = 0.1` and `do_sample = true` are superseded by temperature-zero reading;
-  `transformers_version` is metadata. This accounts for configuration and request
-  construction, not for what the engine applied; the audit's `generation_config_digest`
-  records the file vLLM read.
+  (`attestator_2`), the one chair whose full vendor file is carried. `repetition_penalty`,
+  `temperature`, `top_k` and `top_p` are sent verbatim from the sealed decoding table's DAI
+  row; the engine reads `eos_token_id` from the pinned file (the secondary EOS is also sent);
+  `bos_token_id`, `pad_token_id` and `do_sample = true` have no request field, and the
+  nonzero temperature is what `do_sample` does; `transformers_version` is metadata. This
+  accounts for configuration and request construction, not for what the engine applied.
 
 ## Pod seam
 
@@ -276,7 +276,9 @@ pixel figures: a row this package refuses to launch should not carry unbenchmark
 the golden page and absent from the prompt. The smoke requires the exact
 `PAGE-WITNESS: ` marker and allows up to two code edits and internal whitespace.
 The lifecycle already proves the request carried the fixture bytes; this proves something
-read them. An answer built from the prompt alone yields the literal
+read them, under the chair's own sealed sampling row and the profile seed, as its run will
+read (`chair_sampling`, built by the pod bootstrap from the pinned checkout's
+`config/decoding.toml`; a chair without a row is refused before anything is sent). An answer built from the prompt alone yields the literal
 `PAGE-WITNESS: <the page witness string>`, is format-invalid, and fails preflight. The
 receipt records the code edit distance, identity and revision, the `served_model_id` the response body itself named
 (`parse_openai_answer` refuses any other alias), the response digest, and `sha256(witness)`
@@ -330,45 +332,67 @@ sends them unchanged.
   (`common/request_capacity.py::sendable_max_tokens`): our own count of the remainder could
   earn an HTTP 400 the engine's count would not, while the declared bound, sent only when
   smaller, stops a chair generating far past its publisher's length.
-- The few explicit decoding values — Churro's `repetition_penalty`, DAI's redundant second
-  EOS in `stop_token_ids`, both Chandra chairs' `chat_template_kwargs` — ride
-  `generation_sent`, so the call record shows exactly what went out.
+- A caller's `generation_sent` may carry only `CALLER_GENERATION_FIELDS`
+  (`common/contracts/serving.py`), one allow-list for every chair: `max_tokens`,
+  `chat_template_kwargs` and `stop_token_ids`. Today the builders send `max_tokens` (every
+  chair), `chat_template_kwargs` (both Chandra chairs and the Perlector) and
+  `stop_token_ids` (DAI's redundant second EOS). The sampling
+  values are the chair's sealed row (below). The call record shows exactly what went out.
 
 **`ChairClient.read(ChairRequest) -> ChairResponse` issues exactly one request:**
 
 1. Refuse an unbuildable request before building anything: a `kind` other than
-   `chat-completions`; `generation_sent` naming `model`, `stream`, `temperature`, `seed` or
-   `n` (the manager's and decoding policy's alone); image digests that do not match
-   `image_sha256s` exactly and in order.
-2. Build the body with the sealed decoding temperature and the profile's seed (except the
-   Designator structure chair's sealed recovery-seed override), and POST through
-   `ServiceHandle.request_reading`.
+   `chat-completions`; a `generation_sent` field outside the caller allow-list, named in the
+   refusal (vLLM's request model ignores an unknown field silently, so a misspelt one would
+   otherwise vanish); image digests that do not match `image_sha256s` exactly and in order.
+2. Build the body with the chair's sealed sampling row and the seed, and POST through
+   `ServiceHandle.request_reading`. The client takes the sealed decoding policy the stage
+   loaded (refused unless it seals to the recorded digest) and selects the row by its own
+   `identity.role`: `config/decoding.toml`'s `chair_decoding`, the chair's makers'
+   recommendation. Two request fields select within the sealed policy and belong to one
+   chair each: the Designator structure chair's `structure_attempt_ordinal` picks the
+   attempt's values on Chandra's retry schedule, and the Perlector's `variance_arm` picks
+   that arm's seed; every other request sends the profile's seed. Both are on the call
+   record's `generation_sent`, and `sampling_effective` beside them holds what the pinned
+   engine samples under (`common.decoding.engine_effective_sampling`: vLLM 0.27.1 raises a
+   temperature in (0, 0.01) to 0.01, as for Churro's 1e-06, and a greedy request runs at
+   `top_p` 1, `top_k` 0, `min_p` 0, as for Chandra's first request). vLLM samples a seeded
+   request from that request's own generator, so the same request on the same engine build,
+   model and hardware draws the same samples; batching and kernels can still move low-order
+   logits, so a repeat is reproducible in intent, not guaranteed bit for bit.
 3. **Retain the raw response through the caller's `retain` callable before checking
    anything**: when vLLM refuses a request it says why in the body of a non-200, and that
    sentence must reach disk before any refusal can discard it.
-4. Classify a non-200 or wrong-model response, write a closed `chair-call-record.v2` (HTTP
+4. Classify a non-200 or wrong-model response, write a closed `chair-call-record.v3` (HTTP
    status, requested and observed model), then raise with both retained references.
 5. Otherwise parse. A content or choices problem becomes `parse_problem` on the returned
    `ChairResponse`, never an exception, because a malformed witness body is evidence, not a
-   stage abort. Write one `chair-call-record.v2` (fields in
-   `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`) and return. Sealed v1 records are
-   still accepted.
+   stage abort. Write one `chair-call-record.v3` (fields in
+   `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`) and return. Every stage reader of a
+   call record (the Designator's structure attempts and minted acts, every Testimonium's
+   serving call, every Perlector reading, re-proof and failed Perlectio) holds its
+   generation fields, sampling and seed to the sealed row through one check,
+   `common.decoding.verify_call_sampling`; a reader holding only the stage context calls it
+   through `common.stage.verify_retained_call_sampling`. A call record written under a
+   retired schema (`common/contracts/serving.RETIRED_CALL_RECORD_SCHEMAS`) is refused by
+   name.
 
 `parse_openai_reading` cannot tell "no model named" from "wrong model named" (both are
 `CHAIR_RESPONSE_MODEL_MISMATCH`), so `read` reports a body with no `model` field as
 `CHAIR_RESPONSE_INVALID` rather than claim a foreign source it never observed.
 
 **Transport failure.** If the POST raises before a complete response exists, the client
-retains `chair-transport-failure.v1` instead: the same request, identity, receipt, decoding,
+retains `chair-transport-failure.v2` instead: the same request, identity, receipt, decoding,
 generation and capacity facts, every response field null, delivery and completion recorded
 as `unknown`. `ChairTransportFailure` names it so a stage can keep one terminal attempt
 rather than repeat a request whose engine-side completion is unknown.
 
 **Chandra native calls.** `prepare_chandra_native` / `read_chandra_native` is the one narrow
 exception, for page-scoped `attestator_1` with adapter `chandra.v1` under the exact
-`decoding.v4` recipe. Each prepared dispatch fixes one of seven declared temperature/top-p
-pairs, and the stage must publish and pass a durable attempt-intent reference before the
-POST; `chandra-native-call-record.v1` binds it, so the three identical 0.8/0.95 attempts stay
+`decoding.v5` recipe. Each prepared dispatch sends Attestator 1's sealed row with one of
+seven declared temperature/top-p pairs (`common.decoding.chair_attempt_decoding`, from the
+client's one decoding policy), and the stage must publish and pass a durable attempt-intent reference before the
+POST; `chandra-native-call-record.v2` binds it, so the three identical 0.8/0.95 attempts stay
 distinct. These calls send no per-request seed because the pinned upstream client sends
 none (the launch seed stays on the serving receipt).
 `chat_template_kwargs.enable_thinking=false` is a local compatibility field for vLLM 0.27

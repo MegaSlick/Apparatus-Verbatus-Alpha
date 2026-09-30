@@ -660,7 +660,7 @@ def test_a_response_that_is_not_bytes_is_refused():
 
 
 def test_the_declared_vocabulary_is_what_the_records_use():
-    assert CHURRO_TEXT_VIEW == "churro-historical-document-text.v1"
+    assert CHURRO_TEXT_VIEW == "churro-historical-document-text.v2"
     assert CHURRO_PARSER == "xml"
     assert PARSE_STATES == {"parsed", "failed", "unrecognized-shape"}
     assert DOCUMENT_SHAPES == {"historical-document", "plain-text", "output-element"}
@@ -669,6 +669,7 @@ def test_the_declared_vocabulary_is_what_the_records_use():
         "retired-output-envelope",
         "stray-markup-escaped",
         "page-text-outside-sections",
+        "document-text-outside-pages",
     }
     assert MARKED_SPAN_KINDS == {
         "Addition",
@@ -783,3 +784,51 @@ def test_a_failed_record_may_not_claim_text_and_needs_a_reason():
 def test_a_non_record_is_refused():
     with pytest.raises(SchemaRefusal, match="not an object"):
         validate_churro_document_parse(["parsed"])
+
+
+def test_the_text_outside_sections_is_every_run_the_finding_names_in_document_order():
+    from common.churro_document import parse_churro_document, text_outside_sections
+
+    raw = (
+        b"<HistoricalDocument><Page>Folio\n   3<Header><Line>h</Line></Header>"
+        b"<Note>en <b>marge</b></Note><Body><Line>b &amp; c</Line></Body>fin"
+        b"<Page>second<Body><Line>x</Line></Body></Page></Page></HistoricalDocument>"
+    )
+    assert "page-text-outside-sections" in [
+        finding["kind"] for finding in parse_churro_document(raw)["findings"]
+    ]
+    assert text_outside_sections(raw) == "Folio 3\nen\nmarge\nfin\nsecond"
+    clean = b"<HistoricalDocument><Page><Body><Line>b</Line></Body></Page></HistoricalDocument>"
+    assert text_outside_sections(clean) == ""
+    assert text_outside_sections(b"plain text reading") == ""
+
+
+def test_the_text_outside_sections_reads_an_answer_parsed_after_the_stray_escape():
+    from common.churro_document import text_outside_sections
+
+    raw = b"<HistoricalDocument><Page>a < b<Body><Line>x</Line></Body></Page></HistoricalDocument>"
+    assert text_outside_sections(raw) == "a < b"
+
+
+def test_text_outside_every_page_is_named_and_returned_but_metadata_is_not():
+    from common.churro_document import parse_churro_document, text_outside_sections
+
+    raw = (
+        b"<HistoricalDocument>avant<Metadata><Language>fra</Language></Metadata>"
+        b"<Page><Body><Line>b</Line></Body></Page>entre<Note>hors page</Note>"
+        b"<Page>marge<Body><Line>c</Line></Body></Page></HistoricalDocument>"
+    )
+    record = parse_churro_document(raw)
+    assert record["text"] == "b\n\nc"
+    kinds = [finding["kind"] for finding in record["findings"]]
+    assert {"kind": "document-text-outside-pages"} in record["findings"]
+    assert "page-text-outside-sections" in kinds
+    assert validate_churro_document_parse(record) == record
+    assert text_outside_sections(raw) == "avant\nentre\nhors page\nmarge"
+    # Metadata alone is not text a reader is missing.
+    only_metadata = (
+        b"<HistoricalDocument><Metadata><Language>fra</Language></Metadata>"
+        b"<Page><Body><Line>b</Line></Body></Page></HistoricalDocument>"
+    )
+    assert parse_churro_document(only_metadata)["findings"] == []
+    assert text_outside_sections(only_metadata) == ""

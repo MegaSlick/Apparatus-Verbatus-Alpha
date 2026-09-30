@@ -45,7 +45,8 @@
 #
 # `config/pod_placement.toml`'s tier ceilings move with them: `pixel_cap =
 # 3,584` at every tier (3,584² = 12,845,056, DAI's vendor `max_pixels`, the
-# largest any row now asks for), `context_cap = 32,768` at every tier (admits Churro's
+# largest any row now asks for), `context_cap = 32,768` at every tier but
+# `generic-80gb-plus`, which is 65,536 for the Perlector's page reading (admits Churro's
 # 25,000-token generation bound, and at `generic-80gb-plus` the Perlector's
 # two-view page-fallback act, 20,400 image tokens alone); `engine_memory_fraction = "0.90"` at `generic-24gb` only (0.58 had
 # no derivation anywhere in this tree or the old pipeline, which never served
@@ -60,8 +61,9 @@
 # whole page, seen from two captures -- sends four page-sized images, which at
 # the 80 GB+ tier's `max_pixels` is 20,400 prompt tokens before a word of
 # prompt.  Its token count fits the smaller tiers' contexts, but its weights
-# rule those tiers out.  The 80 GB+ row has a 32,768-token context; the pinned
-# capacity case says the request fits that row.
+# rule those tiers out.  The 80 GB+ row has a 65,536-token context, sized for a
+# whole-page reading (its own comment has the arithmetic); the pinned capacity
+# case says the act request fits that row.
 #
 # CHURRO'S ANSWER BOUND IS THE VENDOR'S OWN, AND EVERY TIER HOLDS IT.  The live
 # chair is asked in the system string the vendor's own registry resolves for
@@ -108,24 +110,20 @@
 # serve it.  The two smaller tiers have unsupported rows so the catalogue
 # still names their measured refusal rather than offering impossible launches.
 #
-# `generation_config = "auto"` ON EVERY ATTESTATOR (WITNESS) ROW.
-# `operations/serving/config.py` accepts it for Attestator rows
-# only -- `designator_structure` is a Designator, not a witness, and the
-# Perlector is neither, so both stay `"vllm"`.  In vLLM 0.27.1
-# (`vllm/config/model.py`) `"vllm"` drops the model's sampling defaults
-# (`repetition_penalty`, `temperature`, `top_k`, `top_p`, ...) but NOT its
-# `eos_token_id`s: `try_get_generation_config` loads the file under both
+# `generation_config = "vllm"` ON EVERY ROW.  In vLLM 0.27.1
+# (`vllm/config/model.py`, `ModelConfig.get_diff_sampling_param`) `"auto"`
+# fills any of `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`
+# and `max_tokens` a request leaves out from the model's generation_config.json,
+# unseen on the wire; `"vllm"` fills nothing.  Every chair's request carries
+# its full sampling row from `config/decoding.toml`'s `chair_decoding` table,
+# which names every one of those sampling fields, so under `"vllm"` nothing a
+# reading samples under comes from a file by default.  `"vllm"` still reads the
+# file's `eos_token_id`s: `try_get_generation_config` loads it under both
 # settings and `SamplingParams.update_from_generation_config` adds the ids as
-# stop tokens, so the Designator keeps Chandra's 248044 and the Perlector its
-# second id 248044 either way.  `"auto"` additionally applies the sampling
-# defaults, which is what the witnesses want (Churro's `repetition_penalty:
-# 1.05`) and the Designator and Perlector must not have (the Perlector's file
-# ships temperature 1.0, top_k 20, top_p 0.95; the manager forces temperature 0
-# regardless).  `"auto"` also makes the manager receipt record the digest of the
-# chair's own `generation_config.json`.  Chandra-2's file
-# (`designator_structure` serves the same checkpoint) carries only the EOS id
-# and `use_cache`; the Perlector's carries the sampling values above.
-#
+# stop tokens, so the Designator keeps Chandra's 248044, the Perlector its
+# second id 248044, and DAI and Churro theirs.  The file's bytes are pinned by
+# the chair's verified snapshot manifest.
+
 # `min_pixels` ON THE PERLECTOR (65,536) is the vendor default: Qwen3.8-27B's
 # `preprocessor_config.json` says `shortest_edge = 65536`; the 3,136 this row
 # carried was the Qwen2.5-VL processor's figure.  Every image is therefore at
@@ -149,8 +147,12 @@
 # starts and answers is still an unproven row until preflight says otherwise.
 #
 # Rows cover every configured chair in models-real.toml at every tier in
-# pod_placement.toml.  The secondary proposer has no row because it is absent
-# there by ruling of 2026-08-12, and an absent chair needs no coverage.
+# pod_placement.toml.  The secondary proposer is DAI's own record detector, run
+# `kind = "in-process"` by the Designator on the CPU after the structure chair
+# has closed: no server, no port, no share of the card.  Its `imgsz`, `conf_bp`,
+# `iou_bp` and `max_det` are Ultralytics' own predict defaults for this
+# checkpoint (imgsz from the checkpoint's own training arguments), written out
+# so the sealed catalogue says what the detector was asked with; none is tuned.
 # The common stage parser seals the selected catalogue's content, so using
 # this catalogue cannot silently share a run authority with the fixture-only
 # catalogue.
@@ -318,7 +320,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -349,7 +351,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_1 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -380,7 +382,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_1 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -419,7 +421,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -450,7 +452,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_2 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -481,7 +483,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_2 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -512,7 +514,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -543,7 +545,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_3 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -574,7 +576,7 @@ enforce_eager = false
 trust_remote_code = false
 enable_tower_connector_lora = false
 max_lora_rank = 64
-generation_config = "auto"
+generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # EXTRAPOLATED from attestator_3 24 GB RTX 4090 measurement; see header
 poll_interval_seconds = 2
@@ -606,8 +608,21 @@ served_model_id = "perlector-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.27.1", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 32768
-max_num_seqs = 4
+# A whole-page reading of the dense default page needs about 58,000 tokens, so
+# the context is 65,536. Only the 16
+# full-attention layers of 64 keep KV per token: 16 layers x 4 KV heads x 256
+# dims x 2 (K and V) x 2 bytes = 64 KiB a token, 4 GiB for one 65,536-token
+# sequence (from the model card's shape, not measured). The 55.6 GB of bf16
+# weights leave 0.88 x 80 GB - 55.6 GB = 14.8 GB on an 80 GB card for KV, the
+# linear-attention layers' per-sequence state, activations and the vision
+# encoder's peak. Two full-length pages take 8 GiB of it; four would take 16
+# GiB, more than the whole margin. So two sequences at once, the most an 80 GB
+# card of this tier holds at full length with room left for the rest (a 96 GB
+# card holds more, but the row serves every card of the tier). The stage's
+# default concurrency is this value, so no pass schedules more pages at once
+# than the pool can hold whole.
+max_model_len = 65536
+max_num_seqs = 2
 max_num_batched_tokens = 4096
 gpu_memory_utilization = "0.88"
 min_pixels = 65536
@@ -625,3 +640,45 @@ startup_timeout_seconds = 600  # measured cold start ~375 s (see the header) plu
 poll_interval_seconds = 2
 request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+
+[[profiles]]
+kind = "in-process"
+recipe = "unproven-real-secondary-proposer"
+chair = "secondary_proposer"
+tier = "generic-24gb"
+engine = "ultralytics"
+task = "obb"
+device = "cpu"
+imgsz = 1024
+conf_bp = 2500
+iou_bp = 7000
+max_det = 300
+required_packages = { ultralytics = "8.4.14", torch = "2.13.0" }
+
+[[profiles]]
+kind = "in-process"
+recipe = "unproven-real-secondary-proposer"
+chair = "secondary_proposer"
+tier = "generic-48gb"
+engine = "ultralytics"
+task = "obb"
+device = "cpu"
+imgsz = 1024
+conf_bp = 2500
+iou_bp = 7000
+max_det = 300
+required_packages = { ultralytics = "8.4.14", torch = "2.13.0" }
+
+[[profiles]]
+kind = "in-process"
+recipe = "unproven-real-secondary-proposer"
+chair = "secondary_proposer"
+tier = "generic-80gb-plus"
+engine = "ultralytics"
+task = "obb"
+device = "cpu"
+imgsz = 1024
+conf_bp = 2500
+iou_bp = 7000
+max_det = 300
+required_packages = { ultralytics = "8.4.14", torch = "2.13.0" }
