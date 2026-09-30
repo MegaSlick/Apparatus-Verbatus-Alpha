@@ -63,13 +63,12 @@ UNMEASURED_REASONS: Final = frozenset(
 )
 
 
-# Fields the aligned act-attachment record no longer carries. A record holding
-# one was aligned under a wall-clock bound, so whether it aligned depended on
-# the machine; it is refused by name rather than as a generic shape error.
+# An aligned record carrying this field was bounded by a wall clock, so whether
+# it aligned depended on the machine. It is refused by name, not as a shape error.
 _RETIRED_ALIGNED_FIELDS: Final = ("deadline_in_force",)
-# Unaligned reasons no current aligner writes. A wall-clock stop said nothing
-# about the witness, and read today it would land in `unaligned`, the bucket of
-# comparisons made, so it is refused by name rather than counted there.
+# A wall-clock stop that says nothing about the witness. Counted, it would land in
+# `unaligned`, which holds only chairs short for a reason other than the aligner's
+# own bound, so it is refused by name instead.
 _RETIRED_UNALIGNED_REASONS: Final = ("alignment-deadline-exceeded",)
 
 

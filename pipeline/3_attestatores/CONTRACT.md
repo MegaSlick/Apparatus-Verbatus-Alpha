@@ -379,8 +379,8 @@ page shapes cost far less. `common/test_alignment.py` pins the headroom on the
 
 What it does not cover: a page at the ceiling made of shorter units repeated
 verbatim, such as index rows. A 60-character unit needs 570M steps. Such a page
-comes out `alignment-step-limit`, counted `unmeasured` -- a named hold, never a
-silent loss. Degenerate chair responses the bounds admit -- two different
+comes out `alignment-step-limit`, counted `unmeasured` and named, never a silent
+loss; the act is held only when that leaves its witness floor short. Degenerate chair responses the bounds admit -- two different
 low-entropy strings, a repetition loop against a page -- stop the same way,
 after at most the budget's work rather than however long they would take.
 
