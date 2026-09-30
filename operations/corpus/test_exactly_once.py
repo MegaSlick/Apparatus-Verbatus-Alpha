@@ -121,6 +121,10 @@ def page(
             "blocks": [{"id": f"S{k + 1}", "box_px": band(k)} for k in range(records)],
         },
     }
+    sealed = [
+        {"letter": w["letter"], "outcome": w["outcome"], "blank": False, "units": w["units"]}
+        for w in feed["witnesses"]
+    ]
     detections = {
         "surya": {
             "lines": [],
@@ -160,6 +164,7 @@ def page(
     }
     accounting = page_accounting(
         feed=feed,
+        witnesses=sealed,
         detections=detections,
         reading=reading,
         entry_truncation=truncation or {n: "complete" for n in range(1, len(acts) + 1)},
@@ -172,6 +177,7 @@ def page(
     return {
         "page_sha256": PAGE_SHA,
         "feed": feed,
+        "witnesses": sealed,
         "detections": detections,
         "reading": reading,
         "act_regions": [
@@ -385,6 +391,7 @@ def test_a_held_reading_publishes_no_region_and_its_records_are_caught_page_wide
     }
     unread["accounting"] = page_accounting(
         feed=unread["feed"],
+        witnesses=unread["witnesses"],
         detections=unread["detections"],
         reading=unread["reading"],
         entry_truncation={},

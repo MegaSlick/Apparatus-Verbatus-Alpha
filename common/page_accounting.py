@@ -3,10 +3,10 @@
 A page reading is one Perlector answer for a whole page: entries (`act` or
 `other`) that cite the candidate ids of the page feed -- witness units `A1..`,
 Surya lines `L1..` and blocks `S1..` -- plus the ids it set aside with a reason.
-This module takes that answer, the feed and the page's sealed detections as
-plain data and says, rule by rule, whether every witness unit, every detected
-line, every detector record, every witness's text and the page's ink are
-accounted for. It reads no file, calls no model and chooses nothing among the
+This module takes that answer, the feed and the page's sealed witnesses and
+detections as plain data and says, rule by rule, whether every witness unit,
+every detected line, every detector record, every witness's text and the
+page's ink are accounted for. It reads no file, calls no model and chooses nothing among the
 witnesses. A hold only asks a human to look; a measurement that cannot be
 taken holds; any hold holds the page's acts for review.
 
@@ -65,6 +65,8 @@ READING_UNPLACED: Final = "reading-unplaced"
 UNACCOUNTED_WITNESS_UNIT: Final = "unaccounted-witness-unit"
 SET_ASIDE_SUBSTANTIAL: Final = "set-aside-substantial"
 WITNESS_NOT_READ: Final = "witness-not-read"
+WITNESS_READ_NO_UNITS: Final = "witness-read-no-units"
+WITNESS_READ_BLANK: Final = "witness-read-blank"
 UNREAD_LINE: Final = "unread-line"
 UNREAD_LINE_NOT_MEASURED: Final = "unread-line-not-measured"
 WITNESS_TEXT_NOT_READ: Final = "witness-text-not-read"
@@ -91,6 +93,7 @@ HOLD_CODES: Final = frozenset(
         UNACCOUNTED_WITNESS_UNIT,
         SET_ASIDE_SUBSTANTIAL,
         WITNESS_NOT_READ,
+        WITNESS_READ_NO_UNITS,
         UNREAD_LINE,
         UNREAD_LINE_NOT_MEASURED,
         WITNESS_TEXT_NOT_READ,
@@ -149,6 +152,7 @@ _ENTRY_REQUIRED: Final = frozenset(
     {"n", "kind", "cites", "text", "continues_from_previous_page", "continues_to_next_page"}
 )
 _ENTRY_KINDS: Final = frozenset({"act", "other"})
+_WITNESS_KEYS: Final = frozenset({"letter", "outcome", "blank", "units"})
 _DETECTIONS_KEYS: Final = frozenset({"surya", "records", "record_detector", "record_census"})
 _RECORD_CENSUS_KEYS: Final = frozenset({"detection_count", "max_det", "max_det_reached"})
 MAX_LABEL_CHARACTERS: Final = 80
@@ -162,6 +166,7 @@ class PageAccountingPolicy:
 
     inside_min_area_bp: int
     max_unread_characters: int
+    max_set_aside_characters: int
     max_unread_share_bp: int
     min_block_characters: int
     anchor_characters: int
@@ -177,12 +182,18 @@ class PageAccountingPolicy:
     window_slack: int
     min_pieces: int
     min_distinctive_share_bp: int
+    max_short_unit_distance_bp: int
     sha256: str
 
 
 _POLICY_TABLES: Final = {
     "inside": ("min_area_bp",),
-    "witness_text": ("max_unread_characters", "max_unread_share_bp", "min_block_characters"),
+    "witness_text": (
+        "max_unread_characters",
+        "max_set_aside_characters",
+        "max_unread_share_bp",
+        "min_block_characters",
+    ),
     "alignment": (
         "anchor_characters",
         "anchor_neighbours",
@@ -199,10 +210,16 @@ _POLICY_TABLES: Final = {
         "window_slack",
         "min_pieces",
         "min_distinctive_share_bp",
+        "max_short_unit_distance_bp",
     ),
 }
 _BASIS_POINT_FIELDS: Final = frozenset(
-    {"min_area_bp", "max_unread_share_bp", "min_distinctive_share_bp"}
+    {
+        "min_area_bp",
+        "max_unread_share_bp",
+        "min_distinctive_share_bp",
+        "max_short_unit_distance_bp",
+    }
 )
 
 
@@ -547,6 +564,65 @@ def _read_detections(
         }
         records = _census(records, "detector records", witness_units, [])
     return lines, records, detector, capped
+
+
+def _read_witnesses(
+    witnesses: Sequence[Mapping[str, Any]], feed: Mapping[str, Any]
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Every sealed witness in letter order, checked against the feed, and the letters shown.
+
+    The feed's `witnesses` switch chooses what the model saw, never what the
+    check measures: a witness the feed shows must be here with its outcome and
+    units unchanged, and one it hides is still measured.
+    """
+    if not isinstance(witnesses, Sequence) or isinstance(witnesses, str):
+        raise ContractError("sealed witnesses are not a list")
+    sealed: dict[str, dict[str, Any]] = {}
+    for witness in witnesses:
+        if not isinstance(witness, Mapping) or set(witness) != _WITNESS_KEYS:
+            raise ContractError("a sealed witness is not {letter, outcome, blank, units}")
+        letter = witness["letter"]
+        if not isinstance(letter, str) or not re.fullmatch("[A-Z]", letter) or letter in sealed:
+            raise ContractError(f"sealed witness letter {letter!r} is not one new capital")
+        if witness["blank"] not in (True, False, None) or not isinstance(witness["units"], list):
+            raise ContractError(f"sealed witness {letter} blank or units are malformed")
+        units = []
+        for unit in witness["units"]:
+            if not isinstance(unit, Mapping) or not isinstance(unit.get("text"), str):
+                raise ContractError(f"a sealed witness {letter} unit is not {{id, box_px, text}}")
+            box = unit.get("box_px")
+            units.append(
+                {
+                    "id": unit.get("id"),
+                    "box_px": None if box is None else _box(box, f"sealed {unit.get('id')}"),
+                    "text": unit["text"],
+                }
+            )
+        expected = [f"{letter}{number}" for number in range(1, len(units) + 1)]
+        if sorted((unit["id"] for unit in units), key=str) != sorted(expected):
+            raise ContractError(f"sealed witness {letter} unit ids are not {letter}1..n once each")
+        units.sort(key=lambda unit: _id_key(unit["id"]))
+        if witness["blank"] is True and units:
+            raise ContractError(f"sealed witness {letter} reports a blank page and gives units")
+        sealed[letter] = {**witness, "units": units}
+    shown: set[str] = set()
+    for witness in feed["witnesses"]:
+        letter = witness["letter"]
+        match = sealed.get(letter)
+        shown_units = sorted(
+            ((u["id"], u.get("box_px"), u["text"]) for u in witness["units"]),
+            key=lambda unit: _id_key(unit[0]),
+        )
+        if (
+            match is None
+            or witness.get("outcome") != match["outcome"]
+            or shown_units != [(u["id"], u["box_px"], u["text"]) for u in match["units"]]
+        ):
+            raise ContractError(
+                f"the feed shows witness {letter} other than the sealed witness {letter}"
+            )
+        shown.add(letter)
+    return [sealed[letter] for letter in sorted(sealed)], shown
 
 
 # --- geometry --------------------------------------------------------------------------
@@ -989,6 +1065,22 @@ def _distinctive_share(
     return found * BASIS_POINTS // len(distinctive)
 
 
+def _short_unit_distance_bp(
+    witness: str, reading: str, coverage: TextCoverage, policy: PageAccountingPolicy
+) -> int:
+    """Edits turning a unit's text into the best stretch of its readings, per unit letter.
+
+    A `[[?]]` opposite the unit, where the alignment puts it and `window_slack`
+    letters either side, accounts for it (distance 0), as it does for a
+    distinctive piece: the reader flagged that ink unreadable.
+    """
+    slack = policy.window_slack
+    start = max(0, coverage.position[0] - slack)
+    if UNREADABLE in reading[start : coverage.position[len(witness)] + slack]:
+        return 0
+    return best_substring_distance(witness, reading) * BASIS_POINTS // len(witness)
+
+
 def _rule(findings: list[dict[str, Any]]) -> dict[str, Any]:
     """`hold` on any held finding, else `not-measured` on any unmeasured one, else `pass`."""
     found = {finding["code"] for finding in findings}
@@ -1015,6 +1107,7 @@ def _located(finding: dict[str, Any], box: Box | None) -> dict[str, Any]:
 def page_accounting(
     *,
     feed: Mapping[str, Any],
+    witnesses: Sequence[Mapping[str, Any]],
     detections: Mapping[str, Any],
     reading: Mapping[str, Any],
     entry_truncation: Mapping[int, str],
@@ -1029,6 +1122,15 @@ def page_accounting(
     - `feed`: the `page-feed` payload (`page_id`, `page_ordinal`, `witnesses[]`
       with `letter`, `outcome` and `units[]` of `{id, box_px | None, text}`,
       `surya` with `lines[]` and `blocks[]` of `{id, box_px}` as shown).
+    - `witnesses`: every witness the run sealed for the page, whatever the
+      feed's `witnesses` switch showed the model: `[{letter, outcome, blank,
+      units}]`, `units[]` of `{id, box_px | None, text}` with ids of the
+      witness's own letter numbered `1..n`, and `blank` the witness's own
+      report that its page text is blank (its content health `blank`; `None`
+      when it did not read). A witness the feed shows is here with the same
+      outcome and the same units; one it hides is measured by rule (e) against
+      every reading on the page, and rule (c) does not apply to it (its units'
+      disposition is `not-shown`).
     - `detections`: the page's sealed detections, whatever the feed showed the
       model: `{"surya": {"lines": [...], "blocks": [...]} | None, "records":
       [...] | None, "record_detector": "configured" | "absent",
@@ -1059,11 +1161,14 @@ def page_accounting(
     finish_reason = reading["finish_reason"]
     if parse_state not in PARSE_STATES:
         raise ContractError(f"page reading parse_state {parse_state!r} is not a known state")
-    witnesses = sorted(feed["witnesses"], key=lambda witness: witness["letter"])
+    sealed, shown_letters = _read_witnesses(witnesses, feed)
+    shown = [witness for witness in sealed if witness["letter"] in shown_letters]
     units = sorted(
-        (unit for witness in witnesses for unit in witness["units"]),
+        (unit for witness in sealed for unit in witness["units"]),
         key=lambda unit: _id_key(unit["id"]),
     )
+    shown_units = [unit for unit in units if unit["id"][0] in shown_letters]
+    unit_boxes = {unit["id"]: unit["box_px"] for unit in units}
 
     rules: dict[str, dict[str, Any]] = {}
     answered = parse_state == PARSED and reading.get("answer") is not None
@@ -1109,7 +1214,9 @@ def page_accounting(
     unit_rows = [
         {
             "id": unit["id"],
-            "disposition": "cited"
+            "disposition": "not-shown"
+            if unit["id"][0] not in shown_letters
+            else "cited"
             if unit["id"] in cited_by
             else "set-aside"
             if unit["id"] in set_aside
@@ -1150,11 +1257,11 @@ def page_accounting(
         ]
     )
 
-    # (c) every witness read the page, and every unit is cited or set aside with a
-    # reason; a set-aside unit carrying more than a line of text is a set-aside
-    # act until a human says otherwise.
+    # (c) every witness the feed showed read the page, and every unit it showed is
+    # cited or set aside with a reason; a set-aside unit carrying more than a folio number or a short header
+    # is a set-aside act until a human says otherwise.
     unaccounted = [
-        _located({"code": UNACCOUNTED_WITNESS_UNIT, "id": row["id"]}, candidates[row["id"]])
+        _located({"code": UNACCOUNTED_WITNESS_UNIT, "id": row["id"]}, unit_boxes[row["id"]])
         for row in unit_rows
         if row["disposition"] == "unaccounted"
     ]
@@ -1166,13 +1273,13 @@ def page_accounting(
                 "reason": set_aside[unit["id"]],
                 "unit_characters": len(normalized_text(unit["text"])),
             },
-            candidates[unit["id"]],
+            unit_boxes[unit["id"]],
         )
-        for unit in units
+        for unit in shown_units
         if unit["id"] in set_aside
-        and len(normalized_text(unit["text"])) > policy.max_unread_characters
+        and len(normalized_text(unit["text"])) > policy.max_set_aside_characters
     ]
-    rules["c"] = _rule(_witnesses_not_read(witnesses) + unaccounted + substantial)
+    rules["c"] = _rule(_witness_findings(shown) + unaccounted + substantial)
 
     # (d) every detected line lies inside the reading regions or is set aside,
     # shown to the model or not.
@@ -1195,7 +1302,7 @@ def page_accounting(
         )
 
     rules["e"] = _witness_text_rule(
-        witnesses, units, entries, set_aside, cited_by, candidates, policy, clock
+        sealed, units, entries, set_aside, cited_by, unit_boxes, policy, clock
     )
     rules["f"] = _ink_rule(ink, all_regions)
     rules["g"] = _rule(incomplete_reading)
@@ -1215,12 +1322,21 @@ def page_accounting(
     )
 
 
-def _witnesses_not_read(witnesses: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {"code": WITNESS_NOT_READ, "letter": witness["letter"], "outcome": witness.get("outcome")}
-        for witness in witnesses
-        if witness.get("outcome") != WITNESS_READ
-    ]
+def _witness_findings(witnesses: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Each witness that did not read the page, or read it and gave no unit.
+
+    A witness that read the page and gave no unit holds unless its own report
+    says the page text is blank; then it is recorded.
+    """
+    findings = []
+    for witness in witnesses:
+        where = {"letter": witness["letter"], "outcome": witness["outcome"]}
+        if witness["outcome"] != WITNESS_READ:
+            findings.append({"code": WITNESS_NOT_READ, **where})
+        elif not witness["units"]:
+            code = WITNESS_READ_BLANK if witness["blank"] is True else WITNESS_READ_NO_UNITS
+            findings.append({"code": code, **where})
+    return findings
 
 
 def _witness_text_rule(
@@ -1229,14 +1345,15 @@ def _witness_text_rule(
     entries: list[dict[str, Any]],
     set_aside: Mapping[str, str],
     cited_by: Mapping[str, list[int]],
-    candidates: Mapping[str, Box | None],
+    unit_boxes: Mapping[str, Box | None],
     policy: PageAccountingPolicy,
     clock: Callable[[], float],
 ) -> dict[str, Any]:
     """(e) Every witness unit's own text appears in the readings that cite it.
 
     A unit is compared with the readings of the entries citing it, joined in
-    `n` order; an uncited unit with every reading. Scoping to the citing
+    `n` order; an uncited unit, or one of a witness the feed hid, with every
+    reading. Scoping to the citing
     entries is what catches a unit that merged two records while only one was
     read: the other record's formula would otherwise find itself in a
     neighbouring entry's reading. A unit is held (`witness-text-not-read`,
@@ -1248,14 +1365,19 @@ def _witness_text_rule(
     - `distinctive-share`: under `min_distinctive_share_bp` of its distinctive
       pieces (see `_distinctive_pieces`) are held where the citing readings
       align them (see `_distinctive_share`). This is what holds a reading of the neighbouring
-      record: same formula, other names. A unit with fewer than `min_pieces`
-      distinctive pieces is not measured this way, recorded as
-      `too-few-distinctive-pieces`.
+      record: same formula, other names;
+    - `short-unit-distance`: a unit with fewer than `min_pieces` distinctive
+      pieces, whose share is mostly chance, is instead held when its text is
+      further than `max_short_unit_distance_bp` of its length from every
+      stretch of the citing readings (see `_short_unit_distance_bp`). A long
+      entry's text stands opposite every letter of a short unit it does not
+      transcribe, so no run of it is unread; only this distance shows it. The
+      unit is recorded as `too-few-distinctive-pieces` with that distance.
 
-    A short unit only one witness read, cited by a longer entry that does not
-    transcribe it, passes: the entry's text stands opposite every letter of it
-    and nothing corroborates its names. Rule (i) holds it when the record
-    detector cut it.
+    `[[?]]` credit is deliberate: an entry whose text is only `[[?]]` marks
+    passes this rule for every unit its marks can account for (up to
+    `max_unread_characters` each), because the reading's own uncertainty
+    already routes those gaps to review.
 
     Every measured unit's run, shares and piece count are kept as
     `measurements`, so the proof run can set these thresholds from real pages.
@@ -1267,7 +1389,7 @@ def _witness_text_rule(
         deadline.check()
     except _NotMeasured as error:
         return _rule([{"code": WITNESS_TEXT_NOT_MEASURED, "reason": error.reason}])
-    findings: list[dict[str, Any]] = _witnesses_not_read(witnesses)
+    findings: list[dict[str, Any]] = _witness_findings(witnesses)
     measurements: list[dict[str, Any]] = []
     for unit in units:
         identifier = unit["id"]
@@ -1296,15 +1418,19 @@ def _witness_text_rule(
         ):
             reasons.append("no-match")
         distinctive = distinctive_by_unit[identifier]
-        share_bp = None
+        share_bp = distance_bp = None
         if len(distinctive) < policy.min_pieces:
+            distance_bp = _short_unit_distance_bp(witness, joined, coverage, policy)
             findings.append(
                 {
                     "code": TOO_FEW_DISTINCTIVE_PIECES,
                     "id": identifier,
                     "distinctive_pieces": len(distinctive),
+                    "distance_bp": distance_bp,
                 }
             )
+            if distance_bp > policy.max_short_unit_distance_bp:
+                reasons.append("short-unit-distance")
         else:
             share_bp = _distinctive_share(witness, joined, distinctive, coverage, policy)
             if share_bp < policy.min_distinctive_share_bp:
@@ -1317,6 +1443,7 @@ def _witness_text_rule(
                 "unread_share_bp": coverage.unread_share_bp,
                 "distinctive_pieces": len(distinctive),
                 "distinctive_share_bp": share_bp,
+                "distance_bp": distance_bp,
             }
         )
         if reasons:
@@ -1330,10 +1457,11 @@ def _witness_text_rule(
                         "unread_share_bp": coverage.unread_share_bp,
                         "distinctive_share_bp": share_bp,
                         "distinctive_pieces": len(distinctive),
+                        "distance_bp": distance_bp,
                         "unit_characters": len(witness),
                         "compared_with": scope,
                     },
-                    candidates[identifier],
+                    unit_boxes[identifier],
                 )
             )
     return {**_rule(findings), "measurements": measurements}

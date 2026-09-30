@@ -14,12 +14,16 @@ min_area_bp = 5000
 [witness_text]
 # Longest run of a witness unit's normalized text (letters and digits only)
 # the readings citing it may leave unaccounted for; also the most one reading
-# gap or one `[[?]]` mark may account for, and the most text a set-aside unit
-# may carry before it holds. Starting value: about one written line of a
-# register (50-70 letters). On synthetic register entries whose reading and
-# witnesses disagree on 15% to 30% of characters, the longest run a correct
-# reading left was 14. To be measured on the proof run.
+# gap or one `[[?]]` mark may account for. Starting value: about one written
+# line of a register (50-70 letters). On synthetic register entries whose
+# reading and witnesses disagree on 15% to 30% of characters, the longest run a
+# correct reading left was 14. To be measured on the proof run.
 max_unread_characters = 60
+
+# Most normalized text a set-aside witness unit may carry before it holds as a
+# set-aside act: a folio number or a short running header, not an index row
+# or a one-line burial. Starting value; to be measured on the proof run.
+max_set_aside_characters = 20
 
 # Largest share of a unit's normalized text (basis points) the readings citing
 # it may leave unaccounted for in all, however short each run: a short unit
@@ -106,3 +110,14 @@ min_pieces = 5
 # 20 six-entry pages with clean witnesses: the ones it missed shared their
 # names with the neighbour. Starting value; to be measured on the proof run.
 min_distinctive_share_bp = 3500
+
+# A unit with fewer than `min_pieces` distinctive pieces is held when the
+# fewest edits turning its normalized text into some stretch of its citing
+# readings exceed this share (basis points) of its length: a short unit the
+# reading does not transcribe (a burial folded into the next act, a marginal
+# name). On synthetic 19-letter names read correctly at 15% character error
+# on one side the largest share was 2,777 on 30 pages, and 4,117 over 200
+# draws; a 7-letter name reached 6,250. A 50-letter burial that is not read
+# was at least 4,800 from each of 900 synthetic baptism readings. Starting
+# value; to be measured on the proof run.
+max_short_unit_distance_bp = 4000

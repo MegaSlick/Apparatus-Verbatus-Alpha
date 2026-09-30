@@ -107,6 +107,9 @@ def page(
     A is a boxed layout witness, B the record detector (its units are the
     detector's records, which the sealed detections also carry), C an unboxed
     witness. Surya has three lines and one block per record, shown and sealed.
+    The sealed witnesses are the feed's own witness objects, so a test that
+    edits a shown witness edits what was sealed; dropping one from the feed
+    hides it from the model without unsealing it.
     """
     texts = [record_text(seed * 100 + k) for k in range(records)]
 
@@ -120,16 +123,19 @@ def page(
             {
                 "letter": "A",
                 "outcome": "read",
+                "blank": False,
                 "units": [unit("A", k, t, band(k), seed) for k, t in enumerate(texts)],
             },
             {
                 "letter": "B",
                 "outcome": "read",
+                "blank": False,
                 "units": [unit("B", k, t, band(k), seed + 100) for k, t in enumerate(texts)],
             },
             {
                 "letter": "C",
                 "outcome": "read",
+                "blank": False,
                 "units": [unit("C", k, t, None, seed + 200) for k, t in enumerate(texts)],
             },
         ],
@@ -174,6 +180,7 @@ def page(
     }
     return {
         "feed": feed,
+        "witnesses": list(feed["witnesses"]),
         "detections": detections,
         "reading": {"parse_state": "parsed", "finish_reason": "stop", "answer": answer},
         "entry_truncation": {k + 1: "complete" for k in range(records)},
@@ -374,6 +381,26 @@ def test_a_short_unit_set_aside_with_a_reason_is_accounted_for():
     assert {"id": "C4", "disposition": "set-aside", "by": []} in record["units"]
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Roy, Jean-Baptiste, baptême, 12 mai 1810 .......... f. 34",  # an index row
+        BURIAL,  # a one-line burial
+    ],
+)
+def test_a_set_aside_unit_longer_than_a_folio_or_short_header_holds(text):
+    case = page()
+    witness(case, "C")["units"].append({"id": "C4", "box_px": None, "text": text})
+    case["reading"]["answer"]["set_aside"].append({"id": "C4", "reason": "index"})
+
+    record = account(case)
+
+    assert len(normalized_text(text)) > POLICY.max_set_aside_characters
+    assert len(normalized_text(text)) < POLICY.max_unread_characters
+    assert codes(record, "c") == ["set-aside-substantial"]
+    assert record["rules"]["c"]["findings"][0]["unit_characters"] == len(normalized_text(text))
+
+
 def test_setting_aside_a_whole_act_holds():
     """Every other witness read record 3; the reader set aside A3 and read nothing there."""
     case = page()
@@ -423,11 +450,7 @@ def test_a_unit_set_aside_without_a_reason_is_unaccounted():
 def test_a_witness_that_did_not_read_the_page_holds(outcome):
     case = page()
     failed = witness(case, "C")
-    failed["units"] = []
-    if outcome is None:
-        del failed["outcome"]
-    else:
-        failed["outcome"] = outcome
+    failed.update(units=[], outcome=outcome, blank=None)
     for entry in acts(case):
         entry["cites"] = [cite for cite in entry["cites"] if not cite.startswith("C")]
 
@@ -437,6 +460,108 @@ def test_a_witness_that_did_not_read_the_page_holds(outcome):
     assert record["rules"]["c"]["findings"] == [expected]
     assert expected in record["rules"]["e"]["findings"]
     assert record["holds"] == ["witness-not-read"]
+
+
+def test_a_witness_that_read_the_page_but_gave_no_unit_holds():
+    case = page()
+    witness(case, "C")["units"] = []
+    for entry in acts(case):
+        entry["cites"] = [cite for cite in entry["cites"] if not cite.startswith("C")]
+
+    record = account(case)
+
+    expected = {"code": "witness-read-no-units", "letter": "C", "outcome": "read"}
+    assert record["rules"]["c"]["findings"] == [expected]
+    assert expected in record["rules"]["e"]["findings"]
+    assert record["holds"] == ["witness-read-no-units"]
+
+
+def test_a_witness_that_reports_a_blank_page_is_recorded_not_held():
+    case = page()
+    witness(case, "C").update(units=[], blank=True)
+    for entry in acts(case):
+        entry["cites"] = [cite for cite in entry["cites"] if not cite.startswith("C")]
+
+    record = account(case)
+
+    expected = {"code": "witness-read-blank", "letter": "C", "outcome": "read"}
+    assert record["rules"]["c"] == {"status": "pass", "findings": [expected]}
+    assert record["holds"] == []
+
+    witness(case, "A")["blank"] = True
+    with pytest.raises(ContractError, match="reports a blank page and gives units"):
+        account(case)
+
+
+def hide_witness(case: dict, letter: str) -> None:
+    """The feed's `witnesses` switch hides one sealed witness from the model."""
+    case["feed"]["witnesses"] = [w for w in case["feed"]["witnesses"] if w["letter"] != letter]
+    for entry in acts(case):
+        entry["cites"] = [cite for cite in entry["cites"] if not cite.startswith(letter)]
+
+
+def test_a_witness_hidden_by_the_feed_is_still_measured_against_every_reading():
+    case = page()
+    hide_witness(case, "C")
+
+    record = account(case)
+
+    assert statuses(record) == {name: "pass" for name in RULE_NAMES}
+    assert {"id": "C2", "disposition": "not-shown", "by": []} in record["units"]
+    assert {m["id"] for m in record["rules"]["e"]["measurements"]} >= {"C1", "C2", "C3"}
+
+
+MARRIAGE = (
+    "Le douze juin mil huit cent dix, après la publication de trois bans, nous prêtre "
+    "soussigné avons reçu le mutuel consentement de mariage de Hyacinthe Desrosiers, "
+    "journalier, et de Scholastique Beaulieu, en présence de Narcisse Lapointe. Morin ptre"
+)
+
+
+def test_a_record_only_a_hidden_witness_read_holds_under_rule_e_not_c():
+    case = page()
+    witness(case, "C")["units"].append({"id": "C4", "box_px": None, "text": MARRIAGE})
+    hide_witness(case, "C")
+
+    record = account(case)
+
+    only_hold(record, "e")
+    [held] = [f for f in record["rules"]["e"]["findings"] if f["code"] == "witness-text-not-read"]
+    assert held["id"] == "C4"
+    assert held["compared_with"] == [1, 2, 3]
+
+
+def test_a_hidden_witness_that_did_not_read_holds_under_rule_e_only():
+    case = page()
+    witness(case, "C").update(units=[], outcome="failed", blank=None)
+    hide_witness(case, "C")
+
+    record = account(case)
+
+    only_hold(record, "e")
+    assert codes(record, "e") == ["witness-not-read"]
+
+
+def test_a_feed_witness_other_than_the_sealed_one_is_refused():
+    case = page()
+    case["witnesses"] = [
+        {**w, "units": [{**u, "text": u["text"] + " x"} for u in w["units"]]}
+        if w["letter"] == "A"
+        else w
+        for w in case["witnesses"]
+    ]
+    with pytest.raises(ContractError, match="shows witness A other than the sealed"):
+        account(case)
+
+    case = page()
+    case["witnesses"] = [w for w in case["witnesses"] if w["letter"] != "B"]
+    with pytest.raises(ContractError, match="shows witness B other than the sealed"):
+        account(case)
+
+    case = page()
+    witness(case, "C")["units"][2]["id"] = "C5"
+    with pytest.raises(ContractError):
+        account(case)
 
 
 # --- rule (d) -------------------------------------------------------------------------
@@ -675,7 +800,7 @@ def test_a_short_burial_whose_act_reads_nothing_holds():
         f for f in record["rules"]["e"]["findings"] if f["code"] == "witness-text-not-read"
     ]
     assert finding["id"] == "A4"
-    assert set(finding["reasons"]) == {"unread-share", "no-match"}
+    assert set(finding["reasons"]) == {"unread-share", "no-match", "short-unit-distance"}
 
 
 def test_an_unreadable_line_marked_in_the_reading_passes():
@@ -744,17 +869,112 @@ def test_a_size_bound_hit_is_not_measured_and_held():
     assert "witness-text-not-measured" in record["holds"]
 
 
-def test_a_unit_with_too_few_distinctive_pieces_is_recorded_not_held():
+def test_a_marginal_name_that_is_read_passes_and_one_that_is_not_holds():
+    """Too few distinctive pieces for identity: the name's distance to its readings decides."""
     case = page()
     witness(case, "C")["units"].append({"id": "C4", "box_px": None, "text": "Jean Roy"})
+    acts(case)[2]["cites"].append("C4")
+    acts(case)[2]["text"] += " Jean Roy"
+
+    record = account(case)
+
+    [recorded] = [f for f in record["rules"]["e"]["findings"] if f.get("id") == "C4"]
+    assert recorded["code"] == "too-few-distinctive-pieces"
+    assert recorded["distance_bp"] == 0
+    assert record["rules"]["e"]["status"] == "pass"
+
+    acts(case)[2]["text"] = acts(case)[2]["text"].removesuffix(" Jean Roy")
+    unread = account(case)
+    [held] = [f for f in unread["rules"]["e"]["findings"] if f["code"] == "witness-text-not-read"]
+    assert held["id"] == "C4"
+    assert held["reasons"] == ["short-unit-distance"]
+    assert held["distance_bp"] > POLICY.max_short_unit_distance_bp
+
+
+def test_a_burial_folded_into_a_merged_unit_and_read_by_one_witness_alone_holds():
+    """DAI merged baptism 3 and the burial below it into A3; Chandra (C) read the burial
+    as its own unit C4. The baptism's act cites both and transcribes only the baptism.
+
+    A3 leaves the burial's 50 letters as one run under the line and a small share, and
+    C4 has too few distinctive pieces for identity: DAI's noisy copy of the burial does
+    not corroborate them. Only C4's distance from the reading shows it.
+    """
+    case = page(noise=0.15, seed=3)
+    burial = noisy(BURIAL, 0.3, 11)
+    witness(case, "A")["units"][2]["text"] += " " + burial
+    witness(case, "C")["units"].append({"id": "C4", "box_px": None, "text": BURIAL})
     acts(case)[2]["cites"].append("C4")
 
     record = account(case)
 
-    assert {"code": "too-few-distinctive-pieces", "id": "C4", "distinctive_pieces": 0} in (
-        record["rules"]["e"]["findings"]
+    assert record["holds"] == ["witness-text-not-read"]
+    [held] = [f for f in record["rules"]["e"]["findings"] if f["code"] == "witness-text-not-read"]
+    assert held["id"] == "C4"
+    assert held["reasons"] == ["short-unit-distance"]
+    assert held["distinctive_pieces"] < POLICY.min_pieces
+    a3 = unit_measure(record, "A3")
+    assert a3["unread_run"] <= POLICY.max_unread_characters
+    assert a3["unread_share_bp"] <= POLICY.max_unread_share_bp
+
+
+def short_units_read_correctly(seed: int, witness_noise: float, reading_noise: float) -> dict:
+    """A burial and a marginal name, each read by one witness and by the reader."""
+    case = page(noise=witness_noise, reading_noise=reading_noise, seed=seed)
+    witness(case, "C")["units"] += [
+        {"id": "C4", "box_px": None, "text": noisy(BURIAL, witness_noise, seed + 40)},
+        {"id": "C5", "box_px": None, "text": noisy(MARGINAL_NAME, witness_noise, seed + 50)},
+    ]
+    acts(case)[2]["cites"] += ["C4", "C5"]
+    acts(case)[2]["text"] += " " + noisy(BURIAL, reading_noise, seed + 60)
+    acts(case)[2]["text"] += " " + noisy(MARGINAL_NAME, reading_noise, seed + 70)
+    return account(case)
+
+
+MARGINAL_NAME = "Marguerite Gauthier"
+
+
+@pytest.mark.parametrize(("witness_noise", "reading_noise"), [(0.15, 0.0), (0.0, 0.15)])
+def test_short_units_read_correctly_at_fifteen_percent_pass(witness_noise, reading_noise):
+    """The false-hold side of the short-unit distance, 15% character error on one side.
+
+    The burial is read, so the reading corroborates its names and identity measures
+    it; the name mostly has too few distinctive pieces, and its distance decides.
+    Over these 30 pages the largest distance was 2,500 (witness side) and 2,777
+    (reading side). Alone, over 200 draws, an 18-letter name at 15% reached 4,117
+    and a 7-letter one 6,250: the shorter the unit, the thinner the margin.
+    """
+    distances = []
+    for seed in range(30):
+        record = short_units_read_correctly(seed, witness_noise, reading_noise)
+        assert record["rules"]["e"]["status"] == "pass", record["rules"]["e"]["findings"]
+        distances.append(unit_measure(record, "C5")["distance_bp"])
+
+    measured = [value for value in distances if value is not None]
+    assert len(measured) >= 20
+    assert max(measured) <= POLICY.max_short_unit_distance_bp - 1000
+
+
+def test_an_entry_of_only_unreadable_marks_passes_rule_e():
+    """Deliberate: the reading's own `[[?]]` routes the gaps to review, not rule (e)."""
+    case = page()
+    witness(case, "C")["units"].append({"id": "C4", "box_px": None, "text": BURIAL})
+    acts(case).append(
+        {
+            "n": 4,
+            "kind": "act",
+            "cites": ["C4", "L10"],
+            "text": "[[?]]",
+            "continues_from_previous_page": False,
+            "continues_to_next_page": False,
+        }
     )
-    assert record["rules"]["e"]["status"] == "pass"
+    add_line(case, "L10", [100, 1250, 900, 1300])
+    case["entry_truncation"][4] = "complete"
+
+    record = account(case)
+
+    assert record["rules"]["e"]["status"] == "pass", record["rules"]["e"]["findings"]
+    assert unit_measure(record, "C4")["distance_bp"] == 0
 
 
 def test_normalization_ignores_case_accents_markup_punctuation_and_doubt_marks():
@@ -842,6 +1062,7 @@ def test_a_dense_page_is_measured_within_the_deadline():
     started = time.monotonic()
     record = page_accounting(
         feed=feed,
+        witnesses=[{**row, "blank": False} for row in feed["witnesses"]],
         detections={
             "surya": {"lines": [], "blocks": []},
             "records": None,
@@ -1144,6 +1365,7 @@ def test_candidate_order_does_not_change_the_record(seed):
         shuffled = copy.deepcopy(case)
         rng = random.Random(seed)
         rng.shuffle(shuffled["feed"]["witnesses"])
+        rng.shuffle(shuffled["witnesses"])
         for witness_row in shuffled["feed"]["witnesses"]:
             rng.shuffle(witness_row["units"])
         rng.shuffle(shuffled["feed"]["surya"]["lines"])
