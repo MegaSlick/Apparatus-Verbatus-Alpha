@@ -1458,6 +1458,26 @@ def test_a_resumed_pass_adopts_its_sealed_measures_rather_than_measuring_again(
     assert file_bytes_snapshot(root / "r" / "4_perlector") == before
 
 
+def test_a_resumed_pass_refuses_a_sealed_perlectio_with_invalid_dissent(
+    live_tree, tmp_path, monkeypatch
+):
+    """A sealed reading whose dissent loses a shown witness is not adopted on resume."""
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
+    assert exit_code == 0
+    original = page_run._sealed
+
+    def one_witness_lost(context, kind, subject, attempt):
+        record = original(context, kind, subject, attempt)
+        if record is not None and kind == page_run.PERLECTIO_KIND:
+            record = json.loads(json.dumps(record))
+            record["payload"]["dissent"] = record["payload"]["dissent"][:-1]
+        return record
+
+    monkeypatch.setattr(page_run, "_sealed", one_witness_lost)
+    with pytest.raises(ContractError, match="cannot stand behind .*one row per shown witness"):
+        _read_pages(live_tree, tmp_path / "again", monkeypatch)
+
+
 def test_a_page_sent_but_never_answered_is_sent_again_naming_the_first_send(
     live_tree, tmp_path, monkeypatch
 ):
