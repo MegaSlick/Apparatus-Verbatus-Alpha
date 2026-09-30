@@ -19,7 +19,18 @@ the one it spawns running after this process exits.
 
 Determinism: CPU only, a fixed thread count, torch's deterministic algorithms,
 one page per call, and Surya's own default thresholds, checked rather than
-assumed. The same bundle, environment, thread count and CPU give the same bytes.
+assumed. The same bundle, environment, thread count and CPU instruction set give
+the same bytes; the run facts name the instruction set torch chose kernels for.
+
+No network: every checkpoint is handed to Surya as a directory inside the
+bundle, which Surya's loaders take as a local path before any fetch, and the
+Hugging Face libraries are switched offline. Surya has no offline switch of its
+own. It does read a `local.env` file for its settings wherever one sits above
+its own package, so the runner refuses to run when Surya found one.
+
+Reading order: Surya orders blocks with its learned head, or raster-sorts them
+when a page has more detections than the head takes or no feature map came back
+for it. Each page document records which ordering its positions come from.
 """
 
 from __future__ import annotations
@@ -39,6 +50,7 @@ from contract import (
     PAGE_SCHEMA,
     BundleRefusal,
     read_bundle,
+    reading_order,
 )
 
 
@@ -89,6 +101,36 @@ def _checked_settings(settings: Any, defaults: dict[str, Any]) -> dict[str, str]
     return effective
 
 
+def _checked_env_file(settings_class: Any) -> None:
+    """Surya's settings read a `local.env` found above its package; the run records
+    only settings it can see, so a found file is refused rather than read."""
+    found = settings_class.model_config.get("env_file")
+    if found:
+        raise RunRefusal(f"Surya found a settings file at {found}; remove it, then run again")
+
+
+def _require_order_head(engine: Any) -> None:
+    """Surya loads the reading-order head lazily and, if it cannot, raster-sorts
+    every page with only a log line; a bundle whose head does not load is refused."""
+    if engine._order is None:
+        raise RunRefusal("Surya's reading-order head did not load from the bundle")
+
+
+def _observed(model: Any) -> list[Any]:
+    """Keep what the layout detector returns to `LayoutEngine.run_batch`, unchanged,
+    so the runner can tell which ordering Surya applied to each page."""
+    detect = model.detect
+    seen: list[Any] = []
+
+    def observing_detect(*args: Any, **kwargs: Any) -> Any:
+        detections = detect(*args, **kwargs)
+        seen.append(detections)
+        return detections
+
+    model.detect = observing_detect
+    return seen
+
+
 def _checked_checkpoints(bundle: dict[str, Any], defaults: dict[str, Any]) -> None:
     """The bundle holds exactly the checkpoints Surya would fetch for itself."""
     for name, setting in CHECKPOINT_SETTINGS.items():
@@ -116,10 +158,12 @@ def run(bundle_root: Path, threads: int, output_dir: Path, pages: list[Path]) ->
     # Imported only now, so Surya's settings read the environment set above.
     import torch
     from PIL import Image
+    from surya.common.order import predictor as order_predictor
     from surya.detection import DetectionPredictor
     from surya.fast_layout.server import LayoutEngine
     from surya.settings import Settings, settings
 
+    _checked_env_file(Settings)
     defaults = {name: field.default for name, field in Settings.model_fields.items()}
     effective = _checked_settings(settings, defaults)
     _checked_checkpoints(bundle, defaults)
@@ -142,6 +186,10 @@ def run(bundle_root: Path, threads: int, output_dir: Path, pages: list[Path]) ->
         "engine": "surya",
         **versions,
         "device": "cpu",
+        # torch picks CPU kernels by instruction set, so floats are only
+        # reproducible on the same one.
+        "cpu_capability": torch.backends.cpu.get_cpu_capability(),
+        "machine": platform.machine(),
         "threads": threads,
         "deterministic_algorithms": True,
         "settings": effective,
@@ -153,16 +201,22 @@ def run(bundle_root: Path, threads: int, output_dir: Path, pages: list[Path]) ->
         "threshold": settings.FAST_LAYOUT_CONFIDENCE_THRESHOLD,
         "use_order": settings.FAST_LAYOUT_USE_ORDER,
     }
+    detections = _observed(engine.model)
     documents = []
     for ordinal, path in enumerate(pages, start=1):
         # Surya's own image loader for a page image.
         image = Image.open(path).convert("RGB")
         (lines,) = detector([image])
+        detections.clear()
         (layout,) = engine.run_batch([image], [dict(layout_params)])
-        # Surya loads the reading-order head lazily and, if it cannot, raster-sorts
-        # with only a log line; a block's position would then not be Surya's order.
-        if engine._order is None:
-            raise RunRefusal("Surya's reading-order head did not load from the bundle")
+        _require_order_head(engine)
+        ((page_detections,),) = detections
+        # The limit is read where Surya's own head reads it, when it runs.
+        order, reason = reading_order(
+            len(page_detections),
+            getattr(page_detections, "features", None) is not None,
+            order_predictor.MAX_BOXES,
+        )
         documents.append(
             {
                 "schema": PAGE_SCHEMA,
@@ -173,6 +227,8 @@ def run(bundle_root: Path, threads: int, output_dir: Path, pages: list[Path]) ->
                     mode="json", exclude={"heatmap", "affinity_map"}
                 ),
                 "layout": layout.model_dump(mode="json"),
+                "reading_order": order,
+                "reading_order_reason": reason,
             }
         )
     output_dir.mkdir(parents=True, exist_ok=True)

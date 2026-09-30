@@ -121,9 +121,9 @@ def qualification_candidates(
             + ", ".join(adapters)
         )
     # A chair its stage runs as a subprocess (Surya) is never served: preflight
-    # checks its weights and its environment and reads no page through it, so
-    # it has a cache receipt and a placement but no smoke receipt, and no row
-    # of its is ever proven here.
+    # checks its weights and runs its own runner once on the golden page, so it
+    # has a cache receipt and a placement but no smoke receipt, and no row of
+    # its is ever proven here.
     subprocess_chairs = {
         role
         for role, identity in identities.items()

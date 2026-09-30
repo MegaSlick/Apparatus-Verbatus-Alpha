@@ -1,7 +1,7 @@
 # Surya's own environment. Surya pins Pillow and OpenCV versions the project's
 # environment cannot share, so it runs here, apart, through `runner.py`, and the
 # Designator reads only the JSON the runner writes. `uv.lock` pins every package
-# byte; the pod syncs it with `uv sync --frozen` (operations/pod/README.md).
+# byte; the pod syncs it with `uv sync --locked` (operations/pod/README.md).
 #
 # Licence record (CONTRIBUTING.md):
 #   surya-ocr==0.22.1   Apache-2.0 (code)   github.com/datalab-to/surya

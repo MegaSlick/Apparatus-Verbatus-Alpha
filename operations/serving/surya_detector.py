@@ -9,8 +9,9 @@ every document is checked here against that closed shape, refused by name if
 anything differs, before the Designator reads a value from it.
 
 A detection is returned exactly as Surya gave it: float polygons, float
-confidences, labels and reading-order positions. Turning that into integer page
-geometry is the Designator's declared quantization, not this module's.
+confidences, labels and reading-order positions, with the ordering those
+positions came from. Turning that into integer page geometry is the
+Designator's declared quantization, not this module's.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from typing import Any, Callable, Mapping, Sequence
 from common.chairs.models import ChairIdentity, ServingDetails
 
 from .config import SubprocessProfile
-from .errors import ServingConfigurationError
+from .errors import ServingConfigurationError, ServingError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONTRACT_PATH = REPO_ROOT / "operations" / "serving" / "surya" / "contract.py"
@@ -54,7 +55,16 @@ PAGE_SCHEMA = contract.PAGE_SCHEMA
 FIXTURE_ENGINE = "fixture"
 RUNNER = "runner.py"
 
-_PAGE_FIELDS = {"schema", "input_ordinal", "image_size", "run", "text_detection", "layout"}
+_PAGE_FIELDS = {
+    "schema",
+    "input_ordinal",
+    "image_size",
+    "run",
+    "text_detection",
+    "layout",
+    "reading_order",
+    "reading_order_reason",
+}
 _LINES_FIELDS = {"bboxes", "image_bbox"}
 _LINE_FIELDS = {"polygon", "confidence", "bbox"}
 _LAYOUT_FIELDS = {"bboxes", "image_bbox", "raw", "error"}
@@ -65,6 +75,8 @@ _SURYA_RUN_FIELDS = {
     "torch",
     "python",
     "device",
+    "cpu_capability",
+    "machine",
     "threads",
     "deterministic_algorithms",
     "settings",
@@ -77,6 +89,12 @@ _FIXTURE_DECLARATION = "proof/skeleton_fixture.toml"
 
 class SuryaOutputRefusal(ServingConfigurationError):
     """A Surya page document that is not the shape Surya's own schema gives."""
+
+
+class SuryaRunFailure(ServingError):
+    """Surya's runner could not be started, did not finish in time, or failed."""
+
+    code = "SURYA_RUN_FAILED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,9 +191,9 @@ def _check_run(run: Any) -> None:
     _no_floats(run, "$.run")
     if run["device"] != "cpu" or run["deterministic_algorithms"] is not True:
         raise _refuse("$.run", "is not a deterministic CPU run")
-    for field in ("surya_ocr", "torch", "python"):
-        if not isinstance(run[field], str) or not run[field]:
-            raise _refuse(f"$.run.{field}", "is not a version")
+    for field in ("surya_ocr", "torch", "python", "cpu_capability", "machine"):
+        if not isinstance(run[field], str) or not run[field].strip():
+            raise _refuse(f"$.run.{field}", "is not a non-blank string")
     if (
         isinstance(run["threads"], bool)
         or not isinstance(run["threads"], int)
@@ -185,15 +203,15 @@ def _check_run(run: Any) -> None:
     settings = _closed(run["settings"], set(contract.OUTPUT_SETTINGS), "$.run.settings")
     if not all(isinstance(value, str) for value in settings.values()):
         raise _refuse("$.run.settings", "carries a setting that is not recorded as text")
-    checkpoints = _closed(
-        run["checkpoints"], set(contract.CHECKPOINT_SETTINGS), "$.run.checkpoints"
-    )
-    for name, checkpoint in checkpoints.items():
-        _closed(checkpoint, {"source", "revision", "path"}, f"$.run.checkpoints.{name}")
     if not isinstance(run["weights"], list) or not run["weights"]:
         raise _refuse("$.run.weights", "lists no weight file")
-    for index, row in enumerate(run["weights"]):
-        _closed(row, {"path", "sha256", "size"}, f"$.run.weights[{index}]")
+    # The bundle lock's own checks: each checkpoint at its host's pin, and
+    # every weight file a path, a sha256 digest and a size.
+    try:
+        contract.check_checkpoints(run["checkpoints"])
+        contract.check_file_rows(run["weights"])
+    except contract.BundleRefusal as error:
+        raise _refuse("$.run", f"does not describe a locked bundle: {error}") from error
 
 
 def validate_page_document(
@@ -203,6 +221,10 @@ def validate_page_document(
 
     Lines keep Surya's order. Blocks come in Surya's reading order, so each
     block's `position` is its index; anything else is not what Surya returns.
+    `reading_order` names where those positions came from, with the reason
+    when Surya raster-sorted instead of running its head. A page whose layout
+    call reports an error is refused, and so is a block `count` other than
+    0, which Surya's fast layout never sets.
     """
     page = _closed(document, _PAGE_FIELDS, "$")
     if page["schema"] != PAGE_SCHEMA:
@@ -221,8 +243,8 @@ def validate_page_document(
         _polygon_box(_closed(line, _LINE_FIELDS, where), where)
     layout = _closed(page["layout"], _LAYOUT_FIELDS, "$.layout")
     _image_bbox(layout["image_bbox"], width, height, "$.layout.image_bbox")
-    if not isinstance(layout["error"], bool):
-        raise _refuse("$.layout.error", "is not a boolean")
+    if layout["error"] is not False:
+        raise _refuse("$.layout.error", "is not false: Surya's layout call reported an error")
     if layout["raw"] is not None and not isinstance(layout["raw"], str):
         raise _refuse("$.layout.raw", "is neither null nor a string")
     if not isinstance(layout["bboxes"], list):
@@ -235,7 +257,18 @@ def validate_page_document(
                 raise _refuse(f"{where}.{field}", "is not a non-blank string")
         if _count(block["position"], f"{where}.position") != index:
             raise _refuse(f"{where}.position", f"is not {index}, its place in reading order")
-        _count(block["count"], f"{where}.count")
+        if _count(block["count"], f"{where}.count") != 0:
+            raise _refuse(f"{where}.count", "is not 0, which Surya's fast layout always gives")
+    order, reason = page["reading_order"], page["reading_order_reason"]
+    if order not in contract.READING_ORDERS:
+        raise _refuse("$.reading_order", f"is not one of {list(contract.READING_ORDERS)}")
+    if (order == contract.ORDER_HEAD) != (reason is None) or (
+        reason is not None and (not isinstance(reason, str) or not reason.strip())
+    ):
+        raise _refuse(
+            "$.reading_order_reason",
+            "is not null for the order head and a non-blank reason for a raster fallback",
+        )
     return page
 
 
@@ -261,6 +294,11 @@ def _page_bytes(document: Mapping[str, Any]) -> bytes:
 # --- the fixture detector ----------------------------------------------------
 
 
+def _require_pages(pages: Mapping[int, Any]) -> None:
+    if not pages:
+        raise SuryaOutputRefusal("Surya was given no page to run on")
+
+
 def _fixture_polygon(row: Mapping[str, Any]) -> dict[str, Any]:
     polygon = [[float(x), float(y)] for x, y in row["polygon"]]
     xs = [point[0] for point in polygon]
@@ -277,18 +315,32 @@ def declared_page_documents(
     blocks: Sequence[Mapping[str, Any]],
     pages: Mapping[int, tuple[int, int]],
     run_facts: Mapping[str, Any],
+    *,
+    reading_orders: Mapping[int, tuple[str, str | None]] | None = None,
 ) -> dict[int, bytes]:
     """Each page's document in the runner's shape, built from declared rows.
 
     `pages` maps each page ordinal to its (width, height); the documents are
-    numbered by input order, as the runner numbers the pages it is given.
+    numbered by input order, as the runner numbers the pages it is given. A
+    row declared for a page that is not in `pages` is refused by name.
+    `reading_orders` gives a page's ordering and its reason; a page it does
+    not name was ordered by Surya's head.
     """
+    _require_pages(pages)
+    for family, rows in (("surya_line", lines), ("surya_block", blocks)):
+        unsealed = sorted({row["page_ordinal"] for row in rows} - set(pages))
+        if unsealed:
+            raise SuryaOutputRefusal(
+                f"the fixture declares {family} rows for page(s) {unsealed}, which are not "
+                "among the sealed pages Surya was given"
+            )
     documents = {}
     for input_ordinal, (ordinal, (width, height)) in enumerate(sorted(pages.items()), start=1):
         page_blocks = sorted(
             (row for row in blocks if row["page_ordinal"] == ordinal),
             key=lambda row: row["position"],
         )
+        order, reason = (reading_orders or {}).get(ordinal, (contract.ORDER_HEAD, None))
         documents[ordinal] = _page_bytes(
             {
                 "schema": PAGE_SCHEMA,
@@ -308,7 +360,7 @@ def declared_page_documents(
                             "label": row["label"],
                             "raw_label": row["raw_label"],
                             "position": row["position"],
-                            "count": row["count"],
+                            "count": 0,
                         }
                         for row in page_blocks
                     ],
@@ -316,6 +368,8 @@ def declared_page_documents(
                     "raw": None,
                     "error": False,
                 },
+                "reading_order": order,
+                "reading_order_reason": reason,
             }
         )
     return documents
@@ -363,7 +417,7 @@ def _environment_dir(profile: SubprocessProfile) -> Path:
 def _command(profile: SubprocessProfile, *arguments: str) -> list[str]:
     """The runner under the environment's own interpreter, by absolute path.
 
-    `uv sync --frozen --project <environment>` builds that interpreter from the
+    `uv sync --locked --project <environment>` builds that interpreter from the
     committed lock; nothing here syncs, resolves or searches PATH for it.
     """
     environment = _environment_dir(profile)
@@ -371,7 +425,7 @@ def _command(profile: SubprocessProfile, *arguments: str) -> list[str]:
     if not interpreter.is_file():
         raise ServingConfigurationError(
             f"Surya's environment has no interpreter at {interpreter}; build it with "
-            f"`uv sync --frozen --project {profile.environment}`"
+            f"`uv sync --locked --project {profile.environment}`"
         )
     return [str(interpreter), str(environment / RUNNER), *arguments]
 
@@ -383,6 +437,27 @@ def _child_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key in kept}
 
 
+def _run_child(
+    runner: Runner, argv: list[str], timeout: int, what: str
+) -> subprocess.CompletedProcess:
+    """One child process, with a timeout or a failed start named as such."""
+    try:
+        return runner(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=_child_environment(),
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise SuryaRunFailure(
+            f"Surya's {what} did not finish within {timeout} seconds and was stopped"
+        ) from error
+    except OSError as error:
+        raise SuryaRunFailure(f"Surya's {what} could not be started: {error}") from error
+
+
 def _release(version: str) -> str:
     """`2.14.0+cu130` and `2.14.0` are the same release."""
     return version.split("+", 1)[0]
@@ -392,19 +467,14 @@ def environment_versions(
     profile: SubprocessProfile, *, runner: Runner = subprocess.run
 ) -> dict[str, str]:
     """The versions Surya's environment reports, refused unless the row's pins match."""
-    result = runner(
-        _command(profile, "--check"),
-        capture_output=True,
-        text=True,
-        timeout=profile.timeout_seconds,
-        env=_child_environment(),
-        check=False,
+    result = _run_child(
+        runner, _command(profile, "--check"), profile.startup_timeout_seconds, "version check"
     )
     if result.returncode != 0:
         raise ServingConfigurationError(
             f"Surya's environment in {profile.environment} did not answer its version check "
             f"(exit {result.returncode}): {result.stderr.strip()[-400:]}; sync it with "
-            f"`uv sync --frozen --project {profile.environment}`"
+            f"`uv sync --locked --project {profile.environment}`"
         )
     try:
         found = json.loads(result.stdout)
@@ -431,9 +501,15 @@ def run_surya_subprocess(
     sizes: Mapping[int, tuple[int, int]],
     identity: ChairIdentity,
     *,
+    manifest_rows: Sequence[Mapping[str, Any]] | None = None,
     runner: Runner = subprocess.run,
 ) -> SuryaRun:
-    """Run Surya once over every page, in page order, and check what it wrote."""
+    """Run Surya once over every page, in page order, and check what it wrote.
+
+    One process loads the models once and reads every page; its timeout is the
+    row's startup allowance plus its per-page allowance for each page.
+    """
+    _require_pages(pages)
     versions = environment_versions(profile, runner=runner)
     ordinals = sorted(pages)
     with tempfile.TemporaryDirectory(prefix="verbatus-surya-") as work:
@@ -446,25 +522,19 @@ def run_surya_subprocess(
             inputs.append(str(path))
         output = work_root / "out"
         started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        result = runner(
-            _command(
-                profile,
-                "--weights",
-                str(bundle_root),
-                "--threads",
-                str(profile.threads),
-                "--output-dir",
-                str(output),
-                *inputs,
-            ),
-            capture_output=True,
-            text=True,
-            timeout=profile.timeout_seconds,
-            env=_child_environment(),
-            check=False,
+        argv = _command(
+            profile,
+            "--weights",
+            str(bundle_root),
+            "--threads",
+            str(profile.threads),
+            "--output-dir",
+            str(output),
+            *inputs,
         )
+        result = _run_child(runner, argv, profile.run_timeout_seconds(len(pages)), "runner")
         if result.returncode != 0:
-            raise ServingConfigurationError(
+            raise SuryaRunFailure(
                 f"Surya's runner failed (exit {result.returncode}): {result.stderr.strip()[-800:]}"
             )
         written = {}
@@ -473,7 +543,9 @@ def run_surya_subprocess(
             if not document.is_file():
                 raise SuryaOutputRefusal(f"Surya's runner wrote no document for page {ordinal}")
             written[ordinal] = document.read_bytes()
-    return surya_run(profile, identity, versions, started_at, written, sizes)
+    return surya_run(
+        profile, identity, versions, started_at, written, sizes, manifest_rows=manifest_rows
+    )
 
 
 def surya_run(
@@ -483,19 +555,42 @@ def surya_run(
     started_at: str,
     written: Mapping[int, bytes],
     sizes: Mapping[int, tuple[int, int]],
+    *,
+    manifest_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> SuryaRun:
     """The run the parent records from what Surya's runner wrote, page by page.
 
     `written` maps each page ordinal to its document's bytes; `versions` is
     what the environment reported. Every document is checked against the
-    closed shape, and all must name the one run this row asked for.
+    closed shape, and all must name the one run this row asked for. Given the
+    chair's digest manifest, the weights the run names must be exactly the
+    files it pins, less the bundle's own lock.
     """
+    _require_pages(written)
     documents = _parsed(written, sizes)
     run_facts = documents[min(documents)].document["run"]
     if any(page.document["run"] != run_facts for page in documents.values()):
         raise SuryaOutputRefusal("Surya's page documents disagree about the run that wrote them")
-    if run_facts["engine"] != "surya" or run_facts["threads"] != profile.threads:
+    if (
+        run_facts["engine"] != "surya"
+        or run_facts["threads"] != profile.threads
+        or run_facts["surya_ocr"] != versions["surya_ocr"]
+        or run_facts["torch"] != versions["torch"]
+    ):
         raise SuryaOutputRefusal("Surya's run facts do not describe the run this row asked for")
+    if manifest_rows is not None:
+        pinned = sorted(
+            (
+                {"path": row["path"], "sha256": row["sha256"], "size": row["size"]}
+                for row in manifest_rows
+                if row["path"] != contract.BUNDLE_FILE
+            ),
+            key=lambda row: row["path"],
+        )
+        if run_facts["weights"] != pinned:
+            raise SuryaOutputRefusal(
+                "the weights Surya's run names are not the files the chair's digest manifest pins"
+            )
     details = ServingDetails(
         tokenizer_revision=identity.receipt_revision,
         seed=0,
@@ -503,10 +598,38 @@ def surya_run(
         context_cap=0,
         pixel_cap=0,
         engine="surya-ocr",
-        engine_version=f"surya-ocr {versions['surya_ocr']}; torch {versions['torch']}",
+        # The CPU instruction set is part of what ran: torch picks kernels by it.
+        engine_version=(
+            f"surya-ocr {versions['surya_ocr']}; torch {versions['torch']}; "
+            f"cpu {run_facts['cpu_capability']} on {run_facts['machine']}"
+        ),
         dtype="float32",
         adapter_identity=None,
         endpoint=f"subprocess://{profile.device}/threads-{profile.threads}",
         started_at=started_at,
     )
     return SuryaRun(run_facts=run_facts, serving_details=details, pages=documents)
+
+
+class SuryaSubprocess:
+    """How a stage answers a subprocess Surya row: its environment is checked
+    before any paid work starts, and its runner is started when the pages are
+    ready. Tests stand in for both with `operations.serving.fakes.InProcessSurya`.
+    """
+
+    def check(self, profile: SubprocessProfile) -> dict[str, str]:
+        return environment_versions(profile)
+
+    def __call__(
+        self,
+        profile: SubprocessProfile,
+        bundle_root: Path,
+        pages: Mapping[int, bytes],
+        sizes: Mapping[int, tuple[int, int]],
+        identity: ChairIdentity,
+        *,
+        manifest_rows: Sequence[Mapping[str, Any]] | None = None,
+    ) -> SuryaRun:
+        return run_surya_subprocess(
+            profile, bundle_root, pages, sizes, identity, manifest_rows=manifest_rows
+        )

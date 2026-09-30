@@ -75,7 +75,8 @@ _SUBPROCESS_FIELDS = _PROFILE_COMMON | {
     "environment",
     "device",
     "threads",
-    "timeout_seconds",
+    "startup_timeout_seconds",
+    "seconds_per_page",
     "required_packages",
 }
 # The one engine a subprocess row may name, the packages its row pins, and the
@@ -197,6 +198,10 @@ class SubprocessProfile:
     starts it, on the CPU, with the stated thread count, and reads the JSON it
     writes. ``required_packages`` are the versions that environment's lock
     installs, checked against the environment before a run.
+
+    One process runs every page, so the models load once: the version check
+    and the model load get ``startup_timeout_seconds``, and a run over ``n``
+    pages gets that plus ``n * seconds_per_page``.
     """
 
     recipe: str
@@ -206,7 +211,8 @@ class SubprocessProfile:
     environment: str
     device: str
     threads: int
-    timeout_seconds: int
+    startup_timeout_seconds: int
+    seconds_per_page: int
     required_packages: Mapping[str, str]
     kind: str = "subprocess"
 
@@ -218,6 +224,9 @@ class SubprocessProfile:
     @property
     def key(self) -> tuple[str, str, str]:
         return (self.recipe, self.chair, self.tier)
+
+    def run_timeout_seconds(self, pages: int) -> int:
+        return self.startup_timeout_seconds + pages * self.seconds_per_page
 
 
 @dataclass(frozen=True, slots=True)
@@ -708,7 +717,10 @@ def _parse_subprocess_profile(raw: Mapping[str, Any]) -> SubprocessProfile:
         environment=environment,
         device=device,
         threads=_positive_int(raw["threads"], "threads"),
-        timeout_seconds=_positive_int(raw["timeout_seconds"], "timeout_seconds"),
+        startup_timeout_seconds=_positive_int(
+            raw["startup_timeout_seconds"], "startup_timeout_seconds"
+        ),
+        seconds_per_page=_positive_int(raw["seconds_per_page"], "seconds_per_page"),
         required_packages={
             package: _text(version, f"required_packages.{package}")
             for package, version in raw_packages.items()

@@ -4,8 +4,11 @@ Run in this directory's own environment, on a machine that may reach Datalab's
 model host and the Hugging Face Hub (the pod, never a laptop holding register
 material):
 
-    uv run --project operations/serving/surya --frozen --no-sync \
-        python operations/serving/surya/prefetch.py --out <volume>/surya/bundle
+    operations/serving/surya/.venv/bin/python operations/serving/surya/prefetch.py \
+        --out <volume>/store/staging/surya2-detection
+
+after `uv sync --locked --project operations/serving/surya` has built that
+environment.
 
 The detection checkpoint comes from Surya's own downloader, the layout and
 reading-order checkpoints from the Hub at the pinned commit
