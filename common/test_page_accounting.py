@@ -162,7 +162,6 @@ def page(
             "blocks": [
                 {**block, "ref": f"surya-block-{block['id']}"} for block in feed["surya"]["blocks"]
             ],
-            "layout_error": False,
         },
         "records": [
             {"id": f"B{k + 1}", "box_px": band(k), "ref": f"record-{k}"} for k in range(records)
@@ -1074,7 +1073,7 @@ def test_a_dense_page_is_measured_within_the_deadline():
         feed=feed,
         witnesses=[{**row, "blank": False} for row in feed["witnesses"]],
         detections={
-            "surya": {"lines": [], "blocks": [], "layout_error": False},
+            "surya": {"lines": [], "blocks": []},
             "records": None,
             "record_detector": "absent",
             "record_census": None,
@@ -1540,26 +1539,6 @@ def test_a_detector_record_with_no_box_is_reported_not_measured_never_dropped():
     ]
     assert record["holds"] == ["detector-record-not-measured"]
     assert len(record["records"]) == 3
-
-
-def test_a_failed_surya_layout_is_blocks_not_measured_never_no_blocks():
-    case = page()
-    case["feed"]["surya"]["blocks"] = []
-    for entry in acts(case):
-        entry["cites"] = [cite for cite in entry["cites"] if cite[0] != "S"]
-    for block in case["detections"]["surya"]["blocks"]:
-        block["id"] = None
-    case["detections"]["surya"]["layout_error"] = True
-
-    record = account(case)
-
-    assert record["rules"]["d"]["status"] == "pass"
-    assert record["rules"]["d"]["findings"] == [{"code": "surya-blocks-not-measured"}]
-    assert record["holds"] == []
-    shown = page()
-    shown["detections"]["surya"]["layout_error"] = True
-    with pytest.raises(ContractError, match="layout Surya reported failed"):
-        account(shown)
 
 
 def test_a_flat_witness_places_nothing_so_the_accounting_reads_the_stage_s_regions():

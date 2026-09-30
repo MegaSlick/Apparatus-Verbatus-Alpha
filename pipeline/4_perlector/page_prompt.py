@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Any, Callable, Final
 
 from common.contracts.canonical import code_digest, digest_bytes
+from operations.serving.surya_detector import contract as surya_contract
 
 BUILDER_SHA256: Final[str] = code_digest(Path(__file__).resolve().read_text(encoding="utf-8"))
 
@@ -197,14 +198,17 @@ def _feed_parts(feed: dict[str, Any]) -> list[list[_Part]]:
             _fixed("surya lines: text lines a layout detector found, with their box_1000.")
         )
         lines.extend([(line["id"], False), _box(line["box_1000"])] for line in surya["lines"])
-    if surya is not None and surya["layout_error"] is True and feed["switches"]["surya_blocks"]:
-        lines.append(
-            _fixed("surya blocks: not measured; the detector's layout failed on this page.")
-        )
     if shown["blocks"]:
+        # A raster fallback is Surya's own top-to-bottom sort, not a reading
+        # order, and the prompt says so.
+        order = (
+            "in its reading order"
+            if surya["block_sequence"] == surya_contract.ORDER_HEAD
+            else "in raster order (top to bottom, then left to right), not a reading order"
+        )
         lines.append(
             _fixed(
-                "surya blocks: layout blocks the same detector found, in its reading order, "
+                f"surya blocks: layout blocks the same detector found, {order}, "
                 "with their box_1000 and label."
             )
         )

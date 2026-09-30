@@ -218,11 +218,12 @@ def witnesses(blobs: _Blobs, *, regime="named"):
     ]
 
 
-def surya(lines: int = 3, blocks: int = 2, *, layout_error: bool = False):
+def surya(lines: int = 3, blocks: int = 2, *, fallback_reason: str | None = None):
     line_band, block_band = 3000 // lines, 3000 // blocks
     return {
         "census_ref": _ref("census"),
-        "layout_error": layout_error,
+        "block_sequence": "surya-order-head" if fallback_reason is None else "raster-fallback",
+        "block_sequence_reason": fallback_reason,
         "lines": [
             {
                 "box_px": {"x": 255, "y": 150 + line_band * index, "w": 2000, "h": line_band - 5},
@@ -1399,14 +1400,30 @@ def test_surya_confidence_is_recorded_on_the_feed_and_never_rendered():
     assert "9000" not in text and "9500" not in text
 
 
-def test_a_failed_surya_layout_shows_no_block_and_says_the_blocks_were_not_measured():
+def test_a_raster_fallback_is_recorded_and_the_prompt_says_raster_order():
     blobs = _Blobs()
-    feed = feed_for(blobs, census=surya(layout_error=True))
-    assert feed["surya"]["layout_error"] is True and feed["surya"]["blocks"] == []
-    assert len(feed["surya"]["lines"]) == 3
-    lines = page_prompt.build_page_prompt("unproven-real-perlector", feed).split("\n")
-    assert "surya blocks: not measured; the detector's layout failed on this page." in lines
-    assert feed_for(blobs)["surya"]["layout_error"] is False
+    feed = feed_for(blobs, census=surya(fallback_reason="more detections than the order head"))
+    assert feed["surya"]["block_sequence"] == "raster-fallback"
+    assert feed["surya"]["block_sequence_reason"] == "more detections than the order head"
+    assert len(feed["surya"]["blocks"]) == 2
+    text = page_prompt.build_page_prompt("unproven-real-perlector", feed)
+    assert "in raster order (top to bottom, then left to right), not a reading order" in text
+    assert "in its reading order" not in text
+    head = feed_for(blobs)
+    assert head["surya"]["block_sequence"] == "surya-order-head"
+    assert head["surya"]["block_sequence_reason"] is None
+    assert "in its reading order" in page_prompt.build_page_prompt("unproven-real-perlector", head)
+
+
+@pytest.mark.parametrize(
+    ("order", "reason"),
+    [("raster-fallback", None), ("raster-fallback", " "), ("surya-order-head", "why"), ("x", None)],
+)
+def test_a_block_sequence_that_does_not_state_itself_honestly_is_refused(order, reason):
+    census = surya()
+    census["block_sequence"], census["block_sequence_reason"] = order, reason
+    with pytest.raises(SchemaRefusal, match="block_sequence"):
+        feed_for(_Blobs(), census=census)
 
 
 def test_a_page_no_witness_testified_to_states_it_and_has_no_row():

@@ -137,7 +137,6 @@ def page(
         "surya": {
             "lines": [],
             "blocks": [{**block, "ref": block["id"]} for block in feed["surya"]["blocks"]],
-            "layout_error": False,
         },
         "records": [
             {"id": f"A{i + 1}", "box_px": box, "ref": f"record-{i}"}

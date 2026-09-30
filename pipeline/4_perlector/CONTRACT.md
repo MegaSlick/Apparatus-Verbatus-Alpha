@@ -1175,17 +1175,20 @@ run (committed `round_cap = 1`) can read pages.
   shortened roster and refuses.
 - Surya's stage-2 records, read in one place (`page_run.sealed_surya_census`): each
   `surya-page` census (`page_id`, `line_count`, `block_count`, `line_subjects`,
-  `block_subjects`, `layout_error`) and every `surya-line` and `surya-block` it
-  names (`n`, `bounds`, `confidence_bp`; a block also `label` and
-  `reading_order_position`). The census and its detections must agree exactly --
-  counts, subjects, `n`, page -- and every sealed detection must be named by its
-  page's census, or the stage refuses by name. A run with no `surya-page` record at
-  all shows none and records it on the feed: `surya: {census_ref: null, absent: "no
-  Surya page census was sealed in this run", layout_error: null, lines: [], blocks:
-  []}`. A run with censuses but none for a page refuses. A census whose
-  `layout_error` is true is blocks not measured, never a page with no blocks: the feed
-  shows no block, records `layout_error: true`, and the prompt says the blocks were not
-  measured. Each line's and block's `confidence_bp` is recorded on the feed and never
+  `block_subjects`, `reading_order`, `reading_order_reason`) and every `surya-line`
+  and `surya-block` it names (`n`, `bounds`, `confidence_bp`; a block also `label`,
+  `reading_order_position` and the page's `reading_order`). The census and its
+  detections must agree exactly -- counts, subjects, `n`, page, reading order -- and
+  every sealed detection must be named by its page's census, or the stage refuses by
+  name. A run with no `surya-page` record at all shows none and records it on the
+  feed: `surya: {census_ref: null, absent: "no Surya page census was sealed in this
+  run", block_sequence: null, block_sequence_reason: null, lines: [], blocks: []}`.
+  A run with censuses but none for a page refuses. A layout Surya failed on is refused
+  in stage 2, so every census has its blocks. The feed carries how they were
+  sequenced as `block_sequence` (`surya-order-head`, or `raster-fallback` with
+  `block_sequence_reason`; named so because the dossier sweep refuses any key naming
+  an order), and for a raster fallback the prompt says the blocks are in raster
+  order, not a reading order. Each line's and block's `confidence_bp` is recorded on the feed and never
   rendered into the prompt.
 - The page image at the sealed `[feed] page_image`: `legible` is
   `dossier.build_page_render` at `[page_context] maximum_edge` (reason
@@ -1275,8 +1278,7 @@ anything (`page_run.entry_plans`). It is given:
   in sorted `witness_label` order; `blank` is its content health's `blank` when it
   read;
 - Surya's census (`null` when the run has none), with feed ids on what the feed
-  showed and its `layout_error` (a failed layout records `surya-blocks-not-measured`
-  under rule (d), not held); the record detector as `configured` when the sealed
+  showed; the record detector as `configured` when the sealed
   `secondary_proposer` is a chair, its page's `detector-record` boxes -- a record whose
   corners enclose no crop is given with no box, and rule (i) reports it
   `detector-record-not-measured` (held) and counts them as `records_not_measured` --

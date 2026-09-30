@@ -85,7 +85,7 @@ Churro's section names -- are part of its report and are shown as given.
         roster=[chair, ...],                    # the sealed page-witness roster
         witnesses=[{"chair", "witness_label", "adapter", "testimonium",
                     "testimonium_ref"}, ...],   # one per roster chair
-        surya={"census_ref", "layout_error",
+        surya={"census_ref", "block_sequence", "block_sequence_reason",
                "lines": [{"box_px", "confidence_bp", "ref"}],
                "blocks": [{"box_px", "label", "position", "confidence_bp", "ref"}]} | None,
         page_render=dossier.build_page_render(...) | None,
@@ -114,9 +114,12 @@ witnesses: its feed records `witness_testimony: "none"` and no row, so the
 absence is stated rather than silent. A roster chair missing beside others
 that did testify is still refused.
 
-Surya's census carries its own `layout_error` flag. A failed layout is blocks
-not measured, never a page with no blocks: the feed shows no block, records
-`layout_error: true`, and the prompt says the blocks were not measured. Each
+Surya's census states how its blocks were sequenced, recorded on the feed as
+`block_sequence`: `surya-order-head` (Surya's reading-order model placed them)
+or `raster-fallback` (Surya sorted them top to bottom, then left to right, and
+`block_sequence_reason` says why). The prompt says "raster order" rather than
+"reading order" for a fallback. The feed names it `block_sequence` because the
+dossier sweep refuses any key naming an order. Each
 line's and block's `confidence_bp` is recorded on the feed and never rendered.
 
 `serving_recipe` may be `None` (the Perlector chair is absent): the feed is
@@ -160,6 +163,7 @@ from common.native_witness import (
 )
 from common.page_accounting import placement_boxes as _placement_boxes
 from common.witness_regime import BLINDED, NAMED, REGIMES
+from operations.serving.surya_detector import contract as surya_contract
 
 SCHEMA: Final = "perlector-page-feed.v1"
 READING_UNIT: Final = "page"
@@ -203,7 +207,13 @@ _ANSWER_HEALTH_FIELDS: Final = frozenset({"truncated", "repetition"})
 # The answer health of a witness that did not read, or whose answer shows nothing.
 NO_ANSWER_HEALTH: Final = {"truncated": None, "repetition": []}
 _UNIT_FIELDS: Final = frozenset({"ordinal", "box_px", "label", "text"})
-_SURYA_FIELDS: Final = frozenset({"census_ref", "layout_error", "lines", "blocks"})
+_SURYA_FIELDS: Final = frozenset(
+    {"census_ref", "block_sequence", "block_sequence_reason", "lines", "blocks"}
+)
+# How Surya ordered a page's blocks: its reading-order model, or a raster sort
+# (top to bottom, then left to right) with the reason Surya fell back to it.
+ORDER_HEAD: Final = surya_contract.ORDER_HEAD
+RASTER_FALLBACK: Final = surya_contract.RASTER_FALLBACK
 # Given as `surya` when the run holds no Surya census at all: the feed then
 # records Surya as absent and shows no line or block, whatever the switches say.
 SURYA_ABSENT: Final = "absent"
@@ -802,22 +812,27 @@ def _surya(surya: Any, switches: dict[str, Any], page_size: tuple[int, int]) -> 
         return {
             "census_ref": None,
             "absent": SURYA_ABSENT_REASON,
-            "layout_error": None,
+            "block_sequence": None,
+            "block_sequence_reason": None,
             "lines": [],
             "blocks": [],
         }
-    if (
-        not isinstance(surya, dict)
-        or set(surya) != _SURYA_FIELDS
-        or not isinstance(surya["layout_error"], bool)
-    ):
+    if not isinstance(surya, dict) or set(surya) != _SURYA_FIELDS:
         raise SchemaRefusal(
             "the sealed feed shows Surya's detections, but no Surya census of "
             f"{sorted(_SURYA_FIELDS)} was given for this page"
         )
+    order, reason = surya["block_sequence"], surya["block_sequence_reason"]
+    if not (
+        (order == ORDER_HEAD and reason is None)
+        or (order == RASTER_FALLBACK and isinstance(reason, str) and reason.strip())
+    ):
+        raise SchemaRefusal(
+            f"Surya's block_sequence is not {ORDER_HEAD!r} with no reason or "
+            f"{RASTER_FALLBACK!r} with one"
+        )
     lines = surya["lines"] if switches["surya_lines"] else []
-    # A failed layout is blocks not measured: none is shown, and the feed says why.
-    blocks = surya["blocks"] if switches["surya_blocks"] and not surya["layout_error"] else []
+    blocks = surya["blocks"] if switches["surya_blocks"] else []
     if not isinstance(lines, list) or not isinstance(blocks, list):
         raise SchemaRefusal("Surya's lines and blocks are not lists")
     shown_lines = []
@@ -860,7 +875,8 @@ def _surya(surya: Any, switches: dict[str, Any], page_size: tuple[int, int]) -> 
         )
     return {
         "census_ref": digest_ref(surya["census_ref"], "the Surya page census reference"),
-        "layout_error": surya["layout_error"],
+        "block_sequence": order,
+        "block_sequence_reason": reason,
         "lines": shown_lines,
         "blocks": shown_blocks,
     }
@@ -1026,14 +1042,16 @@ def assemble_page_feed(
     switch hides). The `witnesses` switch picks which become rows; shown ones
     get `WITNESS_LETTERS` in sorted `witness_label` order, and a hidden chair
     appears only in the recorded `switches`. `surya` is the page's Surya census
-    as `{census_ref, layout_error, lines: [{box_px, confidence_bp, ref}] in
-    Surya's order, blocks: [{box_px, label, position, confidence_bp, ref}]}`,
-    `position` being Surya's reading order; it may be
+    as `{census_ref, block_sequence, block_sequence_reason, lines: [{box_px,
+    confidence_bp, ref}] in Surya's order, blocks: [{box_px, label, position,
+    confidence_bp, ref}]}`, `position` being the block's place in the sequence
+    `block_sequence` names; it may be
     `None` only when both Surya switches are off, or `SURYA_ABSENT` when the
     run holds no Surya census at all, which the feed records as
-    `{census_ref: None, absent: <reason>, layout_error: None, lines: [], blocks:
-    []}`. `no_testimony` states that the page has no page Testimonium at all
-    (`witnesses` is then empty). `page_render` is what
+    `{census_ref: None, absent: <reason>, block_sequence: None,
+    block_sequence_reason: None, lines: [], blocks: []}`. `no_testimony`
+    states that the page has no page Testimonium at all (`witnesses` is then
+    empty). `page_render` is what
     `dossier.build_page_render` returned for the `page_image` switch, or `None`
     when it is off. `page_render_bytes` are the render's bytes, needed only
     when `page_overlay` is on, to draw the overlay and seal its digest.

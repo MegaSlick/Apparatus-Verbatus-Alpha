@@ -284,7 +284,8 @@ _SURYA_CENSUS_FIELDS: Final = (
     "block_count",
     "line_subjects",
     "block_subjects",
-    "layout_error",
+    "reading_order",
+    "reading_order_reason",
 )
 _SURYA_DETECTION_FIELDS: Final = {
     SURYA_LINE_KIND: ("page_id", "n", "bounds", "confidence_bp"),
@@ -295,6 +296,7 @@ _SURYA_DETECTION_FIELDS: Final = {
         "confidence_bp",
         "label",
         "reading_order_position",
+        "reading_order",
     ),
 }
 
@@ -316,6 +318,7 @@ def _surya_detections(
     subjects: Any,
     count: Any,
     entries: dict[tuple[str, str], dict[str, Any]],
+    reading_order: str,
 ) -> list[dict[str, Any]]:
     """One page's Surya lines or blocks, in the census's order, checked against it."""
     what = f"page {page_id}'s Surya census"
@@ -349,6 +352,11 @@ def _surya_detections(
             "ref": context.artifact_ref(DESIGNATOR, kind, entry["artifact_id"]),
         }
         if kind == SURYA_BLOCK_KIND:
+            if payload["reading_order"] != reading_order:
+                raise FatalAccounting(
+                    f"Surya {subject} states reading order {payload['reading_order']!r}, "
+                    f"but its page census states {reading_order!r}"
+                )
             row["label"] = payload["label"]
             row["position"] = payload["reading_order_position"]
         rows.append(row)
@@ -360,11 +368,13 @@ def sealed_surya_census(context) -> dict[str, dict[str, Any]] | None:
 
     Read from the Designator's stage-2 records: each `surya-page` (subject
     page_id) names its `line_subjects` and `block_subjects` in Surya's order
-    with their counts and Surya's own `layout_error`; each `surya-line` and
-    `surya-block` carries `n`, its `bounds` and `confidence_bp`, and a block
-    its `label` and `reading_order_position`. The census and its detections
-    must agree exactly, and every sealed detection must be named by its page's
-    census. This is the one place that shape is read.
+    with their counts, and how Surya ordered the blocks (`reading_order`, and
+    `reading_order_reason` for a raster fallback; the feed calls them
+    `block_sequence`); each `surya-line` and `surya-block` carries `n`, its
+    `bounds` and `confidence_bp`, and a block its `label`,
+    `reading_order_position` and the page's `reading_order`. The census and
+    its detections must agree exactly, and every sealed detection must be
+    named by its page's census. This is the one place that shape is read.
     """
     records = stage_manifest(context, DESIGNATOR)["artifacts"]
     censuses = [entry for entry in records if entry["kind"] == SURYA_PAGE_KIND]
@@ -383,9 +393,12 @@ def sealed_surya_census(context) -> dict[str, dict[str, Any]] | None:
         page_id = entry["subject_id"]
         record = context.tree.read_artifact(DESIGNATOR, SURYA_PAGE_KIND, entry["artifact_id"])
         census = _fields(record["payload"], _SURYA_CENSUS_FIELDS, f"page {page_id}'s Surya census")
-        if census["page_id"] != page_id or not isinstance(census["layout_error"], bool):
+        if census["page_id"] != page_id:
+            raise FatalAccounting(f"page {page_id}'s Surya census names another page")
+        if census["reading_order"] not in (page_feed.ORDER_HEAD, page_feed.RASTER_FALLBACK):
             raise FatalAccounting(
-                f"page {page_id}'s Surya census names another page or no layout_error flag"
+                f"page {page_id}'s Surya census states reading order "
+                f"{census['reading_order']!r}, which is not one Surya gives"
             )
         lines = _surya_detections(
             context,
@@ -394,6 +407,7 @@ def sealed_surya_census(context) -> dict[str, dict[str, Any]] | None:
             census["line_subjects"],
             census["line_count"],
             entries,
+            census["reading_order"],
         )
         blocks = _surya_detections(
             context,
@@ -402,12 +416,14 @@ def sealed_surya_census(context) -> dict[str, dict[str, Any]] | None:
             census["block_subjects"],
             census["block_count"],
             entries,
+            census["reading_order"],
         )
         named |= {(SURYA_LINE_KIND, s) for s in census["line_subjects"]}
         named |= {(SURYA_BLOCK_KIND, s) for s in census["block_subjects"]}
         by_page[page_id] = {
             "census_ref": context.artifact_ref(DESIGNATOR, SURYA_PAGE_KIND, entry["artifact_id"]),
-            "layout_error": census["layout_error"],
+            "block_sequence": census["reading_order"],
+            "block_sequence_reason": census["reading_order_reason"],
             "lines": lines,
             "blocks": blocks,
         }
@@ -1335,7 +1351,6 @@ def _accounting_detections(state: _PagePass, page: _Page) -> tuple[dict[str, Any
             else [{"box_px": row["box_px"], "ref": row["ref"]} for row in census[kind]]
             for kind in ("lines", "blocks")
         }
-        surya["layout_error"] = census["layout_error"]
         references = [census["census_ref"]] + [
             row["ref"] for row in census["lines"] + census["blocks"]
         ]

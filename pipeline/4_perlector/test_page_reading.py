@@ -180,15 +180,22 @@ def _configured_block(chair: str, recipe: str) -> str:
     )
 
 
+def _chair_block(chair: str) -> str:
+    """The shipped roster's block for `chair`, exactly as written."""
+    text = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
+    start = text.index(f"[chairs.{chair}]\n")
+    return text[start : text.index("\n\n", start) + 1]
+
+
 _ABSENT_SURYA = (
     '[chairs.designator_surya]\nstate = "absent"\n'
-    'reason = "no Surya detector is configured for the offline walking skeleton"\n'
+    'reason = "no Surya detector is configured for this test run"\n'
 )
 _ABSENT_DETECTOR = (
     '[chairs.secondary_proposer]\nstate = "absent"\n'
     'reason = "no secondary proposer is configured for the offline walking skeleton"\n'
 )
-_SURYA = (_ABSENT_SURYA, _configured_block("designator_surya", "fake-surya-v0"))
+_NO_SURYA = (_chair_block("designator_surya"), _ABSENT_SURYA)
 _DETECTOR = (_ABSENT_DETECTOR, _configured_block("secondary_proposer", "fake-secondary-v0"))
 
 
@@ -200,7 +207,6 @@ def _fixture_rows(recipe: str, chair: str) -> str:
     )
 
 
-_SURYA_ROWS = _fixture_rows("fake-surya-v0", "designator_surya")
 _DETECTOR_ROWS = _fixture_rows("fake-secondary-v0", "secondary_proposer")
 
 
@@ -243,7 +249,9 @@ def test_every_sealed_page_is_read_whole_into_a_feed_a_reading_and_its_acts(page
         assert payload["engine_call"] is None and payload["capacity"] is None
         assert payload["reading_unit"] == "page"
     feed = feeds[0]["payload"]
-    assert feed["surya"]["absent"] == "no Surya page census was sealed in this run"
+    # The fixture roster runs Surya in stage 2, so every feed shows its census.
+    assert feed["surya"]["census_ref"] is not None and "absent" not in feed["surya"]
+    assert feed["surya"]["block_sequence"] == "surya-order-head"
     assert feed["witness_testimony"] == "present"
     assert [(row["letter"], row["witness_label"]) for row in feed["witnesses"]] == [
         ("A", "attestator_1"),
@@ -313,9 +321,9 @@ def test_every_act_record_names_its_page_accounting_published_before_it(page_tre
             assert payload["page_holds"] == account["payload"]["holds"]
             held = bool(payload["page_holds"] or payload["holds"])
             assert record["outcome"] == ("held" if held else "read")
-    # The fixture has no Surya census, so rule (d) cannot be measured on any page,
-    # and every act of the happy run is held for it.
-    assert all(r["outcome"] == "held" for r in _records(root, "perlectio"))
+    # Page 1 is read whole and covered; page 2's one entry is unplaced and held.
+    outcomes = {(r["payload"]["page_ordinal"], r["outcome"]) for r in _records(root, "perlectio")}
+    assert outcomes == {(1, "read"), (2, "held")}
 
 
 def test_a_perlectio_carries_clean_text_doubt_dissent_truncation_and_autopsia(page_tree):
@@ -334,8 +342,8 @@ def test_a_perlectio_carries_clean_text_doubt_dissent_truncation_and_autopsia(pa
     assert rows["A"]["cited_units"] == ["A1"] and rows["A"]["departed"] is False
     # Churro's line reads "... alpha beta": it stops short, so the reading departs.
     assert rows["B"]["cited_units"] == ["B1"] and rows["B"]["departed"] is True
-    assert payload["holds"] == [] and payload["page_holds"] == ["unread-line-not-measured"]
-    assert first["outcome"] == "held"
+    assert payload["holds"] == [] and payload["page_holds"] == []
+    assert first["outcome"] == "read"
     last = next(
         record
         for record in _records(root, "perlectio")
@@ -373,23 +381,23 @@ def test_a_second_pass_and_a_fresh_run_leave_the_same_bytes_and_act_ids(page_tre
 
 
 def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree):
-    """Page 1 is read whole and placed; it holds only because this tree has no
-    Surya census, so rule (d) cannot be measured. Page 2's one entry cites no
-    boxed id: it is unplaced, has no region to measure truncation over, and the
-    page's ink lies outside every reading region."""
+    """Page 1 is read whole and placed, and its readings cover every Surya line:
+    nothing holds it. Page 2's one entry cites no boxed id: it is unplaced, has
+    no region to measure truncation over, and the page's ink and Surya's lines
+    lie outside every reading region."""
     root, _protocol = page_tree
     accounts = {r["payload"]["page_ordinal"]: r for r in _records(root, "page-accounting")}
     assert set(accounts) == {1, 2}
     first = accounts[1]["payload"]
-    assert first["schema"] == "page-accounting.v1" and accounts[1]["outcome"] == "held"
-    assert first["holds"] == ["unread-line-not-measured"]
+    assert first["schema"] == "page-accounting.v1" and accounts[1]["outcome"] == "read"
+    assert first["holds"] == []
     assert {unit["disposition"] for unit in first["units"]} == {"cited"}
     assert first["rules"]["i"]["status"] == "not-applicable"
     assert accounts[2]["payload"]["holds"] == [
         "reading-incomplete",
         "reading-unplaced",
         "unread-ink",
-        "unread-line-not-measured",
+        "unread-line",
     ]
 
 
@@ -457,8 +465,7 @@ def test_the_page_path_refuses_a_blind_read_or_a_sampled_control_by_name():
 # Each switch changes what the page is shown, so it changes the sealed feed and,
 # where it changes the text, page 1's prompt (page 2 has one unboxed unit per
 # witness, which no witness switch changes). The fixture page is smaller than
-# the legible edge, so `full` changes the render's record, not the prompt; and
-# Surya is absent from this tree, so its two switches change only the switches.
+# the legible edge, so `full` changes the render's record, not the prompt.
 @pytest.mark.parametrize(
     ("feed", "prompt_changes"),
     [
@@ -468,8 +475,8 @@ def test_the_page_path_refuses_a_blind_read_or_a_sampled_control_by_name():
         ({"witness_units": "flat"}, True),
         ({"witness_coordinates": False}, True),
         ({"page_overlay": "boxes"}, True),
-        ({"surya_lines": False}, False),
-        ({"surya_blocks": False}, False),
+        ({"surya_lines": False}, True),
+        ({"surya_blocks": False}, True),
     ],
     ids=lambda value: str(value),
 )
@@ -528,23 +535,8 @@ def _testimonium_paths(root: Path, ordinal: int) -> set[str]:
 # --- Surya and the record detector, from real stage-2 records ---------------------
 
 
-@pytest.fixture(scope="module")
-def surya_tree(tmp_path_factory) -> tuple[Path, Path, tuple[str, ...]]:
-    """A page-read tree whose stage 2 ran Surya against the fixture's declared rows."""
-    base = tmp_path_factory.mktemp("surya-pages")
-    protocol = _page_protocol(base / "config")
-    flags = (
-        "--models-config",
-        str(_roster(base, _SURYA)),
-        "--serving-recipes-config",
-        str(_fixture_catalogue(base, _SURYA_ROWS)),
-    )
-    _chain(base / "runs", protocol, *flags, through_perlector=True)
-    return base / "runs", protocol, flags
-
-
-def test_the_feed_shows_the_stage_two_surya_records_as_sealed(surya_tree):
-    root, _protocol, _flags = surya_tree
+def test_the_feed_shows_the_stage_two_surya_records_as_sealed(page_tree):
+    root, _protocol = page_tree
     census = {r["subject_id"]: r["payload"] for r in _designator_records(root, "surya-page")}
     lines = {r["subject_id"]: r["payload"] for r in _designator_records(root, "surya-line")}
     blocks = {r["subject_id"]: r["payload"] for r in _designator_records(root, "surya-block")}
@@ -553,7 +545,8 @@ def test_the_feed_shows_the_stage_two_surya_records_as_sealed(surya_tree):
         feed = record["payload"]
         page = census[feed["page_id"]]
         surya = feed["surya"]
-        assert surya["layout_error"] is page["layout_error"] is False
+        assert surya["block_sequence"] == page["reading_order"]
+        assert surya["block_sequence_reason"] == page["reading_order_reason"]
         assert surya["census_ref"] in record["inputs"]
         assert [line["box_px"] for line in surya["lines"]] == [
             lines[subject]["bounds"] for subject in page["line_subjects"]
@@ -571,8 +564,8 @@ def test_the_feed_shows_the_stage_two_surya_records_as_sealed(surya_tree):
         assert all(ref["ref"] in record["inputs"] for ref in surya["lines"] + surya["blocks"])
 
 
-def test_with_surya_sealed_every_detected_line_is_measured(surya_tree):
-    root, _protocol, _flags = surya_tree
+def test_with_surya_sealed_every_detected_line_is_measured(page_tree):
+    root, _protocol = page_tree
     for account in _records(root, "page-accounting"):
         payload = account["payload"]
         assert payload["rules"]["d"]["status"] != "not-measured"
@@ -591,6 +584,20 @@ def test_with_surya_sealed_every_detected_line_is_measured(surya_tree):
         for record in _records(root, kind):
             if record["payload"]["page_ordinal"] == 1:
                 assert record["payload"]["page_holds"] == [] and record["outcome"] == "read"
+
+
+def test_a_run_with_surya_absent_states_it_on_the_feed_and_holds_rule_d(tmp_path):
+    protocol = _page_protocol(tmp_path / "config")
+    models = _roster(tmp_path, _NO_SURYA)
+    _chain(tmp_path / "runs", protocol, "--models-config", str(models), through_perlector=True)
+    for record in _records(tmp_path / "runs", "page-feed"):
+        surya = record["payload"]["surya"]
+        assert surya["absent"] == "no Surya page census was sealed in this run"
+        assert (surya["census_ref"], surya["block_sequence"], surya["lines"]) == (None, None, [])
+    for account in _records(tmp_path / "runs", "page-accounting"):
+        assert account["payload"]["rules"]["d"]["status"] == "not-measured"
+        assert "unread-line-not-measured" in account["payload"]["holds"]
+        assert account["outcome"] == "held"
 
 
 def _detector_tree(base: Path, monkeypatch, detections: list[dict[str, Any]]):
@@ -771,30 +778,20 @@ class _Live:
     root: Path
     catalogue: Path
     protocol: Path
-    extra: tuple[str, ...] = ()
     scenario: str = "happy"
 
 
 def _live_chain(
     base: Path,
     *,
-    surya: bool = False,
     scenario: str = "happy",
     feed: dict[str, Any] | None = None,
     **row: Any,
 ) -> _Live:
-    catalogue = _catalogue(base / "config", _SURYA_ROWS if surya else "", **row)
+    catalogue = _catalogue(base / "config", **row)
     protocol = _page_protocol(base / "config", **(feed or {}))
-    extra = ("--models-config", str(_roster(base, _SURYA))) if surya else ()
-    _chain(
-        base / "runs",
-        protocol,
-        "--serving-recipes-config",
-        str(catalogue),
-        *extra,
-        scenario=scenario,
-    )
-    return _Live(base / "runs", catalogue, protocol, extra, scenario)
+    _chain(base / "runs", protocol, "--serving-recipes-config", str(catalogue), scenario=scenario)
+    return _Live(base / "runs", catalogue, protocol, scenario)
 
 
 @pytest.fixture(scope="module")
@@ -838,7 +835,6 @@ def _read_pages(tree: _Live, tmp_path, monkeypatch, *answers: ScriptedAnswer, ex
             TIER,
             "--perlector-protocol-config",
             str(tree.protocol),
-            *tree.extra,
             *extra,
         ],
     )
@@ -1205,7 +1201,7 @@ def test_under_flat_witnesses_the_accounting_measures_the_regions_the_stage_cut(
     """Flat witnesses place nothing: act 1's region is its one cited Surya line, in the
     published act-region and in the accounting both, so the lines it leaves out are
     unread by both readings of the page."""
-    tree = _live_chain(tmp_path / "flat", surya=True, feed={"witness_units": "flat"})
+    tree = _live_chain(tmp_path / "flat", feed={"witness_units": "flat"})
     answer = json.loads(PAGE_ANSWERS[1])
     answer["acts"][0]["cites"] = ["A1", "B1", "L1"]
     answer["acts"][1]["cites"] = ["A2", "B2", "L5-L9"]

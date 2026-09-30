@@ -84,7 +84,6 @@ SET_ASIDE_RECORD: Final = "set-aside-record"
 SPLIT_DETECTION: Final = "split-detection"
 RECORDS_NOT_MEASURED: Final = "detector-records-not-measured"
 RECORD_NOT_MEASURED: Final = "detector-record-not-measured"
-SURYA_BLOCKS_NOT_MEASURED: Final = "surya-blocks-not-measured"
 RECORD_DETECTOR_CAPPED: Final = "record-detector-capped"
 NO_RECORD_DETECTOR: Final = "no-record-detector"
 NO_PARSED_ANSWER: Final = "no-parsed-answer"
@@ -155,7 +154,7 @@ _ENTITY: Final = re.compile(r"&(?:#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6}|[A-Za-z][A-Z
 UNREADABLE: Final = ""
 _WITNESS_KEYS: Final = frozenset({"letter", "outcome", "blank", "units"})
 _DETECTIONS_KEYS: Final = frozenset({"surya", "records", "record_detector", "record_census"})
-_SURYA_KEYS: Final = frozenset({"lines", "blocks", "layout_error"})
+_SURYA_KEYS: Final = frozenset({"lines", "blocks"})
 _RECORD_CENSUS_KEYS: Final = frozenset({"detection_count", "max_det", "max_det_reached"})
 _BOX_KEYS: Final = frozenset({"x", "y", "w", "h"})
 WITNESS_UNITS_FLAT: Final = "flat"
@@ -544,7 +543,7 @@ def _census(
 
 def _read_detections(
     detections: Mapping[str, Any], feed: Mapping[str, Any], candidates: Mapping[str, Box | None]
-) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]] | None, str, bool, bool]:
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]] | None, str, bool]:
     if not isinstance(detections, Mapping) or set(detections) != _DETECTIONS_KEYS:
         raise ContractError("detections are not {surya, records, record_detector, record_census}")
     detector = detections["record_detector"]
@@ -555,22 +554,14 @@ def _read_detections(
     shown_blocks = [] if feed_surya is None else [block["id"] for block in feed_surya["blocks"]]
     surya = detections["surya"]
     lines = None
-    layout_error = False
     if surya is None:
         if shown_lines or shown_blocks:
             raise ContractError("the feed shows Surya detections the page has no census for")
     else:
-        if (
-            not isinstance(surya, Mapping)
-            or set(surya) != _SURYA_KEYS
-            or not isinstance(surya["layout_error"], bool)
-        ):
-            raise ContractError("detections surya is not {lines, blocks, layout_error}")
+        if not isinstance(surya, Mapping) or set(surya) != _SURYA_KEYS:
+            raise ContractError("detections surya is not {lines, blocks}")
         lines = _census(surya["lines"], "Surya lines", candidates, shown_lines)
         _census(surya["blocks"], "Surya blocks", candidates, shown_blocks)
-        layout_error = surya["layout_error"]
-        if layout_error and shown_blocks:
-            raise ContractError("the feed shows Surya blocks from a layout Surya reported failed")
     records = detections["records"]
     census = detections["record_census"]
     if (records is None) != (census is None):
@@ -600,7 +591,7 @@ def _read_detections(
             unit["id"]: unit["box_px"] for witness in feed["witnesses"] for unit in witness["units"]
         }
         records = _census(records, "detector records", witness_units, [], unboxed=True)
-    return lines, records, detector, capped, layout_error
+    return lines, records, detector, capped
 
 
 def _read_witnesses(
@@ -1168,13 +1159,12 @@ def page_accounting(
       every reading on the page, and rule (c) does not apply to it (its units'
       disposition is `not-shown`).
     - `detections`: the page's sealed detections, whatever the feed showed the
-      model: `{"surya": {"lines": [...], "blocks": [...], "layout_error": bool}
+      model: `{"surya": {"lines": [...], "blocks": [...]}
       | None, "records": [...] | None, "record_detector": "configured" |
       "absent", "record_census": {"detection_count", "max_det",
       "max_det_reached"} | None}`, each line, block and record `{id?, box_px,
       ref}` with `id` the feed id when the feed showed it. `surya` is `None`
-      when the page has no Surya census; `layout_error` is Surya's own flag that
-      its layout failed on the page, whose blocks are then not measured.
+      when the page has no Surya census.
       `records` and `record_census` are the record detector's records and page
       census, both `None` when it did not run or failed for the page; a record
       whose corners enclose no crop has `box_px: None` and is reported not
@@ -1195,9 +1185,7 @@ def page_accounting(
     order of any input list.
     """
     candidates = feed_candidates(feed)
-    census_lines, records, detector, capped, layout_error = _read_detections(
-        detections, feed, candidates
-    )
+    census_lines, records, detector, capped = _read_detections(detections, feed, candidates)
     parse_state = reading["parse_state"]
     finish_reason = reading["finish_reason"]
     if parse_state not in PARSE_STATES:
@@ -1345,9 +1333,6 @@ def page_accounting(
                 if line["id"] not in set_aside
                 and not is_inside(line["box_px"], all_regions, policy)
             ]
-            # Recorded, not held: no rule measures against Surya's blocks, and a
-            # failed layout is blocks not measured, never a page with none.
-            + ([{"code": SURYA_BLOCKS_NOT_MEASURED}] if layout_error else [])
         )
 
     rules["e"] = _witness_text_rule(

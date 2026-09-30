@@ -342,7 +342,8 @@ def page_shape(page: dict[str, Any]) -> dict[str, Any]:
         ],
         "surya": {
             "census_ref": _PLACEHOLDER_REF,
-            "layout_error": False,
+            "block_sequence": "surya-order-head",
+            "block_sequence_reason": None,
             "lines": surya_lines,
             "blocks": blocks,
         },

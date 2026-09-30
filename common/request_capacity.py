@@ -670,7 +670,7 @@ def _rate_bound_tokens(characters: int) -> int:
 # The carried rate is sealed against the page builder's own digest, so editing
 # the builder expires it.
 PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST: Final = (
-    "265f7e2e9f911810a190b34b84466194b7547b02b7b80d3d683151c6134d8668"
+    "81f50e7d053dca1b397812f4a8521985317466131d336b3c43854e9efeeade7d"
 )
 # Chat-template cost: 52 for the one turn plus 2 per image, charged at the most a
 # page request sends -- the page render and its overlay (`[feed] page_overlay`).
