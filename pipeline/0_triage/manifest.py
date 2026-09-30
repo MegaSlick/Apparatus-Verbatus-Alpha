@@ -16,6 +16,7 @@ apply recipe, not to geometry defaults hidden here.
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from typing import Any, Final
@@ -43,9 +44,9 @@ MAX_CLUSTER_MEMBERS: Final = 4_096
 # A single frame's parts must remain in one content-aware shard, and the shared
 # corpus-frame policy refuses any configured shard limit above 1,000 — so any
 # bound at or below that keeps every ingestible frame provable. The 64-part
-# value is the security pass's ceiling on the quadratic pairwise-disjointness
-# proof; a real frame with more parts is a triage-policy conversation, not a
-# bigger loop. The Exemplar boundary bounds the same split with the shared cap.
+# value caps the quadratic pairwise-disjointness proof; a real frame with more
+# parts needs a triage-policy change, not a bigger loop. The Exemplar boundary
+# bounds the same split with the shared cap.
 MAX_SPLIT_PARTS: Final = MAX_TRIAGE_SPLIT_PARTS
 MAX_SCANTAILOR_PROJECT_BYTES: Final = 4 * 1024 * 1024
 
@@ -127,16 +128,8 @@ def _row_digest(row: Mapping[str, Any]) -> str:
     payload = {key: value for key, value in row.items() if key != "manifest_row_sha256"}
     try:
         return digest_bytes(canonical_bytes(payload))
-    except (TypeError, ValueError, RecursionError) as error:
-        # `canonical_bytes` refuses unsupported values with TypeError, circular
-        # containers with ValueError, and cycles found by its own pre-walk with
-        # RecursionError. A lone Unicode surrogate — which JSON accepts and UTF-8
-        # has no form for — arrives as TypeError too, because `canonical_bytes`
-        # converts it there deliberately; naming `UnicodeError` here would neither
-        # widen this clause (it is a `ValueError` subclass) nor be reachable, while
-        # reading as a branch a test had covered. A caller building a row is inside
-        # this contract's refusal algebra, so each is one here too; a bare built-in
-        # exception would escape every `except SchemaRefusal` in the pipeline.
+    except TypeError as error:
+        # `canonical_bytes` refuses every unrepresentable value with TypeError.
         raise SchemaRefusal(f"triage row cannot be canonically serialized: {error}") from error
 
 
@@ -177,7 +170,7 @@ def _validate_split(split: Any, frame: Mapping[str, int]) -> None:
     # no overlap, without a tolerance. It costs the number of parts rather than
     # the number of pixels, which is what makes it usable: enumerating the pixels
     # of a 4000x6000 master takes ~8s and ~3.3GB for a single row, and a parish
-    # set is ruled to run past 2,000 frames.
+    # set can run past 2,000 frames.
     for index, region in enumerate(regions):
         for other in regions[index + 1 :]:
             if not (
@@ -407,11 +400,19 @@ def derivative_page_backlink(row: Mapping[str, Any], part_index: int) -> dict[st
     }
 
 
+def _fixture_int(text: str, message: str) -> int:
+    """One plain ASCII decimal integer; `int` alone would accept `1_0`, `+5`, ` 7 `."""
+    if re.fullmatch(r"-?[0-9]+", text) is None:
+        raise SchemaRefusal(message)
+    return int(text)
+
+
 def _fixture_rectangle(text: str, what: str) -> dict[str, int]:
-    try:
-        x, y, width, height = (int(part) for part in text.split(","))
-    except ValueError as error:
-        raise SchemaRefusal(f"ScanTailor fixture {what} geometry is malformed") from error
+    message = f"ScanTailor fixture {what} geometry is malformed"
+    fields = text.split(",")
+    if len(fields) != 4:
+        raise SchemaRefusal(message)
+    x, y, width, height = (_fixture_int(field, message) for field in fields)
     return {"x": x, "y": y, "w": width, "h": height}
 
 
@@ -492,10 +493,9 @@ def transcribe_scantailor_project(
                 raise SchemaRefusal("ScanTailor fixture part has the wrong closed geometry shape")
             if len(part) or (part.text and part.text.strip()):
                 raise SchemaRefusal("ScanTailor fixture part has content outside its closed shape")
-            try:
-                rotation = int(part.attrib["rotation_millidegrees"])
-            except ValueError as error:
-                raise SchemaRefusal("ScanTailor fixture rotation is malformed") from error
+            rotation = _fixture_int(
+                part.attrib["rotation_millidegrees"], "ScanTailor fixture rotation is malformed"
+            )
             parts.append(
                 make_part(
                     _fixture_rectangle(part.attrib["region"], "split"),
@@ -515,14 +515,14 @@ def transcribe_scantailor_project(
                 )
         if not parts:
             raise SchemaRefusal("ScanTailor fixture page declares no split part")
-        try:
-            frame = {"width": int(page.attrib["width"]), "height": int(page.attrib["height"])}
-        except ValueError as error:
-            raise SchemaRefusal("ScanTailor fixture page dimensions are malformed") from error
-        try:
-            confidence = int(page.attrib["confidence"])
-        except ValueError as error:
-            raise SchemaRefusal("ScanTailor fixture page confidence is malformed") from error
+        dimensions = "ScanTailor fixture page dimensions are malformed"
+        frame = {
+            "width": _fixture_int(page.attrib["width"], dimensions),
+            "height": _fixture_int(page.attrib["height"], dimensions),
+        }
+        confidence = _fixture_int(
+            page.attrib["confidence"], "ScanTailor fixture page confidence is malformed"
+        )
         rows.append(
             make_row(
                 corpus_id=corpus_id,

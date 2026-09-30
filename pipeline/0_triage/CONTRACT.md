@@ -106,14 +106,14 @@ count. The mapping key a caller files a record under must equal the record's own
 `cluster_id`, and the record's `corpus_id` must match the manifest and every row it
 contains. Every frame remains processable.
 
-## ScanTailor seam — unverified
+## ScanTailor fixture seam — unverified
 
 **UNVERIFIED FORMAT GAP — DO NOT TREAT THIS AS A REAL SCANTAILOR IMPORTER.**
 `transcribe_scantailor_project` accepts only the checked-in XML fixture shape
 `scantailor-project shape="unverified-fixture-v0"`. It is a defended parsing seam,
 bounded to 4 MiB before XML parsing, not a claim about ScanTailor Advanced's real
-project-file format. No real project file was available offline, so closing this gap
-here was impossible under the inherited Q2 ruling. Every decision field — operation
+project-file format: it was written without a real project file to check against,
+and nothing here closes that gap. Every decision field — operation
 order, coordinate spaces, each part's region, local crop, rotation direction, origin,
 canvas rule, colour mode and deskew angle — is read from the fixture's own attributes;
 none is synthesized or defaulted. Empty projects are refused. If real projects do not
@@ -126,6 +126,57 @@ flag, but no actor claim: a caller-supplied version would assert something about
 artifact nobody read, and a caller-supplied `kind` would let a
 transcribed row claim to be natively produced, which is exactly what "distinguishable
 by actor alone" is for.
+
+## ScanTailor midpoint bridge
+
+`operations/triage/scantailor_bridge.py` is a second, separate route. It does not read
+project XML: it reads the `scantailor-geometry.v1` document that the confined importer
+(`operations/operator/scantailor_worker.py`, whose v4 project shape is read from ScanTailor
+Advanced's own project writer) publishes, and it accepts only one shape of it. The
+document must be the importer's exact canonical bytes, read as one direct regular file
+of at most 16 MiB without following a final symlink, with `project_version` 4. Every
+entry must be a full-frame rectangular `two-pages` layout whose outline is exactly the
+submitted frame and whose single primary cutter is one full-height internal vertical
+line at an integral pixel. Each source path appears once, names the first image of its
+file (`file_image` 0, because a triage row carries no page index), and declares no
+removed half. Perspective, deskew, slanted or fractional cutters, partial outlines, a
+removed half, a later image of a multi-page file, dimensions that disagree with the
+decoded submitted bytes, and any source without exactly one submitted frame and one
+declared orientation are refusals, never approximations.
+
+Each accepted entry becomes one ordinary decision row with two frame-space parts, left
+and right of the cutter. Orientation (0 or 180 degrees) comes from dataset metadata the
+caller declares for every source, never from ScanTailor; a 180-degree source lists its
+source-right half first and rotates both parts by 180 000 millidegrees, so the outputs
+stay in physical reading order. Confidence is `0`, and colour mode is `keep` only for
+an encoder-lossless source mode, otherwise `rgb`. The rows go through the ordinary
+producer, so the Door admits them like any other.
+
+The actor the bridge currently records is fixed in code, not read from the document:
+`{kind: "scantailor", identity: "ScanTailor Advanced", revision: "v4"}`. `v4` is the
+project-file format version, not a ScanTailor release, and the bridge records it
+whatever produced the geometry — including a project written by the prescribed-midpoint
+generator below, which ScanTailor never measured.
+
+Beside the rows the bridge returns a `scantailor-triage-binding.v1` sidecar that is
+retained with them. It names the geometry document's digest and the project's digest,
+and for each geometry entry its index, source path, submitted path, source-frame digest,
+`manifest_row_sha256` and orientation. The imported document keeps ScanTailor's original
+decimal coordinates; the sidecar is what ties the derived rows back to it, so the
+triage manifest schema stays unchanged.
+
+`operations/triage/scantailor_project.py` writes a deterministic v4 project with one
+prescribed vertical cut at `width // 2` per source, for sources named by canonical
+relative paths with integer dimensions of at least 2 pixels. It runs no ScanTailor; its
+geometry is an operator's declaration, never a measurement.
+`operations/triage/recordgold_midpoint_pilot.py` is the two-step CPU handoff that uses
+both: step one writes that project into a strict ancestor of the source root, the
+operator imports it, and step two runs the bridge and the producer over the import and
+writes the manifest and binding, optionally rendering every split page with
+`common.imaging.render_triage_derivative` into an empty directory before writing any.
+It refuses a page identifier that leaves the source root, a project directory that is
+not a strict ancestor of the source root, a non-empty prepared-page directory, output
+files that already exist, and two pages whose prepared file names would collide.
 
 ## Two fields that look redundant and are not
 
@@ -194,8 +245,9 @@ walked, and an evidence manifest may name only frames in the producer submission
 decompression-bomb warning and error are producer refusals, and the canonical confirmation
 loader reads at most 16 MiB from a direct regular file without following its final path.
 
-The two ScanTailor fixture seams must be replaced together when real transcription lands.
-A real project has no trustworthy `source_frame_sha256` attribute: Unit 6B computes a
+The two ScanTailor fixture seams must be replaced together when real transcription lands;
+the midpoint bridge above is a narrower route that already meets the binding and
+confidence rules below for the one shape it accepts. A real project has no trustworthy `source_frame_sha256` attribute: Unit 6B computes a
 path-to-digest map from the submitted master bytes and binds each transcribed row through it.
 Nor does a project supply this pipeline's confidence ordinal: every transcribed row records
 confidence `0`, with `actor.kind == "scantailor"` preserving its origin. Do not synthesize
