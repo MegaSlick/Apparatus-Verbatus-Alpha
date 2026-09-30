@@ -57,8 +57,7 @@ register drift and an unloadable fixture names the fixture first.
 **The Door seals three names on a real run alone, and they are what stands in
 for the whole-digest check downstream.** `_real_bindings` adds `models`,
 `armarium-formats` and `run-policy` to `sealed_config_digests` on the real path
-only — never into `config_digest`, so the real digest does not move and no run
-in flight is invalidated by their arrival. They exist because a real run's
+only — never into `config_digest`. They exist because a real run's
 `config_digest` cannot be recomputed by any later stage: it binds the submission
 ledger's file list and self-hash, the data-handling policy that gated admission,
 the triage documents, and `_door_execution_recipe`, which is the PDFium and
@@ -76,8 +75,7 @@ publish stage-3 testimony naming one model and stage-4 dossiers naming another,
 every check green, which is provenance broken silently on the one path that
 will ever carry real material.
 
-**A real run created before these three names cannot be resumed under this
-build.** `_refuse_incompatible_real_reuse` names an absent digest apart from a
+**A real run whose seal lacks any of these three names cannot be resumed.** `_refuse_incompatible_real_reuse` names an absent digest apart from a
 moved one — "run 'r1' sealed no digest for the … configuration, so a stage
 cannot prove which bytes it is bound to" — because the two need different
 operator actions: restore the file, versus start the run again on a build that
@@ -266,10 +264,10 @@ repaired tree, a caller that never passed a Door — is refused on its own merit
 rather than depending on the Door having run. Every stage behind the Exemplar still
 keys its work by submitted ordinal and would mint each act on such a page twice.
 
-The operator consequence has changed shape: the same scan under two filenames —
-routine in archive exports — now stops at the stage that read the filenames, with a
-report naming them, instead of producing a green Exemplar and then a fatal
-Designator complaining about an ordinal that was never lost. **What lifts the Door
+For the operator, the same scan under two filenames — routine in archive exports —
+stops at the stage that read the filenames, with a report naming them, rather than
+passing the Exemplar and then failing in the Designator over an ordinal that was
+never lost. **What lifts the Door
 refusal is a decision, not a code change**: consumers processing merged pages once
 per identity is tractable (`sealed_submission_rows` was built for it; the census is
 one row per ordinal and `expected_refs` is a set, so only the Designator's
@@ -296,9 +294,9 @@ filename/digest linkage and any `container_page_index` in `export.pages` and in
 every delivered crop's `source_regions`, so an individual output can be matched to
 all originals it used without guessing from an ordinal.
 
-## Split derivative pages (Unit 7)
+## Split derivative pages
 
-A submitted frame that Unit 5's decision manifest gives a split for fans out to one
+A submitted frame that the triage decision manifest gives a split for fans out to one
 ordinal per declared part **before** `RunTree.create`, so `source_manifest` is the
 post-split page denominator and `require_corpus_frame_shard` counts post-split
 pages. `container_page_index` is the index of a page within whatever divided its
@@ -333,14 +331,13 @@ master's.
   the encoded PNG. Pillow modes such as LAB that do not implement direct conversion
   to `L` take the recipe's explicit LAB-to-RGB-to-L path. Nothing here converts
   evidence silently.
-- **Unit 6 consequence for real 16-bit TIFF masters:** it must emit a deliberate
-  per-part `grayscale`, `rgb`, or `bitonal` decision and record the actor that made
-  it. It must not default those masters to `keep`. If preserving the 16-bit samples
-  is required, Unit 6 must emit no split decision for that frame; the whole-page
-  route then seals lossless TIFF samples. This is a doctrine consequence, not a
-  guess based on the synthetic test material.
+- **Real 16-bit TIFF masters:** the triage producer must emit a deliberate per-part
+  `grayscale`, `rgb`, or `bitonal` decision and record the actor that made it; `keep`
+  refuses those masters. If the 16-bit samples must be preserved, the producer emits
+  no split decision for that frame, and the whole-page route seals lossless TIFF
+  samples.
 - The row's declared `frame` is compared against the master's actual dimensions,
-  at the door and again at the Exemplar boundary. Unit 5 proves a row's parts
+  at the door and again at the Exemplar boundary. The triage manifest validator proves a row's parts
   partition its *declared* frame exactly; only this comparison ties that
   declaration to the photograph, and without it a row declaring a smaller frame
   re-derives perfectly while the rest of the master reaches no page.
@@ -349,8 +346,8 @@ master's.
   rotation swaps the derivative's output dimensions; every one-pixel width or
   height mismatch is refused. EXIF orientation metadata is not an unrecorded
   transform: a JPEG tagged for rotated display still has the stored raster's
-  dimensions and coordinate space here. Unit 6 must transcribe ScanTailor geometry
-  into that raw frame space rather than silently applying EXIF orientation.
+  dimensions and coordinate space here. ScanTailor geometry is transcribed
+  into that raw frame space, never with EXIF orientation silently applied.
 - **The apply recipe's library versions are a record, not an enforcement.** The
   frozen `triage-raster-apply-v1` recipe is compared exactly; the Pillow, pillow-heif
   and libheif versions beside it are provenance and are *not*
@@ -398,8 +395,8 @@ no cross-capture read is built yet (`pipeline/4_perlector/CONTRACT.md`).
 **Not yet wired, and whose job it is.** `door.content_aware_shards` plans seams
 that fall at opening boundaries and never inside a split pair or a cluster, and
 refuses by name when the page cap leaves no legal seam. Nothing calls it: nothing
-in the tree partitions a corpus into shards at all. Unit 8 owns multi-shard
-submission and must call it before creating each `RunTree`, passing the sealed
+in the tree partitions a corpus into shards at all. A multi-shard submitter must
+call it before creating each `RunTree`, passing the sealed
 `max_pages_per_shard` from `config/corpus_frame.toml`. It imposes no shard-count
 ceiling of its own — the page cap is the sealed policy and the shard count is its
 consequence — so a caller with a real ceiling passes `max_shards` explicitly. A
@@ -409,13 +406,12 @@ copies remain distinct submitted frames, and a legal seam may fall between them.
 Nested or interleaved cluster spans are kept as one contiguous shard interval.
 
 **Hard-failure cap across shards — decided per shard/run.** The ruled unit in
-`config/hard_failure.toml` is "more than 2 failures within a 1000 page run". Unit 8
-creates one run per at-most-1,000-page shard, so it must keep the existing tally per
+`config/hard_failure.toml` is "more than 2 failures within a 1000 page run". A
+multi-shard submitter creates one run per at-most-1,000-page shard, so it must keep the existing tally per
 shard and must not add a corpus-wide aggregate that would silently change the ruled
 unit. Two hard failures in each of several shards remain warnings in each run; the
 third within any one shard halts that run at its next checkpoint. Nothing links a
-continuation that crosses a shard boundary: each run sees only its own pages, and
-Unit 8 inherits that gap.
+continuation that crosses a shard boundary: each run sees only its own pages.
 
 **Recovery does not re-render a derivative page.** A recovery pass reads the same
 sealed Exemplar page, re-verifies its master/recipe lineage at the ordinary boundary,
@@ -466,8 +462,8 @@ Real input is fail-closed on living inside a storage root
 `config/data_handling_policy.json` names — the submitted folder, the run root,
 the filename ledger, and any triage decision manifest or cluster records all check
 against it before a byte is read, and none of the record files may live inside the
-submitted folder. **Real input no longer also needs a current
-data-gate approval-record artifact:** none of this material ever reaches git
+submitted folder. **Real input needs no data-gate
+approval-record artifact:** none of this material ever reaches git
 regardless of any such sign-off. The local gate package is
 [`operations/submit/README.md`](../../operations/submit/README.md).
 It retains all run material, exports, and filename ledger until the whole run is

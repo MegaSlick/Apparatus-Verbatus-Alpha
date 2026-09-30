@@ -40,17 +40,17 @@ clockwise about their centre onto an expanded canvas. A consumer cannot instead
 deskew and then crop, rotate counterclockwise, rotate about the frame origin, or clip
 to the input canvas while still passing schema validation.
 
-This manifest settles geometry, not raster implementation. Unit 7's required sealed
-apply recipe still owns sampling, fill, conversion implementation, encoder, and
+This manifest settles geometry, not raster implementation. The Door's sealed
+`triage-raster-apply-v1` recipe owns sampling, fill, conversion implementation, encoder, and
 library versions; a renderer must not invent those as defaults from this record.
 
 ## Modes and refusals
 
-The modes are Unit 1's pipeline-wide vocabulary, named once as
+The modes are the pipeline-wide vocabulary, named once as
 `common.contracts.stages.TRIAGE_MODES`. The schema, the sealed
 `config/triage_modes.toml` declaration, and `require_triage_modes`'s point-of-use
-recheck all read that one constant; Unit 1's driver joins it rather than declaring a
-fourth spelling.
+recheck all read that one constant, and `common/stage.py` reads it too rather than
+declaring its own spelling.
 
 Every refusal in this module is a `SchemaRefusal`, the type the pipeline's live
 recorders catch (`pipeline/7_armarium/run.py`, `pipeline/3_attestatores/run.py`,
@@ -79,12 +79,12 @@ never left silently unchecked.
 
 A manifest refuses two rows for the same submitted frame, but that check sees one
 shard at a time. Two shards each holding a row for the same frame with different
-geometry is a contradiction no single-manifest validation can see; Unit 6 owns not
-producing one, and a derivative's backlink names a row digest, so a consumer that
+geometry is a contradiction no single-manifest validation can see; the producer must
+never write one, and a derivative's backlink names a row digest, so a consumer that
 resolves a backlink against the wrong shard finds nothing rather than the wrong
 geometry.
 
-**Unit 7 still owes half of one check this module cannot make.**
+**The Door makes the other half of one check this module cannot make.**
 `source_frame_sha256` is opaque bytes-identity: nothing here can tell the digest of a
 source frame from the digest of a ScanTailor crop output, and ScanTailor's output
 images are never submitted. The cheap structural guard is the row's own `frame`,
@@ -130,18 +130,18 @@ model identity and revision, or the ScanTailor version. `human_override` records
 whether a person then changed it. They are deliberately orthogonal: collapsing them
 would make `human_override` a restatement of `actor.kind == "human"`, and a human
 correcting a ScanTailor crop would have to be recorded either as ScanTailor doing the
-correcting or as a human whose identity the project file does not carry. The
-overriding person's own identity lands in Unit 4's decision-record shape, which is
-where the plan puts a manual crop.
+correcting or as a human whose identity the project file does not carry. The row
+does not carry the overriding person's own identity.
 
 A human actor's `revision` is `null`, not a placeholder string. The resolved revision
 belongs to the *model* that produced a record; a person has none, and a
 required string would only buy a value that protects nothing.
 
-## Unit 6B producer and confirmation contract
+## Producer and confirmation contract
 
-Unit 6A supplies only an offline co-visibility instrument. It calls no model, writes no
-manifest or cluster, and asserts no link. Unit 6B is the sole path that may turn a reviewed
+The co-visibility instrument (`operations.triage.instrument`) runs offline. It calls no
+model, writes no manifest or cluster, and asserts no link. The producer is the sole path
+that may turn a reviewed
 confirmation into `re_shoot_cluster_id`; an instrument verdict never does so directly.
 Every confirmed cluster must trace to candidate evidence by
 `(instrument_config_sha256, sorted source-frame digest pair)`, and the confirmation must
@@ -156,9 +156,8 @@ imaging-library versions, the exact bounded determinism claim, every tuning valu
 `UNMEASURED`, and `known_blindness`. Its digest belongs only under the Door's
 `triage_document_digests["triage-producer-recipe"]`; the producer configuration remains
 outside `run_config_bindings` because it executes before a run exists. The run authority
-still hashes triage document digests without recording them by name; Unit 6A deliberately
-does not change that inherited Unit 5 shape, and 6B's pre-door confirmation does not depend
-on learning them from a run.
+hashes triage document digests without recording them by name, and the pre-door
+confirmation does not depend on learning them from a run.
 
 Consume each complete `cluster-candidate-evidence.v1` record together with its
 `cluster-candidate-evidence-manifest.v1` and matching recipe. A record's `near-duplicate`
@@ -198,7 +197,7 @@ or rotation. All three shipped triage modes continue to route every row to revie
 real measured pass establishes thresholds; synthetic fixtures are regression cases, never
 calibration data.
 
-### Closed confirmation-file and reconciliation contracts (Unit 6B)
+### Closed confirmation-file and reconciliation contracts
 
 The producer consumes canonical JSON `triage-re-shoot-confirmation.v1`, with exactly
 `schema`, `corpus_id`, `appending_run`, `authority`, `instrument_config_sha256`,
@@ -277,10 +276,10 @@ from 0 through 1000. These deliberately generous ceilings bound an untrusted sea
 without constraining the seven-frame measured protocol. A host runs the actual
 image-reading seats separately, never this producer.
 
-### What a confirmation is authority for, and what binds it (Unit 6B audit)
+### What a confirmation is authority for, and what binds it
 
-A confirmation authorizes a corpus-lifetime write. Unit 0D's boundary — the pipeline
-cannot approve itself — applies here in spirit, so it is worth saying exactly where the
+A confirmation authorizes a corpus-lifetime write. The pipeline cannot approve itself,
+and that applies here in spirit, so it is worth saying exactly where the
 line currently falls rather than implying a stronger one.
 
 **The producer cannot manufacture one.** `operations.triage` has no model client and no
@@ -289,14 +288,14 @@ verdict per pair and never a link, and `produce` mints a cluster only from a con
 handed to it. There is no code path in which running the instrument produces a
 confirmation.
 
-**What binds a confirmation to an operator act, pre-Unit 21, is that a person put the
-file there.** That is the whole of it, and it is worth being blunt: `load_confirmation`
+**What binds a confirmation to an operator act is that a person put the file
+there.** That is the whole of it, and it is worth being blunt: `load_confirmation`
 reads canonical JSON from a path, and `produce` accepts an already-parsed mapping, so an
 in-process caller can synthesize one without any file existing. The `authority` record
 (`{kind, identity, revision}`) is a *claim* the confirmation makes about itself, not a
 credential anything verifies. Cryptographic trust roots for approval records are settled
 permanently against adoption: integrity-only records are the design. This is therefore
-not a gap waiting on a signature scheme; it is the honest shape of a pre-console act.
+not a gap waiting on a signature scheme; it is the honest shape of an act made without an operator console.
 
 Three things make that shape safe enough to ship, and each is enforced rather than
 documented:
@@ -317,11 +316,11 @@ documented:
    append is then refused, the authority remains as evidence of the attempted confirmation
    and makes no claim that the register changed.
 
-**Unit 21 replaces the placement, not the schema.** A console act should supply the same
+**An operator console would replace the placement, not the schema.** A console act should supply the same
 closed `triage-re-shoot-confirmation.v1` object with `authority.kind = "human"` and a
 resolved operator identity, and should bind that identity into the register record rather
 than only beside it. The record shapes in `common/corpus_register.py` are closed, so that
-is a deliberate contract change for Unit 21 to make, not something to add quietly here.
+is a deliberate contract change for the console to make, not something to add quietly here.
 
 ### Correcting a confirmation that was wrong
 

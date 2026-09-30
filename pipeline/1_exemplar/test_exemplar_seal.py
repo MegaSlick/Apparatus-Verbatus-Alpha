@@ -441,7 +441,7 @@ def test_a_derivative_naming_a_master_other_than_its_submitted_row_refuses(tmp_p
 def test_exemplar_rederives_a_derivative_recipe_before_sealing_it(tmp_path, rebind_stage_seal):
     """A rehashed but false Door recipe cannot acquire an Exemplar seal.
 
-    `rebind_stage_seal` because the Door now witnesses its own boundary: without
+    `rebind_stage_seal` because the Door witnesses its own boundary: without
     it the Exemplar correctly stops on the Door's stage-seal and the recipe
     re-derivation this test is named for is never reached. Rebinding models the
     other hypothesis -- a Door that wrote the false recipe and honestly witnessed
@@ -1248,12 +1248,12 @@ def test_a_real_ingress_exemplar_refuses_to_open_over_a_door_that_did_not_comple
 def test_the_real_route_still_seals_behind_a_completed_door_and_reaches_the_designator(
     tmp_path,
 ):
-    """The only real path that works today, driven program by program.
+    """The real path, driven program by program.
 
     Door, Exemplar and Ink Map complete over a real submission opened through
     the shared constructor, and the Designator reaches its honest real-input
     refusal -- the ledger reconciled, nothing fabricated -- without ever
-    touching the refusing fixture accessor a real context now carries.
+    touching the refusing fixture accessor a real context carries.
     """
     run_root, door_argv = _real_submission(tmp_path, {"FS-1.png": png(4, 3), "FS-2.png": png(5, 2)})
 
