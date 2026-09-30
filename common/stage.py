@@ -2445,16 +2445,6 @@ def _verify_page_read_denominator(
 ) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
     index = _PageReadRecords(context)
     pages = exemplar_page_ids(context)
-    submitted = {
-        row.get("ordinal")
-        for row in context.run.get("source_manifest", [])
-        if isinstance(row, Mapping)
-    }
-    if set(pages) != submitted:
-        raise FatalAccounting(
-            f"submitted page ordinal(s) {sorted(submitted - set(pages), key=str)} have no "
-            "Exemplar page; a submitted page is never silently absent from the count"
-        )
     index.refuse_strays(set(pages.values()))
     rows: dict[int, dict[str, Any]] = {}
     acts: list[dict[str, Any]] = []
@@ -5061,7 +5051,8 @@ def exemplar_page_ids(context) -> dict[int, str]:
 
     Read from the Exemplar's `page` artifacts, the only source that carries a
     container page's full identity.  Says which page an ordinal names, not
-    that its bytes are sound.
+    that its bytes are sound. Every submitted ordinal has exactly one page, so
+    no submitted page is silently absent from what a stage reads or counts.
     """
     submitted = {
         row.get("ordinal")
@@ -5102,6 +5093,12 @@ def exemplar_page_ids(context) -> dict[int, str]:
                 "and those ordinals would otherwise leave this index silently"
             )
         pages[ordinal] = page["subject_id"]
+    missing = submitted - set(pages)
+    if missing:
+        raise FatalAccounting(
+            f"submitted page ordinal(s) {sorted(missing, key=str)} have no Exemplar page; a "
+            "submitted page is never silently absent"
+        )
     return dict(sorted(pages.items()))
 
 

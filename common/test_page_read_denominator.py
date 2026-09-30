@@ -615,11 +615,13 @@ def test_a_refused_page_with_an_act_record_is_refused(happy_tree, tmp_path):
         reading_acts(_context(tree))
 
 
-def test_every_submitted_page_must_have_an_exemplar_page(happy_tree, monkeypatch):
-    pages = stage_module.exemplar_page_ids
-    monkeypatch.setattr(stage_module, "exemplar_page_ids", lambda context: {1: pages(context)[1]})
-    with pytest.raises(FatalAccounting, match=r"ordinal\(s\) \[2\] have no Exemplar page"):
-        reading_acts(_context(happy_tree))
+def test_every_submitted_page_must_have_an_exemplar_page(happy_tree):
+    context = _context(happy_tree)
+    context.run["source_manifest"].append({**context.run["source_manifest"][-1], "ordinal": 3})
+    with pytest.raises(FatalAccounting, match=r"ordinal\(s\) \[3\] have no Exemplar page"):
+        reading_acts(context)
+    with pytest.raises(FatalAccounting, match=r"ordinal\(s\) \[3\] have no Exemplar page"):
+        stage_module.exemplar_page_ids(context)
 
 
 # --- refusals ---------------------------------------------------------------------
