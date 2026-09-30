@@ -478,7 +478,7 @@ class RunTree:
         it, because the reviews it cites are append-only and an act's class only
         moves toward resolution.  Concurrent Recensor passes are still unsafe.
         """
-        from common.recensor_receipt import validate_recensor_partition_receipt
+        from common.recensor_receipt import expected_count, validate_recensor_partition_receipt
 
         checked = validate_recensor_partition_receipt(record)
         if checked["run_id"] != self.run_id or checked["config_digest"] != self._run_authority():
@@ -491,12 +491,12 @@ class RunTree:
             if existing is not None and (
                 existing["run_id"] == checked["run_id"]
                 and existing["config_digest"] == checked["config_digest"]
-                and existing["expected_act_count"] != checked["expected_act_count"]
+                and expected_count(existing) != expected_count(checked)
             ):
                 raise SchemaRefusal(
                     "Recensor partition receipt would change its expected_act_count from "
-                    f"{existing['expected_act_count']} to {checked['expected_act_count']} under "
-                    "the same run authority; the proposal-act denominator is sealed once and "
+                    f"{expected_count(existing)} to {expected_count(checked)} under "
+                    "the same run authority; the act or unit denominator is sealed once and "
                     "cannot legitimately differ between two passes over the same run"
                 )
         target.parent.mkdir(parents=True, exist_ok=True)

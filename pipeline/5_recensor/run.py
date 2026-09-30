@@ -1498,14 +1498,17 @@ def page_coverage_findings(
         )
         width, height, rows = grayscale_rows(image_bytes)
         try:
-            findings[ordinal] = residual_ink(
-                width,
-                height,
-                rows,
-                bounds,
-                background_policy=resolve_background_policy(background_config, width, height),
-                coverage_policy=resolve_coverage_audit_policy(coverage_config, width, height),
-            )
+            findings[ordinal] = {
+                **residual_ink(
+                    width,
+                    height,
+                    rows,
+                    bounds,
+                    background_policy=resolve_background_policy(background_config, width, height),
+                    coverage_policy=resolve_coverage_audit_policy(coverage_config, width, height),
+                ),
+                "background_config_sha256": background_config["config_sha256"],
+            }
         except BackgroundInferenceRefusal as error:
             # Without a paper value zero ink would be a false clean page.
             findings[ordinal] = {
@@ -3464,14 +3467,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     occlusions = occlusion_records_by_page(context)
     proposal_geometry: dict[str, dict] = {}
     # Counted from the tree: an in-memory counter would reset after the requested recrop.
-    funded_pages = observation_funded_pages(context, expected_acts(context))
+    acts = denominator["acts"]
+    funded_pages = observation_funded_pages(context, acts)
     candidate_refs = continuation_candidate_refs(
         context,
-        {act["act_id"] for act in expected_acts(context) if act["outcome"] == "proposed"},
+        {act["act_id"] for act in acts if act["outcome"] == "proposed"},
     )
 
     held = 0
-    for act in expected_acts(context):
+    for act in acts:
         act_id, act_key = act["act_id"], act["act_key"]
 
         coverage = validate_chair_coverage(context, act_id, floor)
