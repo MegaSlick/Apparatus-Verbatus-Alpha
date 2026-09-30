@@ -367,36 +367,50 @@ record on a laptop and on a loaded pod.
 
 An unaligned page witness is not `comparable`, so it leaves the act's witness
 floor -- a budget small enough to run out on real work records a comparison as
-coverage that is missing. The budget is sized to clear, with room to spare,
-every legitimate page the character and pair bounds admit. The costliest is a
-page at the pair ceiling whose acts repeat one short formula verbatim and whose
-witness misreads the same word in every act: every repeat is an equally long
-candidate match, so the search revisits them all. Varied acts, witnesses with
-scattered errors, reordered or half-read pages and asymmetric page shapes cost
-far less. `common/test_alignment.py` pins that headroom on the costliest shape.
-Degenerate chair responses the bounds admit -- two different low-entropy
-strings, a repetition loop against a page -- run out instead of finishing, after
-at most the budget's work rather than however long they would take.
+coverage that is missing. What the budget covers, exactly: a page at the pair
+ceiling (10,000 x 10,000 characters) made of register acts of 150 characters or
+more, including the costliest such page, whose acts repeat one formula verbatim
+and whose witness misreads the same word in every act, so every repeat is an
+equally long candidate match and the search revisits them all. That page needs
+243.2M steps at 150 characters, under half the sealed 500M. Varied acts,
+witnesses with scattered errors, reordered or half-read pages and asymmetric
+page shapes cost far less. `common/test_alignment.py` pins the headroom on the
+150-character page.
+
+What it does not cover: a page at the ceiling made of shorter units repeated
+verbatim, such as index rows. A 60-character unit needs 570M steps. Such a page
+comes out `alignment-step-limit`, counted `unmeasured` -- a named hold, never a
+silent loss. Degenerate chair responses the bounds admit -- two different
+low-entropy strings, a repetition loop against a page -- stop the same way,
+after at most the budget's work rather than however long they would take.
+
+One stop at the sealed 500M costs about 45 seconds of wall time: measured at
+42.0 s (40.2 s CPU) for two different repeated phrases and 48.7 s (42.8 s CPU)
+for the 60-character unit, on a 4-core Intel Xeon virtual machine at 2.10 GHz
+with 15 GiB of memory, under Python 3.14.6, while other jobs held its load
+average between 3.5 and 6.9. The alignment is cached per page and chair, so this
+is at most once per stopped page witness.
 
 A spent budget is `alignment-step-limit`. The name has to say that this module
-stopped, because nothing may read it as a measurement of the witness. The
-Recensor holds the act rather than counting the chair -- no comparison was
-made, so none may be claimed -- and `common/contracts/outcomes.py::
-witness_coverage` counts it in its own `shortfalls["unmeasured"]` bucket, apart
-from `shortfalls["unaligned"]`, a comparison made and found not to cover. The
-same bucket takes a page stopped by the character or pair bound, which is
-equally unmeasured. The Recensor partition receipt carries the split from
-`recensor-partition-receipt.v3`; a v2 receipt still reads, with its single
+stopped, because nothing may read it as a measurement of the witness. No
+comparison was made, so none may be claimed: the chair does not count toward the
+act's witness floor, and the Recensor holds the act only when the chairs that do
+count fall short of that floor. `common/contracts/outcomes.py::witness_coverage`
+counts the chair in its own `shortfalls["unmeasured"]` bucket, apart from
+`shortfalls["unaligned"]`, and the Recensor's hold reason names it as unmeasured,
+not failed. The same bucket takes a page stopped by the character or pair bound,
+which is equally unmeasured. The Recensor partition receipt carries the split
+from `recensor-partition-receipt.v3`; a v2 receipt still reads, with its single
 `unaligned` bucket.
 
 **Not built: an LCS fallback on a spent budget.** A bounded LCS pass (RapidFuzz
 Indel) could return spans where Ratcliff-Obershelp runs out, with the record
 naming which matcher produced them. It is not built because nothing is lost
 without it: the counted budget already gives a spent budget a named reason and
-its own bucket, every legitimate page aligns under Ratcliff-Obershelp with room
-to spare, and the pages that do run out are degenerate responses on which the
-LCS tie-break flaw above would decide an attachment that is not well defined
-anyway.
+its own bucket, a page of register acts aligns under Ratcliff-Obershelp with
+room to spare, and the pages that do run out are short repeated units or
+degenerate responses, on which the LCS tie-break flaw above would decide an
+attachment that is not well defined anyway.
 
 Only acts whose primary page is this one are anchored; a continuation's tail
 has no anchor line by design. An act no reported block overlaps, or whose

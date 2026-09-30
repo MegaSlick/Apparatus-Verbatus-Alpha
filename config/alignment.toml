@@ -1,4 +1,4 @@
-# R4 alignment limits. Its values are sealed at run creation and rechecked at
+# Alignment limits. Their values are sealed at run creation and rechecked at
 # the point of use. Values are operational bounds, never similarity thresholds.
 [limits]
 max_characters = 100000
@@ -6,13 +6,14 @@ max_character_pairs = 100000000
 # The matcher's work, in steps: one witness character scanned or one anchor
 # position visited by `find_longest_match`. Counted, not timed, so the same
 # page under the same limits aligns the same way on every machine. An
-# unaligned page witness is not comparable and leaves the act's witness floor,
-# so the budget is sized to clear, with room to spare, every legitimate page
-# the two bounds above admit. The costliest is a page at the pair ceiling
-# whose acts repeat one short formula verbatim and whose witness misreads the
-# same word in every act; varied acts, noisy witnesses and asymmetric page
-# shapes cost far less. Degenerate chair responses the bounds admit (a
-# repetition loop, two different low-entropy strings) stop here.
+# unaligned page witness is not comparable and leaves the act's witness floor.
+# Covered, with room to spare: a page at the pair ceiling made of register acts
+# of 150 characters or more, even when every act repeats one formula verbatim
+# and the witness misreads the same word in each. Not covered: shorter units
+# repeated verbatim across the ceiling, such as 60-character index rows, which
+# stop here and are counted unmeasured, a named hold. Degenerate chair
+# responses the bounds admit (a repetition loop, two different low-entropy
+# strings) stop here too.
 max_alignment_steps = 500000000
 
 # The Perlector's dissent and self-revision comparisons: one act's reading

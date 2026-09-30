@@ -35,15 +35,15 @@ The knobs. One question per planned file, each answerable without reading code.
 
 The step budgets count the matcher's work instead of timing it, so whether a
 page aligns, or a dissent or self-revision comparison finishes, depends only on
-its texts and the sealed limits, never on the machine. The page budget is sized
-to clear, with room to spare, every legitimate page the character and pair
-bounds admit. An unaligned page witness is not `comparable`, so it leaves the
-act's witness floor: a budget that runs out on real work records a comparison
-as coverage that is missing. The costliest legitimate page is one at the pair
-ceiling whose acts repeat one short formula verbatim, read by a witness that
-misreads the same word in every act; `common/test_alignment.py` pins its
-headroom. Degenerate chair responses run out on the budget instead of
-finishing. The dissent budget, `[dissent]` in the same file, is sized the same
+its texts and the sealed limits, never on the machine. An unaligned page
+witness is not `comparable`, so it leaves the act's witness floor. The page
+budget clears, with room to spare, a page at the pair ceiling made of register
+acts of 150 characters or more, even when every act repeats one formula
+verbatim and the witness misreads the same word in each;
+`common/test_alignment.py` pins that headroom. Shorter units repeated verbatim
+across the ceiling, such as 60-character index rows, are not covered: they stop
+on the budget and are counted unmeasured, a named hold. Degenerate chair
+responses stop on it too. The dissent budget, `[dissent]` in the same file, is sized the same
 way for act-length text; a comparison past it is recorded as not measured. A
 faster matcher was tried and refused because it attached witness text to the
 wrong act; see `pipeline/3_attestatores/CONTRACT.md`.

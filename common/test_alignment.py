@@ -8,6 +8,7 @@ import common.alignment as alignment_module
 from common.alignment import (
     DEFAULT_ALIGNMENT_CONFIG_PATH,
     STEP_LIMIT_REASON,
+    UNMEASURED_REASONS,
     AlignmentLimits,
     StepCountedMatcher,
     align_to_anchor,
@@ -15,6 +16,7 @@ from common.alignment import (
     load_alignment_limits,
     load_dissent_limits,
     markup_text_view,
+    refuse_retired_alignment_record,
 )
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
@@ -206,6 +208,30 @@ def test_an_alignment_finishes_on_its_exact_step_count_and_not_one_step_fewer():
     assert result["witness"]["text"] == witness, "refused, never clipped"
 
 
+def test_a_retired_deadline_record_of_either_status_is_refused_by_name():
+    """A wall-clock stop measured nothing. Read today it would land in
+    `unaligned`, the bucket of comparisons made, so its reason is refused by
+    name, as the aligned record's retired field is."""
+    with pytest.raises(
+        SchemaRefusal, match="retired unaligned reason 'alignment-deadline-exceeded'"
+    ):
+        refuse_retired_alignment_record(
+            {"status": "unaligned", "reason": "alignment-deadline-exceeded"}, "a record"
+        )
+    with pytest.raises(
+        SchemaRefusal, match=r"retired alignment field\(s\) \['deadline_in_force'\]"
+    ):
+        refuse_retired_alignment_record(
+            {"status": "aligned", "deadline_in_force": True}, "a record"
+        )
+    for current in (
+        {"status": "unaligned", "reason": STEP_LIMIT_REASON},
+        {"status": "unaligned", "reason": "no-common-anchor-text"},
+        None,
+    ):
+        refuse_retired_alignment_record(current, "a record")
+
+
 class _VisitCounter(dict):
     """`b2j` with every position list counting the times `difflib` iterates it.
 
@@ -261,21 +287,26 @@ def test_the_charge_is_a_hand_counted_number_and_covers_every_inner_loop_visit()
 # One short act, 150 characters, repeated verbatim to fill a page at the pair
 # ceiling, read by a witness that misreads the same character in every act.
 # Every repeat is an equally long candidate match, so the search revisits them
-# all: the costliest legitimate page the bounds admit.
+# all: the costliest page of register acts the budget is sized to cover.
 _ACT = (
     "L'an mil sept cent quarante-trois, le douziesme jour du mois de may, a este "
     "baptise par nous soubsigne Jean, fils legitime de Pierre Moreau, laboureur"
 )
 
 
+def _repeated_page(unit: str, side: int) -> tuple[str, str]:
+    """`unit` repeated to `side` characters, and a witness misreading one character per unit."""
+    middle = len(unit) // 2
+    misread = unit[:middle] + "X" + unit[middle + 1 :]
+    return (misread * (side // len(unit) + 1))[:side], (unit * (side // len(unit) + 1))[:side]
+
+
 @pytest.mark.full
-def test_the_costliest_legitimate_page_aligns_with_at_least_twice_the_steps_to_spare():
+def test_a_page_of_150_character_acts_at_the_pair_ceiling_aligns_with_twice_the_steps_to_spare():
     limits = _matcher_limits()
     side = int(limits.max_character_pairs**0.5)
     assert len(_ACT) == 150
-    anchor = (_ACT * (side // len(_ACT) + 1))[:side]
-    misread = _ACT[:75] + "X" + _ACT[76:]
-    witness = (misread * (side // len(_ACT) + 1))[:side]
+    witness, anchor = _repeated_page(_ACT, side)
     assert len(witness) * len(anchor) <= limits.max_character_pairs
 
     steps = _steps_to_align(witness, anchor)
@@ -283,6 +314,19 @@ def test_the_costliest_legitimate_page_aligns_with_at_least_twice_the_steps_to_s
     # An unaligned page witness leaves the act's witness floor, so running out
     # here would record a page read perfectly well as uncorroborated.
     assert 2 * steps <= limits.max_alignment_steps, steps
+
+
+@pytest.mark.full
+def test_short_repeated_units_at_the_pair_ceiling_are_not_covered_and_stop_as_unmeasured():
+    """60-character units repeated across the ceiling, such as index rows, need
+    more than the budget. They are not covered: they come out on the step-limit
+    reason the Recensor counts as unmeasured, a named hold, never a silent loss."""
+    limits = load_alignment_limits()[0]
+    side = int(limits.max_character_pairs**0.5)
+    witness, anchor = _repeated_page(_ACT[:60], side)
+    result = align_to_anchor(witness, anchor, limits)
+    assert (result["status"], result["reason"]) == ("unaligned", STEP_LIMIT_REASON)
+    assert STEP_LIMIT_REASON in UNMEASURED_REASONS
 
 
 def test_the_step_counted_matcher_returns_exactly_the_standard_library_blocks():
