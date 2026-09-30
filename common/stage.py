@@ -101,6 +101,7 @@ from common.hard_failure import (
 )
 from common.imaging import dimensions
 from common.native_witness import validate_presented, validate_presented_page_binding
+from common.page_accounting import DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH, load_page_accounting_policy
 from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
     RECOVERY_KINDS,
@@ -517,6 +518,10 @@ class StageContext:
     @property
     def perlector_audit_config_path(self) -> str:
         return self.args.perlector_audit_config
+
+    @property
+    def page_accounting_config_path(self) -> str:
+        return self.args.page_accounting_config
 
     def publish(
         self,
@@ -1343,6 +1348,11 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         ),
     )
     parser.add_argument("--alignment-config", default=str(DEFAULT_ALIGNMENT_CONFIG_PATH))
+    parser.add_argument(
+        "--page-accounting-config",
+        default=str(DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH),
+        help="the sealed thresholds of the check that a page reading missed nothing",
+    )
     parser.add_argument("--pdf-render-config", default=str(DEFAULT_PDF_RENDER_CONFIG_PATH))
     parser.add_argument(
         "--designator-padding-config", default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH)
@@ -1587,6 +1597,7 @@ def run_config_bindings(
     designator_geometry_config_path: str | Path = DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
     designator_grouping_config_path: str | Path = DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
     alignment_config_path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
+    page_accounting_config_path: str | Path = DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     armarium_formats_config_path: str | Path = DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
@@ -1645,6 +1656,7 @@ def run_config_bindings(
         designator_grouping_config_path, "Designator grouping configuration"
     )[1]
     _, alignment_config_digest = load_alignment_limits(alignment_config_path)
+    page_accounting_config_digest = load_page_accounting_policy(page_accounting_config_path).sha256
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
     )
@@ -1687,6 +1699,7 @@ def run_config_bindings(
                 "designator_geometry_config_sha256": geometry_config_digest,
                 "designator_grouping_config_sha256": grouping_config_digest,
                 "alignment_config_sha256": alignment_config_digest,
+                "page_accounting_config_sha256": page_accounting_config_digest,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_digest,
                 "decoding_config_sha256": decoding_config_digest,
@@ -1721,6 +1734,7 @@ def run_config_bindings(
             "designator-geometry": geometry_config_digest,
             "designator-grouping": grouping_config_digest,
             "alignment": alignment_config_digest,
+            "page-accounting": page_accounting_config_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
             "decoding": decoding_config_digest,
             "perlector-protocol": perlector_protocol_config_digest,
@@ -1794,6 +1808,7 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
                 args.designator_grouping_config, "Designator grouping configuration"
             )[1],
             "alignment": alignment_config_digest,
+            "page-accounting": load_page_accounting_policy(args.page_accounting_config).sha256,
             "corpus-frame-shard": corpus_frame_config_digest,
             "decoding": decoding_config_digest,
             "perlector-protocol": read_sealed_toml(
@@ -3833,6 +3848,7 @@ def open_context(
         designator_geometry_config_path=args.designator_geometry_config,
         designator_grouping_config_path=args.designator_grouping_config,
         alignment_config_path=args.alignment_config,
+        page_accounting_config_path=args.page_accounting_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,

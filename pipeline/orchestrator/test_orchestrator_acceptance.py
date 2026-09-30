@@ -121,8 +121,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # second recovery round.
 HAPPY_SNAPSHOT_FILES = 98
 REVIEW_SNAPSHOT_FILES = 108
-HAPPY_RUN_TREE_DIGEST = "ff93bf0546c8bce0b8b4dabbf42cfd16aa1c3d07a4157d0f6a9fed61608445ff"
-REVIEW_RUN_TREE_DIGEST = "4fa565f67dd6379f23a457889bb7b2d7bfd652462a9167dc600ef704a4a45bb0"
+HAPPY_RUN_TREE_DIGEST = "e17b2432cf209c4f65473f551366228eb6ca2f7e62738aea9bfe273c1d965bc6"
+REVIEW_RUN_TREE_DIGEST = "bc52d7160f86f9943782aff9eef9c2fd24a7965a490ef909d143dc5692323449"
 
 
 def orchestrate(
@@ -343,6 +343,7 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
         designator_grouping_config=ROOT / "config" / "designator_grouping.toml",
         alignment_config=ROOT / "config" / "alignment.toml",
+        page_accounting_config=ROOT / "config" / "page_accounting.toml",
         # `config/armarium_formats.toml` until now, which is a file that has
         # never existed: the Armarium's formats policy is `config/formats.toml`
         # (`common/armarium_formats.DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH`, which

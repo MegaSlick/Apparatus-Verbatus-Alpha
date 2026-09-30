@@ -56,6 +56,7 @@ from common.hard_failure import (  # noqa: E402
     load_hard_failure_policy,
     tally_hard_failures,
 )
+from common.page_accounting import DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH  # noqa: E402
 from common.recovery import (  # noqa: E402
     DEFAULT_RECOVERY_CONFIG_PATH,
     FALLBACK_RECROP,
@@ -390,6 +391,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
                 ("--designator-geometry-config", args.designator_geometry_config),
                 ("--designator-grouping-config", args.designator_grouping_config),
                 ("--alignment-config", args.alignment_config),
+                ("--page-accounting-config", args.page_accounting_config),
                 ("--formats-config", args.formats_config),
                 ("--recovery-config", args.recovery_config),
                 ("--hard-failure-config", args.hard_failure_config),
@@ -767,6 +769,11 @@ def main() -> int:
         "--alignment-config",
         default=str(DEFAULT_ALIGNMENT_CONFIG_PATH),
         help="the sealed limits for page-witness alignment",
+    )
+    parser.add_argument(
+        "--page-accounting-config",
+        default=str(DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH),
+        help="the sealed thresholds of the check that a page reading missed nothing",
     )
     parser.add_argument(
         "--formats-config",

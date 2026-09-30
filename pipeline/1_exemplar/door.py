@@ -85,6 +85,10 @@ from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy  
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.image_sniff import SIGNATURE_PREFIX_BYTES  # noqa: E402
+from common.page_accounting import (  # noqa: E402
+    DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
+    load_page_accounting_policy,
+)
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.sealed_config import read_sealed_toml  # noqa: E402
@@ -1649,6 +1653,7 @@ def fixture_submission(args, registry) -> int:
         designator_geometry_config_path=args.designator_geometry_config,
         designator_grouping_config_path=args.designator_grouping_config,
         alignment_config_path=args.alignment_config,
+        page_accounting_config_path=args.page_accounting_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,
@@ -1854,6 +1859,7 @@ def real_submission(args, registry) -> int:
             args.designator_grouping_config, "Designator grouping configuration"
         )[1],
         alignment_config_path=args.alignment_config,
+        page_accounting_config_path=args.page_accounting_config,
         serving_recipes_config_path=args.serving_recipes_config,
         triage_document_digests=triage_digests,
         witness_context=args.witness_context,
@@ -2007,6 +2013,7 @@ def _real_bindings(
     designator_geometry_config_sha256: str,
     designator_grouping_config_sha256: str,
     alignment_config_path=DEFAULT_ALIGNMENT_CONFIG_PATH,
+    page_accounting_config_path=DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
     triage_document_digests: dict[str, str] | None = None,
     witness_context: str = "named",
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
@@ -2049,6 +2056,7 @@ def _real_bindings(
         blind_read=blind_read,
     )
     _, alignment_config_sha256 = load_alignment_limits(alignment_config_path)
+    page_accounting_config_sha256 = load_page_accounting_policy(page_accounting_config_path).sha256
     _decoding_policy, decoding_config_sha256 = load_decoding_policy(decoding_config_path)
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
     adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
@@ -2093,6 +2101,7 @@ def _real_bindings(
                 "designator_geometry_config_sha256": designator_geometry_config_sha256,
                 "designator_grouping_config_sha256": designator_grouping_config_sha256,
                 "alignment_config_sha256": alignment_config_sha256,
+                "page_accounting_config_sha256": page_accounting_config_sha256,
                 "triage_modes_config_sha256": triage_modes_config_sha256,
                 # Triage decisions shape pixels, so a re-run triage pass under one
                 # run id is refused by name. Empty without split decisions.
@@ -2127,6 +2136,7 @@ def _real_bindings(
             "designator-geometry": designator_geometry_config_sha256,
             "designator-grouping": designator_grouping_config_sha256,
             "alignment": alignment_config_sha256,
+            "page-accounting": page_accounting_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
             "decoding": decoding_config_sha256,
             "perlector-protocol": perlector_protocol_config_sha256,
