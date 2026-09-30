@@ -10,7 +10,7 @@ import pytest
 
 from common.background import DEFAULT_BACKGROUND_CONFIG_PATH
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ApprovalRefusal, FatalAccounting
+from common.contracts.errors import ApprovalRefusal, ContractError, FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify, terminal_category
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, INK_MAP
 from common.imaging import encode_grayscale_png
@@ -799,3 +799,31 @@ def test_a_real_submission_names_edge_ink_and_an_unmeasurable_page(tmp_path):
             record = tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
             outcomes[record["payload"]["page_ordinal"]] = record["outcome"]
     assert outcomes == {1: "unclaimed-edge-ink", 2: "ink-not-measurable"}
+
+
+@pytest.mark.parametrize(
+    ("row", "defect"),
+    [
+        ("not a row", "malformed row"),
+        ([[0, 1, 2]], "malformed run"),
+        ([[0, True]], "malformed run"),
+        ([[2, 1], [0, 1]], "unordered or out-of-bounds"),
+        ([[3, 2]], "unordered or out-of-bounds"),
+        ([[1, 0]], "unordered or out-of-bounds"),
+    ],
+)
+def test_every_reader_of_the_retained_runs_refuses_the_same_row(row, defect):
+    """The Recensor and the Designator check a retained row through one validator."""
+    designator = load_stage("2_designator")
+    evidence = {"schema": "ink-runs.v2", "width": 4, "height": 1, "rows": [row]}
+    box = {"x": 0, "y": 0, "w": 4, "h": 1}
+
+    with pytest.raises(FatalAccounting, match=defect):
+        RECENSOR_RUN._ink_outside_cuts_in_box(evidence, box, [])
+    with pytest.raises(ContractError, match=defect):
+        designator._ink_outside_cut_union(evidence, box, [])
+    assert (
+        RECENSOR_RUN._ink_outside_cuts_in_box({**evidence, "rows": [[[0, 1], [2, 2]]]}, box, [])
+        == designator._ink_outside_cut_union({**evidence, "rows": [[[0, 1], [2, 2]]]}, box, [])
+        == 3
+    )

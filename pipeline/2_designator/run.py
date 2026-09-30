@@ -72,6 +72,7 @@ from common.exemplar_boundary import (  # noqa: E402
 from common.fixture_identity import act_bounds, act_identity, page_identity  # noqa: E402
 from common.imaging import dimensions, grayscale_rows  # noqa: E402
 from common.recovery import FALLBACK_RECROP  # noqa: E402
+from common.residual_ink import validated_ink_runs  # noqa: E402
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
@@ -3232,25 +3233,12 @@ def _ink_outside_cut_union(evidence: dict, bounds: dict, covered: list[dict]) ->
         raise ContractError("the recovery request's Ink Map evidence is malformed")
     total = 0
     for y in range(bounds["y"], bounds["y"] + bounds["h"]):
-        row = rows[y]
-        if not isinstance(row, list):
-            raise ContractError("the recovery request's Ink Map evidence has a malformed row")
-        previous_end = 0
+        try:
+            runs = validated_ink_runs(rows[y], width)
+        except ValueError as error:
+            raise ContractError(f"the recovery request's Ink Map evidence: {error}") from error
         ink_spans = []
-        for run in row:
-            if (
-                not isinstance(run, list)
-                or len(run) != 2
-                or any(not is_plain_int(value) for value in run)
-            ):
-                raise ContractError("the recovery request's Ink Map evidence has a malformed run")
-            start, length = run
-            end = start + length
-            if start < previous_end or length <= 0 or end > width:
-                raise ContractError(
-                    "the recovery request's Ink Map evidence has unordered or invalid runs"
-                )
-            previous_end = end
+        for start, end in runs:
             start, end = max(start, bounds["x"]), min(end, bounds["x"] + bounds["w"])
             if start < end:
                 ink_spans.append((start, end))
