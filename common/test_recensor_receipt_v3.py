@@ -135,25 +135,45 @@ def test_a_v3_receipt_with_a_unit_on_a_page_it_does_not_name_is_refused():
 
 
 @pytest.mark.parametrize(
-    "change",
+    ("change", "refusal"),
     [
-        lambda r: r["items"][0].update(page_disposition="maybe"),
-        lambda r: r["items"][0].update(designator_outcome="proposed"),
-        lambda r: r["items"][0].pop("release_reason"),
-        lambda r: r["items"][0]["coverage"].update(page_granularity_only=0),
-        lambda r: r.update(page_reading_refs=[]),
-        lambda r: r.update(page_reading_refs=[_page(1), _page(1)]),
-        lambda r: r.update(page_reading_refs=[_page(1), {**_page(2), "reading_ref": _ref("p1")}]),
-        lambda r: r.update(page_reading_refs=[_page(2), _page(1)]),
-        lambda r: r.update(page_reading_refs=[_ref("p1"), _ref("p2")]),
-        lambda r: r.update(page_reading_refs=[{**_page(1), "page_ordinal": 0}, _page(2)]),
-        lambda r: r.update(page_reading_refs=[_page(1), _page(2), _page(3)]),
-        lambda r: r["items"][1].update(act_key=r["items"][0]["act_key"]),
-        lambda r: r["items"][0].update(act_key="1:1"),
-        lambda r: r["items"][0].update(act_key="p1:0"),
-        lambda r: r["items"][0].update(act_key="p1:refused"),
-        lambda r: r.update(proposal_seal_ref=_ref("seal")),
-        lambda r: r.update(scope="proposal-acts-and-configured-witnesses"),
+        (lambda r: r["items"][0].update(page_disposition="maybe"), "names page_disposition"),
+        (lambda r: r["items"][0].update(designator_outcome="proposed"), "wrong closed schema"),
+        (lambda r: r["items"][0].pop("release_reason"), "wrong closed schema"),
+        (
+            lambda r: r["items"][0]["coverage"].update(page_granularity_only=0),
+            "attaches no witness to an act",
+        ),
+        (lambda r: r.update(page_reading_refs=[]), "names no page reading"),
+        (lambda r: r.update(page_reading_refs=[_page(1), _page(1)]), "strictly increasing"),
+        (
+            lambda r: r.update(
+                page_reading_refs=[_page(1), {**_page(2), "reading_ref": _ref("p1")}]
+            ),
+            "names one page reading twice",
+        ),
+        (lambda r: r.update(page_reading_refs=[_page(2), _page(1)]), "strictly increasing"),
+        (
+            lambda r: r.update(page_reading_refs=[_ref("p1"), _ref("p2")]),
+            "is not {page_ordinal, reading_ref}",
+        ),
+        (
+            lambda r: r.update(page_reading_refs=[{**_page(1), "page_ordinal": 0}, _page(2)]),
+            "with a positive page ordinal",
+        ),
+        (
+            lambda r: r.update(page_reading_refs=[_page(1), _page(2), _page(3)]),
+            r"no unit on sealed page\(s\) \[3\]",
+        ),
+        (lambda r: r["items"][1].update(act_key=r["items"][0]["act_key"]), "one act key twice"),
+        (lambda r: r["items"][0].update(act_key="1:1"), "names act key '1:1'"),
+        (lambda r: r["items"][0].update(act_key="p1:0"), "names act key 'p1:0'"),
+        (lambda r: r["items"][0].update(act_key="p1:refused"), "names act key 'p1:refused'"),
+        (lambda r: r.update(proposal_seal_ref=_ref("seal")), "wrong closed schema"),
+        (
+            lambda r: r.update(scope="proposal-acts-and-configured-witnesses"),
+            "invalid run or denominator facts",
+        ),
     ],
     ids=[
         "disposition",
@@ -175,9 +195,9 @@ def test_a_v3_receipt_with_a_unit_on_a_page_it_does_not_name_is_refused():
         "scope",
     ],
 )
-def test_a_malformed_v3_receipt_is_refused(change):
+def test_a_malformed_v3_receipt_is_refused(change, refusal):
     forged = copy.deepcopy(_receipt([_item("act_a", "p1:1"), _item("act_b", "p2:1")]))
     change(forged)
     forged["self_hash"] = self_hash({k: v for k, v in forged.items() if k != "self_hash"})
-    with pytest.raises(SchemaRefusal):
+    with pytest.raises(SchemaRefusal, match=refusal):
         validate_recensor_partition_receipt(forged)

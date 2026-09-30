@@ -161,9 +161,7 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
         or record["expected_act_count"] != len(record["items"])
     ):
         raise SchemaRefusal("Recensor partition receipt has invalid run or denominator facts")
-    if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3:
-        _validate_page_readings(record)
-    else:
+    if schema != RECENSOR_PARTITION_RECEIPT_SCHEMA_V3:
         _validate_reference(record["proposal_seal_ref"], "proposal-seal reference")
     previous_act_id = ""
     for item in record["items"]:
@@ -174,6 +172,8 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
                 "Recensor partition receipt items must be strictly sorted by unique act identity"
             )
         previous_act_id = act_id
+    if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3:
+        _validate_page_readings(record)
     if record["by_partition_class"] != _partition_counts(record["items"]):
         raise SchemaRefusal("Recensor partition receipt partition counts do not reconcile")
     reasons = _reasons(record["items"], schema=schema)
