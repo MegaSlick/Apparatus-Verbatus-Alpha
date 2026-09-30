@@ -68,9 +68,8 @@ _DESKTOP_INI_SECTIONS: Final = frozenset(
 # Every field `log()` may carry. The immutable records carry filename linkage;
 # terminal presentation carries only counts, digests, and report locations. Image
 # bytes are never terminal output.
-_LOG_FIELDS: Final = frozenset({"files", "bytes", "digest", "removed", "status", "skipped"})
-_LOG_EVENTS: Final = frozenset({"submission sealed", "submission refused"})
-_LOG_STATUSES: Final = frozenset({"refusal-report-written"})
+_LOG_FIELDS: Final = frozenset({"files", "digest", "skipped"})
+_LOG_EVENTS: Final = frozenset({"submission sealed"})
 
 
 class SubmitRefusal(ContractError):
@@ -116,7 +115,7 @@ def log(event: str, **fields: Any) -> None:
             "log event is outside the closed operational vocabulary; arbitrary event "
             "text could carry image bytes or an unaccounted presentation claim"
         )
-    for field in ("files", "bytes", "removed", "skipped"):
+    for field in ("files", "skipped"):
         if field in fields and (
             not isinstance(fields[field], int)
             or isinstance(fields[field], bool)
@@ -127,8 +126,6 @@ def log(event: str, **fields: Any) -> None:
         value = fields["digest"]
         if not is_sha256(value):
             raise SubmitRefusal("log field 'digest' must be a lowercase sha256")
-    if "status" in fields and fields["status"] not in _LOG_STATUSES:
-        raise SubmitRefusal("log field 'status' is outside the closed status vocabulary")
     rendered = " ".join(f"{key}={fields[key]}" for key in sorted(fields))
     print(f"{event}: {rendered}" if rendered else event)
 
@@ -302,7 +299,14 @@ def atomic_create(target: Path, data: bytes) -> bool:
     was reused; public because `operations/operator/ingest_worker.py` depends
     on exactly this three-way created/reused/`ExistingRecordRefusal` contract.
     """
-    target.parent.mkdir(parents=True, exist_ok=True)
+    # Each OSError becomes a refusal: a traceback would print the path, and
+    # terminal output names no path.
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise SubmitRefusal(
+            "the folder for the submission manifest could not be created; nothing was sealed"
+        ) from error
     try:
         durability.atomic_create(target, data, strict=False)
     except FileExistsError:
@@ -324,8 +328,6 @@ def atomic_create(target: Path, data: bytes) -> bool:
             "record was not touched, and a changed submission needs its own path"
         ) from None
     except OSError as error:
-        # Unhandled, it escaped `main()` as a traceback printing the manifest path,
-        # which the data-handling policy's logging rule forbids.
         raise SubmitRefusal(
             "the submission manifest could not be written; nothing was sealed"
         ) from error
@@ -426,14 +428,16 @@ def submit(
             raise SubmitRefusal(
                 "submission was refused and its private refusal report could not be written"
             ) from report_error
-        advice = (
-            "; move the non-image files out of the folder, or remove them, then seal again"
+        # Inventory messages never interpolate a submitted path, so the reason is
+        # safe to print; the file names stay in the private report.
+        reason = (
+            "move the non-image files out of the folder, or remove them, then seal again"
             if isinstance(error, NotPageImagesRefusal)
-            else ""
+            else str(error)
         )
         raise SubmissionRefusal(
-            f"submission refused: {len(records)} source refusal(s) recorded in private report"
-            + advice,
+            f"submission refused: {len(records)} source refusal(s) recorded in private report; "
+            + reason,
             report_path=written_report,
             refusal_count=len(records),
         ) from error

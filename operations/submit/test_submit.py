@@ -132,13 +132,39 @@ def test_submitting_the_same_folder_twice_seals_identical_bytes(submission):
 def test_an_empty_folder_is_a_loud_failure_rather_than_an_empty_submission(submission, tmp_path):
     empty = submission["approved"] / "empty"
     empty.mkdir()
-    with pytest.raises(submit.SubmissionRefusal, match="0 source refusal"):
+    with pytest.raises(submit.SubmissionRefusal, match="contains no files to submit"):
         submit.submit(
             empty,
             submission["manifest_out"],
             policy_path=submission["policy_path"],
         )
     assert not submission["manifest_out"].exists()
+
+
+def test_a_source_that_is_not_a_directory_is_refused_with_its_reason(submission, capsys):
+    not_a_folder = submission["approved"] / "page.png"
+    not_a_folder.write_bytes(b"\x89PNG\r\n\x1a\n")
+    with pytest.raises(submit.SubmissionRefusal, match="not a directory") as refused:
+        submit.submit(
+            not_a_folder,
+            submission["manifest_out"],
+            policy_path=submission["policy_path"],
+        )
+    assert refused.value.refusal_count == 0
+    assert "page.png" not in str(refused.value)
+    assert not submission["manifest_out"].exists()
+
+
+def test_a_manifest_path_under_a_regular_file_is_a_refusal_not_a_traceback(submission):
+    blocker = submission["approved"] / "blocker"
+    blocker.write_bytes(b"not a folder")
+    with pytest.raises(submit.SubmitRefusal, match="could not be created") as refused:
+        submit.submit(
+            submission["folder"],
+            blocker / "nested" / "submission.json",
+            policy_path=submission["policy_path"],
+        )
+    assert "blocker" not in str(refused.value)
 
 
 # --- The storage-root gate is checked before a byte is read ----------------------
