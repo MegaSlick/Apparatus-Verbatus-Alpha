@@ -136,6 +136,28 @@ def test_nothing_anywhere_under_common_imports_pipeline():
     )
 
 
+def test_no_production_module_under_common_imports_operations():
+    """Stages and `operations/` both import `common/`, so a shared shape such as
+    `common/contracts/serving.py` must sit where neither depends on the other's
+    package. Tests may import `operations/` to prove a contract on both sides."""
+    files = sorted(
+        path
+        for path in COMMON.rglob("*.py")
+        if not path.name.startswith("test_") and path.name != "conftest.py"
+    )
+    assert len(files) >= 20, f"expected the whole of common/ under {COMMON}, found {len(files)}"
+
+    violations = [
+        f"{path.relative_to(ROOT)} imports {full!r}"
+        for path in files
+        for root, full in _imports_in(path)
+        if root == "operations"
+    ]
+    assert not violations, "common/ must never import operations/, but found:\n" + "\n".join(
+        violations
+    )
+
+
 def test_a_literal_dynamic_stage_import_is_detected(tmp_path):
     """A guard must prove its new dynamic branch can become red."""
     source = tmp_path / "dynamic_import.py"

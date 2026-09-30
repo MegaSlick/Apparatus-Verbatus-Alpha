@@ -60,7 +60,7 @@ def _accepted_review() -> dict:
         # that omitted the continuation restatement would be a review no
         # producer can emit, and the export reads it unconditionally.
         "payload": {
-            "coverage": {"under_witnessed": False},
+            "coverage": {"under_witnessed": False, "unresolved_chairs": 0},
             "testimony_content_coverage": {
                 "by_chair": None,
                 "shortfall": None,

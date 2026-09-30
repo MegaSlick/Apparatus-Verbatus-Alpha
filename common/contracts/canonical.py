@@ -323,6 +323,11 @@ def _ast_value(value: Any) -> Any:
     if isinstance(value, bytes):
         # Tagged, so a bytes literal never digests like a list of strings.
         return ["bytes", value.hex()]
+    # Tagged like bytes: `...` in a type hint or stub body, and an imaginary literal.
+    if value is Ellipsis:
+        return ["ellipsis"]
+    if isinstance(value, complex):
+        return ["complex", repr(value)]
     raise TypeError(f"no canonical form for a {type(value).__name__} constant")
 
 

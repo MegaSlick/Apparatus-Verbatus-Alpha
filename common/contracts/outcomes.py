@@ -1,6 +1,6 @@
 """The outcome algebra: two layers, and a total mapping between them.
 
-Harvest invariant #10 is the spine — *total partition, proven, every stage*: every
+The spine is a *total partition, proven at every stage*: every
 unit entering a stage is accounted for at the boundary as exactly one of completed
 / unresolved-with-evidence / failed, and a unit in none of those sets is a FATAL
 accounting imbalance, never a warning. That is the CLASS layer, and it is the same
@@ -44,7 +44,7 @@ from .stages import (
 
 
 class OutcomeClass(str, Enum):
-    """Invariant #10's three sets. Every unit is in exactly one."""
+    """The three terminal sets. Every unit is in exactly one."""
 
     COMPLETED = "completed"
     UNRESOLVED = "unresolved"
@@ -166,7 +166,7 @@ def page_attachment_basis(*, reading: bool, geometry_overlaps: bool, alignment: 
     forged attachment needs only a forged alignment, still behind the
     Attestatores seal (`pipeline/4_perlector/test_comparability_seam.py`).  The
     fix is a reader that re-derives the alignment, which needs text neither
-    reader holds today.
+    reader holds.
     """
     if not reading:
         return "unattached"
@@ -188,8 +188,9 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
         "sealed": _C.COMPLETED,
         "refused": _C.FAILED,
     },
-    # Page evidence, not an act decision; Unit 14 owns the hold that makes an
-    # unclaimed edge terminal.
+    # Page evidence, not an act decision: the page is held for review through the
+    # `edge_hold_pages` that `run_aggregate` takes, so an unclaimed edge still
+    # reaches a terminal category.
     INK_MAP: {
         "mapped": _C.COMPLETED,
         "unclaimed-edge-ink": _C.UNRESOLVED,
@@ -341,8 +342,8 @@ def classify(stage: str, outcome: Any) -> OutcomeClass:
     except (KeyError, TypeError):
         raise FatalAccounting(
             f"{stage} produced outcome {outcome!r}, which is in no terminal set; "
-            f"its closed vocabulary is {sorted(vocabulary)}. Invariant #10: a unit "
-            "in no set is a fatal accounting imbalance, never a warning"
+            f"its closed vocabulary is {sorted(vocabulary)}. A unit in no set is a "
+            "fatal accounting imbalance, never a warning"
         ) from None
 
 
@@ -491,7 +492,7 @@ def witness_coverage(
     reading on it.
 
     `under_witnessed` is chairs reaching a completed-class outcome below the
-    configured floor. Spec 07: three chairs is the floor, the machinery tolerates
+    configured floor. Three chairs is the floor; the machinery tolerates
     fewer so one dead witness never kills a run, and a run below the floor is
     recorded as under-witnessed in the Recensor receipt and the export manifest,
     visibly, every time.
@@ -535,7 +536,8 @@ def witness_coverage(
                     "The act-level witness floor cannot be derived from an ambiguous attachment. "
                     "Rebuild the attachment from the retained Testimonia before retrying."
                 )
-            if fact.get("attachment_basis") not in ATTACHMENT_BASES:
+            basis = fact.get("attachment_basis")
+            if type(basis) is not str or basis not in ATTACHMENT_BASES:
                 native_evidence = False
             if fact.get("health_unrecorded") is True:
                 health_unrecorded += 1
@@ -671,7 +673,7 @@ def _attributed_pages(
             if page is None:
                 raise FatalAccounting(
                     f"act {act} was marked out on page {ordinal}, which the run's page census "
-                    "does not account for; an act on a page nobody counted is invariant #10's "
+                    "does not account for; an act on a page nobody counted is an accounting "
                     "imbalance"
                 )
             if page.get("outcome") != "sealed":
@@ -842,12 +844,24 @@ def run_aggregate(
 
     for act in sorted(coverage):
         record = coverage[act]
-        if record.get("under_witnessed"):
+        # Both flags are required, so a record stripped of them cannot pass as witnessed.
+        if (
+            not isinstance(record, Mapping)
+            or type(record.get("under_witnessed")) is not bool
+            or type(record.get("unresolved_chairs")) is not int
+            or record["unresolved_chairs"] < 0
+        ):
+            raise FatalAccounting(
+                f"act {act}'s witness coverage record carries no boolean under_witnessed and "
+                "non-negative integer unresolved_chairs, so it cannot say whether the act "
+                "was witnessed"
+            )
+        if record["under_witnessed"]:
             completed = _attached_reading_count(act, record)
             reasons.append(
                 f"act {act} is under-witnessed ({completed} of a floor of {record['floor']})"
             )
-        if record.get("unresolved_chairs"):
+        if record["unresolved_chairs"]:
             reasons.append(
                 f"act {act} has {record['unresolved_chairs']} chair(s) with no outcome yet"
             )

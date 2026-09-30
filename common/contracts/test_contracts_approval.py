@@ -1,13 +1,9 @@
 """The approval-record contract: schema, self-hash, and the closed ingress record.
 
-This file used to be almost entirely about `require_current_data_gate_approval`,
-the `data-gate` action, and the policy-hash currency check that backed a per-run
-approval requirement for real input. All three are gone: real material never
-reaches git regardless of any per-run sign-off, so the requirement bought
-nothing. What remains — and what this file now covers — is the approval-record
-contract itself (`exclusion` and `salvage-promotion` still need the project
-lead's approval) and the closed fixture-or-real ingress
-record every run authority carries.
+Covers the approval record itself (an `exclusion` or a `salvage-promotion` needs the
+project lead's approval) and the closed fixture-or-real ingress record every run
+authority carries. Real input needs no per-run approval: real material never reaches
+git whatever is signed off, so no action exists to approve it.
 """
 
 from pathlib import Path
@@ -39,10 +35,9 @@ def approval(*, action="exclusion", target=None, timestamp="2026-08-04T12:00:00Z
     )
 
 
-def test_data_gate_is_not_an_approvable_action():
-    """Real input no longer needs a per-run approval, and this action no longer
-    exists to claim one against. `exclusion` and `salvage-promotion` remain —
-    the project lead's approval is still required for an exclusion."""
+def test_the_approvable_actions_are_exactly_these_four():
+    """No per-run approval of real input exists to be claimed, so `data-gate` is
+    refused; an exclusion still needs the project lead's approval."""
     assert "data-gate" not in ACTIONS
     assert set(ACTIONS) == {"advance", "exclusion", "salvage-promotion", "other"}
     with pytest.raises(ApprovalRefusal, match="not one of"):
@@ -215,12 +210,12 @@ APPROVAL_MINTING_MODULES = frozenset(
 
 
 def test_no_pipeline_module_mints_its_own_approval_record():
-    """GOVERNANCE: "No automated agent may act as the human in any rule here."
+    """No automated agent may act as the project lead: only the lead approves.
 
     `approver` is a string compare against a constant this module stamps itself,
     so a record's authority rests entirely on *who wrote the file* -- nothing in
     the bytes distinguishes the project lead's record from one a stage wrote for itself. The
-    gates that consume approval records (spec 08's two sampled Perlector arms)
+    gates that consume approval records (the Perlector's two sampled arms)
     therefore depend on production code never reaching the builder or the writer.
     An unused writer leaves no runtime trace, so this reads the source: a stage
     that grows an approval of its own fails here even though no test calls it.
