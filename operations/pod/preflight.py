@@ -34,16 +34,13 @@ class _RuntimeProvenance:
     """Opaque proof that a runtime in this package produced the value it sits on.
 
     `assembly_proven` is the one claim a preflight receipt makes about a paid
-    measurement, and until this existed it was derived from two ordinary
-    dataclass fields -- `GpuProfile.measured` and `SmokeResult.served_by` --
-    that any caller of `PreflightRunner.run` could set to whatever it liked.
-    Both are constructor arguments; a caller-built profile and a caller-built
-    smoke result could therefore publish "real assembly measured on <card>"
-    with no `nvidia-smi` read and no served engine anywhere in the run. A
-    fabricated *page* was already caught by `_bound_receipt`; a fabricated
-    *claim about the hardware* was not.
-
-    So the two facts now travel as an instance of this class, which is:
+    measurement. It rests on two facts, `GpuProfile.measured` and
+    `SmokeResult.served_by`, and each can be set only together with an instance
+    of this class: both are constructor arguments that a caller of
+    `PreflightRunner.run` supplies, so without the token a caller-built profile
+    and smoke result could publish "real assembly measured on <card>" with no
+    `nvidia-smi` read and no served engine. (`_bound_receipt` guards the page;
+    this guards the claim about the hardware.) The token is:
 
     * module-private, and never exported, so no public name reaches it;
     * minted in exactly two places -- `SystemGpuProbe.profile`'s successful
@@ -261,7 +258,7 @@ class SystemGpuProbe:
                 # The one place `measured` is ever set: `nvidia-smi` answered
                 # with four parseable fields for a card this process can see.
                 # The token beside it is what makes that unforgeable from
-                # outside this module -- the flag alone was an argument.
+                # outside this module; the flag without it is refused.
                 measured=True,
                 provenance=_mint_runtime_provenance("nvidia-smi read by SystemGpuProbe"),
             )
@@ -280,7 +277,7 @@ class SystemGpuProbe:
 
     # A hung `nvidia-smi` -- a wedged driver, a card mid-reset -- would otherwise
     # block preflight forever on a pod that is already billing, and the red
-    # `GpuProfile` path below would never be reached.  `TimeoutExpired` is an
+    # `GpuProfile` path in `profile` would never be reached.  `TimeoutExpired` is an
     # `Exception`, so the handler in `profile` records it in `discovery_detail`
     # like any other discovery failure.
     _RUN_TIMEOUT_SECONDS = 30.0
@@ -673,8 +670,8 @@ class SmokeResult:
     reader that fabricates a green `SmokeResult` cannot also fabricate the claim
     that an engine produced it.  `PreflightReport.assembly_proven` reads this.
 
-    "Only" is now enforced rather than documented: it cannot be set without the
-    `provenance` token below, which is minted in that one lifecycle path.
+    It cannot be set without the `provenance` token below, which is minted in
+    that one lifecycle path.
     """
     provenance: object | None = field(default=None, repr=False, compare=False)
     """The serving runtime's own opaque token, or `None`.  Never serialised.
@@ -1110,10 +1107,9 @@ class PreflightRunner:
 
         "Set only by" is enforced by `_RuntimeProvenance`, not by convention.
         `PreflightRunner` takes both values from callers -- a caller supplies
-        the profile to `run` and the reader to the constructor -- so both fields
-        were writable by whoever wanted the claim. Each now travels with an
-        opaque token that only those two runtime paths can mint, and this method
-        checks the token rather than the flag: a caller-built
+        the profile to `run` and the reader to the constructor -- so each
+        travels with an opaque token that only those two runtime paths can
+        mint, and this method checks the token rather than the flag: a caller-built
         `GpuProfile(measured=True)` and a caller-built
         `SmokeResult(served_by=...)` are refused at construction, and no
         combination of ordinary values reaches `True` here.
