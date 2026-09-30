@@ -35,11 +35,16 @@ from common.page_accounting import (
     HOLD_CODES,
     NOT_MEASURED_CODES,
     PARSED,
+    REASK_DUPLICATE,
+    REASK_SET_ASIDE,
     RECORD_NOT_READ,
     UNACCOUNTED_WITNESS_UNIT,
     UNREAD_LINE,
     PageAccountingPolicy,
     feed_candidates,
+    feed_items,
+    finished_on_stop,
+    id_key,
     is_inside,
     validate_answer,
 )
@@ -65,21 +70,6 @@ def reask_budget(recovery_policy: Mapping[str, Any]) -> int:
     return budget
 
 
-def _boxes_1000(feed: Mapping[str, Any]) -> dict[str, list[int] | None]:
-    """Each feed id's box on the 0-1000 grid, as the prompt showed it."""
-    boxes = {
-        unit["id"]: unit["box_1000"] for witness in feed["witnesses"] for unit in witness["units"]
-    }
-    surya = feed["surya"]
-    if surya is not None:
-        boxes.update((item["id"], item["box_1000"]) for item in surya["lines"] + surya["blocks"])
-    return boxes
-
-
-def _id_key(identifier: str) -> tuple[str, int]:
-    return identifier[0], int(identifier[1:])
-
-
 def reask_plan(
     reading: Mapping[str, Any],
     accounting: Mapping[str, Any],
@@ -94,8 +84,9 @@ def reask_plan(
     reading's `page-accounting` payload and `feed` the page's feed; `budget`
     is `reask_budget`'s and `policy` the sealed page-accounting policy. There
     is no re-ask with the budget at 0, or unless the first reading is a
-    parsed answer, read, that finished on `stop` (one with no entry
-    included). Otherwise the named ids are every distinct finding of the
+    parsed answer, read, that finished on `stop`
+    (`page_accounting.finished_on_stop`, the test rule (a) reads; an answer
+    with no entry included). Otherwise the named ids are every distinct finding of the
     three `RE_ASKABLE` codes, sorted by id and code, whose id is one the feed
     showed and places by a box -- so an unboxed witness unit, a witness shown
     flat and a detection the feed did not show are never named -- and, for a
@@ -112,7 +103,7 @@ def reask_plan(
         budget == 0
         or reading["parse_state"] != PARSED
         or reading["disposition"] != "read"
-        or reading["stop_reason"] != "stop"
+        or not finished_on_stop(reading)
     ):
         return []
     candidates = feed_candidates(feed)
@@ -132,10 +123,11 @@ def reask_plan(
             ):
                 continue
             found.add((identifier, code))
-    boxes = _boxes_1000(feed)
+    # Each id's box on the 0-1000 grid, as the prompt showed it.
+    boxes = {item["id"]: item["box_1000"] for _kind, item in feed_items(feed)}
     return [
         {"id": identifier, "code": code, "box_1000": boxes[identifier]}
-        for identifier, code in sorted(found, key=lambda item: (_id_key(item[0]), item[1]))
+        for identifier, code in sorted(found, key=lambda item: (id_key(item[0]), item[1]))
     ]
 
 
@@ -159,4 +151,27 @@ def render_reask(
             for act in first_answer["acts"]
         ],
         "named": [dict(item) for item in named],
+    }
+
+
+def reask_outcome(named: Sequence[Mapping[str, Any]], accounting: Mapping[str, Any]) -> dict:
+    """What a page's re-ask did about the ids it named, from the page's last accounting.
+
+    `named` is the re-ask's `reask.named` and `accounting` the combined
+    `page-accounting` payload. Each named id is `unread` while a re-askable
+    finding of the last accounting still names it, else `set_aside` when the
+    re-ask set it aside (rule (j), `reask-set-aside`), else `cleared`; each
+    list keeps `named_ids`' order. `duplicate` is the combined number of each
+    re-ask entry rule (j) holds as a first-reading entry's duplicate.
+    """
+    ids = named_ids(named)
+    findings = [finding for rule in accounting["rules"].values() for finding in rule["findings"]]
+    unread = {f.get("id") for f in findings if f["code"] in RE_ASKABLE}
+    set_aside = {f["id"] for f in findings if f["code"] == REASK_SET_ASIDE} - unread
+    return {
+        "named": ids,
+        "cleared": [i for i in ids if i not in unread and i not in set_aside],
+        "set_aside": [i for i in ids if i in set_aside],
+        "unread": [i for i in ids if i in unread],
+        "duplicate": sorted({f["n"] for f in findings if f["code"] == REASK_DUPLICATE}),
     }

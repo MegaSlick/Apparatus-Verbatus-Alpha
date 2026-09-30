@@ -308,6 +308,28 @@ def require_page_accounting_policy(
     return policy
 
 
+# --- the finish and the re-ask ------------------------------------------------------
+
+
+def finished_on_stop(reading: Mapping[str, Any]) -> bool:
+    """Whether a reading ran to its own end: its `finish_reason` is `stop`.
+
+    The one test of a finish that rule (a), the re-ask's standing (rule (j))
+    and the re-ask plan (`common/page_reask.py`) all read.
+    """
+    return reading["finish_reason"] == "stop"
+
+
+def reask_stood(accounting: Mapping[str, Any]) -> bool:
+    """Whether a page accounting counts its page's re-ask among the entries it measures.
+
+    Only a combined accounting can; it does unless rule (j) holds `reask-unread`.
+    """
+    return accounting["answer_basis"] == ANSWER_BASIS_COMBINED and all(
+        finding["code"] != REASK_UNREAD for finding in accounting["rules"]["j"]["findings"]
+    )
+
+
 # --- candidates and the answer's ids -------------------------------------------------
 
 
@@ -334,6 +356,21 @@ def _from_corners(x0: int, y0: int, x1: int, y1: int) -> Box:
     return {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
 
 
+def feed_items(feed: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
+    """Every citable item of a page feed, `(kind, item)`, in feed order.
+
+    `kind` is `unit` for a witness unit and `surya` for a Surya line or block;
+    each item carries its `id`, `box_px` and `box_1000` as the feed holds them.
+    """
+    items: list[tuple[str, Mapping[str, Any]]] = [
+        ("unit", unit) for witness in feed["witnesses"] for unit in witness["units"]
+    ]
+    surya = feed["surya"]
+    if surya is not None:
+        items += [("surya", item) for item in surya["lines"] + surya["blocks"]]
+    return items
+
+
 def placement_boxes(feed: Mapping[str, Any]) -> dict[str, Box | None]:
     """Every id a page feed defines, with the box it places an entry by, or `None`.
 
@@ -346,15 +383,10 @@ def placement_boxes(feed: Mapping[str, Any]) -> dict[str, Box | None]:
     accounting measures against it, so the two never read different regions.
     """
     flat = feed["switches"]["witness_units"] == WITNESS_UNITS_FLAT
-    boxes: dict[str, Box | None] = {}
-    for witness in feed["witnesses"]:
-        for unit in witness["units"]:
-            boxes[unit["id"]] = None if flat or unit["box_px"] is None else unit["box_px"]
-    surya = feed["surya"]
-    if surya is not None:
-        for item in surya["lines"] + surya["blocks"]:
-            boxes[item["id"]] = item["box_px"]
-    return boxes
+    return {
+        item["id"]: None if kind == "unit" and flat else item["box_px"]
+        for kind, item in feed_items(feed)
+    }
 
 
 def feed_candidates(feed: Mapping[str, Any]) -> dict[str, Box | None]:
@@ -367,11 +399,7 @@ def feed_candidates(feed: Mapping[str, Any]) -> dict[str, Box | None]:
     a range citation reads every id between its ends.
     """
     seen: set[str] = set()
-    identifiers = [unit["id"] for witness in feed["witnesses"] for unit in witness["units"]]
-    surya = feed["surya"]
-    if surya is not None:
-        identifiers += [item["id"] for item in surya["lines"] + surya["blocks"]]
-    for identifier in identifiers:
+    for identifier in (item["id"] for _kind, item in feed_items(feed)):
         if not isinstance(identifier, str) or not _ID.fullmatch(identifier):
             raise ContractError(f"feed id {identifier!r} is not a letter and a number")
         if identifier in seen:
@@ -381,8 +409,8 @@ def feed_candidates(feed: Mapping[str, Any]) -> dict[str, Box | None]:
         identifier: None if box is None else _box(box, identifier)
         for identifier, box in placement_boxes(feed).items()
     }
-    if surya is not None:
-        for item in surya["lines"] + surya["blocks"]:
+    for kind, item in feed_items(feed):
+        if kind == "surya":
             _box(item["box_px"], item["id"])
     numbers: dict[str, list[int]] = {}
     for identifier in candidates:
@@ -577,14 +605,14 @@ def _combined(
         {"code": CITED_AND_SET_ASIDE, "id": identifier}
         for identifier in sorted(
             (cited_first & set(validated["set_aside"])) | (cited_second & set(first["set_aside"])),
-            key=_id_key,
+            key=id_key,
         )
     ]
     problems += [
         {"code": SET_ASIDE_TWICE, "id": identifier}
-        for identifier in sorted(set(first["set_aside"]) & set(validated["set_aside"]), key=_id_key)
+        for identifier in sorted(set(first["set_aside"]) & set(validated["set_aside"]), key=id_key)
     ]
-    stands = parsed and reading["finish_reason"] == "stop" and not problems
+    stands = parsed and finished_on_stop(reading) and not problems
     k = len(first["entries"])
     added = (
         [
@@ -654,7 +682,7 @@ def _census(
                 )
             seen.add(identifier)
         census.append({"id": identifier, "box_px": box, "ref": item["ref"]})
-    missing = sorted(set(shown_ids) - seen, key=_id_key)
+    missing = sorted(set(shown_ids) - seen, key=id_key)
     if missing:
         raise ContractError(f"the feed shows {missing} that the sealed {where} do not hold")
     return sorted(census, key=_ref_key)
@@ -748,7 +776,7 @@ def _read_witnesses(
         expected = [f"{letter}{number}" for number in range(1, len(units) + 1)]
         if sorted((unit["id"] for unit in units), key=str) != sorted(expected):
             raise ContractError(f"sealed witness {letter} unit ids are not {letter}1..n once each")
-        units.sort(key=lambda unit: _id_key(unit["id"]))
+        units.sort(key=lambda unit: id_key(unit["id"]))
         if witness["blank"] is True and units:
             raise ContractError(f"sealed witness {letter} reports a blank page and gives units")
         sealed[letter] = {**witness, "units": units}
@@ -758,7 +786,7 @@ def _read_witnesses(
         match = sealed.get(letter)
         shown_units = sorted(
             ((u["id"], u.get("box_px"), u["text"]) for u in witness["units"]),
-            key=lambda unit: _id_key(unit[0]),
+            key=lambda unit: id_key(unit[0]),
         )
         if (
             match is None
@@ -1258,7 +1286,8 @@ def _rule(findings: list[dict[str, Any]]) -> dict[str, Any]:
     return {"status": status, "findings": findings}
 
 
-def _id_key(identifier: str) -> tuple[str, int]:
+def id_key(identifier: str) -> tuple[str, int]:
+    """A feed id's sort key: its letter, then its number."""
     return identifier[0], int(identifier[1:])
 
 
@@ -1347,7 +1376,7 @@ def page_accounting(
     shown = [witness for witness in sealed if witness["letter"] in shown_letters]
     units = sorted(
         (unit for witness in sealed for unit in witness["units"]),
-        key=lambda unit: _id_key(unit["id"]),
+        key=lambda unit: id_key(unit["id"]),
     )
     shown_units = [unit for unit in units if unit["id"][0] in shown_letters]
     unit_boxes = {unit["id"]: unit["box_px"] for unit in units}
@@ -1374,7 +1403,7 @@ def page_accounting(
 
     # (a) the answer is complete: finished on `stop`, parsed and valid.
     incomplete = []
-    if finish_reason != "stop":
+    if not finished_on_stop(reading):
         incomplete.append({"code": "finish-reason", "finish_reason": finish_reason})
     if parse_state != PARSED:
         incomplete.append({"code": "parse-state", "parse_state": parse_state})
@@ -1852,7 +1881,7 @@ def _reask_rule(
         )
     findings: list[dict[str, Any]] = [
         {"code": REASK_SET_ASIDE, "id": identifier, "reason": combined["set_aside"][identifier]}
-        for identifier in sorted(combined["set_aside"], key=_id_key)
+        for identifier in sorted(combined["set_aside"], key=id_key)
     ]
     added = [entry for entry in entries if entry.get("reading_attempt") == 2]
     findings += [
@@ -1898,6 +1927,15 @@ def _entry_distinctive_pieces(text: str, formula: _PageFormula, k: int) -> dict[
     on the page holds it exactly, so a piece of the entry's own invention
     never counts. What is left are the names and dates that tell one record
     from another.
+
+    It differs from rule (e)'s `_distinctive_pieces` because the text is a
+    reading, not a witness unit. Rule (e) drops a piece another unit of the
+    unit's own witness holds, since that witness wrote it twice; an entry
+    belongs to no witness, so one unit holding its piece is the corroboration
+    and only two units of one witness make it formula. And rule (e) takes
+    corroboration from a reading within one edit, which here would let the
+    first-reading entry under test corroborate the duplicate it is tested for,
+    so only the witnesses corroborate.
     """
     kept: dict[str, int] = {}
     for offset in range(len(text) - k + 1):
@@ -2018,7 +2056,7 @@ def _record(
                 "reading_attempt": entry.get("reading_attempt", 1),
                 "reading_n": entry.get("reading_n", entry["n"]),
                 "kind": entry["kind"],
-                "cited_ids": sorted(entry["cited_ids"], key=_id_key),
+                "cited_ids": sorted(entry["cited_ids"], key=id_key),
                 "union_box_px": entry["union_box_px"],
             }
             for entry in entries

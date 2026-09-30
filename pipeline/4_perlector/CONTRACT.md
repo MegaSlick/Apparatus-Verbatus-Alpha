@@ -1374,7 +1374,9 @@ anything (`common/page_path.py`, `entry_plans`). It is given:
 - the Ink Map's retained runs and the coverage policy resolved for the page, or
   `null` when the page's ink was not measurable.
 
-Per entry `n` of a `read` page's answer, in answer order, each naming the page's
+Per entry `n` of a `read` page's answer, in answer order -- `n` being the number the
+page's last accounting names it by, which for an entry the re-ask read is `k + j`
+after the first answer's `k` entries -- each naming the page's
 last accounting (`page_accounting_ref`, also an input; a re-asked page's is its
 re-ask's) and carrying its hold codes as
 `page_holds`; either record is held when `page_holds` or its own `holds` is
@@ -1386,7 +1388,7 @@ held:
 ```
 {schema: "perlector-act-region.v1", page_id, page_ordinal, reading_unit, n, kind,
  label, cites (as given), cited_ids (expanded, first-cited order), act_class,
- page_reading_attempt, reading_attempt?, union_box_px | null, region_id, image_path, image_sha256,
+ page_reading_attempt, reading_attempt?, reading_n?, union_box_px | null, region_id, image_path, image_sha256,
  transform, transform_digest, page_reading_ref, page_accounting_ref, feed_ref, holds,
  page_holds}
 ```
@@ -1410,7 +1412,7 @@ held:
  page_reading_ref, page_accounting_ref, feed_ref, n, kind, label, text,
  uncertain_spans, gaps, uncertainty_assessment, dissent, truncation | null, autopsia,
  continues_from_previous_page, continues_to_next_page, holds, page_holds, engine_call,
- provenance, reading_attempt?}
+ provenance, reading_attempt?, reading_n?}
 ```
 
 - `text` and the doubt layers come from `annotations.read_doubt_marks`; a mark that
@@ -1458,7 +1460,8 @@ re-ask publishes its act records at once, and a planned page's wait. The
 second is a window of its own over the planned pages, after its own resume
 and deadline check: each sends (live: `reader-sent` ordinal 2, pass
 `page-reask`) the same images and the same rendered feed, then the first
-reading's entries as `n, kind, label, cites` -- never their text -- then the
+reading's entries as `n, kind, label, cites` -- their labels are shown, since a
+label names an entry without its text, but never their text -- then the
 named ids with their `box_1000` by finding, and the re-ask's instruction
 (`common/page_prompt.py`, `page_reask_prompt`, a builder of its own per
 recipe). The request is admitted through `page_path.reask_request_capacity`,
@@ -1476,39 +1479,64 @@ reask: {trigger_reading_ref, trigger_accounting_ref, named: [{id, code, box_1000
 ```
 
 Its answer is read against the named ids only (`validate_reask_answer`):
-citing or setting aside any other id is `unknown-id`, and a continuation flag
-set is `reask-continuation`, either holding it whole. On the fixture pass the
-answer is the fixture's one `[[page_reask_answer]]` row for the scenario and
-page; a row for a page the plan does not re-ask is refused by name.
+citing or setting aside any other id is the problem code `unknown-id`, and an
+entry with a continuation flag set is the problem code `reask-continuation`;
+either holds the re-ask whole. On the fixture pass the answer is the
+fixture's one `[[page_reask_answer]]` row for the scenario and page; a row
+for a page the plan does not re-ask is refused by name. With
+`page_level_reread = 0` no page is planned and the rows are not read at all,
+so one fixture serves both budgets: that is the one case a fixture row goes
+unread without a refusal.
 
 Then the page's last accounting, bound to attempt 2, measures both readings
 (`answer_basis: "combined"`): the first reading's entries exactly, then, when
 the re-ask is a parsed, valid answer finished on `stop`, its entries numbered
-on after them (`n = k + j`), with both readings' set-asides. Rule (a) reads
-the first reading; rules (b) to (i) read the entries together, so a page break
-continued by the first reading's last entry is never an off-edge
-continuation; rule (g) classifies each entry under its own reading. Rule (j)
-holds `reask-unread` (the re-ask is not a parsed, valid answer finished on
-`stop`, and the page stands on its first reading), `reask-set-aside` (a named
-id it set aside), `reask-unplaced` (an entry of it citing no placing id),
-`reask-no-text` (an entry of it giving no text beyond `[[?]]`),
-`reask-duplicate` (an entry whose text one first-reading entry already holds
-by rule (e)'s test, naming that entry) and `reask-duplicate-not-measured`.
-Then the act records of both readings are published -- the re-ask's only for
-entries the accounting measured, so a re-ask that does not stand adds none --
-all naming that accounting; an entry the re-ask read mints its act id from attempt 2
-(`entry_plans(..., attempt=2)`), names attempt 2 as its `page_reading_ref`, and
-carries `reading_attempt: 2` on its act-region and its Perlectio, so recovered
-entries are always measured apart. The first reading's records keep their
-shape, and nothing of it is changed, dropped or out-counted: a named id's hold
-clears only through a placed re-ask entry that passes rules (b) to (j).
+on after them (`n = k + j`, `reading_n = j`), with both readings' set-asides;
+an id both read and set aside across the two readings (`cited-and-set-aside`)
+or set aside by both (`set-aside-twice`) holds the re-ask whole. Whether a
+reading finished is one test, `page_accounting.finished_on_stop` over its
+`finish_reason`, which rule (a), the re-ask's standing and the plan all read.
+Rule (a) reads the first reading; rules (b) to (i) read the entries together;
+rule (g) classifies each entry under its own reading. Continuation is not
+measured here: a recovered entry carries no continuation flag, and the page's
+edges are its first reading's, which is how the Recensor measures page breaks
+and off-edge flags (`pipeline/5_recensor/CONTRACT.md`). Rule (j) holds these
+codes:
 
-A re-ask on a page the plan does not re-ask, any attempt past the re-ask, a
-planned page whose act records were published without its re-ask, and a
-planned page left with no re-ask are refused by name (`FatalAccounting`).
-The page-read denominator (`common.stage.reading_acts`) counts one reading of
-a page and refuses a re-asked page by name, so no later stage counts a
-re-asked page as though it had one reading.
+- `reask-unread`: the re-ask is not a parsed, valid answer finished on `stop`
+  (its problem codes named), and the page stands on its first reading;
+- `reask-set-aside`: a named id it set aside;
+- `reask-unplaced`: an entry of it citing no placing id;
+- `reask-no-text`: an entry of it giving no text beyond `[[?]]`;
+- `reask-duplicate`: an entry whose text one first-reading entry already holds
+  by rule (e)'s test, naming that entry; `reask-duplicate-not-measured` when
+  the test ran out of its work budget.
+
+Then the act records of both readings are published, all naming that
+accounting: the first reading's always, and the re-ask's exactly when the
+accounting counts it (`page_accounting.reask_stood`), so a re-ask that does not
+stand adds none. Before any is published, the entries the accounting counts --
+by reading, number in that reading and number on the page -- must be exactly
+the records about to be published (`page_path.reask_act_plans`), or the page
+is refused (`FatalAccounting`). An entry the re-ask read mints its act id from
+attempt 2 and its own number there (`entry_plans(..., attempt=2)`), names
+attempt 2 as its `page_reading_ref`, records the accounting's `n`, and carries
+`reading_attempt: 2` and `reading_n` on its act-region and its Perlectio, so
+recovered entries are always measured apart. The first reading's records keep
+their shape, and nothing of it is changed, dropped or out-counted: a named
+id's hold clears only through a placed re-ask entry that passes rules (b) to
+(j).
+
+Refused by name (`FatalAccounting`), from what the stage already holds before
+it publishes: any page reading or accounting attempt past the re-ask; on a
+page the plan does not re-ask, a re-ask reading, a re-ask accounting or an act
+record the re-ask read; and on a planned page with no re-ask reading yet, its
+re-ask accounting or any act record. Once phase 2 runs, every planned page has
+its re-ask reading: each drawn job is finished, and a finish either publishes
+or adopts the reading or raises, so no separate check follows the window.
+The page-read denominator (`common.stage.reading_acts`, `common/README.md`)
+recomputes the plan and counts both readings' entries exactly as the
+accounting does.
 
 ### Resume
 

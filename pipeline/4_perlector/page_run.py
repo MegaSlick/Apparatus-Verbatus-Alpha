@@ -52,6 +52,7 @@ reading".
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass, field
 from functools import partial
@@ -224,6 +225,16 @@ class _Page:
 
 
 @dataclass
+class _Sealed:
+    """The page records this stage already holds for one page, by reading."""
+
+    readings: set[str] = field(default_factory=set)
+    accountings: set[str] = field(default_factory=set)
+    # The reading ordinal (1, or 2 for an entry the re-ask read) of each act record.
+    act_readings: set[int] = field(default_factory=set)
+
+
+@dataclass
 class _PagePass:
     """What every page of one pass reads under."""
 
@@ -235,8 +246,8 @@ class _PagePass:
     surya: dict[str, dict[str, Any]] | None
     accounting_policy: Any
     reask_budget: int
-    # Each page's sealed page-reading attempts, read before the pass publishes any.
-    sealed_attempts: dict[str, set[str]] = field(default_factory=dict)
+    # What each page already holds, read before the pass publishes anything.
+    sealed: dict[str, _Sealed] = field(default_factory=dict)
     row: Any = None
 
     @property
@@ -270,14 +281,26 @@ def _existing_reading(context, page_id: str, ordinal: int) -> dict[str, Any] | N
     )
 
 
-def _sealed_attempts(context) -> dict[str, set[str]]:
-    """Every page's page-reading attempts this stage already holds, by page."""
-    found: dict[str, set[str]] = {}
-    # Only the attempts are read here; each record's inputs are checked where it is used.
+def _sealed_pages(context) -> dict[str, _Sealed]:
+    """Every page's page-reading and page-accounting attempts and act records, by page."""
+    found: dict[str, _Sealed] = {}
+    # Only attempts and pages are read here, from the records the manifest listed, so
+    # a record whose input is gone is still seen; each record's inputs are checked
+    # where it is used.
     for entry in context.tree.build_manifest(PERLECTOR, verify_inputs=False)["artifacts"]:
-        if entry["kind"] == PAGE_READING_KIND:
-            record = context.tree.read_artifact(PERLECTOR, PAGE_READING_KIND, entry["artifact_id"])
-            found.setdefault(entry["subject_id"], set()).add(record["attempt_id"])
+        kind = entry["kind"]
+        if kind not in (PAGE_READING_KIND, PAGE_ACCOUNTING_KIND, ACT_REGION_KIND, PERLECTIO_KIND):
+            continue
+        record = json.loads(context.tree.read_bytes(entry["relative_path"]))
+        if kind == PAGE_READING_KIND:
+            found.setdefault(entry["subject_id"], _Sealed()).readings.add(record["attempt_id"])
+        elif kind == PAGE_ACCOUNTING_KIND:
+            found.setdefault(entry["subject_id"], _Sealed()).accountings.add(record["attempt_id"])
+        else:
+            payload = record["payload"]
+            found.setdefault(payload.get("page_id"), _Sealed()).act_readings.add(
+                payload.get("reading_attempt", FIRST_READING)
+            )
     return found
 
 
@@ -449,7 +472,7 @@ def _finish(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | 
         budget=state.reask_budget,
         policy=state.accounting_policy,
     )
-    _refuse_stray_attempts(state, page, planned=bool(named), plans=plans)
+    _refuse_stray_attempts(state, page, planned=bool(named))
     if not named:
         if state.reask_budget and not state.live:
             page_path.fixture_reask_answer(state.context, page.ordinal, planned=False)
@@ -459,46 +482,48 @@ def _finish(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | 
     page.reask = _prepare_reask(state, page, reading, accounting, named)
 
 
-def _refuse_stray_attempts(
-    state: _PagePass, page: _Page, *, planned: bool, plans: list[dict[str, Any]] = ()
-) -> None:
-    """Refuse a page reading attempt the plan does not account for, by name.
+def _refuse_stray_attempts(state: _PagePass, page: _Page, *, planned: bool) -> None:
+    """Refuse a page record the plan does not account for, by name.
 
     A page holds its first reading and, only when its plan re-asks it, one
-    re-ask: a re-ask on a page the plan never re-asks, or any attempt past
-    the re-ask, was never this pass's to make. A planned page with no re-ask
-    yet must have no act record either (`plans` are its first reading's):
-    they are published only after the re-ask, naming its accounting.
+    re-ask. A page the plan never re-asks may hold no attempt-2 reading,
+    accounting or act record, and no page any attempt past the re-ask. A
+    planned page with no re-ask reading yet may hold neither the re-ask's
+    accounting nor any act record: those are published only after the
+    re-ask, naming its accounting.
     """
-    context = state.context
-    attempts = state.sealed_attempts.get(page.page_id, set())
+    sealed = state.sealed.get(page.page_id, _Sealed())
     first = page_path.page_reading_attempt(page.page_id, FIRST_READING)
     second = page_path.page_reading_attempt(page.page_id, REASK_READING)
-    if attempts - {first, second}:
-        raise FatalAccounting(
-            f"page {page.page_id} carries a page reading attempt past its one re-ask "
-            f"({sorted(attempts - {first, second})}); a page is read once and re-asked at most "
-            "once, so it is not counted. Read this page in a new run"
-        )
-    if second in attempts and not planned:
-        raise FatalAccounting(
-            f"page {page.page_id} carries a re-ask (page-read:2), but its first reading and "
-            "accounting plan none under the sealed page_level_reread; it is not counted. Read "
-            "this page in a new run"
-        )
-    if planned and second not in attempts:
-        if any(
-            _sealed(
-                context, ACT_REGION_KIND, plan["act_id"], page_path.region_attempt(plan["act_id"])
-            )
-            is not None
-            for plan in plans
-        ):
+    for what, attempts in (("reading", sealed.readings), ("accounting", sealed.accountings)):
+        if attempts - {first, second}:
             raise FatalAccounting(
-                f"page {page.page_id} is planned for a re-ask, yet act records of its first "
-                "reading were published without one; its act records would name an accounting "
-                "that is not the page's last. Read this page in a new run"
+                f"page {page.page_id} carries a page {what} attempt past its one re-ask "
+                f"({sorted(attempts - {first, second})}); a page is read once and re-asked at "
+                "most once, so it is not counted. Read this page in a new run"
             )
+    if not planned:
+        stray = [
+            what
+            for what, found in (
+                ("reading", second in sealed.readings),
+                ("accounting", second in sealed.accountings),
+                ("act records", REASK_READING in sealed.act_readings),
+            )
+            if found
+        ]
+        if stray:
+            raise FatalAccounting(
+                f"page {page.page_id} carries a re-ask's {', '.join(stray)} (page-read:2), but "
+                "its first reading and accounting plan none under the sealed "
+                "page_level_reread; it is not counted. Read this page in a new run"
+            )
+    elif second not in sealed.readings and (second in sealed.accountings or sealed.act_readings):
+        raise FatalAccounting(
+            f"page {page.page_id} is planned for a re-ask, yet its re-ask accounting or act "
+            "records were published without its re-ask reading; its act records would name an "
+            "accounting that is not the page's last. Read this page in a new run"
+        )
 
 
 def _prepare_reask(
@@ -561,6 +586,7 @@ def _finish_reask(state: _PagePass, page: _Page, result: dict[str, Any] | Except
             truncation_policy=state.run.protocol_config["truncation"],
             attempt=REASK_READING,
             named=request.named,
+            first_count=len(page.plans),
         )
         if payload["disposition"] == READ
         else []
@@ -579,17 +605,13 @@ def _finish_reask(state: _PagePass, page: _Page, result: dict[str, Any] | Except
             "named": request.named,
         },
     )
-    # Only entries the accounting measured become acts: a re-ask that does not
-    # stand adds none, and the page stands on its first reading.
-    counted = {
-        entry["reading_n"]
-        for entry in accounting["payload"]["entries"]
-        if entry["reading_attempt"] == REASK_READING
-    }
+    # A re-ask the accounting does not count adds no act, and the page stands on
+    # its first reading; one it counts adds exactly the entries it measured.
+    recovered = page_path.reask_act_plans(
+        accounting["payload"], page.plans, plans, f"page {page.page_id}"
+    )[len(page.plans) :]
     publish_act_records(state, page, page.reading, page.plans, accounting)
-    publish_act_records(
-        state, page, second, [plan for plan in plans if plan["act"]["n"] in counted], accounting
-    )
+    publish_act_records(state, page, second, recovered, accounting)
 
 
 def _reading(state: _PagePass, page: _Page, request: _Request, result) -> dict[str, Any]:
@@ -779,8 +801,10 @@ def publish_act_records(
 
     Every record carries `page_accounting_ref` -- the page's last accounting,
     the re-ask's on a re-asked page -- and the page's hold codes as
-    `page_holds`, and is held when those or its own holds are non-empty. An
-    entry the re-ask read carries `reading_attempt: 2` on both records. A
+    `page_holds`, and is held when those or its own holds are non-empty.
+    Each record's `n` is the number the accounting names the entry by; an
+    entry the re-ask read carries `reading_attempt: 2` and `reading_n`, its
+    number in the re-ask's answer, on both records. A
     `perlectio` already sealed for the entry is adopted when every field but
     its dissent is the expected one, so a resumed pass aligns nothing again.
     """
@@ -814,7 +838,7 @@ def publish_act_records(
             "page_id": page.page_id,
             "page_ordinal": page.ordinal,
             "reading_unit": READING_UNIT,
-            "n": act["n"],
+            "n": plan["n"],
             "kind": act["kind"],
             "label": act.get("label"),
             "cites": list(act["cites"]),
@@ -834,9 +858,8 @@ def publish_act_records(
             "feed_ref": page.feed_ref,
             "holds": region_holds,
             "page_holds": list(page_holds),
+            **page_path.recovered_fields(plan),
         }
-        if plan["reading_attempt"] == REASK_READING:
-            region_payload["reading_attempt"] = REASK_READING
         region_inputs = [reading_ref, accounting_ref, page.feed_ref, page_ref]
         if crop:
             region_inputs.append(
@@ -1016,7 +1039,13 @@ def _refuse_past_phase_deadline(state: _PagePass, left: int, what: str) -> None:
 
 
 def read_the_pages(run, hooks: StageHooks) -> None:
-    """Read every sealed Exemplar page once, re-ask the planned ones, and publish in page order."""
+    """Read every sealed Exemplar page once, then re-ask the planned ones.
+
+    Each phase publishes its pages in page order, so a re-asked page's
+    attempt-2 records follow every page's first reading. Nothing reads the
+    records in the order written: each names its inputs, and every reader
+    orders by page.
+    """
     context = run.context
     refuse_unsupported_settings(context)
     pages = exemplar_page_ids(context)
@@ -1035,7 +1064,7 @@ def read_the_pages(run, hooks: StageHooks) -> None:
             context, context.page_accounting_config_path
         ),
         reask_budget=page_reask.reask_budget(context.recovery_policy),
-        sealed_attempts=_sealed_attempts(context),
+        sealed=_sealed_pages(context),
     )
     prepared = [_prepare(state, ordinal, page_id) for ordinal, page_id in pages.items()]
     if state.live and state.chair_present:
@@ -1059,9 +1088,3 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         run.concurrency,
         (_job(state, page, page.reask, partial(_finish_reask, state, page)) for page in planned),
     )
-    for page in planned:
-        if _existing_reading(context, page.page_id, REASK_READING) is None:
-            raise FatalAccounting(
-                f"page {page.page_id} was planned for a re-ask, but no re-ask reading was "
-                "sealed; the page is not counted"
-            )

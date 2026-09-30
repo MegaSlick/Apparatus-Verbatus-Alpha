@@ -965,6 +965,27 @@ def toml_value(value) -> str:
     raise ValueError(f"fixture cannot render TOML value {value!r}")
 
 
+def _answer_rows(table: str, rows) -> list[str]:
+    """The fixture lines of fake Perlector answers: one `[[table]]` row per scenario and page."""
+    lines = []
+    for row in rows:
+        lines += [
+            f"[[{table}]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"page_ordinal = {row['page_ordinal']}",
+            "answer = "
+            + toml_string(
+                row["answer"]
+                if isinstance(row["answer"], str)
+                else json.dumps(row["answer"], separators=(",", ":"))
+            ),
+        ]
+        if "stop_reason" in row:
+            lines.append(f"stop_reason = {toml_string(row['stop_reason'])}")
+        lines.append("")
+    return lines
+
+
 def build_ingress_manifest(rendered: dict[int, bytes]) -> str:
     lines = [
         "version = 1",
@@ -1594,39 +1615,13 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         '# read only under reading_unit = "page". `answer` is the reply text exactly.',
         "",
     ]
-    for row in PAGE_ANSWERS:
-        lines += [
-            "[[page_answer]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"page_ordinal = {row['page_ordinal']}",
-            "answer = "
-            + toml_string(
-                row["answer"]
-                if isinstance(row["answer"], str)
-                else json.dumps(row["answer"], separators=(",", ":"))
-            ),
-            "",
-        ]
+    lines += _answer_rows("page_answer", PAGE_ANSWERS)
     lines += [
         "# The fake Perlector's answer to a page's one re-ask, one per re-asked scenario",
         "# and page, read only with the re-ask on. `answer` is the reply text exactly.",
         "",
     ]
-    for row in PAGE_REASK_ANSWERS:
-        lines += [
-            "[[page_reask_answer]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"page_ordinal = {row['page_ordinal']}",
-            "answer = "
-            + toml_string(
-                row["answer"]
-                if isinstance(row["answer"], str)
-                else json.dumps(row["answer"], separators=(",", ":"))
-            ),
-        ]
-        if "stop_reason" in row:
-            lines.append(f"stop_reason = {toml_string(row['stop_reason'])}")
-        lines.append("")
+    lines += _answer_rows("page_reask_answer", PAGE_REASK_ANSWERS)
     lines += [
         "# One declared provider RESPONSE per row: an empty body from that chair on",
         "# that act. The Attestatores derives `genuinely-empty` from the retained",

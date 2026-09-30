@@ -194,16 +194,20 @@ def not_run_problems(
     return problems
 
 
-def fixture_page_answer(context, ordinal: int) -> dict[str, Any]:
-    """The synthetic fixture's one declared answer to page `ordinal` under this scenario."""
-    rows = [
+def _fixture_rows(context, table: str, ordinal: int) -> list[dict[str, Any]]:
+    """The synthetic fixture's `[[table]]` rows for page `ordinal` under this scenario."""
+    return [
         row
-        for row in context.fixture.get("page_answer", [])
+        for row in context.fixture.get(table, [])
         if row.get("scenario") == context.scenario and row.get("page_ordinal") == ordinal
     ]
+
+
+def _one_fixture_answer(rows: list[dict[str, Any]], what: str, context, ordinal: int) -> dict:
+    """The one fixture answer row `rows` must be: an answer string, stopped or cut."""
     if len(rows) != 1:
         raise ContractError(
-            f"the fixture declares {len(rows)} page answers for scenario {context.scenario!r}, "
+            f"the fixture declares {len(rows)} {what}s for scenario {context.scenario!r}, "
             f"page {ordinal}; a page read offline needs exactly one"
         )
     row = rows[0]
@@ -212,10 +216,17 @@ def fixture_page_answer(context, ordinal: int) -> dict[str, Any]:
         "length",
     ):
         raise ContractError(
-            f"the fixture's page answer for {context.scenario!r}, page {ordinal} is not an "
+            f"the fixture's {what} for {context.scenario!r}, page {ordinal} is not an "
             "answer string with a stop reason of stop or length"
         )
     return row
+
+
+def fixture_page_answer(context, ordinal: int) -> dict[str, Any]:
+    """The synthetic fixture's one declared answer to page `ordinal` under this scenario."""
+    return _one_fixture_answer(
+        _fixture_rows(context, "page_answer", ordinal), "page answer", context, ordinal
+    )
 
 
 def fixture_reask_answer(context, ordinal: int, *, planned: bool) -> dict[str, Any] | None:
@@ -224,13 +235,10 @@ def fixture_reask_answer(context, ordinal: int, *, planned: bool) -> dict[str, A
     A page the plan re-asks needs exactly one `[[page_reask_answer]]` row
     under the scenario; a row for a page the plan does not re-ask is refused
     by name, since its answer would never be asked for. Read only with the
-    re-ask on.
+    re-ask on: with `page_level_reread = 0` no page is planned and the rows
+    are not read, so one fixture serves both budgets.
     """
-    rows = [
-        row
-        for row in context.fixture.get("page_reask_answer", [])
-        if row.get("scenario") == context.scenario and row.get("page_ordinal") == ordinal
-    ]
+    rows = _fixture_rows(context, "page_reask_answer", ordinal)
     if not planned:
         if rows:
             raise ContractError(
@@ -239,21 +247,7 @@ def fixture_reask_answer(context, ordinal: int, *, planned: bool) -> dict[str, A
                 "would never be asked for"
             )
         return None
-    if len(rows) != 1:
-        raise ContractError(
-            f"the fixture declares {len(rows)} page re-ask answers for scenario "
-            f"{context.scenario!r}, page {ordinal}; a page re-asked offline needs exactly one"
-        )
-    row = rows[0]
-    if not isinstance(row.get("answer"), str) or row.get("stop_reason", "stop") not in (
-        "stop",
-        "length",
-    ):
-        raise ContractError(
-            f"the fixture's page re-ask answer for {context.scenario!r}, page {ordinal} is not "
-            "an answer string with a stop reason of stop or length"
-        )
-    return row
+    return _one_fixture_answer(rows, "page re-ask answer", context, ordinal)
 
 
 # --- the request -----------------------------------------------------------------
@@ -546,12 +540,17 @@ def entry_plans(
     truncation_policy: Mapping[str, Any],
     attempt: int = FIRST_READING,
     named: list[str] | None = None,
+    first_count: int = 0,
 ) -> list[dict[str, Any]]:
     """Each entry of a read answer as it is published, computed from the answer and feed alone.
 
     `attempt` is the reading's ordinal: a re-ask's entries (`attempt = 2`,
     `named` its named ids) are read against the ids it names and bound to
     its own attempt, so they never take a first-reading entry's identity.
+    Each plan's `n` is the number the page accounting names the entry by and
+    `reading_n` its number in its own answer: equal on a first reading, and
+    for a re-ask `n = first_count + reading_n`, `first_count` being the first
+    reading's entries (`page_accounting._combined`).
 
     Per entry: its act id and class, its union box, its text and doubt layers
     (`reading_annotations.read_doubt_marks`), its truncation classification
@@ -564,6 +563,8 @@ def entry_plans(
     page_pixels = feed["page_size"]["w"] * feed["page_size"]["h"]
     if (attempt == REASK_READING) != (named is not None):
         raise ContractError("a re-ask's entries are planned with its named ids, and only its")
+    if first_count and attempt != REASK_READING:
+        raise ContractError("only a re-ask's entries are numbered on after a first reading's")
     reading_attempt = page_reading_attempt(page_id, attempt)
     autopsia = feed["page_render"] is not None
     plans = []
@@ -601,6 +602,8 @@ def entry_plans(
                     {"page_reading": reading_attempt, "n": act["n"], "union_box_px": union},
                 ),
                 "reading_attempt": attempt,
+                "n": first_count + act["n"],
+                "reading_n": act["n"],
                 "act_class": act_class,
                 "cited_ids": list(entry["cited_ids"]),
                 "union_box_px": union,
@@ -611,6 +614,37 @@ def entry_plans(
                 "truncation": record,
                 "autopsia": autopsia,
             }
+        )
+    return plans
+
+
+def reask_act_plans(
+    accounting: Mapping[str, Any],
+    first_plans: list[dict[str, Any]],
+    reask_plans: list[dict[str, Any]],
+    what: str,
+) -> list[dict[str, Any]]:
+    """The plans a re-asked page publishes act records for, in the accounting's order.
+
+    `accounting` is the page's combined `page-accounting` payload, and
+    `first_plans` and `reask_plans` its two readings' `entry_plans`. The
+    first reading's entries always, and the re-ask's only when the
+    accounting counts it (`page_accounting.reask_stood`); refused
+    (`FatalAccounting`) unless they are exactly the entries the accounting
+    counts, by reading, number in that reading and number on the page, so
+    no act record is published for an entry nothing measured and none the
+    accounting measured is left without one.
+    """
+    plans = first_plans + (reask_plans if page_accounting.reask_stood(accounting) else [])
+    counted = [
+        (entry["reading_attempt"], entry["reading_n"], entry["n"])
+        for entry in accounting["entries"]
+    ]
+    if counted != [(plan["reading_attempt"], plan["reading_n"], plan["n"]) for plan in plans]:
+        raise FatalAccounting(
+            f"{what}'s re-ask accounting counts other entries than its readings give act "
+            "records for; an act nothing measured, or a measured entry with no act, is never "
+            "counted"
         )
     return plans
 
@@ -912,10 +946,6 @@ def expected_perlectio(
     page-read denominator requires them of every Perlectio it counts.
     """
     act, assessment = plan["act"], plan["assessment"]
-    # An entry the re-ask recovered says so, so it is always told from a first reading's.
-    recovered = (
-        {"reading_attempt": REASK_READING} if plan["reading_attempt"] == REASK_READING else {}
-    )
     return {
         "schema": PERLECTIO_SCHEMA,
         "page_id": page_id,
@@ -925,7 +955,7 @@ def expected_perlectio(
         "page_reading_ref": refs["page_reading_ref"],
         "page_accounting_ref": refs["page_accounting_ref"],
         "feed_ref": refs["feed_ref"],
-        "n": act["n"],
+        "n": plan["n"],
         "kind": act["kind"],
         "label": act.get("label"),
         "text": plan["text"],
@@ -940,8 +970,20 @@ def expected_perlectio(
         "page_holds": list(page_holds),
         "engine_call": reading["engine_call"],
         "provenance": reading["provenance"],
-        **recovered,
+        **recovered_fields(plan),
     }
+
+
+def recovered_fields(plan: Mapping[str, Any]) -> dict[str, int]:
+    """What an entry the re-ask recovered adds to its act-region and Perlectio, else nothing.
+
+    `reading_attempt: 2` and `reading_n`, its number in the re-ask's answer,
+    so a recovered entry is always told from a first reading's; its `n` is
+    the page accounting's.
+    """
+    if plan["reading_attempt"] != REASK_READING:
+        return {}
+    return {"reading_attempt": REASK_READING, "reading_n": plan["reading_n"]}
 
 
 # --- the page accounting's inputs -----------------------------------------------

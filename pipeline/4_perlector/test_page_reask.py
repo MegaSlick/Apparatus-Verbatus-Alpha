@@ -146,13 +146,14 @@ def _rewrite(root: Path, record: dict[str, Any]) -> None:
 
 
 def _plant(root: Path, source: dict[str, Any], ordinal: int) -> None:
-    """A copy of a page reading planted as another attempt of the same page."""
+    """A copy of a page reading or accounting planted as another attempt of the same page."""
     planted = json.loads(json.dumps(source))
     planted["attempt_id"] = attempt_id(source["subject_id"], "page-read", ordinal)
     planted["artifact_id"] = artifact_id(
-        PERLECTOR, "page-reading", source["subject_id"], planted["attempt_id"]
+        PERLECTOR, source["kind"], source["subject_id"], planted["attempt_id"]
     )
-    planted["payload"]["attempt_ordinal"] = ordinal
+    if source["kind"] == "page-reading":
+        planted["payload"]["attempt_ordinal"] = ordinal
     _rewrite(root, planted)
 
 
@@ -253,7 +254,14 @@ def test_a_recovered_entry_is_an_act_of_its_own_read_on_re_ask(recovers):
     recovered_region, recovered = regions[1], readings[1]
     assert _names(recovered["payload"]["page_reading_ref"], second)
     assert recovered["payload"]["text"] == "SYNTHETIC ACT TWO delta epsilon zeta eta"
-    assert recovered["payload"]["n"] == 1
+    # Numbered on after the first reading's one entry, as the accounting names it.
+    assert recovered["payload"]["n"] == recovered_region["payload"]["n"] == 2
+    assert recovered["payload"]["reading_n"] == recovered_region["payload"]["reading_n"] == 1
+    assert [(e["n"], e["reading_attempt"], e["reading_n"]) for e in last["payload"]["entries"]] == [
+        (1, 1, 1),
+        (2, 2, 1),
+    ]
+    assert "reading_n" not in regions[0]["payload"] and "reading_n" not in readings[0]["payload"]
     assert recovered["payload"]["continues_from_previous_page"] is False
     assert recovered["payload"]["continues_to_next_page"] is False
     verify(
@@ -435,7 +443,7 @@ def test_a_deleted_re_ask_is_refused_by_name(recovers, tmp_path, monkeypatch):
     tree = _copy(recovers, tmp_path)
     root = tree[0]
     _path_of(root, _reading(root, 1, 2)).unlink()
-    with pytest.raises(FatalAccounting, match="act records of its first reading were published"):
+    with pytest.raises(FatalAccounting, match="were published without its re-ask reading"):
         _stage(tree, "reask-recovers", monkeypatch)
 
 
@@ -444,8 +452,42 @@ def test_a_re_ask_planted_on_a_page_its_plan_does_not_re_ask_is_refused(
 ):
     tree = _copy(happy, tmp_path)
     _plant(tree[0], _reading(tree[0], 1, 1), 2)
-    with pytest.raises(FatalAccounting, match=r"carries a re-ask \(page-read:2\), but"):
+    with pytest.raises(FatalAccounting, match=r"carries a re-ask's reading \(page-read:2\), but"):
         _stage(tree, "happy", monkeypatch)
+
+
+def test_a_re_ask_accounting_planted_on_a_page_its_plan_does_not_re_ask_is_refused(
+    happy, tmp_path, monkeypatch
+):
+    tree = _copy(happy, tmp_path)
+    _plant(tree[0], _accounting(tree[0], 1, 1), 2)
+    with pytest.raises(FatalAccounting, match=r"carries a re-ask's accounting \(page-read:2\)"):
+        _stage(tree, "happy", monkeypatch)
+
+
+def test_a_recovered_act_record_on_a_page_its_plan_does_not_re_ask_is_refused(
+    happy, tmp_path, monkeypatch
+):
+    tree = _copy(happy, tmp_path)
+    record = _on_page(tree[0], "perlectio", 1)[0]
+    record["payload"].update(reading_attempt=2, reading_n=1)
+    _rewrite(tree[0], record)
+    with pytest.raises(FatalAccounting, match=r"carries a re-ask's act records \(page-read:2\)"):
+        _stage(tree, "happy", monkeypatch)
+
+
+def test_a_re_ask_planted_with_the_re_ask_off_is_refused(tmp_path, monkeypatch):
+    tree = _tree(tmp_path / "off", "happy", reask=0)
+    _plant(tree[0], _reading(tree[0], 1, 1), 2)
+    with pytest.raises(FatalAccounting, match=r"carries a re-ask's reading \(page-read:2\)"):
+        _stage(tree, "happy", monkeypatch)
+
+
+def test_a_third_page_accounting_is_refused(recovers, tmp_path, monkeypatch):
+    tree = _copy(recovers, tmp_path)
+    _plant(tree[0], _accounting(tree[0], 1, 2), 3)
+    with pytest.raises(FatalAccounting, match="page accounting attempt past its one re-ask"):
+        _stage(tree, "reask-recovers", monkeypatch)
 
 
 def test_a_third_page_reading_is_refused(recovers, tmp_path, monkeypatch):
@@ -627,6 +669,36 @@ def test_a_re_ask_stopped_after_its_send_with_its_reply_retained_is_refused_by_n
     with pytest.raises(ContractError, match="asking again would read them twice"):
         _read_pages(live, tmp_path / "again", monkeypatch, _recovered())
     assert _reading(live.root, 1, 2) is None
+
+
+def test_a_re_ask_stopped_after_its_send_with_no_reply_retained_is_sent_again(
+    live, tmp_path, monkeypatch
+):
+    original = page_run._call
+
+    def stopped_before_the_call(run, page, request, images):
+        if request.ordinal == 2:
+            raise KeyboardInterrupt
+        return original(run, page, request, images)
+
+    monkeypatch.setattr(page_run, "_call", stopped_before_the_call)
+    with pytest.raises(KeyboardInterrupt):
+        _read_pages(live, tmp_path, monkeypatch, _first_act_only(), _page_two(), _recovered())
+    monkeypatch.setattr(page_run, "_call", original)
+    assert _reading(live.root, 1, 2) is None
+    reask_sent = [
+        r["payload"]["attempt_ordinal"]
+        for r in _records(live.root, "reader-sent")
+        if r["payload"]["pass"] == "page-reask"
+    ]
+    assert reask_sent == [2]
+    # Its send has no reply that could be its answer, so the resumed pass asks again.
+    endpoint, exit_code = _read_pages(live, tmp_path / "again", monkeypatch, _recovered())
+    assert exit_code == 0
+    assert len(_chat_requests(endpoint)) == 1
+    second = _reading(live.root, 1, 2)["payload"]
+    assert second["disposition"] == "read" and second["engine_call"] is not None
+    assert len(_on_page(live.root, "perlectio", 1)) == 2
 
 
 def test_a_re_ask_over_the_rows_capacity_is_held_unread_and_never_sent(live, tmp_path, monkeypatch):

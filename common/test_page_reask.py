@@ -9,7 +9,7 @@ import json
 import pytest
 
 from common import page_accounting as accounting_module
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, FatalAccounting
 from common.page_accounting import (
     HOLD_CODES,
     NOT_MEASURED_CODES,
@@ -17,12 +17,13 @@ from common.page_accounting import (
     UNACCOUNTED_WITNESS_UNIT,
     UNREAD_LINE,
 )
+from common.page_path import reask_act_plans
 from common.page_reask import (
     MAX_REASKS,
-    NEVER,
     RE_ASKABLE,
     named_ids,
     reask_budget,
+    reask_outcome,
     reask_plan,
     render_reask,
 )
@@ -84,13 +85,12 @@ def missing_last(records: int = 3) -> dict:
 # --- the codes ---------------------------------------------------------------------
 
 
-def test_the_re_askable_codes_and_the_others_partition_every_hold_and_unmeasured_code():
-    assert RE_ASKABLE | NEVER == HOLD_CODES | NOT_MEASURED_CODES
-    assert not RE_ASKABLE & NEVER
+def test_only_the_three_unread_findings_are_re_askable_and_each_holds():
     assert RE_ASKABLE == {UNACCOUNTED_WITNESS_UNIT, UNREAD_LINE, RECORD_NOT_READ}
+    # Each holds the page; none is a measurement that could not be taken.
     assert RE_ASKABLE <= HOLD_CODES - NOT_MEASURED_CODES
     # What the re-ask itself finds is never asked about again.
-    assert {code for code in HOLD_CODES if code.startswith("reask-")} <= NEVER
+    assert not any(code.startswith("reask-") for code in RE_ASKABLE)
 
 
 @pytest.mark.parametrize("code", ALL_CODES)
@@ -142,10 +142,10 @@ def test_the_re_ask_is_off_at_a_budget_of_zero_and_refused_above_one():
     [
         {"parse_state": "malformed"},
         {"disposition": "held"},
-        {"stop_reason": None},
-        {"stop_reason": "length"},
+        {"finish_reason": None},
+        {"finish_reason": "length"},
     ],
-    ids=["malformed", "held", "no-stop-reason", "cut-off"],
+    ids=["malformed", "held", "no-finish-reason", "cut-off"],
 )
 def test_only_a_read_answer_finished_on_stop_is_re_asked(change):
     case = missing_last()
@@ -439,3 +439,92 @@ def test_a_re_ask_entry_giving_no_text_holds_though_it_accounts_for_its_ids(text
     both = account(case, reask=reask_of(case, recovered(case, text, cites=("B3", "L7-L9"))))
     assert {"code": "reask-no-text", "n": 3, "reading_n": 1} in both["rules"]["j"]["findings"]
     assert "reask-no-text" in both["holds"]
+
+
+def _set_aside(*identifiers: str) -> list[dict]:
+    return [{"id": identifier, "reason": "no entry here"} for identifier in identifiers]
+
+
+@pytest.mark.parametrize(
+    ("first_sets_aside", "answer", "named", "code"),
+    [
+        # The first reading cites A1; the re-ask sets it aside.
+        ((), {"acts": [], "set_aside": _set_aside("A1")}, ["A1"], "cited-and-set-aside"),
+        # The first reading sets A3 aside; the re-ask cites it.
+        (("A3",), "recovered", ["A3", "B3", "L7", "L8", "L9"], "cited-and-set-aside"),
+        # Both readings set L7 aside.
+        (("L7",), {"acts": [], "set_aside": _set_aside("L7")}, ["L7"], "set-aside-twice"),
+    ],
+    ids=["read-then-set-aside", "set-aside-then-read", "set-aside-twice"],
+)
+def test_an_id_both_readings_account_for_holds_the_re_ask_whole(
+    first_sets_aside, answer, named, code
+):
+    case = missing_last()
+    case["reading"]["answer"]["set_aside"] = _set_aside(*first_sets_aside)
+    first = account(case)
+    if answer == "recovered":
+        answer = recovered(case, last_text(case))
+    both = account(case, reask=reask_of(case, answer, named=named))
+    [unread] = both["rules"]["j"]["findings"]
+    assert unread["code"] == "reask-unread" and unread["problems"] == [code]
+    # The re-ask adds nothing, not even its set-asides; the page stands on its first reading.
+    assert both["entries"] == first["entries"]
+    assert both["units"] == first["units"]
+    assert not accounting_module.reask_stood(both)
+
+
+def test_a_re_ask_is_planned_only_from_a_first_readings_accounting():
+    case = missing_last()
+    both = account(case, reask=reask_of(case, recovered(case, last_text(case))))
+    for budget in (0, 1):
+        with pytest.raises(ContractError, match="only from a first reading's accounting"):
+            reask_plan(first_reading(case), both, shown(case), budget=budget, policy=POLICY)
+    assert plan(case)
+
+
+def test_what_a_re_ask_did_splits_its_named_ids_by_the_last_accounting():
+    case = missing_last()
+    named = plan(case)
+    ids = named_ids(named)
+    cleared = account(case, reask=reask_of(case, recovered(case, last_text(case))))
+    assert reask_outcome(named, cleared) == {
+        "named": ids,
+        "cleared": ids,
+        "set_aside": [],
+        "unread": [],
+        "duplicate": [],
+    }
+    aside = {"acts": [], "set_aside": _set_aside("A3", "B3", "L7-L9")}
+    assert reask_outcome(named, account(case, reask=reask_of(case, aside)))["set_aside"] == ids
+    malformed = account(case, reask=reask_of(case, None, parse_state="malformed"))
+    assert reask_outcome(named, malformed)["unread"] == ids
+    again = account(case, reask=reask_of(case, recovered(case, acts(case)[1]["text"])))
+    assert reask_outcome(named, again)["duplicate"] == [3]
+
+
+def _entries(*keys: tuple[int, int, int]) -> list[dict]:
+    return [{"reading_attempt": a, "reading_n": j, "n": n} for a, j, n in keys]
+
+
+def test_a_re_asked_page_publishes_exactly_the_entries_its_accounting_counts():
+    first, second = _entries((1, 1, 1)), _entries((2, 1, 2))
+    stood = {"answer_basis": "combined", "rules": {"j": {"findings": []}}}
+    unread = {"answer_basis": "combined", "rules": {"j": {"findings": [{"code": "reask-unread"}]}}}
+    assert reask_act_plans({**stood, "entries": first + second}, first, second, "p") == [
+        *first,
+        *second,
+    ]
+    assert reask_act_plans({**unread, "entries": first}, first, second, "p") == first
+    for accounting, reask in (
+        # It counts the re-ask's entry, but the re-ask gave no entry to publish.
+        ({**stood, "entries": first + second}, []),
+        # It counts nothing of the re-ask it says stood.
+        ({**stood, "entries": first}, second),
+        # It numbers the recovered entry otherwise than its plan.
+        ({**stood, "entries": first + _entries((2, 1, 3))}, second),
+        # It counts an entry of a re-ask that did not stand.
+        ({**unread, "entries": first + second}, second),
+    ):
+        with pytest.raises(FatalAccounting, match="counts other entries than its readings"):
+            reask_act_plans(accounting, first, reask, "p")
