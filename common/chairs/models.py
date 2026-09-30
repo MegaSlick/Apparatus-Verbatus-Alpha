@@ -25,6 +25,23 @@ def is_hf_revision(value: object) -> bool:
     )
 
 
+def is_plain_role(role: object) -> bool:
+    """A role names exactly one cache directory, so it is a single visible name.
+
+    Path separators would reach outside the cache root, and a leading dot would
+    name `.`, `..` or the registry's own hidden `.{role}.candidate-` and
+    `.{role}.prior-` work directories.
+    """
+
+    return (
+        isinstance(role, str)
+        and bool(role)
+        and "/" not in role
+        and "\\" not in role
+        and not role.startswith(".")
+    )
+
+
 def is_witness_role(role: object) -> bool:
     """Apply the single naming rule used to classify Attestator chairs."""
 

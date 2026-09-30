@@ -14,6 +14,7 @@ in code.
 | `model_store.py` | validation of the host's durable model store, its derived seven-chair inventory, licence snapshots, and carried DAI prompts; versions canonical download records immutably and publishes derived inventories and promoted manifests once, never overwriting evidence |
 | `registry.py` | resolution and verification against the filesystem and Hugging Face |
 | `receipts.py` | what a serving receipt must carry before it is one |
+| `filesystem.py` | the bounded control-file read and the APFS name key (case and Unicode normalization folded) the other modules share |
 | `errors.py` | the closed refusal taxonomy — one member per door "Resolution refuses; it never substitutes" names |
 | `protocol.py` | the caller-visible shape, and the contract exerciser that names the clause a broken implementation breaks |
 
@@ -106,7 +107,8 @@ Each configured Hugging Face role is bound to its exact repository, revision and
 manifest when its stage fills its cache. `StoreRoleFetcher` copies these sources
 into separate role caches, and `ChairRegistry` verifies and publishes each cache
 with its own identity descriptor. When making room, the registry may remove a
-configured role's unused cache and abandoned `.<role>.candidate-*` directories;
+configured role's unused cache and abandoned `.<role>.candidate-*` and
+`.<role>.prior-*` directories;
 it leaves all other entries under `cache_root` alone. Cache preparation and
 preflight do not fall back to network downloads when retained bytes are missing
 or invalid.

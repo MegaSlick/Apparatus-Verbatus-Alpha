@@ -20,7 +20,6 @@ import shutil
 import stat
 import tempfile
 import time
-import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -31,6 +30,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.durability import atomic_create, atomic_replace
 
 from .errors import DigestMismatchRefusal
+from .filesystem import apfs_alias, apfs_key, read_limited_bytes
 from .manifests import (
     build_manifest,
     read_manifest,
@@ -444,9 +444,8 @@ def _refuse_staged_symlinks(snapshot: Path, artifact: str) -> None:
         for name in [*directories, *filenames]:
             candidate = parent / name
             relative = candidate.relative_to(snapshot).as_posix()
-            folded = unicodedata.normalize("NFD", relative).casefold()
-            previous = identities.setdefault(folded, relative)
-            if previous != relative:
+            previous = apfs_alias(identities, relative)
+            if previous is not None:
                 raise DigestMismatchRefusal(
                     artifact,
                     "the fetched revision carries paths that collide on default APFS: "
@@ -539,7 +538,7 @@ def _indexed_shards(snapshot: Path, artifact: str) -> list[str]:
             continue
         try:
             index = json.loads(
-                _read_limited_bytes(
+                read_limited_bytes(
                     path,
                     MAX_SHARD_INDEX_BYTES,
                     artifact,
@@ -775,13 +774,13 @@ def _licence_observation_text(requirement: RequiredArtifact) -> str:
 def _write_licence_observation(path: Path, text: str, artifact: str) -> None:
     """Create synthetic evidence once, never overwriting repository bytes or a concurrent writer's."""
 
-    folded_name = unicodedata.normalize("NFD", path.name).casefold()
+    folded_name = apfs_key(path.name)
     try:
         collision = next(
             (
                 candidate.name
                 for candidate in path.parent.iterdir()
-                if unicodedata.normalize("NFD", candidate.name).casefold() == folded_name
+                if apfs_key(candidate.name) == folded_name
             ),
             None,
         )
@@ -841,34 +840,6 @@ def _materialization_receipt(entry: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
-def _read_limited_bytes(path: Path, limit: int, chair: str, label: str) -> bytes:
-    """Read one small control artifact without allowing boundary amplification."""
-
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
-        )
-        status = os.fstat(descriptor)
-        if not stat.S_ISREG(status.st_mode):
-            raise DigestMismatchRefusal(chair, f"{label} must be a regular file")
-        with os.fdopen(descriptor, "rb") as handle:
-            descriptor = None
-            payload = handle.read(limit + 1)
-    except OSError as error:
-        raise DigestMismatchRefusal(chair, f"cannot read {label}: {error}") from error
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-    if len(payload) > limit:
-        raise DigestMismatchRefusal(
-            chair,
-            f"{label} exceeds the {limit}-byte control-artifact limit",
-        )
-    return payload
-
-
 def load_download_record(store_root: str | Path) -> dict[str, Any]:
     """Load the canonical active record and prove its immutable version exists."""
 
@@ -882,7 +853,7 @@ def _load_custodied(root: Path, validate: Callable[[Mapping[str, Any]], None]) -
             "model-store", "download_record.json must be a regular in-store active copy"
         )
     try:
-        raw_bytes = _read_limited_bytes(
+        raw_bytes = read_limited_bytes(
             active,
             MAX_DOWNLOAD_RECORD_BYTES,
             "model-store",
@@ -908,7 +879,7 @@ def _load_custodied(root: Path, validate: Callable[[Mapping[str, Any]], None]) -
             "model-store", "immutable download record version must be a regular in-store file"
         )
     try:
-        archived_bytes = _read_limited_bytes(
+        archived_bytes = read_limited_bytes(
             archive,
             MAX_DOWNLOAD_RECORD_BYTES,
             "model-store",

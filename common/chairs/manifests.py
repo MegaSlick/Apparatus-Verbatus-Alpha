@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import stat
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -13,6 +12,7 @@ from typing import Any, Iterable
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 
 from .errors import DigestMismatchRefusal
+from .filesystem import read_limited_bytes
 from .models import ChairIdentity, DigestManifest, ManifestRow, VerifiedSnapshot, is_sha256
 
 # A manifest is a small control artifact, bounded like `model_store`'s shard index.
@@ -73,7 +73,7 @@ def read_manifest(path: str | Path, *, expected_digest: str, chair: str) -> Dige
 
     source = Path(path)
     try:
-        data = _read_limited_manifest_bytes(source, chair)
+        data = read_limited_bytes(source, MAX_MANIFEST_BYTES, chair, f"manifest {source}")
         raw = json.loads(data)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise DigestMismatchRefusal(chair, f"cannot read manifest {source}: {error}") from error
@@ -91,39 +91,6 @@ def read_manifest(path: str | Path, *, expected_digest: str, chair: str) -> Dige
             f"manifest differs: expected digest {expected_digest}, got {actual}",
         )
     return manifest
-
-
-def _read_limited_manifest_bytes(path: Path, chair: str) -> bytes:
-    """Read one manifest control artifact without allowing boundary amplification.
-
-    Mirrors `model_store._read_limited_bytes`: a regular-file check plus
-    `O_NOFOLLOW` refuses a symlink-redirected read, and reading `limit + 1`
-    bytes detects an oversized file without loading all of it. Duplicated
-    rather than imported: `model_store.py` already imports this module, so the
-    reverse import would close a cycle.
-    """
-
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
-        )
-        status = os.fstat(descriptor)
-        if not stat.S_ISREG(status.st_mode):
-            raise DigestMismatchRefusal(chair, f"manifest {path} must be a regular file")
-        with os.fdopen(descriptor, "rb") as handle:
-            descriptor = None
-            payload = handle.read(MAX_MANIFEST_BYTES + 1)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-    if len(payload) > MAX_MANIFEST_BYTES:
-        raise DigestMismatchRefusal(
-            chair,
-            f"manifest {path} exceeds the {MAX_MANIFEST_BYTES}-byte control-artifact limit",
-        )
-    return payload
 
 
 def verify_snapshot(

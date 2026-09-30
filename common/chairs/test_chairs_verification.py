@@ -790,8 +790,8 @@ def test_a_validated_file_swapped_for_a_fifo_is_refused_instead_of_hanging_the_b
     still owns the per-call cache between then and the copy. Opening the name
     again without ``O_NONBLOCK`` blocks forever on a FIFO -- inside a pod boot,
     with the GPU billing, no journal step recorded and no reason printed -- so
-    the identity check below it never runs. ``_read_limited_bytes`` already pays
-    for this flag; this call did not.
+    the identity check below it never runs, so this open carries ``O_NONBLOCK``
+    as ``read_limited_bytes`` does.
 
     The refusal is asserted from a worker thread with a deadline: a regression
     here is a hang, and a hang must surface as a failed test rather than a suite

@@ -10,7 +10,6 @@ import os
 import shutil
 import stat
 import tempfile
-import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
@@ -32,6 +31,7 @@ from .errors import (
     ServingRecipeRefusal,
     UnresolvedChairRefusal,
 )
+from .filesystem import apfs_alias
 from .manifests import inspect_snapshot_for_repair, read_manifest, verify_snapshot
 from .models import (
     AbsentChair,
@@ -41,6 +41,7 @@ from .models import (
     ServingDetails,
     ServingReceipt,
     VerifiedSnapshot,
+    is_plain_role,
 )
 from .receipts import build_receipt
 
@@ -212,9 +213,8 @@ def _validated_materialization_files(
         for name in [*directories, *filenames]:
             candidate = parent / name
             relative = candidate.relative_to(source).as_posix()
-            folded = unicodedata.normalize("NFD", relative).casefold()
-            previous = identities.setdefault(folded, relative)
-            if previous != relative:
+            previous = apfs_alias(identities, relative)
+            if previous is not None:
                 raise DigestMismatchRefusal(
                     repo,
                     "the pinned repository carries paths that collide on default APFS: "
@@ -465,7 +465,7 @@ class ChairRegistry:
             raise UnresolvedChairRefusal(
                 identity.role, "no cache_root was supplied for Hugging Face chair"
             )
-        if "/" in identity.role or "\\" in identity.role or identity.role in ("", ".", ".."):
+        if not is_plain_role(identity.role):
             raise CacheRevisionRefusal(identity.role, "role is unsafe as a cache path")
         # The cache writes its descriptor inside the snapshot root, and would
         # overwrite a pinned file of that name after verification passed.
@@ -545,7 +545,8 @@ class ChairRegistry:
                 if other.name in keep:
                     continue
                 if other.name not in configured_roles and not any(
-                    other.name.startswith(f".{role}.candidate-") for role in configured_roles
+                    other.name.startswith((f".{role}.candidate-", f".{role}.prior-"))
+                    for role in configured_roles
                 ):
                     continue
                 if other.is_symlink():

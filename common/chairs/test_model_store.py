@@ -518,19 +518,16 @@ def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_pat
             (destination / "LICENSE").write_text("terms", encoding="utf-8")
             (destination / "model.safetensors.index.json").symlink_to(outside_index)
 
-    # `_indexed_shards` does not use `Path.read_text`; it reads through
-    # `_read_limited_bytes`. Guarding the wrong call left the claim in this
-    # test's name -- that the external index was never read -- asserted nowhere,
-    # so a change that read the symlinked index before the symlink check would
-    # have passed here.
-    real_read_limited_bytes = model_store._read_limited_bytes
+    # `_indexed_shards` reads through `read_limited_bytes`, so guarding that call
+    # is what proves the symlinked index is never read.
+    real_read_limited_bytes = model_store.read_limited_bytes
 
     def refuse_external_read(path, *args, **kwargs):
         if Path(path).resolve() == outside_index:
             raise AssertionError("the external shard index was read")
         return real_read_limited_bytes(path, *args, **kwargs)
 
-    monkeypatch.setattr(model_store, "_read_limited_bytes", refuse_external_read)
+    monkeypatch.setattr(model_store, "read_limited_bytes", refuse_external_read)
 
     with pytest.raises(DigestMismatchRefusal, match="symlink"):
         materialize_real_roster(tmp_path, _SymlinkedShardIndex())

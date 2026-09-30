@@ -12,11 +12,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from .errors import ConfigurationRefusal
+from .filesystem import apfs_key
 from .models import (
     AbsentChair,
     ChairIdentity,
     ModelsConfig,
     is_hf_revision,
+    is_plain_role,
     is_sha256,
     is_witness_role,
 )
@@ -294,8 +296,7 @@ def _refuse_case_variant_collisions(
 def _refuse_case_variants(rows: Any, label: str) -> None:
     first_by_folded: dict[str, tuple[str, str]] = {}
     for role, spelling in rows:
-        folded = spelling.casefold()
-        first = first_by_folded.setdefault(folded, (role, spelling))
+        first = first_by_folded.setdefault(apfs_key(spelling), (role, spelling))
         if first[1] != spelling:
             raise ConfigurationRefusal(
                 "models.toml",
@@ -323,9 +324,11 @@ def _role(value: Any) -> str:
         raise ConfigurationRefusal(
             "models.toml", f"role {value!r} is blank or has surrounding whitespace"
         )
-    if "/" in value or "\\" in value or ".." in value.split("_"):
+    if not is_plain_role(value):
         raise ConfigurationRefusal(
-            "models.toml", f"role {value!r} is not a plain configuration key"
+            "models.toml",
+            f"role {value!r} is not a plain configuration key: it holds a path "
+            "separator or starts with '.'",
         )
     return value
 
