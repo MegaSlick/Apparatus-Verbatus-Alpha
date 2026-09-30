@@ -120,7 +120,6 @@ def framed_pass(tmp_path_factory):
         yield designator, context, held
 
 
-@pytest.mark.act_path
 def test_all_withheld_ink_uses_readable_fallbacks_without_claiming_no_ink(frame_only_pass):
     """The full stage preserves the cause, crops, and exact pixel accounting."""
     _designator, context, held = frame_only_pass

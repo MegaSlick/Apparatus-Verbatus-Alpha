@@ -389,7 +389,6 @@ def _live_setup(tmp_path: Path, *, fixture_surya: bool = False):
     return root, catalogue, endpoint, factory
 
 
-@pytest.mark.act_path
 def test_the_live_pass_runs_surya_only_after_the_structure_chair_has_answered(
     tmp_path, monkeypatch
 ):
@@ -479,7 +478,6 @@ def _live_run(tmp_path, monkeypatch, surya):
     return root, catalogue
 
 
-@pytest.mark.act_path
 def test_a_raster_fallback_is_recorded_on_the_page_and_on_every_block(tmp_path, monkeypatch):
     reason = "3 detections exceed the order head's limit of 2"
     surya = InProcessSurya(
@@ -508,7 +506,6 @@ def test_a_raster_fallback_is_recorded_on_the_page_and_on_every_block(tmp_path, 
             assert blocks[subject]["reading_order"] == page["reading_order"]
 
 
-@pytest.mark.act_path
 def test_a_resume_on_another_cpu_instruction_set_is_refused(tmp_path, monkeypatch):
     root, catalogue = _live_run(tmp_path, monkeypatch, in_process_surya())
     args = stage_parser("surya detection test").parse_args(
@@ -524,7 +521,6 @@ def test_a_resume_on_another_cpu_instruction_set_is_refused(tmp_path, monkeypatc
         surya_detection.publish_surya_detections(context, pages, live=True, runner=other)
 
 
-@pytest.mark.act_path
 def test_the_live_pass_refuses_an_environment_that_is_not_ready_before_any_chair_is_asked(
     tmp_path, monkeypatch
 ):

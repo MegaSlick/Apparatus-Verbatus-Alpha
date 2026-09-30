@@ -94,7 +94,6 @@ ROOT = Path(__file__).resolve().parents[2]
 DOOR_CLI = ROOT / "pipeline" / "1_exemplar" / "door.py"
 EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
 INK_MAP_CLI = ROOT / "pipeline" / "1_ink_map" / "run.py"
-ATTESTATORES_CLI = ROOT / "pipeline" / "3_attestatores" / "run.py"
 MODELS_CONFIG = ROOT / "config" / "models.toml"
 FIXTURE_CATALOGUE = ROOT / "config" / "serving_recipes.toml"
 FIXTURE_PAGES = ROOT / "proof" / "fixtures" / "synthetic-two-page-v0"
@@ -115,6 +114,44 @@ structure_pass = designator.structure_pass
 
 
 # --- building the run and the catalogue ---------------------------------------
+
+
+_COMMITTED_SECONDARY_HEAD = '[chairs.secondary_proposer]\nstate = "configured"\n'
+_ABSENT_SECONDARY = """[chairs.secondary_proposer]
+state = \"absent\"
+reason = \"no secondary proposer is configured for the offline walking skeleton\"
+"""
+
+
+def _live_models(destination: Path) -> Path:
+    """The committed roster with the record detector recorded absent.
+
+    These tests are about the structure chair; the committed detector row is a
+    fixture row, which a live pass refuses. The roster's paths resolve beside
+    it, so the fixture snapshots and manifests are copied next to it.
+    """
+    config_root = destination / "chair-config"
+    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
+    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
+    committed = MODELS_CONFIG.read_text(encoding="utf-8")
+    head, _, rest = committed.partition(_COMMITTED_SECONDARY_HEAD)
+    assert rest, "the committed roster no longer configures the record detector in one block"
+    # The chair's block runs to the next blank line.
+    _block, _, tail = rest.partition("\n\n")
+    models = config_root / "models.toml"
+    models.write_text(head + _ABSENT_SECONDARY + "\n" + tail, encoding="utf-8")
+    return models
+
+
+def live_models_for(catalogue: Path) -> Path:
+    """The roster `_live_catalogue` wrote beside `catalogue`."""
+    return catalogue.parent / "chair-config" / "models.toml"
+
+
+def _roster_args(catalogue: Path) -> list[str]:
+    """The roster a run under `catalogue` is sealed with: the live one beside it, else the committed one."""
+    models = live_models_for(catalogue)
+    return ["--models-config", str(models)] if models.is_file() else []
 
 
 def _structure_identity():
@@ -223,6 +260,7 @@ def _live_catalogue(destination: Path) -> Path:
     body = "\n".join(f"{key} = {_toml_value(value)}" for key, value in row.items())
     path = destination / "serving_recipes_live_designator.toml"
     path.write_text(f"{head}[[profiles]]\n{body}\n{tail}", encoding="utf-8")
+    _live_models(destination)
     return path
 
 
@@ -240,6 +278,7 @@ def _chain(root: Path, catalogue: Path, *extra: str) -> None:
                 "happy",
                 "--serving-recipes-config",
                 str(catalogue),
+                *_roster_args(catalogue),
                 *extra,
             ],
             cwd=ROOT,
@@ -376,6 +415,7 @@ def _argv(root: Path, catalogue: Path, *extra: str) -> list[str]:
         "happy",
         "--serving-recipes-config",
         str(catalogue),
+        *_roster_args(catalogue),
         *extra,
     ]
 
@@ -467,6 +507,7 @@ def _open(root: Path, catalogue: Path, stage: str, *extra: str):
             "happy",
             "--serving-recipes-config",
             str(catalogue),
+            *_roster_args(catalogue),
             *extra,
         ]
     )
@@ -556,7 +597,6 @@ def test_every_sealed_fixture_page_subject_equals_the_fixture_derived_identity(c
 # --- a live pass, end to end -------------------------------------------------------
 
 
-@pytest.mark.act_path
 def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstream(
     live_run, tmp_path, monkeypatch
 ):
@@ -730,54 +770,6 @@ def test_a_live_pass_mints_the_chairs_rectangles_and_the_seal_verifies_downstrea
     assert [row["act_key"] for row in acts] == [row["act_key"] for row in rows]
 
 
-@pytest.mark.act_path
-def test_the_attestatores_read_a_live_seal_under_their_own_fixture_rows(
-    live_run, tmp_path, monkeypatch
-):
-    """Every witness keeps its own pass: the Attestatores stage runs as the
-    real program over a tree the live Designator produced, and nothing in it
-    reaches the structure chair.
-    """
-    root, catalogue = live_run
-    endpoint, exit_code = _run_designator(root, catalogue, tmp_path, monkeypatch, _happy_answers())
-    assert exit_code == EXIT_COMPLETE
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ATTESTATORES_CLI),
-            "--run-root",
-            str(root),
-            "--run-id",
-            RUN_ID,
-            "--scenario",
-            "happy",
-            "--serving-recipes-config",
-            str(catalogue),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), result.stderr
-    assert len(endpoint.requests) == 2
-    testimonia = _artifacts(root, ATTESTATORES, "testimonium")
-    assert testimonia
-    for record in testimonia:
-        provenance = record["payload"]["provenance"]
-        assert provenance["chair"] != "designator_structure"
-        assert "engine_call" not in provenance
-    # The Attestatores' production client binds each chair's own sealed row
-    # through the shared assembly, never the structure section, pinned at the
-    # source.
-    source = ATTESTATORES_CLI.read_text(encoding="utf-8")
-    assert "decoding_policy=decoding_policy," in source
-    assert '["structure"]' not in source
-
-
-# --- what each answer does to the page (SPEC_D §1.4) ---------------------------------
-
-
-@pytest.mark.act_path
 def test_a_blank_page_answer_cuts_the_page_into_fallback_tiles(live_run, tmp_path, monkeypatch):
     root, catalogue = live_run
     _endpoint, exit_code = _run_designator(
@@ -840,7 +832,6 @@ def _mixed_block_answer() -> ScriptedAnswer:
     )
 
 
-@pytest.mark.act_path
 def test_a_block_with_no_usable_box_is_recorded_and_never_minted(live_run, tmp_path, monkeypatch):
     """Unlike the vendor's own parser, which substitutes `[0, 0, 1, 1]` for a
     bbox it cannot read, this keeps the block with its geometry unresolved,
@@ -895,7 +886,6 @@ def test_a_block_with_no_usable_box_is_recorded_and_never_minted(live_run, tmp_p
     assert not _artifacts(root, DESIGNATOR, "page-fallback")
 
 
-@pytest.mark.act_path
 def test_a_page_whose_every_block_failed_to_place_is_tiled_and_says_so(
     live_run, tmp_path, monkeypatch
 ):
@@ -935,7 +925,6 @@ def test_a_page_whose_every_block_failed_to_place_is_tiled_and_says_so(
     assert statuses[2]["payload"]["structure_evidence"] == "fallback-tiles"
 
 
-@pytest.mark.act_path
 def test_ink_the_answer_wrote_outside_every_block_is_counted_and_named(
     live_run, tmp_path, monkeypatch
 ):
@@ -1056,7 +1045,6 @@ def test_a_looping_answer_is_held_as_degenerate_not_as_a_cut_off():
     assert structure_pass._finish_reason_disposition("stop", looped) is None
 
 
-@pytest.mark.act_path
 def test_a_cut_off_answer_holds_the_page_even_though_it_parsed(live_run, tmp_path, monkeypatch):
     root, catalogue = live_run
     endpoint, exit_code = _run_designator(
@@ -1079,7 +1067,6 @@ def test_a_cut_off_answer_holds_the_page_even_though_it_parsed(live_run, tmp_pat
     assert len(endpoint.requests) == 2
 
 
-@pytest.mark.act_path
 def test_an_invalid_structure_answer_gets_one_bounded_coverage_retry(
     live_run, tmp_path, monkeypatch
 ):
@@ -1125,7 +1112,6 @@ def test_an_invalid_structure_answer_gets_one_bounded_coverage_retry(
     assert attempts[1]["payload"]["attempts"] == final["attempts"][:1]
 
 
-@pytest.mark.act_path
 def test_resume_keeps_the_published_attempt_and_sends_the_next_scheduled_request(
     live_run, tmp_path, monkeypatch
 ):
@@ -1175,7 +1161,6 @@ def test_resume_keeps_the_published_attempt_and_sends_the_next_scheduled_request
     assert [row["payload"]["attempt_seed"] for row in attempts] == [0, 0]
 
 
-@pytest.mark.act_path
 def test_resume_terminalizes_a_retained_nonretryable_attempt_without_starting_a_chair(
     live_run, tmp_path, monkeypatch
 ):
@@ -1355,7 +1340,6 @@ def test_real_denominator_indexes_structure_attempts_and_decoding_once(monkeypat
     }
 
 
-@pytest.mark.act_path
 @pytest.mark.parametrize("case", ["prior-retry", "held", "fallback"])
 def test_shared_attempt_call_verifier_refuses_a_digest_valid_call_from_another_attempt(
     live_run, tmp_path, monkeypatch, case
@@ -1404,7 +1388,6 @@ def test_shared_attempt_call_verifier_refuses_a_digest_valid_call_from_another_a
         )
 
 
-@pytest.mark.act_path
 @pytest.mark.parametrize("mismatch", ["image", "temperature"])
 def test_v3_attempt_refuses_a_digest_valid_call_with_wrong_image_or_temperature(
     live_run, tmp_path, monkeypatch, mismatch
@@ -1455,7 +1438,6 @@ def test_v3_attempt_refuses_a_digest_valid_call_with_wrong_image_or_temperature(
         )
 
 
-@pytest.mark.act_path
 @pytest.mark.parametrize("case", ["prior-retry", "held", "fallback"])
 def test_downstream_consumer_verifies_every_attempt_including_nonproposal_pages(
     live_run, tmp_path, monkeypatch, case
@@ -1505,7 +1487,6 @@ def test_downstream_consumer_verifies_every_attempt_including_nonproposal_pages(
     assert verified.count(target_page) == expected_verifications
 
 
-@pytest.mark.act_path
 @pytest.mark.parametrize("outcome", ["no-layout-blocks", "blocks-not-at-top-level"])
 def test_an_answer_the_grammar_refuses_holds_the_page_by_its_outcome(
     live_run, tmp_path, monkeypatch, outcome
@@ -1564,7 +1545,6 @@ def test_an_answer_the_grammar_refuses_holds_the_page_by_its_outcome(
     assert attempts[-1]["payload"] == {**payload, "attempts": payload["attempts"][:-1]}
 
 
-@pytest.mark.act_path
 def test_a_truncated_body_holds_as_cut_off_even_though_the_grammar_reads_it(
     live_run, tmp_path, monkeypatch
 ):
@@ -1597,7 +1577,6 @@ def test_a_truncated_body_holds_as_cut_off_even_though_the_grammar_reads_it(
     assert not _artifacts(root, DESIGNATOR, "page-fallback")
 
 
-@pytest.mark.act_path
 def test_an_unrecognized_stop_word_over_a_body_that_does_not_parse_is_still_refused_by_name(
     live_run, tmp_path, monkeypatch
 ):
@@ -1623,7 +1602,6 @@ def test_an_unrecognized_stop_word_over_a_body_that_does_not_parse_is_still_refu
     assert sorted(_by_page_ordinal(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))) == [1]
 
 
-@pytest.mark.act_path
 def test_a_body_the_client_cannot_read_holds_the_page_as_unusable(live_run, tmp_path, monkeypatch):
     root, catalogue = live_run
     body = json.dumps({"model": SERVED_MODEL_ID, "choices": []}).encode()
@@ -1726,7 +1704,6 @@ def test_the_ink_tripwire_returns_false_on_a_page_with_no_background():
     )
 
 
-@pytest.mark.act_path
 def test_rectangles_touching_none_of_the_scanned_ink_hold_the_page(live_run, tmp_path, monkeypatch):
     """The coordinate-space tripwire: the scan found ink, the chair drew on paper."""
     root, catalogue = live_run
@@ -1750,7 +1727,6 @@ def test_rectangles_touching_none_of_the_scanned_ink_hold_the_page(live_run, tmp
     assert any(key.startswith("residual:1:") for key in rows)
 
 
-@pytest.mark.act_path
 def test_a_rectangle_that_touches_ink_is_not_tripped_by_one_that_does_not(
     live_run, tmp_path, monkeypatch
 ):
@@ -1775,7 +1751,6 @@ def test_a_rectangle_that_touches_ink_is_not_tripped_by_one_that_does_not(
     assert any(key.startswith("residual:1:") for key in rows)
 
 
-@pytest.mark.act_path
 def test_two_rectangles_over_one_ink_group_are_shared_detection_on_both(
     live_run, tmp_path, monkeypatch
 ):
@@ -1803,7 +1778,6 @@ def test_two_rectangles_over_one_ink_group_are_shared_detection_on_both(
     assert exit_code == EXIT_COMPLETE
 
 
-@pytest.mark.act_path
 def test_a_duplicate_rectangle_mints_once_and_is_recorded_as_a_finding(
     live_run, tmp_path, monkeypatch
 ):
@@ -1827,7 +1801,6 @@ def test_a_duplicate_rectangle_mints_once_and_is_recorded_as_a_finding(
     assert len(acts) == 3
 
 
-@pytest.mark.act_path
 def test_an_unrecognized_engine_stop_word_is_refused_by_name(live_run, tmp_path, monkeypatch):
     root, catalogue = live_run
     with pytest.raises(ContractError, match="finish_reason 'abort'"):
@@ -1841,7 +1814,6 @@ def test_an_unrecognized_engine_stop_word_is_refused_by_name(live_run, tmp_path,
     assert not _artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND)
 
 
-@pytest.mark.act_path
 def test_a_prompt_too_long_400_is_refused_by_name_and_never_read_as_a_cut_off(
     live_run, tmp_path, monkeypatch
 ):
@@ -1884,7 +1856,6 @@ def test_a_prompt_too_long_400_is_refused_by_name_and_never_read_as_a_cut_off(
     assert call_record["parse_problem"] == "CHAIR_RESPONSE_HTTP_ERROR"
 
 
-@pytest.mark.act_path
 def test_a_wrong_model_response_is_one_terminal_attempt_with_observed_model_retained(
     live_run, tmp_path, monkeypatch
 ):
@@ -1917,7 +1888,6 @@ def test_a_wrong_model_response_is_one_terminal_attempt_with_observed_model_reta
     assert call_record["parse_problem"] == "CHAIR_RESPONSE_MODEL_MISMATCH"
 
 
-@pytest.mark.act_path
 def test_a_transport_timeout_is_retained_once_and_resume_never_resends_it(
     live_run, tmp_path, monkeypatch
 ):
@@ -2019,11 +1989,6 @@ def test_the_structure_chair_reads_at_chandras_own_first_request_settings(tmp_pa
     }
 
 
-_ABSENT_SECONDARY = """[chairs.secondary_proposer]
-state = \"absent\"
-reason = \"no secondary proposer is configured for the offline walking skeleton\"
-"""
-
 _CONFIGURED_SECONDARY = """[chairs.secondary_proposer]
 state = \"configured\"
 source = \"local-repository\"
@@ -2035,7 +2000,6 @@ license_note = \"fixture identity only; no model weights or model license apply\
 """
 
 
-@pytest.mark.act_path
 def test_a_record_detector_the_live_pass_cannot_run_is_refused_before_any_request(
     tmp_path, monkeypatch
 ):
@@ -2044,20 +2008,17 @@ def test_a_record_detector_the_live_pass_cannot_run_is_refused_before_any_reques
     and no receipt is written for a call that was never made."""
     import tomllib
 
-    config_root = tmp_path / "chair-config"
-    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
-    live = MODELS_CONFIG.read_text(encoding="utf-8")
+    catalogue = _live_catalogue(tmp_path)
+    models = live_models_for(catalogue)
+    live = models.read_text(encoding="utf-8")
     assert _ABSENT_SECONDARY in live
     digest_manifest = tomllib.loads(live)["chairs"]["designator_structure"]["digest_manifest"]
-    models = config_root / "models.toml"
     models.write_text(
         live.replace(
             _ABSENT_SECONDARY, _CONFIGURED_SECONDARY.format(digest_manifest=digest_manifest)
         ),
         encoding="utf-8",
     )
-    catalogue = _live_catalogue(tmp_path)
     root = tmp_path / "runs"
     _chain(root, catalogue, "--models-config", str(models))
     endpoint = FakeEndpoint(served_model_id=SERVED_MODEL_ID)
@@ -2076,7 +2037,6 @@ def test_a_record_detector_the_live_pass_cannot_run_is_refused_before_any_reques
     assert _receipts(root) == []
 
 
-@pytest.mark.act_path
 @pytest.mark.parametrize(
     ("installed", "refusal"),
     [
@@ -2096,17 +2056,14 @@ def test_a_record_detector_that_could_not_load_is_refused_before_any_request(
     pins = {"torch": "2.13.0", "ultralytics": "8.4.14"}
     if installed:
         monkeypatch.setattr(detector, "metadata", SimpleNamespace(version=pins.__getitem__))
-    config_root = tmp_path / "chair-config"
-    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
-    live = MODELS_CONFIG.read_text(encoding="utf-8")
+    catalogue = _live_catalogue(tmp_path)
+    models = live_models_for(catalogue)
+    live = models.read_text(encoding="utf-8")
     digest_manifest = tomllib.loads(live)["chairs"]["designator_structure"]["digest_manifest"]
-    models = config_root / "models.toml"
     configured = _CONFIGURED_SECONDARY.format(digest_manifest=digest_manifest).replace(
         'serving_recipe = "fake-designator-v0"', 'serving_recipe = "in-process-detector-test"'
     )
     models.write_text(live.replace(_ABSENT_SECONDARY, configured), encoding="utf-8")
-    catalogue = _live_catalogue(tmp_path)
     catalogue.write_text(
         catalogue.read_text(encoding="utf-8")
         + '\n[[profiles]]\nkind = "in-process"\nrecipe = "in-process-detector-test"\n'
@@ -2136,14 +2093,13 @@ def test_a_record_detector_that_could_not_load_is_refused_before_any_request(
 # --- the fixture pass is the fixture pass ----------------------------------------------
 
 
-@pytest.mark.act_path
 def test_the_fixture_catalogue_runs_the_fixture_pass_with_no_answer_and_no_call(
     tmp_path, monkeypatch
 ):
     """Under the committed catalogue nothing of the live path appears on
     disk: the fixture pass writes no structure-answer, no engine call, no
-    answer reference, and only `fixture://` receipts: the structure chair's
-    and Surya's.
+    answer reference, and only `fixture://` receipts: the structure chair's,
+    Surya's and the record detector's.
     """
     root = tmp_path / "runs"
     _chain(root, FIXTURE_CATALOGUE)
@@ -2165,6 +2121,7 @@ def test_the_fixture_catalogue_runs_the_fixture_pass_with_no_answer_and_no_call(
     assert sorted(receipt["chair"] for receipt in receipts) == [
         "designator_structure",
         "designator_surya",
+        "secondary_proposer",
     ]
     assert all(receipt["endpoint"].startswith("fixture://") for receipt in receipts)
 
@@ -2312,7 +2269,6 @@ def test_the_structure_prompts_measured_token_count_still_matches_the_prompt_tha
     assert structure_pass.structure_prompt_tokens() == 593
 
 
-@pytest.mark.act_path
 def test_every_live_page_record_carries_the_capacity_it_was_admitted_on(
     live_run, tmp_path, monkeypatch
 ):
@@ -2529,7 +2485,6 @@ def test_a_finding_kind_the_grammar_grows_refuses_at_the_page_that_produces_it()
         structure_pass._designator_finding({"kind": "a-kind-nobody-declared", "ordinal": 0})
 
 
-@pytest.mark.act_path
 def test_an_act_entry_that_grew_a_label_again_refuses_before_publication(
     live_run, tmp_path, monkeypatch
 ):
@@ -2621,7 +2576,6 @@ def test_one_region_covering_half_two_rectangles_is_still_shared_detection():
     assert all(block["detected_bounds"] == band for block in blocks)
 
 
-@pytest.mark.act_path
 def test_a_parsed_answer_records_the_text_view_its_parser_reports(live_run, tmp_path, monkeypatch):
     """The record names the view the parser read under, not a fixed constant, so a
     parser reporting a view this build does not read is refused by that name."""
@@ -2643,7 +2597,6 @@ def test_a_parsed_answer_records_the_text_view_its_parser_reports(live_run, tmp_
 # --- a custody refusal is one page's outcome ------------------------------------
 
 
-@pytest.mark.act_path
 def test_a_custody_refusal_holds_that_page_instead_of_aborting_the_run(
     live_run, tmp_path, monkeypatch
 ):

@@ -32,6 +32,7 @@ from test_structure_pass import (
     _run_designator,
     _seal,
     designator,
+    live_models_for,
 )
 
 from common.contracts.identities import artifact_id
@@ -89,7 +90,12 @@ def submitted(tmp_path_factory):
     def template(name: str, pages: dict[str, bytes]) -> Path:
         if name not in templates:
             templates[name] = _real_submission(
-                base / name, pages, "--serving-recipes-config", str(catalogue)
+                base / name,
+                pages,
+                "--serving-recipes-config",
+                str(catalogue),
+                "--models-config",
+                str(live_models_for(catalogue)),
             )
         return templates[name]
 
@@ -120,7 +126,6 @@ def _rows(root: Path) -> dict[str, dict]:
     return {row["act_key"]: row for row in _seal(root)["payload"]["expected_acts"]}
 
 
-@pytest.mark.act_path
 def test_an_undeclared_page_break_forms_one_candidate_and_both_acts_stay_proposed(
     live_run, tmp_path, monkeypatch
 ):
@@ -175,7 +180,6 @@ def test_an_undeclared_page_break_forms_one_candidate_and_both_acts_stay_propose
     assert not any("continuation-candidate" in path for path in seal_inputs)
 
 
-@pytest.mark.act_path
 def test_a_crossing_with_no_proposed_act_over_its_tail_is_still_recorded(
     live_run, tmp_path, monkeypatch
 ):
@@ -195,7 +199,6 @@ def test_a_crossing_with_no_proposed_act_over_its_tail_is_still_recorded(
     assert candidate["payload"]["acts_b"] == []
 
 
-@pytest.mark.act_path
 def test_every_act_tied_at_the_edge_is_named(submitted, tmp_path, monkeypatch):
     """Two columns share one scanned group at each edge; neither act is chosen."""
     root, catalogue = _live_run(
@@ -217,7 +220,6 @@ def test_every_act_tied_at_the_edge_is_named(submitted, tmp_path, monkeypatch):
     assert candidate["payload"]["acts_b"] == _named(rows, "proposal:2:0", "proposal:2:1")
 
 
-@pytest.mark.act_path
 def test_a_fallback_tiled_page_never_forms_a_candidate(live_run, tmp_path, monkeypatch):
     """Fallback tiles touch both edges by construction and would pair any two pages."""
     root, catalogue = live_run
@@ -228,7 +230,6 @@ def test_a_fallback_tiled_page_never_forms_a_candidate(live_run, tmp_path, monke
     assert _candidates(root) == []
 
 
-@pytest.mark.act_path
 def test_a_page_whose_scan_fell_back_to_tiles_never_forms_a_candidate(
     submitted, tmp_path, monkeypatch
 ):
@@ -248,7 +249,6 @@ def test_a_page_whose_scan_fell_back_to_tiles_never_forms_a_candidate(
     assert _candidates(root) == []
 
 
-@pytest.mark.act_path
 def test_a_resumed_pass_publishes_the_same_candidate_once(live_run, tmp_path, monkeypatch):
     root, catalogue = live_run
     answers = [_answer(HEAD_PAGE_ACTS), _answer(TAIL_PAGE_ACTS)]
@@ -294,7 +294,6 @@ def test_the_fixture_pass_records_an_undeclared_crossing(tmp_path, monkeypatch):
     assert candidate["payload"]["acts_b"] == []
 
 
-@pytest.mark.act_path
 def test_an_act_ending_one_pixel_short_of_its_neighbour_is_named_too(
     submitted, tmp_path, monkeypatch
 ):

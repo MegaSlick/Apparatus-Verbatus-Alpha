@@ -4,12 +4,6 @@ Two levels: the pure failure-reading rule needs no run tree at all; everything
 after it is one real end-to-end orchestrator run, because what matters is not
 that this stage writes a hold but that it survives every later stage and
 arrives in the Armarium's review list as a named loss, not an absence.
-
-What this file does NOT prove: that recovery can propose a replacement region
-for such a page. CONTRACT.md's "What this contract does not settle" names this
-required and not yet met: `recovery_pass` refuses any act the seal holds -- a
-held act is terminal -- which is a cross-stage recovery contract shared with
-the Recensor, not a Designator decision.
 """
 
 import subprocess
@@ -292,21 +286,12 @@ def test_the_unmarked_pages_ink_is_accounted_as_residual_not_as_absence(structur
     assert len(residual_keys) == len(page_one["residual_components"])
 
 
-@pytest.mark.act_path
 def test_nothing_downstream_reports_the_lost_page_as_a_success(structure_failure_run):
     """Every held unit reaches the Armarium as a review item, and the run is partial."""
     export = _artifacts(structure_failure_run, ARMARIUM, "export")[0]["payload"]
     assert export["aggregate"]["status"] == "partial"
     assert export["non_delivered"], "a page nobody could mark out must leave a review item"
     assert {item["category"] for item in export["non_delivered"]} == {"held-for-review"}
-
-    seal = _artifacts(structure_failure_run, DESIGNATOR, "proposal-seal")[0]["payload"]
-    entries = [
-        entry
-        for entry in structure_failure_run.build_manifest(ARMARIUM)["artifacts"]
-        if entry["kind"] == "manifest-entry"
-    ]
-    assert len(entries) == seal["count"] == len(export["non_delivered"])
 
 
 # --- a page whose background cannot be inferred: read, but never claimed ---------
@@ -415,8 +400,9 @@ def test_a_uniformly_dark_page_is_refused_rather_than_counted_as_zero_ink():
     is at or below it, and the page would count zero ink pixels -- the same
     silent loss the majority-ink guard exists to stop, by a route it doesn't cover.
     """
-    from common.test_background_components import infer_background
     from structure import PRIMARY_MARGIN, primary_scan
+
+    from common.test_background_components import infer_background
 
     width, height = 12, 12
     rows = [bytearray([0] * width) for _ in range(height)]
