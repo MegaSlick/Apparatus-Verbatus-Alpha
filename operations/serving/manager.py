@@ -1859,16 +1859,7 @@ def _active_chat_image_bytes(payload: Mapping[str, object], *, label: str) -> by
     The image rules live in :func:`chat_image_bytes_all`.
     """
 
-    try:
-        images = chat_image_bytes_all(payload, label=label)
-    except ServingConfigurationError as error:
-        # Reword a stray image_url refusal as this caller's single refusal.
-        if "outside a role=user content list" in str(error):
-            raise ServingConfigurationError(
-                f"{label} must contain exactly one active image_url "
-                "content block and no ignored image_url fields"
-            ) from error
-        raise
+    images = chat_image_bytes_all(payload, label=label)
     if len(images) != 1:
         raise ServingConfigurationError(
             f"{label} must contain exactly one active image_url content block and no ignored image_url fields"

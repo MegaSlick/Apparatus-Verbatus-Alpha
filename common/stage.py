@@ -1488,9 +1488,13 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     return parser
 
 
+# The declaration file under a run's --fixture-root.
+FIXTURE_DECLARATION = "skeleton_fixture.toml"
+
+
 def load_fixture(fixture_root: str) -> dict[str, Any]:
     """Read the declared fixture as data; a missing one is a failure, not an empty run."""
-    path = Path(fixture_root) / "skeleton_fixture.toml"
+    path = Path(fixture_root) / FIXTURE_DECLARATION
     if not path.exists():
         raise ContractError(
             f"no fixture declaration at {path}. The skeleton runs on declared "

@@ -284,6 +284,19 @@ def test_green_qualification_renders_marks_for_only_the_measured_tier(tmp_path: 
     )
 
 
+def test_a_parsed_catalogue_keeps_one_profile_per_row_in_file_order() -> None:
+    """Qualification pairs each typed profile with its raw row by position."""
+
+    shipped = Path(__file__).resolve().parents[2] / "config" / "serving_recipes.toml"
+    raw = tomllib.loads(shipped.read_text(encoding="utf-8"))
+
+    parsed = parse_serving_recipes(raw)
+
+    assert [(p.recipe, p.chair, p.tier) for p in parsed.profiles] == [
+        (row["recipe"], row["chair"], row["tier"]) for row in raw["profiles"]
+    ]
+
+
 def test_bootstrap_witness_evidence_is_accepted_by_the_qualifier(tmp_path: Path) -> None:
     """Exercise the real bootstrap producer shape through the offline verifier.
 

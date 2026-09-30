@@ -4619,7 +4619,10 @@ def test_fixture_request_refuses_an_image_hidden_outside_openai_chat_content(
     }
     handle = manager.start(chair, TIER)
 
-    with pytest.raises(ServingConfigurationError, match="active image_url content block"):
+    with pytest.raises(
+        ServingConfigurationError,
+        match="golden-page request has an image_url outside a role=user content list",
+    ):
         handle.request_fixture_image(
             "chat-completions", hidden_image_payload, fixture=fixture, sampling=SAMPLING
         )

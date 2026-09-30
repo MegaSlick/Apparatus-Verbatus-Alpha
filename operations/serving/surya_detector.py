@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from common.chairs.models import ChairIdentity, ServingDetails
+from common.stage import FIXTURE_DECLARATION
 
 from .config import SubprocessProfile, package_release
 from .errors import ServingConfigurationError, ServingError
@@ -84,9 +85,6 @@ _SURYA_RUN_FIELDS = {
     "weights",
 }
 _FIXTURE_RUN_FIELDS = {"engine", "declared_by"}
-# The declaration file under whichever --fixture-root the run read; the run's
-# config_digest seals the declaration's content itself.
-_FIXTURE_DECLARATION = "skeleton_fixture.toml"
 
 
 class SuryaOutputRefusal(ServingConfigurationError):
@@ -407,7 +405,8 @@ def fixture_surya_run(
     the runner's shape and checked like the runner's, so the fixture proves the
     same reader the real detector feeds.
     """
-    run_facts = {"engine": FIXTURE_ENGINE, "declared_by": _FIXTURE_DECLARATION}
+    # The run's config_digest seals the declaration's content itself.
+    run_facts = {"engine": FIXTURE_ENGINE, "declared_by": FIXTURE_DECLARATION}
     documents = _parsed(declared_page_documents(lines, blocks, pages, run_facts), pages)
     return SuryaRun(run_facts=run_facts, serving_details=details, pages=documents)
 
