@@ -75,7 +75,13 @@ def _relabel_page_two_pixels_as_page_one(records: list[dict]) -> tuple[str, dict
     for record in records:
         payload = record["payload"]
         by_chair.setdefault(payload["chair"], {})[payload["page_ordinal"]] = record
-    chair_records = next(rows for rows in by_chair.values() if {1, 2} <= set(rows))
+    # A chair shown one image per page, so the forged `presented` is the whole
+    # presentation rather than the first of several.
+    chair_records = next(
+        rows
+        for rows in by_chair.values()
+        if {1, 2} <= set(rows) and rows[1]["payload"].get("presentations") is None
+    )
     forged = copy.deepcopy(chair_records[1])
     forged["payload"]["presented"] = copy.deepcopy(chair_records[2]["payload"]["presented"])
     # The retained image path/digest, page id and transform all come from page
@@ -167,7 +173,6 @@ def test_page_health_joins_valid_transformed_presentations_to_exact_exemplar(
         ] + counts[chair]["truncated_null"] == len(page_sha256_by_ordinal)
 
 
-@pytest.mark.act_path
 def test_page_health_refuses_self_consistent_page_relabelled_to_another_ordinal(
     sealed_run: RunTree,
 ):
@@ -185,7 +190,6 @@ def test_page_health_refuses_self_consistent_page_relabelled_to_another_ordinal(
         )
 
 
-@pytest.mark.act_path
 def test_attachment_index_refuses_self_consistent_page_relabelled_to_another_ordinal(
     sealed_run: RunTree,
 ):
@@ -216,7 +220,6 @@ def sealed_run(tmp_path_factory) -> RunTree:
     return RunTree(run_root, "r")
 
 
-@pytest.mark.act_path
 def test_cli_scores_all_three_chairs_from_current_sealed_attachments_without_mutating_run(
     sealed_run: RunTree, tmp_path: Path
 ):
@@ -255,17 +258,20 @@ def test_cli_scores_all_three_chairs_from_current_sealed_attachments_without_mut
         assert total["references"] == len(reference["acts"])
         assert total["cer_units"] > 0 and total["wer_units"] > 0
 
-    # Attestator 2 is the act-scoped DAI chair. Each scored row came from its
-    # whole sealed crop response, while both page chairs supplied aligned slices.
-    assert report["totals"]["attestator_2"]["statuses"]["complete"] == 2
+    # The two page chairs supply aligned slices of their page Testimonia. The
+    # page-scoped DAI chair (attestator_2) attaches to no act, so each of its
+    # rows is unavailable and counted as a whole deletion, never dropped.
     assert report["totals"]["attestator_1"]["statuses"]["complete"] == 2
     assert report["totals"]["attestator_3"]["statuses"]["complete"] == 2
-    assert report["page_health"]["attestator_2"]["missing"] == 1
-    assert report["page_health"]["attestator_1"]["truncated_false"] == 1
-    assert report["page_health"]["attestator_3"]["truncated_false"] == 1
+    assert report["totals"]["attestator_2"]["statuses"]["unavailable"] == 2
+    assert (
+        report["totals"]["attestator_2"]["cer_errors"]
+        == report["totals"]["attestator_2"]["cer_units"]
+    )
+    for chair in CHAIRS:
+        assert report["page_health"][chair]["truncated_false"] == 1
 
 
-@pytest.mark.act_path
 def test_two_page_act_selects_primary_source_attachment_not_transformed_image_digest(
     sealed_run: RunTree,
 ):
@@ -299,12 +305,10 @@ def test_two_page_act_selects_primary_source_attachment_not_transformed_image_di
         assert span["end"] - span["start"] < len(page_text)
 
     for candidate in attachments.values():
-        dai = candidate["attestator_2"][0]
-        assert dai["attachment"]["page_witness"] is False
-        assert dai["attachment"]["span"] == {
-            "start": 0,
-            "end": len(dai["testimonium"]["payload"]["payload"]),
-        }
+        assert all(
+            item["attachment"]["page_witness"] and not item["attachment"]["attached"]
+            for item in candidate["attestator_2"]
+        )
 
     report = evaluate_page(
         reference_page=reference,
@@ -314,7 +318,11 @@ def test_two_page_act_selects_primary_source_attachment_not_transformed_image_di
         chairs=CHAIRS,
     )
     rows = [row for row in report["rows"] if row["pipeline_act_id"] == act_id]
-    assert {row["chair"]: row["status"] for row in rows} == {chair: "complete" for chair in CHAIRS}
+    assert {row["chair"]: row["status"] for row in rows} == {
+        "attestator_1": "complete",
+        "attestator_2": "unavailable",
+        "attestator_3": "complete",
+    }
 
 
 def test_missing_proposal_is_a_full_deletion_in_every_chair_aggregate(

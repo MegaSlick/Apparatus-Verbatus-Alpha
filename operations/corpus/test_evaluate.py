@@ -439,12 +439,11 @@ def _page_never_sealed() -> dict:
 def sealed_run(tmp_path_factory):
     """One orchestrated fixture run, shared by every integration case below."""
     run_root = tmp_path_factory.mktemp("runs")
-    completed = _orchestrate(run_root, "audit-reproof-cutoff")
+    completed = _orchestrate(run_root, "page-review")
     assert completed.returncode == 3, completed.stderr
     return RunTree(run_root, "r")
 
 
-@pytest.mark.act_path
 def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_counted(
     sealed_run, tmp_path, monkeypatch
 ):
@@ -457,7 +456,7 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
     assert report["schema"] == SCHEMA
     assert report["fixture"] is True and report["label"] == FIXTURE_LABEL
     assert report["run"]["export_status"] == "partial"
-    assert report["run"]["scenario"] == "audit-reproof-cutoff"
+    assert report["run"]["scenario"] == "page-review"
     assert len(report["run"]["export_sha256"]) == 64
     assert report["run"]["sealed_config_method"] == SEAL_METHOD
     assert report["corpus"] == {
@@ -484,33 +483,29 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
     totals = report["denominators"]
     assert totals["run_pages_sealed"] == 2 and totals["run_pages_compared"] == 1
     assert totals["run_pages_without_reference"] == 1
-    assert totals["exported_acts_by_category"] == {"delivered": 1, "held-for-review": 1}
-    assert totals["proposed_acts"] == 2 and totals["proposal_regions"] == 3
-    assert totals["reference_records_scored"] == 2
-    assert totals["reference_records_scored_by_export_category"] == {
-        "delivered": 1,
-        "held-for-review": 1,
+    # The held reading on page 2 is counted by its export category and, having
+    # no rectangle, named among the regions the join left out.
+    assert totals["exported_acts_by_category"] == {"delivered": 2, "held-for-review": 1}
+    assert totals["read_acts"] == 2 and totals["reading_regions"] == 2
+    assert totals["excluded_reading_regions"] == {
+        "by_kind": {},
+        "by_origin": {"reading-unplaced": 1},
     }
+    assert totals["reference_records_scored"] == 2
+    assert totals["reference_records_scored_by_export_category"] == {"delivered": 2}
     assert totals["reference_records_missed"] == 0
     assert totals["reference_records_not_attempted"] == 0
     assert totals["pipeline_acts_unmatched"] == 0
 
     rows = {row["record_id"]: row for row in report["records"]}
-    held = rows["a1"]
-    assert held["outcome"] == "scored" and held["export_category"] == "held-for-review"
-    assert held["status"] == "unavailable"
-    assert held["cer"]["deletions"] == held["cer"]["reference_units"] > 0
-    assert held["cer"]["rate"] == {
-        "numerator": held["cer"]["reference_units"],
-        "denominator": held["cer"]["reference_units"],
-    }
-    delivered = rows["a2"]
-    assert delivered["outcome"] == "scored" and delivered["export_category"] == "delivered"
-    assert delivered["status"] == "complete"
-    assert delivered["cer"]["rate"]["numerator"] == 0 and delivered["wer"]["rate"]["numerator"] == 0
-    # The aggregate is the sum of both rows: the held act's whole reference is
-    # in the numerator, so a held act can never improve a score. With nothing
-    # missed, the two aggregates agree exactly.
+    for key in ("a1", "a2"):
+        delivered = rows[key]
+        assert delivered["outcome"] == "scored" and delivered["export_category"] == "delivered"
+        assert delivered["status"] == "complete"
+        assert delivered["cer"]["rate"]["numerator"] == 0
+        assert delivered["wer"]["rate"]["numerator"] == 0
+    # The aggregate is the sum of both rows. With nothing missed, the two
+    # aggregates agree exactly.
     assert report["aggregate"]["normalization_profile_id"] == "graphemic-v1"
     # The validator holds the profile to the declared vocabulary, not to the
     # constant this module happens to score with today: a report sealed under
@@ -523,9 +518,9 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
     with pytest.raises(CorpusRefusal, match="^malformed-record:"):
         validate_evaluation(_reseal(unknown))
     matched = report["aggregate"]["matched_pairs_only"]
-    assert matched["cer"]["rate"]["numerator"] == held["cer"]["reference_units"]
+    assert matched["cer"]["rate"]["numerator"] == 0
     assert matched["cer"]["rate"]["denominator"] == (
-        held["cer"]["reference_units"] + delivered["cer"]["reference_units"]
+        rows["a1"]["cer"]["reference_units"] + rows["a2"]["cer"]["reference_units"]
     )
     assert report["aggregate"]["including_missed_records"]["cer"] == matched["cer"]
     assert report["pages_without_reference"] == [
@@ -547,7 +542,6 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
         write_report(report, written)
 
 
-@pytest.mark.act_path
 def test_a_missed_record_moves_only_the_aggregate_that_counts_it(sealed_run):
     """A missed act must be visible in a number, not only in a count."""
     tree = sealed_run
@@ -582,7 +576,6 @@ def test_a_missed_record_moves_only_the_aggregate_that_counts_it(sealed_run):
     assert "missed" in report["aggregate"]["including_missed_records"]["scope"]
 
 
-@pytest.mark.act_path
 def test_a_page_the_run_never_sealed_leaves_its_records_not_attempted_never_scored(sealed_run):
     tree = sealed_run
     report = evaluate_run(
@@ -601,7 +594,6 @@ def test_a_page_the_run_never_sealed_leaves_its_records_not_attempted_never_scor
     )
 
 
-@pytest.mark.act_path
 def test_a_pipeline_act_no_reference_record_covers_is_reported_and_not_scored(sealed_run):
     tree = sealed_run
     report = evaluate_run(
@@ -609,7 +601,7 @@ def test_a_pipeline_act_no_reference_record_covers_is_reported_and_not_scored(se
     )
     assert report["denominators"]["pipeline_acts_unmatched"] == 1
     (unmatched,) = report["unmatched_pipeline_acts"]
-    assert unmatched["export_category"] == "held-for-review"
+    assert unmatched["export_category"] == "delivered"
     assert "records-only" in unmatched["note"]
     # It moved no rate: the reference it would have been scored against is not
     # annotated, so scoring it would invent a denominator.
@@ -617,7 +609,6 @@ def test_a_pipeline_act_no_reference_record_covers_is_reported_and_not_scored(se
     assert report["denominators"]["reference_records_missed"] == 0
 
 
-@pytest.mark.act_path
 def test_every_record_row_carries_one_closed_shape_whatever_its_outcome(sealed_run):
     """A scored, a missed and a not-attempted row all answer the same questions."""
     tree = sealed_run
@@ -649,7 +640,6 @@ def test_every_record_row_carries_one_closed_shape_whatever_its_outcome(sealed_r
     assert len({frozenset(row) for row in report["records"]}) == 1
 
 
-@pytest.mark.act_path
 def test_a_comparison_refusal_travels_under_this_modules_name(sealed_run):
     """`compare_page` refuses by its own vocabulary; a caller sees this module's.
 
@@ -682,7 +672,6 @@ def test_a_comparison_refusal_travels_under_this_modules_name(sealed_run):
     assert "region-outside-page" in str(refused.value)
 
 
-@pytest.mark.act_path
 def test_two_reference_pages_over_one_page_digest_are_refused(sealed_run):
     tree = sealed_run
     reference = _fixture_reference_for_page_one(tree)
@@ -690,7 +679,6 @@ def test_two_reference_pages_over_one_page_digest_are_refused(sealed_run):
         evaluate_run(tree, [reference, reference], code_ref="test")
 
 
-@pytest.mark.act_path
 def test_naming_a_ledger_is_a_check_not_a_caption(sealed_run):
     """`reference_ledger_verified` can only be true of something that is a ledger."""
     tree = sealed_run
@@ -718,7 +706,6 @@ def test_naming_a_ledger_is_a_check_not_a_caption(sealed_run):
         )
 
 
-@pytest.mark.act_path
 def test_a_reference_page_that_does_not_validate_is_refused_under_this_modules_name(sealed_run):
     """Round 2 item 11: a delegated refusal travels under the caller's vocabulary."""
     reference = json.loads(json.dumps(_fixture_reference_for_page_one(sealed_run)))
@@ -728,7 +715,6 @@ def test_a_reference_page_that_does_not_validate_is_refused_under_this_modules_n
     assert "empty-normalized-text" in str(refused.value), "the delegate's own name is kept in view"
 
 
-@pytest.mark.act_path
 def test_the_command_line_refuses_a_missing_or_damaged_input_by_name(sealed_run, tmp_path):
     with pytest.raises(CorpusRefusal, match="^missing-input-file:"):
         load_reference_pages(tmp_path / "nowhere.jsonl")
@@ -744,14 +730,12 @@ def test_the_command_line_refuses_a_missing_or_damaged_input_by_name(sealed_run,
         load_reference_ledger(not_a_ledger)
 
 
-@pytest.mark.act_path
 def test_a_run_with_no_verified_export_is_refused_not_scored(sealed_run, tmp_path):
     reference = _fixture_reference_for_page_one(sealed_run)
     with pytest.raises(CorpusRefusal, match="^no-export:"):
         evaluate_run(RunTree(tmp_path / "nowhere", "r"), [reference], code_ref="test")
 
 
-@pytest.mark.act_path
 def test_an_evaluation_must_name_the_code_it_ran_under(sealed_run):
     reference = _fixture_reference_for_page_one(sealed_run)
     with pytest.raises(CorpusRefusal, match="^malformed-record:"):
@@ -761,7 +745,6 @@ def test_an_evaluation_must_name_the_code_it_ran_under(sealed_run):
 # --- The validator ----------------------------------------------------------------
 
 
-@pytest.mark.act_path
 def test_the_validator_refuses_a_report_edited_after_it_was_sealed(sealed_run):
     report = json.loads(
         json.dumps(
@@ -779,7 +762,6 @@ def test_the_validator_refuses_a_report_edited_after_it_was_sealed(sealed_run):
     assert "disagree with the denominators" in str(refused.value)
 
 
-@pytest.mark.act_path
 @pytest.mark.parametrize("value", [[1], {"delivered": True}, {"delivered": -1}, {"delivered": "1"}])
 def test_the_validator_refuses_a_category_histogram_that_is_not_counts(sealed_run, value):
     """A list, a bool, a negative or a string is refused by name before it is summed."""
@@ -795,7 +777,6 @@ def test_the_validator_refuses_a_category_histogram_that_is_not_counts(sealed_ru
     assert "reference_records_scored_by_export_category" in str(refused.value)
 
 
-@pytest.mark.act_path
 def test_the_validator_holds_the_page_records_to_the_pages_compared_count(sealed_run):
     """A report claiming N compared pages carries N comparison records, or it is refused."""
     report = json.loads(
@@ -811,7 +792,6 @@ def test_the_validator_holds_the_page_records_to_the_pages_compared_count(sealed
     assert "run_pages_compared" in str(refused.value)
 
 
-@pytest.mark.act_path
 def test_the_validator_refuses_a_page_compared_twice_behind_a_whole_count(sealed_run):
     """Duplicating one comparison keeps the count right and loses a page's evidence."""
     report = json.loads(
@@ -848,7 +828,6 @@ def test_the_validator_refuses_a_page_compared_twice_behind_a_whole_count(sealed
         validate_evaluation(_reseal(broken))
 
 
-@pytest.mark.act_path
 def test_the_validator_refuses_a_foreign_schema_and_a_label_that_does_not_match(sealed_run):
     report = json.loads(
         json.dumps(
@@ -867,7 +846,6 @@ def test_the_validator_refuses_a_foreign_schema_and_a_label_that_does_not_match(
     assert "sealed identity" in str(refused.value)
 
 
-@pytest.mark.act_path
 def test_write_report_refuses_an_off_shape_record_before_it_reaches_disk(sealed_run, tmp_path):
     report = json.loads(
         json.dumps(
@@ -883,7 +861,6 @@ def test_write_report_refuses_an_off_shape_record_before_it_reaches_disk(sealed_
 # --- The command-line entry point ---------------------------------------------------
 
 
-@pytest.mark.act_path
 def test_the_command_line_scores_a_sealed_run_and_prints_its_summary(sealed_run, tmp_path, capsys):
     pages = tmp_path / "reference-pages.jsonl"
     pages.write_text(json.dumps(_fixture_reference_for_page_one(sealed_run)) + "\n")
