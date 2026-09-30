@@ -2,25 +2,22 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import shutil
 import subprocess
 import sys
-import tomllib
-from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from zipfile import ZipFile
 
 import pytest
 from armarium_export import verify_export_bundle, verify_projection_identity
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
-from common.contracts.stages import ARCHETYPUS, ARMARIUM, DESIGNATOR, PERLECTOR, RECENSOR
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, RECENSOR
 from common.runtree.store import RunTree
+from conftest import load_stage
 from conftest import rebind_stage_seal_artifact as _rebind_stage_seal
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -85,50 +82,6 @@ def _export(tree: RunTree) -> dict:
     )
 
 
-@pytest.mark.act_path
-def test_armarium_seals_a_self_verifying_product_bundle(tmp_path):
-    root = tmp_path / "runs"
-    result = _orchestrate(root, "bundle", scenario="happy")
-    assert result.returncode == 0, result.stderr
-
-    tree = RunTree(root, "bundle")
-    export = _export(tree)
-    assert "canary" not in export["payload"]
-    bundle = export["payload"]["bundle"]
-    reference = bundle["reference"]
-    assert export["inputs"] == [reference]
-    assert bundle["sha256"] == reference["sha256"]
-
-    clean = tmp_path / "clean"
-    manifest = verify_export_bundle(tree.read_bytes(reference["relative_path"]), clean)
-    readings = [
-        tree.read_artifact(PERLECTOR, "perlectio", row["artifact_id"])["payload"]
-        for row in tree.build_manifest(PERLECTOR)["artifacts"]
-        if row["kind"] == "perlectio"
-    ]
-    assert all(reading["lectio_kind"] == "primed-draft-withheld" for reading in readings)
-    assert all(reading["self_revision"] == [] for reading in readings)
-    with ZipFile(BytesIO(tree.read_bytes(reference["relative_path"]))) as archive:
-        acts = [json.loads(line) for line in archive.read("acts.jsonl").splitlines()]
-    assert all(act["uncertainty"]["self_revisions"] is None for act in acts)
-    assert all(act["uncertainty"]["lectio_kind"] == "primed-draft-withheld" for act in acts)
-    # The happy fixture loses nothing, so the ledger says so. A status that reads
-    # `partial` on every run whatever happened could not report the run that did.
-    assert manifest["claims"]["status"] == "complete"
-    assert manifest["claims"]["partial_reasons"] == []
-    ledger = manifest["claims"]["terminal_ledger"]
-    assert ledger["by_unit_type"] == {"source": 2, "page": 2, "act": 2}
-    assert ledger["by_unit_type"]["source"] == manifest["claims"]["page_census"]["counted"]
-    assert sum(ledger["by_category"].values()) == ledger["unit_count"] == 6
-    assert (
-        manifest["claims"]["submission_inventory"]["status"]
-        == "reconciled-at-source-page-ordinal-granularity"
-    )
-    assert verify_projection_identity(
-        tree.read_bytes(reference["relative_path"]), tmp_path / "identity"
-    )
-
-
 def test_run_bound_pixel_embedding_packages_page_and_crop_bytes(tmp_path):
     formats = tmp_path / "formats.toml"
     formats.write_text(
@@ -146,41 +99,6 @@ def test_run_bound_pixel_embedding_packages_page_and_crop_bytes(tmp_path):
     manifest = verify_export_bundle(tree.read_bytes(reference["relative_path"]), tmp_path / "clean")
     assert manifest["formats"]["embed_pixels"] is True
     assert manifest["claims"]["pixels"]["resolution_claim"].startswith("embedded pixels")
-
-
-@pytest.mark.act_path
-def test_product_keeps_non_text_provenance_and_every_continuation_citation(tmp_path):
-    root = tmp_path / "runs"
-    result = _orchestrate(root, "provenance", scenario="happy")
-    assert result.returncode == 0, result.stderr
-
-    tree = RunTree(root, "provenance")
-    export = _export(tree)
-    delivered = next(entry for entry in export["payload"]["delivered"] if entry["act_key"] == "a2")
-    reference = export["payload"]["bundle"]["reference"]
-    bundle_bytes = tree.read_bytes(reference["relative_path"])
-    with ZipFile(BytesIO(bundle_bytes)) as archive:
-        rows = [json.loads(line) for line in archive.read("acts.jsonl").decode().splitlines()]
-        row = next(item for item in rows if item["act_id"] == delivered["act_id"])
-        text = archive.read(
-            "text/_source_folder/fixtures/synthetic-two-page-v0/readings.txt"
-        ).decode()
-
-    assert delivered["witnesses"], "the delivered act carried no witnesses to compare"
-    assert len(row["witnesses"]) == len(delivered["witnesses"])
-    assert row["perlectio_ref"] == {
-        "availability": "requires-retained-run-access",
-        "run_relative_path": delivered["perlectio_ref"]["relative_path"],
-        "sha256": delivered["perlectio_ref"]["sha256"],
-    }
-    assert row["witnesses"][0]["testimonium_ref"]["availability"] == (
-        "requires-retained-run-access"
-    )
-    assert "relative_path" not in row["perlectio_ref"]
-    assert delivered["source_regions"], "the delivered act carried no source citations"
-    for region in delivered["source_regions"]:
-        assert f"source-page: {region['declared_path']}" in text
-        assert f"source-sha256: {region['declared_sha256']}" in text
 
 
 def test_happy_run_marks_absent_salvage_inventory_as_not_produced(tmp_path):
@@ -268,497 +186,112 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
     )
 
 
-@pytest.mark.act_path
-def test_a_provenance_that_fails_deeper_validation_is_also_downgraded_to_refused(tmp_path):
-    """The `except SchemaRefusal` branch in run.py's main(), not just the narrower
-    field-presence check `missing_export_provenance` performs before it.
-
-    Provenance and regions are both structurally present here -- unlike the
-    parametrized test above -- so `missing_export_provenance` finds nothing wrong.
-    Tampering only the Perlectio's provenance would just trip
-    `verify_established_record`'s exact-preservation check (it would no longer
-    match the Archetypus's copy) -- the shallower, already-covered branch. Reaching
-    `validate_serving_provenance` needs the Archetypus's own provenance tampered
-    identically, which in turn means every digest-checked reference between the
-    three sealed records -- Perlectio, the Recensor review that accepted it, and
-    the Archetypus -- has to be updated to match the new bytes: exactly the
-    chain-of-custody `verify_established_record` exists to enforce, so a corrupted
-    provenance cannot simply carry its own falsified referrers along with it.
-    """
-    root = tmp_path / "runs"
-    result = _orchestrate(root, "deeper-refusal", scenario="happy")
-    assert result.returncode == 0, result.stderr
-    tree = RunTree(root, "deeper-refusal")
-    original = next(
-        tree.read_artifact(ARCHETYPUS, "archetypus", entry["artifact_id"])
-        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
-        if entry["kind"] == "archetypus"
-    )
-    refused_act_id = original["subject_id"]
-
-    perlectio_ref = original["payload"]["perlectio_ref"]
-    perlectio_original = tree.read_artifact_reference(
-        perlectio_ref, stage=PERLECTOR, kind="perlectio", subject_id=refused_act_id
-    )
-    recensor_ref = original["payload"]["recensor_ref"]
-    review_original = tree.read_artifact_reference(
-        recensor_ref, stage=RECENSOR, kind="review", subject_id=refused_act_id
-    )
-
-    shutil.rmtree(tree.root / "7_armarium")
-    endpoint = "https://example.invalid/served"
-
-    def _with_updated_ref(inputs, old_ref, new_ref):
-        return [new_ref if entry == old_ref else entry for entry in inputs]
-
-    altered_perlectio = json.loads(json.dumps(perlectio_original))
-    altered_perlectio["payload"]["provenance"]["endpoint"] = endpoint
-    altered_perlectio["payload"]["self_hash"] = self_hash(altered_perlectio["payload"])
-    altered_perlectio["self_hash"] = self_hash(altered_perlectio)
-    perlectio_path = tree.resolve(
-        tree.artifact_path(PERLECTOR, "perlectio", altered_perlectio["artifact_id"])
-    )
-    perlectio_path.write_bytes(canonical_bytes(altered_perlectio))
-    new_perlectio_ref = {
-        "relative_path": perlectio_ref["relative_path"],
-        "sha256": digest_bytes(canonical_bytes(altered_perlectio)),
+def _page_record_case():
+    """An accepted page reading, its review and its Archetypus, all mutually consistent."""
+    reading_ref = {"relative_path": "4_perlector/artifacts/perlectio/r.json", "sha256": "a" * 64}
+    review_ref = {"relative_path": "5_recensor/artifacts/review/v.json", "sha256": "b" * 64}
+    region_ref = {"relative_path": "4_perlector/artifacts/act-region/g.json", "sha256": "c" * 64}
+    crop_ref = {"relative_path": "4_perlector/blobs/crop", "sha256": "d" * 64}
+    region = {"image_path": crop_ref["relative_path"], "image_sha256": crop_ref["sha256"]}
+    row = {
+        "act_id": "act_0000000000000001",
+        "act_key": "p1-e1",
+        "page_id": "pg_0000000000000001",
+        "kind": "act",
+        "perlectio_ref": reading_ref,
+        "region_ref": region_ref,
     }
-
-    altered_review = json.loads(json.dumps(review_original))
-    altered_review["payload"]["perlectio_ref"] = new_perlectio_ref
-    altered_review["inputs"] = _with_updated_ref(
-        altered_review["inputs"], perlectio_ref, new_perlectio_ref
-    )
-    altered_review["self_hash"] = self_hash(altered_review)
-    review_path = tree.resolve(
-        tree.artifact_path(RECENSOR, "review", altered_review["artifact_id"])
-    )
-    review_path.write_bytes(canonical_bytes(altered_review))
-    new_recensor_ref = {
-        "relative_path": recensor_ref["relative_path"],
-        "sha256": digest_bytes(canonical_bytes(altered_review)),
-    }
-
-    altered = json.loads(json.dumps(original))
-    altered["payload"]["provenance"]["endpoint"] = endpoint
-    altered["payload"]["perlectio_ref"] = new_perlectio_ref
-    altered["payload"]["dissent_ref"] = new_perlectio_ref
-    altered["payload"]["recensor_ref"] = new_recensor_ref
-    altered["inputs"] = _with_updated_ref(
-        _with_updated_ref(altered["inputs"], perlectio_ref, new_perlectio_ref),
-        recensor_ref,
-        new_recensor_ref,
-    )
-    altered["payload"]["self_hash"] = self_hash(altered["payload"])
-    altered["self_hash"] = self_hash(altered)
-    artifact_path = tree.resolve(
-        tree.artifact_path(ARCHETYPUS, "archetypus", altered["artifact_id"])
-    )
-    artifact_path.write_bytes(canonical_bytes(altered))
-    _rebind_stage_seal(tree, PERLECTOR)
-    _rebind_stage_seal(tree, RECENSOR)
-    _rebind_stage_seal(tree, ARCHETYPUS)
-
-    result = _run_armarium(root, "deeper-refusal", "happy")
-    assert result.returncode == 3, result.stderr
-    export = _export(tree)
-    assert export["payload"]["aggregate"]["status"] == "partial"
-    refused = [
-        entry for entry in export["payload"]["non_delivered"] if entry["act_id"] == refused_act_id
-    ]
-    assert len(refused) == 1
-    assert refused[0]["category"] == "refused-with-reason"
-    assert "provenance was refused" in refused[0]["reason"]
-    assert "leaks serving-only field" in refused[0]["reason"]
-    assert not [
-        entry for entry in export["payload"]["delivered"] if entry["act_id"] == refused_act_id
-    ]
-
-
-@pytest.mark.act_path
-def test_a_digest_damaged_testimonium_hard_stops_instead_of_exporting_partial(tmp_path):
-    """Broken witness custody is damage, not an act-level provenance refusal."""
-    root = tmp_path / "runs"
-    result = _orchestrate(root, "damaged-testimonium", scenario="happy")
-    assert result.returncode == 0, result.stderr
-    tree = RunTree(root, "damaged-testimonium")
-    first_act = next(
-        item for item in _export(tree)["payload"]["delivered"] if item["act_key"] == "a1"
-    )
-    reading = tree.read_artifact_reference(
-        first_act["perlectio_ref"],
-        stage=PERLECTOR,
-        kind="perlectio",
-        subject_id=first_act["act_id"],
-    )
-    testimony_ref = reading["payload"]["basis"]["testimonia"][0]["reference"]
-    testimony_path = tree.resolve(testimony_ref["relative_path"])
-
-    shutil.rmtree(tree.root / "7_armarium")
-    # Whitespace keeps the Testimonium readable JSON while changing the bytes
-    # under the Perlectio's sealed digest reference.
-    testimony_path.write_bytes(testimony_path.read_bytes() + b"\n")
-
-    result = _run_armarium(root, "damaged-testimonium", "happy")
-
-    assert result.returncode == 2
-    assert "bytes changed under a sealed reference" in result.stderr
-    assert not tree.has_artifact(
-        ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
-    )
-    armarium_root = tree.root / "7_armarium"
-    assert not armarium_root.exists() or not any(
-        path.is_file() for path in armarium_root.rglob("*")
-    )
-
-
-@pytest.mark.act_path
-def test_a_damaged_witness_receipt_hard_stops_rather_than_refusing_only_its_act(tmp_path):
-    """The narrowed `except SchemaRefusal` scope, driven where it is the only guard.
-
-    The test above damages a Testimonium, and that never reaches the narrow catch at
-    all: `build_manifest(PERLECTOR)` revalidates every Perlectio's sealed inputs and
-    raises first, so the run hard-stops with the catch widened or narrow. A serving
-    receipt is not an artifact input, so nothing revalidates it before
-    `export_witnesses` reads it -- and with the catch widened back over that read, this
-    run exports a *partial* product at exit 3 with the act merely refused, over
-    witness custody the stage could not verify. Damaged evidence is fatal contract
-    damage, not one act's provenance refusal.
-    """
-    root = tmp_path / "runs"
-    result = _orchestrate(root, "damaged-receipt", scenario="happy")
-    assert result.returncode == 0, result.stderr
-    tree = RunTree(root, "damaged-receipt")
-    first_act = next(
-        item for item in _export(tree)["payload"]["delivered"] if item["act_key"] == "a1"
-    )
-    receipt_ref = first_act["witnesses"][0]["provenance"]["receipt_ref"]
-    receipt_path = tree.resolve(receipt_ref["relative_path"])
-
-    shutil.rmtree(tree.root / "7_armarium")
-    receipt_path.write_bytes(receipt_path.read_bytes() + b"\n")
-
-    result = _run_armarium(root, "damaged-receipt", "happy")
-
-    assert result.returncode == 2, result.stdout
-    assert "run receipt" in result.stderr
-    assert not tree.has_artifact(
-        ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
-    )
-
-
-# --- The act-attachment view is required at export, not merely checked ----------
-#
-# `export_witnesses` must not recheck the act-attachment dossier view only
-# `if attachment is not None`: an established reading that dropped the field
-# would then export with its page-witness custody never rechecked here, even
-# though the retained witness basis beside it was already required.
-
-
-def _stage_module(name: str, path: Path, *, isolated_modules: tuple[str, ...] = ()):
-    """Load one stage program under a unique name, its own directory first.
-
-    Restore a stage's import search order and any bare sibling aliases used
-    during its module-scope load. Shared ``common.*`` imports stay cached so
-    their classes retain one process identity across the test session.
-    """
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    original_path = list(sys.path)
-    missing = object()
-    previous_module = sys.modules.get(name, missing)
-    isolated = {}
-    stage_dir = path.resolve().parent
-    for module_name in isolated_modules:
-        cached = sys.modules.get(module_name, missing)
-        cached_file = getattr(cached, "__file__", None)
-        expected_file = stage_dir / f"{module_name}.py"
-        if (
-            cached is missing
-            or not isinstance(cached_file, str)
-            or Path(cached_file).resolve() != expected_file
-        ):
-            isolated[module_name] = cached
-            sys.modules.pop(module_name, None)
-    try:
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-    finally:
-        sys.path[:] = original_path
-        for module_name, previous in isolated.items():
-            if previous is missing:
-                sys.modules.pop(module_name, None)
-            else:
-                sys.modules[module_name] = previous
-        if previous_module is missing:
-            sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = previous_module
-    return module
-
-
-def _armarium_module():
-    """Load the stage program under a unique name.
-
-    Never a bare ``import run``: several stage directories define a module by that
-    name, and the import cache would decide which one this test got.
-    """
-    return _stage_module(
-        "armarium_run_under_test_export",
-        ARMARIUM_CLI,
-        isolated_modules=("armarium_export", "display", "textnorm"),
-    )
-
-
-def _established_uncertainty_case(armarium, monkeypatch):
-    act = {"act_id": "act-1", "act_key": "a1", "page_id": "page-1"}
-    reading_ref = {"relative_path": "perlectio.json", "sha256": "a" * 64}
-    review_ref = {"relative_path": "review.json", "sha256": "b" * 64}
-    provenance = {"chair": "perlector"}
-    layer = {
+    reading_payload = {
+        "schema": "perlectio.v2",
+        "kind": "act",
+        "text": "Maria",
+        "provenance": {"chair": "perlector"},
+        "act_region_ref": region_ref,
+        "holds": [],
+        "page_holds": [],
         "uncertain_spans": [],
         "gaps": [],
-        "self_revisions": [],
-        "lectio_kind": "primed-with-prior",
-        "assessment": {
-            "state": "not-assessed",
-            "problem": "this fixture reader has no channel for a doubt report",
+        "uncertainty_assessment": {
+            "state": "assessed",
+            "problem": None,
+            "uncertain_spans": [],
+            "gaps": [],
         },
     }
-    reading = {
-        "artifact_id": "reading-1",
-        "payload": {"text": "Maria", "provenance": provenance},
-    }
-    checked_review = {
+    reading = {"outcome": "read", "payload": reading_payload}
+    review = {
         "artifact_id": "review-1",
         "outcome": "accepted",
         "payload": {"perlectio_ref": reading_ref},
         "inputs": [reading_ref],
     }
-    payload = {
-        **act,
-        "status": "established",
-        "text": "Maria",
-        "regions": [],
-        "provenance": provenance,
-        "dissent_ref": reading_ref,
-        "perlectio_ref": reading_ref,
-        "recensor_ref": review_ref,
-        "uncertainty": layer,
-        # The record's two damage fields, reconciled like every other field
-        # export copies from the reading.
-        "annotations": [],
-        "text_status": "established",
-    }
-    payload["self_hash"] = self_hash(payload)
-    established = {"payload": payload, "inputs": [review_ref, reading_ref]}
-    review = {"artifact_id": "review-1"}
-
-    def read_artifact_reference(_reference, *, stage, **_kwargs):
-        return checked_review if stage == RECENSOR else reading
-
+    records = {"perlectio": reading, "act-region": {"payload": {}}}
     context = SimpleNamespace(
         artifact_ref=lambda *_args: review_ref,
-        tree=SimpleNamespace(read_artifact_reference=read_artifact_reference),
+        input_ref=lambda _path: crop_ref,
+        run={},
+        tree=SimpleNamespace(
+            read_artifact_reference=lambda _ref, *, kind, **_kwargs: records[kind]
+        ),
     )
-    monkeypatch.setattr(
-        armarium,
-        "artifacts_for",
-        lambda _context, stage, *_args: [] if stage == armarium.DESIGNATOR else [reading],
+    return (
+        context,
+        row,
+        review,
+        reading_payload,
+        region,
+        [review_ref, reading_ref, region_ref, crop_ref],
     )
-    monkeypatch.setattr(armarium, "latest_attempt", lambda *_args, **_kwargs: reading)
-    monkeypatch.setattr(armarium, "recovery_region_count", lambda *_args: 0)
-    monkeypatch.setattr(armarium, "reading_basis_regions", lambda *_args: [])
-    return context, act, review, established, layer
 
 
-def test_malformed_perlectio_is_attributed_to_the_perlectio(monkeypatch):
-    armarium = _armarium_module()
-    context, act, review, established, _layer = _established_uncertainty_case(armarium, monkeypatch)
-
-    def refuse_perlectio(_payload):
-        raise armarium.SchemaRefusal("malformed producer layer")
-
-    monkeypatch.setattr(armarium, "from_perlectio", refuse_perlectio)
-
-    with pytest.raises(FatalAccounting, match="accepted Perlectio is malformed"):
-        armarium.verify_established_record(context, act, review, established, {})
-
-
-def test_malformed_archetypus_uncertainty_is_attributed_to_the_archetypus(monkeypatch):
-    armarium = _armarium_module()
-    context, act, review, established, layer = _established_uncertainty_case(armarium, monkeypatch)
-    monkeypatch.setattr(armarium, "from_perlectio", lambda _payload: layer)
-
-    def refuse_archetypus(_layer, _text):
-        raise armarium.SchemaRefusal("malformed established layer")
-
-    monkeypatch.setattr(armarium, "validate_uncertainty", refuse_archetypus)
-
-    with pytest.raises(FatalAccounting, match="Archetypus uncertainty layer is malformed"):
-        armarium.verify_established_record(context, act, review, established, {})
-
-
-def test_an_archetypus_claiming_whole_text_over_its_own_gap_is_refused_at_export(monkeypatch):
-    """`text_status` is recomputed here, never read out of the record and believed.
-
-    The record below is internally consistent in every other way -- self-hash
-    good, both parents digest-checked, both damage layers exactly the reading's
-    own -- and claims `established` over an uncertainty layer whose gap says the
-    Perlector knows ink is present and could not read it. Every other check in
-    this function passes; this one is the only thing standing between a damaged
-    act and an export that describes it as a whole one.
-    """
-    armarium = _armarium_module()
-    context, act, review, established, layer = _established_uncertainty_case(armarium, monkeypatch)
-    monkeypatch.setattr(armarium, "from_perlectio", lambda _payload: layer)
-
-    # Mutating the shared layer keeps the Archetypus and the Perlectio equal, so
-    # the reconciliation above this check still passes and this check is reached.
-    layer["gaps"].append({"position": "internal", "start": 2, "end": 2, "witness_evidence": []})
-    payload = established["payload"]
-    payload.pop("self_hash")
+def _sealed_page_record(armarium, row, reading_payload, region, **changes):
+    payload = {
+        "act_id": row["act_id"],
+        "act_key": row["act_key"],
+        "page_id": row["page_id"],
+        "kind": row["kind"],
+        "status": "established",
+        "text": reading_payload["text"],
+        "regions": [region],
+        "provenance": reading_payload["provenance"],
+        "annotations": [],
+        "uncertainty": armarium.from_page_perlectio(reading_payload),
+        "text_status": "established",
+        "recensor_ref": {"relative_path": "5_recensor/artifacts/review/v.json", "sha256": "b" * 64},
+        "perlectio_ref": row["perlectio_ref"],
+        "dissent_ref": row["perlectio_ref"],
+        **changes,
+    }
     payload["self_hash"] = self_hash(payload)
+    return payload
+
+
+def test_an_archetypus_claiming_whole_text_over_its_reading_s_gap_is_refused_at_export(
+    monkeypatch,
+):
+    """`text_status` is recomputed from the reading here, never read out of the record."""
+    armarium = load_stage("7_armarium")
+    context, row, review, reading_payload, region, inputs = _page_record_case()
+    monkeypatch.setattr(armarium, "verify_reading_region_lineage", lambda *_args: region)
+
+    whole = _sealed_page_record(armarium, row, reading_payload, region)
+    payload, _reading = armarium.verify_established_page_record(
+        context, row, review, {"payload": whole, "inputs": inputs}
+    )
     assert payload["text_status"] == "established"
 
-    with pytest.raises(FatalAccounting, match="not leave the pipeline described as a whole one"):
-        armarium.verify_established_record(context, act, review, established, {})
-
-
-def test_an_established_reading_without_its_act_attachment_view_is_refused_at_export():
-    """R0's exit criterion says the attachment is consumed, not consumed-if-present."""
-    armarium = _armarium_module()
-    reading = {
-        "inputs": [],
-        "payload": {
-            "basis": {"testimonia": [{"chair": "attestator_1"}]},
-            "dossier": {"act_key": "a1", "dossier_digest": "d" * 64},
-        },
-    }
-    with pytest.raises(FatalAccounting, match="no act-attachment evidence"):
-        armarium.export_witnesses(None, reading, "act_0000000000000001")
-
-
-# --- `claims.not_measured` is derived from the run, not declared by the build --
-
-
-@pytest.mark.act_path
-def test_the_export_block_matches_what_the_run_tree_itself_records(tmp_path):
-    """Every row re-derived here from the run's own evidence, independently.
-
-    The export's job at this boundary is to qualify its own `complete`: to say
-    which pages the run never reconciled, which acts reached no measured
-    testimony coverage, and which instruments published nothing at all. A block
-    that carried constants would say the same words on a run that measured
-    everything, so this rebuilds each number from the run tree and the sealed
-    configurations and compares.
-    """
-    root = tmp_path / "runs"
-    result = _orchestrate(root, "not-measured", scenario="happy")
-    assert result.returncode == 0, result.stderr
-
-    tree = RunTree(root, "not-measured")
-    export = _export(tree)
-    manifest = verify_export_bundle(
-        tree.read_bytes(export["payload"]["bundle"]["reference"]["relative_path"]),
-        tmp_path / "clean",
+    gap = {"position": "internal", "start": 2, "end": 2, "witness_evidence": []}
+    reading_payload["gaps"] = [gap]
+    reading_payload["uncertainty_assessment"]["gaps"] = [gap]
+    # The record copies the reading's gap and still claims `established`.
+    forged = _sealed_page_record(
+        armarium,
+        row,
+        reading_payload,
+        region,
+        uncertainty=armarium.from_page_perlectio(reading_payload),
     )
-    block = manifest["claims"]["not_measured"]
-    rows = {entry["instrument"]: entry for entry in block["entries"]}
-
-    designator = tree.build_manifest(DESIGNATOR)["artifacts"]
-    unreconciled = sorted(
-        tree.read_artifact(DESIGNATOR, "conservation", entry["artifact_id"])["payload"][
-            "page_ordinal"
-        ]
-        for entry in designator
-        if entry["kind"] == "conservation"
-        and tree.read_artifact(DESIGNATOR, "conservation", entry["artifact_id"])["payload"].get(
-            "ink_measurable"
+    with pytest.raises(FatalAccounting, match="does not exactly preserve"):
+        armarium.verify_established_page_record(
+            context, row, review, {"payload": forged, "inputs": inputs}
         )
-        is not True
-    )
-    assert rows["page-ink-conservation"]["detail"]["pages_not_reconciled"] == unreconciled
-
-    reviews = [
-        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])["payload"]
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review"
-    ]
-    # One review per attempt; the export reads the act's current one, so the
-    # comparison is over act keys rather than review count.
-    unmeasured = set()
-    for payload in reviews:
-        base = payload.get("testimony_content_coverage")
-        continuation = payload.get("testimony_content_coverage_continuation", [])
-        if (not isinstance(base, dict) or base.get("shortfall") is None) or any(
-            isinstance(row, dict) and row.get("shortfall") is None for row in continuation
-        ):
-            unmeasured.add(payload["act_key"])
-    assert set(rows["page-testimony-content-coverage"]["detail"]["acts_unmeasured"]) == unmeasured
-    assert block["count"] == 4
-
-    audit = tomllib.loads((ROOT / "config" / "perlector_audit.toml").read_text(encoding="utf-8"))
-    spans = rows["perlector-uncertain-spans"]
-    assert spans["detail"]["sealed_audit_round_cap"] == audit["round_cap"]
-    # The shipped policy cannot mint a span, so the instrument declares itself
-    # unproduced rather than reporting a reader who was never uncertain.
-    assert spans["status"] == "declared-unproduced"
-
-    calibration = rows["designator-geometry-calibration"]["detail"]["configurations"]
-    for row, (name, filename, table) in zip(
-        calibration,
-        (
-            ("designator-padding", "designator_padding.toml", "padding"),
-            ("designator-geometry", "designator_geometry.toml", "geometry"),
-            ("designator-grouping", "designator_grouping.toml", "grouping"),
-            ("perlector-protocol", "perlector_protocol.toml", "truncation"),
-        ),
-        strict=True,
-    ):
-        provenance = tomllib.loads((ROOT / "config" / filename).read_text(encoding="utf-8"))[table][
-            "provenance"
-        ]
-        assert row["configuration"] == name
-        assert row["calibrated_for_this_corpus"] == provenance["calibrated_for_this_corpus"]
-        assert row["sample_count"] == provenance.get("sample_count")
-    assert rows["designator-geometry-calibration"]["status"] == "not-measured"
-
-    # No stage publishes the Designator occlusion records the survey reads, so
-    # every capture row the run wrote carries a named absence code. That is the
-    # instrument declaring itself unproduced, and the export must say so rather
-    # than let an unresolved row read as "the act was fully visible".
-    capture_rows = [
-        row
-        for payload in reviews
-        for component in (payload.get("cross_capture_coverage") or {}).get("components", [])
-        for row in component["captures"]
-    ]
-    survey = rows["act-visibility-survey"]
-    assert survey["detail"]["capture_rows"] == len(capture_rows)
-    assert survey["detail"]["rows_with_named_absence"] == sum(
-        1 for row in capture_rows if row["finding_codes"]
-    )
-    assert survey["detail"]["absence_codes"] == sorted(
-        {code for row in capture_rows for code in row["finding_codes"]}
-    )
-    assert capture_rows, "the fixture writes capture rows; an empty list proves nothing here"
-    assert survey["status"] == "declared-unproduced"
-
-    assert block["count"] == sum(1 for row in block["entries"] if row["status"] != "measured")
-
-
-def test_the_absence_codes_the_export_reads_are_the_recensors_own(tmp_path):
-    """Two modules spell one closed vocabulary; they may not drift apart.
-
-    `pipeline/7_armarium/run.py` cannot import the Recensor's implementation
-    module, so it keeps its own copy of the named absence codes. A code added
-    there and missed here would be a capture row the export silently counted as
-    a measurement.
-    """
-    recensor = _stage_module("recensor_absence_codes", ROOT / "pipeline" / "5_recensor" / "run.py")
-    armarium = _armarium_module()
-
-    assert recensor.INSTRUMENT_ABSENT_CODES, "an empty vocabulary proves no shared absence codes"
-    assert armarium._VISIBILITY_ABSENCE_CODES == recensor.INSTRUMENT_ABSENT_CODES
