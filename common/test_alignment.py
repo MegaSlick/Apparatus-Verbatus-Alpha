@@ -1,14 +1,16 @@
 """Alignment: markup loss is visible and bounded failures are records."""
 
-import signal
-import time
+from difflib import SequenceMatcher
 
 import pytest
 
 import common.alignment as alignment_module
 from common.alignment import (
     DEFAULT_ALIGNMENT_CONFIG_PATH,
+    STEP_LIMIT_REASON,
     AlignmentLimits,
+    AlignmentStepLimit,
+    StepCountedMatcher,
     align_to_anchor,
     bracket_marker_view,
     load_alignment_limits,
@@ -33,31 +35,25 @@ def test_alignment_returns_an_explicit_unaligned_record_at_the_sealed_pair_limit
     result = align_to_anchor(
         "alpha beta gamma",
         "alpha beta gamma",
-        AlignmentLimits(max_characters=100, max_character_pairs=4, timeout_seconds=1),
+        AlignmentLimits(max_characters=100, max_character_pairs=4, max_alignment_steps=10**9),
     )
 
     assert result["status"] == "unaligned"
     assert result["reason"] == "character-pair-limit"
     assert result["witness"]["text"] == "alpha beta gamma"
-    # Refused before the matcher ever ran; no timer question arises.
-    assert result["deadline_in_force"] is False
 
 
 def test_alignment_carries_matching_spans_through_markup_normalization():
     result = align_to_anchor(
         "<output>alpha beta</output>",
         "<p>alpha beta gamma</p>",
-        AlignmentLimits(max_characters=100, max_character_pairs=10_000, timeout_seconds=1),
+        AlignmentLimits(max_characters=100, max_character_pairs=10_000, max_alignment_steps=10**9),
     )
 
     assert result["status"] == "aligned"
     assert result["spans"] == [
         {"witness": {"start": 0, "end": 10}, "anchor": {"start": 0, "end": 10}}
     ]
-    # An ordinary aligned run on this interpreter (main thread, SIGALRM
-    # available, no timer already held) actually armed the backstop.
-    posix_alarm_available = all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL"))
-    assert result["deadline_in_force"] is posix_alarm_available
 
 
 # --- The ampersand that ate the markup ---------------------------------
@@ -129,7 +125,9 @@ def test_an_anchor_that_repeats_the_witness_text_still_aligns_without_crashing()
     result = align_to_anchor(
         "alpha beta",
         "alpha beta gamma alpha beta",
-        AlignmentLimits(max_characters=1000, max_character_pairs=100_000, timeout_seconds=1),
+        AlignmentLimits(
+            max_characters=1000, max_character_pairs=100_000, max_alignment_steps=10**9
+        ),
     )
 
     assert result["status"] == "aligned"
@@ -148,7 +146,7 @@ def test_witness_text_exactly_at_the_character_limit_still_aligns():
     result = align_to_anchor(
         text,
         text,
-        AlignmentLimits(max_characters=50, max_character_pairs=10_000, timeout_seconds=1),
+        AlignmentLimits(max_characters=50, max_character_pairs=10_000, max_alignment_steps=10**9),
     )
     assert result["status"] == "aligned"
 
@@ -158,7 +156,7 @@ def test_witness_text_one_character_past_the_limit_is_explicitly_unaligned():
     result = align_to_anchor(
         text,
         text,
-        AlignmentLimits(max_characters=50, max_character_pairs=10_000, timeout_seconds=1),
+        AlignmentLimits(max_characters=50, max_character_pairs=10_000, max_alignment_steps=10**9),
     )
     assert result["status"] == "unaligned"
     assert result["reason"] == "character-limit"
@@ -175,152 +173,70 @@ def test_an_all_markup_input_normalizes_to_a_genuinely_zero_width_offset_map():
     assert view["offset_map"] == []
 
 
-@pytest.mark.skipif(
-    not hasattr(signal, "SIGALRM"),
-    reason="the wall-clock backstop is a SIGALRM mechanism; where it cannot exist the "
-    "comparison runs unbounded and this test would hang for minutes to say nothing",
-)
-def test_alignment_deadline_reports_unaligned_honestly_never_a_partial_map(monkeypatch):
-    """The timeout path must say `unaligned` -- never return a spans list that
-    stopped partway through and pretend it was complete.
-
-    The deadline is forced deterministically: a matcher that sleeps past the
-    timeout stands in for the real one, so the alarm always fires. Racing
-    real inputs against the wall clock made the test's verdict a machine claim
-    -- a fast runner finishes the comparison and goes red for no code reason,
-    and a loaded runner is what makes it pass, so a genuine loss of the
-    deadline would not reliably show up either. Since the sealed deadline was
-    raised above the slowest input the pair bound admits,
-    forcing it is not merely the robust way to test this path but the only
-    way: no admissible input reaches 25 seconds.
-    """
-
-    def _stuck_matcher(witness_text, anchor_text):
-        time.sleep(30)
-        raise AssertionError("the deadline never fired")
-
-    monkeypatch.setattr(alignment_module, "_matching_blocks", _stuck_matcher)
-    limits = AlignmentLimits(max_characters=100_000, max_character_pairs=10**9, timeout_seconds=1)
-
-    result = align_to_anchor("alpha beta gamma", "alpha beta gamna", limits)
-
-    assert result["status"] == "unaligned"
-    # Named for what happened -- this module's backstop fired -- so a receipt
-    # cannot be read as saying the witness itself timed out or that coverage
-    # was measured and found absent.
-    assert result["reason"] == alignment_module.DEADLINE_REASON == "alignment-deadline-exceeded"
-    assert "spans" not in result, "a timed-out alignment must never carry a partial spans list"
-    # The backstop that fired is the one thing this record can say for certain
-    # was in force.
-    assert result["deadline_in_force"] is True
+def _steps_to_align(witness: str, anchor: str) -> int:
+    """The steps one alignment of the two normalized texts takes to finish."""
+    matcher = StepCountedMatcher(witness, anchor, 10**12)
+    matcher.get_matching_blocks()
+    return 10**12 - matcher.steps_left
 
 
-@pytest.mark.skipif(
-    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
-    reason="requires the POSIX real-time alarm inspected by the alignment backstop",
-)
-def test_alignment_does_not_cancel_an_unrelated_existing_alarm():
-    """A caller's timer remains its timer; alignment must not borrow or clear it."""
-    previous_handler = signal.getsignal(signal.SIGALRM)
+def test_an_alignment_finishes_on_its_exact_step_count_and_not_one_step_fewer():
+    """The budget is a count, so its edge is exact: the same pair aligns with
+    exactly the steps it needs and is unaligned with one fewer, on any machine
+    and under any load. Running out says `unaligned` with its own reason --
+    never a spans list that stopped partway and pretends to be complete."""
+    witness, anchor = "alpha beta gamma", "alpha beta gamna"
+    needed = _steps_to_align(witness, anchor)
+    assert needed > 1
 
-    def unrelated_handler(signum, frame):
-        pass
-
-    signal.signal(signal.SIGALRM, unrelated_handler)
-    signal.alarm(30)
-    try:
-        result = align_to_anchor(
-            "alpha beta",
-            "alpha beta",
-            AlignmentLimits(max_characters=100, max_character_pairs=10_000, timeout_seconds=1),
+    def limits(steps: int) -> AlignmentLimits:
+        return AlignmentLimits(
+            max_characters=100, max_character_pairs=10_000, max_alignment_steps=steps
         )
-        remaining = signal.alarm(0)
 
-        assert result["status"] == "aligned"
-        assert remaining > 0
-        assert signal.getsignal(signal.SIGALRM) is unrelated_handler
-        # This call could not arm its own backstop -- a timer was already
-        # running -- so the record must say the comparison ran unbounded, even
-        # though it still finished and reports `aligned`.
-        assert result["deadline_in_force"] is False
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, previous_handler)
+    assert align_to_anchor(witness, anchor, limits(needed))["status"] == "aligned"
+    result = align_to_anchor(witness, anchor, limits(needed - 1))
 
-
-@pytest.mark.skipif(
-    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
-    reason="requires the POSIX real-time alarm inspected by the alignment backstop",
-)
-def test_alignment_clears_its_alarm_and_restores_the_handler_on_an_exception(monkeypatch):
-    """No alignment-owned alarm may escape into unrelated work after a failure."""
-    previous_handler = signal.getsignal(signal.SIGALRM)
-
-    def caller_handler(signum, frame):
-        pass
-
-    def broken_matcher(witness_text, anchor_text):
-        raise RuntimeError("matcher failed")
-
-    signal.alarm(0)
-    signal.signal(signal.SIGALRM, caller_handler)
-    monkeypatch.setattr(alignment_module, "_matching_blocks", broken_matcher)
-    try:
-        with pytest.raises(RuntimeError, match="matcher failed"):
-            align_to_anchor(
-                "alpha beta",
-                "alpha beta",
-                AlignmentLimits(
-                    max_characters=100,
-                    max_character_pairs=10_000,
-                    timeout_seconds=10,
-                ),
-            )
-
-        assert signal.alarm(0) == 0
-        assert signal.getsignal(signal.SIGALRM) is caller_handler
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, previous_handler)
-
-
-@pytest.mark.skipif(
-    not all(hasattr(signal, name) for name in ("SIGALRM", "ITIMER_REAL")),
-    reason="requires the POSIX real-time alarm inspected by the alignment backstop",
-)
-def test_an_alarm_firing_at_the_cancellation_point_is_a_record_not_an_exception(monkeypatch):
-    """Cancelling only in the `finally` left a real window: an alarm firing
-    after `get_matching_blocks` returned would raise `_TimedOut` from inside
-    the `finally` itself, past the `except` above it, propagating an internal
-    exception out of a function whose contract is to return `unaligned`.
-
-    The fire is simulated at the first cancellation, which is where the real
-    signal would land. Recording `timeout` there understates a finished
-    alignment; escaping as an exception crashes the Attestatores stage.
-    """
-    real_alarm = signal.alarm
-    fired: list[bool] = []
-
-    def firing_alarm(seconds):
-        # The one cancellation the alignment itself owns, whichever it is.
-        if seconds == 0 and not fired:
-            fired.append(True)
-            real_alarm(0)
-            raise alignment_module._TimedOut()
-        return real_alarm(seconds)
-
-    monkeypatch.setattr(signal, "alarm", firing_alarm)
-
-    result = align_to_anchor(
-        "alpha beta",
-        "alpha beta",
-        AlignmentLimits(max_characters=100, max_character_pairs=10_000, timeout_seconds=5),
-    )
-
-    assert fired, "the alignment armed no alarm, so this window was never exercised"
     assert result["status"] == "unaligned"
-    assert result["reason"] == alignment_module.DEADLINE_REASON
-    assert "spans" not in result
+    # Named for what happened -- this module stopped -- so a receipt cannot be
+    # read as saying the witness failed or that coverage was measured and found
+    # absent.
+    assert result["reason"] == STEP_LIMIT_REASON == "alignment-step-limit"
+    assert "spans" not in result, "a stopped alignment must never carry a partial spans list"
+    assert result["witness"]["text"] == witness, "refused, never clipped"
+
+
+def test_the_step_counted_matcher_returns_exactly_the_standard_library_blocks():
+    """The budget counts the work and changes none of it: every block and
+    opcode is `difflib`'s own, so no aligned record moves because it is
+    counted."""
+    pairs = [
+        ("alpha beta gamma", "alpha beta gamna"),
+        ("abcabcabcabc", "cbacbacba"),
+        (
+            "et de Marie Bernard, laboureur de cette paroisse, en presence de Jean Moreau",
+            "et de Marie Bernart, laboureur de ceste parroisse, en presence de Jan Moreau",
+        ),
+        ("", "alpha"),
+        ("a" * 300, "a" * 200 + "b" + "a" * 50),
+    ]
+    for witness, anchor in pairs:
+        reference = SequenceMatcher(None, witness, anchor, autojunk=False)
+        counted = StepCountedMatcher(witness, anchor, 10**9)
+        assert counted.get_matching_blocks() == reference.get_matching_blocks()
+        assert counted.get_opcodes() == reference.get_opcodes()
+
+
+def test_a_degenerate_pair_the_pair_bound_admits_stops_on_the_sealed_budget():
+    """A single repeated letter at the pair ceiling is the matcher's worst
+    shape. The first search is charged its whole cost before it runs, so it
+    stops before doing any of it."""
+    limits = load_alignment_limits()[0]
+    side = int(limits.max_character_pairs**0.5)
+    with pytest.raises(AlignmentStepLimit):
+        StepCountedMatcher("a" * side, "a" * side, limits.max_alignment_steps).find_longest_match()
+    result = align_to_anchor("a" * side, "a" * side, limits)
+    assert (result["status"], result["reason"]) == ("unaligned", STEP_LIMIT_REASON)
 
 
 # --- The matcher's contract --------------------------------------------------
@@ -336,13 +252,15 @@ def test_an_alarm_firing_at_the_cancellation_point_is_a_record_not_an_exception(
 def _matcher_limits() -> AlignmentLimits:
     """The shipped limits, loaded, never a copy of them.
 
-    Restating 100,000 / 10^8 / 25 here would have made the
-    two tests below assert against numbers that agree with
-    `config/alignment.toml` only until someone edits it -- and the deadline is
-    the number under scrutiny, so a test that cannot notice it
-    changing is the wrong test.
+    Restating them here would have made the tests below assert against
+    numbers that agree with `config/alignment.toml` only until someone edits
+    it, and the step budget is the number these tests exist to watch.
     """
     return load_alignment_limits()[0]
+
+
+def _blocks(witness: str, anchor: str) -> list[tuple[int, int, int]]:
+    return alignment_module._matching_blocks(witness, anchor, _matcher_limits().max_alignment_steps)
 
 
 @pytest.mark.parametrize(
@@ -371,7 +289,7 @@ def test_every_matched_span_names_text_that_is_actually_equal(witness, anchor, e
     file is meant to be watching. Only the two empty-input rows may return
     nothing.
     """
-    blocks = alignment_module._matching_blocks(witness, anchor)
+    blocks = _blocks(witness, anchor)
     assert bool(blocks) is expects_a_match
     for witness_start, anchor_start, size in blocks:
         assert (
@@ -388,7 +306,7 @@ def test_matched_blocks_are_strictly_ordered_and_non_overlapping_on_both_sides()
     an act's anchor range pull in witness text from the far end of the page."""
     witness = "et de Marie Bernard, laboureur de cette paroisse, en presence de Jean Moreau"
     anchor = "et de Marie Bernart, laboureur de ceste parroisse, en presence de Jan Moreau"
-    blocks = alignment_module._matching_blocks(witness, anchor)
+    blocks = _blocks(witness, anchor)
     assert len(blocks) > 1, "this pair must exercise more than a single block"
     previous_witness_end = previous_anchor_end = 0
     for witness_start, anchor_start, size in blocks:
@@ -404,12 +322,12 @@ def test_the_matcher_folds_no_case_and_composes_no_accents():
     """`markup_text_view` decides normalization -- NFC and whitespace collapse,
     both recorded as loss. The matcher must add none of its own, or two
     readings that differ in the ink would be reported as agreeing."""
-    assert alignment_module._matching_blocks("ABC", "abc") == []
+    assert _blocks("ABC", "abc") == []
     # Composed vs decomposed: the same grapheme, different codepoints. Only
     # `markup_text_view` may reconcile those, and it records the count when it
     # does; a matcher that did it silently would hide the difference.
-    assert alignment_module._matching_blocks("\u00e9", "e\u0301") == []
-    assert alignment_module._matching_blocks("\u00e9", "\u00e9") == [(0, 0, 1)]
+    assert _blocks("\u00e9", "e\u0301") == []
+    assert _blocks("\u00e9", "\u00e9") == [(0, 0, 1)]
 
 
 def test_offsets_are_codepoint_indices_even_past_the_basic_multilingual_plane():
@@ -418,7 +336,7 @@ def test_offsets_are_codepoint_indices_even_past_the_basic_multilingual_plane():
     not UTF-8 bytes and not UTF-16 units. An astral character counting as two
     would shift every later offset and mis-place the raw span."""
     witness = "\U0001f600\U0001f600abc"
-    assert alignment_module._matching_blocks(witness, "abc") == [(2, 0, 3)]
+    assert _blocks(witness, "abc") == [(2, 0, 3)]
 
 
 def test_a_shared_act_opening_attaches_to_the_act_the_witness_actually_read():
@@ -447,7 +365,7 @@ def test_a_shared_act_opening_attaches_to_the_act_the_witness_actually_read():
     witness = "SYNTHETIC ACT TWO delta epsilon zeta eta"
     second_act_start = anchor.index("SYNTHETIC ACT TWO")
 
-    blocks = alignment_module._matching_blocks(witness, anchor)
+    blocks = _blocks(witness, anchor)
 
     assert sum(size for _, _, size in blocks) == len(witness), (
         "the witness read one act verbatim, so all of it has a counterpart"
@@ -459,32 +377,18 @@ def test_a_shared_act_opening_attaches_to_the_act_the_witness_actually_read():
 
 
 @pytest.mark.full
-def test_the_page_that_set_the_deadline_still_aligns_under_the_sealed_limits():
-    """The workload that decided `timeout_seconds`, run against the sealed
+def test_the_page_that_set_the_budget_still_aligns_under_the_sealed_limits():
+    """The workload that decided `max_alignment_steps`, run against the sealed
     value, so lowering that value goes red here.
 
-    A fired deadline is `unaligned`, an unaligned page witness is not
-    `comparable`, and an incomparable chair leaves the act's witness floor -- so
-    a comparison that is merely slow is recorded as coverage that is missing.
-    The input below is 7,500 characters of register prose whose acts
-    repeat one formula verbatim, which is what a scribe copying one form
-    actually produces, and which is the shape Ratcliff-Obershelp works hardest
-    on. It measures 10.1 s: under a shorter deadline it came back `unaligned`,
-    and a page that had been read perfectly well was recorded as an act nobody
-    corroborated.
-
-    The bar is the sealed deadline itself, not a fraction of it derived here:
-    the claim is "this page aligns under the shipped limits", and a second
-    invented threshold would be a different, weaker claim. Marked `full` so a
-    ten-second alignment stays out of the fast loop. The timing is kept rather
-    than removed: the deadline's adequacy is this change's whole subject, and
-    a claim no test can notice going wrong is not a claim.
-
-    What no deadline value can claim is that nothing reaches it: two different
-    low-entropy chair responses at the pair ceiling measure 283.9 s, so the
-    deadline still fires on degenerate output and is still an honest non-verdict
-    when it does. `pipeline/3_attestatores/CONTRACT.md` carries that measurement
-    and the design that would close it.
+    A spent budget is `unaligned`, an unaligned page witness is not
+    `comparable`, and an incomparable chair leaves the act's witness floor --
+    so a budget that runs out on real work records coverage that is missing.
+    The input below is 7,500 characters of register prose whose acts repeat
+    one formula verbatim, which is what a scribe copying one form actually
+    produces, and which is the shape Ratcliff-Obershelp works hardest on. It
+    takes 76.8 million steps. Marked `full` so the seconds it takes stay out
+    of the fast loop; its verdict does not depend on them.
     """
     act = (
         "L'an mil sept cent quarante-trois, le douziesme jour du mois de may, "
@@ -494,14 +398,12 @@ def test_the_page_that_set_the_deadline_still_aligns_under_the_sealed_limits():
     anchor = (act * 40)[:7_500]
     witness = anchor.replace("este", "esté").replace("legitime", "legitirne")[:7_500]
     limits = _matcher_limits()
-    start = time.perf_counter()
     result = align_to_anchor(witness, anchor, limits)
-    elapsed = time.perf_counter() - start
 
     assert result["status"] == "aligned", (
-        f"the page that set the deadline took {elapsed:.1f}s against a sealed "
-        f"{limits.timeout_seconds}s and came back {result.get('reason')}; a page read "
-        "perfectly well would be recorded as an act nobody corroborated"
+        f"the page that set the budget came back {result.get('reason')} under a sealed "
+        f"{limits.max_alignment_steps} steps; a page read perfectly well would be "
+        "recorded as an act nobody corroborated"
     )
 
 
@@ -559,7 +461,7 @@ def test_the_loader_returns_the_sealed_limits_and_the_file_seal():
     limits, digest = load_alignment_limits()
     assert limits.max_characters > 0
     assert limits.max_character_pairs > 0
-    assert limits.timeout_seconds > 0
+    assert limits.max_alignment_steps > 0
     assert digest == read_sealed_toml(DEFAULT_ALIGNMENT_CONFIG_PATH, "alignment")[1]
 
 
@@ -571,7 +473,7 @@ def test_the_loader_refuses_an_unreadable_file(tmp_path):
 def test_the_loader_refuses_an_unknown_or_missing_key(tmp_path):
     misspelt = tmp_path / "misspelt.toml"
     misspelt.write_text(
-        "[limits]\nmax_characters = 1\nmax_character_pairs = 1\ntimeout_second = 1\n"
+        "[limits]\nmax_characters = 1\nmax_character_pairs = 1\nmax_alignment_step = 1\n"
     )
     with pytest.raises(ContractError, match="closed schema"):
         load_alignment_limits(misspelt)
@@ -584,11 +486,11 @@ def test_the_loader_refuses_an_unknown_or_missing_key(tmp_path):
 @pytest.mark.parametrize("bad", ['"3"', "true", "0", "-1", "1.5"])
 def test_the_loader_refuses_a_value_that_is_not_a_positive_integer(tmp_path, bad):
     """`true` would parse as 1 and quietly cut every page alignment to one
-    second; a float or string would land in signal.alarm at run time. The
+    step; a float or string would reach the matcher's budget at run time. The
     loader is where those stop."""
     path = tmp_path / "limits.toml"
     path.write_text(
-        f"[limits]\nmax_characters = 1\nmax_character_pairs = 1\ntimeout_seconds = {bad}\n"
+        f"[limits]\nmax_characters = 1\nmax_character_pairs = 1\nmax_alignment_steps = {bad}\n"
     )
     with pytest.raises(ContractError, match="positive integers"):
         load_alignment_limits(path)

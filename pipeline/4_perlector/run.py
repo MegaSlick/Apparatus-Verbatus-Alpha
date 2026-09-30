@@ -1337,7 +1337,6 @@ def _page_comparison_view(
                     "line_geometry",
                     "loss",
                     "offset_maps",
-                    "deadline_in_force",
                 }
                 or (
                     alignment.get("anchor_basis") == "act-anchor"
@@ -1348,8 +1347,6 @@ def _page_comparison_view(
                     and alignment.get("anchor_chair") is not None
                 )
                 or span != alignment.get("witness_span")
-                # Whether the SIGALRM backstop was armed, not only whether it finished.
-                or not isinstance(alignment.get("deadline_in_force"), bool)
             ):
                 raise SchemaRefusal("an attached page witness has no computed alignment")
             page_text = page_payload.get("payload")

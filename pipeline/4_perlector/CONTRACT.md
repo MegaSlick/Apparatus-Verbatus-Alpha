@@ -405,13 +405,14 @@ long to align against this reading at all: a witness's report is a model's own
 output that nothing upstream bounds, and a repetition loop running to a
 32k-token cap would hold the stage for tens of minutes per act.
 `dissent.MAX_COMPARISON_CHARACTER_PAIRS` refuses that case cheaply, before any
-alignment starts. It is **not**, on its own, a wall-clock bound: `SequenceMatcher`'s
-cost on text that differs in many scattered places — exactly the shape a
-systematically-mistaken witness produces — runs close to the *cube* of the
-length rather than the square the pair count assumes, so a comparison well
-under the pair bound can still run for minutes. `dissent.MAX_COMPARISON_SECONDS`
-is the real backstop: a `SIGALRM` deadline around the alignment itself, so a
-comparison that has not finished by then is abandoned rather than awaited.
+alignment starts. It does **not**, on its own, bound the matcher's work:
+`SequenceMatcher`'s cost on low-entropy or scattered-difference text can run far
+past the square the pair count assumes, so a comparison well under the pair
+bound can still run for minutes. `dissent.MAX_COMPARISON_STEPS` is the real
+backstop: the matcher's work counted in `common.alignment.StepCountedMatcher`
+steps and charged before it is done, so a comparison that would pass it stops
+before the work, and whether a row is compared depends only on the two texts,
+never on the machine that ran it.
 Either bound is on the **comparison**, never the text — nothing is clipped, no
 reading changes, and the row says in words which bound stopped it and that it
 did not run.

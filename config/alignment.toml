@@ -3,14 +3,15 @@
 [limits]
 max_characters = 100000
 max_character_pairs = 100000000
-# 25 seconds, not five, and chosen from the legitimate ceiling rather than the
-# pathological one. An unaligned page witness is not comparable, so it leaves
-# the act's witness floor: a deadline that fires on real work records a slow
-# comparison as coverage that is missing. A 7,500-character page whose acts
+# The matcher's work, in steps: one witness character scanned or one anchor
+# position visited by `find_longest_match`. Counted, not timed, so the same
+# page under the same limits aligns the same way on every machine. Sized from
+# the legitimate ceiling: an unaligned page witness is not comparable, so it
+# leaves the act's witness floor. Synthetic register pages of 2,000 to 8,000
+# characters, witnesses at 2% to 30% character error, reordered, half read or
+# unrelated, took 0.4 to 27.2 million steps. A 7,500-character page whose acts
 # repeat one formula verbatim -- what a scribe copying one form produces --
-# measures 10.1 s, already past five seconds. Twenty-five clears it with load
-# headroom. It does NOT clear everything the pair bound admits: two different
-# low-entropy chair responses at 100,000,000 pairs measure 283.9 s. That case is
-# reported as a named non-verdict, and closing it needs the matcher, not this
-# number. See pipeline/3_attestatores/CONTRACT.md.
-timeout_seconds = 25
+# takes 76.8 million, and clears. Degenerate pairs the pair bound admits stop
+# here: two 10,000-character random two-letter responses reach the budget in
+# about 8.5 s on a laptop, a single repeated letter at once.
+max_alignment_steps = 100000000

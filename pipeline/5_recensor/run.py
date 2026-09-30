@@ -839,7 +839,6 @@ _ALIGNED_KEYS = frozenset(
         "line_geometry",
         "loss",
         "offset_maps",
-        "deadline_in_force",
     }
 )
 # `detector-record`: the act's slice is the records a page witness's own detector
@@ -868,8 +867,6 @@ def _require_alignment_shape(act_id: str, chair: str, alignment: dict) -> None:
                 alignment["anchor_basis"] != "act-anchor"
                 and alignment.get("anchor_chair") is not None
             )
-            # The SIGALRM backstop fact, as the Perlector requires it.
-            or not isinstance(alignment.get("deadline_in_force"), bool)
         ):
             raise FatalAccounting(
                 f"act {act_id} page witness {chair!r} carries a malformed aligned "

@@ -328,7 +328,7 @@ zero-length attach for a genuinely-empty witness, `refuse_ambiguous_act_alignmen
 for two acts one chair cannot tell apart (including any overlapping aligned
 spans that remain after block ownership, named rather than resolved).
 
-### The matcher, and why the deadline is 25 seconds
+### The matcher, and its step budget
 
 `common/alignment.py::_matching_blocks` is `difflib.SequenceMatcher(autojunk=
 False)`'s Ratcliff-Obershelp blocks -- longest common contiguous block first,
@@ -342,8 +342,8 @@ what the witness did.
 
 **RapidFuzz's Indel/LCS opcodes were tried and refused on
 measurement.** They are four orders of magnitude
-faster -- the slowest input the sealed pair bound admits, 283.9 s below, takes
-0.011 s under them -- and
+faster -- the slowest input the sealed pair bound admits, 283.9 s to finish
+under Ratcliff-Obershelp, takes 0.011 s under them -- and
 on identical or near-identical page text they return byte-for-byte the same
 blocks (26 blocks, 7,508 matched characters on a 1,200-word page fixture). But
 LCS maximizes matched characters and breaks ties towards the earliest match, so
@@ -357,64 +357,46 @@ objective is the wrong objective for attaching a reading to an anchor.
 blind, alongside the fidelity and monotonicity properties the same work
 established.
 
-The deadline is what changed. An
-unaligned page witness is not `comparable`, so it leaves the act's witness floor
--- which means a deadline short enough to fire on real work records a *slow
-comparison* as coverage that is missing. `config/alignment.toml` now
-carries 25 s rather than 5 s.
+The matcher's work is bounded by a count, not a clock. `common/alignment.py::
+StepCountedMatcher` charges each `find_longest_match` call its exact work -- one
+step per witness character scanned and per anchor position visited -- before
+the call runs, and stops at the sealed `max_alignment_steps`. Whether a page
+aligns is therefore a function of its texts and the sealed limits alone: the
+same page gives the same record on a laptop and on a loaded pod.
 
-The number is chosen from the legitimate ceiling, not from the pathological one,
-because measurement showed the pathological one cannot be cleared. Timings
-measured on a development machine, `align_to_anchor` through the shipped bounds:
+An unaligned page witness is not `comparable`, so it leaves the act's witness
+floor -- a budget small enough to run out on real work records a comparison as
+coverage that is missing. The budget is chosen from the legitimate ceiling.
+Step counts on synthetic register pages, `common.alignment.StepCountedMatcher`
+through the shipped bounds:
 
-| Input, at or near the sealed ceiling | Wall clock |
+| Input | Steps |
 |---|---|
-| 7,500-character page, names varying between acts | 2.0 s |
-| 7,500-character page, one act's formula repeated verbatim | **10.1 s** |
-| single-character chair response, 10,000 x 10,000 | 7.0 s |
-| genuinely random two-letter pair, 10,000 x 10,000 | 14.7 s |
-| two *different* repeated phrases, 10,000 x 10,000 | **283.9 s** |
+| 2,000 to 8,000-character pages, 2% to 30% character error, reordered, half read or unrelated | 0.4 to 27.2 million |
+| 7,500-character page, one act's formula repeated verbatim | **76.8 million** |
+| 100,000-character witness holding a 1,000-character anchor verbatim | 9.1 million |
 
-Two of those rows are new and both matter. The fully formulaic page is the one
-that decides the number: a scribe copying one form produces exactly that text,
-and at 10.1 s it was already past the old five seconds -- so the five-second
-deadline could fire on a page that had been read perfectly well, and record it
-as an act nobody corroborated. Twenty-five seconds puts real material safely
-inside with load headroom.
+`max_alignment_steps` is 100 million, which clears every row. Degenerate
+chair responses the pair ceiling admits run out instead of finishing: a
+single-character 10,000 x 10,000 pair is charged past the budget before the
+first search runs, and two different low-entropy 10,000-character responses --
+283.9 s to finish -- run out in about ten seconds on a development machine.
 
-The 284-second row is the one that decides what is still open. An earlier
-measurement put the worst admissible input at 17.5 s, but its
-degenerate cases were all *self*-similar (and one of its two rows was
-accidentally the same single-character string, from a generator that rebuilt its
-`random.Random(1)` on every draw). Two different low-entropy responses are far
-worse, and 284 s is what the sealed pair ceiling actually admits. **No deadline
-value closes this case**: raising it far enough to never fire would mean
-minutes per (page, chair) on a billing pod, and lowering `max_character_pairs`
-far enough to exclude the case would refuse legitimate pages, since a real page
-at 10,000 x 10,000 already sits at the ceiling. The deadline is now honest about
-real material and remains an honest non-verdict on degenerate material; closing
-the case needs the matcher, and the matcher needs the design below.
+**What would give those an answer, and is not built here.** On a spent budget,
+a bounded LCS pass (RapidFuzz Indel, ~10 ms at the ceiling) instead of
+returning `unaligned`, with the record disclosing which matcher produced the
+spans. Every page any fixture or real reading produces today is decided by
+Ratcliff-Obershelp exactly as now, so no verdict and no run-tree digest moves;
+only inputs that already fail get an answer instead of a shortfall, and the LCS
+tie-break flaw above lands only where no attachment was well defined anyway. It
+needs a `matcher` key on the aligned attachment record and a widening of the
+closed-set check in `pipeline/5_recensor/run.py`, which is a published record
+shape, so it is named here rather than made.
 
-**What would close it, and is not built here.** Ratcliff-Obershelp first under
-the deadline; on a fired deadline, a bounded LCS pass (RapidFuzz Indel, ~10 ms
-at the ceiling) instead of returning `unaligned`, with the record disclosing
-which matcher produced the spans. Every page any fixture or real reading
-produces today is decided by Ratcliff-Obershelp exactly as now, so no verdict and
-no run-tree digest moves; only inputs that already fail get an answer instead of
-a shortfall, and the LCS tie-break flaw above lands only where no attachment was
-well defined anyway. It needs a `matcher` key on the aligned attachment record
-and a widening of the closed-set check in `pipeline/5_recensor/run.py`, which is a
-published record shape, so it is named here rather than made.
-
-One related gap is unchanged and still open:
-where `SIGALRM` cannot arm, `max_character_pairs` is the only guard, and it
-admits a 284-second comparison.
-
-A fired deadline is `alignment-deadline-exceeded`, deliberately not `timeout`.
-The name has to say that this module's own backstop gave up, because nothing may
-read it as a measurement of the witness. The Recensor holds the act rather than
-counting the chair, which is the right direction -- no comparison was made, so
-none may be claimed -- but
+A spent budget is `alignment-step-limit`. The name has to say that this
+module stopped, because nothing may read it as a measurement of the witness.
+The Recensor holds the act rather than counting the chair, which is the right
+direction -- no comparison was made, so none may be claimed -- but
 `common/contracts/outcomes.py::witness_coverage` still counts it in the same
 `shortfalls["unaligned"]` bucket as a measured non-overlap. Separating the two is
 a change to a published coverage record and is not made here.
@@ -1579,7 +1561,7 @@ claim a page the ink does not support, or drop one the ink does.
 - unaligned: `{status, reason}`, reasons among `missing-chandra-page-anchor`,
   `act-anchor-line-not-located`, `no-overlap-with-act-anchor`,
   `no-raw-counterpart-for-aligned-span`,
-  `character-limit`, `character-pair-limit`, `alignment-deadline-exceeded`,
+  `character-limit`, `character-pair-limit`, `alignment-step-limit`,
   `no-common-anchor-text` (the aligner's own reasons pass through
   verbatim), `non-reading-page-testimonium-<outcome>` for a native page
   capture that produced no reading, `non-reading-act-attempt-<outcome>`
