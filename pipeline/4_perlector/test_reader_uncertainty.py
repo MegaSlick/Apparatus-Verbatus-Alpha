@@ -20,12 +20,12 @@ import sys
 import zipfile
 from pathlib import Path
 
-from common import reading_annotations as annotations
 import audit
 import pytest
 import reader as reader_module
 from test_prior_protocol import sampling_approval_records
 
+from common import reading_annotations as annotations
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
 from common.contracts.uncertainty import from_perlectio

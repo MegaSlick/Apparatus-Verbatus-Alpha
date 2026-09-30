@@ -47,7 +47,6 @@ from __future__ import annotations
 from typing import Any, Final, Protocol, TypedDict
 
 from common import reading_annotations as annotations
-
 from common.background import SECONDARY_MARGIN
 from common.contracts.errors import ContractError
 from common.contracts.identities import act_id as derive_act_id

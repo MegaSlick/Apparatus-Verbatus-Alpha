@@ -66,10 +66,10 @@ from __future__ import annotations
 import base64
 from typing import Any, Mapping
 
-from common import reading_annotations as annotations
 import prompts
 from reader import PASS_KINDS, DeliveredPixels, LectioResult, validate_audit_delivery
 
+from common import reading_annotations as annotations
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
