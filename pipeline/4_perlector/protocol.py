@@ -1,11 +1,15 @@
-"""The sealed, non-model policy for R5a's prior-draft protocol.
+"""The sealed, non-model policy a Perlector pass reads under.
 
-It also seals what one Perlector call reads (`reading_unit`) and, for the page
-path, the feed switches (`[feed]`, `validate_feed_table`). The page feed shows
-witnesses under the run's witness regime: `blinded` hides chair and model
-names, so a witness is a pseudonymous label and a letter; the labels a witness
-wrote on its own units (a layout block's label, a section name) are part of
-its report and are shown as given under either regime.
+It seals what one Perlector call reads (`reading_unit`, always `"page"`), the
+feed switches (`[feed]`, `validate_feed_table`), the page render's edges
+(`[page_context]`) and the truncation instrument's numbers (`[truncation]`).
+The declaration also carries the prior-draft fields, `max_images` and
+`[neighbours]`; they are checked as sealed and no pass reads them.
+
+The page feed shows witnesses under the run's witness regime: `blinded` hides
+chair and model names, so a witness is a pseudonymous label and a letter; the
+labels a witness wrote on its own units (a layout block's label, a section
+name) are part of its report and are shown as given under either regime.
 """
 
 from __future__ import annotations
@@ -14,12 +18,9 @@ from pathlib import Path
 from typing import Any, Final
 
 from common.calibration import calibrated_claim_has_sample_evidence
-from common.contracts.approval import ApprovalRecordBinding
-from common.contracts.canonical import digest_of
 from common.contracts.errors import ContractError
 from common.page_feed import FEED_TABLE, validate_feed_table
 from common.sealed_config import read_sealed_toml
-from common.stage import PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT
 
 SELECTION_RULE: Final = "digest-threshold-over-frame-page-seed-act.v1"
 PAGE_SHARED_PREFIX_POLICY: Final = "page-shared-prefix-first.v1"
@@ -45,7 +46,7 @@ NEIGHBOUR_FRAGMENT: Final = (
 NEIGHBOURS_TABLE: Final = "neighbours"
 PAGE_CONTEXT_TABLE: Final = "page_context"
 READING_UNIT_FIELD: Final = "reading_unit"
-READING_UNITS: Final = frozenset({"act", "page"})
+READING_UNITS: Final = frozenset({"page"})
 _FIELDS: Final = frozenset(
     {
         "selection_rule",
@@ -233,65 +234,3 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
             "configuration field"
         )
     return record, digest
-
-
-def validate_control_per_mille(value: int) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 1000:
-        raise ValueError(
-            f"perlector_instrument_per_mille must be an integer in [0, 1000], got {value!r}"
-        )
-    return value
-
-
-def is_control_sampled(
-    act_id: str, *, frame_digest: str, page_digest: str, seed: str, per_mille: int
-) -> bool:
-    """Uniform digest threshold over run-stable corpus and act facts only.
-
-    `int(digest[:8], 16) % 1000` is not perfectly uniform (2**32 % 1000 ==
-    296), biasing the low 296 thresholds by ~2.3e-5% -- negligible at any
-    corpus size this pipeline will sample, and left uncorrected because a
-    rejection-sampling retry would exist only for a bias no real run could
-    detect.
-    """
-    validate_control_per_mille(per_mille)
-    if per_mille == 0:
-        return False
-    digest = digest_of(
-        {
-            "purpose": "perlector-prior-control",
-            "frame_digest": frame_digest,
-            "page_digest": page_digest,
-            "seed": seed,
-            "act_id": act_id,
-        }
-    )
-    return int(digest[:8], 16) % 1000 < per_mille
-
-
-def control_sampling_design(
-    *, per_mille: int, selection_rule: str, approval_ref: ApprovalRecordBinding
-) -> dict[str, object]:
-    """Bind each control sample to its rate, rule, and typed approval."""
-    validate_control_per_mille(per_mille)
-    if selection_rule != SELECTION_RULE:
-        raise ValueError(
-            f"design {PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT!r} does not execute selection "
-            f"rule {selection_rule!r}"
-        )
-    if not isinstance(approval_ref, ApprovalRecordBinding):
-        raise ValueError(
-            "a prior-draft control was drawn with an untyped approval reference; "
-            "an arbitrary string is not an approval record"
-        )
-    if approval_ref.subject != PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT:
-        raise ValueError(
-            "a prior-draft control executes design "
-            f"{PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT!r}, but its approval record names "
-            f"{approval_ref.subject!r}"
-        )
-    return {
-        "perlector_instrument_per_mille": per_mille,
-        "selection_rule": selection_rule,
-        "approval_ref": approval_ref.reference.to_record(),
-    }

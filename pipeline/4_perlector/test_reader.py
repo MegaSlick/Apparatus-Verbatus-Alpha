@@ -1,12 +1,9 @@
 """The fixture reader recognizes and actually inspects minted fallback acts."""
 
-import re
-from pathlib import Path
-
 import pytest
-import reader as reader_module
 from reader import FixtureReader
 
+from common import reading_annotations as annotations
 from common.contracts.errors import ContractError
 from common.contracts.identities import act_id as derive_act_id
 from common.imaging import encode_grayscale_png
@@ -138,24 +135,6 @@ def test_an_unnamed_pass_kind_is_refused_rather_than_served_as_the_establishing_
         reader.read(_ordinary_dossier("a1"), pass_kind="lectio_prior")
 
 
-def test_every_pass_kind_the_producer_uses_is_in_the_closed_vocabulary():
-    """The vocabulary equals literals in both producers, including audit re-proof."""
-    # Derived from the files that actually name a pass kind, not a fixed pair,
-    # so the pin grows with the code. A reader call moved into a new module
-    # would otherwise never have its pass kinds compared, and a misspelling
-    # there would be read as an establishing pass.
-    producers = [
-        path
-        for path in sorted(Path(__file__).parent.glob("*.py"))
-        if not path.name.startswith("test_") and "pass_kind=" in path.read_text()
-    ]
-    assert {path.name for path in producers} >= {"run.py", "combined.py"}
-    producer_calls = set()
-    for path in producers:
-        producer_calls |= set(re.findall(r"pass_kind=\"([^\"]+)\"", path.read_text()))
-    assert producer_calls == set(reader_module.PASS_KINDS)
-
-
 def test_pass_a_reads_this_scenarios_own_declared_prior_not_the_first_row():
     reader = FixtureReader(_TWO_ACT_FIXTURE, "happy")
 
@@ -227,3 +206,118 @@ def test_a_fallback_shaped_key_cannot_blank_a_non_fallback_act():
         reader.read(
             _dossier(act_id=non_fallback_id, act_key="page-fallback:3"), pass_kind="perlectio"
         )
+
+
+# --- The fixture's declared doubt report ----------------------------------------
+
+
+_DOUBT = {
+    "scenario": "happy",
+    "act_key": "a1",
+    "start": 0,
+    "end": 1,
+    "alternatives": [],
+    "confidence": "low",
+}
+
+
+def _fixture(**tables) -> dict:
+    base = {
+        "act": [{"key": "a1", "text": "alpha beta"}],
+        "page": [],
+        "scenario": [{"name": "happy"}],
+    }
+    base.update(tables)
+    return base
+
+
+def _read(fixture: dict, scenario: str = "happy"):
+    return FixtureReader(fixture, scenario).read(
+        {"act_id": "act_0000000000000000", "act_key": "a1", "regions": [], "page_renders": []},
+        pass_kind="perlectio",
+    )
+
+
+@pytest.mark.parametrize(
+    ("tables", "expected"),
+    [
+        ({"reader_doubt": [{**_DOUBT, "scenario": "nowhere"}]}, "undeclared scenario"),
+        ({"reader_doubt": [{**_DOUBT, "act_key": "a9"}]}, "undeclared act"),
+        (
+            {"reader_doubt": [{**_DOUBT, "pass_kind": "not-a-pass"}]},
+            "unknown pass kind",
+        ),
+        (
+            {
+                "reader_assessment": [
+                    {"scenario": "happy", "act_key": "a1", "state": "assessed", "problem": ""},
+                    {"scenario": "happy", "act_key": "a1", "state": "malformed", "problem": "x"},
+                ]
+            },
+            "twice",
+        ),
+        # The two refusals the correction added: a detail row that would have
+        # been discarded in silence, and a state whose whole content is missing.
+        ({"reader_doubt": [dict(_DOUBT)]}, "cannot also report one"),
+        (
+            {
+                "reader_assessment": [
+                    {"scenario": "happy", "act_key": "a1", "state": "malformed", "problem": ""}
+                ]
+            },
+            "with no problem",
+        ),
+        # A row naming no pass covers every pass, so a pass-scoped row beside it
+        # is a second answer to the same call, not a second key.
+        (
+            {
+                "reader_assessment": [
+                    {"scenario": "happy", "act_key": "a1", "state": "assessed", "problem": ""},
+                    {
+                        "scenario": "happy",
+                        "act_key": "a1",
+                        "state": "malformed",
+                        "problem": "x",
+                        "pass_kind": "perlectio",
+                    },
+                ]
+            },
+            "with 2 rows",
+        ),
+    ],
+)
+def test_the_fixture_refuses_a_doubt_row_it_cannot_honestly_serve(tables, expected):
+    with pytest.raises(KeyError, match=expected):
+        _read(_fixture(**tables))
+
+
+def test_a_declared_not_assessed_row_reports_this_modules_own_reason():
+    """TOML has no null, so an empty problem is the absence, under that state alone."""
+    result = _read(
+        _fixture(
+            reader_assessment=[
+                {"scenario": "happy", "act_key": "a1", "state": "not-assessed", "problem": ""}
+            ]
+        )
+    )
+
+    assert result["assessment"] == annotations.not_assessed()
+
+
+def test_a_declared_malformed_row_keeps_the_problem_it_stands_in_for():
+    result = _read(
+        _fixture(
+            reader_assessment=[
+                {
+                    "scenario": "happy",
+                    "act_key": "a1",
+                    "state": "malformed",
+                    "problem": "the engine returned a doubt this fixture cannot anchor",
+                }
+            ]
+        )
+    )
+
+    assert result["assessment"]["state"] == "malformed"
+    assert result["assessment"]["uncertain_spans"] == [] and result["assessment"]["gaps"] == []
+    assert "cannot anchor" in result["assessment"]["problem"]

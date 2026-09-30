@@ -1,8 +1,7 @@
-"""The dossier: deterministic, order-invariant, and leaking nothing under the
-blinded regime that a named dossier would show.
+"""The page render a reading is shown (`common/page_render.py`), and the
+preference screen over a witness payload (`dossier.assert_no_order_bearing_field`).
 """
 
-import copy
 import subprocess
 import sys
 from io import BytesIO
@@ -13,7 +12,7 @@ from PIL import Image
 
 from common import page_render
 from common.chairs.registry import ChairRegistry
-from common.contracts.canonical import canonical_text, digest_bytes
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR
@@ -25,12 +24,10 @@ from conftest import load_stage, programs_through
 ROOT = Path(__file__).resolve().parents[2]
 
 
-perlector = load_stage("4_perlector")
-dossier = perlector.dossier_module
+dossier = load_stage("4_perlector", "dossier")
+protocol = load_stage("4_perlector", "protocol")
 # The run's sealed page-render bound, as a pass reads it.
-PAGE_CONTEXT = perlector.protocol.load(ROOT / "config" / "perlector_protocol.toml")[0][
-    "page_context"
-]
+PAGE_CONTEXT = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0]["page_context"]
 EDGE = PAGE_CONTEXT["maximum_edge"]
 
 
@@ -102,24 +99,6 @@ def evidence(tmp_path_factory):
     return context, act_id, act_key, regions, testimonia
 
 
-DECLARATION = ROOT / "config" / "witness_context.toml"
-
-
-def _build(context, act_id, act_key, regions, testimonia, *, regime="named", witness_context=None):
-    if witness_context is None:
-        witness_context = dossier.load_witness_context(DECLARATION)
-    return dossier.build_dossier(
-        context,
-        act_id=act_id,
-        act_key=act_key,
-        regions=regions,
-        testimonia=testimonia,
-        regime=regime,
-        page_renders=[],
-        witness_context=witness_context,
-    )
-
-
 def test_a_page_render_blob_is_reproducible_by_the_projects_own_encoder(evidence):
     """Pillow's bundled zlib differs per wheel, so a
     Pillow-saved render renames its content-addressed path on another platform.
@@ -151,58 +130,14 @@ def test_a_page_render_blob_is_reproducible_by_the_projects_own_encoder(evidence
         assert encode_grayscale_png_deterministic(width, height, rows) == blob
 
 
-def test_dossier_is_deterministic_and_shuffle_invariant(evidence):
-    context, act_id, act_key, regions, testimonia = evidence
-    forward = _build(context, act_id, act_key, regions, testimonia)
-    shuffled = _build(context, act_id, act_key, list(reversed(regions)), list(reversed(testimonia)))
-    assert forward == shuffled
-    assert forward["dossier_digest"] == shuffled["dossier_digest"]
-
-
-def test_dossier_carries_no_order_bearing_field(evidence):
-    context, act_id, act_key, regions, testimonia = evidence
-    built = _build(context, act_id, act_key, regions, testimonia)
-    dossier.assert_no_order_bearing_field(built)
-
-
-def test_the_sweep_runs_on_every_dossier_the_build_actually_produces(evidence, monkeypatch):
-    """A guard the production path does not run is a guard in name only, and
-    this one was exactly that until the merge: the tests called it, the handoff
-    said it swept every key, and `build_dossier` never invoked it.
-
-    The sweep checks field *names*, and every field name in a dossier comes from
-    this module's own code -- so no forged input can trip it, and the only
-    honest test of the wiring is that the build really calls it. A future edit
-    that drops the call fails here rather than silently removing the one guard
-    that keeps a witness preference out of the dossier."""
-    context, act_id, act_key, regions, testimonia = evidence
-    swept = []
-    monkeypatch.setattr(
-        dossier,
-        "assert_no_order_bearing_field",
-        # A deep copy, because the real call is handed the dossier dict itself
-        # and the digest is added to that same object a line later -- keeping
-        # the reference would record the value as it looks *after* the step
-        # this test exists to order.
-        lambda value, path="$": swept.append(copy.deepcopy(value)),
-    )
-    built = _build(context, act_id, act_key, regions, testimonia)
-    assert swept == [{key: value for key, value in built.items() if key != "dossier_digest"}], (
-        "build_dossier must sweep the whole dossier, and must do it before the "
-        "digest is taken -- a preference-bearing field sealed into the digest is "
-        "already in the record by the time anyone could object"
-    )
-
-
-def test_the_no_order_bearing_sweep_is_not_vacuous(evidence):
-    """Prove the guard can go red: a dossier carrying a trust/preference field
+def test_the_no_order_bearing_sweep_is_not_vacuous():
+    """Prove the guard can go red: a payload carrying a trust/preference field
     must be caught."""
-    context, act_id, act_key, regions, testimonia = evidence
-    built = _build(context, act_id, act_key, regions, testimonia)
-    tampered = copy.deepcopy(built)
-    tampered["testimonia"][0]["trust_score"] = 100
+    payload = {"testimonia": [{"witness_label": "attestator_1", "reported": "alpha"}]}
+    dossier.assert_no_order_bearing_field(payload)
+    payload["testimonia"][0]["trust_score"] = 100
     with pytest.raises(ContractError, match="names a preference"):
-        dossier.assert_no_order_bearing_field(tampered)
+        dossier.assert_no_order_bearing_field(payload)
 
 
 # Far past any interpreter's recursion allowance, so a sweep that reaches the
@@ -266,273 +201,11 @@ def test_the_sweep_still_names_the_first_offender_a_recursive_walk_would_have_fo
 
 
 @pytest.mark.parametrize("field", ["consensus", "majority", "vote", "quorum"])
-def test_voting_synonyms_are_refused_at_the_dossier_boundary_before_reading(evidence, field):
-    """Every durable voting synonym is also blocked before a reader sees it."""
-    context, act_id, act_key, regions, testimonia = evidence
-    built = _build(context, act_id, act_key, regions, testimonia)
-    tampered = copy.deepcopy(built)
-    tampered["testimonia"][0][field] = True
-
+def test_voting_synonyms_are_refused_by_the_sweep(field):
+    """Every durable voting synonym is refused by name."""
+    payload = {"testimonia": [{"witness_label": "attestator_1", field: True}]}
     with pytest.raises(ContractError, match="names a preference"):
-        dossier.assert_no_order_bearing_field(tampered)
-
-
-def test_edge_deltas_refuse_a_colliding_witness_label(evidence, monkeypatch):
-    """The new per-label geometry map may not overwrite one chair with another.
-
-    Comparison views already refuse the same collision. Drive this with no
-    comparison views so the edge-delta map has to defend its own evidence.
-    """
-    context, act_id, act_key, regions, testimonia = evidence
-    monkeypatch.setattr(dossier, "witness_label", lambda *args, **kwargs: "witness-collision")
-
-    with pytest.raises(SchemaRefusal, match="edge-deltas.*same witness label"):
-        dossier.build_dossier(
-            context,
-            act_id=act_id,
-            act_key=act_key,
-            regions=regions,
-            testimonia=testimonia,
-            regime="blinded",
-            page_renders=[],
-            witness_context=dossier.load_witness_context(DECLARATION),
-            act_attachment={
-                "reference": {"relative_path": "unused", "sha256": "0" * 64},
-                "page_witness_count": 0,
-                "comparison_views": {},
-                "edge_deltas": {
-                    "attestator_1": [],
-                    "attestator_2": [],
-                },
-            },
-        )
-
-
-def test_an_attachment_with_no_edge_deltas_key_at_all_is_refused_not_read_as_empty(evidence):
-    """An absent mapping is unmeasured geometry, not measured-and-clean geometry.
-
-    Read through a `{}` default, an attachment that never carried the key
-    produced a well-formed dossier saying no chair's ink sat outside the sealed
-    proposal for this act -- boundary evidence deleted from the one record a
-    human reads, with nothing downstream able to tell. Every
-    other case here supplies the key explicitly, so only this pins the absence.
-    """
-    context, act_id, act_key, regions, testimonia = evidence
-
-    with pytest.raises(SchemaRefusal, match="no edge-deltas mapping"):
-        dossier.build_dossier(
-            context,
-            act_id=act_id,
-            act_key=act_key,
-            regions=regions,
-            testimonia=testimonia,
-            regime="blinded",
-            page_renders=[],
-            witness_context=dossier.load_witness_context(DECLARATION),
-            act_attachment={
-                "reference": {"relative_path": "unused", "sha256": "0" * 64},
-                "page_witness_count": 0,
-                "comparison_views": {},
-            },
-        )
-
-
-def test_an_edge_deltas_mapping_that_omits_one_chair_is_refused_like_an_absent_one(evidence):
-    """The absent-mapping rule, one chair at a time.
-
-    A present mapping that simply does not name a contributing witness used to
-    fall through to an empty list for that row, so the dossier said this
-    chair's ink had been compared against the sealed proposal and sat inside
-    it. `reported` has no such spelling -- a chair with no comparison view
-    keeps `reported_basis: "none"` -- and neither does this now.
-    """
-    context, act_id, act_key, regions, testimonia = evidence
-
-    with pytest.raises(SchemaRefusal, match="no edge-deltas entry for witness"):
-        dossier.build_dossier(
-            context,
-            act_id=act_id,
-            act_key=act_key,
-            regions=regions,
-            testimonia=testimonia,
-            regime="named",
-            page_renders=[],
-            witness_context=dossier.load_witness_context(DECLARATION),
-            act_attachment={
-                "reference": {"relative_path": "unused", "sha256": "0" * 64},
-                "page_witness_count": 0,
-                "comparison_views": {},
-                "edge_deltas": {},
-            },
-        )
-
-
-def test_blinded_regime_carries_no_chair_name_or_training_domain(evidence):
-    context, act_id, act_key, regions, testimonia = evidence
-    named = _build(context, act_id, act_key, regions, testimonia, regime="named")
-    blinded = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
-
-    chairs = {record["payload"]["chair"] for record in testimonia}
-    domains = {
-        entry["training_domain"] for entry in named["testimonia"] if entry["training_domain"]
-    }
-    blinded_text = canonical_text(blinded)
-
-    for chair in chairs:
-        assert chair not in blinded_text, f"blinded dossier leaks the real chair name {chair!r}"
-    for domain in domains:
-        assert domain not in blinded_text, (
-            f"blinded dossier leaks a training-domain fact {domain!r}"
-        )
-    assert all(entry["training_domain"] is None for entry in blinded["testimonia"])
-    assert all(entry["model_name"] is None for entry in blinded["testimonia"])
-    assert all(entry["resolved_provenance"] is None for entry in blinded["testimonia"])
-    assert all(entry["witness_label"].startswith("witness-") for entry in blinded["testimonia"])
-
-
-def test_named_dossier_carries_each_witness_model_and_resolved_provenance(evidence):
-    context, act_id, act_key, regions, testimonia = evidence
-    named = _build(context, act_id, act_key, regions, testimonia, regime="named")
-    by_chair = {record["payload"]["chair"]: record for record in testimonia}
-    assert set(by_chair) == {row["witness_label"] for row in named["testimonia"]}
-    for row in named["testimonia"]:
-        provenance = by_chair[row["witness_label"]]["payload"]["provenance"]
-        identity = provenance["resolved_identity"]
-        expected_name = (
-            identity["repo"] if identity["source"] == "huggingface" else identity["path"]
-        )
-        assert row["model_name"] == expected_name
-        assert row["resolved_provenance"] == provenance
-
-
-def test_named_dossier_carries_the_fixture_training_domain_for_the_fixture_roster(
-    evidence,
-):
-    """The fixture roster must not receive vendor facts as though they were its own.
-
-    The default declaration is the single source both this dossier and the
-    config-binding check read, so asserting against it catches an accidental
-    real/fixture declaration swap.
-    """
-    context, act_id, act_key, regions, testimonia = evidence
-    named = _build(context, act_id, act_key, regions, testimonia, regime="named")
-    declared = dossier.load_witness_context(DECLARATION)
-    assert declared, "the fixture witness declaration must name at least one chair"
-
-    by_label = {row["witness_label"]: row for row in named["testimonia"]}
-    assert set(by_label) >= set(declared), (
-        "every declared witness chair must actually reach the dossier as testimony"
-    )
-    for chair, entry in declared.items():
-        assert by_label[chair]["training_domain"] == entry["training_domain"]
-        assert (
-            entry["training_domain"]
-            == "a synthetic fixture witness; no real training domain applies"
-        )
-
-
-def test_dossier_refuses_an_undeclared_witness_regime_even_without_testimonia(evidence):
-    context, act_id, act_key, regions, _ = evidence
-    with pytest.raises(SchemaRefusal, match="witness regime"):
-        _build(context, act_id, act_key, regions, [], regime="half-blinded")
-
-
-def test_blinded_pseudonyms_are_stable_and_reversible_without_a_stored_map(evidence):
-    """Reversal is recomputing the same deterministic function over the public
-    roster in `run.json`, never a second stored copy of it."""
-    from common.witness_regime import pseudonym_for
-
-    context, act_id, act_key, regions, testimonia = evidence
-    blinded = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
-    labels = {entry["witness_label"] for entry in blinded["testimonia"]}
-    chairs = {record["payload"]["chair"] for record in testimonia}
-    recomputed = {
-        pseudonym_for(chair, run_id=context.tree.run_id, config_digest=context.config_digest)
-        for chair in chairs
-    }
-    assert labels == recomputed
-
-
-def test_named_and_blinded_sort_orders_are_each_sorted_by_displayed_label(evidence):
-    """D-9: this test's older name (`…_can_differ`) promised more than the body
-    proved -- both assertions below hold by construction, since `build_dossier`
-    always sorts by displayed label, regardless of what that label is under
-    either regime. See
-    `test_a_blinded_regimes_pseudonym_order_is_not_a_fixed_slot_per_chair`
-    below for the property the old name actually meant to claim."""
-    context, act_id, act_key, regions, testimonia = evidence
-    named = _build(context, act_id, act_key, regions, testimonia, regime="named")
-    blinded = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
-    named_order = [entry["witness_label"] for entry in named["testimonia"]]
-    assert named_order == sorted(named_order)
-    blinded_order = [entry["witness_label"] for entry in blinded["testimonia"]]
-    assert blinded_order == sorted(blinded_order)
-
-
-def test_a_blinded_regimes_pseudonym_order_is_not_a_fixed_slot_per_chair(evidence, monkeypatch):
-    """Sorting by displayed label, not the true chair name: under blinding the
-    order is a function of the run-scoped pseudonym, not a fixed slot per
-    chair. Proven by rebuilding the identical roster under two different
-    run ids and showing the true chair sequence a reader would see reorders --
-    the property `test_..._are_each_sorted_by_displayed_label` above names but,
-    being sorted-by-construction either way, can never exhibit."""
-    from common.witness_regime import pseudonym_for
-
-    context, act_id, act_key, regions, testimonia = evidence
-    chairs = [record["payload"]["chair"] for record in testimonia]
-    assert len(set(chairs)) >= 3, "need enough witnesses for a reorder to be provable, not luck"
-    original_run_id = context.tree.run_id
-
-    first = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
-
-    def chair_sequence(built, run_id):
-        pseudonym_to_chair = {
-            pseudonym_for(chair, run_id=run_id, config_digest=context.config_digest): chair
-            for chair in chairs
-        }
-        return [pseudonym_to_chair[entry["witness_label"]] for entry in built["testimonia"]]
-
-    # With three chairs two run ids coincide on the same order one time in six,
-    # so one alternate is a bet the suite loses on an unrelated roster or run-id
-    # change. Search a handful; the property needs one reorder to exist, not a
-    # particular run id to produce it.
-    first_sequence = chair_sequence(first, original_run_id)
-    second_sequence = first_sequence
-    for index in range(24):
-        alternate_run_id = f"{original_run_id}-alternate-{index}"
-        monkeypatch.setattr(context.tree, "run_id", alternate_run_id)
-        second = _build(context, act_id, act_key, regions, testimonia, regime="blinded")
-        second_sequence = chair_sequence(second, alternate_run_id)
-        if second_sequence != first_sequence:
-            break
-    assert set(first_sequence) == set(second_sequence) == set(chairs)
-    assert first_sequence != second_sequence, (
-        "two different run ids produced the same chair order by coincidence; "
-        "the property under test is that order is pseudonym-derived, not fixed"
-    )
-
-
-def test_load_witness_context_refuses_a_chair_with_no_declared_entry(tmp_path, evidence):
-    context, act_id, act_key, regions, testimonia = evidence
-    incomplete = tmp_path / "witness_context.toml"
-    incomplete.write_text('[attestator_1]\ntraining_domain = "x"\n', encoding="utf-8")
-    table = dossier.load_witness_context(incomplete)
-    with pytest.raises(ContractError, match="no declared entry"):
-        _build(context, act_id, act_key, regions, testimonia, witness_context=table)
-
-
-@pytest.mark.parametrize(
-    "entry",
-    [
-        'training_domain = ""',
-        'training_domain = "fixture"\ntrust_score = 1',
-    ],
-)
-def test_witness_context_refuses_missing_facts_and_picker_metadata(tmp_path, entry):
-    declaration = tmp_path / "witness_context.toml"
-    declaration.write_text(f"[attestator_1]\n{entry}\n", encoding="utf-8")
-    with pytest.raises(ContractError, match="closed, non-blank"):
-        dossier.load_witness_context(declaration)
+        dossier.assert_no_order_bearing_field(payload)
 
 
 def test_build_page_render_records_its_whole_transform_not_only_a_factor(evidence):
@@ -618,48 +291,6 @@ def test_build_page_render_is_reused_byte_identically_on_a_repeat_call(evidence)
         crop_bounds=[],
     )
     assert first == second
-
-
-@pytest.mark.act_path
-def test_published_perlectio_binds_page_context_and_its_source_as_direct_inputs(tmp_path):
-    root = tmp_path / "runs"
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--run-root",
-            str(root),
-            "--run-id",
-            "page-context-inputs",
-            "--scenario",
-            "happy",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    tree = RunTree(root, "page-context-inputs")
-    readings = [
-        entry
-        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
-        if entry["kind"] == "perlectio"
-    ]
-    assert readings, "the fixture must publish a Perlectio before input lineage can be tested"
-    for entry in readings:
-        reading = tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
-        assert reading["payload"]["dossier"]["page_renders"], (
-            "a reading must carry page context; an empty list would make every "
-            "assertion below vacuous"
-        )
-        for render in reading["payload"]["dossier"]["page_renders"]:
-            assert render["source"] in reading["inputs"]
-            assert {
-                "relative_path": render["image_path"],
-                "sha256": render["image_sha256"],
-            } in reading["inputs"]
 
 
 def test_a_page_render_refuses_page_bytes_swapped_after_the_artifact_check(evidence, monkeypatch):

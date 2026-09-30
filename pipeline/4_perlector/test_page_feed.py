@@ -11,7 +11,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import dossier
-import prompts
 import protocol
 import pytest
 from PIL import Image, ImageColor, ImageDraw
@@ -693,7 +692,7 @@ def test_the_fixture_recipe_renders_the_same_inputs_without_the_instruction():
         page_prompt.build_page_prompt("some-other-recipe", feed)
 
 
-def test_the_page_instruction_keeps_the_act_instructions_doubt_marks_word_for_word():
+def test_the_page_instruction_states_the_doubt_marks_word_for_word():
     marks = (
         "Transcribe the ink exactly as it is written on the page. Do not modernize spelling, "
         "expand abbreviations, or correct the scribe. ",
@@ -702,7 +701,6 @@ def test_the_page_instruction_keeps_the_act_instructions_doubt_marks_word_for_wo
     )
     instruction = page_prompt.page_reading_instruction(feed_for(_Blobs()))
     for sentence in marks:
-        assert sentence in prompts.TRANSCRIPTION_INSTRUCTION
         assert sentence in instruction
     for feed in (feed_for(_Blobs()), feed_for(_Blobs(), render=None, page_image="off")):
         example = page_prompt.page_reading_instruction(feed).split("in this form: ", 1)[1]
