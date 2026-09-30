@@ -20,6 +20,7 @@ from common.stage import (
     COUNTED_READING_CLASSES,
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_HOLD,
+    exemplar_page_ids,
     latest_attempt,
     stage_manifest,
 )
@@ -251,6 +252,60 @@ def review_notes(review: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [dict(note) for note in _payload(review)["notes"]]
 
 
+# --- page breaks ---------------------------------------------------------------------
+
+
+def act_entries_by_page(acts: Sequence[Mapping[str, Any]]) -> dict[int, list[Mapping[str, Any]]]:
+    """Each page's `act` entries: the only entries a page break can join."""
+    entries: dict[int, list[Mapping[str, Any]]] = {}
+    for act in acts:
+        if act["n"] is not None and act["kind"] == "act":
+            entries.setdefault(act["page_ordinal"], []).append(act)
+    return entries
+
+
+def page_breaks(
+    pages: Mapping[int, str], acts: Sequence[Mapping[str, Any]]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Every page break an answer flags, as `(subject, payload)`, in page order.
+
+    The last `act` entry of page p and the first of page p+1 are the break's
+    two sides; either side's flag records the break, `agreed` only when both
+    say so, and a break whose sides disagree is still recorded. A side with no
+    `act` entry (a page not read, blank, of `other` entries only, or outside
+    the run) is null. The link holds no unit and joins nothing.
+    """
+    entries = act_entries_by_page(acts)
+    ordinals = sorted(pages)
+    links = []
+    for left in range(ordinals[0] - 1, ordinals[-1] + 1):
+        right = left + 1
+        last = max(entries.get(left, []), key=lambda act: act["n"], default=None)
+        first = min(entries.get(right, []), key=lambda act: act["n"], default=None)
+        to_next = last is not None and last["continues_to_next_page"] is True
+        from_previous = first is not None and first["continues_from_previous_page"] is True
+        if not (to_next or from_previous):
+            continue
+        links.append(
+            (
+                f"page-break:{left}:{right}",
+                {
+                    "schema": CONTINUATION_LINK_SCHEMA,
+                    "from_page_ordinal": left,
+                    "to_page_ordinal": right,
+                    "from_act_id": last["act_id"] if last else None,
+                    "from_act_key": last["act_key"] if last else None,
+                    "to_act_id": first["act_id"] if first else None,
+                    "to_act_key": first["act_key"] if first else None,
+                    "continues_to_next_page": to_next,
+                    "continues_from_previous_page": from_previous,
+                    "agreed": to_next and from_previous,
+                },
+            )
+        )
+    return links
+
+
 def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Every `continuation-link`, as `{ref, from_page_ordinal, to_page_ordinal,
     head_act_id, tail_act_id, agreed}`.
@@ -261,9 +316,12 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
     act entry. Each named side must be a counted row under its own key whose
     reading the link inputs; the link is `agreed` exactly when both flags say
     an act crosses the break, and is `accepted` exactly when it agrees. A break
-    has one link.
+    has one link, and each link is a break `page_breaks` derives from `rows`,
+    its sides its pages' act edges; a flagged break with no link is named by
+    the aggregate (`unpaired_continuations`) and keeps the run partial.
     """
     counted = {row["act_id"]: row for row in rows}
+    derived = dict(page_breaks(exemplar_page_ids(context), rows))
     links: list[dict[str, Any]] = []
     subjects: set[str] = set()
     for entry in stage_manifest(context, RECENSOR)["artifacts"]:
@@ -318,6 +376,12 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
             )
         if record["subject_id"] in subjects:
             raise FatalAccounting(f"{record['subject_id']} has more than one continuation-link")
+        if derived.get(record["subject_id"]) != payload:
+            raise FatalAccounting(
+                f"{what} is not the page break the counted rows' flags derive: no break is "
+                "flagged there, or its sides are not the last and first act entries of their "
+                "pages"
+            )
         subjects.add(record["subject_id"])
         links.append(
             {

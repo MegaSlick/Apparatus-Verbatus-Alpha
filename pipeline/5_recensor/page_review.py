@@ -37,10 +37,11 @@ from common.page_accounting import NOT_APPLICABLE, PASS
 from common.page_path import PAGE_ACCOUNTING_KIND, refs_by_path
 from common.page_review import (
     CONTINUATION_LINK_KIND,
-    CONTINUATION_LINK_SCHEMA,
     HELD,
     PAGE_REVIEW_FIELDS,
     RELEASABLE_HOLDS,
+    act_entries_by_page,
+    page_breaks,
     reviewed_rows,
 )
 from common.page_testimonia import (
@@ -276,15 +277,6 @@ def confirmation(accounting: dict, records: list[dict], *, blank: bool) -> dict[
 # --- continuation --------------------------------------------------------------------
 
 
-def _act_entries_by_page(acts: list[dict]) -> dict[int, list[dict]]:
-    """Each page's `act` entries: the only entries a page break can join."""
-    entries: dict[int, list[dict]] = {}
-    for act in acts:
-        if act["n"] is not None and act["kind"] == "act":
-            entries.setdefault(act["page_ordinal"], []).append(act)
-    return entries
-
-
 def _flags(act: dict) -> list[str]:
     return [
         flag
@@ -301,7 +293,7 @@ def continuation_off_edge(acts: list[dict]) -> dict[str, list[str]]:
     for one, do not move it.
     """
     found: dict[str, list[str]] = {}
-    for page in _act_entries_by_page(acts).values():
+    for page in act_entries_by_page(acts).values():
         first = min(act["n"] for act in page)
         last = max(act["n"] for act in page)
         for act in page:
@@ -323,46 +315,6 @@ def continuation_notes(act: dict) -> list[dict[str, Any]]:
     """
     flags = _flags(act) if act["n"] is not None and act["kind"] != "act" else []
     return [{"code": CONTINUATION_ON_OTHER, "flags": flags}] if flags else []
-
-
-def continuation_links(pages: dict[int, str], acts: list[dict]) -> list[tuple[str, dict]]:
-    """Every page break an answer flags, as `(subject, payload)`, in page order.
-
-    The last `act` entry of page p and the first of page p+1 are the break's
-    two sides; either side's flag records the break, `agreed` only when both
-    say so, and a break whose sides disagree is still recorded. A side with no
-    `act` entry (a page not read, blank, of `other` entries only, or outside
-    the run) is null. The link holds no unit and joins nothing.
-    """
-    entries = _act_entries_by_page(acts)
-    ordinals = sorted(pages)
-    links = []
-    for left in range(ordinals[0] - 1, ordinals[-1] + 1):
-        right = left + 1
-        last = max(entries.get(left, []), key=lambda act: act["n"], default=None)
-        first = min(entries.get(right, []), key=lambda act: act["n"], default=None)
-        to_next = last is not None and last["continues_to_next_page"] is True
-        from_previous = first is not None and first["continues_from_previous_page"] is True
-        if not (to_next or from_previous):
-            continue
-        links.append(
-            (
-                f"page-break:{left}:{right}",
-                {
-                    "schema": CONTINUATION_LINK_SCHEMA,
-                    "from_page_ordinal": left,
-                    "to_page_ordinal": right,
-                    "from_act_id": last["act_id"] if last else None,
-                    "from_act_key": last["act_key"] if last else None,
-                    "to_act_id": first["act_id"] if first else None,
-                    "to_act_key": first["act_key"] if first else None,
-                    "continues_to_next_page": to_next,
-                    "continues_from_previous_page": from_previous,
-                    "agreed": to_next and from_previous,
-                },
-            )
-        )
-    return links
 
 
 def link_inputs(payload: dict, by_id: dict[str, dict], pages: dict[int, dict]) -> list[dict]:
@@ -651,7 +603,7 @@ def review_pages(
     by_id = {act["act_id"]: act for act in acts}
     links = [
         (subject, payload, link_inputs(payload, by_id, pages))
-        for subject, payload in continuation_links(exemplar_page_ids(context), acts)
+        for subject, payload in page_breaks(exemplar_page_ids(context), acts)
     ]
 
     held = 0
@@ -883,9 +835,7 @@ def write_reading_receipt(
                 "coverage": coverage,
             }
         )
-    links = current_links(
-        context, continuation_links(exemplar_page_ids(context), acts), by_id, pages
-    )
+    links = current_links(context, page_breaks(exemplar_page_ids(context), acts), by_id, pages)
     receipt = build_recensor_reading_receipt(
         run_id=context.tree.run_id,
         config_digest=context.run["config_digest"],

@@ -591,7 +591,7 @@ def test_a_continuation_flag_no_link_pairs_is_named_and_keeps_the_run_partial(
 @pytest.mark.parametrize(
     ("links", "refusal"),
     [
-        ([("p1:1", "p2:1", False)], "names an other reading"),
+        ([("p1:1", "p2:1", False)], "is not the page break the counted rows' flags derive"),
         ([("p2:1", "p1:2", True)], "does not name one flagged page break"),
     ],
     ids=["other-reading", "non-adjacent"],
@@ -605,6 +605,16 @@ def test_a_continuation_link_the_recensor_never_makes_is_refused(
     result = _after_recensor(root, options, "page-other")
     assert result.returncode == 2
     assert refusal in result.stderr
+
+
+def test_a_continuation_link_whose_side_is_not_its_pages_act_edge_is_refused(happy, tmp_path):
+    """Page 1's break runs from its last act, p1:2; a link from p1:1 joins the wrong pair."""
+    root, options = _copy(happy, tmp_path)
+    _recense(root, options, "happy")
+    forge_continuation_links(root, RUN_ID, "happy", options, [("p1:1", "p2:1", False)])
+    result = _after_recensor(root, options, "happy")
+    assert result.returncode == 2
+    assert "is not the page break the counted rows' flags derive" in result.stderr
 
 
 def test_confirmed_blank_on_a_row_that_is_not_a_blank_page_is_refused(happy, tmp_path):

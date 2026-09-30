@@ -943,7 +943,7 @@ def test_continuation_links_record_each_flagged_break_agreed_or_one_sided():
         _link_row(2, 2, following=True),
         _link_row(3, 1),
     ]
-    links = dict(page_review.continuation_links(pages, rows))
+    links = dict(page_review.page_breaks(pages, rows))
     assert sorted(links) == ["page-break:0:1", "page-break:1:2", "page-break:2:3"]
     assert links["page-break:1:2"]["agreed"] is True
     before = links["page-break:0:1"]
@@ -951,7 +951,7 @@ def test_continuation_links_record_each_flagged_break_agreed_or_one_sided():
     after = links["page-break:2:3"]
     assert (after["agreed"], after["from_act_key"], after["to_act_key"]) == (False, "p2:2", "p3:1")
     assert (after["continues_to_next_page"], after["continues_from_previous_page"]) == (True, False)
-    assert page_review.continuation_links(pages, [_link_row(1, 1), _link_row(2, 1)]) == []
+    assert page_review.page_breaks(pages, [_link_row(1, 1), _link_row(2, 1)]) == []
     assert set(links["page-break:1:2"]) == CONTINUATION_LINK_FIELDS
     assert page_review.continuation_off_edge(rows) == {}
 
@@ -964,7 +964,7 @@ def test_a_link_joins_act_entries_past_a_catchword_and_notes_the_catchword_flag(
         _link_row(2, 1, kind="other", previous=True),
         _link_row(2, 2, previous=True),
     ]
-    [(subject, link)] = page_review.continuation_links(pages, rows)
+    [(subject, link)] = page_review.page_breaks(pages, rows)
     assert subject == "page-break:1:2" and link["agreed"] is True
     assert (link["from_act_key"], link["to_act_key"]) == ("p1:1", "p2:2")
     assert page_review.continuation_off_edge(rows) == {}
@@ -994,7 +994,7 @@ def test_a_continuation_flag_off_the_act_edge_holds_its_entry():
         rows[3]["act_id"]: ["continues_from_previous_page"],
     }
     # Neither flag sits on a side of the break, so no link records it.
-    assert page_review.continuation_links({1: "pg_1", 2: "pg_2"}, rows) == []
+    assert page_review.page_breaks({1: "pg_1", 2: "pg_2"}, rows) == []
     outcome, payload = page_review.review_of(
         rows[0],
         coverage=FLOORED,
@@ -1010,7 +1010,7 @@ def test_a_continuation_flag_off_the_act_edge_holds_its_entry():
 
 def test_a_links_inputs_bind_a_null_sides_page_reading():
     rows = [_link_row(1, 1, following=True)]
-    [(_subject, link)] = page_review.continuation_links({1: "pg_1", 2: "pg_2"}, rows)
+    [(_subject, link)] = page_review.page_breaks({1: "pg_1", 2: "pg_2"}, rows)
     pages = {1: {"reading_ref": "reading-1"}, 2: {"reading_ref": "reading-2"}}
     by_id = {row["act_id"]: row for row in rows}
     assert page_review.link_inputs(link, by_id, pages) == [rows[0]["perlectio_ref"], "reading-2"]

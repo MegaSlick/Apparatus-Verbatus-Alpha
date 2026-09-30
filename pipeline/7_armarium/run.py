@@ -2065,15 +2065,15 @@ def reading_region_bounds_by_page(context, rows: list[dict]) -> dict[int, list[d
 
 
 def page_continuation_joins(
-    links: list[dict], rows: dict[str, dict], projected_acts: list[dict], formats: tuple[str, ...]
+    links: list[dict], projected_acts: list[dict], formats: tuple[str, ...]
 ) -> tuple[dict, ...]:
     """Each Recensor continuation link as a join row over the delivered literals.
 
     Every flagged page break is a join, so each keeps the run partial with its
     reason: an agreed link with both sides delivered is reconstructed; a side
     with no `act` entry names no act (`side-names-no-act`); a link whose two
-    readings' flags disagree reconstructs nothing (`flags-disagree`). A link
-    naming an `other` reading is refused: the Recensor links only `act` entries.
+    readings' flags disagree reconstructs nothing (`flags-disagree`). Each
+    link is one `page_review.continuation_links` proved to join `act` edges.
     """
     delivered_texts = {
         act["act_id"]: act["canonical_clean_text"]
@@ -2083,11 +2083,6 @@ def page_continuation_joins(
     joins = []
     for index, link in enumerate(links):
         sides = [link["head_act_id"], link["tail_act_id"]]
-        if any(side is not None and rows[side]["kind"] != "act" for side in sides):
-            raise FatalAccounting(
-                f"continuation link {link['ref']['relative_path']} names an other reading; an "
-                "other reading is never half of an act"
-            )
         head, tail = link["from_page_ordinal"], link["to_page_ordinal"]
         joins.append(
             continuation_join_row(
@@ -2365,9 +2360,7 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
         context, census, reading_region_bounds_by_page(context, rows)
     )
     ink_map_pages = [row for row in all_ink_map_pages if row["ordinal"] not in canaries]
-    joins = page_continuation_joins(
-        links, {row["act_id"]: row for row in rows}, projected_acts, formats.formats
-    )
+    joins = page_continuation_joins(links, projected_acts, formats.formats)
     unaddressed = list(unaddressed_chairs(context.registry.config))
     other_categories_by_page: dict[int, list[str]] = {}
     for other in projected_others:
