@@ -21,6 +21,8 @@ from common.chairs.config import load_models_toml
 from common.imaging import dimensions
 from operations.serving.config import parse_serving_recipes
 from operations.serving.surya_detector import (
+    BUNDLE_ARTIFACT,
+    SuryaBundleFetcher,
     SuryaRunFailure,
     contract,
     parse_page_document,
@@ -327,3 +329,9 @@ def test_the_runner_reads_a_page_with_the_network_refused(bundle, tmp_path):
         (output / "page-1.json").read_bytes(), width=width, height=height, input_ordinal=1
     )
     assert parsed.document["layout"]["bboxes"]
+
+
+def test_the_bundle_fetcher_s_check_passes_in_the_synced_environment():
+    """The check the model store runs before any download imports what the
+    prefetch fetches with and finds no Surya settings file, fetching nothing."""
+    SuryaBundleFetcher("operations/serving/surya").check(BUNDLE_ARTIFACT)

@@ -827,14 +827,37 @@ def test_the_bundle_fetcher_names_the_sync_command_when_the_environment_is_missi
         fetcher.fetch(surya_detector.BUNDLE_ARTIFACT, tmp_path / "out")
 
 
-def test_the_bundle_fetcher_checks_its_environment_without_running_anything(environment):
-    def never(argv, **kwargs):
-        raise AssertionError("check runs nothing")
+def test_the_bundle_fetcher_checks_its_environment_by_running_prefetch_s_check(environment):
+    seen: dict = {}
 
-    fetcher = surya_detector.SuryaBundleFetcher("operations/serving/surya", runner=never)
+    def child(argv, **kwargs):
+        seen.update(argv=argv, env=kwargs["env"], timeout=kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    fetcher = surya_detector.SuryaBundleFetcher("operations/serving/surya", runner=child)
     fetcher.check(surya_detector.BUNDLE_ARTIFACT)
+
+    surya = environment / "operations" / "serving" / "surya"
+    assert seen["argv"] == [
+        str(surya / ".venv" / "bin" / "python"),
+        str(surya / "prefetch.py"),
+        "--check",
+    ]
+    assert "HF_HOME" not in seen["env"]
+    assert seen["timeout"] == surya_detector.PREFETCH_CHECK_TIMEOUT_SECONDS
     with pytest.raises(ServingConfigurationError, match="not 'churro-3B'"):
         fetcher.check("churro-3B")
+
+
+def test_the_bundle_fetcher_s_check_names_a_failed_prefetch_check(environment):
+    def failing(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv, 1, "", "SystemExit: Surya found a settings file at /srv/local.env"
+        )
+
+    fetcher = surya_detector.SuryaBundleFetcher("operations/serving/surya", runner=failing)
+    with pytest.raises(SuryaRunFailure, match="prefetch check failed .*settings file"):
+        fetcher.check(surya_detector.BUNDLE_ARTIFACT)
 
 
 def test_a_failed_prefetch_s_excerpt_carries_no_proxy_credential(environment):

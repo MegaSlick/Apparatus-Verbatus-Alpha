@@ -1114,6 +1114,17 @@ def test_a_bundle_fetcher_that_cannot_run_is_refused_before_anything_downloads(t
     assert fetcher.calls == []
 
 
+def test_a_bundle_that_fails_to_fetch_leaves_the_hub_fetcher_uncalled(tmp_path):
+    class _Unreachable(_FakeBundleFetcher):
+        def fetch(self, artifact: str, destination: Path) -> None:
+            raise OSError("model host unreachable")
+
+    fetcher = _FakeMaterializationFetcher()
+    with pytest.raises(OSError, match="model host unreachable"):
+        materialize_real_roster(tmp_path, fetcher, _Unreachable())
+    assert fetcher.calls == []
+
+
 def test_a_complete_store_does_not_ask_the_bundle_fetcher_to_run(tmp_path):
     materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
     bundles = _FakeBundleFetcher()
@@ -1441,7 +1452,7 @@ def _die_on_call(monkeypatch, name, ordinal):
         (
             "_promote_materialized_snapshot",
             2,
-            ["manifests/dai-recordgold-atr.json"],
+            ["manifests/chandra-ocr-2.json"],
         ),
         # Between moving the first artifact's snapshot into place and recording
         # it present — the second record write, the first being the all-pending
@@ -1449,7 +1460,7 @@ def _die_on_call(monkeypatch, name, ordinal):
         (
             "write_download_record",
             2,
-            ["hf/chandra-ocr-2", "manifests/chandra-ocr-2.json"],
+            ["local/surya2-detection", "manifests/surya2-detection.json"],
         ),
     ],
 )

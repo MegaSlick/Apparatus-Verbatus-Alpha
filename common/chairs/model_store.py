@@ -338,11 +338,14 @@ def _materialize_real_roster_locked(
         for item in requirements
         if record_by_artifact[item.artifact]["state"] == "present"
     }
-    # A bundle fetcher that cannot run is found before any repository downloads.
+    # A bundle fetcher that cannot run is found before any repository downloads,
+    # and the local bundles are fetched first, so a bundle that fails to fetch
+    # fails before the Hub downloads are paid for.
     for requirement in requirements:
         if requirement.source == "local-repository" and requirement.artifact not in already_present:
             bundle_fetcher.check(requirement.artifact)
-    for requirement in requirements:
+    local_first = sorted(requirements, key=lambda item: item.source != "local-repository")
+    for requirement in local_first:
         if requirement.artifact in already_present:
             continue
         if requirement.source == "local-repository":

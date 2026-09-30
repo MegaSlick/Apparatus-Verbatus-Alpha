@@ -615,6 +615,8 @@ def surya_run(
 PREFETCH = "prefetch.py"
 BUNDLE_ARTIFACT = "surya2-detection"
 PREFETCH_TIMEOUT_SECONDS = 1800
+# Importing torch and Surya from a cold disk is the slow part of the check.
+PREFETCH_CHECK_TIMEOUT_SECONDS = 300
 # What the prefetch child inherits: a locale, a temporary directory and the
 # route to the network, never a variable that could set one of Surya's settings.
 _PREFETCH_ENVIRONMENT = {
@@ -644,8 +646,18 @@ class SuryaBundleFetcher:
 
     def check(self, artifact: str) -> None:
         """Refuse by name, before anything downloads, an artifact that is not
-        Surya's bundle or an environment that is not built."""
-        self._interpreter(artifact)
+        Surya's bundle, an environment that is not built, or one whose prefetch
+        cannot import what it fetches with or finds a Surya settings file."""
+        self._run(artifact, ["--check"], None, PREFETCH_CHECK_TIMEOUT_SECONDS, "prefetch check")
+
+    def fetch(self, artifact: str, destination: Path) -> None:
+        self._run(
+            artifact,
+            ["--out", str(destination)],
+            destination.parent / "hf-home",
+            PREFETCH_TIMEOUT_SECONDS,
+            "prefetch",
+        )
 
     def _interpreter(self, artifact: str) -> Path:
         if artifact != BUNDLE_ARTIFACT:
@@ -660,31 +672,39 @@ class SuryaBundleFetcher:
             )
         return interpreter
 
-    def fetch(self, artifact: str, destination: Path) -> None:
+    def _run(
+        self,
+        artifact: str,
+        arguments: list[str],
+        hf_home: Path | None,
+        timeout: int,
+        what: str,
+    ) -> None:
         interpreter = self._interpreter(artifact)
         environment = REPO_ROOT / self.environment
         child = {key: value for key, value in os.environ.items() if key in _PREFETCH_ENVIRONMENT}
-        child["HF_HOME"] = str(destination.parent / "hf-home")
+        if hf_home is not None:
+            child["HF_HOME"] = str(hf_home)
         child["HF_HUB_DISABLE_TELEMETRY"] = "1"
-        argv = [str(interpreter), str(environment / PREFETCH), "--out", str(destination)]
+        argv = [str(interpreter), str(environment / PREFETCH), *arguments]
         try:
             result = self.runner(
                 argv,
                 capture_output=True,
                 text=True,
-                timeout=PREFETCH_TIMEOUT_SECONDS,
+                timeout=timeout,
                 env=child,
                 check=False,
             )
         except subprocess.TimeoutExpired as error:
             raise SuryaRunFailure(
-                f"Surya's prefetch did not finish within {PREFETCH_TIMEOUT_SECONDS} seconds"
+                f"Surya's {what} did not finish within {timeout} seconds"
             ) from error
         except OSError as error:
-            raise SuryaRunFailure(f"Surya's prefetch could not be started: {error}") from error
+            raise SuryaRunFailure(f"Surya's {what} could not be started: {error}") from error
         if result.returncode != 0:
             raise SuryaRunFailure(
-                f"Surya's prefetch failed (exit {result.returncode}): "
+                f"Surya's {what} failed (exit {result.returncode}): "
                 f"{_without_url_credentials(result.stderr.strip())[-800:]}"
             )
 
