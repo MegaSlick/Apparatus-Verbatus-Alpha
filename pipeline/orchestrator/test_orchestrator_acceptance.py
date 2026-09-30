@@ -121,10 +121,10 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # the ink map must confirm ink under it before it may spend a recovery or hold
 # an act; here it cannot, so a2 goes straight to a hold without a
 # second recovery round.
-HAPPY_SNAPSHOT_FILES = 119
-REVIEW_SNAPSHOT_FILES = 129
-HAPPY_RUN_TREE_DIGEST = "6a886c97d142151c9efda059d39e65b4c6fca5621f44ddb8dfe4d49bbbece75a"
-REVIEW_RUN_TREE_DIGEST = "eb145ccf8b9496ce9978cf04662bd673cd42455702074865713047c921e08db1"
+HAPPY_SNAPSHOT_FILES = 123
+REVIEW_SNAPSHOT_FILES = 133
+HAPPY_RUN_TREE_DIGEST = "c5fb2d4a5373323ba8352dc7da3158402129f56f444d40f2dcdb93311b5fcf4c"
+REVIEW_RUN_TREE_DIGEST = "f79c85c29697ce4d5a133324f31eb913a17ce97d2865b81146a2757ccd133098"
 
 
 def orchestrate(
@@ -346,6 +346,7 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         designator_grouping_config=ROOT / "config" / "designator_grouping.toml",
         alignment_config=ROOT / "config" / "alignment.toml",
         page_accounting_config=ROOT / "config" / "page_accounting.toml",
+        reconstruction_config=ROOT / "config" / "reconstruction.toml",
         ink_map_config=ROOT / "config" / "ink_map.toml",
         # `config/armarium_formats.toml` until now, which is a file that has
         # never existed: the Armarium's formats policy is `config/formats.toml`
@@ -2976,7 +2977,7 @@ def test_the_run_used_no_network_and_no_model(happy_run):
     assert run["witness_chairs"] == list(config.witness_chairs)
     assert run["adapter_recipes"] == dict(config.adapter_recipes)
     recipes = run["adapter_recipes"]
-    assert len(recipes) == 9
+    assert len(recipes) == 10
     assert recipes[INK_MAP] == "deterministic-residual-ink-v1"
     assert all(
         revision.startswith("fake-") for stage, revision in recipes.items() if stage != INK_MAP
@@ -3408,6 +3409,8 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
     assert record["status"] == "established"
     assert record["evidence_ref"] == evidence_ref
 
+    coniector_result = invoke_stage(root, "r", "happy", "pipeline/4b_coniector/run.py")
+    assert coniector_result.returncode == 0, coniector_result.stderr
     export_result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
     # EXIT_HELD, not 0, since the export became honest about damage: an act
     # delivered with a record that establishes no readable text is a delivered act
@@ -4569,6 +4572,40 @@ def test_each_stage_seal_corruption_stops_its_named_consumer(
         return
 
     result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[consumer])
+
+    assert result.returncode != 0
+    assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr
+    assert snapshot(root) == before
+
+
+def _further_seal_readers() -> list[tuple[str, str]]:
+    from common.contracts.stages import seal_readers
+
+    return [
+        (producer, reader)
+        for producer in STAGES
+        for reader in seal_readers(producer)
+        if (producer, reader) not in SEAL_ARTIFACTS
+    ]
+
+
+@pytest.mark.full
+@pytest.mark.parametrize("producer,reader", _further_seal_readers())
+def test_every_further_reader_of_a_seal_refuses_it_corrupted(happy_run, tmp_path, producer, reader):
+    """A seal read by more than one stage (the Perlector's, by the Recensor and the
+    Coniector) is refused by each reader, not only the one the battery above names."""
+    assert (PERLECTOR, CONIECTOR) in _further_seal_readers()
+    source_root, _ = happy_run
+    root = tmp_path / "runs"
+    shutil.copytree(source_root, root)
+    tree = RunTree(root, "r")
+    path = _stage_seal_path(tree, producer)
+    record = json.loads(path.read_bytes())
+    record["schema"] = "skeleton.v99"
+    path.write_bytes(canonical_bytes(record))
+    before = snapshot(root)
+
+    result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[reader])
 
     assert result.returncode != 0
     assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr

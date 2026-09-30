@@ -105,8 +105,12 @@ def _recense(root: Path, options: dict, scenario: str) -> None:
 
 
 def _after_recensor(root: Path, options: dict, scenario: str):
-    """The Archetypus, then (when it completes) the Armarium; the last result."""
-    for program in ("pipeline/6_archetypus/run.py", "pipeline/7_armarium/run.py"):
+    """The Archetypus, then (when it completes) the Coniector and the Armarium; the last result."""
+    for program in (
+        "pipeline/6_archetypus/run.py",
+        "pipeline/4b_coniector/run.py",
+        "pipeline/7_armarium/run.py",
+    ):
         result = run_stage(root, RUN_ID, scenario, program, **options)
         if program.startswith("pipeline/6") and result.returncode != 0:
             return result

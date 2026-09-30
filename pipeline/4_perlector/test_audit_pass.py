@@ -1958,7 +1958,12 @@ def test_the_reproofs_own_termination_is_sealed_whether_or_not_its_text_changed(
     # The Archetypus establishes nothing for a run whose every act is held and
     # exits 0 over that empty work; the Recensor and the Armarium are the two
     # stages that report the hold.
-    for stage, expected_exit in (("recensor", 3), ("archetypus", 0), ("armarium", 3)):
+    for stage, expected_exit in (
+        ("recensor", 3),
+        ("archetypus", 0),
+        ("coniector", 0),
+        ("armarium", 3),
+    ):
         remainder = _run(root, "--stage", stage, scenario=scenario)
         assert remainder.returncode == expected_exit, (stage, remainder.stderr)
     export = _export(tree)
@@ -2199,7 +2204,12 @@ def test_failed_reproof_flows_to_held_review_and_partial_export(tmp_path, monkey
         assert "text" not in failure["payload"] and "audit" not in failure["payload"]
 
     # And the hold is what the downstream stages actually report.
-    for stage, expected_exit in (("recensor", 3), ("archetypus", 0), ("armarium", 3)):
+    for stage, expected_exit in (
+        ("recensor", 3),
+        ("archetypus", 0),
+        ("coniector", 0),
+        ("armarium", 3),
+    ):
         remainder = _run(root, "--stage", stage, scenario="audit-change")
         assert remainder.returncode == expected_exit, (stage, remainder.stderr)
     export = _export(tree)

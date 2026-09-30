@@ -268,6 +268,7 @@ def test_an_unsealed_whole_pass_resumes_over_what_it_already_sealed(tmp_path, mo
         "pipeline/4_perlector/run.py",
         "pipeline/5_recensor/run.py",
         "pipeline/6_archetypus/run.py",
+        "pipeline/4b_coniector/run.py",
         "pipeline/7_armarium/run.py",
     ):
         result = invoke_stage(run_root, "retention", "happy", program)
@@ -354,7 +355,11 @@ def test_resume_does_not_ask_an_already_sealed_pair_to_decode_again(tmp_path, mo
     recensor = invoke_stage(run_root, "retention", "happy", "pipeline/5_recensor/run.py")
     assert recensor.returncode in (0, 3), f"recensor: {recensor.stderr}"
     if recensor.returncode == 0:
-        for program in ("pipeline/6_archetypus/run.py", "pipeline/7_armarium/run.py"):
+        for program in (
+            "pipeline/6_archetypus/run.py",
+            "pipeline/4b_coniector/run.py",
+            "pipeline/7_armarium/run.py",
+        ):
             result = invoke_stage(run_root, "retention", "happy", program)
             assert result.returncode == 0, f"{program}: {result.stderr}"
 

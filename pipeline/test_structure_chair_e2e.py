@@ -153,6 +153,7 @@ CHAIN_TO_INK_MAP = programs_through("ink-map")
 TAIL_FROM_RECENSOR = (
     "pipeline/5_recensor/run.py",
     "pipeline/6_archetypus/run.py",
+    "pipeline/4b_coniector/run.py",
     "pipeline/7_armarium/run.py",
 )
 LIVE_CHAIRS = ("designator_structure", *WITNESS_CHAIRS, "perlector")
@@ -813,6 +814,7 @@ def test_the_run_reaches_a_sealed_terminal_export_over_proposed_acts(whole_run):
     assert whole_run.tail == {
         "pipeline/5_recensor/run.py": EXIT_COMPLETE,
         "pipeline/6_archetypus/run.py": EXIT_COMPLETE,
+        "pipeline/4b_coniector/run.py": EXIT_COMPLETE,
         "pipeline/7_armarium/run.py": EXIT_COMPLETE,
     }
     export = verify_final_seal(RunTree(whole_run.run_root, RUN_ID))

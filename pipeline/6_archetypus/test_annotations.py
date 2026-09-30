@@ -403,6 +403,9 @@ def _witness_refs_of(reading_payload: dict) -> list[dict]:
 
 
 def invoke_armarium(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
+    """The Coniector, which the Armarium reads beside this stage, then the Armarium."""
+    coniector = stage_driver.invoke(root, run_id, scenario, "pipeline/4b_coniector/run.py")
+    assert coniector.returncode == 0, coniector.stderr
     return stage_driver.invoke(root, run_id, scenario, "pipeline/7_armarium/run.py")
 
 

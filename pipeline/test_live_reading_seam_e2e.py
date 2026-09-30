@@ -136,6 +136,7 @@ CHAIN_TO_DESIGNATOR = programs_through("designator")
 TAIL_FROM_RECENSOR = (
     "pipeline/5_recensor/run.py",
     "pipeline/6_archetypus/run.py",
+    "pipeline/4b_coniector/run.py",
     "pipeline/7_armarium/run.py",
 )
 
@@ -1066,6 +1067,7 @@ def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(liv
     assert live_seam.tail == {
         "pipeline/5_recensor/run.py": EXIT_COMPLETE,
         "pipeline/6_archetypus/run.py": EXIT_COMPLETE,
+        "pipeline/4b_coniector/run.py": EXIT_COMPLETE,
         "pipeline/7_armarium/run.py": EXIT_COMPLETE,
     }
     export = verify_final_seal(RunTree(live_seam.run_root, RUN_ID))

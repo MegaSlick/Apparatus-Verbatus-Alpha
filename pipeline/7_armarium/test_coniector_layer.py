@@ -90,7 +90,7 @@ def test_each_reconstruction_stands_beneath_its_delivered_act_labelled_with_its_
     text = _text(bundle["members"])
     section = text[text.index("act-id: " + row["act_ids"][0]) :]
     section = section[: section.index("\n\n")]
-    assert "reconstruction_maker:\n\"model, chair reconstructor" in section
+    assert 'reconstruction_maker:\n"model, chair reconstructor' in section
     assert 'reconstruction_text:\n"SYNTHETIC ACT ONE alpha beta gamma"' in section
     # The delivered text is the diplomatic reading, untouched by its reconstruction.
     delivered = {act["act_key"]: act["text"] for act in bundle["export"]["payload"]["delivered"]}

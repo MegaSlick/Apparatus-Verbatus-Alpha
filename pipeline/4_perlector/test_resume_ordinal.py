@@ -169,6 +169,7 @@ def test_an_unsealed_perlector_pass_resumes_without_minting_an_unrequested_readi
     for program in (
         "pipeline/5_recensor/run.py",
         "pipeline/6_archetypus/run.py",
+        "pipeline/4b_coniector/run.py",
         "pipeline/7_armarium/run.py",
     ):
         result = invoke_stage(root, "resume", "happy", program)

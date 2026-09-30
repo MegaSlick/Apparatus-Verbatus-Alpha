@@ -57,6 +57,7 @@ ATTESTATORES_PROGRAM = "pipeline/3_attestatores/run.py"
 PERLECTOR_PROGRAM = "pipeline/4_perlector/run.py"
 RECENSOR_PROGRAM = "pipeline/5_recensor/run.py"
 ARCHETYPUS_PROGRAM = "pipeline/6_archetypus/run.py"
+CONIECTOR_PROGRAM = "pipeline/4b_coniector/run.py"
 ARMARIUM_PROGRAM = "pipeline/7_armarium/run.py"
 
 TO_ATTESTATORES = (DOOR, EXEMPLAR, INK_MAP_PROGRAM, DESIGNATOR_PROGRAM, ATTESTATORES_PROGRAM)
@@ -195,6 +196,7 @@ def test_a_reread_inside_its_window_runs_green_to_a_delivered_export(tmp_path):
         PERLECTOR_PROGRAM,
         RECENSOR_PROGRAM,
         ARCHETYPUS_PROGRAM,
+        CONIECTOR_PROGRAM,
         ARMARIUM_PROGRAM,
     ):
         stage_result = invoke(root, "r", "reread-success", program)
@@ -257,7 +259,7 @@ def test_the_refused_reread_leaves_the_run_able_to_finish(tmp_path):
     assert invoke(root, "r", "reread-success", PERLECTOR_PROGRAM).returncode == 0
     assert reread(root, "r", "reread-success", act, "attestator_2").returncode != 0
 
-    for program in (RECENSOR_PROGRAM, ARCHETYPUS_PROGRAM, ARMARIUM_PROGRAM):
+    for program in (RECENSOR_PROGRAM, ARCHETYPUS_PROGRAM, CONIECTOR_PROGRAM, ARMARIUM_PROGRAM):
         result = invoke(root, "r", "reread-success", program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     tree = RunTree(root, "r")
@@ -497,7 +499,7 @@ def test_the_export_refuses_to_complete_over_a_superseded_witness_basis(tmp_path
 
     _supersede_a_witness_basis(tree, act, "attestator_2")
 
-    for program in (RECENSOR_PROGRAM, ARCHETYPUS_PROGRAM, ARMARIUM_PROGRAM):
+    for program in (RECENSOR_PROGRAM, ARCHETYPUS_PROGRAM, CONIECTOR_PROGRAM, ARMARIUM_PROGRAM):
         result = invoke(root, "r", "happy", program)
         assert result.returncode != 0, f"{program} accepted a superseded witness basis"
         assert "since superseded" in result.stderr, f"{program}: {result.stderr}"
