@@ -333,14 +333,19 @@ def recorded_wire_decimals(view: Mapping[str, object]) -> dict[str, object]:
     Canonical artifacts refuse floats, since their JSON form is not stable
     enough to hash, so every float at any depth becomes the exact decimal text
     the wire body carries, tagged `wire-decimal.v1` so a reader can tell it
-    from a declared string. `decoded_wire_decimals` is its strict inverse.
+    from a declared string. `decoded_wire_decimals` is its strict inverse, so a
+    non-finite float, which it would refuse, raises `ContractError` here.
     """
     return {key: _recorded_wire_value(item) for key, item in view.items()}
 
 
 def _recorded_wire_value(value: object) -> object:
     if isinstance(value, float):
-        return {"schema": WIRE_DECIMAL_SCHEMA, "decimal": json.dumps(value)}
+        try:
+            decimal = json.dumps(value, allow_nan=False)
+        except ValueError as error:
+            raise ContractError(f"a wire decimal is not finite: {value!r}") from error
+        return {"schema": WIRE_DECIMAL_SCHEMA, "decimal": decimal}
     if isinstance(value, Mapping):
         return {key: _recorded_wire_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):

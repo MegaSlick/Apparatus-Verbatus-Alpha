@@ -502,6 +502,12 @@ def test_recorded_wire_decimals_tags_every_float_at_any_depth_and_decodes_back()
     assert decoded_wire_decimals(recorded) == view
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_recorded_wire_decimals_refuses_a_value_its_inverse_would_refuse(value: float) -> None:
+    with pytest.raises(ContractError, match="not finite"):
+        recorded_wire_decimals({"nested": [{"t": value}]})
+
+
 @pytest.mark.parametrize(
     ("decimal", "reason"),
     [
