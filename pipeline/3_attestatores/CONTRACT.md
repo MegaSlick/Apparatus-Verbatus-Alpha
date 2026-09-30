@@ -1394,6 +1394,71 @@ did, the page outcome is `not-run`, with `presented={}` and no receipt. Thus
 `failed` never also means “never attempted,” and an absent or never-shown chair
 is never forced to invent a serving moment.
 
+### DAI: a page witness over its own detector's records
+
+DAI was trained on crops of the records its own project's detector finds, so a
+page-scoped `dai.v1` chair is shown its page that way and never the
+Designator's act crops. The adapter declares it (`RunnableAdapter.page_units =
+"detector-records"`), and a roster that scopes such a chair `page` without a
+configured `secondary_proposer` is refused before anything runs. The fixture
+posture has no per-record reading to declare, so such a chair must be served
+live; a fixture row for it is refused by name.
+
+**Units.** A page's units are the Designator's `detector-region` crops of that
+page, in the detector's own order, read from its `detector-page` census. A
+missing or out-of-order record, a census whose count disagrees with its
+records, or a crop that does not re-derive from its sealed page at its recorded
+bounds refuses. A record the Designator could not cut is not a unit. A page
+that carries acts and no census refuses: the chair cannot be shown the page as
+it was trained to read it.
+
+**One call per record.** Each unit is one request, with the unit crop as the
+presentation `dai.v1` resizes and sends; every response is retained as it
+arrives. A unit refused for capacity before it is sent is a `failed` unit with
+no capture. The page record is sealed only once every unit on the page has
+been answered, so a pass interrupted inside a page asks that page's units
+again, and a page record already sealed is resumed and never asked again. A
+page the detector found nothing on is sealed `not-run` without a request, with
+reason "DAI's own record detector found no record on this page, so DAI was
+shown nothing here".
+
+**The page record.** One `page-testimonium` per page, in the closed page shape
+plus two fields. `presentations` lists every image the chair was shown, in
+unit order, each an `adapter-crop` of the one sealed page, and `presented` is
+its first. `unit_captures` holds one retained model view per presentation
+(`null` for a unit that never reached the chair), each naming a response the
+record retains in `raw_response_refs`. `observed` has one `native` box per
+unit, the record's own bounds, each contained by the image it was read from,
+with a `span` into the page text when that unit delivered a reading. Every
+presented image and retained response is digest-bound in `inputs`. Both later
+readers take every presentation from `presentations`
+(`common/native_witness.py::record_presentations`).
+
+**The page text.** Unit readings join with `"\n"` in act order: each act's
+owned records together, in detector order, then the records no act owns. So
+one act's slice never reaches into another's. An empty reading adds no
+separator.
+
+**Ownership.** A record belongs to the act whose proposal regions on the page
+it overlaps most by area, and to no act on a tie or when it overlaps none. This
+decides where DAI's text sits, not what it says or whether an act exists.
+
+**The page outcome.** One failed unit fails the page, with a reason naming each
+failed record: an act then goes visibly under-witnessed by DAI rather than read
+from part of what DAI was shown. Otherwise the page is `read`, or
+`genuinely-empty` when every unit delivered an empty reading.
+
+**Act attachment.** On an act's primary page the entry's alignment comes from
+ownership, not from the Chandra anchor: `aligned` with
+`anchor_basis: "detector-record"`, `anchor_chair: null`, a zero-length
+`anchor_span`, a `witness_span` from the first to the last owned record's span,
+and one `line_geometry` box per owned record; `unaligned` with reason
+`no-detector-record-owned` when the act owns no record; and
+`non-reading-page-testimonium-<outcome>` when the page did not read. A
+continuation page stays `continuation-page-no-act-anchor`, as for every page
+witness. The act's own `testimonium` view keeps the act's Designator crop as
+its presentation, since the chair was never shown that crop.
+
 ## Act-attachment schema (R4)
 
 Written by the same stage invocation that writes page testimony, one
@@ -1441,6 +1506,8 @@ claim a page the ink does not support, or drop one the ink does.
   rectangle per anchor line -- exactly one on the fixture path, and on the
   live path every reported block that overlaps the act. `anchor_basis` is one of
   `act-anchor` (computed through Chandra's located anchor line),
+  `detector-record` (a chair read one detector record at a time, placed by the
+  records this act owns; see above),
   `no-page-anchor` (a genuinely-empty witness's trivial zero-length attach on
   a page with no Chandra anchor at all — the ink-free/fallback path; blank
   confirmation stays open), or `act-line-not-located` (the page's anchor
@@ -1471,7 +1538,9 @@ claim a page the ink does not support, or drop one the ink does.
   capture that produced no reading, `non-reading-act-attempt-<outcome>`
   where the page record is the legacy join and this act's own attempt is
   the non-reading fact (the page record itself may still read, on the
-  strength of another act), and `continuation-page-no-act-anchor` for a
+  strength of another act), `no-detector-record-owned` for an act that owns
+  none of the records a detector-record chair read, and
+  `continuation-page-no-act-anchor` for a
   contributing page that is not the act's primary one.
 
 For a page witness, `attached` is derived from one of two bases since Unit 12

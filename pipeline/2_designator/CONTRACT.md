@@ -549,6 +549,80 @@ only as inert metadata while the stage exits complete. Removing the proposer
 changes no `region`, `act-group`, or `proposal-seal` outcome; only the secondary
 evidence and held exit disappear.
 
+## `kind="detector-page"`, `kind="detector-record"`, and `kind="detector-region"`
+
+When `secondary_proposer` is configured it is DAI's own project's record
+detector (Teklia's YOLOv26 OBB model, one class, `record`), and these three
+kinds are what it found. They are the units DAI reads in the Attestatores and
+nothing else: page evidence that decides nothing.
+
+**Where the detector runs.** This stage runs it itself and never launches an
+engine for it. Its catalogue row is `in-process` (the verified weights, loaded
+on the CPU by `operations/serving/detector.py`) or `fixture`; a `vllm` row is
+refused, and a `fixture` row answers only the fixture pass. The fixture
+detector answers each page with the fixture's `[[detector_record]]` rows for
+that page (`page_ordinal`, four `corners`, `score_bp`, optional `class_id`);
+the shipped fixture declares none, so tests declare them on the stage context.
+On the live path the row is checked before the structure chair starts and the
+detector is loaded only after that chair has closed, so one model is resident
+at a time; a resumed pass reuses the `secondary-provenance` it already sealed.
+Every sealed page is asked once, after the act proposals and page fallbacks
+are published and before conservation.
+
+**The raw output.** One retained blob per page, schema
+`record-detector-output.v1`: the page, the run facts (engine, repository,
+revision, manifest digest, and for the in-process engine the weights file and
+digest, package versions, device, input size and thresholds), and every
+detection exactly as the engine gave it — four float corners in page pixels, a
+float score, a class.
+
+**`detector-page`**, subject the page identity, one per sealed page:
+`page_ordinal`, `detection_count`, `record_subjects` (in the engine's order),
+`raw_output_ref` and `provenance` (the sealed `secondary-provenance`). A page
+the detector found nothing on has `detection_count: 0`, which reads
+differently from a page never asked.
+
+**`detector-record`**, subject `<page_id>-detector-<n>`, one per detection in
+the engine's order: `page_ordinal`, `detector_ordinal` (`n`), `raw_output_ref`,
+`quantization`, `score_quantization`, `score_bp`, `class_id`, `class_name`,
+`raw_proposal` (the `yolo-obb` record `geometry_layer.yolo_obb` builds, which
+keeps the oriented polygon), `bounds` (its axis-aligned hull), `cut`,
+`authoritative: false`, `authority_effect: "none"`, `act_overlaps`,
+`region_ref` and `provenance`. `act_overlaps` lists every act proposal on the
+page the hull overlaps, as `{act_id, overlap_px}` sorted by `act_id`. Text
+fields are refused on both record kinds; a detector reports boxes, not words.
+
+**`detector-region`**, same subject, one per record that was cut: the hull's
+pixels, cut by the stage's one crop path, with `origin: "detector"`,
+`padding: null`, `raw_bounds` equal to the transform's bounds, `record_key`,
+`region_id`, the image digests and `provenance`. It is its own kind, not
+`region`, because every reader of `region` treats its subject as an act and its
+bounds as act coverage, and a detector box is neither.
+
+**Quantization.** `obb-corner-floor-clamp.v1`: each float corner is floored to
+the pixel it falls in and clamped into the page, and the crop is the
+axis-aligned hull of those four points (`aabb-enclose`;
+`config/designator_geometry.toml` keeps `rectify = false`). A rotated record is
+not rectified before DAI reads it, because nothing states that DAI's own
+pipeline does so. The score is recorded in basis points, rounded half to even
+(`score-round-half-even-bp.v1`). A detection whose corners collapse to fewer
+than three distinct pixels encloses no crop: its record is kept with
+`cut: false`, `bounds: null`, `raw_proposal: null` and `region_ref: null`,
+never dropped. Two detections that quantize to the same box share one geometry
+proposal and still keep a record and a crop each.
+
+**Determinism.** The in-process detector loads only weights whose SHA-256
+matches the pin, only under the exact package versions its catalogue row names,
+on the CPU with deterministic algorithms and one thread, so the same sealed
+page gives the same boxes. A resumed pass re-derives the same records, and a
+difference meets the RunTree's immutable publish boundary and refuses.
+
+**They decide nothing.** No detector record holds, rescues, or enters an act, an
+`act-group`, a `region` or the proposal seal, and `act_overlaps` is recorded,
+never acted on. The pixel-scan rescue above runs beside the detector unchanged.
+Leaving the chair absent publishes none of the three kinds and changes no
+authoritative outcome (`pipeline/2_designator/test_secondary_proposer.py`).
+
 ## `kind="structure-status"`
 
 One record per sealed page, subject-keyed to the page identity: whether the
@@ -1286,7 +1360,10 @@ those declared witness reports and the Perlector's observed-empty reading exist.
 
 `continuation-candidate` is read by the Recensor, which cites it on every act it names,
 and by the Armarium, which projects it as a continuation join.
-`act-group`, `secondary-provenance`, `secondary-proposal`, `rescue-crop` and
+`detector-page`, `detector-record` and `detector-region` are read by the
+Attestatores, and only for a page-scoped chair that reads its page one detector
+record at a time (DAI): they are its units. `act-group`,
+`secondary-provenance`, `secondary-proposal`, `rescue-crop` and
 `structure-status` have no consumer downstream of this stage today.
 `structure-status` is the exception in one direction only: it is not *read* by a
 later stage, but `common/stage.py::_verify_page_fallback_act_row` reads it back
