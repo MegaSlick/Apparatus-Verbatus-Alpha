@@ -33,6 +33,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Final, NamedTuple
 from zipfile import ZIP_STORED, BadZipFile, LargeZipFile, ZipFile, ZipInfo
 
+from coniector_layer import (
+    CONIECTOR_MEMBER,
+    join_section,
+    reconstruction_lines,
+    text_bundle_rows,
+    verify_row,
+)
 from display import DISPLAY_CONVENTION, render_display, strip_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
@@ -347,6 +354,9 @@ class ArmariumProjection:
     reading_unit: str = READING_UNIT_ACT
     other_readings: tuple[dict[str, Any], ...] = ()
     page_accounting: tuple[dict[str, Any], ...] = ()
+    # The Coniector's reconstructions beneath delivered acts
+    # (`coniector_layer.export_rows`): labelled, unconfirmed, never acts.
+    reconstructions: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -633,6 +643,7 @@ def build_armarium_bundle(
     delivered = [
         act for act in projection.acts if act["category"] == ArmariumCategory.DELIVERED.value
     ]
+    coniector_rows = tuple(_mark_retained_references(row) for row in projection.reconstructions)
     reconstructions = _reconstructions(
         projection.continuation_joins,
         {
@@ -648,6 +659,7 @@ def build_armarium_bundle(
                 projection.continuation_joins,
                 reconstructions,
                 projection.other_readings,
+                coniector_rows,
             )
         )
     if "acts-database" in formats.formats:
@@ -658,6 +670,8 @@ def build_armarium_bundle(
         )
         if reconstructions:
             members["reconstructions.jsonl"] = _jsonl_bytes(reconstructions)
+        if coniector_rows:
+            members[CONIECTOR_MEMBER] = _jsonl_bytes(list(coniector_rows))
         if page_path:
             members[OTHER_READINGS_MEMBER] = _jsonl_bytes(
                 _other_json_records(projection.other_readings)
@@ -793,6 +807,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     if sources["reading_unit"] == READING_UNIT_PAGE:
         _verify_page_layers(root, manifest, formats, sources)
     _verify_continuation_joins(root, formats, sources)
+    _verify_coniector_layer(root, formats, sources, actual_names)
     verification = {}
     if search_fold_verification is not None:
         verification["search_fold"] = search_fold_verification
@@ -1710,6 +1725,49 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
             )
     if "text-bundle" in formats.formats:
         _verify_text_bundle_joins(root, sources, joins, reconstructions, act_keys)
+
+
+def _verify_coniector_layer(
+    root: Path, formats: ArmariumFormats, sources: dict, actual_names: set[str]
+) -> None:
+    """Recompute every reconstruction the package shows, in each format that shows it.
+
+    Each row must stand beneath delivered literals of its own format and, when
+    made, be its own departures applied to its own diplomatic pieces. The JSONL
+    member and the text bundle, when both are selected, show the same rows.
+    """
+    shown: list[list[dict[str, Any]]] = []
+    if CONIECTOR_MEMBER in actual_names:
+        literals = _jsonl_literals(root / "acts.jsonl")
+        shown.append(
+            [
+                verify_row(row, literals)
+                for row in _jsonl_rows(
+                    root / CONIECTOR_MEMBER, CONIECTOR_MEMBER, "a reconstruction row"
+                )
+            ]
+        )
+    elif "jsonl" in formats.formats:
+        shown.append([])
+    if "text-bundle" in formats.formats:
+        literals = _text_bundle_literals(root)
+        rows: list[dict[str, Any]] = []
+        for folder in sorted(
+            {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
+        ):
+            lines = _package_lines(root / _text_member_path(folder), "text bundle")
+            rows += [
+                verify_row(row, literals) for row in text_bundle_rows(lines) if row not in rows
+            ]
+        shown.append(rows)
+    for rows in shown:
+        if len({tuple(row["act_ids"]) for row in rows}) != len(rows):
+            raise SchemaRefusal("a package shows one reconstruction twice")
+    keyed = [sorted(rows, key=lambda row: row["act_ids"]) for rows in shown]
+    if any(rows != keyed[0] for rows in keyed):
+        raise SchemaRefusal(
+            f"the text bundle and {CONIECTOR_MEMBER} show different reconstructions"
+        )
 
 
 def _verify_text_bundle_joins(root, sources, joins, reconstructions, act_keys) -> None:
@@ -2973,6 +3031,7 @@ def _text_bundle_members(
     joins: tuple[dict[str, Any], ...] = (),
     reconstructions: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
     others: tuple[dict[str, Any], ...] = (),
+    coniector_rows: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, bytes]:
     """Write one readable file for every cited source folder.
 
@@ -3016,6 +3075,7 @@ def _text_bundle_members(
             other_groups[folder].append(other)
     act_keys = {act["act_id"]: act["act_key"] for act in acts}
     notes = _join_notes(joins, act_keys)
+    beneath = {row["act_ids"][0]: row for row in coniector_rows if row["unit"] == "act"}
     members: dict[str, bytes] = {}
     for folder in sorted(folders):
         records = grouped[folder]
@@ -3048,6 +3108,11 @@ def _text_bundle_members(
                     "display:",
                     json.dumps(render_display(act[CANONICAL_TEXT_FIELD]), ensure_ascii=False),
                     *notes.get(act["act_id"], []),
+                    *(
+                        reconstruction_lines(beneath[act["act_id"]])
+                        if act["act_id"] in beneath
+                        else []
+                    ),
                     "",
                 ]
             )
@@ -3056,6 +3121,9 @@ def _text_bundle_members(
             if record["head_act_id"] not in in_folder:
                 continue
             lines.extend(_reconstruction_section(record, act_keys))
+        for row in coniector_rows:
+            if row["unit"] == "join" and row["act_ids"][0] in in_folder:
+                lines.extend(join_section(row))
         for other in sorted(
             other_groups[folder], key=lambda item: act_key_sort_key(item["act_key"])
         ):
@@ -4603,6 +4671,10 @@ def _verify_exact_product_members(
         expected.add("reconstructions.jsonl")
     if "jsonl" in formats.formats and sources["reading_unit"] == READING_UNIT_PAGE:
         expected.add(OTHER_READINGS_MEMBER)
+    # Written only when a delivered act carries a reconstruction; its rows are
+    # verified whole (`_verify_coniector_layer`).
+    if "jsonl" in formats.formats and CONIECTOR_MEMBER in actual_names:
+        expected.add(CONIECTOR_MEMBER)
     expected.update(_embedded_member_paths(sources))
     if actual_names != expected:
         missing = sorted(expected - actual_names)

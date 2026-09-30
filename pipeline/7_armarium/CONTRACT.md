@@ -200,6 +200,22 @@ projection configuration. The bundle may contain these plainly specified formats
   database or its search index. The clean verifier recomputes every row, every
   reconstruction record, every section line for line in its head act's folder and
   every act's notes from the packaged literals.
+- `coniector.jsonl` (with `jsonl`) and the text bundle's reconstruction lines (with
+  `text-bundle`) — the Coniector's reconstructions (`pipeline/4b_coniector`), each
+  verified at export by `common.reconstruction_records.verified_reconstructions`,
+  which recomputes every Coniector record from the Perlector's sealed readings and
+  each call's retained reply. A reconstruction is shown only beneath a delivered act
+  whose literal is exactly the reading the Coniector was shown (a join only when
+  every piece is delivered), as one `armarium-coniector-reconstruction.v1` row:
+  its label, who made it (`maker.kind`, a model chair or a person), its diplomatic
+  pieces with their doubt marks, its departures, its findings as `flags`, and, when
+  not made, why. In the text bundle it follows the act's own fields as
+  `reconstruction_*` lines, ending with the whole row, and a join is its own
+  `## JOIN RECONSTRUCTION <keys> (not an act)` section. Flags change nothing: no
+  reconstruction or flag enters the act count, the ledger, review items, the
+  database, a category or the aggregate. The clean verifier re-applies every made
+  row's departures to its pieces, holds each piece to its act's literal in the same
+  format, and requires both formats, when selected, to show the same rows.
 - `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
   act identifiers or canonical-text fields; promotion requires recorded approval
   and pipeline re-entry, never an export-time act.
