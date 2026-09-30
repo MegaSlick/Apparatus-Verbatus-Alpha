@@ -52,7 +52,11 @@ def build_manifest(snapshot_root: str | Path) -> DigestManifest:
 
 
 def write_manifest(manifest: DigestManifest, path: str | Path) -> str:
-    """Write the canonical artifact and return its configured digest pin."""
+    """Write the canonical artifact and return its configured digest pin.
+
+    It replaces an existing file, because it serves fixtures and authoring tools
+    that regenerate a pin; the model store publishes real manifests once instead.
+    """
 
     _validate_manifest(manifest, "manifest")
     destination = Path(path)
@@ -67,8 +71,9 @@ def read_manifest(path: str | Path, *, expected_digest: str, chair: str) -> Dige
     The pin names the artifact, not merely a JSON value that happens to parse to
     the same rows.  Accepting whitespace or another serialization here would let
     the file on disk differ from the artifact whose digest the configuration
-    names.  `write_manifest` is the one writer, so exact canonical bytes are a
-    reasonable and useful contract.
+    names.  Every writer emits `canonical_bytes` of the manifest record:
+    `write_manifest` for fixtures and authoring tools, and the model store's
+    publish-once promotion for real snapshots.
     """
 
     source = Path(path)
@@ -102,18 +107,14 @@ def verify_snapshot(
 ) -> VerifiedSnapshot:
     """Verify every expected file and refuse the lexical first difference or extra."""
 
-    inspection = _inspect_snapshot(
+    _inspect_snapshot(
         identity,
         snapshot_root,
         manifest,
         ignored_paths=ignored_paths,
         allow_missing=False,
     )
-    if inspection.verified is None:  # pragma: no cover - strict mode refuses every gap
-        raise DigestMismatchRefusal(
-            identity.role, "strict snapshot verification produced an incomplete result"
-        )
-    return inspection.verified
+    return _verified(identity, snapshot_root, manifest)
 
 
 def inspect_snapshot_for_repair(
@@ -131,13 +132,16 @@ def inspect_snapshot_for_repair(
     cache verification or hashing every present file a second time.
     """
 
-    return _inspect_snapshot(
+    missing = _inspect_snapshot(
         identity,
         snapshot_root,
         manifest,
         ignored_paths=ignored_paths,
         allow_missing=True,
     )
+    if missing:
+        return SnapshotInspection(verified=None, missing=missing)
+    return SnapshotInspection(verified=_verified(identity, snapshot_root, manifest), missing=())
 
 
 def _inspect_snapshot(
@@ -147,8 +151,11 @@ def _inspect_snapshot(
     *,
     ignored_paths: Iterable[str],
     allow_missing: bool,
-) -> SnapshotInspection:
-    """Inventory and verify a snapshot once, with an explicit repair mode."""
+) -> tuple[str, ...]:
+    """Inventory and verify a snapshot once, returning the pinned paths it lacks.
+
+    Strict mode refuses the first missing file, so it only ever returns `()`.
+    """
 
     root = Path(snapshot_root)
     if not root.is_dir():
@@ -198,13 +205,16 @@ def _inspect_snapshot(
                 identity.role,
                 f"snapshot differs at {relative}: sha256 {actual_sha}, expected {row.sha256}",
             )
-    if missing:
-        return SnapshotInspection(verified=None, missing=tuple(missing))
-    return SnapshotInspection(
-        verified=VerifiedSnapshot(
-            identity=identity, root=root.resolve(), manifest_digest=manifest_digest(manifest)
-        ),
-        missing=(),
+    return tuple(missing)
+
+
+def _verified(
+    identity: ChairIdentity, snapshot_root: str | Path, manifest: DigestManifest
+) -> VerifiedSnapshot:
+    return VerifiedSnapshot(
+        identity=identity,
+        root=Path(snapshot_root).resolve(),
+        manifest_digest=manifest_digest(manifest),
     )
 
 
