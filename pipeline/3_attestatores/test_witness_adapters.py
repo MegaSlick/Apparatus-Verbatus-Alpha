@@ -10,7 +10,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 from PIL import Image
 
-from common import chandra_layout, native_witness
+from common import chandra_layout, native_witness, page_witness_units
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import artifact_id
@@ -293,9 +293,10 @@ def test_the_registry_binds_the_native_intake_contract_seams():
     # whether this adapter's `observe` accepts the sealed page's own size, and
     # `resolve_framing` how it resolves a declared framing name (`None` where it
     # has one framing and a run has nothing to choose) -- all three read off the
-    # registry entry rather than off the adapter's name. `page_units` says how a
-    # page-scoped occupant is shown its page: DAI one image per record its own
-    # project's detector found, the others one whole-page image.
+    # registry entry rather than off the adapter's name. How a page-scoped
+    # occupant is shown its page is not the adapter's to say: it is
+    # `common.page_witness_units.reads_detector_records`, the one answer the
+    # stage and every reader of its page records share.
     assert fields == {
         "prompt",
         "parse",
@@ -307,13 +308,13 @@ def test_the_registry_binds_the_native_intake_contract_seams():
         "resolve_framing",
         "format_capabilities",
         "fixture_parse",
-        "page_units",
     }
-    assert {name: entry.page_units for name, entry in adapters.RUNNABLE_ADAPTERS.items()} == {
-        "chandra.v1": None,
-        "churro.v1": None,
-        "dai.v1": "detector-records",
-    }
+    assert set(page_witness_units.UNIT_KINDS) == set(adapters.RUNNABLE_ADAPTERS)
+    assert {
+        name
+        for name, unit in page_witness_units.UNIT_KINDS.items()
+        if unit == page_witness_units.DETECTOR_RECORD_UNIT
+    } == {"dai.v1"}
     # The reader each adapter's fixture posture uses where its declared rows are
     # not in the grammar a served chair answers in. Chandra alone has one until
     # U16 re-declares `proof/skeleton_fixture.toml`'s rows in the vendor

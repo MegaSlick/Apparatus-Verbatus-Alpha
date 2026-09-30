@@ -39,6 +39,7 @@ from common.contracts.errors import SchemaRefusal
 from common.exemplar_boundary import read_sealed_page
 from common.imaging import crop_png, dimensions, resize_png_lanczos
 from common.native_witness import validate_presented
+from common.page_witness_units import reads_detector_records
 from common.stage import SECONDARY_PROPOSER_CHAIR
 from common.witness_adapters import AdapterRefusal, resolve_witness_adapter_name
 
@@ -118,10 +119,6 @@ class RunnableAdapter:
     #: history only: the retention seam refuses this reader's parser name for a
     #: served chair (`feeding.retain_model_view`).
     fixture_parse: Callable[..., Any] | None = None
-    #: How a page-scoped occupant is shown its page: ``None`` for one whole-page
-    #: image, ``"detector-records"`` for one image per record its own project's
-    #: detector found (the Designator's `detector-region` records).
-    page_units: str | None = None
 
 
 def _retain_dai_model_view(
@@ -366,7 +363,6 @@ RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
         present=_dai_present,
         observe=_dai_observe,
         format_capabilities=feeding.DAI_FORMAT_CAPABILITIES,
-        page_units="detector-records",
     ),
 }
 
@@ -408,10 +404,8 @@ def validate_runnable_adapter_bindings(models: ModelsConfig) -> None:
         if isinstance(identity, AbsentChair):
             continue
         adapter = resolve_runnable_adapter(identity.witness_adapter)
-        if (
-            identity.witness_scope == "page"
-            and adapter.page_units == "detector-records"
-            and not isinstance(models.chairs.get(SECONDARY_PROPOSER_CHAIR), ChairIdentity)
+        if reads_detector_records(identity) and not isinstance(
+            models.chairs.get(SECONDARY_PROPOSER_CHAIR), ChairIdentity
         ):
             raise SchemaRefusal(
                 f"chair {chair!r} reads the page as {identity.witness_adapter!r} does, one "

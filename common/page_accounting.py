@@ -83,6 +83,9 @@ SHARED_LINE: Final = "shared-line"
 MERGED_DETECTION: Final = "merged-detection"
 RECORD_READ_AS_OTHER: Final = "record-read-as-other"
 RECORD_NOT_READ: Final = "record-not-read"
+# The record detector looked below its cap and found no record on a page whose
+# reading establishes acts: the detector and the reading disagree about the page.
+NO_RECORD_ON_ACT_PAGE: Final = "no-detector-record-on-act-page"
 SET_ASIDE_RECORD: Final = "set-aside-record"
 SPLIT_DETECTION: Final = "split-detection"
 RECORDS_NOT_MEASURED: Final = "detector-records-not-measured"
@@ -111,6 +114,7 @@ HOLD_CODES: Final = frozenset(
         MERGED_DETECTION,
         RECORD_READ_AS_OTHER,
         RECORD_NOT_READ,
+        NO_RECORD_ON_ACT_PAGE,
         SET_ASIDE_RECORD,
         RECORDS_NOT_MEASURED,
         RECORD_NOT_MEASURED,
@@ -1176,9 +1180,10 @@ def page_accounting(
     - `witnesses`: every witness the run sealed for the page, whatever the
       feed's `witnesses` switch showed the model: `[{letter, outcome, blank,
       units}]`, `units[]` of `{id, box_px | None, text}` with ids of the
-      witness's own letter numbered `1..n`, and `blank` the witness's own
-      report that its page text is blank (its content health `blank`; `None`
-      when it did not read, `read` and `genuinely-empty` being reading). A
+      witness's own letter numbered `1..n`, and `blank` whether its retained
+      page text is blank, measured from that text (`None` when it did not
+      read, `read` and `genuinely-empty` being reading, or its retained
+      payload is not text). A
       witness the feed shows is here with the same outcome and the same
       units; one it hides is measured by rule (e) against every reading on
       the page, and rule (c) does not apply to it (its units' disposition is
@@ -1385,8 +1390,7 @@ def _witness_findings(witnesses: list[Mapping[str, Any]]) -> list[dict[str, Any]
     """Each witness that did not read the page, or read it and gave no unit.
 
     A witness that read the page (`read` or `genuinely-empty`) and gave no unit
-    holds unless its own report says the page text is blank; then it is
-    recorded.
+    holds unless its retained page text is blank; then it is recorded.
     """
     findings = []
     for witness in witnesses:
@@ -1574,6 +1578,10 @@ def _detection_rule(
     one set aside `set-aside-record`: each an entry the reading did not
     establish as an act, held. One inside two act regions is `split-detection`,
     recorded: a detector record that merged two entries the Perlector read apart.
+    A detector that found no record at all below its cap on a page whose
+    reading establishes acts disagrees with the whole reading:
+    `no-detector-record-on-act-page`, held, naming the act entries. Its
+    record reader's page testimony there is that the page holds nothing.
 
     Without the detector's records for the page, or when the detector reached
     its detection cap (`record-detector-capped`), the rule is not measured,
@@ -1605,6 +1613,9 @@ def _detection_rule(
         }
     kinds = {entry["n"]: entry["kind"] for entry in entries}
     findings: list[dict[str, Any]] = list(unboxed)
+    acts = [entry["n"] for entry in entries if entry["kind"] == "act"]
+    if not rows and acts:
+        findings.append({"code": NO_RECORD_ON_ACT_PAGE, "acts": acts})
     inside_region: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
         where = {"id": row["id"], "ref": row["ref"], "box_px": row["box_px"]}

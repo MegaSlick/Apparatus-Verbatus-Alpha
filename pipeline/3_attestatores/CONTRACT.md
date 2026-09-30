@@ -1459,9 +1459,9 @@ been answered, so a pass interrupted inside a page asks that page's units
 again, and a page record already sealed is resumed and never asked again.
 
 **A page the detector found nothing on.** When the census counts no record and
-the detector's retained run facts state its cap (`max_det`), the detector
-stopped because it saw nothing, not because it reached the cap: DAI looked and
-the page holds nothing for it. That is testimony. The page is sealed without a
+the detector's retained run facts are complete, its cap (`max_det`) included, as
+the page accounting's rule (i) reads them: DAI's own detector looked and the page
+holds nothing for it. That is testimony. The page is sealed without a
 request as `genuinely-empty`: native `payload` `""`, content health of empty
 text (blank, not truncated), `presented={}`, no observed box, no receipt, and
 one input, the page's `detector-page` census, with reason "DAI's own record
@@ -1469,17 +1469,21 @@ detector looked at this page and found no record below its cap, so the page
 holds nothing for DAI". Every reader re-derives it
 (`common.page_testimonia.is_detector_blank_testimony`,
 `common.page_path.empty_detector_page`): such a record whose text is not empty,
-whose census names a record or states no cap, or which binds anything but that
-census is refused. It counts toward the witness floor like any reading, the
-page accounting records it `witness-read-blank` rather than holding it
-unread, and a blank page's confirmation counts it as a witness that read
-blank text. The page's testimony is not a reading of any act's crop: an act
+whose health or reason is not the fixed one above, whose census names a record
+or states no cap, or which binds anything but that census is refused. It counts
+toward the witness floor like any reading, the page accounting records it
+`witness-read-blank` rather than holding it unread, and a blank page's
+confirmation counts it as a witness that read blank text. On a page whose
+reading establishes acts the detector's silence contradicts the reading, and
+the page accounting's rule (i) holds the page (`no-detector-record-on-act-page`),
+so such a page never passes as witnessed on DAI's silence. The page's testimony is not a reading of any act's crop: an act
 view on such a page is `not-run`, with no receipt and reason "DAI's own record
 detector found no record on this act's page below its cap, so DAI was never
 asked about this act; its page testimony is that the page holds nothing for
-it". A page that is not such testimony stays `not-run` without a
-request, and its act is held under-witnessed: a detector that states no cap
-(reason naming that whether it saw nothing is unknown), or a census that
+it". An act view is taken for such testimony from the sealed page record's
+structure, never from its reason. A page that is not such testimony stays
+`not-run` without a request, and its act is held under-witnessed: a detector
+whose run facts state no cap (reason naming them incomplete), or a census that
 counts records none of which enclosed a crop (a reason naming that count). A
 page with no census is refused, as above. A detector record inside an `other`
 reading is still held by the page accounting's rule (i).

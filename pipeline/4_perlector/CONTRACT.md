@@ -1329,12 +1329,15 @@ anything (`common/page_path.py`, `entry_plans`). It is given:
   under `witness_units = "flat"` a witness's units place nothing in either;
 - every page witness: a shown one as its feed row, a hidden one read by
   `page_witness_units.witness_reading` and lettered with the next letter the feed did not use,
-  in sorted `witness_label` order; `blank` is its content health's `blank` when it
-  read (`read` or `genuinely-empty`). A witness that read and gave no unit is
-  recorded `witness-read-blank` when its health says its text is blank, and held
-  `witness-read-no-units` otherwise; only a witness that did not read is held
+  in sorted `witness_label` order; `blank` is whether its retained page text is
+  blank, measured from that text, when it read (`read` or `genuinely-empty`). A
+  witness that read and gave no unit is recorded `witness-read-blank` when its text
+  is blank, and held `witness-read-no-units` otherwise; only a witness that did not
+  read is held
   `witness-not-read`. So DAI's page on which its own detector found nothing below
-  its cap (`genuinely-empty`, Attestatores CONTRACT) is recorded, not held;
+  its cap (`genuinely-empty`, Attestatores CONTRACT) is recorded, not held, by
+  rule (c); on a page whose reading establishes acts, rule (i) holds it as
+  `no-detector-record-on-act-page`;
 - Surya's census (`null` when the run has none), with feed ids on what the feed
   showed; the record detector as `configured` when the sealed
   `secondary_proposer` is a chair, its page's `detector-record` boxes -- a record whose

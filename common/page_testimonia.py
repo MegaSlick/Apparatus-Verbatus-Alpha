@@ -15,9 +15,9 @@ reads `common.stage`.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
-from common.chairs.models import AbsentChair, ChairIdentity
+from common.chairs.models import AbsentChair
 from common.chandra_native_retry import validate_trace as validate_chandra_trace
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
@@ -41,7 +41,7 @@ from common.page_path import (
 )
 from common.page_path import declared_page_witness_chairs as declared_page_witness_chairs
 from common.page_path import require_page_roster as require_page_roster
-from common.page_witness_units import UNIT_KINDS
+from common.page_witness_units import reads_detector_records
 from common.stage import (
     ATTEMPTED_WITNESS_OUTCOMES,
     latest_per_chair,
@@ -126,14 +126,23 @@ def validate_presented_page(context, payload: dict, presentations: list[dict]) -
         )
 
 
-def reads_detector_records(context, chair: Any) -> bool:
-    """Whether the sealed configuration's chair reads its page one detector record at a time."""
-    identity = context.registry.config.chairs.get(chair) if isinstance(chair, str) else None
-    return (
-        isinstance(identity, ChairIdentity)
-        and identity.witness_scope == "page"
-        and UNIT_KINDS.get(identity.witness_adapter) == "detector-record"
-    )
+# DAI's page on which its own record detector found no record below its cap:
+# `genuinely-empty` with empty text, this health and this reason, sealed with
+# no request (`is_detector_blank_testimony`).
+NO_DETECTOR_RECORD_REASON: Final = (
+    "DAI's own record detector looked at this page and found no record below its cap, so "
+    "the page holds nothing for DAI"
+)
+BLANK_TESTIMONY_HEALTH: Final = {
+    "native_type": "string",
+    "encoding": "utf-8-json-native",
+    "recordable": True,
+    "empty": True,
+    "blank": True,
+    "truncated": False,
+    "characters": 0,
+    "truncation_basis": "trusted-response-boundary",
+}
 
 
 def is_detector_blank_testimony(context, record: dict[str, Any]) -> bool:
@@ -149,7 +158,8 @@ def is_detector_blank_testimony(context, record: dict[str, Any]) -> bool:
         record.get("outcome") == "genuinely-empty"
         and isinstance(payload, dict)
         and payload.get("presented") == {}
-        and reads_detector_records(context, payload.get("chair"))
+        and isinstance(payload.get("chair"), str)
+        and reads_detector_records(context.registry.config.chairs.get(payload["chair"]))
     )
 
 
@@ -195,6 +205,15 @@ def validate_page_testimonium_record(
                 "text is not empty or its record detector's census for the page is not one of no "
                 "record below a stated cap. Only such a census is blank testimony; any other page "
                 "is read record by record or not at all"
+            )
+        if (
+            payload.get("content_health") != BLANK_TESTIMONY_HEALTH
+            or payload.get("reason") != NO_DETECTOR_RECORD_REASON
+        ):
+            raise SchemaRefusal(
+                "a record reader's blank page Testimonium does not state the health and reason "
+                "of blank testimony: empty text read to its end, because its record detector "
+                "found no record below its cap"
             )
         if record.get("inputs") != [census]:
             raise SchemaRefusal(

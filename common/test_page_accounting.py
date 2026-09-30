@@ -1406,6 +1406,45 @@ def test_a_detector_that_reached_its_cap_is_not_measured_and_held():
     assert record["holds"] == ["record-detector-capped"]
 
 
+def _detector_found_nothing(case: dict) -> None:
+    """The record detector looked below its cap and found no record; DAI testified blank."""
+    case["detections"]["records"] = []
+    case["detections"]["record_census"] = {
+        "detection_count": 0,
+        "max_det": 300,
+        "max_det_reached": False,
+    }
+    witness(case, "B").update(units=[], outcome="genuinely-empty", blank=True)
+    for entry in case["reading"]["answer"]["acts"]:
+        entry["cites"] = [cite for cite in entry["cites"] if not cite.startswith("B")]
+
+
+def test_a_detector_that_found_nothing_on_a_page_of_acts_holds():
+    """The detector's silence contradicts a reading that establishes acts, so the page holds."""
+    case = page()
+    _detector_found_nothing(case)
+
+    record = account(case)
+
+    assert record["rules"]["i"] == {
+        "status": "hold",
+        "findings": [{"code": "no-detector-record-on-act-page", "acts": [1, 2, 3]}],
+        "records_not_measured": 0,
+    }
+    assert "no-detector-record-on-act-page" in record["holds"]
+
+
+def test_a_detector_that_found_nothing_on_a_page_of_other_entries_passes_rule_i():
+    case = page()
+    _detector_found_nothing(case)
+    for entry in acts(case):
+        entry["kind"] = "other"
+
+    record = account(case)
+
+    assert record["rules"]["i"] == {"status": "pass", "findings": [], "records_not_measured": 0}
+
+
 def test_a_roster_without_a_record_detector_is_not_applicable():
     case = page()
     case["detections"].update(record_detector="absent", records=None, record_census=None)

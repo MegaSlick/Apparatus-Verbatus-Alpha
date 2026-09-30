@@ -48,6 +48,7 @@ import math
 import re
 from typing import Any, Callable, Final
 
+from common.chairs.models import ChairIdentity
 from common.chandra_layout import (
     block_page_bounds,
     is_refusal,
@@ -75,6 +76,7 @@ DAI: Final = "dai.v1"
 # How finely each adapter's own units cut a page: a layout block or detector
 # record is about one act; a line is a fraction of one.
 UNIT_KINDS: Final = {CHANDRA: "layout-block", DAI: "detector-record", CHURRO: "line"}
+DETECTOR_RECORD_UNIT: Final = "detector-record"
 # The label of the unit holding a witness's text outside its own units.
 OUTSIDE_UNITS_LABEL: Final = "outside units"
 # The letters a witness may take, in order: every capital but `L` and `S`,
@@ -88,6 +90,21 @@ _BOX_FIELDS: Final = frozenset({"x", "y", "w", "h"})
 _NON_BLANK_LINE: Final = re.compile(r"[^\n]+")
 _ASCII_WHITESPACE: Final = " \t\n\r\f\v"
 _ASCII_WHITESPACE_RUN: Final = re.compile(f"[{re.escape(_ASCII_WHITESPACE)}]+")
+
+
+def reads_detector_records(identity: Any) -> bool:
+    """Whether a chair reads its page one detector record at a time.
+
+    A page-scoped chair whose adapter's units are detector records (DAI) is
+    shown one crop per record its own project's detector found, never the
+    whole page. The one answer to this question, for the stage that serves the
+    chair and for every reader of its page record.
+    """
+    return (
+        isinstance(identity, ChairIdentity)
+        and identity.witness_scope == "page"
+        and UNIT_KINDS.get(identity.witness_adapter) == DETECTOR_RECORD_UNIT
+    )
 
 
 def checked_box(box: Any, page_size: tuple[int, int], what: str) -> dict[str, int]:

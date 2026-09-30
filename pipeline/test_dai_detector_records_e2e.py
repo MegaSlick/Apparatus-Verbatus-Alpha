@@ -365,10 +365,9 @@ def test_a_page_the_detector_found_nothing_on_below_its_cap_is_dais_blank_testim
     assert page_two["outcome"] == "genuinely-empty"
     assert payload["payload"] == ""
     assert payload["reason"] == attestatores.NO_DETECTOR_RECORD_REASON
-    assert (payload["content_health"]["blank"], payload["content_health"]["truncated"]) == (
-        True,
-        False,
-    )
+    # The fixed health every reader requires is exactly the health of empty text read whole.
+    assert payload["content_health"] == attestatores.content_health("", completed=True)
+    assert payload["content_health"] == attestatores.BLANK_TESTIMONY_HEALTH
     assert payload["presented"] == {} and payload["observed"] == []
     assert payload["provenance"]["receipt_ref"] is None
     [census] = [
@@ -404,7 +403,7 @@ def test_an_act_on_a_page_dai_saw_nothing_on_is_not_run_for_dai_and_names_no_rec
 def test_a_detector_that_states_no_cap_leaves_dai_not_run_on_a_page_it_found_nothing_on(
     tmp_path,
 ):
-    """With no stated cap, whether the detector saw nothing is unknown: DAI is held `not-run`."""
+    """Run facts that state no cap are incomplete, so no census is testimony: DAI is `not-run`."""
     tree, _world = _witness(tmp_path, DETECTIONS[:2], [DAI_ACT_TWO, DAI_ACT_ONE], cap_stated=False)
     page_two = _dai_page(tree, 2)
     assert page_two["outcome"] == "not-run"

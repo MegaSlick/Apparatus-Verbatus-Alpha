@@ -155,14 +155,26 @@ def _other_chair(record):
     record["payload"]["chair"] = "attestator_3"
 
 
+def _not_blank_health(record):
+    record["payload"]["content_health"] = {**record["payload"]["content_health"], "blank": False}
+
+
+def _other_reason(record):
+    record["payload"]["reason"] = "the detector was not run on this page"
+
+
 FORGED = (
     (_text, "text is not empty"),
     (_unbound, "does not bind exactly its record detector's census"),
     (_other_chair, "attempted page Testimonium has no image presentation"),
+    (_not_blank_health, "does not state the health and reason of blank testimony"),
+    (_other_reason, "does not state the health and reason of blank testimony"),
 )
 
 
-@pytest.mark.parametrize(("change", "refusal"), FORGED, ids=["text", "unbound", "chair"])
+@pytest.mark.parametrize(
+    ("change", "refusal"), FORGED, ids=["text", "unbound", "chair", "health", "reason"]
+)
 def test_blank_testimony_that_is_not_the_detectors_census_is_refused(
     blank_testimony, change, refusal
 ):

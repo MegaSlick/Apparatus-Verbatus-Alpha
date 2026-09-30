@@ -525,8 +525,10 @@ the shape the v3 receipt recomputes. DAI's page on which its own record detector
 found no record below its stated cap is `genuinely-empty` with empty text, bound to
 the detector's census (Attestatores CONTRACT, "A page the detector found nothing
 on"): it counts toward the floor, and the validation above re-derives the census
-it rests on. A DAI page whose detector states no cap, or whose records enclosed no
-crop, is `not-run` and does not count. An act-scoped witness testifies to no page-read
+it rests on. On a page whose reading establishes acts, the page accounting's rule
+(i) holds every unit (`no-detector-record-on-act-page`), so no unit there is
+accepted on DAI's silence. A DAI page whose detector's run facts state no cap, or
+whose records enclosed no crop, is `not-run` and does not count. An act-scoped witness testifies to no page-read
 unit and is not counted.
 
 **Residual ink.** `page_coverage_findings` measures every sealed page's own pixels

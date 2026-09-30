@@ -787,10 +787,11 @@ def accounting_witnesses(
     for witness in sorted(witnesses, key=lambda item: item["witness_label"]):
         testimonium = witness["testimonium"]
         outcome = testimonium["outcome"]
-        health = testimonium["payload"].get("content_health")
+        text = testimonium["payload"].get("payload")
+        # Measured from the retained text itself, never from its self-reported health.
         blank = (
-            health.get("blank")
-            if outcome in WITNESS_READING_OUTCOMES and isinstance(health, dict)
+            text.strip() == ""
+            if outcome in WITNESS_READING_OUTCOMES and isinstance(text, str)
             else None
         )
         row = shown.get(witness["witness_label"])
@@ -1020,10 +1021,10 @@ def empty_detector_page(
 ) -> dict[str, str] | None:
     """The page's `detector-page` reference when the record detector saw nothing on it.
 
-    That is a census of no record from a detector that states its cap, so it
-    stopped because it found nothing, not because it reached the cap. `None`
-    when the detector published no census for the page, found records, or
-    states no cap.
+    That is a census of no record from a detector whose retained run facts are
+    complete, its cap (`max_det`) included, as rule (i) reads them. `None` when
+    the detector published no census for the page, found records, or its run
+    facts state no cap.
     """
     pages = [
         e for e in designator_entries if e["kind"] == "detector-page" and e["subject_id"] == page_id

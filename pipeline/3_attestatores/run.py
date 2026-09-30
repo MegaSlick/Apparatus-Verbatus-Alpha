@@ -106,9 +106,12 @@ from common.native_witness import (
 )
 from common.page_path import empty_detector_page  # noqa: E402
 from common.page_testimonia import (  # noqa: E402
+    BLANK_TESTIMONY_HEALTH,
+    NO_DETECTOR_RECORD_REASON,
     declared_page_witness_chairs,
     is_detector_blank_testimony,
 )
+from common.page_witness_units import reads_detector_records  # noqa: E402
 from common.request_capacity import RequestCapacityRefusal  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -4422,7 +4425,7 @@ def publish_page_act_views(
     An act view of DAI's blank page testimony is `not-run`: the chair was never
     asked about the act's crop, so its view names no serving moment.
     """
-    if is_blank_detector_page_attempt(attempt):
+    if is_blank_detector_page(context, resolved, chair, page_ordinal, ordinal):
         attempt = Attempt(
             outcome="not-run",
             native_payload=None,
@@ -4466,54 +4469,50 @@ DETECTOR_REGION_KIND: Final = "detector-region"
 # Why an act has no DAI slice although DAI read its page.
 NO_DETECTOR_RECORD_OWNED: Final = "no-detector-record-owned"
 DETECTOR_RECORD_ANCHOR_BASIS: Final = "detector-record"
-NO_DETECTOR_RECORD_REASON: Final = (
-    "DAI's own record detector looked at this page and found no record below its cap, so "
-    "the page holds nothing for DAI"
-)
 # Why DAI's act view on a page its detector found nothing on is `not-run`.
 BLANK_DETECTOR_ACT_REASON: Final = (
     "DAI's own record detector found no record on this act's page below its cap, so DAI "
     "was never asked about this act; its page testimony is that the page holds nothing for it"
 )
 UNCAPPED_DETECTOR_REASON: Final = (
-    "DAI's own record detector found no record on this page but states no cap, so whether it "
-    "saw nothing is unknown, and DAI was shown nothing here"
+    "DAI's own record detector found no record on this page, but its run facts are incomplete "
+    "(they state no cap), so its census is not taken as having looked at the page, and DAI "
+    "was shown nothing here"
 )
 
 
-def is_blank_detector_page_attempt(attempt: Any) -> bool:
-    """Whether a page attempt is DAI's blank testimony, sealed without a request.
+def is_blank_detector_page(
+    context, resolved: Any, chair: str, page_ordinal: int, ordinal: int
+) -> bool:
+    """Whether this pass sealed the chair's page as DAI's blank testimony.
 
-    Its reason says so; a page DAI was asked about and answered empty carries none.
+    Decided from the sealed page record's structure
+    (`page_testimonia.is_detector_blank_testimony`): `genuinely-empty`, no
+    presentation, a record reader's. Its reason is display text only.
     """
-    return (
-        isinstance(attempt, Attempt)
-        and attempt.outcome == "genuinely-empty"
-        and attempt.reason == NO_DETECTOR_RECORD_REASON
+    if not reads_detector_records(resolved):
+        return False
+    subject = page_subject(context, page_ordinal)
+    identifier = artifact_id(
+        ATTESTATORES, "page-testimonium", subject, attempt_id(subject, f"read:{chair}", ordinal)
     )
+    if not context.tree.has_artifact(ATTESTATORES, "page-testimonium", identifier):
+        return False
+    record = context.tree.read_artifact(ATTESTATORES, "page-testimonium", identifier)
+    return is_detector_blank_testimony(context, record)
 
 
 def no_detector_unit_reason(detection_count: int) -> str:
     """Why a page's DAI record is `not-run` with no request.
 
-    The detector states no cap and found no record, or the records it found
-    enclosed no crop.
+    The detector found no record and its run facts state no cap, or the
+    records it found enclosed no crop.
     """
     if detection_count == 0:
         return UNCAPPED_DETECTOR_REASON
     return (
         f"DAI's own record detector found {detection_count} record(s) on this page and none "
         "enclosed a crop, so DAI was shown nothing here"
-    )
-
-
-def reads_detector_records(resolved: Any) -> bool:
-    """Whether this chair reads its page one detector record at a time."""
-    return (
-        isinstance(resolved, ChairIdentity)
-        and resolved.witness_scope == "page"
-        and witness_adapters.resolve_runnable_adapter(resolved.witness_adapter).page_units
-        == "detector-records"
     )
 
 
@@ -4707,7 +4706,7 @@ def publish_detector_page_testimonium(
     served: list[tuple[dict[str, Any], dict[str, Any], Attempt]],
     receipt_ref: dict[str, str] | None,
     page_ids: dict[int, str] | None = None,
-    detection_count: int = 0,
+    detection_count: int | None,
 ) -> Attempt:
     """Seal one DAI page record over every unit it read; return the page attempt.
 
@@ -4715,7 +4714,7 @@ def publish_detector_page_testimonium(
     record below a stated cap: `genuinely-empty`, empty text, binding the
     detector's census. Otherwise it is sealed `not-run`; ``detection_count``
     is its census count, which says whether the detector found nothing or found
-    records that enclosed no crop.
+    records that enclosed no crop. A caller with served units passes `None`.
     """
     # First, so a bad roster or a chair the run did not seal page-scoped refuses
     # before any record is built.
@@ -4737,6 +4736,11 @@ def publish_detector_page_testimonium(
     adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
     capabilities = _declared_format_capabilities(adapter)
     if not served:
+        if detection_count is None:
+            raise FatalAccounting(
+                f"page {page_ordinal}'s record reader was served no unit, and no census count "
+                "says whether its detector found nothing or found records that enclosed no crop"
+            )
         census = (
             empty_detector_page(
                 context, stage_manifest(context, DESIGNATOR)["artifacts"], page_subject_id
@@ -4746,7 +4750,7 @@ def publish_detector_page_testimonium(
         )
         if census is not None:
             outcome, reason, native = "genuinely-empty", NO_DETECTOR_RECORD_REASON, ""
-            health = content_health(native, completed=True)
+            health = dict(BLANK_TESTIMONY_HEALTH)
         else:
             outcome, reason, native = "not-run", no_detector_unit_reason(detection_count), None
             health = no_response_health(reason=reason)
@@ -4919,6 +4923,7 @@ def _serve_detector_page(
         served=served,
         receipt_ref=dict(client.handle.receipt_reference),
         page_ids=page_ids,
+        detection_count=None,
     )
     page_captures[(page_ordinal, chair)] = (page_attempt, None)
     return publish_page_act_views(
@@ -5106,6 +5111,7 @@ def fixture_detector_pages(
                         served=served,
                         receipt_ref=None,
                         page_ids=page_ids,
+                        detection_count=None,
                     ),
                     None,
                 )
