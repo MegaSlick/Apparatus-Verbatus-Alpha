@@ -499,9 +499,27 @@ def _verify_subprocess_receipts(
             f"expected={sorted(subprocess_rows)}, observed={sorted(receipts)}"
         )
     for role, rows in receipts.items():
-        if len(rows) != 1 or rows[0].get("environment") != subprocess_rows[role].get("environment"):
+        row = subprocess_rows[role]
+        if len(rows) != 1 or rows[0].get("environment") != row.get("environment"):
             raise QualificationRefusal(
                 f"chair {role!r} subprocess receipt does not name its row's environment"
+            )
+        _verify_measured_packages(role, rows[0].get("versions"), row.get("required_packages"))
+
+
+def _verify_measured_packages(role: str, measured: object, required: object) -> None:
+    """Each package the row pins, as the run measured it: `surya-ocr` is
+    measured as `surya_ocr`, and a local build tag (`2.14.0+cu130`) is the
+    same release."""
+    if not isinstance(required, Mapping) or not required:
+        raise QualificationRefusal(f"chair {role!r} subprocess row pins no packages")
+    if not isinstance(measured, Mapping):
+        raise QualificationRefusal(f"chair {role!r} subprocess receipt measured no versions")
+    for package, pin in required.items():
+        found = measured.get(package.replace("-", "_"))
+        if not isinstance(found, str) or found.split("+", 1)[0] != pin:
+            raise QualificationRefusal(
+                f"chair {role!r} ran {package} {found!r}, and its row pins {pin!r}"
             )
 
 

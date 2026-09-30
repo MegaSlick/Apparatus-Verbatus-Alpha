@@ -442,6 +442,22 @@ def test_a_subprocess_chair_needs_its_runner_s_receipt(tmp_path: Path) -> None:
         _qualify(paths)
 
 
+def test_a_subprocess_receipt_must_measure_the_row_s_pinned_packages(tmp_path: Path) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    (receipt,) = wrapper["bootstrap"]["receipts"]["preflight"]["subprocess_receipts"]
+    receipt["versions"]["torch"] = "2.14.0+cu130"
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    _qualify(paths)
+    receipt["versions"]["surya_ocr"] = "0.22.0"
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="ran surya-ocr '0.22.0'.*pins '0.22.1'"):
+        _qualify(paths)
+    del receipt["versions"]
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="measured no versions"):
+        _qualify(paths)
+
+
 def test_qualification_refuses_record_without_producer_wrapper(tmp_path: Path) -> None:
     paths, wrapper = _qualification_fixture(tmp_path)
     paths["report"].write_text(json.dumps(wrapper["bootstrap"]), encoding="utf-8")
