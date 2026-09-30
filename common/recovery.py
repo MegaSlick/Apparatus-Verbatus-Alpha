@@ -1,9 +1,8 @@
-"""The one checked reader for the bounded recovery policy.
+"""The one checked reader for the re-ask budget in `config/recovery.toml`.
 
-Recovery policy changes which artifacts the Recensor may request and which
-subprocesses the orchestrator may dispatch.  It is therefore run-shaping
-configuration, not a stage-local convenience file read from whichever current
-directory happened to launch a command.
+`[budget] page_level_reread` bounds how many times a page may be asked again.
+The run seals the file as `recovery` at the door, and every reader takes that
+sealed record rather than reading the file again.
 """
 
 from pathlib import Path
@@ -31,7 +30,11 @@ RECOVERY_KINDS: Final = {
 
 
 def load_recovery_policy(path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH) -> dict[str, Any]:
-    """Read one policy, validate its bounds, and return its resolved record."""
+    """Read the policy, validate its bounds, and return its resolved record.
+
+    `page_level_reread` bounds re-asks per page; the record keeps every field
+    the file carries, all within the ruled absolute cap.
+    """
     config, digest = read_sealed_toml(path, "recovery configuration", {"absolute_cap", "budget"})
     budget = config.get("budget")
     if not isinstance(budget, dict):
@@ -102,11 +105,8 @@ def reconcile_recovery_requests(
     """One act's recovery requests in ordinal order, refusing a history that does
     not reconcile to the sealed budget.
 
-    The one implementation of this arithmetic. The Recensor writes the requests
-    and needs much more state around them (which review answered which request,
-    which recrop and reread followed); the Designator and the orchestrator read
-    one current request and need only this. Both ends of a bounded budget
-    counting it independently is how the two ends drift apart.
+    The one implementation of this arithmetic, for every reader of an act's
+    current request, so no two readers count a bounded budget differently.
 
     Each request's recorded counters are checked against the requests that came
     before it rather than trusted because they sit inside a self-hashed payload:
@@ -115,7 +115,7 @@ def reconcile_recovery_requests(
     renumbered away would let a spent budget read as an unspent one, which is the
     one arithmetic this bounded loop cannot afford to get wrong.
 
-    Both callers read every request through `RunTree.read_artifact`, which already
+    Callers read every request through `RunTree.read_artifact`, which already
     recomputes each `artifact_id` from the stage, kind, subject and attempt it
     carries (`common/contracts/envelope.py`) and refuses a mismatch, so nothing
     here re-derives it.

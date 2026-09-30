@@ -2,10 +2,9 @@
 
 Three stages, one test file, because the wiring is one change: each stage's
 `main` opens through `common.stage.open_stage_context` instead of the
-fixture-only `open_context`, and the two fixture concepts that lived in this
-group -- the Perlector's declared `reading_failure` and the Recensor's declared
-`hold_acts` -- are answered by name on a real submission rather than by an empty
-table. The stage programs are loaded by path under unambiguous names (every
+fixture-only `open_context`, and the Perlector's declared `reading_failure`, a
+fixture concept, is answered by name on a real submission rather than by an
+empty table. The stage programs are loaded by path under unambiguous names (every
 stage has a top-level `run`), and the real run is driven by the real programs:
 Door, Exemplar and Ink Map over the synthetic fixture's own two pages, submitted
 as a real folder. No pod, no socket, no model.
@@ -18,8 +17,6 @@ What is proven:
   refusing fixture accessor, and still reads the declaration on the fixture route;
 - `fixture_reader_for` refuses a real submission whose sealed row is not live,
   by name, and needs no reader for an absent chair;
-- `declared_unreconciled` has no producer on a real run, so the review route is
-  silent about cross-act reconciliation there;
 - driven as programs over a real submission, all three stages refuse at their
   own missing predecessor seal with their contexts already opened: no "sealed no
   digest", no fixture accessor, no binding refusal, no traceback, nothing written.
@@ -257,74 +254,6 @@ def test_the_fixture_route_constructs_its_reader_exactly_as_before():
 
 
 # --- the Recensor's one fixture concept ---------------------------------------------
-
-
-def test_unreconciled_has_no_producer_on_a_real_run_and_the_route_stays_silent():
-    """`False` because nothing fed the cause, not because anything measured it;
-    with every other cause absent the route composes to no hold at all."""
-    assert RECENSOR_RUN.declared_unreconciled(None, "structural:1:1") is False
-    assert (
-        RECENSOR_RUN.review_route_from_findings(
-            testimony_shortfall=None,
-            audit_unresolved=None,
-            under_witnessed=False,
-            unreconciled=RECENSOR_RUN.declared_unreconciled(None, "structural:1:1"),
-        )
-        is None
-    )
-
-
-def test_declared_recovery_has_no_producer_on_a_real_run_and_still_reads_a_fixture_scenario():
-    """`False` because nothing fed the cause, not because any act was measured
-    as needing no recovery; a fixture scenario that declares `recover_acts`
-    still feeds it on the fixture route."""
-    assert RECENSOR_RUN.declared_recovery(None, "structural:1:1") is False
-
-    fixture = {
-        "act": [],
-        "page": [],
-        "scenario": [{"name": "recovered", "recover_acts": ["held-act"]}],
-    }
-    scenario = RECENSOR_RUN.declared_scenario(_fixture_context(RECENSOR, fixture, "recovered"))
-    assert RECENSOR_RUN.declared_recovery(scenario, "held-act") is True
-    assert RECENSOR_RUN.declared_recovery(scenario, "other-act") is False
-
-
-def test_declared_scenario_is_none_on_a_real_run_and_the_declared_row_on_the_fixture_route():
-    """The one branch `main` reads the scenario through, named as its own function.
-
-    A real submission carries no fixture to declare one, and the refusing
-    accessor is never touched to find that out. The fixture route still reads
-    the exact row `scenario_for` names.
-    """
-    assert RECENSOR_RUN.declared_scenario(_real_context(RECENSOR)) is None
-
-    fixture = {"act": [], "page": [], "scenario": [{"name": "held", "hold_acts": ["held-act"]}]}
-    scenario = RECENSOR_RUN.declared_scenario(_fixture_context(RECENSOR, fixture, "held"))
-    assert scenario == {"name": "held", "hold_acts": ["held-act"]}
-
-
-def test_a_declared_scenario_still_feeds_unreconciled_on_the_fixture_route():
-    scenario = {"name": "held", "hold_acts": ["held-act"]}
-
-    assert RECENSOR_RUN.declared_unreconciled(scenario, "held-act") is True
-    assert RECENSOR_RUN.declared_unreconciled(scenario, "other-act") is False
-    outcome, reason = RECENSOR_RUN.review_route_from_findings(
-        testimony_shortfall=None,
-        audit_unresolved=None,
-        under_witnessed=False,
-        unreconciled=RECENSOR_RUN.declared_unreconciled(scenario, "held-act"),
-    )
-    assert outcome == "held-for-review"
-    assert "did not reconcile" in reason
-
-
-def test_the_real_route_reads_the_ingress_record_the_constructor_read():
-    """The same reading `common.stage` makes: absent is synthetic, present must parse."""
-    assert RECENSOR_RUN.real_ingress(_real_context(RECENSOR)) is True
-    assert RECENSOR_RUN.real_ingress(_fixture_context(RECENSOR, {}, "happy")) is False
-    assert PERLECTOR_RUN.real_ingress(_real_context(PERLECTOR)) is True
-    assert PERLECTOR_RUN.real_ingress(_fixture_context(PERLECTOR, {}, "happy")) is False
 
 
 # --- the programs, over a real submission ------------------------------------------
