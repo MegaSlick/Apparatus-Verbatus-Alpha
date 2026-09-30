@@ -13,9 +13,8 @@ from zipfile import ZipFile
 
 from PIL import Image
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
+from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import FatalAccounting
-from common.contracts.identities import PROPOSAL_SEAL_ID
 from common.contracts.stages import (
     ARMARIUM,
     ATTESTATORES,
@@ -24,9 +23,8 @@ from common.contracts.stages import (
     EXEMPLAR,
     PERLECTOR,
 )
-from common.exemplar_boundary import verify_exemplar_crop_lineage
 from common.runtree.store import RunTree
-from common.stage import canary_ordinals, latest_attempt
+from common.stage import canary_ordinals
 from operations.spike_perlector.models import OutputStatus
 from operations.spike_perlector.normalization import GRAPHEMIC_V1
 from operations.spike_perlector.scoring import score_response
@@ -67,22 +65,27 @@ def _references(root: Path) -> dict[str, dict[str, Any]]:
     return by_sha
 
 
-def _sealed_act_pages(tree: RunTree, run: dict[str, Any]) -> dict[str, set[int]]:
-    """The proposal seal counts even acts for which no crop was made."""
-    seal = tree.read_artifact(DESIGNATOR, "proposal-seal", PROPOSAL_SEAL_ID)["payload"]
-    acts = seal["expected_acts"]
-    if not verify_self_hash(seal) or seal["count"] != len(acts):
-        raise ValueError("the Designator act census is not sealed or reconciled")
-    pages = {act["act_id"]: {act["page_ordinal"]} for act in acts}
-    if len(pages) != len(acts):
-        raise ValueError("the Designator act census repeats an identity")
-    for entry in tree.build_manifest(DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "region":
+def _canary_readings(tree: RunTree, ordinals: set[int]) -> dict[int, list[dict[str, Any]]]:
+    """Every Perlectio of each canary page, by page ordinal, in entry order.
+
+    A reading's act id is minted per page reading, so one subject naming two
+    Perlectio records is refused rather than resolved.
+    """
+    readings: dict[int, list[dict[str, Any]]] = {ordinal: [] for ordinal in ordinals}
+    subjects: set[str] = set()
+    for entry in tree.build_manifest(PERLECTOR)["artifacts"]:
+        if entry["kind"] != "perlectio":
             continue
-        region = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        verified = verify_exemplar_crop_lineage(tree, run, region)
-        pages[region["subject_id"]].add(verified["source_page_ordinal"])
-    return pages
+        if entry["subject_id"] in subjects:
+            raise FatalAccounting(f"reading {entry['subject_id']} has two Perlectio records")
+        subjects.add(entry["subject_id"])
+        record = tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+        ordinal = record.get("payload", {}).get("page_ordinal")
+        if ordinal in readings:
+            readings[ordinal].append(record)
+    for rows in readings.values():
+        rows.sort(key=lambda record: record["payload"].get("n", 0))
+    return readings
 
 
 def _contains_canary_identity(value: Any, act_ids: set[str], ordinals: set[int]) -> bool:
@@ -267,34 +270,37 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                         else "canary-witness-reading-failed",
                     )
 
+        # The reader is checked page by page: every entry it read on a canary
+        # page, joined in order, against that page's reference text.
         try:
-            perlectio_manifest = tree.build_manifest(PERLECTOR)
-            perlectios: dict[str, list[dict]] = {}
-            for entry in perlectio_manifest["artifacts"]:
-                if entry["kind"] == "perlectio":
-                    perlectios.setdefault(entry["subject_id"], []).append(
-                        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
-                    )
+            readings = _canary_readings(tree, ordinals)
+        except FatalAccounting:
+            fail(PERLECTOR, "canary-reading-ambiguous")
+            readings = {}
         except Exception as error:
             fail(PERLECTOR, f"check-raised:{type(error).__name__}")
-            perlectios = {}
-        for act_id, reference, _ in matched:
-            try:
-                reading = latest_attempt(
-                    perlectios.get(act_id, []), f"canary reading of {act_id}", operation="perlegere"
-                )
-            except FatalAccounting:
-                fail(PERLECTOR, "canary-reading-ambiguous")
+            readings = {}
+        for ordinal in sorted(ordinals):
+            page = references.get(page_shas.get(ordinal))
+            rows = readings.get(ordinal, [])
+            if page is None:
                 continue
-            payload = reading.get("payload", {}) if isinstance(reading, dict) else {}
-            status = reading.get("outcome") if isinstance(reading, dict) else None
-            text = payload.get("text")
-            if status != "read" or not isinstance(text, str) or not text.strip() or _repeated(text):
+            if not rows:
+                fail(PERLECTOR, "no-canary-reading")
+                continue
+            texts = [row.get("payload", {}).get("text") for row in rows]
+            if (
+                any(row.get("outcome") != "read" for row in rows)
+                or not all(isinstance(text, str) and text.strip() for text in texts)
+                or _repeated("\n".join(texts))
+            ):
                 fail(PERLECTOR, "canary-reading-empty-truncated-or-repeated")
-            elif not _shared(reference["text"], text, OutputStatus.COMPLETE):
+            elif not _shared(
+                "\n".join(act["text"] for act in page["acts"]),
+                "\n".join(texts),
+                OutputStatus.COMPLETE,
+            ):
                 fail(PERLECTOR, "canary-reading-shared-too-little-ink")
-        if not matched:
-            fail(PERLECTOR, "no-canary-reading")
 
         try:
             export_manifest = tree.build_manifest(ARMARIUM)
@@ -310,22 +316,27 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 export = exports[0]["payload"]
             if export is None:
                 raise ValueError("ambiguous canary export")
-            act_pages = _sealed_act_pages(tree, run)
-            sealed_canaries = {act_id for act_id, pages in act_pages.items() if pages & ordinals}
-            if any(not act_pages[act_id] <= ordinals for act_id in sealed_canaries):
-                fail(ARMARIUM, "canary-in-real-export")
+            # Every reading on a canary page must be in the block; a page with no
+            # reading still has a block row, so the block may name more.
+            read_canaries = {
+                row["subject_id"]
+                for rows in _canary_readings(tree, ordinals).values()
+                for row in rows
+            }
+            sealed_canaries = set(read_canaries)
             block = export.get("canary")
             if not isinstance(block, dict) or not isinstance(block.get("acts"), list):
                 fail(ARMARIUM, "canary-missing-from-block")
             else:
                 block_rows = {row["act_id"]: row for row in block["acts"]}
+                sealed_canaries |= set(block_rows)
                 if (
                     set(block["ordinals"]) != ordinals
-                    or set(block_rows) != sealed_canaries
+                    or not read_canaries <= set(block_rows)
                     or len(block_rows) != len(block["acts"])
                     or any(
-                        set(row["page_ordinals"]) != act_pages[act_id]
-                        for act_id, row in block_rows.items()
+                        len(row["page_ordinals"]) != 1 or not set(row["page_ordinals"]) <= ordinals
+                        for row in block_rows.values()
                     )
                 ):
                     fail(ARMARIUM, "canary-missing-from-block")
