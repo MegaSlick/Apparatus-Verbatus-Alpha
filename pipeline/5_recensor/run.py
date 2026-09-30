@@ -102,6 +102,7 @@ from common.residual_ink import (  # noqa: E402
     residual_ink,
     resolve_coverage_audit_policy,
 )
+from common.sealed_config import read_sealed_toml  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
@@ -3396,10 +3397,28 @@ def _verify_ink_recovery_request(
         )
 
 
+def refuse_a_page_read_tree(context) -> None:
+    """Refuse, by name, a run whose sealed Perlector protocol reads whole pages.
+
+    Such a run's Perlector publishes page readings and the acts it established
+    from them, not a reading per Designator act, and nothing here counts those.
+    """
+    protocol, digest = read_sealed_toml(
+        context.perlector_protocol_config_path, "Perlector protocol declaration"
+    )
+    context.require_sealed_config("perlector-protocol", digest)
+    if protocol.get("reading_unit") == "page":
+        raise ContractError(
+            'the sealed Perlector protocol reads whole pages (reading_unit = "page"): '
+            "page-read trees are not yet counted downstream, so the Recensor stops here"
+        )
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(DESCRIPTION).parse_args()
     context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
+    refuse_a_page_read_tree(context)
     # Re-reading policy could publish an allowance the run never sealed.
     budget = context.recovery_policy
     context.require_sealed_config("recovery", budget["config_sha256"])
