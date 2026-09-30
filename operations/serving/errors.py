@@ -48,11 +48,15 @@ class ProcessLaunchError(ServingError):
 
 
 class ReadinessError(ServingError):
-    """A bounded readiness transition did not reach a real model answer."""
+    """A bounded readiness transition did not reach a real model answer.
 
-    def __init__(self, code: str, detail: str) -> None:
+    ``http_status`` is the status of a non-success answer, when there was one.
+    """
+
+    def __init__(self, code: str, detail: str, *, http_status: int | None = None) -> None:
         self.code = code
         self.detail = detail
+        self.http_status = http_status
         super().__init__(f"{code}: {detail}")
 
 

@@ -332,7 +332,9 @@ def parse_openai_answer(
 
     if response.status != 200:
         raise ReadinessError(
-            "VLLM_PROBE_HTTP_ERROR", f"inference probe returned HTTP {response.status}"
+            "VLLM_PROBE_HTTP_ERROR",
+            f"inference probe returned HTTP {response.status}",
+            http_status=response.status,
         )
     payload = _json_object(response, "VLLM_PROBE_RESPONSE_INVALID")
     if payload.get("model") != expected_model_id:

@@ -107,8 +107,7 @@ another chair around it.
 
 Readiness is a bounded poll of the exact child and its fresh launch log. It fails early on
 an exited child or a named log signature: `CUDA out of memory`, `EngineDeadError`,
-`LORA_UNSUPPORTED` (`does not support LoRA`), `UNKNOWN_MODEL`, or `VLLM_ERROR` (reserved for
-a launch wrapper that writes to this log; vLLM never prints it). Broad words like
+`LORA_UNSUPPORTED` (`does not support LoRA`) or `UNKNOWN_MODEL`. Broad words like
 `RuntimeError` are deliberately not matched: the poll re-reads the whole tail, so one benign
 line would abort a good start. Success requires all of:
 

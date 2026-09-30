@@ -19,7 +19,7 @@ import string
 import sys
 import time
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -575,7 +575,7 @@ def test_proven_profile_digest_refuses_a_different_chair_identity_digest() -> No
 
 
 def test_a_real_serving_profile_missing_preflight_state_refuses_by_name():
-    """Migration honesty: an older row that predates this field is not silently proven."""
+    """A real serving row without `preflight_state` is refused by name, never taken as proven."""
 
     row = profile_row(recipe="reader", chair="perlector", served_model_id="reader", port=8100)
     del row["preflight_state"]
@@ -1176,10 +1176,9 @@ def test_an_endpoint_answering_as_a_different_model_never_becomes_ready(tmp_path
     [
         ("CUDA out of memory", "CUDA out of memory"),
         ("EngineDeadError", "EngineDeadError"),
-        ("VLLM_ERROR: fatal engine startup failure", "VLLM_ERROR"),
-        # The two the old pipeline's own launch scripts grepped for, and the
-        # two vLLM prints when it rejects an adapter loudly rather than
-        # ignoring one silently.
+        # What vLLM prints when it rejects an adapter loudly rather than
+        # ignoring one silently: a model class without LoRA support, and a
+        # served name it does not know.
         (
             "ValueError: Qwen3VLForConditionalGeneration does not support LoRA yet.",
             "LORA_UNSUPPORTED",
@@ -1868,6 +1867,16 @@ def test_image_calibration_seals_nested_payload_against_later_mutation(tmp_path:
     assert isinstance(sealed_url, str) and sealed_url.startswith("data:image/png;base64,")
 
 
+def test_a_text_calibration_fixture_digest_is_its_own_payload_not_a_caller_claim() -> None:
+    payload = {"messages": [{"role": "user", "content": "calibrate"}]}
+    calibration = AdapterCalibration.from_text_payload(kind="completions", payload=payload)
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    assert calibration.fixture_sha256 == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    with pytest.raises(ServingConfigurationError, match="digest of its canonical payload"):
+        AdapterCalibration(kind="completions", payload=payload, fixture_sha256="c" * 64)
+
+
 def test_tower_connector_adapter_refuses_a_text_only_calibration(tmp_path: Path) -> None:
     base = identity("base", "base-v1")
     adapter = identity("adapter", "adapter-v1", adapter_of="base")
@@ -1886,10 +1895,9 @@ def test_tower_connector_adapter_refuses_a_text_only_calibration(tmp_path: Path)
         ),
         model_ids=("base-api", "adapter-api"),
     )
-    calibration = AdapterCalibration(
+    calibration = AdapterCalibration.from_text_payload(
         kind="chat-completions",
         payload={"messages": [{"role": "user", "content": "text is insufficient"}]},
-        fixture_sha256="c" * 64,
     )
 
     with pytest.raises(ServingRecipeRefusal, match="image-bearing adapter calibration"):
@@ -4957,9 +4965,8 @@ def _snapshot_carrying(tmp_path: Path, filename: str, document: object):
 # The two real shapes, taken from the pinned revisions themselves:
 # `preprocessor_config.json` states the pair at the top level (chandra-ocr-2,
 # churro-3B, Qwen3.8-27B); `processor_config.json` nests it under
-# `image_processor`, and for `attestator_2`'s DAI revision it is the only file
-# that exists at all -- fetching the other returns 404, which is the defect
-# this check and the comment corrections beside it close.
+# `image_processor`, and `attestator_2`'s DAI revision ships only that file, so
+# the check must read either one.
 TOP_LEVEL = {"patch_size": 16, "merge_size": 2, "image_processor_type": "Qwen2VLImageProcessorFast"}
 NESTED = {
     "image_processor": {"patch_size": 16, "merge_size": 2},
@@ -4990,9 +4997,9 @@ def test_a_row_matching_the_models_own_processor_configuration_passes(
 def test_a_row_that_disagrees_with_the_model_is_refused_by_name(
     tmp_path: Path, filename: str, document: dict
 ) -> None:
-    """The defect this closes: `patch_size`/`merge_size` decide every image's
-    prompt-token cost, and a wrong pair mis-counts by 30% while the receipt
-    publishes the arithmetic as though it had been checked."""
+    """`patch_size`/`merge_size` decide every image's prompt-token cost, so a
+    row whose pair differs from the model's own file is refused by name rather
+    than serving under a mis-count the receipt would publish as checked."""
 
     with pytest.raises(ServingConfigurationError) as error:
         assert_processor_geometry(_snapshot_carrying(tmp_path, filename, document), _geometry_row())
@@ -5048,6 +5055,17 @@ def test_a_present_file_with_neither_pair_complete_is_refused_not_skipped(
     assert filename in str(error.value)
 
 
+@pytest.mark.parametrize("document", [[16, 2], None, "patch_size=16"])
+def test_a_present_file_that_is_not_a_json_object_is_refused_not_skipped(
+    tmp_path: Path, document: object
+) -> None:
+    with pytest.raises(ServingConfigurationError, match="not a JSON object") as error:
+        assert_processor_geometry(
+            _snapshot_carrying(tmp_path, PROCESSOR_CONFIG_FILENAMES[0], document), _geometry_row()
+        )
+    assert "attestator_2" in str(error.value)
+
+
 def test_a_split_declaration_across_top_level_and_nested_is_read_and_confirmed(
     tmp_path: Path,
 ) -> None:
@@ -5061,9 +5079,9 @@ def test_a_split_declaration_across_top_level_and_nested_is_read_and_confirmed(
 
 
 def test_a_split_declaration_that_disagrees_with_the_row_is_refused(tmp_path: Path) -> None:
-    """The counterfactual for the split layout: if the check ever skipped an
-    incomplete nested section again, the positive test above would still pass;
-    this one cannot, because the split pair must be READ to be refused."""
+    """The counterfactual for the split layout: a check that skipped an
+    incomplete nested section would still pass the positive test above; this
+    one cannot, because the split pair must be read to be refused."""
 
     document = {"patch_size": 14, "image_processor": {"merge_size": 2}}
     with pytest.raises(ServingConfigurationError) as error:
@@ -5104,6 +5122,32 @@ def test_generation_config_vllm_is_rendered_on_the_launch(tmp_path: Path) -> Non
     argv, _log_path = launcher.calls[0]
     handle.stop()
     assert argv[argv.index("--generation-config") + 1] == "vllm"
+
+
+def test_an_adapter_over_a_hybrid_base_refuses_prefix_caching_on_its_own_row(
+    tmp_path: Path,
+) -> None:
+    """vLLM takes the adapter row's flags over the base's weights, so the base decides."""
+
+    base = replace(identity("base", "base-v1"), repo="Qwen/Qwen3.8-27B")
+    adapter = identity("adapter", "adapter-v1", adapter_of="base")
+    base_row = profile_row(recipe="base-v1", chair="base", served_model_id="base-api", port=8000)
+    base_row["enable_prefix_caching"] = False
+    adapter_row = profile_row(
+        recipe="adapter-v1", chair="adapter", served_model_id="adapter-api", port=8100
+    )
+    assert adapter_row["enable_prefix_caching"] is True
+    manager, _, _, launcher, registry, _ = manager_for(
+        tmp_path,
+        identities={base.role: base, adapter.role: adapter},
+        profiles=(base_row, adapter_row),
+        model_ids=("base-api", "adapter-api"),
+    )
+
+    with pytest.raises(ServingRecipeRefusal, match="hybrid Mamba/attention"):
+        manager.start(adapter, TIER)
+    assert "'adapter'" in registry.refusals[-1][1]
+    assert launcher.processes == []
 
 
 def test_a_hybrid_attention_checkpoint_refuses_to_launch_with_prefix_caching_on(
