@@ -29,10 +29,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import dissent
 import pytest
 
-from common import perlector_audit
+from common import dissent, perlector_audit
 from common.chairs.models import ChairIdentity
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash

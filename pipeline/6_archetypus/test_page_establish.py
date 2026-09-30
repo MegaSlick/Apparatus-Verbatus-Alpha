@@ -2,7 +2,8 @@
 
 The trees are the fixture's `happy`, `page-review` and `page-other` scenarios
 read with `reading_unit = "page"` and reviewed by the real Recensor, and
-`page-no-act` read by Chandra and Churro alone. Two tests forge a review the
+`page-no-act-unbroken` (`page-no-act` with nothing running across the page
+break) read by Chandra and Churro alone. Two tests forge a review the
 Recensor does not write on the fixture (`conftest.forge_page_review`), each
 saying why.
 """
@@ -28,9 +29,7 @@ from conftest import (
     forge_page_review,
     load_stage,
     page_context,
-    reaccount_page,
     rewitness_stage_boundary,
-    rewrite_page_answer_entry,
     run_stage,
 )
 
@@ -182,10 +181,11 @@ def test_index_rows_name_each_reading_s_kind(page_other, tmp_path):
     }
 
 
-def test_a_refused_reading_leaves_no_record_of_the_readings_before_it(happy, tmp_path):
+def test_a_perlectio_carrying_a_layer_no_page_reading_records_stops_the_review(happy, tmp_path):
     root, options = _copy(happy, tmp_path)
-    # p2:1 is counted, but its reading carries a layer a page reading never
-    # records, so its constructor refuses it after p1's records were built.
+    # p2:1's Perlectio carries a layer a page reading never records. The
+    # page-read denominator every later stage reads refuses it, so the review
+    # stops and no reading is established.
     directory = root / RUN_ID / "4_perlector" / "artifacts" / "perlectio"
     for path in directory.glob("*.json"):
         record = json.loads(path.read_text("utf-8"))
@@ -196,33 +196,21 @@ def test_a_refused_reading_leaves_no_record_of_the_readings_before_it(happy, tmp
             )
             path.write_bytes(canonical_bytes(record))
     rewitness_stage_boundary(RunTree(root, RUN_ID), "perlector")
-    result = _establish(root, options, "happy")
+    result = run_stage(root, RUN_ID, "happy", "pipeline/5_recensor/run.py", **options)
     assert result.returncode == 2
-    assert "carries an annotation layer" in result.stderr
+    assert "Perlectio carries fields other than its closed schema" in result.stderr
     assert _records(root) == {}
 
 
-@pytest.fixture(scope="module")
-def no_act(tmp_path_factory) -> tuple[Path, dict]:
-    """`page-no-act` read by Chandra and Churro alone, DAI absent.
-
-    With DAI a page witness, a page of `other` entries either has a record
-    inside one (rule i) or DAI was shown nothing on it (rule e), and neither is
-    confirmed; on this roster the page's record detector finds nothing on page 2.
-    """
-    return build_page_tree(
-        tmp_path_factory.mktemp("page-no-act"), "page-no-act", floor=2, absent=("attestator_2",)
+def test_a_confirmed_no_act_page_establishes_its_other_reading(tmp_path):
+    # `page-no-act` with nothing running across the break, read by Chandra and
+    # Churro alone, the page witnesses a confirmed no-act page can have.
+    root, options = build_page_tree(
+        tmp_path, "page-no-act-unbroken", floor=2, absent=("attestator_2",)
     )
-
-
-def test_a_confirmed_no_act_page_establishes_its_other_reading(no_act, tmp_path):
-    root, options = _copy(no_act, tmp_path)
-    rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
-    rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_from_previous_page=False)
-    reaccount_page(root, RUN_ID, "page-no-act", options, 2)
-    result = _establish(root, options, "page-no-act")
+    result = _establish(root, options, "page-no-act-unbroken")
     assert result.returncode == 0, result.stderr
-    context = page_context(root, RUN_ID, "page-no-act", options)
+    context = page_context(root, RUN_ID, "page-no-act-unbroken", options)
     reviews = current_page_reviews(context, reading_acts(context)).values()
     [review] = [review for review in reviews if review["payload"]["act_key"] == "p2:1"]
     assert review["outcome"] == "accepted"

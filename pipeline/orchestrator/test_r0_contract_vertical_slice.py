@@ -875,7 +875,7 @@ def test_the_recensor_refuses_a_page_role_only_the_whole_page_disproves(tmp_path
 # --- Fresh-context review (P2): the second spelling of the scope claim -----------
 #
 # The act-scoped Testimonium carries the page-witness claim a second time, as the
-# optional `page_witness` payload flag, and `pipeline/4_perlector/dissent.py` reads
+# optional `page_witness` payload flag, and `common/dissent.py` reads
 # that flag directly. The attachment's copy was reconciled against the run's
 # declaration; this one was reconciled against nothing.
 

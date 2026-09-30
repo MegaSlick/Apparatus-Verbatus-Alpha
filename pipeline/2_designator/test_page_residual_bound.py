@@ -2,8 +2,7 @@
 
 Significant components become individual held acts. Components below both
 sealed presentation floors retain exact geometry and pixels on a page-level
-aggregate hold. The legacy component ceiling is varied here only to prove it no
-longer changes current producer behavior.
+aggregate hold.
 
 The A4 case itself is the last test in the file, marked `full`: an 8.7
 megapixel pure-Python structure scan does not belong in the everyday leg.
@@ -36,23 +35,14 @@ _SCATTER_Y = range(240, 259, 10)
 _SCATTER_INK = 40
 
 
-def _grouping_config_with_bound(
-    directory: Path, bound: int, *, promote_all_components: bool = True
-) -> Path:
-    """The shipped grouping policy with an isolated cardinality bound.
+def _grouping_config(directory: Path, *, promote_all_components: bool = True) -> Path:
+    """The shipped grouping policy, with every residual promoted to its own act when asked.
 
     The six page-fraction thresholds are copied byte for byte, so these runs
-    resolve to the same geometry the shipped policy resolves to. Cardinality tests
-    promote every component to isolate their legacy ceiling; aggregate
+    resolve to the same geometry the shipped policy resolves to. Aggregate
     presentation cases keep the sealed floors.
     """
-    source = SHIPPED_GROUPING_CONFIG.read_text(encoding="utf-8")
-    # Asserted against the literal so a shipped-value change fails loudly here
-    # rather than silently becoming a no-op edit.
-    assert "max_residual_components = 2000" in source, (
-        "the shipped grouping config no longer declares a bound of 2000"
-    )
-    edited = source.replace("max_residual_components = 2000", f"max_residual_components = {bound}")
+    edited = SHIPPED_GROUPING_CONFIG.read_text(encoding="utf-8")
     if promote_all_components:
         for declaration in (
             "residual_aggregate_max_pixel_count = 500",
@@ -173,16 +163,13 @@ def _seal_rows(context) -> list[dict]:
 def _pass_over_scattered_page(
     root: Path,
     monkeypatch,
-    bound: int,
     page_png: bytes,
     ordinal: int,
     *,
     promote_all_components: bool = True,
 ):
     """One whole Designator initial pass over a page carrying unclaimed scatter."""
-    grouping_config = _grouping_config_with_bound(
-        root.parent, bound, promote_all_components=promote_all_components
-    )
+    grouping_config = _grouping_config(root.parent, promote_all_components=promote_all_components)
     _base_run(root, grouping_config)
     designator = load_stage("2_designator")
     context = _designator_context(root, designator, grouping_config)
@@ -195,14 +182,14 @@ def _pass_over_scattered_page(
 def measured_scatter(tmp_path_factory):
     """How many residual components the scatter band actually reconciles to.
 
-    Measured through a real pass with a bound nothing can reach, rather than
-    predicted from the pitch arithmetic above, so the boundary tests below are
-    stated against what the instrument actually produced.
+    Measured through a real pass rather than predicted from the pitch
+    arithmetic above, so the tests below are stated against what the
+    instrument actually produced.
     """
     with pytest.MonkeyPatch.context() as monkeypatch:
         root = tmp_path_factory.mktemp("probe") / "runs"
         _designator, context, held = _pass_over_scattered_page(
-            root, monkeypatch, 1_000_000, _scattered_page_png(), 1
+            root, monkeypatch, _scattered_page_png(), 1
         )
         payload = _conservation_for(context, 1)["payload"]
         assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_COMPLETE
@@ -213,22 +200,18 @@ def measured_scatter(tmp_path_factory):
         return count
 
 
-def test_a_page_exactly_at_the_bound_enumerates_every_component(
+def test_every_significant_scatter_component_is_its_own_held_act(
     tmp_path, monkeypatch, measured_scatter
 ):
-    """At the bound, nothing changes: one held act per residual, no page hold.
-
-    The bound is `>`, not `>=`; pinned from the side that costs a reviewer nothing.
-    """
+    """One held act per residual, however many, and no page hold."""
     _designator, context, held = _pass_over_scattered_page(
-        tmp_path / "runs", monkeypatch, measured_scatter, _scattered_page_png(), 1
+        tmp_path / "runs", monkeypatch, _scattered_page_png(), 1
     )
     payload = _conservation_for(context, 1)["payload"]
 
     assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_COMPLETE
     assert payload["residual_component_count"] == measured_scatter
     assert len(payload["residual_components"]) == measured_scatter
-    assert "max_residual_components" not in payload
     assert _conservation_for(context, 1)["outcome"] == "proposed"
     assert _page_residual_holds(context) == []
 
@@ -242,12 +225,7 @@ def test_a_page_exactly_at_the_bound_enumerates_every_component(
 
 def test_small_residuals_are_retained_as_accounting_not_fictitious_acts(tmp_path, monkeypatch):
     """Every speck remains inspectable without claiming the specks are one act."""
-    source = SHIPPED_GROUPING_CONFIG.read_text(encoding="utf-8")
-    grouping_config = tmp_path / "designator_grouping.toml"
-    grouping_config.write_text(
-        source.replace("max_residual_components = 2000", "max_residual_components = 1000000"),
-        encoding="utf-8",
-    )
+    grouping_config = SHIPPED_GROUPING_CONFIG
     _base_run(tmp_path / "runs", grouping_config)
     designator = load_stage("2_designator")
     context = _designator_context(tmp_path / "runs", designator, grouping_config)
@@ -292,32 +270,8 @@ def test_residual_at_either_presentation_threshold_is_promoted():
     assert aggregated == []
 
 
-def test_component_count_never_suppresses_individual_significant_residuals(
-    tmp_path, monkeypatch, measured_scatter
-):
-    """A dust-count cap cannot turn significant components into one fake act."""
-    bound = measured_scatter - 1
-    designator, context, held = _pass_over_scattered_page(
-        tmp_path / "runs", monkeypatch, bound, _scattered_page_png(), 1
-    )
-    payload = _conservation_for(context, 1)["payload"]
-    assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_COMPLETE
-    assert payload["residual_component_count"] == measured_scatter
-    rows = _seal_rows(context)
-    assert (
-        len([row for row in rows if row["act_key"].startswith("residual:1:")]) == measured_scatter
-    )
-    assert _page_residual_holds(context) == []
-    assert held is True
-
-
-def test_the_shipped_bound_holds_no_fixture_page(tmp_path, monkeypatch):
-    """A green fixture run stays green, and every page stays enumerated.
-
-    The shipped bound of 2000 is orders of magnitude above anything these
-    pages reconcile to; if it ever began holding a fixture page, that would
-    change what a green run means, not just what it contains.
-    """
+def test_no_fixture_page_is_held_whole(tmp_path, monkeypatch):
+    """A green fixture run stays green, and every page stays enumerated."""
     root = tmp_path / "runs"
     _base_run(root, SHIPPED_GROUPING_CONFIG)
     designator = load_stage("2_designator")
@@ -332,7 +286,6 @@ def test_the_shipped_bound_holds_no_fixture_page(tmp_path, monkeypatch):
         payload = record["payload"]
         assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_COMPLETE
         assert payload["residual_component_count"] == len(payload["residual_components"])
-        assert "max_residual_components" not in payload
     assert [row for row in _seal_rows(context) if row["act_key"].startswith("page-residual:")] == []
 
 
@@ -372,12 +325,12 @@ def test_an_a4_page_at_three_percent_scatter_is_held_as_one_item(tmp_path, monke
     page_png = encode_grayscale_png(width, height, rows)
 
     _designator, context, held = _pass_over_scattered_page(
-        tmp_path / "runs", monkeypatch, 2000, page_png, 2, promote_all_components=False
+        tmp_path / "runs", monkeypatch, page_png, 2, promote_all_components=False
     )
     payload = _conservation_for(context, 2)["payload"]
 
     assert payload["residual_enumeration"] == RESIDUAL_ENUMERATION_AGGREGATED
-    assert payload["residual_component_count"] > 2000
+    assert payload["residual_component_count"] > 10_000
     assert payload["residual_component_count"] == (
         len(payload["residual_components"]) + len(payload["aggregated_residual_components"])
     )

@@ -10,8 +10,9 @@ import time
 import unicodedata
 from pathlib import Path
 
-import dissent
 import pytest
+
+from common import dissent
 
 ROOT = Path(__file__).resolve().parents[2]
 

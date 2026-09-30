@@ -658,7 +658,7 @@ def _rate_bound_tokens(characters: int) -> int:
 # --- the whole-page Perlector request -------------------------------------------
 #
 # One call reads a whole page (`reading_unit = "page"`): the page image, the text
-# `pipeline/4_perlector/page_prompt.py` renders from the page feed, and one JSON
+# `common/page_prompt.py` renders from the page feed, and one JSON
 # answer covering every act on the page.
 #
 # No tokenizer has measured the page prompt, so it is charged in two parts. Every

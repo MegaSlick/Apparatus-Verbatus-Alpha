@@ -607,12 +607,14 @@ dispatch.
 
 **The v3 receipt.** `page_review.write_reading_receipt` rebuilds
 `recensor-partition-receipt.v3` from disk: the units re-derived through
-`reading_denominator` (`expected_unit_count` of them), `page_reading_refs` in page
-order, each item's `page_disposition`, review and coverage recomputed from the
-Testimonia, and its `release_reason`: the review's `release.reason` for a unit its
-page reading held and this stage released, `null` otherwise. A unit its page reading
-held is a receipt reason even when released, so such a receipt is never
-`complete`. Each review's outcome is recomputed too: every row hold code is kept or
+`reading_denominator` (`expected_unit_count` of them), `page_reading_refs` keyed by
+page ordinal in page order (`[{page_ordinal, reading_ref}]`), each item's
+`page_disposition`, review and coverage recomputed from the Testimonia, and its
+`release_reason`: the review's `release.reason` for a unit its page reading held and
+this stage released, `null` otherwise. A held unit so released is resolved and adds
+no receipt reason, so a run whose only held page is a blank page the review
+confirmed can be `complete`; a held unit with no completed review keeps the receipt
+`partial`. Each review's outcome is recomputed too: every row hold code is kept or
 named in a release, a release names exactly the row's releasable codes on a
 confirmed page, the witness-floor and continuation codes are what disk derives, and
 the unit is held exactly when a code remains. Every `continuation-link` is matched

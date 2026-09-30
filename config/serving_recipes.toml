@@ -60,27 +60,6 @@ description = "offline walking-skeleton fixture for the Designator-structure cha
 
 [[profiles]]
 kind = "fixture"
-recipe = "fake-secondary-proposer-v0"
-chair = "secondary_proposer"
-tier = "generic-24gb"
-description = "offline walking-skeleton fixture for DAI's record detector chair"
-
-[[profiles]]
-kind = "fixture"
-recipe = "fake-secondary-proposer-v0"
-chair = "secondary_proposer"
-tier = "generic-48gb"
-description = "offline walking-skeleton fixture for DAI's record detector chair"
-
-[[profiles]]
-kind = "fixture"
-recipe = "fake-secondary-proposer-v0"
-chair = "secondary_proposer"
-tier = "generic-80gb-plus"
-description = "offline walking-skeleton fixture for DAI's record detector chair"
-
-[[profiles]]
-kind = "fixture"
 recipe = "fake-surya-v0"
 chair = "designator_surya"
 tier = "generic-24gb"

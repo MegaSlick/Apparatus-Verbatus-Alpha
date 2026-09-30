@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from common.chairs.models import ChairIdentity
 from common.chandra_native_retry import validate_trace as validate_chandra_trace
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
@@ -25,7 +24,16 @@ from common.native_witness import (
     validate_presented_page_binding,
     verify_native_capture_blob,
 )
-from common.page_path import distinct_refs, refs_by_path
+from common.page_path import (
+    PAGE_TESTIMONIUM_KIND,
+    distinct_refs,
+    refs_by_path,
+)
+
+# The roster and its check live beside the page feed that applies them; every
+# consumer reads them through this module too.
+from common.page_path import declared_page_witness_chairs as declared_page_witness_chairs
+from common.page_path import require_page_roster as require_page_roster
 from common.stage import (
     ATTEMPTED_WITNESS_OUTCOMES,
     latest_per_chair,
@@ -34,46 +42,6 @@ from common.stage import (
     validate_serving_provenance,
 )
 from common.witness_regime import NAMED, witness_label
-
-PAGE_TESTIMONIUM_KIND = "page-testimonium"
-
-
-def declared_page_witness_chairs(context) -> set[str]:
-    """Read page scope from the sealed model configuration, not from upstream records.
-
-    A consumer may not inherit trust across a stage boundary. The uniqueness and roster
-    checks stop a duplicate or a nonexistent chair from silently erasing page coverage.
-    """
-    roster = context.witness_chairs
-    # Exact `str`, not `isinstance`: set construction and refusal formatting would run
-    # subclass code.
-    if (
-        not isinstance(roster, list)
-        or any(type(chair) is not str for chair in roster)
-        or len(roster) != len(set(roster))
-    ):
-        raise SchemaRefusal(
-            "the sealed witness roster is not a unique list of chair names. Page-witness scope "
-            "cannot be derived from this run authority. Start a new run from the sealed models "
-            "configuration; do not edit the existing run"
-        )
-    configured = context.registry.config.chairs
-    unknown = set(roster) - set(configured)
-    if unknown:
-        raise SchemaRefusal(
-            "the sealed witness roster names chair(s) absent from the current models "
-            "configuration: "
-            f"{sorted(unknown)} not in {sorted(configured)}. The run authority and current models "
-            "configuration do not describe the same witness set. Reopen the run with its original "
-            "models configuration or start a new run; do not edit sealed evidence"
-        )
-    return {
-        chair
-        for chair in roster
-        if isinstance(configured[chair], ChairIdentity)
-        and configured[chair].witness_scope == "page"
-    }
-
 
 # --- inputs -------------------------------------------------------------------------
 
@@ -303,21 +271,6 @@ def current_page_testimonia(context, proposal_regions: list[dict]) -> dict[str, 
         page_id: latest_per_chair(records, f"page Testimonium for page {page_id}")
         for page_id, records in by_page.items()
     }
-
-
-def require_page_roster(page_id: str, records: list[dict], page_chairs: set[str]) -> None:
-    """A page some witness testified to carries every configured page witness and no other."""
-    present = {record["payload"]["chair"] for record in records}
-    if present - page_chairs:
-        raise FatalAccounting(
-            f"page {page_id} carries page Testimonia from chair(s) "
-            f"{sorted(present - page_chairs)}, which this run did not seal as page witnesses"
-        )
-    if page_chairs - present:
-        raise FatalAccounting(
-            f"page {page_id} has no current page Testimonium for configured page witness(es) "
-            f"{sorted(page_chairs - present)}; it cannot be counted over a shortened roster"
-        )
 
 
 # --- the witnesses a page reading was shown ------------------------------------------

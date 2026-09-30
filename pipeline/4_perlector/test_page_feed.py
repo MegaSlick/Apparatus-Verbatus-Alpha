@@ -11,15 +11,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import dossier
-import page_feed
-import page_overlay
-import page_prompt
 import prompts
 import protocol
 import pytest
 from PIL import Image, ImageColor, ImageDraw
 
-from common import page_testimonia, page_witness_units
+from common import page_feed, page_overlay, page_prompt, page_testimonia, page_witness_units
 from common.churro_document import churro_system_prompt
 from common.contracts.canonical import code_digest, digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
@@ -1272,8 +1269,8 @@ def test_the_overlay_is_byte_identical_when_redrawn_in_a_fresh_process(tmp_path)
     (tmp_path / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
     script = (
         "import json, sys; from pathlib import Path; "
-        f"sys.path.insert(0, {str(ROOT)!r}); sys.path.insert(0, {str(Path(page_overlay.__file__).parent)!r}); "
-        "import page_overlay; from common.contracts.canonical import digest_bytes; "
+        f"sys.path.insert(0, {str(ROOT)!r}); "
+        "from common import page_overlay; from common.contracts.canonical import digest_bytes; "
         f"d = Path({str(tmp_path)!r}); "
         "print(digest_bytes(page_overlay.draw_page_overlay((d / 'render.png').read_bytes(), "
         "json.loads((d / 'plan.json').read_text()))))"

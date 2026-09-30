@@ -21,7 +21,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import page_feed
 import page_run
 import pytest
 from test_live_perlector import (
@@ -34,10 +33,11 @@ from test_live_perlector import (
     _TreeBlobs,
 )
 
-from common import page_path
+from common import page_feed, page_path
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import act_bindings, artifact_id, region_id, verify
+from common.contracts.stages import RECENSOR
 from common.decoding import (
     chair_decoding,
     engine_effective_sampling,
@@ -49,7 +49,14 @@ from common.imaging import crop_png
 from common.page_accounting import is_inside, load_page_accounting_policy, placement_boxes
 from common.page_witness_units import DAI
 from common.runtree.store import RunTree
-from conftest import file_bytes_snapshot, load_stage, page_models_config, programs_through
+from common.stage import open_context, reading_acts, stage_parser
+from conftest import (
+    file_bytes_snapshot,
+    load_stage,
+    page_models_config,
+    page_serving_recipes_config,
+    programs_through,
+)
 from operations.serving.config import profile_preflight_digest
 from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
 
@@ -115,17 +122,26 @@ def _run(
             scenario,
             "--perlector-protocol-config",
             str(protocol),
-            *(
-                ()
-                if "--models-config" in extra
-                else ("--models-config", str(_page_roster(protocol)))
-            ),
+            *_roster_flags(protocol, extra),
             *extra,
         ],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
+
+
+def _roster_flags(protocol: Path, extra: tuple[str, ...]) -> tuple[str, ...]:
+    """The page-read roster and its catalogue, unless `extra` names its own."""
+    flags: tuple[str, ...] = ()
+    models = _page_roster(protocol)
+    if "--models-config" in extra:
+        models = Path(extra[extra.index("--models-config") + 1])
+    else:
+        flags += ("--models-config", str(models))
+    if "--serving-recipes-config" not in extra:
+        flags += ("--serving-recipes-config", str(page_serving_recipes_config(models)))
+    return flags
 
 
 def _chain(
@@ -572,7 +588,7 @@ def _detector_tree(
     its page and ordinal.
     """
     protocol = _page_protocol(base / "config")
-    flags = ("--models-config", str(_page_roster(protocol)))
+    flags = _roster_flags(protocol, ())
     root = base / "runs"
     _chain(root, protocol, *flags, programs=programs_through("ink-map"))
     designator = load_stage("2_designator")
@@ -898,19 +914,26 @@ def test_dissent_does_not_count_a_witness_s_own_doubt_markers_as_departure():
             "testimonium": {"payload": {"format_capabilities": capabilities}},
         }
 
-    [marked] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(True)])
+    [marked] = page_path.page_dissent("Marie  Roy", feed, ["A1"], [witness(True)])
     assert marked["compared"] is True and marked["departed"] is False
-    [plain] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(False)])
+    [plain] = page_path.page_dissent("Marie  Roy", feed, ["A1"], [witness(False)])
     assert plain["departed"] is True
 
 
 # --- live serving, against the fakes ------------------------------------------------
 
 
-def _catalogue(destination: Path, rows: str = "", **overrides: Any) -> Path:
-    """The committed fixture catalogue with its Perlector row live, and any field changed."""
-    source = (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8")
-    head = source.split('[[profiles]]\nkind = "fixture"\nrecipe = "fake-perlector-v0"')[0]
+def _catalogue(destination: Path, models: Path, rows: str = "", **overrides: Any) -> Path:
+    """The page-read roster's fixture catalogue with its Perlector row live, and any field changed.
+
+    `models` is the page-read roster (`conftest.page_models_config`), whose
+    catalogue adds the record detector's rows to the committed one.
+    """
+    committed = (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8")
+    source = page_serving_recipes_config(models).read_text(encoding="utf-8")
+    assert source.startswith(committed)
+    head = committed.split('[[profiles]]\nkind = "fixture"\nrecipe = "fake-perlector-v0"')[0]
+    rows = source[len(committed) :].lstrip("\n") + rows
     row = {**_live_row(_perlector_identity()), **overrides}
     row["preflight_digest"] = profile_preflight_digest(row)
     body = "\n".join(f"{key} = {_toml_value(value)}" for key, value in row.items())
@@ -935,8 +958,8 @@ def _live_chain(
     feed: dict[str, Any] | None = None,
     **row: Any,
 ) -> _Live:
-    catalogue = _catalogue(base / "config", **row)
     protocol = _page_protocol(base / "config", **(feed or {}))
+    catalogue = _catalogue(base / "config", _page_roster(protocol), **row)
     _chain(base / "runs", protocol, "--serving-recipes-config", str(catalogue), scenario=scenario)
     return _Live(base / "runs", catalogue, protocol, scenario)
 
@@ -1323,7 +1346,7 @@ def test_a_resumed_pass_never_asks_a_read_page_again(live_tree, tmp_path, monkey
 def test_a_resumed_pass_adopts_its_sealed_measures_rather_than_measuring_again(
     live_tree, tmp_path, monkeypatch
 ):
-    """Rule (e) and dissent are bounded by a clock: a resume reads back what was sealed."""
+    """A resume reads back the sealed accounting and dissent rather than measuring again."""
     root = live_tree.root
     _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
     assert exit_code == 0
@@ -1333,10 +1356,46 @@ def test_a_resumed_pass_adopts_its_sealed_measures_rather_than_measuring_again(
         raise AssertionError("a sealed measure was computed again")
 
     monkeypatch.setattr(page_run.page_accounting, "page_accounting", never)
-    monkeypatch.setattr(page_run, "dissent_against", never)
+    monkeypatch.setattr(page_path, "page_dissent", never)
     _endpoint, exit_code = _read_pages(live_tree, tmp_path / "again", monkeypatch)
     assert exit_code == 0
     assert file_bytes_snapshot(root / "r" / "4_perlector") == before
+
+
+def test_the_denominator_reads_a_live_reading_again_from_its_retained_reply(
+    live_tree, tmp_path, monkeypatch
+):
+    """The page-read denominator re-derives each live answer from the engine's own bytes."""
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
+    assert exit_code == 0
+    for reading in _records(live_tree.root, "page-reading"):
+        payload = reading["payload"]
+        reply = page_path.retained_reply(
+            lambda path: (live_tree.root / "r" / path).read_bytes(), payload["engine_call"]
+        )
+        assert reply == {
+            "content": PAGE_ANSWERS[payload["page_ordinal"]],
+            "finish_reason": "stop",
+            "stop_reason": "stop",
+        }
+    args = stage_parser("page-read denominator").parse_args(
+        [
+            "--run-root",
+            str(live_tree.root),
+            "--run-id",
+            "r",
+            "--scenario",
+            live_tree.scenario,
+            "--serving-recipes-config",
+            str(live_tree.catalogue),
+            "--perlector-protocol-config",
+            str(live_tree.protocol),
+            "--models-config",
+            str(_page_roster(live_tree.protocol)),
+        ]
+    )
+    acts = reading_acts(open_context(args, RECENSOR))
+    assert [act["act_key"] for act in acts] == ["p1:1", "p1:2", "p2:1"]
 
 
 def test_a_page_sent_but_never_answered_is_sent_again_naming_the_first_send(
@@ -1430,7 +1489,7 @@ def test_a_pass_stopped_between_an_act_region_and_its_perlectio_resumes_the_rest
     live_tree, tmp_path, monkeypatch
 ):
     root = live_tree.root
-    original = page_run._dissent
+    original = page_path.page_dissent
     calls = []
 
     def stopped_at_the_second(*args, **kwargs):
@@ -1439,7 +1498,7 @@ def test_a_pass_stopped_between_an_act_region_and_its_perlectio_resumes_the_rest
             raise KeyboardInterrupt
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(page_run, "_dissent", stopped_at_the_second)
+    monkeypatch.setattr(page_path, "page_dissent", stopped_at_the_second)
     with pytest.raises(KeyboardInterrupt):
         _serial(live_tree, tmp_path, monkeypatch, *_answers())
     regions = [r for r in _records(root, "act-region") if r["payload"]["page_ordinal"] == 1]
@@ -1447,7 +1506,7 @@ def test_a_pass_stopped_between_an_act_region_and_its_perlectio_resumes_the_rest
     assert len(regions) == 2
     [kept_path] = (root / "r" / "4_perlector" / "artifacts" / "perlectio").glob("*.json")
     kept_bytes = kept_path.read_bytes()
-    monkeypatch.setattr(page_run, "_dissent", original)
+    monkeypatch.setattr(page_path, "page_dissent", original)
     endpoint, exit_code = _serial(live_tree, tmp_path / "again", monkeypatch, _answers()[1])
     assert exit_code == 0 and len(_chat_requests(endpoint)) == 1
     assert kept_path.read_bytes() == kept_bytes
@@ -1475,10 +1534,9 @@ def test_a_retained_accounting_measured_from_other_inputs_is_not_adopted(
 
 
 def test_a_retained_page_reading_or_perlectio_from_other_inputs_is_not_adopted():
-    state = SimpleNamespace(context=SimpleNamespace(config_digest="now"))
+    state = SimpleNamespace(context=SimpleNamespace())
     page = SimpleNamespace(page_id="pg_0000000000000001", feed_ref={"relative_path": "f"})
     reading = {
-        "config_digest": "now",
         "payload": {
             "schema": page_run.PAGE_READING_SCHEMA,
             "feed_ref": {"relative_path": "f"},
@@ -1487,15 +1545,22 @@ def test_a_retained_page_reading_or_perlectio_from_other_inputs_is_not_adopted()
         },
     }
     page_run._check_adopted(state, page, reading)
-    for changed in ({"config_digest": "then"}, {"payload": {**reading["payload"], "feed_ref": {}}}):
+    for changed in (
+        {"payload": {**reading["payload"], "feed_ref": {}}},
+        {"payload": {**reading["payload"], "schema": "perlector-page-reading.v0"}},
+    ):
         with pytest.raises(ContractError, match="retained page reading .* not adopted"):
             page_run._check_adopted(state, page, {**reading, **changed})
-    expected = {"page_accounting_ref": {"relative_path": "a"}}
-    page_run._check_adopted_perlectio({"payload": dict(expected)}, expected, "act_1")
-    with pytest.raises(ContractError, match="retained perlectio .* not adopted"):
-        page_run._check_adopted_perlectio(
-            {"payload": {"page_accounting_ref": {"relative_path": "b"}}}, expected, "act_1"
-        )
+    expected = {"page_accounting_ref": {"relative_path": "a"}, "text": "Marie Roy"}
+    sealed = {**expected, "dissent": []}
+    page_run._check_adopted_perlectio({"payload": sealed}, expected, "act_1")
+    for changed in (
+        {"page_accounting_ref": {"relative_path": "b"}},
+        {"text": "Marie Roi"},
+        {"added": True},
+    ):
+        with pytest.raises(ContractError, match="retained perlectio .* not adopted"):
+            page_run._check_adopted_perlectio({"payload": {**sealed, **changed}}, expected, "act_1")
 
 
 def test_the_page_deadline_refusal_speaks_in_pages(live_tree, tmp_path, monkeypatch):

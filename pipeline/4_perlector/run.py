@@ -43,14 +43,13 @@ import page_run  # noqa: E402
 import prompts  # noqa: E402
 import protocol  # noqa: E402
 import regime  # noqa: E402
-from dissent import departures, dissent_against, validate_dissent  # noqa: E402
 from live_reader import EngineSignalRefusal, VLLMReader  # noqa: E402
 from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 from throughput import PLANNED_SECONDS_PER_CALL  # noqa: E402
 
 import operations.serving.errors as serving_errors  # noqa: E402
+from common import page_render, truncation  # noqa: E402
 from common import reading_annotations as annotations  # noqa: E402
-from common import truncation  # noqa: E402
 from common.alignment import bracket_marker_view, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -111,6 +110,7 @@ from common.decoding import (  # noqa: E402
     perlector_page_max_tokens,
     refuse_retired_call_record,
 )
+from common.dissent import departures, dissent_against, validate_dissent  # noqa: E402
 from common.image_sniff import PNG_SIGNATURE  # noqa: E402
 from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
@@ -925,7 +925,7 @@ def _current_testimonium_for(
         raise SchemaRefusal(
             f"act {act_id} attachment changes page-witness scope for chair {chair!r}"
         )
-    # `dissent.py` trusts the Testimonium's own `page_witness` flag and skips the
+    # `common/dissent.py` trusts the Testimonium's own `page_witness` flag and skips the
     # comparison for it, so a resealed flag could silence an act-scoped chair's
     # dissent row. Reconcile this copy against the run's declaration too.
     if chair_testimonium["payload"].get("page_witness", False) is not expected_page_witness:
@@ -1888,7 +1888,7 @@ def _page_renders_for(context, bases: list[dict], *, page_context: dict[str, int
     for basis in bases:
         by_page.setdefault(basis["source_page_id"], []).append(basis)
     return [
-        dossier_module.build_page_render(
+        page_render.build_page_render(
             context,
             source_page_id=page_id,
             source_page_ordinal=on_page[0]["source_page_ordinal"],
@@ -1936,7 +1936,7 @@ def _region_pixels(bases: list[dict]) -> int:
         by_page.setdefault(basis["source_page_id"], []).append(
             (bounds["x"], bounds["y"], bounds["x"] + bounds["w"], bounds["y"] + bounds["h"])
         )
-    return sum(dossier_module.union_area(rectangles) for rectangles in by_page.values())
+    return sum(page_render.union_area(rectangles) for rectangles in by_page.values())
 
 
 def _page_pixels(page_renders: list[dict]) -> int:

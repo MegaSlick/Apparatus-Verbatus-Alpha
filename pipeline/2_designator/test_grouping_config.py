@@ -71,7 +71,6 @@ def test_default_config_loads_and_carries_the_seal_of_its_own_file():
     config = load_grouping_config()
 
     assert config["config_sha256"] == read_sealed_toml(DEFAULT_GROUPING_CONFIG_PATH, "x")[1]
-    assert config["max_residual_components"] == 2000
     assert config["max_secondary_proposals"] == 2000
     assert config["fallback_bands"] == 4
     assert set(config["page_fraction_bp"]) == set(_RETIRED)
@@ -126,7 +125,6 @@ def test_every_bp_value_resolves_to_the_retired_constant_at_each_fixture_size(wi
     )  # DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX
     assert resolved.fallback_overlap_px == 8  # DEFAULT_FALLBACK_OVERLAP_PX
     assert resolved.gap_tolerance_px == 3  # DEFAULT_GAP_TOLERANCE_PX, unconverted
-    assert resolved.max_residual_components == 2000
     assert resolved.max_secondary_proposals == 2000
     assert resolved.fallback_bands == 4  # DEFAULT_FALLBACK_BANDS, unconverted
     # A fraction of the page's AREA, so it passes through unresolved: the
@@ -310,7 +308,6 @@ def _valid_toml() -> str:
     # the end of this document to put a field inside it.
     return (
         "[grouping]\n"
-        "max_residual_components = 2000\n"
         "max_secondary_proposals = 2000\n"
         "fallback_bands = 4\n\n"
         "[grouping.residual_presentation]\n"
@@ -333,7 +330,7 @@ def _valid_toml() -> str:
 def test_valid_synthetic_toml_round_trips(tmp_path):
     path = _write(tmp_path, _valid_toml())
     config = load_grouping_config(path)
-    assert config["max_residual_components"] == 2000
+    assert config["max_secondary_proposals"] == 2000
     assert config["connectivity"]["gap_tolerance_px"] == 3
 
 
@@ -345,7 +342,17 @@ def test_unknown_top_level_field_refused(tmp_path):
 
 def test_unknown_grouping_field_refused(tmp_path):
     body = _valid_toml().replace(
-        "max_residual_components = 2000", "max_residual_components = 2000\nbogus_field = 1"
+        "max_secondary_proposals = 2000", "max_secondary_proposals = 2000\nbogus_field = 1"
+    )
+    path = _write(tmp_path, body)
+    with pytest.raises(ContractError, match="unknown field"):
+        load_grouping_config(path)
+
+
+def test_the_retired_residual_component_count_is_refused_as_unknown(tmp_path):
+    body = _valid_toml().replace(
+        "max_secondary_proposals = 2000",
+        "max_secondary_proposals = 2000\nmax_residual_components = 2000",
     )
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="unknown field"):
@@ -353,7 +360,7 @@ def test_unknown_grouping_field_refused(tmp_path):
 
 
 def test_missing_grouping_field_refused(tmp_path):
-    body = _valid_toml().replace("max_residual_components = 2000\n", "")
+    body = _valid_toml().replace("max_secondary_proposals = 2000\n", "")
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="missing field"):
         load_grouping_config(path)
@@ -362,8 +369,8 @@ def test_missing_grouping_field_refused(tmp_path):
 @pytest.mark.parametrize("forbidden", ["primary_margin", "secondary_margin"])
 def test_forbidden_margin_names_refused_at_grouping_top_level(tmp_path, forbidden):
     body = _valid_toml().replace(
-        "max_residual_components = 2000",
-        f"max_residual_components = 2000\n{forbidden} = 20",
+        "max_secondary_proposals = 2000",
+        f"max_secondary_proposals = 2000\n{forbidden} = 20",
     )
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match=forbidden):
@@ -426,7 +433,7 @@ def test_page_fraction_bp_field_present_but_not_a_table_refused(tmp_path):
         _valid_toml()
         .replace("[grouping.page_fraction_bp]\n" + _VALID_PAGE_FRACTION, "")
         .replace(
-            "max_residual_components = 2000", "max_residual_components = 2000\npage_fraction_bp = 1"
+            "max_secondary_proposals = 2000", "max_secondary_proposals = 2000\npage_fraction_bp = 1"
         )
     )
     path = _write(tmp_path, body)
@@ -438,7 +445,7 @@ def test_provenance_field_present_but_not_a_table_refused(tmp_path):
     body = (
         _valid_toml()
         .replace("[grouping.provenance]\n" + _VALID_PROVENANCE, "")
-        .replace("max_residual_components = 2000", "max_residual_components = 2000\nprovenance = 1")
+        .replace("max_secondary_proposals = 2000", "max_secondary_proposals = 2000\nprovenance = 1")
     )
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="no \\[grouping.provenance\\] table"):
@@ -564,16 +571,9 @@ def test_float_in_page_fraction_bp_refused(tmp_path):
         load_grouping_config(path)
 
 
-def test_negative_max_residual_components_refused(tmp_path):
-    body = _valid_toml().replace("max_residual_components = 2000", "max_residual_components = -1")
-    path = _write(tmp_path, body)
-    with pytest.raises(ContractError, match="non-negative integer"):
-        load_grouping_config(path)
-
-
-def test_bool_max_residual_components_refused(tmp_path):
+def test_bool_max_secondary_proposals_refused(tmp_path):
     # bool is an int subclass in Python; is_plain_int must reject it explicitly.
-    body = _valid_toml().replace("max_residual_components = 2000", "max_residual_components = true")
+    body = _valid_toml().replace("max_secondary_proposals = 2000", "max_secondary_proposals = true")
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="non-negative integer"):
         load_grouping_config(path)
@@ -670,7 +670,7 @@ def test_background_field_present_but_not_a_table_refused(tmp_path):
     body = (
         _valid_toml()
         .replace("[background]\n" + _VALID_BACKGROUND + "\n", "")
-        .replace("max_residual_components = 2000", "max_residual_components = 2000\nbackground = 1")
+        .replace("max_secondary_proposals = 2000", "max_secondary_proposals = 2000\nbackground = 1")
     )
     path = _write(tmp_path, body)
     with pytest.raises(ContractError, match="unknown field"):

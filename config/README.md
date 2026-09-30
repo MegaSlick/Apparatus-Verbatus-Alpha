@@ -275,10 +275,9 @@ The connectivity radius the structure scan runs at, `gap_tolerance_px`, never sc
 with the page: it is a stroke-connectivity radius rather than a page proportion, and
 scaling it would change what "connected" means. It and the page-spanning bound are the
 ink map's `[connectivity]` and `[page_spanning]` (below), which this pass reads rather
-than keeping a copy. Three more values are bare counts rather than lengths, so
-they have no dimension to be a fraction of: `max_residual_components` remains
-sealed but does not govern current residual presentation;
-`max_secondary_proposals` caps one page's secondary rescue pass; and
+than keeping a copy. Two more values are bare counts rather than lengths, so
+they have no dimension to be a fraction of: `max_secondary_proposals` caps one
+page's secondary rescue pass, and
 `fallback_bands` is how many horizontal bands the predetermined fallback grid
 cuts a page into, a cardinality rather than a length
 (a taller page gets taller bands, not more of them; its `fallback_overlap_bp`

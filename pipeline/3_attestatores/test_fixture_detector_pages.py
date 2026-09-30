@@ -24,7 +24,7 @@ from common.runtree.store import RunTree
 from conftest import (
     file_bytes_snapshot,
     load_stage,
-    page_models_config,
+    page_roster_options,
     programs_through,
     run_stage,
 )
@@ -54,7 +54,7 @@ def _dai_pages(tree: RunTree) -> dict[int, dict]:
 
 
 def _through_designator(base: Path) -> tuple[Path, dict]:
-    options: dict[str, object] = {"models_config": page_models_config(base / "models")}
+    options: dict[str, object] = {**page_roster_options(base / "models")}
     root = base / "runs"
     for program in programs_through("designator"):
         result = run_stage(root, RUN_ID, "happy", program, **options)

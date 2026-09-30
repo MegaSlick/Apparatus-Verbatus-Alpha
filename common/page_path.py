@@ -25,19 +25,22 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Final
 
-from common import page_accounting, page_answer, truncation
+from common import dissent, page_accounting, page_answer, page_render, truncation
 from common import reading_annotations as annotations
+from common.alignment import bracket_marker_view
 from common.background import validate_measured_ink_map_payload
+from common.chairs.models import ChairIdentity
 from common.contracts.canonical import is_plain_int
 from common.contracts.envelope import read_verified
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import attempt_id, perlector_attempt_id
-from common.contracts.stages import DESIGNATOR, INK_MAP
-from common.page_witness_units import DAI, WITNESS_LETTERS, witness_reading
+from common.contracts.serving import reading_stop_reason
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP
+from common.page_witness_units import DAI, READ_OUTCOME, WITNESS_LETTERS, witness_reading
 from common.residual_ink import (
     INK_NOT_MEASURABLE,
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
@@ -79,6 +82,9 @@ HELD: Final = "held"
 
 # Why a page is not asked (`not-run`), and why a parsed answer is held whole.
 PAGE_NOT_SEALED: Final = "page-not-sealed"
+CHAIR_ABSENT: Final = "chair-absent"
+NO_WITNESS_TESTIMONY: Final = "no-witness-testimony"
+NOTHING_TO_SHOW: Final = "nothing-to-show"
 NO_STOP_REASON: Final = "no-stop-reason"
 
 # Why one entry of a parsed, valid answer is held.
@@ -98,6 +104,8 @@ UNPLACED_CLASS: Final = "reading-unplaced"
 SURYA_PAGE_KIND: Final = "surya-page"
 SURYA_LINE_KIND: Final = "surya-line"
 SURYA_BLOCK_KIND: Final = "surya-block"
+# The Attestatores' page witness record a feed is built from.
+PAGE_TESTIMONIUM_KIND: Final = "page-testimonium"
 
 
 def page_reading_attempt(page_id: str) -> str:
@@ -134,6 +142,136 @@ def distinct_refs(references: list[dict[str, str] | None]) -> list[dict[str, str
 
 def refs_by_path(references: list[dict[str, str]]) -> list[dict[str, str]]:
     return sorted(references, key=lambda reference: reference["relative_path"])
+
+
+# --- the reply ------------------------------------------------------------------
+
+
+def not_run_problems(
+    feed: Mapping[str, Any], *, chair_present: bool, no_testimony: bool
+) -> list[dict[str, str]]:
+    """Every reason a sealed page with a feed is not asked, in the order they are recorded."""
+    # The serving package reads `common.stage`, which reads this module.
+    from common import page_feed
+
+    problems = []
+    if not chair_present:
+        problems.append(
+            {
+                "code": CHAIR_ABSENT,
+                "detail": "the Perlector chair is absent from this run's roster; nothing read "
+                "the page",
+            }
+        )
+    if no_testimony:
+        problems.append(
+            {
+                "code": NO_WITNESS_TESTIMONY,
+                "detail": "no witness testified to this page (the Attestatores serve only pages "
+                "with a proposed Designator act); the page is held for a human, not read "
+                "without its witnesses",
+            }
+        )
+    if page_feed.shows_nothing(feed):
+        problems.append(
+            {
+                "code": NOTHING_TO_SHOW,
+                "detail": "the sealed feed shows no page image, and this page has no witness "
+                "text and no detection to show; a reading would have nothing to be made from",
+            }
+        )
+    return problems
+
+
+def fixture_page_answer(context, ordinal: int) -> dict[str, Any]:
+    """The synthetic fixture's one declared answer to page `ordinal` under this scenario.
+
+    The answer is keyed by how the page's witnesses were lettered: a row naming
+    `witnesses` answers only a run whose page witnesses are exactly those
+    chairs, and replaces a row that names none.
+    """
+    rows = [
+        row
+        for row in context.fixture.get("page_answer", [])
+        if row.get("scenario") == context.scenario and row.get("page_ordinal") == ordinal
+    ]
+    roster = sorted(declared_page_witness_chairs(context))
+    rows = [row for row in rows if row.get("witnesses") == roster] or [
+        row for row in rows if "witnesses" not in row
+    ]
+    if len(rows) != 1:
+        raise ContractError(
+            f"the fixture declares {len(rows)} page answers for scenario {context.scenario!r}, "
+            f"page {ordinal} and page witnesses {roster}; a page read offline needs exactly one"
+        )
+    row = rows[0]
+    if not isinstance(row.get("answer"), str) or row.get("stop_reason", "stop") not in (
+        "stop",
+        "length",
+    ):
+        raise ContractError(
+            f"the fixture's page answer for {context.scenario!r}, page {ordinal} is not an "
+            "answer string with a stop reason of stop or length"
+        )
+    return row
+
+
+def retained_reply(read_bytes, engine_call: Mapping[str, Any]) -> dict[str, Any]:
+    """What the engine answered a live page call, read again from its retained bytes.
+
+    `engine_call` is the `page-reading`'s: the raw response and the call record
+    are read digest-checked, and the response is parsed as the serving client
+    parsed it. Returns `{content, finish_reason, stop_reason}`.
+    """
+    # The serving package reads `common.stage`, which reads this module.
+    from operations.serving.errors import ChairRequestRefusal, ChairResponseRefusal
+    from operations.serving.http import HttpResponse, parse_openai_reading
+
+    if not isinstance(engine_call, Mapping):
+        raise ContractError("a live page reading's engine_call is not an object")
+    body = read_verified(read_bytes, engine_call["raw_response_ref"], "a page reading's response")
+    call = json.loads(
+        read_verified(read_bytes, engine_call["call_record_ref"], "a page reading's call record")
+    )
+    if not isinstance(call, dict):
+        raise ContractError("a page reading's call record is not a JSON object")
+    try:
+        result = parse_openai_reading(
+            HttpResponse(status=call.get("response_status"), body=body),
+            kind=call.get("kind"),
+            expected_model_id=engine_call["served_model_id"],
+        )
+        stop_reason = reading_stop_reason(result.finish_reasons[0])
+    except (ChairRequestRefusal, ChairResponseRefusal, ValueError) as error:
+        raise ContractError(
+            f"a page reading's retained response is not a reading: {error}"
+        ) from error
+    return {
+        "content": result.outputs[0],
+        "finish_reason": result.finish_reasons[0],
+        "stop_reason": stop_reason,
+    }
+
+
+def read_reply(
+    content: str, stop_reason: str | None, feed: Mapping[str, Any]
+) -> tuple[str, Any, list[dict[str, Any]]]:
+    """`(parse_state, answer, problems)` for a reply the engine finished or was cut on."""
+    if stop_reason == "length":
+        return (
+            CUT_OFF,
+            None,
+            [
+                {
+                    "code": CUT_OFF,
+                    "detail": "the engine stopped at the output cap; the answer is held whole",
+                }
+            ],
+        )
+    state, answer, problems = page_answer.parse_page_answer(content)
+    if state == PARSED:
+        problems = answer_problems(answer, feed, stop_reason)
+    return state, answer, problems
 
 
 # --- the answer -----------------------------------------------------------------
@@ -258,6 +396,367 @@ def entry_plans(
             }
         )
     return plans
+
+
+# --- the page feed ----------------------------------------------------------------
+
+
+def declared_page_witness_chairs(context) -> set[str]:
+    """The page witnesses of the sealed roster, read from the sealed model configuration.
+
+    A consumer may not inherit trust across a stage boundary. The uniqueness and roster
+    checks stop a duplicate or a nonexistent chair from silently erasing page coverage.
+    """
+    roster = context.witness_chairs
+    # Exact `str`, not `isinstance`: set construction and refusal formatting would run
+    # subclass code.
+    if (
+        not isinstance(roster, list)
+        or any(type(chair) is not str for chair in roster)
+        or len(roster) != len(set(roster))
+    ):
+        raise SchemaRefusal(
+            "the sealed witness roster is not a unique list of chair names. Page-witness scope "
+            "cannot be derived from this run authority. Start a new run from the sealed models "
+            "configuration; do not edit the existing run"
+        )
+    configured = context.registry.config.chairs
+    unknown = set(roster) - set(configured)
+    if unknown:
+        raise SchemaRefusal(
+            "the sealed witness roster names chair(s) absent from the current models "
+            "configuration: "
+            f"{sorted(unknown)} not in {sorted(configured)}. The run authority and current models "
+            "configuration do not describe the same witness set. Reopen the run with its original "
+            "models configuration or start a new run; do not edit sealed evidence"
+        )
+    return {
+        chair
+        for chair in roster
+        if isinstance(configured[chair], ChairIdentity)
+        and configured[chair].witness_scope == "page"
+    }
+
+
+def require_page_roster(page_id: str, records: list[dict], page_chairs: set[str]) -> None:
+    """A page some witness testified to carries every configured page witness and no other."""
+    present = {record["payload"]["chair"] for record in records}
+    if present - page_chairs:
+        raise FatalAccounting(
+            f"page {page_id} carries page Testimonia from chair(s) "
+            f"{sorted(present - page_chairs)}, which this run did not seal as page witnesses"
+        )
+    if page_chairs - present:
+        raise FatalAccounting(
+            f"page {page_id} has no current page Testimonium for configured page witness(es) "
+            f"{sorted(page_chairs - present)}; it cannot be read or counted over a shortened "
+            "roster"
+        )
+
+
+def page_witnesses(
+    context, page_id: str, current: list[dict[str, Any]], page_chairs: set[str]
+) -> list[dict[str, Any]]:
+    """Every configured page witness's current Testimonium for one page, as the feed takes it.
+
+    `current` is each chair's latest page Testimonium of the page. Called only
+    for a page some witness testified to: a page with none is read as
+    `no-witness-testimony`, but a roster chair missing beside others that
+    testified is a shortened roster and refuses.
+    """
+    # `witness_regime` reads `common.stage`, which reads this module.
+    from common.witness_regime import witness_label
+
+    require_page_roster(page_id, current, page_chairs)
+    by_chair = {record["payload"]["chair"]: record for record in current}
+    return [
+        {
+            "chair": chair,
+            "witness_label": witness_label(
+                chair,
+                regime=context.witness_context,
+                run_id=context.tree.run_id,
+                config_digest=context.config_digest,
+            ),
+            "adapter": context.registry.resolve(chair).witness_adapter,
+            "testimonium": by_chair[chair],
+            "testimonium_ref": context.artifact_ref(
+                ATTESTATORES, PAGE_TESTIMONIUM_KIND, by_chair[chair]["artifact_id"]
+            ),
+        }
+        for chair in sorted(page_chairs)
+    ]
+
+
+def _feed_surya(census: dict[str, dict[str, Any]] | None, page_id: str) -> Any:
+    # The serving package reads `common.stage`, which reads this module.
+    from common import page_feed
+
+    if census is None:
+        return page_feed.SURYA_ABSENT
+    if page_id not in census:
+        raise FatalAccounting(
+            f"this run seals Surya censuses, but none for page {page_id}; the page cannot be "
+            "shown its detections"
+        )
+    return census[page_id]
+
+
+def _feed_render(
+    context,
+    protocol_config: Mapping[str, Any],
+    page_id: str,
+    ordinal: int,
+    retain: Callable[[bytes], dict[str, str]] | None,
+):
+    """The page image the sealed `page_image` switch shows, or `None` when it is off."""
+    setting = protocol_config["feed"]["page_image"]
+    if setting == "off":
+        return None
+    return page_render.build_page_render(
+        context,
+        source_page_id=page_id,
+        source_page_ordinal=ordinal,
+        page_context=protocol_config["page_context"],
+        crop_bounds=[],
+        full_page=setting == "full",
+        retain=retain,
+    )
+
+
+def page_feed_of(
+    context,
+    *,
+    page_id: str,
+    ordinal: int,
+    page_size: tuple[int, int],
+    protocol_config: Mapping[str, Any],
+    page_chairs: set[str],
+    current: list[dict[str, Any]],
+    surya_census: dict[str, dict[str, Any]] | None,
+    serving_recipe: str | None,
+    fixture_placeholders: bool,
+    retain: Callable[[bytes], dict[str, str]] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, str]]]:
+    """One sealed page's `page-feed` payload, its page witnesses and its inputs.
+
+    Stage 4 builds and publishes the feed from this, and the page-read
+    denominator builds it again from the same sealed inputs and requires the
+    sealed feed to equal it. `current` is each chair's latest page Testimonium
+    of the page, `page_chairs` `declared_page_witness_chairs`, `surya_census`
+    `sealed_surya_census`, `serving_recipe` the Perlector chair's or `None`
+    when it is absent. `retain` stores the page render (stage 4's
+    `context.retain`) or, for a reader, checks the render is already retained.
+    Returns the feed, the page witnesses `page_witnesses` gives (empty for a
+    page no witness testified to) and the feed record's inputs.
+    """
+    # The serving package reads `common.stage`, which reads this module.
+    from common import page_feed
+
+    no_testimony = not current
+    witnesses = [] if no_testimony else page_witnesses(context, page_id, current, page_chairs)
+    feed = page_feed.build_page_feed(
+        page_id=page_id,
+        page_ordinal=ordinal,
+        page_size=page_size,
+        feed_switches=protocol_config["feed"],
+        witness_regime=context.witness_context,
+        roster=sorted(page_chairs),
+        witnesses=witnesses,
+        surya=_feed_surya(surya_census, page_id),
+        page_render=_feed_render(context, protocol_config, page_id, ordinal, retain),
+        serving_recipe=serving_recipe,
+        read_bytes=context.tree.read_bytes,
+        fixture_placeholders=fixture_placeholders,
+        no_testimony=no_testimony,
+    )
+    return feed, witnesses, feed_inputs(context, feed, witnesses)
+
+
+def feed_inputs(
+    context, feed: Mapping[str, Any], witnesses: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Every record and image the feed names or was built from, digest-checked on disk.
+
+    `witnesses` is every page witness of the sealed roster, shown or hidden:
+    a hidden witness's Testimonium is an input too, since the accounting
+    measures it.
+    """
+    named: list[dict[str, str] | None] = [
+        witness["testimonium_ref"] for witness in feed["witnesses"]
+    ] + [witness["testimonium_ref"] for witness in witnesses]
+    render = feed["page_render"]
+    if render is not None:
+        named += [
+            dict(render["source"]),
+            {"relative_path": render["image_path"], "sha256": render["image_sha256"]},
+        ]
+    surya = feed["surya"]
+    if surya is not None:
+        named.append(surya["census_ref"])
+        named += [row["ref"] for row in surya["lines"] + surya["blocks"]]
+    references = distinct_refs(named)
+    for reference in references:
+        if context.input_ref(reference["relative_path"]) != reference:
+            raise SchemaRefusal(
+                f"the page feed names {reference!r}, but the bytes at that path differ"
+            )
+    return references
+
+
+# --- the Perlectio -------------------------------------------------------------------
+
+
+def _comparison_text(text: str, capabilities: Any) -> str:
+    """A witness's text as dissent compares it: its own doubt markers removed when it has any.
+
+    A witness whose declared format can express uncertainty writes its doubt
+    inline (DAI's `[UNCERTAIN]`, `[CROSSED_OUT]`); those characters are the
+    witness's doubt, not a reading the Perlector departed from.
+    """
+    if isinstance(capabilities, Mapping) and capabilities.get("can_express_uncertainty") is True:
+        return bracket_marker_view(text)["text"]
+    return text
+
+
+def _dissent_rows(
+    text: str,
+    feed: Mapping[str, Any],
+    cited_ids: list[str],
+    witnesses: list[dict[str, Any]],
+    seconds: int | None,
+) -> list[tuple[dict[str, Any], str | None]]:
+    """Each shown witness's dissent row, with the text it was compared against (or `None`)."""
+    capabilities = {
+        witness["witness_label"]: witness["testimonium"]["payload"].get("format_capabilities")
+        for witness in witnesses
+    }
+    cited = set(cited_ids)
+    rows = []
+    for witness in feed["witnesses"]:
+        head = {"letter": witness["letter"], "witness_label": witness["witness_label"]}
+        if witness["outcome"] != READ_OUTCOME:
+            reason = f"this witness's page outcome is {witness['outcome']}; it has no units"
+            rows.append(({**head, "cited_units": [], "compared": False, "reason": reason}, None))
+            continue
+        units = [unit for unit in witness["units"] if unit["id"] in cited]
+        if not units:
+            reason = "no unit of this witness is cited by this entry"
+            rows.append(({**head, "cited_units": [], "compared": False, "reason": reason}, None))
+            continue
+        reported = _comparison_text(
+            "\n".join(unit["text"] for unit in units), capabilities[witness["witness_label"]]
+        )
+        compared = dissent.dissent_against(
+            text,
+            [
+                {
+                    "outcome": READ_OUTCOME,
+                    "payload": {"chair": witness["letter"], "comparison_reported": reported},
+                }
+            ],
+            seconds=seconds,
+        )
+        if len(compared) != 1:
+            raise ContractError(f"dissent gave {len(compared)} rows for one witness, not one")
+        row = dict(compared[0])
+        row.pop("chair")
+        rows.append(({**head, "cited_units": [unit["id"] for unit in units], **row}, reported))
+    return rows
+
+
+def page_dissent(
+    text: str, feed: Mapping[str, Any], cited_ids: list[str], witnesses: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Where an entry's reading departed from each shown witness's cited units.
+
+    Each alignment runs under `dissent.MAX_COMPARISON_SECONDS`; one that does
+    not finish is recorded as not compared (`dissent.unaligned_row`).
+    """
+    return [
+        row
+        for row, _reported in _dissent_rows(
+            text, feed, cited_ids, witnesses, dissent.MAX_COMPARISON_SECONDS
+        )
+    ]
+
+
+def dissent_holds(
+    rows: Any,
+    text: str,
+    feed: Mapping[str, Any],
+    cited_ids: list[str],
+    witnesses: list[dict[str, Any]],
+) -> bool:
+    """Whether a sealed Perlectio's dissent is the one its entry and feed give.
+
+    Every row is computed again with every alignment run to its end, so the
+    check does not depend on how fast this machine is. A sealed row may
+    instead be the not-compared row of an alignment that ran out of time where
+    it was sealed: that row claims no comparison, only that none was made.
+    """
+    if not isinstance(rows, list):
+        return False
+    expected = _dissent_rows(text, feed, cited_ids, witnesses, None)
+    if len(rows) != len(expected):
+        return False
+    for sealed, (row, reported) in zip(rows, expected, strict=True):
+        if sealed == row:
+            continue
+        if row["compared"] is not True or reported is None:
+            return False
+        head = {name: row[name] for name in ("letter", "witness_label", "cited_units")}
+        unaligned = dissent.unaligned_row(row["letter"], text, reported)
+        unaligned.pop("chair")
+        if sealed != {**head, **unaligned}:
+            return False
+    return True
+
+
+def expected_perlectio(
+    *,
+    page_id: str,
+    ordinal: int,
+    plan: Mapping[str, Any],
+    refs: Mapping[str, dict[str, str]],
+    page_holds: list[str],
+    reading: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Every field of an entry's `perlectio.v2` but its dissent, from its plan and page records.
+
+    `refs` names the entry's `act_region_ref` and the page's
+    `page_reading_ref`, `page_accounting_ref` and `feed_ref`; `reading` is the
+    `page-reading` payload, whose `engine_call` and `provenance` the Perlectio
+    repeats. Stage 4 publishes this with the entry's `page_dissent`, adopts a
+    sealed Perlectio only when it holds exactly these fields, and the
+    page-read denominator requires them of every Perlectio it counts.
+    """
+    act, assessment = plan["act"], plan["assessment"]
+    return {
+        "schema": PERLECTIO_SCHEMA,
+        "page_id": page_id,
+        "page_ordinal": ordinal,
+        "reading_unit": READING_UNIT,
+        "act_region_ref": refs["act_region_ref"],
+        "page_reading_ref": refs["page_reading_ref"],
+        "page_accounting_ref": refs["page_accounting_ref"],
+        "feed_ref": refs["feed_ref"],
+        "n": act["n"],
+        "kind": act["kind"],
+        "label": act.get("label"),
+        "text": plan["text"],
+        "uncertain_spans": assessment["uncertain_spans"],
+        "gaps": assessment["gaps"],
+        "uncertainty_assessment": assessment,
+        "truncation": plan["truncation"],
+        "autopsia": plan["autopsia"],
+        "continues_from_previous_page": act["continues_from_previous_page"],
+        "continues_to_next_page": act["continues_to_next_page"],
+        "holds": list(plan["reading_holds"]),
+        "page_holds": list(page_holds),
+        "engine_call": reading["engine_call"],
+        "provenance": reading["provenance"],
+    }
 
 
 # --- the page accounting's inputs -----------------------------------------------

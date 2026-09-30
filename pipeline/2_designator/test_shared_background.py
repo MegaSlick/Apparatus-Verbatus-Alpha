@@ -241,7 +241,6 @@ def test_the_frame_is_withheld_from_grouping_and_still_counted_by_conservation()
     )
     assert result["residual_pixel_count"] >= frame["pixel_count"]
     assert len(result["residual_components"]) == 3
-    assert len(result["residual_components"]) <= config["max_residual_components"]
 
 
 def test_the_audit_withholds_exactly_the_component_the_grouping_pass_withholds():

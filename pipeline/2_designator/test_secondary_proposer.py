@@ -136,8 +136,8 @@ def _configured(tmp_path: Path) -> list[str]:
     A copy of the shipped roster with the chair configured (reusing the
     structure chair's fixture snapshot as its stand-in identity) and the
     shipped catalogue with the chair's fixture rows added. The fixture detector
-    answers with the fixture's `[[detector_record]]` rows; the shipped fixture
-    declares none, so a test that needs records declares them on the context.
+    answers with the fixture's `[[detector_record]]` rows: one over each act's
+    ink, which a test that needs other records replaces on the context.
     """
     config_root = tmp_path / "chair-config"
     shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
@@ -807,11 +807,16 @@ def test_configuring_the_detector_changes_no_authoritative_outcome(tmp_path):
 
     assert seal_outcomes(absent_tree) == seal_outcomes(configured_tree)
 
-    # This fixture has no stray ink, so no rescue crop is cut either way, and it
-    # declares no detections, so the detector adds only its per-page census.
+    # This fixture has no stray ink, so no rescue crop is cut either way; the
+    # detector adds only its own evidence: its per-page census, the records it
+    # declares over each act's ink and their crops.
     absent_kinds = {entry["kind"] for entry in absent_tree.build_manifest(DESIGNATOR)["artifacts"]}
     configured_kinds = {
         entry["kind"] for entry in configured_tree.build_manifest(DESIGNATOR)["artifacts"]
     }
-    assert configured_kinds - absent_kinds == {"detector-page"}
+    assert configured_kinds - absent_kinds == {
+        "detector-page",
+        "detector-record",
+        "detector-region",
+    }
     assert absent_kinds <= configured_kinds

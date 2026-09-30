@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from common import page_render
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_text, digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
@@ -130,7 +131,7 @@ def test_a_page_render_blob_is_reproducible_by_the_projects_own_encoder(evidence
     context, act_id, act_key, regions, testimonia = evidence
     page_ids = {region["transform"]["source_page_id"] for region in regions}
     renders = [
-        dossier.build_page_render(
+        page_render.build_page_render(
             context,
             source_page_id=page_id,
             source_page_ordinal=next(
@@ -540,7 +541,7 @@ def test_build_page_render_records_its_whole_transform_not_only_a_factor(evidenc
     reproducible by someone who also has this module's code, so the record
     names the source size, the target size and the resampler."""
     context, act_id, act_key, regions, testimonia = evidence
-    render = dossier.build_page_render(
+    render = page_render.build_page_render(
         context,
         source_page_id=regions[0]["transform"]["source_page_id"],
         source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
@@ -570,20 +571,20 @@ def test_a_page_the_acts_crops_cover_whole_is_rendered_as_layout_only(evidence):
         "source_page_ordinal": regions[0]["transform"]["source_page_ordinal"],
     }
     halves = [{"x": 0, "y": 0, "w": 200, "h": 130}, {"x": 0, "y": 130, "w": 200, "h": 130}]
-    covered = dossier.build_page_render(
+    covered = page_render.build_page_render(
         context, **page, page_context=PAGE_CONTEXT, crop_bounds=halves
     )
-    partial = dossier.build_page_render(
+    partial = page_render.build_page_render(
         context, **page, page_context=PAGE_CONTEXT, crop_bounds=halves[:1]
     )
-    assert covered["reason"] == dossier.COVERED_BY_CROP
+    assert covered["reason"] == page_render.COVERED_BY_CROP
     assert covered["transform"]["maximum_edge"] == PAGE_CONTEXT["covered_page_edge"]
-    assert partial["reason"] == dossier.LEGIBLE_INK
+    assert partial["reason"] == page_render.LEGIBLE_INK
     assert partial["transform"]["maximum_edge"] == EDGE
-    spanning = dossier.build_page_render(
+    spanning = page_render.build_page_render(
         context, **page, page_context=PAGE_CONTEXT, crop_bounds=halves[:1], multi_page=True
     )
-    assert spanning["reason"] == dossier.MULTI_PAGE_ACT
+    assert spanning["reason"] == page_render.MULTI_PAGE_ACT
     assert spanning["transform"]["maximum_edge"] == PAGE_CONTEXT["covered_page_edge"]
 
 
@@ -593,7 +594,7 @@ def test_a_page_past_the_bound_is_actually_downscaled_to_it():
     the full-resolution page would satisfy every other test in this file."""
     big = BytesIO()
     Image.new("L", (4000, 3000), color=200).save(big, format="PNG")
-    rendered, transform = dossier._downscale_page(big.getvalue(), maximum_edge=EDGE)
+    rendered, transform = page_render._downscale_page(big.getvalue(), maximum_edge=EDGE)
     assert transform["source_dimensions"] == {"w": 4000, "h": 3000}
     assert transform["target_dimensions"] == {"w": EDGE, "h": EDGE * 3 // 4}
     assert transform["resampler"] == "pillow-lanczos"
@@ -602,14 +603,14 @@ def test_a_page_past_the_bound_is_actually_downscaled_to_it():
 
 def test_build_page_render_is_reused_byte_identically_on_a_repeat_call(evidence):
     context, act_id, act_key, regions, testimonia = evidence
-    first = dossier.build_page_render(
+    first = page_render.build_page_render(
         context,
         source_page_id=regions[0]["transform"]["source_page_id"],
         source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
         page_context=PAGE_CONTEXT,
         crop_bounds=[],
     )
-    second = dossier.build_page_render(
+    second = page_render.build_page_render(
         context,
         source_page_id=regions[0]["transform"]["source_page_id"],
         source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],
@@ -652,11 +653,11 @@ def test_published_perlectio_binds_page_context_and_its_source_as_direct_inputs(
             "a reading must carry page context; an empty list would make every "
             "assertion below vacuous"
         )
-        for page_render in reading["payload"]["dossier"]["page_renders"]:
-            assert page_render["source"] in reading["inputs"]
+        for render in reading["payload"]["dossier"]["page_renders"]:
+            assert render["source"] in reading["inputs"]
             assert {
-                "relative_path": page_render["image_path"],
-                "sha256": page_render["image_sha256"],
+                "relative_path": render["image_path"],
+                "sha256": render["image_sha256"],
             } in reading["inputs"]
 
 
@@ -681,7 +682,7 @@ def test_a_page_render_refuses_page_bytes_swapped_after_the_artifact_check(evide
 
     monkeypatch.setattr(context.tree, "read_artifact", verified_before_swap)
     with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
-        dossier.build_page_render(
+        page_render.build_page_render(
             context,
             source_page_id=page_id,
             source_page_ordinal=regions[0]["transform"]["source_page_ordinal"],

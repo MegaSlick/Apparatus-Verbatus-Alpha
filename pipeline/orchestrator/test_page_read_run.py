@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from conftest import page_models_config, run_orchestrator
+from conftest import page_roster_options, run_orchestrator
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,7 +23,7 @@ def _configs(directory: Path) -> dict[str, Path]:
     protocol_path.write_text(protocol.replace('reading_unit = "act"', 'reading_unit = "page"'))
     return {
         "perlector_protocol_config": protocol_path,
-        "models_config": page_models_config(directory / "models"),
+        **page_roster_options(directory / "models"),
     }
 
 

@@ -10,7 +10,7 @@ max_images = 32
 # What one Perlector call reads. `act` reads each act the Designator minted,
 # one call per act. `page` reads one whole page per call: the Perlector
 # establishes the acts itself from the page and the feed below
-# (`pipeline/4_perlector/page_feed.py`), and every record the page path writes
+# (`common/page_feed.py`), and every record the page path writes
 # echoes this value.
 reading_unit = "act"
 
@@ -54,7 +54,7 @@ caveat = "MEASURED ON RECORDGOLD, NOT ON THE QUEBEC REGISTERS THIS INSTRUMENT SE
 characters_per_row = 800
 fragment = "The neighbouring acts are the acts written just before and just after this one, as the witnesses read them; (tail) marks only the end of a reading and (head) only its beginning. They are context only: names, dates and formulas recur from act to act, and the boundary between two acts is where readings most often go wrong. Transcribe only this act's own ink and never copy a neighbour's text into it."
 
-# The whole-page render shown beside an act's crops (`dossier.build_page_render`).
+# The whole-page render shown beside an act's crops (`common/page_render.py`).
 # maximum_edge makes the page's ink legible, not only its layout: 2,560 keeps a
 # 300-DPI letter leaf (2,550x3,300 -> 1,978x2,560, 5.06 MP) and A4 inside the 27B
 # Perlector row's max_pixels (5,299,200), so the chair sees exactly the rendered
@@ -87,7 +87,7 @@ covered_page_edge = 1024
 #   crops                "off", the only setting this build applies.
 #   page_overlay         "off", or "boxes": a second image after the page
 #                        render, a copy of it with every shown boxed id
-#                        outlined and labelled (`pipeline/4_perlector/page_overlay.py`).
+#                        outlined and labelled (`common/page_overlay.py`).
 [feed]
 page_image = "legible"
 witnesses = "all"

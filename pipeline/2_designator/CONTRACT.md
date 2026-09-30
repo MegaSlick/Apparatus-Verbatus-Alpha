@@ -850,9 +850,7 @@ session reading a finished run back can now say, per page, what the structure
 pass actually ran at instead of re-deriving it from the seal and the pixels —
 and a re-derivation is what stops matching the run the day the resolution rule
 changes. The published `resolved_thresholds` records the grouping thresholds
-used for that page, except for `max_residual_components`, which is retained in
-the sealed policy but omitted here because it does not govern current residual
-presentation. These fields
+used for that page. These fields
 are a recording and decide nothing; they
 are `null` on a page held before analysis for the same reason the two above are.
 
@@ -2237,8 +2235,8 @@ directly instead of going through that shared helper.
 Seven fields are integer basis points of a page dimension — `margin_bp` of the
 page's **width**, the other six of its **height** — and each resolves
 bit-identically to its retired constant on the 200×260 fixture pages, so no
-fixture geometry changed. Three are bare counts: `max_residual_components`,
-`max_secondary_proposals` and `fallback_bands`.
+fixture geometry changed. Two are bare counts: `max_secondary_proposals` and
+`fallback_bands`.
 
 Two do **not** move and never will. `PRIMARY_MARGIN` and `SECONDARY_MARGIN`
 (both in `common/background.py`) are *absolute* 8-bit ink-intensity offsets, not

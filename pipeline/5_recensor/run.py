@@ -2068,7 +2068,6 @@ def geometry_coverage_inputs(context) -> dict[int, dict]:
             "residual_component_count": len(components),
             "residual_act_count": len(actual),
             "residual_enumeration": RESIDUAL_ENUMERATION_COMPLETE,
-            "max_residual_components": None,
             # Zero, and checked rather than assumed: the refusal above is what
             # proves an enumerated page carries no page-residual item.
             "page_residual_act_count": page_residual_act_count,
@@ -2236,7 +2235,6 @@ def _aggregate_page_conservation(
         "residual_component_count": len(promoted) + len(aggregate),
         "residual_act_count": len(actual),
         "residual_enumeration": RESIDUAL_ENUMERATION_AGGREGATED,
-        "max_residual_components": None,
         "page_residual_act_count": held_as_one,
         "reason": (
             f"{len(promoted)} significant residual components remain individual held acts; "
@@ -2684,7 +2682,6 @@ NO_PAGE_CONSERVATION = {
     "residual_component_count": None,
     "residual_act_count": None,
     "residual_enumeration": None,
-    "max_residual_components": None,
     "page_residual_act_count": None,
     "reason": (
         "the Designator published no conservation record for this page, so nothing on it "

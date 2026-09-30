@@ -449,7 +449,10 @@ def page_models_config(directory: Path, floor: int = 3, absent: tuple[str, ...] 
     The committed roster with DAI (`attestator_2`) page-scoped and its record
     detector (`secondary_proposer`) configured on the `fake-secondary-proposer-v0`
     fixture row, standing on the structure chair's fixture snapshot; the witness
-    floor set to `floor`, and each chair in `absent` configured absent.
+    floor set to `floor`, and each chair in `absent` configured absent. Beside
+    it, `serving_recipes.toml` (`page_serving_recipes_config`) is the committed
+    catalogue with that fixture row at every tier: the committed catalogue
+    matches the committed roster, where the detector is absent.
     """
     path = floor_models_config(directory, floor)
     text = path.read_text(encoding="utf-8")
@@ -471,7 +474,36 @@ def page_models_config(directory: Path, floor: int = 3, absent: tuple[str, ...] 
     config = tomllib.loads(text)
     assert config["chairs"]["attestator_2"].get("witness_scope", "page") == "page"
     assert all(config["chairs"][chair]["state"] == "absent" for chair in absent)
+    tiers = [
+        tier["id"]
+        for tier in tomllib.loads(
+            (ROOT / "config" / "pod_placement.toml").read_text(encoding="utf-8")
+        )["tiers"]
+    ]
+    page_serving_recipes_config(path).write_text(
+        (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8")
+        + "".join(
+            '\n[[profiles]]\nkind = "fixture"\nrecipe = "fake-secondary-proposer-v0"\n'
+            f'chair = "secondary_proposer"\ntier = "{tier}"\n'
+            'description = "offline walking-skeleton fixture for DAI\'s record detector chair"\n'
+            for tier in tiers
+        ),
+        encoding="utf-8",
+    )
     return path
+
+
+def page_serving_recipes_config(models_config: Path) -> Path:
+    """The serving catalogue `page_models_config` writes beside the roster at `models_config`."""
+    return Path(models_config).parent / "serving_recipes.toml"
+
+
+def page_roster_options(
+    directory: Path, floor: int = 3, absent: tuple[str, ...] = ()
+) -> dict[str, Path]:
+    """The stage options that run on the page-read roster: its models config and catalogue."""
+    models = page_models_config(directory, floor, absent)
+    return {"models_config": models, "serving_recipes_config": page_serving_recipes_config(models)}
 
 
 def build_page_tree(
@@ -492,7 +524,7 @@ def build_page_tree(
     """
     options = {
         "perlector_protocol_config": page_protocol_config(base / "config"),
-        "models_config": page_models_config(base / "models", floor, absent),
+        **page_roster_options(base / "models", floor, absent),
         **options,
     }
     root = base / "runs"
@@ -500,40 +532,6 @@ def build_page_tree(
         result = run_stage(root, run_id, scenario, program, **options)
         assert result.returncode == 0, f"{program}: {result.stderr}"
     return root, options
-
-
-def rewrite_page_answer_entry(root: Path, run_id: str, ordinal: int, n: int, **fields) -> None:
-    """Give one entry of a page's answer other `kind` or continuation flags, everywhere.
-
-    The page reading's answer, the entry's act-region (kind only) and its
-    Perlectio are rewritten and the Perlector's boundary rewitnessed, modelling a
-    reader that answered so; the act identity does not bind either field.
-    """
-    from common.contracts.stages import PERLECTOR
-    from common.runtree.store import RunTree
-
-    directory = root / run_id / "4_perlector" / "artifacts"
-    for kind in ("page-reading", "act-region", "perlectio"):
-        for path in sorted((directory / kind).glob("*.json")):
-            record = json.loads(path.read_text(encoding="utf-8"))
-            payload = record["payload"]
-            if payload["page_ordinal"] != ordinal:
-                continue
-            if kind == "page-reading":
-                [entry] = [item for item in payload["answer"]["acts"] if item["n"] == n]
-                entry.update(fields)
-            elif payload["n"] == n:
-                payload.update(
-                    {
-                        name: value
-                        for name, value in fields.items()
-                        if kind == "perlectio" or name == "kind"
-                    }
-                )
-            else:
-                continue
-            _write_record(path, record)
-    rewitness_stage_boundary(RunTree(root, run_id), PERLECTOR)
 
 
 def page_context(root: Path, run_id: str, scenario: str, options: dict[str, object], stage=None):
@@ -567,68 +565,11 @@ def _stage_records(root: Path, run_id: str, stage_dir: str, kind: str) -> list[t
     ]
 
 
-def _page_records(root: Path, run_id: str, kind: str) -> list[tuple[Path, dict]]:
-    return _stage_records(root, run_id, "4_perlector", kind)
-
-
 def _write_record(path: Path, record: dict) -> None:
     record["self_hash"] = self_hash(
         {key: value for key, value in record.items() if key != "self_hash"}
     )
     path.write_bytes(canonical_bytes(record))
-
-
-def rewrite_page_reading(root: Path, run_id: str, ordinal: int, change) -> None:
-    """Rewrite page `ordinal`'s `page-reading` with `change(record)`; drop its act records
-    when the new reading names no entry. Follow with `reaccount_page`."""
-    for path, record in _page_records(root, run_id, "page-reading"):
-        if record["payload"]["page_ordinal"] == ordinal:
-            change(record)
-            _write_record(path, record)
-            answer = record["payload"].get("answer")
-            if not (isinstance(answer, dict) and answer.get("acts")):
-                for kind in ("act-region", "perlectio"):
-                    for entry_path, entry in _page_records(root, run_id, kind):
-                        if entry["payload"]["page_ordinal"] == ordinal:
-                            entry_path.unlink()
-
-
-def reaccount_page(
-    root: Path, run_id: str, scenario: str, options: dict[str, object], ordinal: int
-) -> list[str]:
-    """Measure page `ordinal`'s accounting again, as the denominator does, and carry it on.
-
-    Models stage 4 having written the page's records after reading what a test
-    rewrote: the page accounting is `common.stage.measure_page_accounting`'s,
-    never written by hand, and the page's act records take its holds. Returns
-    the page's holds.
-    """
-    from common.contracts.stages import PERLECTOR
-    from common.runtree.store import RunTree
-    from common.stage import measure_page_accounting
-
-    rewitness_stage_boundary(RunTree(root, run_id), PERLECTOR)
-    context = page_context(root, run_id, scenario, options)
-    [reading] = [
-        record
-        for _path, record in _page_records(root, run_id, "page-reading")
-        if record["payload"]["page_ordinal"] == ordinal
-    ]
-    measured, inputs = measure_page_accounting(context, reading)
-    holds = measured["holds"]
-    for path, accounting in _page_records(root, run_id, "page-accounting"):
-        if accounting["payload"]["page_ordinal"] == ordinal:
-            accounting.update(payload=measured, inputs=inputs, outcome="held" if holds else "read")
-            _write_record(path, accounting)
-    for kind in ("act-region", "perlectio"):
-        for path, record in _page_records(root, run_id, kind):
-            if record["payload"]["page_ordinal"] == ordinal:
-                record["payload"]["page_holds"] = holds
-                own = record["payload"]["holds"]
-                record["outcome"] = "held" if own or holds else "read"
-                _write_record(path, record)
-    rewitness_stage_boundary(RunTree(root, run_id), PERLECTOR)
-    return holds
 
 
 # --- Recensor decisions the fixture cannot reach -------------------------------------

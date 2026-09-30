@@ -30,9 +30,7 @@ from conftest import (
     build_page_tree,
     file_bytes_snapshot,
     load_stage,
-    reaccount_page,
     rewitness_stage_boundary,
-    rewrite_page_reading,
     run_stage,
 )
 
@@ -112,16 +110,6 @@ def _forge(tree: Tree, kind: str, ordinal: int, change: Callable[[dict], None]) 
     change(forged)
     forged["self_hash"] = self_hash({k: v for k, v in forged.items() if k != "self_hash"})
     path.write_bytes(canonical_bytes(forged))
-
-
-def _forge_page_two(tree: Tree, reading: Callable[[dict], None]) -> None:
-    """Replace page 2's answer, drop its act records, and measure its accounting again.
-
-    The accounting is measured as the denominator measures it, so the page
-    carries the accounting stage 4 would have written for the forged answer.
-    """
-    rewrite_page_reading(tree.root, RUN_ID, 2, reading)
-    reaccount_page(tree.root, RUN_ID, tree.scenario, tree.options, 2)
 
 
 def _on(record: dict, ordinal: int) -> bool:
@@ -254,7 +242,7 @@ def test_the_page_review_scenario_holds_the_unplaced_entry_naming_every_reason(r
     receipt = tree.receipt()
     assert receipt["recensor_status"] == "partial"
     assert receipt["reasons"] == [
-        f"unit {reviews['p2:1']['subject_id']} was held by its page reading",
+        f"unit {reviews['p2:1']['subject_id']} was held by its page reading and is not released",
         f"unit {reviews['p2:1']['subject_id']} is unresolved at the Recensor",
     ]
 
@@ -271,19 +259,9 @@ def test_a_page_under_the_witness_floor_holds_every_unit_on_it(under_floor, tmp_
     assert sum("under-witnessed (3 page reads of a floor of 4)" in r for r in reasons) == 3
 
 
-def test_an_unread_page_is_one_held_unit_and_its_break_is_one_sided(happy, tmp_path):
-    tree = happy.copy(tmp_path)
-
-    def malformed(record):
-        record["outcome"] = "held"
-        record["payload"].update(
-            parse_state="malformed",
-            answer=None,
-            problems=[{"code": "json-invalid", "detail": "the reply is not JSON"}],
-            disposition="held",
-        )
-
-    _forge_page_two(tree, malformed)
+def test_an_unread_page_is_one_held_unit_and_its_break_is_one_sided(tmp_path):
+    # Page 2's reply is not JSON; page 1's last act still says it runs on.
+    tree = _tree(tmp_path, "page-unread")
     assert tree.recensor().returncode == 3
     reviews = tree.reviews()
     assert sorted(reviews) == ["p1:1", "p1:2", "p2:unread"]
@@ -292,7 +270,7 @@ def test_an_unread_page_is_one_held_unit_and_its_break_is_one_sided(happy, tmp_p
     payload = unread["payload"]
     assert payload["unit_class"] == "page-unread"
     assert payload["hold_codes"] == [
-        "json-invalid",
+        "not-json",
         "page-answer-incomplete",
         "page-unread",
         "residual-ink",
@@ -322,25 +300,9 @@ def test_an_unread_page_is_one_held_unit_and_its_break_is_one_sided(happy, tmp_p
     )
 
 
-def test_a_page_read_as_blank_with_ink_and_witness_text_is_not_confirmed(happy, tmp_path):
-    tree = happy.copy(tmp_path)
-    feed_dir = tree.root / RUN_ID / "4_perlector" / "artifacts" / "page-feed"
-    [feed] = [
-        record
-        for path in feed_dir.glob("*.json")
-        if (record := json.loads(path.read_text("utf-8")))["payload"]["page_ordinal"] == 2
-    ]
-    ids = [unit["id"] for witness in feed["payload"]["witnesses"] for unit in witness["units"]]
-    ids += [line["id"] for line in feed["payload"]["surya"]["lines"]]
-    ids += [block["id"] for block in feed["payload"]["surya"]["blocks"]]
-
-    def blank(record):
-        record["payload"]["answer"] = {
-            "acts": [],
-            "set_aside": [{"id": identifier, "reason": "blank paper"} for identifier in ids],
-        }
-
-    _forge_page_two(tree, blank)
+def test_a_page_read_as_blank_with_ink_and_witness_text_is_not_confirmed(tmp_path):
+    # Page 2 read as blank paper, every id on it set aside.
+    tree = _tree(tmp_path, "page-blank")
     assert tree.recensor().returncode == 3
     review = tree.reviews()["p2:blank"]
     payload = review["payload"]

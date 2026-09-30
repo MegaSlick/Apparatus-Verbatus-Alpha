@@ -22,6 +22,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -558,6 +559,92 @@ PAGE_ANSWERS = (
 )
 
 
+def _with_entry(answer: dict, n: int, **fields) -> dict:
+    """`answer` with entry `n`'s fields changed."""
+    return {
+        **answer,
+        "acts": [{**entry, **fields} if entry["n"] == n else entry for entry in answer["acts"]],
+    }
+
+
+_HAPPY_PAGE_TWO_IDS = ("A1", "B1", "C1", "L1", "L2", "L3", "S1")
+
+
+def _unbroken(pages: dict[int, Any] | None = None) -> dict[int, Any]:
+    return {
+        1: lambda answer: _with_entry(answer, 2, continues_to_next_page=False),
+        2: lambda answer: _with_entry(answer, 1, continues_from_previous_page=False),
+        **(pages or {}),
+    }
+
+
+# Page-read scenarios whose reader answered one or both pages otherwise than a
+# base scenario's reader did; every other row they read is the base's. Each
+# maps its name to the base and, per page, what the answer becomes: a new
+# answer from the base's, or reply text that is not an answer at all.
+# `page-unread`: page 2's reply is not JSON, so the page is read as nothing
+# while page 1's last act still says it runs on. `page-blank`: page 2 read as
+# blank paper, every id on it set aside, with no act running onto it.
+# `page-review-other`: page-review's unplaced entry read as `other`, with no
+# act running onto it. `page-unbroken`, `page-other-unbroken` and
+# `page-no-act-unbroken`: their base with no act running across the page
+# break. `page-flags-disagree`: page 1's last act says it runs on and page 2's
+# first says it does not. `page-runs-past-end`: nothing runs across the break,
+# but page 2's act says it runs on past the run's last page.
+PAGE_ANSWER_VARIANTS = {
+    "page-unread": ("happy", {2: "the reply is not JSON"}),
+    "page-blank": (
+        "happy",
+        {
+            1: lambda answer: _with_entry(answer, 2, continues_to_next_page=False),
+            2: lambda _answer: {
+                "acts": [],
+                "set_aside": [
+                    {"id": identifier, "reason": "blank paper"}
+                    for identifier in _HAPPY_PAGE_TWO_IDS
+                ],
+            },
+        },
+    ),
+    "page-review-other": (
+        "page-review",
+        {
+            1: lambda answer: _with_entry(answer, 2, continues_to_next_page=False),
+            2: lambda answer: _with_entry(answer, 1, kind="other"),
+        },
+    ),
+    "page-unbroken": ("happy", _unbroken()),
+    "page-other-unbroken": ("page-other", _unbroken()),
+    "page-no-act-unbroken": ("page-no-act", _unbroken()),
+    "page-flags-disagree": (
+        "happy",
+        {2: lambda answer: _with_entry(answer, 1, continues_from_previous_page=False)},
+    ),
+    "page-runs-past-end": (
+        "happy",
+        _unbroken(
+            {
+                2: lambda answer: _with_entry(
+                    answer, 1, continues_from_previous_page=False, continues_to_next_page=True
+                )
+            }
+        ),
+    ),
+}
+PAGE_ANSWERS += tuple(
+    {
+        **row,
+        "scenario": variant,
+        "answer": pages[row["page_ordinal"]](row["answer"])
+        if callable(pages.get(row["page_ordinal"]))
+        else pages.get(row["page_ordinal"], row["answer"]),
+    }
+    for variant, (base, pages) in PAGE_ANSWER_VARIANTS.items()
+    for row in PAGE_ANSWERS
+    if row["scenario"] == base
+)
+
+
 # Page responses derive from the act declarations so they cannot drift.
 # config/models.toml owns page scope; tests reconcile the two.
 _PAGE_ACTS = {1: ("a1", "a2"), 2: ("a2",)}
@@ -589,7 +676,13 @@ _CHURRO_PAGE_CHAIRS = ("attestator_3",)
 # `page-review` and `page-no-act` carry the same pages as `happy`, so a
 # page-read run of either shows Churro in its own units on every page, as
 # `happy` does.
-_NATIVE_CHURRO_SCENARIOS = ("happy", "page-review", "page-no-act", "page-other")
+_NATIVE_CHURRO_SCENARIOS = (
+    "happy",
+    "page-review",
+    "page-no-act",
+    "page-other",
+    *PAGE_ANSWER_VARIANTS,
+)
 CHURRO_PAGE_RESPONSES = tuple(
     {
         "scenario": scenario,
@@ -692,6 +785,11 @@ SURYA_BLOCKS = tuple(
 # finds no record over a1, and `page-no-act` none on page 2 (`_SCENARIO_RECORDS`).
 DETECTOR_RECORD_INSET_PX = 5
 _SCENARIO_RECORDS = {"page-other": {1: ("a2",), 2: ("a2",)}, "page-no-act": {1: ("a1", "a2")}}
+_SCENARIO_RECORDS |= {
+    variant: _SCENARIO_RECORDS[base]
+    for variant, (base, _pages) in PAGE_ANSWER_VARIANTS.items()
+    if base in _SCENARIO_RECORDS
+}
 
 
 def _page_records(pages: dict[int, tuple[str, ...]]) -> tuple:
@@ -1172,6 +1270,21 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "recover_acts = []",
         "hold_acts = []",
         "",
+        "# Each page-read scenario below is its base scenario with the reader answering",
+        "# one or both pages otherwise (proof/build_fixture.py, PAGE_ANSWER_VARIANTS).",
+        "# Read act by act it declares neither a recovery nor a hold.",
+        *(
+            line
+            for variant, (base, _pages) in PAGE_ANSWER_VARIANTS.items()
+            for line in (
+                f"# {variant}: {base}, answered otherwise.",
+                "[[scenario]]",
+                f"name = {toml_string(variant)}",
+                "recover_acts = []",
+                "hold_acts = []",
+                "",
+            )
+        ),
         "[[scenario]]",
         'name = "continuation-recovery"',
         'recover_acts = ["a2"]',
@@ -1415,7 +1528,12 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"scenario = {toml_string(row['scenario'])}",
             f"page_ordinal = {row['page_ordinal']}",
             *([f"witnesses = {toml_value(row['witnesses'])}"] if "witnesses" in row else []),
-            "answer = " + toml_string(json.dumps(row["answer"], separators=(",", ":"))),
+            "answer = "
+            + toml_string(
+                row["answer"]
+                if isinstance(row["answer"], str)
+                else json.dumps(row["answer"], separators=(",", ":"))
+            ),
             "",
         ]
     lines += [

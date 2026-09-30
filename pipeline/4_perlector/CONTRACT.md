@@ -388,7 +388,7 @@ declaration.
 [{chair, compared: "unknown", reason}, ...]              -- format not yet comparable
 ```
 
-Computed strictly after the reading is fixed (`dissent.py`), over a
+Computed strictly after the reading is fixed (`common/dissent.py`), over a
 Unicode-NFC-normalized, whitespace-collapsed comparison view of both sides —
 NFC first, so a precomposed accented character and the same character spelled
 as a base letter plus a combining mark compare equal, which matters for
@@ -1200,16 +1200,17 @@ run (committed `round_cap = 1`) can read pages.
   shortened roster and refuses.
 - Each shown witness's units are re-derived from its capture's retained bytes
   (`common/page_witness_units.py`, `_checked_capture`), never taken from the
-  capture's own fields. A capture read under a vendor grammar names the `text_view` its parse was read
-  under (`pipeline/3_attestatores/CONTRACT.md`, "The capture's text view"); one
-  naming a retired view, or none where its grammar has one, is refused by that
-  name, whatever its parse state, before it is re-derived, here and in
-  `run.py::_verify_page_native_capture` alike, and the refusal says to re-run the
-  submission from the Door. Past that, a Chandra capture's parsed text and its
-  grammar findings (every finding but the repetition scan's) must be what a fresh
-  parse of its bytes gives, as a Churro capture's parse, findings and stop reason
-  must be.
-- Surya's stage-2 records, read in one place (`common/page_path.py`, `sealed_surya_census`): each
+  capture's own fields. A capture read under a vendor grammar names the `text_view`
+  its parse was read under (`pipeline/3_attestatores/CONTRACT.md`, "The capture's
+  text view"); one naming a retired view, or none where its grammar has one, is
+  refused by that name, whatever its parse state, before it is re-derived, here and
+  in `common/page_testimonia.py`'s `verify_page_native_capture` alike, and the
+  refusal says to re-run the submission from the Door. Past that, a Chandra
+  capture's parsed text and its grammar findings (every finding but the repetition
+  scan's) must be what a fresh parse of its bytes gives, as a Churro capture's
+  parse, findings and stop reason must be.
+- Surya's stage-2 records, read in one place (`common/page_path.py`,
+  `sealed_surya_census`): each
   `surya-page` census (`page_id`, `line_count`, `block_count`, `line_subjects`,
   `block_subjects`, `reading_order`, `reading_order_reason`) and every `surya-line`
   and `surya-block` it names (`n`, `bounds`, `confidence_bp`; a block also `label`,
@@ -1227,7 +1228,7 @@ run (committed `round_cap = 1`) can read pages.
   order, not a reading order. Each line's and block's `confidence_bp` is recorded on the feed and never
   rendered into the prompt.
 - The page image at the sealed `[feed] page_image`: `legible` is
-  `dossier.build_page_render` at `[page_context] maximum_edge` (reason
+  `common.page_render.build_page_render` at `[page_context] maximum_edge` (reason
   `legible-ink`); `full` is the sealed page at its own size (reason `full-page`,
   resampler `identity`); `off` is none.
 - On a synthetic run only, a Chandra page joined from the fixture's act placeholders
@@ -1416,8 +1417,8 @@ was made under this run's configuration from this page's feed and, for a live
 reading, its call record still holds to the sealed Perlector row and the reading
 names that row as its `sampling`. Its `page-accounting`
 and each entry's `perlectio`, when already sealed, are adopted rather than measured
-again -- rule (e) and dissent are bounded by a clock, so a second measurement could
-differ -- and refused by name only when they name other inputs than the page has now
+again -- dissent is bounded by a clock, so a second measurement could differ -- and
+refused by name only when they name other inputs than the page has now
 (another feed, reading, region, accounting, policy, configuration or input set); a
 missing one is computed and published. Act-regions are deterministic and re-published
 byte-identical. Before a live chair starts, a page it will send with `reader-sent`

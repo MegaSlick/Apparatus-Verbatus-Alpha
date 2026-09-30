@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import copy
 import random
-import time
 from pathlib import Path
 
 import pytest
 
+from common import page_accounting as page_accounting_module
 from common.contracts.errors import ContractError
 from common.page_accounting import (
     DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
@@ -846,25 +846,69 @@ def test_a_passage_missed_between_read_parts_holds():
     assert "witness-text-not-read" in codes(record, "e")
 
 
-def test_a_deadline_hit_is_not_measured_and_held():
-    expired = PageAccountingPolicy(**{**POLICY.__dict__, "deadline_milliseconds": 0})
+def with_steps(steps: int) -> PageAccountingPolicy:
+    return PageAccountingPolicy(**{**POLICY.__dict__, "max_alignment_steps": steps})
 
-    record = account(page(), expired)
+
+def steps_spent(case: dict, monkeypatch) -> int:
+    """The alignment steps rule (e) spends on `case` under the sealed policy."""
+    spent = []
+    spend = page_accounting_module._WorkBudget.spend
+
+    def counted(budget, steps):
+        spent.append(steps)
+        spend(budget, steps)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(page_accounting_module._WorkBudget, "spend", counted)
+        account(case)
+    return sum(spent)
+
+
+def test_a_work_bound_hit_is_not_measured_and_held():
+    record = account(page(), with_steps(1))
 
     assert record["rules"]["e"]["status"] == "not-measured"
     assert set(codes(record, "e")) == {"witness-text-not-measured"}
-    assert record["rules"]["e"]["findings"][0]["reason"] == "deadline"
+    assert {f["reason"] for f in record["rules"]["e"]["findings"]} == {"work-bound"}
     assert "witness-text-not-measured" in record["holds"]
 
 
-def test_a_deadline_that_expires_midway_is_not_measured():
-    ticks = iter(range(10_000))
-    policy = PageAccountingPolicy(**{**POLICY.__dict__, "deadline_milliseconds": 5_000})
+def test_a_budget_that_runs_out_midway_holds_the_same_units_every_time(monkeypatch):
+    case = page(noise=0.15, seed=3)
+    policy = with_steps(steps_spent(case, monkeypatch) // 2)
 
-    record = account(page(), policy, clock=lambda: float(next(ticks)))
+    first, second = account(case, policy), account(copy.deepcopy(case), policy)
 
-    assert record["rules"]["e"]["status"] == "not-measured"
-    assert "witness-text-not-measured" in record["holds"]
+    assert first == second
+    assert first["rules"]["e"]["status"] == "not-measured"
+    unmeasured = [f["id"] for f in first["rules"]["e"]["findings"]]
+    assert {f["reason"] for f in first["rules"]["e"]["findings"]} == {"work-bound"}
+    assert unmeasured and first["rules"]["e"]["measurements"]
+    assert "witness-text-not-measured" in first["holds"]
+
+
+def test_the_sealed_budget_measures_a_page_within_it_and_one_step_short_does_not(monkeypatch):
+    case = page(noise=0.15, seed=3)
+    needed = steps_spent(case, monkeypatch)
+
+    assert needed < POLICY.max_alignment_steps
+    assert account(case, with_steps(needed))["rules"]["e"]["status"] != "not-measured"
+    assert account(case, with_steps(needed - 1))["rules"]["e"]["status"] == "not-measured"
+
+
+def test_an_unanchored_unit_runs_out_of_budget_rather_than_running_on():
+    """Two-letter noise leaves no anchor and a match at every turn: pure work."""
+    rng = random.Random(7)
+    case = page(1)
+    witness(case, "A")["units"][0]["text"] = "".join(rng.choice("ab") for _ in range(2000))
+    acts(case)[0]["text"] = "".join(rng.choice("ab") for _ in range(2000))
+
+    record = account(case, with_steps(1_000_000))
+
+    assert {"id": "A1", "code": "witness-text-not-measured", "reason": "work-bound"} in record[
+        "rules"
+    ]["e"]["findings"]
 
 
 def test_a_size_bound_hit_is_not_measured_and_held():
@@ -1028,7 +1072,7 @@ def test_best_substring_distance_matches_the_edit_distance_definition():
         assert best_substring_distance(pattern, text) == brute(pattern, text)
 
 
-def test_a_dense_page_is_measured_within_the_deadline():
+def test_a_dense_page_is_measured_within_the_sealed_budget():
     """Twenty entries, about 12,000 characters per witness, as own units and flat."""
     texts = [record_text(k) + " " + record_text(50 + k) for k in range(20)]
     readings = [
@@ -1068,7 +1112,6 @@ def test_a_dense_page_is_measured_within_the_deadline():
         "surya": {"lines": [], "blocks": []},
     }
     assert sum(len(t) for t in texts) > 12_000
-    started = time.monotonic()
     record = page_accounting(
         feed=feed,
         witnesses=[{**row, "blank": False} for row in feed["witnesses"]],
@@ -1089,10 +1132,8 @@ def test_a_dense_page_is_measured_within_the_deadline():
         feed_ref=None,
         page_reading_ref=None,
     )
-    elapsed = time.monotonic() - started
 
     assert record["rules"]["e"]["status"] == "pass", record["rules"]["e"]["findings"]
-    assert elapsed < POLICY.deadline_milliseconds / 1000
 
 
 # --- rule (f) -------------------------------------------------------------------------

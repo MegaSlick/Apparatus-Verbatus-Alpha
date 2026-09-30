@@ -26,6 +26,7 @@ from zipfile import ZIP_STORED, BadZipFile, ZipFile
 
 import pytest
 
+from common import dissent
 from common.chairs import ChairIdentity, load_models_toml
 from common.contracts.approval import build_approval_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
@@ -121,8 +122,8 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # second recovery round.
 HAPPY_SNAPSHOT_FILES = 119
 REVIEW_SNAPSHOT_FILES = 129
-HAPPY_RUN_TREE_DIGEST = "6065b36e30abb009b841a245b9fcf5f6b71efb0120c1dcf27ca1687eb72e88b4"
-REVIEW_RUN_TREE_DIGEST = "306e4af394f03fe467606217fdf1b995409d6913bc366ec182b0d714ae6f68bb"
+HAPPY_RUN_TREE_DIGEST = "ccc3db5929720ef68b796fed9e97e009ee91b87fe9ce6ac35bd07b74226f24f6"
+REVIEW_RUN_TREE_DIGEST = "9a46be0ad851fe341a33a3f4c1b89314cce62695017adc7f7a2bfdf73c45268a"
 
 
 def orchestrate(
@@ -4367,7 +4368,7 @@ def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_v
 ):
     """Capability handling stays live without blinding the reference instrument.
 
-    `pipeline/4_perlector/dissent.py::is_comparable` refuses to diff a witness
+    `common/dissent.py::is_comparable` refuses to diff a witness
     whose format can express uncertainty, because such a format may embed
     alternative-reading markup inline and diffing the markup would count as
     disagreement. It cannot touch the reading — dissent is read-only and computed
@@ -4419,7 +4420,7 @@ def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_v
     # `is_comparable` is False — so what lifted it above is the view
     # `dissent_testimonia` builds, not a relaxed rule.
     assert "comparison_reported" not in testimonium["payload"]
-    assert load_stage("4_perlector", "dissent").is_comparable(testimonium) is False
+    assert dissent.is_comparable(testimonium) is False
     # The capability decides the comparison route and nothing else: the outcome,
     # the class, and the coverage count are what they would be without it.
     assert testimonium["outcome"] == "read"

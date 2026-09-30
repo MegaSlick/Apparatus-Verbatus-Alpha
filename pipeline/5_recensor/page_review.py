@@ -871,7 +871,10 @@ def write_reading_receipt(context) -> None:
     receipt = build_recensor_reading_receipt(
         run_id=context.tree.run_id,
         config_digest=context.run["config_digest"],
-        page_reading_refs=[pages[ordinal]["reading_ref"] for ordinal in sorted(pages)],
+        page_reading_refs=[
+            {"page_ordinal": ordinal, "reading_ref": pages[ordinal]["reading_ref"]}
+            for ordinal in sorted(pages)
+        ],
         items=items,
         continuation_links=links,
     )

@@ -14,7 +14,7 @@ This module checks the recorded evidence and guards against directly ranking it:
 
 A reviewer reading a change here should still trace aliases and refuse anything
 that puts an offset on either side of `<`, `>`, or `abs()`, exactly as
-`dissent.py` refuses a ratio.
+`common/dissent.py` refuses a ratio.
 """
 
 import ast

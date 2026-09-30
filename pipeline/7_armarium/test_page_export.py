@@ -3,8 +3,10 @@
 The trees are the fixture's `happy`, `page-review` and `page-other` scenarios
 read with `reading_unit = "page"` and reviewed by the real Recensor, and
 `page-no-act` read by Chandra and Churro alone, the page witnesses a confirmed
-no-act page can have (see `no_act`). A test that needs a
-decision the Recensor does not make on the fixture forges it
+no-act page can have (see `no_act`). A reader that answered a page otherwise
+is a scenario of its own (`proof/build_fixture.py`, `PAGE_ANSWER_VARIANTS`),
+since every later stage reads the answer again from what the reader said. A
+test that needs a decision the Recensor does not make on the fixture forges it
 (`conftest.forge_page_review`, `conftest.forge_continuation_links`) and says
 why. Every bundle is checked the way a recipient would, by
 `verify_delivered_bundle` on a clean directory.
@@ -42,9 +44,6 @@ from conftest import (
     forge_continuation_links,
     forge_page_review,
     load_stage,
-    reaccount_page,
-    rewrite_page_answer_entry,
-    rewrite_page_reading,
     run_stage,
 )
 
@@ -81,12 +80,22 @@ def no_act(tmp_path_factory) -> tuple[Path, dict]:
 
 
 @pytest.fixture(scope="module")
-def complete(tmp_path_factory, page_other) -> dict:
+def page_blank(tmp_path_factory) -> tuple[Path, dict]:
+    """Page 2 read as blank paper, with no act running onto it."""
+    return build_page_tree(tmp_path_factory.mktemp("page-blank"), "page-blank")
+
+
+@pytest.fixture(scope="module")
+def runs_past_end(tmp_path_factory) -> tuple[Path, dict]:
+    """Nothing runs across the page break; page 2's act says it runs on past the last page."""
+    return build_page_tree(tmp_path_factory.mktemp("page-runs-past-end"), "page-runs-past-end")
+
+
+@pytest.fixture(scope="module")
+def complete(tmp_path_factory) -> dict:
     """p1:1 read as `other` and no continuation: nothing held, one other reading."""
-    root, options = _copy(page_other, tmp_path_factory.mktemp("complete"))
-    rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
-    rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_from_previous_page=False)
-    result = _export(root, options, "page-other")
+    root, options = build_page_tree(tmp_path_factory.mktemp("complete"), "page-other-unbroken")
+    result = _export(root, options, "page-other-unbroken")
     assert result.returncode == 0, result.stderr
     return _bundle(root, tmp_path_factory.mktemp("complete-clean"))
 
@@ -272,28 +281,16 @@ def test_the_act_count_conserves_across_the_partition_the_formats_and_the_ledger
     assert members["other.jsonl"] == b""
 
 
-def test_a_page_whose_answer_was_not_read_is_one_held_item_with_its_reasons(happy, tmp_path):
-    root, options = _copy(happy, tmp_path)
-
-    def malformed(record):
-        record["outcome"] = "held"
-        record["payload"].update(
-            parse_state="malformed",
-            answer=None,
-            problems=[{"code": "json-invalid", "detail": "the reply is not JSON"}],
-            disposition="held",
-        )
-
-    rewrite_page_reading(root, RUN_ID, 2, malformed)
-    reaccount_page(root, RUN_ID, "happy", options, 2)
-    rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
-    result = _export(root, options, "happy")
+def test_a_page_whose_answer_was_not_read_is_one_held_item_with_its_reasons(tmp_path):
+    # Page 2's reply is not JSON.
+    root, options = build_page_tree(tmp_path, "page-unread")
+    result = _export(root, options, "page-unread")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     items = _jsonl(bundle["members"], "review-items.jsonl")
     assert list(items) == ["p2:unread"]
     assert "page-unread" in items["p2:unread"]["reason"]
-    assert "json-invalid" in items["p2:unread"]["reason"]
+    assert "not-json" in items["p2:unread"]["reason"]
     assert bundle["manifest"]["claims"]["page_accounting"]["held_pages"] == [2]
     ledger = bundle["manifest"]["claims"]["terminal_ledger"]
     [page_two] = [unit for unit in ledger["units"] if unit["unit_id"] == "page:2"]
@@ -306,29 +303,11 @@ def test_a_page_whose_answer_was_not_read_is_one_held_item_with_its_reasons(happ
     ids=["confirmed", "unconfirmed"],
 )
 def test_a_page_read_as_blank_is_confirmed_blank_only_when_the_recensor_confirms_it(
-    happy, tmp_path, confirmed, category, exit_code
+    page_blank, tmp_path, confirmed, category, exit_code
 ):
-    root, options = _copy(happy, tmp_path)
-    feed_dir = root / RUN_ID / "4_perlector" / "artifacts" / "page-feed"
-    [feed] = [
-        json.loads(path.read_text("utf-8"))["payload"]
-        for path in feed_dir.glob("*.json")
-        if json.loads(path.read_text("utf-8"))["payload"]["page_ordinal"] == 2
-    ]
-    ids = [unit["id"] for witness in feed["witnesses"] for unit in witness["units"]]
-    ids += [line["id"] for line in feed["surya"]["lines"]]
-    ids += [block["id"] for block in feed["surya"]["blocks"]]
-
-    def blank(record):
-        record["payload"]["answer"] = {
-            "acts": [],
-            "set_aside": [{"id": identifier, "reason": "blank paper"} for identifier in ids],
-        }
-
-    rewrite_page_reading(root, RUN_ID, 2, blank)
-    reaccount_page(root, RUN_ID, "happy", options, 2)
-    rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
-    _recense(root, options, "happy")
+    # Page 2 read as blank paper, every id on it set aside.
+    root, options = _copy(page_blank, tmp_path)
+    _recense(root, options, "page-blank")
     if confirmed:
         # Page 2 carries ink, Surya lines and witness text, so the real Recensor
         # never confirms it blank.
@@ -340,7 +319,7 @@ def test_a_page_read_as_blank_is_confirmed_blank_only_when_the_recensor_confirms
             hold_codes=[],
             release={"hold_codes": [PAGE_BLANK_HOLD], "reason": "confirmed"},
         )
-    result = _after_recensor(root, options, "happy")
+    result = _after_recensor(root, options, "page-blank")
     assert result.returncode == exit_code, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     partition = bundle["manifest"]["claims"]["act_partition"]
@@ -507,18 +486,10 @@ def _unit(manifest: dict, unit_id: str) -> dict:
     return unit
 
 
-def _no_continuation(root: Path) -> None:
-    rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
-    rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_from_previous_page=False)
-
-
-def test_a_held_other_reading_keeps_the_run_partial(page_review, tmp_path):
-    root, options = _copy(page_review, tmp_path)
+def test_a_held_other_reading_keeps_the_run_partial(tmp_path):
     # The page-review scenario's held entry read as `other`.
-    rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
-    rewrite_page_answer_entry(root, RUN_ID, 2, 1, kind="other")
-    reaccount_page(root, RUN_ID, "page-review", options, 2)
-    result = _export(root, options, "page-review")
+    root, options = build_page_tree(tmp_path, "page-review-other")
+    result = _export(root, options, "page-review-other")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     claims = bundle["manifest"]["claims"]
@@ -562,12 +533,13 @@ def test_a_page_of_other_readings_is_held_until_the_recensor_confirms_no_act(
     ]
 
 
-def test_a_confirmed_no_act_page_delivers_its_other_readings_and_completes(no_act, tmp_path):
-    root, options = _copy(no_act, tmp_path)
-    _no_continuation(root)
-    reaccount_page(root, RUN_ID, "page-no-act", options, 2)
-    # The real Recensor confirms the page holds no act.
-    result = _export(root, options, "page-no-act")
+def test_a_confirmed_no_act_page_delivers_its_other_readings_and_completes(tmp_path):
+    # `page-no-act` with nothing running across the break, read by Chandra and
+    # Churro alone (see `no_act`); the real Recensor confirms the page holds no act.
+    root, options = build_page_tree(
+        tmp_path, "page-no-act-unbroken", floor=2, absent=("attestator_2",)
+    )
+    result = _export(root, options, "page-no-act-unbroken")
     assert result.returncode == 0, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     manifest = bundle["manifest"]
@@ -581,10 +553,9 @@ def test_a_confirmed_no_act_page_delivers_its_other_readings_and_completes(no_ac
     assert sorted(_jsonl(bundle["members"], "other.jsonl")) == ["p2:1"]
 
 
-def test_a_link_whose_flags_disagree_is_a_join_that_reconstructs_nothing(happy, tmp_path):
-    root, options = _copy(happy, tmp_path)
-    rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_from_previous_page=False)
-    result = _export(root, options, "happy")
+def test_a_link_whose_flags_disagree_is_a_join_that_reconstructs_nothing(tmp_path):
+    root, options = build_page_tree(tmp_path, "page-flags-disagree")
+    result = _export(root, options, "page-flags-disagree")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     [join] = json.loads(bundle["members"]["sources.json"])["continuation_joins"]
@@ -597,12 +568,10 @@ def test_a_link_whose_flags_disagree_is_a_join_that_reconstructs_nothing(happy, 
     assert "(not-reconstructed)" in reason and "flags-disagree" in reason
 
 
-def test_a_break_with_no_act_on_one_side_is_a_join_that_names_no_act(happy, tmp_path):
-    root, options = _copy(happy, tmp_path)
-    _no_continuation(root)
+def test_a_break_with_no_act_on_one_side_is_a_join_that_names_no_act(runs_past_end, tmp_path):
     # The last page's act runs on past the run's last page.
-    rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_to_next_page=True)
-    result = _export(root, options, "happy")
+    root, options = _copy(runs_past_end, tmp_path)
+    result = _export(root, options, "page-runs-past-end")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     [join] = json.loads(bundle["members"]["sources.json"])["continuation_joins"]
@@ -612,14 +581,14 @@ def test_a_break_with_no_act_on_one_side_is_a_join_that_names_no_act(happy, tmp_
     assert "side-names-no-act" in reason
 
 
-def test_a_continuation_flag_no_link_pairs_is_named_and_keeps_the_run_partial(happy, tmp_path):
-    root, options = _copy(happy, tmp_path)
-    _no_continuation(root)
-    rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_to_next_page=True)
-    _recense(root, options, "happy")
+def test_a_continuation_flag_no_link_pairs_is_named_and_keeps_the_run_partial(
+    runs_past_end, tmp_path
+):
+    root, options = _copy(runs_past_end, tmp_path)
+    _recense(root, options, "page-runs-past-end")
     # The Recensor records every page break a flag names.
-    forge_continuation_links(root, RUN_ID, "happy", options, [])
-    result = _after_recensor(root, options, "happy")
+    forge_continuation_links(root, RUN_ID, "page-runs-past-end", options, [])
+    result = _after_recensor(root, options, "page-runs-past-end")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     [reason] = bundle["manifest"]["aggregate"]["reasons"]
@@ -673,10 +642,9 @@ def test_a_blinded_run_exports_each_witness_by_chair_and_by_the_label_its_reader
     tmp_path_factory,
 ):
     root, options = build_page_tree(
-        tmp_path_factory.mktemp("blinded"), "happy", witness_context="blinded"
+        tmp_path_factory.mktemp("blinded"), "page-unbroken", witness_context="blinded"
     )
-    _no_continuation(root)
-    result = _export(root, options, "happy")
+    result = _export(root, options, "page-unbroken")
     assert result.returncode == 0, result.stderr
     bundle = _bundle(root, tmp_path_factory.mktemp("blinded-clean"))
     roster = set(bundle["export"]["payload"]["witness_chairs"])

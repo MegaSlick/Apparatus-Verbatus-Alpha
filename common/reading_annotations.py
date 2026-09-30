@@ -1,8 +1,8 @@
 """Uncertain spans and gap anchors: the one place `text` could quietly stop
 being clean, and the schema that keeps it from happening.
 
-Spec_08: "the established text never contains testimony-supplied characters.
-No count of agreeing witnesses changes this." A gap is where sight failed;
+The established text never contains characters a witness supplied, however
+many witnesses agree. A gap is where sight failed;
 `witness_evidence` on a gap is linked, displayable evidence -- searchable,
 shown as "(illegible -- witnesses agree: ...)" -- never characters inside
 `text`. **The declared-gap firewall is structural, not a promise**: a gap's own
@@ -127,9 +127,9 @@ def validate_gaps(gaps: Any, text: str) -> list[dict]:
                 f"gaps[{index}] carries a position outside text bounds (0..{len(text)})"
             )
         # The firewall. A gap whose bounds are not equal claims characters of
-        # `text` for a position where sight failed -- exactly the substitution
-        # spec_08 forbids by name, whatever those characters
-        # happen to equal. Checked before anything about the position label or
+        # `text` for a position where sight failed -- a witness's characters
+        # standing in for the reading, whatever those characters happen to
+        # equal. Checked before anything about the position label or
         # the evidence it carries, because this is the one rule that must hold
         # regardless of what else about the gap is true.
         if start != end:
@@ -169,9 +169,9 @@ def validate_gaps(gaps: Any, text: str) -> list[dict]:
                 or not item["testimonium_id"]
                 # A string, and deliberately allowed to be blank: a
                 # genuinely-empty witness reported "" and that report is the
-                # strongest corroboration a whole-act gap can carry. Requiring
-                # a non-blank variant here refused exactly the confirmed-blank
-                # evidence the Recensor's corroboration is built on.
+                # strongest corroboration a whole-act gap can carry, the
+                # confirmed-blank evidence the Recensor's corroboration is
+                # built on.
                 or not isinstance(item.get("variant"), str)
                 or not isinstance(reference, dict)
                 or set(reference) != {"relative_path", "sha256"}
@@ -197,8 +197,7 @@ def validate_whole_act_consistency(*, outcome: str, text: str, gaps: list[dict])
     whole-act gap but not requiring the converse would let an outcome of
     `read` carry an empty `text` plus a whole-act gap and flow onward as though
     something had been established -- an empty text delivered as the one text,
-    which ARCHITECTURE invariant 6 (partial or unresolved results can never
-    appear complete) forbids exactly as directly as a missing gap would.
+    a partial result appearing complete exactly as a missing gap would be.
     """
     has_whole_act_gap = any(gap["position"] == "whole-act" for gap in gaps)
     if outcome == "no-readable-text" and not (text == "" and has_whole_act_gap):
