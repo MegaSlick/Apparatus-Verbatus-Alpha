@@ -93,7 +93,6 @@ from common.stage import (  # noqa: E402
 from operations.serving.assembly import bound_serving_recipes, stage_chair_client  # noqa: E402
 from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
 from operations.serving.detector import (  # noqa: E402
-    FIXTURE_ENGINE,
     RecordDetector,
     check_record_detector_runnable,
     fixture_record_detector,
@@ -108,11 +107,6 @@ DESCRIPTION = "Designator: marks out the acts and cuts the crops. It establishes
 # equal to common/recovery.py's RULED_ABSOLUTE_CAP by hand: recovery restores
 # coverage, never quality, so the attempt ceiling must equal the absolute cap.
 ABSOLUTE_STRUCTURE_ATTEMPT_CEILING = 3
-
-# How much of a page's secondary rescue pass its records enumerate. Kept here,
-# not in `common/`, because nothing outside this stage reads it.
-SECONDARY_ENUMERATION_COMPLETE = "complete"
-SECONDARY_ENUMERATION_WITHHELD = "withheld-page-held"
 
 # Why an act could not be marked out: a closed vocabulary, so consumers branch
 # on a code and a new cause must be declared here.
@@ -1346,188 +1340,6 @@ def _claimed_regions_by_page(context) -> dict[int, list[dict]]:
     return claimed
 
 
-def _contains(outer: dict, inner: dict) -> bool:
-    return (
-        outer["x"] <= inner["x"]
-        and outer["y"] <= inner["y"]
-        and outer["x"] + outer["w"] >= inner["x"] + inner["w"]
-        and outer["y"] + outer["h"] >= inner["y"] + inner["h"]
-    )
-
-
-def _secondary_rescue_candidates(claimed: list[dict], candidates: list[dict]) -> list[dict]:
-    """Exclude candidates fully inside one claim; keep partial overlaps.
-
-    Count touching acts: a spanning mark may show a merged boundary, but padded
-    claims can abut, so the count is review evidence, never a verdict.
-    """
-    rescues = []
-    for candidate in candidates:
-        if any(_contains(entry["bounds"], candidate["bounds"]) for entry in claimed):
-            continue
-        rescues.append(
-            {
-                "candidate": candidate,
-                "overlapping_claimed_act_count": len(
-                    {
-                        entry["act_id"]
-                        for entry in claimed
-                        if _overlap_area(entry["bounds"], candidate["bounds"]) > 0
-                    }
-                ),
-            }
-        )
-    return rescues
-
-
-def _publish_secondary_proposals(
-    context,
-    ordinal: int,
-    page_record: dict,
-    analysis: dict,
-    claimed: list[dict],
-    secondary: dict | None,
-    grouping_policy: dict,
-) -> bool:
-    """Cut non-authoritative rescue candidates for review, up to the page bound.
-
-    `secondary` is the provenance the pixel-scan rescue runs under, or None
-    when it does not run (`_pixel_rescue_provenance`).
-
-    A speckled page could otherwise mint thousands of crops. Beyond the bound,
-    keep one held count and cut none; candidates are counted, never filtered.
-    Enumeration distinguishes no candidate from counted but not cut.
-    """
-    if secondary is None:
-        return False
-    validate_serving_provenance(
-        context,
-        secondary,
-        producer_stage=DESIGNATOR,
-        require_receipt=True,
-    )
-    if analysis["background"] is None:
-        # The secondary scan needs a background; a substituted one would crop
-        # paper.
-        return False
-    candidates = structure.secondary_scan(
-        analysis["width"],
-        analysis["height"],
-        analysis["rows"],
-        background=analysis["background"],
-        gap_tolerance_px=analysis["thresholds"].gap_tolerance_px,
-    )
-    rescues = _secondary_rescue_candidates(claimed, candidates)
-    image_path = page_record["payload"]["image_path"]
-    max_secondary_proposals = analysis["thresholds"].max_secondary_proposals
-    if len(rescues) > max_secondary_proposals:
-        return _publish_withheld_secondary_pass(
-            context,
-            ordinal,
-            page_record,
-            analysis,
-            secondary,
-            candidate_count=len(rescues),
-            max_secondary_proposals=max_secondary_proposals,
-            grouping_config_sha256=grouping_policy["config_sha256"],
-        )
-    page_bytes = _read_checked_page_bytes(context, page_record)
-    for index, rescue_row in enumerate(rescues):
-        candidate = rescue_row["candidate"]
-        # In-page by construction today; a detector chair would not be, and a
-        # bad box must refuse rather than raise a bare ValueError in `crop_png`.
-        geometry.validate_bounds(
-            candidate["bounds"], analysis["width"], analysis["height"], "secondary candidate bounds"
-        )
-        overlap_count = rescue_row["overlapping_claimed_act_count"]
-        subject = f"{page_record['subject_id']}-secondary-{index}"
-        crop = _stored_crop(context, page_bytes, ordinal, page_record, candidate["bounds"])
-        rescue_payload = {
-            "page_ordinal": ordinal,
-            "pixel_count": candidate["pixel_count"],
-            "origin": "secondary-proposer",
-            "padding": None,
-            "authoritative": False,
-            "authority_effect": "review-only",
-            "overlapping_claimed_act_count": overlap_count,
-            **crop,
-            "provenance": secondary,
-        }
-        _refuse_text_fields(rescue_payload)
-        rescue = context.publish(
-            kind="rescue-crop",
-            subject_id=subject,
-            outcome="held",
-            inputs=[context.input_ref(image_path)],
-            payload=rescue_payload,
-        )
-        proposal_payload = {
-            "page_ordinal": ordinal,
-            "bounds": candidate["bounds"],
-            "pixel_count": candidate["pixel_count"],
-            "authoritative": False,
-            "terminal_disposition": "held-for-review",
-            "secondary_enumeration": SECONDARY_ENUMERATION_COMPLETE,
-            "overlapping_claimed_act_count": overlap_count,
-            "rescue_ref": context.input_ref(rescue.relative_path),
-            "provenance": secondary,
-        }
-        _refuse_text_fields(proposal_payload)
-        context.publish(
-            kind="secondary-proposal",
-            subject_id=subject,
-            outcome="held",
-            inputs=[context.input_ref(image_path), context.input_ref(rescue.relative_path)],
-            payload=proposal_payload,
-        )
-    return bool(rescues)
-
-
-def _publish_withheld_secondary_pass(
-    context,
-    ordinal: int,
-    page_record: dict,
-    analysis: dict,
-    secondary: dict,
-    *,
-    candidate_count: int,
-    max_secondary_proposals: int,
-    grouping_config_sha256: str,
-) -> bool:
-    """One held record for a page whose secondary pass found more than the bound.
-
-    No crop is cut, but the count stays on the record. Like the rescues it
-    replaces, it mints no act and enters no seal; it does hold the run.
-    """
-    payload = {
-        "page_ordinal": ordinal,
-        "page_bounds": _page_bounds(analysis),
-        "authoritative": False,
-        "terminal_disposition": "held-for-review",
-        "secondary_enumeration": SECONDARY_ENUMERATION_WITHHELD,
-        "secondary_candidate_count": candidate_count,
-        "max_secondary_proposals": max_secondary_proposals,
-        "grouping_config_sha256": grouping_config_sha256,
-        "reason": (
-            f"this page's secondary pass found {candidate_count} rescue candidates no crop "
-            f"claims, more than the sealed bound of {max_secondary_proposals} this run may cut "
-            "and hold separately on one page, so the pass is held as a single review item and "
-            "no rescue crop was cut; nothing was filtered out of the scan, and the candidates "
-            "remain recomputable from the sealed page bytes under the sealed policy"
-        ),
-        "provenance": secondary,
-    }
-    _refuse_text_fields(payload)
-    context.publish(
-        kind="secondary-proposal",
-        subject_id=f"{page_record['subject_id']}-secondary-withheld",
-        outcome="held",
-        inputs=[context.input_ref(page_record["payload"]["image_path"])],
-        payload=payload,
-    )
-    return True
-
-
 def _seal_row(
     act_id: str,
     act_key: str,
@@ -1936,16 +1748,15 @@ def _build_conservation_payload(
     return conservation_payload
 
 
-def _publish_conservation_and_secondary(
+def _publish_conservation(
     context,
     ordinal: int,
     page_record: dict,
     analysis: dict,
     claimed: list[dict],
-    secondary: dict | None,
     grouping_policy: dict,
-) -> tuple[list[dict], bool]:
-    """Reconcile ink against crops, then publish conservation and rescue evidence.
+) -> list[dict]:
+    """Reconcile ink against crops, then publish the page's conservation record.
 
     The scan is independent of grouping so missed ink remains visible. Without
     an inferable background, a substituted threshold would invent a measurement.
@@ -1986,9 +1797,6 @@ def _publish_conservation_and_secondary(
         inputs=[context.input_ref(page_record["payload"]["image_path"])],
         payload=conservation_payload,
     )
-    secondary_held = _publish_secondary_proposals(
-        context, ordinal, page_record, analysis, claimed, secondary, grouping_policy
-    )
     conservation_ref = context.input_ref(published.relative_path)
     rows = _publish_residual_holds(context, page_id, ordinal, promoted, conservation_ref)
     if aggregated:
@@ -2004,7 +1812,23 @@ def _publish_conservation_and_secondary(
                 conservation_ref=conservation_ref,
             )
         )
-    return rows, secondary_held
+    return rows
+
+
+def _publish_conservation_and_secondary(
+    context,
+    ordinal: int,
+    page_record: dict,
+    analysis: dict,
+    claimed: list[dict],
+    secondary: None,
+    grouping_policy: dict,
+) -> tuple[list[dict], bool]:
+    """`_publish_conservation` in the call shape the Armarium's conservation tests use."""
+    if secondary is not None:
+        raise ContractError("the Designator runs no secondary pixel scan")
+    rows = _publish_conservation(context, ordinal, page_record, analysis, claimed, grouping_policy)
+    return rows, False
 
 
 def _conservation_reason(measurable: bool, aggregated: bool, component_count: int) -> str | None:
@@ -2062,32 +1886,29 @@ def _publish_page_conservation(
     pages: dict[int, dict],
     failures: dict[int, str],
     page_cache: dict[int, dict],
-    secondary: dict | None,
     grouping_policy: dict,
-) -> tuple[list[dict], bool, bool]:
-    """Reconcile every sealed page and return rows plus named hold facts."""
+) -> tuple[list[dict], bool]:
+    """Reconcile every sealed page; return its residual rows and whether any went unmeasured."""
     residual_rows = []
-    secondary_held = False
     claimed_by_page = _claimed_regions_by_page(context)
     for ordinal, page_record in pages.items():
         analysis = _analyze_page(page_cache, context, ordinal, page_record, grouping_policy)
-        page_rows, page_secondary_held = _publish_conservation_and_secondary(
-            context,
-            ordinal,
-            page_record,
-            analysis,
-            claimed_by_page.get(ordinal, []),
-            secondary,
-            grouping_policy,
+        residual_rows.extend(
+            _publish_conservation(
+                context,
+                ordinal,
+                page_record,
+                analysis,
+                claimed_by_page.get(ordinal, []),
+                grouping_policy,
+            )
         )
-        secondary_held = secondary_held or page_secondary_held
-        residual_rows.extend(page_rows)
     unmeasured = any(
         analysis["background"] is None
         for ordinal, analysis in page_cache.items()
         if ordinal not in failures
     )
-    return residual_rows, secondary_held, unmeasured
+    return residual_rows, unmeasured
 
 
 def _evidence_of(rows: list[dict]) -> list[dict]:
@@ -2098,14 +1919,12 @@ def _initial_pass_has_holds(
     expected: list[dict],
     failures: dict[int, str],
     *,
-    secondary_held: bool,
     unmeasured: bool,
 ) -> bool:
     """One explicit list of the facts that withhold a complete exit."""
     hold_facts = (
         any(row["outcome"] == "held" for row in expected),
         bool(failures),
-        secondary_held,
         unmeasured,
     )
     return any(hold_facts)
@@ -2387,36 +2206,16 @@ def initial_pass(context) -> bool:
         _publish_detector_records(context, pages, secondary, detector)
 
     # Every sealed page, including pages no act touched; residuals join the seal.
-    residual_rows, secondary_held, unmeasured = _publish_page_conservation(
-        context,
-        pages,
-        failures,
-        page_cache,
-        _pixel_rescue_provenance(secondary, detector),
-        grouping_policy,
+    residual_rows, unmeasured = _publish_page_conservation(
+        context, pages, failures, page_cache, grouping_policy
     )
     expected.extend(residual_rows)
     seal_inputs.extend(_evidence_of(residual_rows))
     _publish_proposal_seal(context, expected, seal_inputs, provenance)
-    # Any hold, secondary hold or unmeasured page withholds "complete".
+    # Any hold or unmeasured page withholds "complete".
     # An unmeasured page has not reconciled, but its crops still
     # go downstream; only the run's completion claim is withheld.
-    return _initial_pass_has_holds(
-        expected, failures, secondary_held=secondary_held, unmeasured=unmeasured
-    )
-
-
-def _pixel_rescue_provenance(secondary: dict, detector: RecordDetector | None) -> dict | None:
-    """The provenance the pixel-scan rescue runs under, or None when it does not run.
-
-    The rescue is the fixture pass's offline stand-in for a model proposer, so
-    it runs only when the secondary chair is answered by the fixture, under that
-    fixture's receipt. An in-process record detector never switches it on and
-    never lends it its provenance: a real run cuts no rescue crop.
-    """
-    if detector is None or detector.run_facts.get("engine") != FIXTURE_ENGINE:
-        return None
-    return secondary
+    return _initial_pass_has_holds(expected, failures, unmeasured=unmeasured)
 
 
 def _published_secondary_provenance(context) -> dict | None:
@@ -3139,13 +2938,8 @@ def live_initial_pass(
     if detector is not None:
         _publish_detector_records(context, pages, secondary, detector)
 
-    residual_rows, secondary_held, unmeasured = _publish_page_conservation(
-        context,
-        pages,
-        failures,
-        page_cache,
-        _pixel_rescue_provenance(secondary, detector),
-        grouping_policy,
+    residual_rows, unmeasured = _publish_page_conservation(
+        context, pages, failures, page_cache, grouping_policy
     )
     expected.extend(residual_rows)
     if not expected:
@@ -3154,9 +2948,7 @@ def live_initial_pass(
             "denominator to seal"
         )
     _publish_proposal_seal(context, expected, _evidence_of(expected), seal_provenance)
-    return _initial_pass_has_holds(
-        expected, failures, secondary_held=secondary_held, unmeasured=unmeasured
-    )
+    return _initial_pass_has_holds(expected, failures, unmeasured=unmeasured)
 
 
 def _refuse_duplicate_proposal_bounds(context) -> None:

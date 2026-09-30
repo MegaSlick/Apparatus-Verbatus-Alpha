@@ -23,7 +23,6 @@ from structure import (
     label_components,
     primary_scan,
     scan_ink_components,
-    secondary_scan,
 )
 
 from common.contracts.errors import ContractError
@@ -247,10 +246,10 @@ def test_the_reference_labeller_refuses_what_the_production_one_refuses():
         label_components({(0, 0)}, gap_tolerance_px=-1)
 
 
-# --- primary vs secondary sensitivity ----------------------------------------
+# --- primary vs conservation sensitivity -------------------------------------
 
 
-def test_secondary_scan_finds_a_faint_mark_primary_scan_misses():
+def test_the_conservation_margin_finds_a_faint_mark_primary_scan_misses():
     width, height = 20, 20
     rows = blank_rows(width, height)
     faint = BACKGROUND - (SECONDARY_MARGIN + 1)  # inside secondary's threshold, outside primary's
@@ -271,14 +270,19 @@ def test_secondary_scan_finds_a_faint_mark_primary_scan_misses():
         )
         == []
     )
-    found = secondary_scan(
-        width, height, rows, background=BACKGROUND, gap_tolerance_px=GAP_TOLERANCE_PX
+    found = scan_ink_components(
+        width,
+        height,
+        rows,
+        background=BACKGROUND,
+        margin=SECONDARY_MARGIN,
+        gap_tolerance_px=GAP_TOLERANCE_PX,
     )
     assert len(found) == 1
     assert found[0]["bounds"] == {"x": 5, "y": 5, "w": 3, "h": 3}
 
 
-def test_primary_and_secondary_agree_on_clearly_inked_marks():
+def test_primary_and_conservation_margins_agree_on_clearly_inked_marks():
     width, height = 20, 20
     rows = blank_rows(width, height)
     paint_rect(rows, 2, 2, 6, 6, INK)
@@ -289,8 +293,13 @@ def test_primary_and_secondary_agree_on_clearly_inked_marks():
         background=BACKGROUND,
         margin=PRIMARY_MARGIN,
         gap_tolerance_px=GAP_TOLERANCE_PX,
-    ) == secondary_scan(
-        width, height, rows, background=BACKGROUND, gap_tolerance_px=GAP_TOLERANCE_PX
+    ) == scan_ink_components(
+        width,
+        height,
+        rows,
+        background=BACKGROUND,
+        margin=SECONDARY_MARGIN,
+        gap_tolerance_px=GAP_TOLERANCE_PX,
     )
 
 
@@ -475,11 +484,6 @@ def test_primary_scan_refuses_a_missing_margin_keyword():
     """
     with pytest.raises(TypeError):
         primary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND, gap_tolerance_px=3)
-
-
-def test_secondary_scan_refuses_a_missing_gap_tolerance_keyword():
-    with pytest.raises(TypeError):
-        secondary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND)
 
 
 # --- the row-run substitution: equality against the retired implementation ----
