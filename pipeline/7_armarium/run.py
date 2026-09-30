@@ -34,6 +34,8 @@ from armarium_export import (  # noqa: E402
     ARMARIUM_ARCHIVE_NAME,
     NOT_MEASURED_BASIS_SCHEMA,
     NOT_MEASURED_INSTRUMENTS,
+    PAGE_NOT_MEASURED_INSTRUMENTS,
+    READING_UNIT_PAGE,
     ArmariumProjection,
     act_key_sort_key,
     build_armarium_bundle,
@@ -69,15 +71,25 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
-from common.contracts.uncertainty import from_perlectio  # noqa: E402
+from common.contracts.uncertainty import from_page_perlectio, from_perlectio  # noqa: E402
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.cross_capture_coverage import validate_cross_capture_coverage  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_corpus_seal,
     verify_exemplar_crop_lineage,
+    verify_reading_region_lineage,
     verify_sealed_page_pixels,
 )
 from common.imaging import dimensions  # noqa: E402
+from common.page_accounting import require_page_accounting_policy  # noqa: E402
+from common.page_review import (  # noqa: E402
+    PAGE_REFUSED_CLASS,
+    continuation_links,
+    current_page_reviews,
+    review_coverage,
+    review_reason,
+    reviewed_rows,
+)
 from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
@@ -95,11 +107,14 @@ from common.stage import (  # noqa: E402
     canary_ordinals,
     expected_acts,
     latest_attempt,
+    latest_per_chair,
     open_stage_context,
     reading_basis_regions,
+    reading_denominator,
     recovery_region_count,
     require_current_witness_basis,
     run_stage,
+    sealed_reading_unit,
     stage_parser,
     submission_identity,
     unaddressed_chairs,
@@ -1830,6 +1845,621 @@ def export_run_identity(context) -> tuple[str | None, str | None, dict[str, str]
     return submission_id, fixture_id, run_identity
 
 
+# --- Page-read runs: the readings the Perlector established on each page it read whole
+#
+# The denominator is `common.stage.reading_acts`. Rows of kind `act` are the act
+# partition; rows of kind `other` are a separate, labelled layer that is never
+# counted as an act. A row standing for a page with no reading (`page-unread`,
+# `page-blank`) is an act-partition unit with no text, held or confirmed blank by
+# its review. Regions come from the Perlector's `act-region` records, each proven
+# from the Exemplar by `verify_reading_region_lineage`.
+
+
+def _page_category(
+    context, row: dict, review: dict, manifest_cache: dict[str, dict]
+) -> tuple[ArmariumCategory, dict | None]:
+    """One row's terminal category, from its review and (when accepted) its one Archetypus."""
+    established = artifacts_for(context, ARCHETYPUS, "archetypus", row["act_id"], manifest_cache)
+    outcome = review["outcome"]
+    terminal = terminal_category(RECENSOR, outcome)
+    if terminal is not None:
+        if established:
+            raise FatalAccounting(
+                f"{row['act_key']} is {outcome!r} at the Recensor but carries an Archetypus "
+                "record anyway; a reading not accepted may not also be established"
+            )
+        if terminal is ArmariumCategory.CONFIRMED_BLANK and row["class"] != "page-blank":
+            raise FatalAccounting(
+                f"{row['act_key']} is a {row['class']} row, and only a page read as blank can "
+                "be confirmed blank"
+            )
+        return terminal, None
+    if outcome != "accepted":
+        raise FatalAccounting(
+            f"{row['act_key']} has Recensor outcome {outcome!r}, which reaches no terminal "
+            "category; the export may not complete over an undecided reading"
+        )
+    if len(established) != 1:
+        raise FatalAccounting(
+            f"{row['act_key']} was accepted by the Recensor but carries {len(established)} "
+            "Archetypus records; exactly one established reading is exported"
+        )
+    return terminal_category(ARCHETYPUS, established[0]["outcome"]), established[0]
+
+
+def verify_established_page_record(
+    context, row: dict, review: dict, established: dict
+) -> tuple[dict, dict]:
+    """Reconcile a page-path Archetypus against its row, its review and its reading.
+
+    Returns the record's payload and the reading. The region is re-proven from
+    the Exemplar here, not read out of the record, and the damage layers are
+    recomputed from the reading.
+    """
+    payload = established.get("payload")
+    if not isinstance(payload, dict) or not verify_self_hash(payload):
+        raise FatalAccounting("an Archetypus payload fails its own self-hash before export")
+    expected = {
+        "act_id": row["act_id"],
+        "act_key": row["act_key"],
+        "page_id": row["page_id"],
+        "kind": row["kind"],
+        "status": "established",
+    }
+    if any(payload.get(field) != value for field, value in expected.items()):
+        raise FatalAccounting(
+            f"the Archetypus of {row['act_key']} does not describe the reading being exported"
+        )
+    review_ref = context.artifact_ref(RECENSOR, "review", review["artifact_id"])
+    reading_ref = row["perlectio_ref"]
+    region_ref = row["region_ref"]
+    if (
+        review["outcome"] != "accepted"
+        or payload.get("recensor_ref") != review_ref
+        or payload.get("perlectio_ref") != reading_ref
+        or payload.get("dissent_ref") != reading_ref
+        or review["payload"].get("perlectio_ref") != reading_ref
+        or reading_ref not in review.get("inputs", [])
+    ):
+        raise FatalAccounting(
+            f"the Archetypus of {row['act_key']} is not bound to the accepted review of its "
+            "counted reading"
+        )
+    reading = context.tree.read_artifact_reference(
+        reading_ref, stage=PERLECTOR, kind="perlectio", subject_id=row["act_id"]
+    )
+    reading_payload = reading.get("payload")
+    if not isinstance(reading_payload, dict) or reading_payload.get("act_region_ref") != region_ref:
+        raise FatalAccounting(f"the reading of {row['act_key']} names another act-region")
+    region_record = context.tree.read_artifact_reference(
+        region_ref, stage=PERLECTOR, kind="act-region", subject_id=row["act_id"]
+    )
+    try:
+        region = verify_reading_region_lineage(context.tree, context.run, region_record)
+    except ContractError as error:
+        raise FatalAccounting(
+            f"the act-region of {row['act_key']} does not trace to the Exemplar: {error}"
+        ) from error
+    try:
+        annotations = validate_annotations(
+            payload.get("annotations"), payload.get("text", ""), None, "Archetypus annotation"
+        )
+        uncertainty = from_page_perlectio(reading_payload)
+        text_status = derive_record_text_status(payload.get("text"), annotations, uncertainty)
+    except SchemaRefusal as error:
+        raise FatalAccounting(
+            f"the damage layers of {row['act_key']} cannot be reconciled with its reading"
+        ) from error
+    if (
+        payload.get("text") != reading_payload.get("text")
+        or payload.get("regions") != [region]
+        or payload.get("provenance") != reading_payload.get("provenance")
+        or payload.get("annotations") != annotations
+        or payload.get("uncertainty") != uncertainty
+        or payload.get("text_status") != text_status
+    ):
+        raise FatalAccounting(
+            f"the Archetypus of {row['act_key']} does not exactly preserve the reading its "
+            "review accepted"
+        )
+    expected_inputs = [review_ref, reading_ref, region_ref, context.input_ref(region["image_path"])]
+    if sorted(established.get("inputs", []), key=lambda item: item["relative_path"]) != sorted(
+        expected_inputs, key=lambda item: item["relative_path"]
+    ):
+        raise FatalAccounting(
+            f"the Archetypus of {row['act_key']} does not input exactly its review, reading, "
+            "act-region and crop"
+        )
+    return payload, reading
+
+
+def export_page_witnesses(context, reading: dict, manifest_cache: dict[str, dict]) -> list[dict]:
+    """The page witnesses a reading was shown, each its chair's current page Testimonium."""
+    payload = reading["payload"]
+    page_id = payload["page_id"]
+    feed_ref = payload.get("feed_ref")
+    if feed_ref not in reading.get("inputs", []):
+        raise FatalAccounting("an established page reading does not input its page feed")
+    feed = context.tree.read_artifact_reference(
+        feed_ref, stage=PERLECTOR, kind="page-feed", subject_id=page_id
+    )["payload"]
+    current = {
+        record["payload"]["chair"]: record
+        for record in latest_per_chair(
+            artifacts_for(context, ATTESTATORES, "page-testimonium", page_id, manifest_cache),
+            f"page Testimonium of {page_id}",
+        )
+    }
+    witnesses = []
+    for row in feed.get("witnesses") or []:
+        record = current.get(row.get("chair"))
+        reference = row.get("testimonium_ref")
+        if record is None or reference != context.artifact_ref(
+            ATTESTATORES, "page-testimonium", record["artifact_id"]
+        ):
+            raise FatalAccounting(
+                "an established page reading was shown a witness that is not its chair's "
+                "current page Testimonium"
+            )
+        validate_serving_provenance(
+            context,
+            record["payload"].get("provenance"),
+            producer_stage=ATTESTATORES,
+            require_receipt=record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES,
+        )
+        witnesses.append(
+            {
+                "chair": row["chair"],
+                "outcome": record["outcome"],
+                "testimonium_ref": reference,
+                "provenance": record["payload"]["provenance"],
+            }
+        )
+    return sorted(witnesses, key=lambda witness: witness["chair"])
+
+
+def reading_region_bounds_by_page(context, rows: list[dict]) -> dict[int, list[dict]]:
+    """The rectangles every placed reading (act or other) was cut from, proven from the Exemplar.
+
+    Only these may release unclaimed edge ink on the page path: the Perlector's
+    `act-region` records, each re-verified here by the function that uses it.
+    """
+    claimed: dict[int, list[dict]] = {}
+    for row in rows:
+        if row["region_ref"] is None or row["class"] != "reading":
+            continue
+        region = context.tree.read_artifact_reference(
+            row["region_ref"], stage=PERLECTOR, kind="act-region", subject_id=row["act_id"]
+        )
+        try:
+            verified = verify_reading_region_lineage(context.tree, context.run, region)
+        except ContractError as error:
+            raise FatalAccounting(
+                f"the act-region of {row['act_key']} cannot be verified as a crop of its page, "
+                "so its bounds cannot release any page ink"
+            ) from error
+        claimed.setdefault(verified["source_page_ordinal"], []).append(
+            verified["transform"]["bounds"]
+        )
+    return claimed
+
+
+def page_continuation_joins(
+    links: list[dict], rows: dict[str, dict], projected_acts: list[dict], formats: tuple[str, ...]
+) -> tuple[dict, ...]:
+    """Each agreed Recensor continuation link as a join row over the delivered literals.
+
+    A link whose two readings' flags disagree joins nothing: the readings do not
+    say that an act crosses the break. A link naming an `other` reading is
+    refused, since an other reading is not half of an act.
+    """
+    delivered_texts = {
+        act["act_id"]: act["canonical_clean_text"]
+        for act in projected_acts
+        if act["category"] == ArmariumCategory.DELIVERED.value
+    }
+    joins = []
+    for index, link in enumerate(link for link in links if link["agreed"]):
+        head, tail = rows[link["head_act_id"]], rows[link["tail_act_id"]]
+        if head["kind"] != "act" or tail["kind"] != "act":
+            raise FatalAccounting(
+                f"continuation link {link['ref']['relative_path']} names an other reading; an "
+                "other reading is never half of an act"
+            )
+        if tail["page_ordinal"] != head["page_ordinal"] + 1:
+            raise FatalAccounting(
+                f"continuation link {link['ref']['relative_path']} joins pages that are not "
+                "adjacent"
+            )
+        joins.append(
+            continuation_join_row(
+                join_id=f"join-{head['page_ordinal']}-{tail['page_ordinal']}-{index}",
+                candidate_ref=link["ref"],
+                head_page_ordinal=head["page_ordinal"],
+                tail_page_ordinal=tail["page_ordinal"],
+                head_act_ids=[head["act_id"]],
+                tail_act_ids=[tail["act_id"]],
+                delivered_texts=delivered_texts,
+                selected_formats=formats,
+            )
+        )
+    return tuple(joins)
+
+
+def page_accounting_rows(context, pages: dict[int, dict], real: set[int]) -> list[dict]:
+    """Each real sealed page's accounting: rule statuses, hold codes and policy digest.
+
+    The policy a page names must be the one this run sealed.
+    """
+    policy = require_page_accounting_policy(context, context.page_accounting_config_path)
+    rows = []
+    for ordinal in sorted(real):
+        page = pages[ordinal]
+        record = context.tree.read_artifact_reference(
+            page["accounting_ref"],
+            stage=PERLECTOR,
+            kind="page-accounting",
+            subject_id=page["page_id"],
+        )
+        payload = record["payload"]
+        if payload.get("policy_sha256") != policy.sha256:
+            raise FatalAccounting(
+                f"page {ordinal}'s accounting was measured under another page-accounting "
+                "policy than this run sealed"
+            )
+        rules = payload.get("rules")
+        if not isinstance(rules, dict) or not all(
+            isinstance(rule, dict) and isinstance(rule.get("status"), str)
+            for rule in rules.values()
+        ):
+            raise FatalAccounting(f"page {ordinal}'s accounting records no rule statuses")
+        rows.append(
+            {
+                "ordinal": ordinal,
+                "page_id": page["page_id"],
+                "rules": {name: rules[name]["status"] for name in sorted(rules)},
+                "hold_codes": sorted(set(payload["holds"])),
+                "policy_sha256": payload["policy_sha256"],
+                "accounting_ref": page["accounting_ref"],
+            }
+        )
+    return rows
+
+
+def page_not_measured_basis(
+    context, pages: dict[int, dict], projected_acts: list[dict], manifest_cache: dict[str, dict]
+) -> dict:
+    """What a page-read run did not measure, from its own records and sealed configurations."""
+    policy = require_page_accounting_policy(context, context.page_accounting_config_path)
+    thresholds = sorted(
+        (name, value)
+        for name, value in vars(policy).items()
+        if name != "sha256" and isinstance(value, int)
+    )
+    audits = []
+    for page in pages.values():
+        reading = context.tree.read_artifact_reference(
+            page["reading_ref"], stage=PERLECTOR, kind="page-reading", subject_id=page["page_id"]
+        )
+        audit = reading["payload"].get("audit")
+        if not isinstance(audit, dict) or not isinstance(audit.get("state"), str):
+            raise FatalAccounting(
+                f"page {page['page_ordinal']}'s reading records no audit state; the export "
+                "cannot say whether Pass C ran on it"
+            )
+        audits.append(audit["state"])
+    delivered = [
+        act for act in projected_acts if act["category"] == ArmariumCategory.DELIVERED.value
+    ]
+    states = [act["uncertainty"]["assessment"]["state"] for act in delivered]
+    nuda_records = sum(
+        1
+        for entry in _cached_manifest(context, PERLECTOR, manifest_cache)["artifacts"]
+        if entry["kind"] == "lectio-nuda"
+    )
+    basis = {
+        "schema": NOT_MEASURED_BASIS_SCHEMA,
+        "perlector-uncertain-spans": {
+            "sealed_audit_round_cap": sealed_audit_round_cap(context),
+            "acts_delivered": len(delivered),
+            "acts_with_uncertain_spans": sum(
+                1 for act in delivered if act["uncertainty"].get("uncertain_spans")
+            ),
+            "acts_assessed": states.count("assessed"),
+            "acts_not_assessed": states.count("not-assessed"),
+        },
+        "designator-geometry-calibration": {"configurations": geometry_calibration_rows(context)},
+        # The page accounting's policy carries no calibration record; every value
+        # in it is a starting value (`config/page_accounting.toml`).
+        "page-accounting-thresholds": {
+            "policy_sha256": policy.sha256,
+            "thresholds": [{"name": name, "value": value} for name, value in thresholds],
+            "calibrated_for_this_corpus": False,
+            "sample_count": None,
+        },
+        "perlector-pass-c": {
+            "pages_read": len(audits),
+            "pages_audit_not_run": audits.count("not-run"),
+            "sealed_audit_round_cap": sealed_audit_round_cap(context),
+        },
+        "lectio-nuda": {
+            "sealed_nuda_per_mille": context.nuda_per_mille,
+            "lectio_nuda_records": nuda_records,
+        },
+    }
+    missing = [name for name in PAGE_NOT_MEASURED_INSTRUMENTS if name not in basis]
+    if missing:
+        raise FatalAccounting(f"the page-read not-measured basis names no record for {missing}")
+    return basis
+
+
+def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) -> int:
+    """Export a page-read run: acts, the other layer, page rows, and the page accounting."""
+    submission_id, fixture_id, run_identity = export_run_identity(context)
+    real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
+    denominator = reading_denominator(context)
+    pages, rows = denominator["pages"], denominator["acts"]
+    # A refused page is the census's to report, with the Door's reason; it is
+    # never reviewed and never counted.
+    for row in rows:
+        if row["class"] == PAGE_REFUSED_CLASS:
+            _require_refused_in_census(row, census)
+    rows = reviewed_rows(rows)
+    reviews = current_page_reviews(context, rows)
+    links = continuation_links(context, rows)
+    manifest_cache: dict[str, dict] = {}
+    categories: dict[str, ArmariumCategory] = {}
+    coverages: dict[str, dict] = {}
+    act_text_status: dict[str, str] = {}
+    act_pages: dict[str, list[int]] = {}
+    projected_acts: list[dict] = []
+    projected_others: list[dict] = []
+    delivered: list[dict] = []
+    non_delivered: list[dict] = []
+    canary_acts: list[dict] = []
+    for row in rows:
+        review = reviews[row["act_id"]]
+        category, established = _page_category(context, row, review, manifest_cache)
+        if row["page_ordinal"] in canaries:
+            canary_entry = {
+                "act_id": row["act_id"],
+                "act_key": row["act_key"],
+                "category": category.value,
+                "page_ordinals": [row["page_ordinal"]],
+            }
+            context.publish(
+                kind="manifest-entry",
+                subject_id=row["act_id"],
+                outcome=category.value,
+                payload=canary_entry,
+            )
+            canary_acts.append(canary_entry)
+            continue
+        entry = {
+            "act_id": row["act_id"],
+            "act_key": row["act_key"],
+            "kind": row["kind"],
+            "class": row["class"],
+            "page_ordinal": row["page_ordinal"],
+            "category": category.value,
+            "hold_codes": row["hold_codes"],
+            "witness_coverage": review_coverage(review),
+            "evidence_refs": export_evidence_refs(context, review, established),
+        }
+        if established is not None and category is ArmariumCategory.DELIVERED:
+            refusal = missing_export_provenance(established.get("payload"))
+            if refusal is None:
+                payload, reading = verify_established_page_record(context, row, review, established)
+                try:
+                    validate_serving_provenance(
+                        context,
+                        payload.get("provenance"),
+                        producer_stage=PERLECTOR,
+                        require_receipt=True,
+                    )
+                except SchemaRefusal as error:
+                    refusal = f"the established reading's provenance was refused: {error}"
+                else:
+                    entry.update(
+                        {
+                            "text": payload["text"],
+                            "text_status": payload["text_status"],
+                            "transcription_annotations": payload["annotations"],
+                            "provenance": payload["provenance"],
+                            "source_regions": export_source_regions(
+                                context.tree, payload["regions"], census
+                            ),
+                            "perlectio_ref": payload["perlectio_ref"],
+                            "recensor_ref": payload["recensor_ref"],
+                            "witnesses": export_page_witnesses(context, reading, manifest_cache),
+                            "dissent_ref": payload["dissent_ref"],
+                            "uncertainty": payload["uncertainty"],
+                        }
+                    )
+                    delivered.append(entry)
+            if refusal is not None:
+                category = ArmariumCategory.REFUSED_WITH_REASON
+                entry["category"] = category.value
+                entry["reason"] = refusal
+                non_delivered.append(entry)
+        else:
+            reason = review_reason(review)
+            if not reason and row["hold_codes"]:
+                reason = f"holds: {', '.join(row['hold_codes'])}"
+            entry["reason"] = reason
+            non_delivered.append(entry)
+        is_delivered = category is ArmariumCategory.DELIVERED
+        projected = {
+            "act_id": row["act_id"],
+            "act_key": row["act_key"],
+            "category": category.value,
+            "canonical_clean_text": entry.get("text") if is_delivered else None,
+            "text_status": entry.get("text_status"),
+            "transcription_annotations": entry.get("transcription_annotations"),
+            "provenance": entry.get("provenance"),
+            "source_regions": entry.get("source_regions", []),
+            "reason": entry.get("reason"),
+            "evidence_refs": entry["evidence_refs"],
+            "witnesses": entry.get("witnesses", []),
+            "perlectio_ref": entry.get("perlectio_ref"),
+            "recensor_ref": entry.get("recensor_ref"),
+            "dissent_ref": entry.get("dissent_ref"),
+            "approval_ref": None,
+            "uncertainty": entry.get("uncertainty"),
+        }
+        if row["kind"] == "other":
+            projected_others.append({**projected, "page_ordinal": row["page_ordinal"]})
+        else:
+            categories[row["act_key"]] = category
+            coverages[row["act_key"]] = entry["witness_coverage"]
+            act_pages[row["act_key"]] = sorted(
+                {row["page_ordinal"]}
+                | {region["source_page_ordinal"] for region in entry.get("source_regions", [])}
+            )
+            if is_delivered:
+                act_text_status[row["act_key"]] = entry["text_status"]
+            projected_acts.append(projected)
+        context.publish(
+            kind="manifest-entry",
+            subject_id=row["act_id"],
+            outcome=category.value,
+            payload=entry,
+        )
+
+    all_ink_map_pages = ink_map_page_rows(
+        context, census, reading_region_bounds_by_page(context, rows)
+    )
+    ink_map_pages = [row for row in all_ink_map_pages if row["ordinal"] not in canaries]
+    joins = page_continuation_joins(
+        links, {row["act_id"]: row for row in rows}, projected_acts, formats.formats
+    )
+    unaddressed = list(unaddressed_chairs(context.registry.config))
+    aggregate = run_aggregate(
+        categories,
+        coverages,
+        real_census,
+        unaddressed_chairs=unaddressed,
+        act_pages=act_pages,
+        act_text_status=act_text_status,
+        edge_hold_pages=edge_hold_pages_from_rows(ink_map_pages),
+        continuation_joins=joins,
+    )
+    real_sealed = {
+        ordinal for ordinal, page in real_census.items() if page.get("outcome") == "sealed"
+    }
+    page_rows = [
+        {
+            "ordinal": ordinal,
+            **{
+                key: value
+                for key, value in real_census[ordinal].items()
+                if key != "_pixel_dimensions"
+            },
+        }
+        for ordinal in sorted(real_census)
+    ]
+    bundle = build_armarium_bundle(
+        ArmariumProjection(
+            fixture_id=fixture_id,
+            submission_id=submission_id,
+            scenario=context.scenario,
+            config_digest=context.config_digest,
+            aggregate=aggregate,
+            acts=tuple(projected_acts),
+            pages=tuple(page_rows),
+            source_manifest=tuple(
+                row for row in context.run["source_manifest"] if row["ordinal"] not in canaries
+            ),
+            expected_acts=len(projected_acts),
+            witness_chairs=tuple(context.witness_chairs),
+            witness_floor=context.witness_floor,
+            aggregate_basis={
+                "coverage_records": coverages,
+                "unaddressed_chairs": unaddressed,
+                "act_pages": act_pages,
+                "act_text_status": act_text_status,
+            },
+            ink_map_pages=ink_map_pages,
+            not_measured_basis=page_not_measured_basis(
+                context,
+                {ordinal: page for ordinal, page in pages.items() if ordinal not in canaries},
+                projected_acts,
+                manifest_cache,
+            ),
+            continuation_joins=joins,
+            reading_unit=READING_UNIT_PAGE,
+            other_readings=tuple(projected_others),
+            page_accounting=tuple(page_accounting_rows(context, pages, real_sealed)),
+        ),
+        formats,
+        context.tree.read_bytes,
+    )
+    bundle_ref = context.retain(bundle.data)
+    export_status = bundle.manifest["claims"]["status"]
+    by_key = lambda item: act_key_sort_key(item["act_key"])  # noqa: E731
+    context.publish(
+        kind="export",
+        subject_id="export",
+        outcome=(
+            ArmariumCategory.DELIVERED.value
+            if export_status == "complete"
+            else ArmariumCategory.HELD_FOR_REVIEW.value
+        ),
+        payload={
+            **run_identity,
+            "scenario": context.scenario,
+            "reading_unit": READING_UNIT_PAGE,
+            "aggregate": aggregate,
+            "expected_acts": len(projected_acts),
+            "delivered": sorted((item for item in delivered if item["kind"] == "act"), key=by_key),
+            "non_delivered": sorted(
+                (item for item in non_delivered if item["kind"] == "act"), key=by_key
+            ),
+            # The labelled other layer, never counted in `expected_acts`.
+            "other_readings": sorted(
+                (item for item in delivered + non_delivered if item["kind"] == "other"),
+                key=by_key,
+            ),
+            "pages": page_rows,
+            **(
+                {
+                    "canary": {
+                        "ordinals": sorted(canaries),
+                        "acts": sorted(canary_acts, key=by_key),
+                    }
+                }
+                if canaries
+                else {}
+            ),
+            "witness_chairs": context.witness_chairs,
+            "witness_floor": context.witness_floor,
+            "bundle": {
+                "filename": ARMARIUM_ARCHIVE_NAME,
+                "format": "zip",
+                "reference": bundle_ref,
+                "sha256": bundle_ref["sha256"],
+                "manifest_member": "EXPORT_MANIFEST.json",
+                "manifest_self_hash": bundle.manifest["self_hash"],
+                "claims_status": export_status,
+            },
+        },
+        inputs=[bundle_ref],
+    )
+    context.seal_boundary()
+    context.finish()
+    return EXIT_COMPLETE if export_status == "complete" else EXIT_HELD
+
+
+def _require_refused_in_census(row: dict, census: dict[int, dict]) -> None:
+    """A `page-refused` row must stand for a page the census has refused."""
+    page = census.get(row["page_ordinal"])
+    if page is None or page.get("outcome") == "sealed":
+        raise FatalAccounting(
+            f"{row['act_key']} stands for a refused page, but the census has page "
+            f"{row['page_ordinal']} {'sealed' if page else 'absent'}"
+        )
+
+
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(DESCRIPTION).parse_args()
@@ -1844,6 +2474,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     canaries = canary_ordinals(context.run)
     if not canaries <= set(census):
         raise FatalAccounting("sealed canary ordinals are absent from the Exemplar page census")
+    if sealed_reading_unit(context) == READING_UNIT_PAGE:
+        return _main_page(context, formats, census, canaries)
     real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
 
     categories: dict[str, ArmariumCategory] = {}

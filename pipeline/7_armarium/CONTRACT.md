@@ -380,6 +380,85 @@ in this repository. Spec 11 gates its build on the project lead approving the
 ARCHITECTURE wording that gives the layer its home; until then every export states
 `claims.semantic_annotations` as not produced.
 
+## Page-read runs
+
+A run sealed with `reading_unit = "page"` exports through `_main_page` in
+`run.py`; the act path is unchanged. The denominator is
+`common.stage.reading_denominator`'s page form, and the Recensor's records are
+read only through `common/page_review.py`.
+
+**What is counted.** Rows of kind `act` are the act partition, one category
+each: the manifest's `act_partition` names the denominator `page-read reading
+acts`, and `expected_count` is that number. Rows of kind `other` are a separate,
+labelled layer that is never counted as an act, never enters `act_partition`,
+the aggregate, `acts.jsonl`, `acts.sqlite` or `review-items.jsonl`, and may not
+share an identity with an act. A `page-unread` or `page-blank` row is an act
+partition unit with no text: `held-for-review` with the review's reason and the
+row's hold codes, or `confirmed-blank` (a `page-blank` row only) when the
+Recensor confirms it. A `page-refused` row must be a page the census refused; it
+is reported there with the Door's reason and counted nowhere else. An accepted
+row has exactly one Archetypus record, verified against its row, its accepted
+review, its reading and its act-region (re-proven from the Exemplar), with the
+damage layers recomputed.
+
+**Regions and the ink map.** Source regions are the Archetypus's, each linked to
+the original filename ledger as on the act path. The rectangles that may release
+unclaimed edge ink are every placed act and other reading's `act-region`, each
+verified by `verify_reading_region_lineage` in the function that uses it.
+
+**Continuation joins** come from the Recensor's `continuation-link` records: an
+agreed link becomes a join row (its `candidate_ref` is the link), reconstructed
+exactly as on the act path; a link whose two readings' flags disagree joins
+nothing. A link naming an `other` reading, or pages that are not adjacent, is
+fatal. Every join keeps the run `partial` with its reason, as on the act path.
+
+**Manifest `armarium-export-manifest.v9`**, its own id because its denominator
+differs (a v7/v8 reader must not read reading acts as proposal-seal rows), with
+two more required claims:
+
+- `claims.other_readings` -- `{layer, counted_as_acts: false, count,
+  by_category, act_ids, carried_by}`, derived from `sources.json`'s
+  `other_outcomes`. The terminal ledger gains a fourth unit type, `other`: a held
+  other reading keeps `claims.status` partial; none decides its page's category.
+- `claims.page_accounting` -- `{denominator, pages, held_pages,
+  policy_sha256s}`, one row per real sealed page: `{ordinal, page_id, rules
+  (letter -> status), hold_codes, policy_sha256, accounting_ref}`, read from the
+  page's `page-accounting` under the policy this run sealed.
+
+`claims.not_measured` names the page path's instruments, in order:
+`perlector-uncertain-spans` and `designator-geometry-calibration` as on the act
+path, then `page-accounting-thresholds` (every threshold of the sealed
+`config/page_accounting.toml`; all are starting values, so `not-measured`),
+`perlector-pass-c` (from each page reading's `audit`; the page path never runs
+Pass C, so `declared-unproduced`) and `lectio-nuda` (the sealed
+`nuda_per_mille`, which the page path refuses above zero, and the Perlector's
+`lectio-nuda` records). The act path's testimony-content, page-ink-conservation
+and act-visibility instruments read act-path records a page-read run does not
+make; the page accounting measures what they did, and it is claimed above.
+
+**Formats.** `sources.json` is `armarium-sources.v4`: v3 plus `other_outcomes`,
+`other_citations` and `page_accounting`. The other layer is carried by:
+
+- `other.jsonl` (with `jsonl`) -- one `armarium-other-reading.v1` row per other
+  reading, text only when delivered. A separate member rather than a `kind` field
+  in `acts.jsonl`, because `acts.jsonl` is one row per counted act and its row
+  count is the partition every consumer reconciles against; a second population
+  in it would be counted as acts by any reader counting rows.
+- the text bundle -- a `## OTHER <act_key> (not an act)` section per delivered
+  other reading, after its folder's acts, whose fields (`other-id:`,
+  `other-source-page:`, `other_text:`, ...) are named apart from an act's so no
+  act parser reads one as an act.
+
+`acts.sqlite` carries no other reading; `claims.other_readings.carried_by` says
+which formats do.
+
+**Verification.** `verify_export_bundle` recomputes both claims from
+`sources.json`, requires every other reading apart from the act partition, reads
+`other.jsonl` and every OTHER section against the source rows and requires the
+formats carrying the layer to agree on each reading's text, uncertainty and
+status, recomputes the ledger with its `other` units, and refuses a page the
+accounting holds that delivered any reading.
+
 ## Boundary checks
 
 Before the Armarium publishes any artifact, it reconciles every `run.json`
