@@ -1236,14 +1236,18 @@ def validate_capture_text_view(capture: dict[str, Any]) -> dict[str, Any]:
     if named == current:
         return capture
     if named is None or named in retired:
-        under = "no recorded text view" if named is None else f"the retired text view {named}"
+        read_under = (
+            "records no text view"
+            if named is None
+            else f"was read under the retired text view {named}, which this build no longer reads"
+        )
         raise SchemaRefusal(
-            f"a {capture['adapter']} page capture was read under {under}, not {current}, "
-            "which this build no longer reads; its text and findings are not this parser's; "
-            "re-run the submission from the Door"
+            f"a {capture['adapter']} page capture {read_under}; this build reads {current}; "
+            "its text and findings are not this parser's; re-run the submission from the Door"
         )
     raise SchemaRefusal(
-        f"a {capture['adapter']} page capture names unknown text view {named!r}, not {current}"
+        f"a {capture['adapter']} page capture names unknown text view {named!r}, not {current}; "
+        "re-run the submission from the Door"
     )
 
 

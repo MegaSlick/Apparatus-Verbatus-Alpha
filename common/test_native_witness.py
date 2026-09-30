@@ -2456,12 +2456,37 @@ def test_a_capture_read_under_an_older_parser_is_refused_by_name(adapter, parser
     value["text_view"] = retired
     assert validate_native_capture(value) is value
     with pytest.raises(
-        SchemaRefusal, match=f"the retired text view {retired}.*re-run the submission from the Door"
+        SchemaRefusal,
+        match=f"was read under the retired text view {retired}, which this build no longer "
+        "reads;.*re-run the submission from the Door",
     ):
         verify_native_capture_bytes(value, b"")
     del value["text_view"]
     with pytest.raises(
-        SchemaRefusal, match="no recorded text view.*re-run the submission from the Door"
+        SchemaRefusal, match="records no text view;.*re-run the submission from the Door"
+    ):
+        verify_native_capture_bytes(value, b"")
+
+
+@pytest.mark.parametrize(
+    ("adapter", "parser", "unknown"),
+    [
+        ("churro.v1", "xml", "churro-historical-document-text.v9"),
+        ("chandra.v1", "html", "chandra-layout-text.v9"),
+    ],
+)
+def test_a_capture_naming_an_unknown_text_view_is_refused_with_its_remedy(
+    adapter, parser, unknown
+):
+    value = _native_capture()
+    if adapter == "chandra.v1":
+        value.update(
+            adapter=adapter, view={}, parse={"state": "parsed", "parser": parser, "text": ""}
+        )
+    value["text_view"] = unknown
+    with pytest.raises(
+        SchemaRefusal,
+        match=f"names unknown text view '{unknown}', not .*; re-run the submission from the Door",
     ):
         verify_native_capture_bytes(value, b"")
 
