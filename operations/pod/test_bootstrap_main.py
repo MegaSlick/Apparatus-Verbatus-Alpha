@@ -1766,13 +1766,19 @@ def _render_recipes(rows: list[dict[str, object]]) -> str:
 SURYA_CHAIR = "designator_surya"
 
 
-def _surya_environment_answers(identity, profile) -> dict[str, str]:  # type: ignore[no-untyped-def]
-    """Surya's environment answering its version check with the row's own pins."""
-    del identity
+def _surya_environment_answers(identity, profile, weights_root, golden_page):  # type: ignore[no-untyped-def]
+    """Surya's runner answering its golden-page run with the row's own pins."""
+    del identity, weights_root, golden_page
     return {
-        "surya_ocr": profile.required_packages["surya-ocr"],
-        "torch": profile.required_packages["torch"],
-        "python": "3.12.3",
+        "versions": {
+            "surya_ocr": profile.required_packages["surya-ocr"],
+            "torch": profile.required_packages["torch"],
+            "python": "3.12.3",
+            "cpu_capability": "AVX512",
+            "machine": "x86_64",
+        },
+        "engine_version": "surya-ocr 0.22.1; torch 2.14.0; cpu AVX512 on x86_64",
+        "golden_page": {"lines": 1, "blocks": 1, "reading_order": "surya-order-head"},
     }
 
 
@@ -1827,7 +1833,8 @@ def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspa
             "environment": "operations/serving/surya",
             "device": "cpu",
             "threads": 2,
-            "timeout_seconds": 600,
+            "startup_timeout_seconds": 300,
+            "seconds_per_page": 60,
             "required_packages": {"surya-ocr": "0.22.1", "torch": "2.14.0"},
         }
         for tier in ("generic-24gb", PROVEN_TIER, "generic-80gb-plus")
@@ -1896,6 +1903,25 @@ def test_preflight_measures_the_placement_table_the_run_seals(tmp_path: Path) ->
     assert record["serving_config_inputs"]["pod_placement_sha256"] == sealed  # type: ignore[index]
 
 
+def test_bootstrap_syncs_a_subprocess_environment_only_for_a_row_that_runs_in_it(
+    tmp_path: Path,
+) -> None:
+    from .bootstrap_main import _subprocess_environments, build_parser, resolve_plan
+
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    assert _subprocess_environments(plan) == frozenset({"operations/serving/surya"})
+
+    # The committed fixture catalogue answers Surya from fixture rows only.
+    import shutil
+
+    shutil.copyfile(
+        ROOT / "config" / "serving_recipes.toml",
+        ws.repository / "config" / "serving_recipes.toml",
+    )
+    assert _subprocess_environments(plan) == frozenset()
+
+
 def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
     tmp_path: Path,
 ) -> None:
@@ -1912,13 +1938,17 @@ def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
 
     assert record["color"] == "green"
     assert record["placement_tier"] == PROVEN_TIER
-    # Surya's weights are verified like every chair's, and no page is read through it.
+    # Surya's weights are verified like every chair's, and it is never smoke-read
+    # through a served engine: its own runner reads the golden page, and the
+    # versions and CPU that run measured are in the report.
     assert {receipt["chair"] for receipt in record["cache_receipts"]} == set(identities) | {
         SURYA_CHAIR
     }
     assert {receipt["chair"] for receipt in record["smoke_receipts"]} == set(identities)
     (surya,) = [row for row in record["placements"] if row["chair"] == SURYA_CHAIR]
     assert surya["state"] == "subprocess"
+    (measured,) = record["subprocess_receipts"]
+    assert (measured["chair"], measured["versions"]["cpu_capability"]) == (SURYA_CHAIR, "AVX512")
     assert all(
         receipt["page_witness_matches"] is True and "PAGE-WITNESS" not in json.dumps(receipt)
         for receipt in record["smoke_receipts"]

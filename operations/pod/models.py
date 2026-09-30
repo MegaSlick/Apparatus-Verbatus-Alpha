@@ -280,7 +280,11 @@ arithmetic behind the number:
 container-local ``UV_CACHE_DIR`` (``bootstrap.py`` sizes that at "on the order
 of ten gigabytes of wheels"), then installs an unpacked copy of the same
 torch+CUDA stack into ``<repository>/.venv``, which is larger again; the image
-itself also sits on this disk.
+itself also sits on this disk. Those two are bounded at 32 GiB in
+``bootstrap.py``. When the catalogue runs a configured chair as a subprocess
+(Surya), its own environment adds a cache and a venv bounded at 14 GiB
+(``bootstrap.SUBPROCESS_ENVIRONMENT_REQUIRED_BYTES``): 46 GiB in all, which
+leaves about ten for the image.
 
 **It is a bound, not a measurement**, in the same sense as the spend template's
 figures: no pod has ever been booted from this tree, so nothing here has been
@@ -291,7 +295,9 @@ reads the free space actually present before the download starts.
 """
 
 BIG_CARD_CONTAINER_DISK_GB = 120
-"""Perlector pods: the 52 GiB 27B cache plus the ~32 GiB venv and uv cache."""
+"""Perlector pods: the 52 GiB 27B cache, the project's 32 GiB venv and uv cache, and
+Surya's 14 GiB environment when a Surya subprocess row is configured -- 98 GiB of
+bounds, leaving room for the image."""
 
 
 def container_disk_gb_for_tier(tier: str | None) -> int:
