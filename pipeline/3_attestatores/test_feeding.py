@@ -33,7 +33,6 @@ from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, writing_directory
-from common.decoding import chair_decoding, load_decoding_policy
 from common.native_witness import CHURRO_MAX_RESPONSE_BYTES, validate_vendor_identity
 from common.runtree.store import BLOBS_DIR
 from common.stage import StageContext
@@ -921,11 +920,6 @@ def test_dai_v2_model_view_retains_the_auto_generation_ledger_and_v1_stays_reada
     assert ledger["vendor_do_sample"] is carried_generation["do_sample"]
     assert validate_dai_generation_accounting(ledger) is ledger
     assert validate_dai_model_view(current) is current
-    # The sealed DAI row sends exactly the carried file's sampling values.
-    policy, _digest = load_decoding_policy()
-    assert chair_decoding(policy, "attestator_2") == {
-        key: carried_generation[key] for key in ledger["vendor_keys_sent_by_sealed_decoding"]
-    }
 
     forged = {**ledger, "vendor_keys_without_request_field": []}
     with pytest.raises(SchemaRefusal, match="generation accounting differs"):

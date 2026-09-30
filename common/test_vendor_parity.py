@@ -387,9 +387,11 @@ def test_the_carried_dai_generation_values_are_the_shipped_configuration():
         "decoding policy, not ours, and the sealed decoding table's DAI row sends "
         "its sampling values."
     )
+    # The sealed decoding table is the one source of DAI's sampling values on the
+    # wire; it must equal the carried file's sampling fields, every one of them.
     policy, _digest = load_decoding_policy()
     assert chair_decoding(policy, "attestator_2") == {
-        key: generation[key] for key in ("repetition_penalty", "temperature", "top_k", "top_p")
+        key: value for key, value in generation.items() if key in SAMPLING_FIELDS
     }
 
 

@@ -16,6 +16,7 @@ from typing import Any, Callable, Final, Iterator, Mapping
 from common import chandra_layout
 from common.contracts.canonical import digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
+from common.decoding import SAMPLING_FIELDS
 from common.native_witness import (
     CHURRO_OUTPUT_TOKENS,
     churro_capture_system_prompt,
@@ -187,7 +188,9 @@ def dai_generation_accounting(generation_config: str) -> dict[str, Any]:
     if generation_config != "auto":
         raise SchemaRefusal("DAI native generation accounting requires generation_config='auto'")
     vendor_generation = dai_generation()
-    sampling_keys = ("repetition_penalty", "temperature", "top_k", "top_p")
+    # Read off the carried file, not typed again: the sealed table's DAI row sends
+    # exactly these values (`common/test_vendor_parity.py` proves the two equal).
+    sampling_keys = tuple(sorted(set(vendor_generation) & SAMPLING_FIELDS))
     deliberately_not_sent = {
         "bos_token_id": "delegated to the engine's pinned model snapshot under auto",
         "pad_token_id": "delegated to the engine's pinned model snapshot under auto",
