@@ -309,7 +309,7 @@ def _status(reasons: list[str]) -> str:
     return "complete" if not reasons else "partial"
 
 
-def _witnessed_count(coverage: dict[str, Any], *, page_read: bool = False) -> int:
+def witnessed_count(coverage: dict[str, Any], *, page_read: bool = False) -> int:
     """The count an act's `under_witnessed` flag is judged from.
 
     With `page_granularity_only`: reading outcomes less page-only contributions,
@@ -491,7 +491,7 @@ def _validate_coverage(
             "not a boolean"
         )
     page_only = coverage.get("page_granularity_only", 0)
-    # Typed before `_witnessed_count` subtracts it.
+    # Typed before `witnessed_count` subtracts it.
     if not _is_count(page_only):
         raise SchemaRefusal("Recensor partition receipt has invalid page_granularity_only count")
     reading_chairs = sum(by_outcome.get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES)
@@ -502,7 +502,7 @@ def _validate_coverage(
     # Only `page_granularity_only` decides the formula; the check always runs.
     page_read = schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
     if page_read:
-        # Typed before `_witnessed_count` subtracts it.
+        # Typed before `witnessed_count` subtracts it.
         shortfalls = coverage["shortfalls"]
         truncated = shortfalls.get("truncated") if isinstance(shortfalls, dict) else None
         if not _is_count(truncated) or truncated > reading_chairs:
@@ -510,7 +510,7 @@ def _validate_coverage(
                 "Recensor partition receipt v3 counts truncated readings that are not a count "
                 "of chairs that read the page"
             )
-    witnessed = _witnessed_count(coverage, page_read=page_read)
+    witnessed = witnessed_count(coverage, page_read=page_read)
     if coverage["under_witnessed"] != (witnessed < coverage["floor"]):
         compared_label = (
             "page read(s)"
@@ -614,7 +614,7 @@ def _reasons(
                 if "page_granularity_only" in coverage
                 else "completed chairs"
             )
-            witnessed = _witnessed_count(coverage, page_read=page_read)
+            witnessed = witnessed_count(coverage, page_read=page_read)
             reasons.append(
                 f"{counted} {act_id} is under-witnessed "
                 f"({witnessed} {measured} of a floor of {coverage['floor']})"

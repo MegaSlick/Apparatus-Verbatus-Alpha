@@ -625,7 +625,12 @@ confirmed can be `complete`; a held unit with no completed review keeps the rece
 `partial`. Each review's outcome is recomputed too: every row hold code is kept or
 named in a release, a release names exactly the row's releasable codes on a
 confirmed page, the witness-floor and continuation codes are what disk derives, and
-the unit is held exactly when a code remains. Every `continuation-link` is matched
+the unit is held exactly when a code remains. Then the whole review is measured
+again as it was published (`page_review.plan_reviews`): its coverage, residual ink,
+confirmation, release, codes, reason, outcome and inputs must be exactly what disk
+gives, and the Testimonia counted for the floor must be ones the page accounting
+measured, so no release rests on a stale confirmation and no residual-ink hold is
+lost. Every `continuation-link` is matched
 one to one against the breaks the answers flag; a missing, stray or different link
 is refused. `continuation_links` names each (`subject_id`, `link_ref`, `outcome`),
 and a held one is a receipt reason, so the receipt is `partial` while any page break

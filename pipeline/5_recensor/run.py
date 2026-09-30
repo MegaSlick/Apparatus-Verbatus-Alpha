@@ -3396,7 +3396,7 @@ def review_a_page_read_run(context, denominator: dict) -> int:
     )
     # The receipt needs the current manifest and may refuse before the seal.
     context.finish()
-    page_review.write_reading_receipt(context)
+    page_review.write_reading_receipt(context, page_coverage_findings=page_coverage_findings)
     context.seal_boundary()
     context.finish()
     return EXIT_HELD if held else EXIT_COMPLETE

@@ -50,7 +50,7 @@ from common.page_testimonia import (
     require_page_roster,
     sealed_proposal_regions,
 )
-from common.recensor_receipt import build_recensor_reading_receipt
+from common.recensor_receipt import build_recensor_reading_receipt, witnessed_count
 from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_CLASS,
@@ -65,10 +65,6 @@ CONFIRMED_BLANK: Final = "confirmed-blank"
 # A chair of the sealed page roster with no Testimonium for a page has not been
 # attempted there: unresolved, never a reading.
 NO_TESTIMONIUM_OUTCOME: Final = "not-run"
-
-# A read page whose entries are all `other`: the reading says the page holds no
-# act, which this stage confirms or holds as it does a blank page.
-NO_ACT_HOLD: Final = NO_ACT_ON_PAGE_HOLD
 
 # The codes this stage adds to a unit's own, each with the sentence its reason uses.
 UNDER_WITNESSED: Final = "under-witnessed"
@@ -102,14 +98,6 @@ NO_ACT_RULES: Final = ("d", "e", "f", "i")
 BLANK_RULES: Final = {"d": {PASS}, "e": {PASS}, "f": {PASS}, "i": {PASS, NOT_APPLICABLE}}
 
 
-# --- the units -----------------------------------------------------------------------
-
-
-def counted_units(denominator: dict[str, Any]) -> list[dict]:
-    """The denominator's counted rows: every class but a refused page's row."""
-    return reviewed_rows(denominator["acts"])
-
-
 # --- the page witnesses ------------------------------------------------------------
 
 
@@ -133,9 +121,10 @@ def page_witness_coverage(records: list[dict[str, Any]], floor: int, chairs: set
     reads: a page-read run's witnesses read the whole page, so none is
     attached to an act. A roster chair with no Testimonium for the page is
     `not-run`. The floor counts chairs that read the page (`read` or
-    `genuinely-empty`) and were not cut off, as the act path counts it.
-    `health_unrecorded` counts reading chairs whose Testimonium records no
-    truncation state; `shortfalls` the failed and truncated ones.
+    `genuinely-empty`) and were not cut off, by the v3 receipt's own formula
+    (`recensor_receipt.witnessed_count`). A reading chair whose Testimonium
+    records no truncation state counts toward the floor, and is named in
+    `health_unrecorded`; `shortfalls` counts the failed and truncated ones.
     """
     outcomes = {record["payload"]["chair"]: record["outcome"] for record in records}
     for chair in chairs - set(outcomes):
@@ -143,21 +132,22 @@ def page_witness_coverage(records: list[dict[str, Any]], floor: int, chairs: set
     base = witness_coverage(outcomes, floor)
     reading = [record for record in records if record["outcome"] in WITNESS_READING_OUTCOMES]
     truncation = [_health(record).get("truncated") for record in reading]
-    truncated = sum(1 for state in truncation if state is True)
-    return {
+    coverage = {
         "configured": base["configured"],
         "floor": base["floor"],
         "by_outcome": base["by_outcome"],
         "by_class": base["by_class"],
-        "under_witnessed": len(reading) - truncated < floor,
         "unresolved_chairs": base["unresolved_chairs"],
         "health_unrecorded": sum(1 for state in truncation if state is None),
         "shortfalls": {
             "failed": base["by_outcome"].get("failed", 0),
-            "truncated": truncated,
+            "truncated": sum(1 for state in truncation if state is True),
             "unaligned": 0,
         },
     }
+    # The page-read floor formula the v3 receipt checks, not `witness_coverage`'s own.
+    coverage["under_witnessed"] = witnessed_count(coverage, page_read=True) < floor
+    return coverage
 
 
 def _health(record: dict[str, Any]) -> dict[str, Any]:
@@ -419,12 +409,12 @@ def coverage_findings(coverage: dict, ordinal: int) -> list[tuple[str, str]]:
     """This stage's witness-floor reasons to hold a unit, as `(code, sentence)` pairs."""
     findings = []
     if coverage["under_witnessed"]:
-        reads = sum(coverage["by_outcome"].get(o, 0) for o in WITNESS_READING_OUTCOMES)
         truncated = coverage["shortfalls"]["truncated"]
         findings.append(
             (
                 UNDER_WITNESSED,
-                f"{reads - truncated} page witness(es) read page {ordinal} against a floor of "
+                f"{witnessed_count(coverage, page_read=True)} page witness(es) read page "
+                f"{ordinal} against a floor of "
                 f"{coverage['floor']}"
                 + (f" ({truncated} truncated reading(s) not counted)" if truncated else ""),
             )
@@ -583,29 +573,23 @@ def validate_page_review_payload(subject_id: str, payload: dict) -> None:
 # --- the pass --------------------------------------------------------------------------
 
 
-def review_pages(
-    context,
-    denominator: dict[str, Any],
-    *,
-    page_coverage_findings: Callable[..., dict[int, dict]],
-    publish_review: Callable[..., dict],
-    current_review: Callable[[Any, str], dict | None],
-) -> int:
-    """Review every counted unit and record every flagged page break.
+def plan_reviews(
+    context, denominator: dict[str, Any], page_coverage_findings: Callable[..., dict[int, dict]]
+) -> tuple[list[dict], list[tuple[dict, str, dict, list[dict]]]]:
+    """Every counted unit, and the `(unit, outcome, payload, inputs)` of its review.
 
-    Returns how many records are held: units and one-sided page breaks alike,
-    so a run with an unresolved break does not exit complete. Every fact is
-    measured before anything is published, so a refusal found at a later unit
-    never leaves a partial set of reviews behind.
+    Every fact is measured from disk: the page witnesses, the residual ink,
+    each unit's page accounting and uncertainty assessment, and whether a page
+    said to hold no act is confirmed so. The Recensor publishes these; its v3
+    receipt measures them again and requires the reviews on disk to be them.
     """
     pages = denominator["pages"]
-    acts = counted_units(denominator)
+    acts = reviewed_rows(denominator["acts"])
     chairs = declared_page_witness_chairs(context)
     testimonia = page_testimonia(context, chairs)
     findings = page_coverage_findings(
         context, regions=reading_regions_by_page(context, pages, acts)
     )
-    page_ids = exemplar_page_ids(context)
     off_edge = continuation_off_edge(acts)
     floor = context.witness_floor
     planned = []
@@ -614,7 +598,7 @@ def review_pages(
         accounting = _accounting(context, act)
         _require_accounted_testimonia(context, act, accounting, records)
         confirmed = None
-        if PAGE_BLANK_HOLD in act["hold_codes"] or NO_ACT_HOLD in act["hold_codes"]:
+        if PAGE_BLANK_HOLD in act["hold_codes"] or NO_ACT_ON_PAGE_HOLD in act["hold_codes"]:
             confirmed = confirmation(
                 accounting["payload"], records, blank=act["class"] == PAGE_BLANK_CLASS
             )
@@ -644,10 +628,30 @@ def review_pages(
             for record in records
         ]
         planned.append((act, outcome, payload, inputs))
+    return acts, planned
+
+
+def review_pages(
+    context,
+    denominator: dict[str, Any],
+    *,
+    page_coverage_findings: Callable[..., dict[int, dict]],
+    publish_review: Callable[..., dict],
+    current_review: Callable[[Any, str], dict | None],
+) -> int:
+    """Review every counted unit and record every flagged page break.
+
+    Returns how many records are held: units and one-sided page breaks alike,
+    so a run with an unresolved break does not exit complete. Every fact is
+    measured before anything is published, so a refusal found at a later unit
+    never leaves a partial set of reviews behind.
+    """
+    pages = denominator["pages"]
+    acts, planned = plan_reviews(context, denominator, page_coverage_findings)
     by_id = {act["act_id"]: act for act in acts}
     links = [
         (subject, payload, link_inputs(payload, by_id, pages))
-        for subject, payload in continuation_links(page_ids, acts)
+        for subject, payload in continuation_links(exemplar_page_ids(context), acts)
     ]
 
     held = 0
@@ -794,14 +798,18 @@ def current_links(context, expected: list[tuple[str, dict]], by_id, pages) -> li
     return rows
 
 
-def write_reading_receipt(context) -> None:
+def write_reading_receipt(
+    context, *, page_coverage_findings: Callable[..., dict[int, dict]]
+) -> None:
     """Rebuild the v3 partition receipt from disk: units, reviews, coverage, page breaks.
 
-    The units are re-derived through `reading_denominator`, each review's
-    coverage and outcome are recomputed from the Testimonia and the unit's row,
-    every continuation-link is matched against the breaks the answers flag, and
-    a Recensor review or recovery request of anything outside `reading_acts`
-    is refused.
+    The units are re-derived through `reading_denominator` and every review is
+    measured again (`plan_reviews`): its coverage, residual ink, confirmation,
+    release, codes, outcome and inputs must be exactly what disk gives, the
+    Testimonia counted for the floor must be the ones the page accounting
+    measured, every continuation-link is matched against the breaks the
+    answers flag, and a Recensor review or recovery request of anything outside
+    `reading_acts` is refused.
     """
     for stage in (ATTESTATORES, PERLECTOR, RECENSOR):
         if not context.tree.manifest_agrees_with_disk(stage):
@@ -811,7 +819,7 @@ def write_reading_receipt(context) -> None:
             )
     denominator = reading_denominator(context)
     pages = denominator["pages"]
-    acts = counted_units(denominator)
+    acts, planned = plan_reviews(context, denominator, page_coverage_findings)
     by_id = {act["act_id"]: act for act in acts}
     reviews: dict[str, list[dict]] = {act_id: [] for act_id in by_id}
     for entry in context.tree.build_manifest(RECENSOR)["artifacts"]:
@@ -829,20 +837,17 @@ def write_reading_receipt(context) -> None:
                 "which is outside this page-read run's reading_acts"
             )
         reviews[record["subject_id"]].append(record)
-    chairs = declared_page_witness_chairs(context)
-    testimonia = page_testimonia(context, chairs)
     off_edge = continuation_off_edge(acts)
     items = []
-    for act_id, act in sorted(by_id.items()):
+    for act, outcome, expected, inputs in sorted(planned, key=lambda plan: plan[0]["act_id"]):
+        act_id = act["act_id"]
         if not reviews[act_id]:
             raise FatalAccounting(f"unit {act_id} ({act['act_key']}) has no Recensor review")
         review = latest_attempt(
             reviews[act_id], f"Recensor review of {act_id}", operation="recense"
         )
         payload = review.get("payload")
-        coverage = page_witness_coverage(
-            testimonia.get(act["page_id"], []), context.witness_floor, chairs
-        )
+        coverage = expected["coverage"]
         if (
             not isinstance(payload, dict)
             or payload.get("act_key") != act["act_key"]
@@ -853,6 +858,19 @@ def write_reading_receipt(context) -> None:
                 "recomputed from disk"
             )
         require_derived_outcome(act, review, coverage, off_edge.get(act_id, []))
+        sealed = {name: value for name, value in payload.items() if name != "attempt_ordinal"}
+        differing = sorted(
+            name for name in set(sealed) | set(expected) if sealed.get(name) != expected.get(name)
+        )
+        if review["outcome"] != outcome:
+            differing.insert(0, "outcome")
+        if refs_by_path(review.get("inputs", [])) != refs_by_path(inputs):
+            differing.append("inputs")
+        if differing:
+            raise FatalAccounting(
+                f"Recensor review of {act_id} is not the review disk measures: its "
+                f"{', '.join(differing)} differ from what its page's records give"
+            )
         items.append(
             {
                 "act_id": act_id,

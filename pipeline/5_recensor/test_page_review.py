@@ -23,9 +23,15 @@ from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
 from common.contracts.stages import EXEMPLAR, PERLECTOR, RECENSOR
-from common.page_review import CONTINUATION_LINK_FIELDS
+from common.page_review import CONTINUATION_LINK_FIELDS, reviewed_rows
 from common.runtree.store import RunTree
-from common.stage import PAGE_BLANK_HOLD, open_context, reading_acts, stage_parser
+from common.stage import (
+    NO_ACT_ON_PAGE_HOLD,
+    PAGE_BLANK_HOLD,
+    open_context,
+    reading_acts,
+    stage_parser,
+)
 from conftest import (
     build_page_tree,
     file_bytes_snapshot,
@@ -38,6 +44,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RUN_ID = "r"
 RECENSOR_PROGRAM = "pipeline/5_recensor/run.py"
 page_review = load_stage("5_recensor", "page_review")
+RECENSOR_RUN = load_stage("5_recensor")
 
 
 # --- trees -------------------------------------------------------------------------
@@ -345,7 +352,7 @@ def test_a_page_of_other_entries_dai_saw_nothing_on_is_confirmed_holding_no_act(
     # it as a witness that read blank rather than holding it unread.
     assert payload["coverage"]["under_witnessed"] is False
     assert payload["hold_codes"] == []
-    assert payload["release"]["hold_codes"] == [page_review.NO_ACT_HOLD]
+    assert payload["release"]["hold_codes"] == [NO_ACT_ON_PAGE_HOLD]
     confirmation = payload["confirmation"]
     assert confirmation["confirms"] == "no-act-on-page" and confirmation["confirmed"] is True
     assert confirmation["rules"] == {"d": "pass", "e": "pass", "f": "pass", "i": "pass"}
@@ -395,7 +402,13 @@ def test_the_receipt_refuses_a_review_outside_the_reading_acts(happy, tmp_path):
     )
     context.finish()
     with pytest.raises(FatalAccounting, match="outside this page-read run's reading_acts"):
-        page_review.write_reading_receipt(context)
+        _write_receipt(context)
+
+
+def _write_receipt(context) -> None:
+    page_review.write_reading_receipt(
+        context, page_coverage_findings=RECENSOR_RUN.page_coverage_findings
+    )
 
 
 def _later_review(context, review: dict, **changes) -> None:
@@ -463,6 +476,14 @@ def _stray_link(context, reviews) -> None:
             ),
             "but disk derives",
         ),
+        (
+            lambda tree, context, reviews: _later_review(
+                context,
+                reviews["p1:1"],
+                page_coverage={**reviews["p1:1"]["payload"]["page_coverage"], "checked_pages": []},
+            ),
+            r"not the review disk measures: its page_coverage differ",
+        ),
         (lambda tree, context, reviews: _drop(tree, "continuation-link"), "no continuation-link"),
         (lambda tree, context, reviews: _stray_link(context, reviews), "no answer of this run"),
     ],
@@ -472,6 +493,7 @@ def _stray_link(context, reviews) -> None:
         "coverage",
         "outcome",
         "own-code",
+        "residual-ink",
         "missing-link",
         "stray-link",
     ],
@@ -483,7 +505,22 @@ def test_the_receipt_refuses_a_review_set_disk_does_not_derive(happy, tmp_path, 
     forge(tree, context, tree.reviews())
     context.finish()
     with pytest.raises(FatalAccounting, match=refusal):
-        page_review.write_reading_receipt(context)
+        _write_receipt(context)
+
+
+def test_the_receipt_refuses_a_release_resting_on_a_confirmation_disk_does_not_give(
+    no_act, tmp_path
+):
+    """A release is only as good as its confirmation, so the receipt measures that again too."""
+    tree = no_act.copy(tmp_path)
+    assert tree.recensor().returncode == 3
+    context = tree.context()
+    released = tree.reviews()["p2:1"]
+    confirmation = {**released["payload"]["confirmation"], "witnesses": []}
+    _later_review(context, released, confirmation=confirmation)
+    context.finish()
+    with pytest.raises(FatalAccounting, match="its confirmation differ"):
+        _write_receipt(context)
 
 
 def test_the_receipt_refuses_an_accepted_review_of_a_held_row_with_no_release(review, tmp_path):
@@ -494,7 +531,7 @@ def test_the_receipt_refuses_an_accepted_review_of_a_held_row_with_no_release(re
     _later_review(context, held, outcome="accepted", hold_codes=[])
     context.finish()
     with pytest.raises(FatalAccounting, match="without naming a release"):
-        page_review.write_reading_receipt(context)
+        _write_receipt(context)
 
 
 # --- the review and its parts, over rows ------------------------------------------------
@@ -669,7 +706,7 @@ def test_a_confirmed_blank_page_still_holds_on_the_floor_or_residual_ink():
 
 
 def test_a_page_of_only_other_readings_is_confirmed_as_holding_no_act():
-    row = _row(kind="other", hold_codes=[page_review.NO_ACT_HOLD], disposition="held")
+    row = _row(kind="other", hold_codes=[NO_ACT_ON_PAGE_HOLD], disposition="held")
     witnesses = [_testimonium("a"), _testimonium("b")]
     confirmed = page_review.confirmation(PASSING, witnesses, blank=False)
     assert confirmed["confirmed"] is True
@@ -680,7 +717,7 @@ def test_a_page_of_only_other_readings_is_confirmed_as_holding_no_act():
         assessment=None,
         confirmed=confirmed,
     )
-    assert outcome == "accepted" and payload["release"]["hold_codes"] == [page_review.NO_ACT_HOLD]
+    assert outcome == "accepted" and payload["release"]["hold_codes"] == [NO_ACT_ON_PAGE_HOLD]
     assert "so does rule (i)" in payload["release"]["reason"]
 
 
@@ -689,7 +726,7 @@ def test_a_page_of_only_other_readings_is_confirmed_as_holding_no_act():
     [("d", "hold"), ("e", "hold"), ("f", "not-measured"), ("i", "hold"), ("i", "not-applicable")],
 )
 def test_a_page_of_only_other_readings_stays_held_on_any_rule_not_passing(rule, status):
-    row = _row(kind="other", hold_codes=[page_review.NO_ACT_HOLD], disposition="held")
+    row = _row(kind="other", hold_codes=[NO_ACT_ON_PAGE_HOLD], disposition="held")
     witnesses = [_testimonium("a"), _testimonium("b")]
     unconfirmed = page_review.confirmation(_without(rule, status), witnesses, blank=False)
     assert unconfirmed["failures"] == [f"page accounting rule ({rule}) is {status}, not pass"]
@@ -700,7 +737,7 @@ def test_a_page_of_only_other_readings_stays_held_on_any_rule_not_passing(rule, 
         assessment=None,
         confirmed=unconfirmed,
     )
-    assert outcome == "held-for-review" and payload["hold_codes"] == [page_review.NO_ACT_HOLD]
+    assert outcome == "held-for-review" and payload["hold_codes"] == [NO_ACT_ON_PAGE_HOLD]
 
 
 def test_a_refused_pages_row_is_not_a_counted_unit():
@@ -710,7 +747,25 @@ def test_a_refused_pages_row_is_not_a_counted_unit():
             act_id=None, act_key="p2:refused", page_ordinal=2, n=None, **{"class": "page-refused"}
         ),
     ]
-    assert [row["act_id"] for row in page_review.counted_units({"acts": rows})] == ["a1"]
+    assert [row["act_id"] for row in reviewed_rows(rows)] == ["a1"]
+
+
+def test_a_unit_on_a_page_of_acts_the_detector_found_nothing_on_is_held():
+    """DAI's blank testimony counts as a reading, but the row's rule (i) hold keeps the unit."""
+    row = _row(hold_codes=["no-detector-record-on-act-page"], disposition="read")
+    witnesses = [
+        _testimonium("a", truncated=False),
+        _testimonium("b", "genuinely-empty", "", truncated=False),
+        _testimonium("c", truncated=False),
+    ]
+    coverage = page_review.page_witness_coverage(witnesses, 3, {"a", "b", "c"})
+    assert coverage["under_witnessed"] is False
+    outcome, payload = page_review.review_of(
+        row, coverage=coverage, page_coverage=CLEAN, assessment=None, confirmed=None
+    )
+    assert outcome == "held-for-review"
+    assert payload["hold_codes"] == ["no-detector-record-on-act-page"]
+    assert payload["release"] is None
 
 
 def test_a_held_row_is_never_released_by_this_stage():
@@ -828,8 +883,8 @@ def test_the_receipt_derives_each_outcome_from_the_row_and_the_release():
     derive(held_row, _review("held-for-review", hold_codes=["unread-ink"]), FLOORED, [])
     with pytest.raises(FatalAccounting, match="without naming a release"):
         derive(held_row, _review("accepted"), FLOORED, [])
-    no_act = _row(kind="other", hold_codes=[page_review.NO_ACT_HOLD])
-    release = {"hold_codes": [page_review.NO_ACT_HOLD], "reason": "confirmed"}
+    no_act = _row(kind="other", hold_codes=[NO_ACT_ON_PAGE_HOLD])
+    release = {"hold_codes": [NO_ACT_ON_PAGE_HOLD], "reason": "confirmed"}
     derive(
         no_act, _review("accepted", release=release, confirmation={"confirmed": True}), FLOORED, []
     )
