@@ -351,7 +351,10 @@ def refuse_structure_answer_text_view(
             f"{_RERUN_FROM_THE_DOOR}"
         )
     named = "no text view" if text_view is None else f"unknown text view {text_view!r}"
-    raise error_type(f"{subject} names {named}, not {chandra_layout.LAYOUT_TEXT_VIEW}")
+    raise error_type(
+        f"{subject} names {named}, not {chandra_layout.LAYOUT_TEXT_VIEW}; "
+        f"{_RERUN_FROM_THE_DOOR}"
+    )
 
 
 STRUCTURE_ATTEMPT_KIND: Final = "structure-attempt"

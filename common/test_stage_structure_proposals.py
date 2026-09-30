@@ -858,8 +858,15 @@ def test_a_retired_structure_attempt_is_refused_by_its_schema(real_root, monkeyp
             "was read under chandra-layout-text.v1, which this build no longer reads; "
             "re-run the submission from the Door",
         ),
-        ("chandra-layout-text.v9", "names unknown text view 'chandra-layout-text.v9'"),
-        (None, "names no text view"),
+        (
+            "chandra-layout-text.v9",
+            "names unknown text view 'chandra-layout-text.v9', not chandra-layout-text.v2; "
+            "re-run the submission from the Door",
+        ),
+        (
+            None,
+            "names no text view, not chandra-layout-text.v2; re-run the submission from the Door",
+        ),
     ],
 )
 def test_a_structure_answer_not_read_under_this_builds_text_view_is_refused(
