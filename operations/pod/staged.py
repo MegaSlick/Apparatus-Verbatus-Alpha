@@ -132,6 +132,9 @@ class ScheduledStage:
     stage: str
     pod_required: bool
     chairs: tuple[ScheduledChair, ...] = ()
+    # When the stage boots a pod at all, if not always: shown to the operator
+    # beside the grant it asks for.
+    only_when: str | None = None
 
 
 # This is stage order, not a model preference.  The one model-order ruling is
@@ -172,11 +175,14 @@ COLLECTION_BOOT_SCHEDULE: tuple[ScheduledStage, ...] = (
     ScheduledStage("perlector", True, (ScheduledChair("perlector", "Qwen3.8-27B"),)),
     ScheduledStage("recensor", False),
     ScheduledStage("archetypus", False),
-    # A pod only for a run sealed with the Coniector's mode on; off, it reads nothing.
     ScheduledStage(
         "coniector",
         True,
-        (ScheduledChair("reconstructor", "Qwen3.8-27B, text only, when the sealed mode is on"),),
+        (ScheduledChair("reconstructor", "Qwen3.8-27B, text only"),),
+        only_when=(
+            'the run is sealed with config/reconstruction.toml mode = "on"; the default is '
+            "off, which loads no model and needs no pod"
+        ),
     ),
     ScheduledStage("armarium", False),
 )
@@ -200,9 +206,10 @@ def render_boot_schedule(collection_id: str) -> str:
             lines.append(f"{ordinal}. {item.stage}: no pod (no GPU-hours).")
             continue
         chairs = "; ".join(chair.render() for chair in item.chairs)
+        condition = f" Only when {item.only_when}." if item.only_when else ""
         lines.append(
             f"{ordinal}. {item.stage}: one fresh project-lead authorization, one pod, "
-            f"then pod-down. Serving order: {chairs}."
+            f"then pod-down. Serving order: {chairs}.{condition}"
         )
     return "\n".join(lines)
 

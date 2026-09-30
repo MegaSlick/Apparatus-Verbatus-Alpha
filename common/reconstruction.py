@@ -115,7 +115,7 @@ def load_reconstruction_policy(
             "the reconstruction configuration is not its closed schema: "
             f"{sorted(set(record) ^ expected)}"
         )
-    if record["mode"] not in MODES:
+    if not isinstance(record["mode"], str) or record["mode"] not in MODES:
         raise ContractError(f"reconstruction mode must be one of {sorted(MODES)}")
     if not isinstance(record["pages_are_consecutive"], bool):
         raise ContractError("reconstruction pages_are_consecutive must be true or false")

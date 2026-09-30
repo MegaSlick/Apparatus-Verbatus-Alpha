@@ -78,6 +78,7 @@ def _config_text():
         lambda text: text.replace("max_departures_per_act = 5", "max_departures_per_act = 5.0"),
         lambda text: text.replace("max_changed_share_bp = 1500", "max_changed_share_bp = 10001"),
         lambda text: text.replace('mode = "off"', 'mode = "sometimes"'),
+        lambda text: text.replace('mode = "off"', 'mode = ["on"]'),
         lambda text: text.replace('mode = "off"\n', ""),
         lambda text: text.replace("pages_are_consecutive = false", 'pages_are_consecutive = "no"'),
         lambda text: text.replace("pages_are_consecutive = false\n", ""),
