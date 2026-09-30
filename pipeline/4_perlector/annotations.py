@@ -27,7 +27,12 @@ import re
 from typing import Any, Final
 
 from common.contracts.errors import SchemaRefusal
-from common.contracts.uncertainty import ASSESSMENT_STATES, CONFIDENCE_LEVELS, GAP_POSITIONS
+from common.contracts.uncertainty import (
+    ASSESSMENT_STATES,
+    CONFIDENCE_LEVELS,
+    GAP_POSITIONS,
+    is_trailing_offset,
+)
 
 _SPAN_FIELDS: Final = frozenset({"start", "end", "alternatives", "confidence"})
 _GAP_FIELDS: Final = frozenset({"position", "start", "end", "witness_evidence"})
@@ -135,8 +140,11 @@ def validate_gaps(gaps: Any, text: str) -> list[dict]:
             )
         if position == "leading" and start != 0:
             raise SchemaRefusal(f"gaps[{index}] is declared leading but does not start at 0")
-        if position == "trailing" and end != len(text):
-            raise SchemaRefusal(f"gaps[{index}] is declared trailing but does not end at len(text)")
+        if position == "trailing" and not is_trailing_offset(text, end):
+            raise SchemaRefusal(
+                f"gaps[{index}] is declared trailing but text follows it other than whitespace "
+                "or closing punctuation"
+            )
         if position == "internal" and not (0 < start < len(text)):
             raise SchemaRefusal(
                 f"gaps[{index}] is declared internal but is not strictly inside the text"
@@ -349,7 +357,7 @@ def read_doubt_marks(raw: str) -> tuple[str, dict[str, Any]]:
             "position": "leading"
             if offset == 0
             else "trailing"
-            if offset == len(text)
+            if is_trailing_offset(text, offset)
             else "internal",
             "start": offset,
             "end": offset,

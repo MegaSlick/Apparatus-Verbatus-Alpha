@@ -103,6 +103,19 @@ def test_whitespace_only_text_refuses_a_partly_read_gap_position() -> None:
         validate(layer, " \t\n")
 
 
+def test_an_internal_gap_before_only_closing_punctuation_is_refused() -> None:
+    layer = {
+        "uncertain_spans": [],
+        "gaps": [{"position": "internal", "start": 3, "end": 3, "witness_evidence": []}],
+        "self_revisions": [],
+        "assessment": _ASSESSED,
+        "lectio_kind": "primed-with-prior",
+    }
+
+    with pytest.raises(SchemaRefusal, match="declared internal"):
+        validate(layer, "abc)")
+
+
 def test_projection_renames_the_prior_draft_span_and_keeps_its_offsets() -> None:
     """`testimonium_span` indexes the prior draft, not a witness's report.
 

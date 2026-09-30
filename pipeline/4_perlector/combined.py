@@ -16,8 +16,10 @@ from common.cross_capture_autopsia import invoke_one_logical_read
 def _unprimed(dossier: dict[str, Any]) -> dict[str, Any]:
     value = _without_prior(dossier)
     value["testimonia"] = []
-    # Unprimed arms may receive neither testimony nor facts derived from it.
+    # Unprimed arms may receive neither testimony nor facts derived from it,
+    # including the neighbouring acts' witness readings.
     value.pop("act_attachment", None)
+    value.pop("neighbours", None)
     for region in value.get("regions") or ():
         if isinstance(region, dict):
             region.pop("witness_covered", None)

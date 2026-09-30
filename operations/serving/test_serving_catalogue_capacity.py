@@ -51,14 +51,14 @@ REAL_RECIPES = REPO_ROOT / "config" / "serving_recipes_real.toml"
 REAL_PLACEMENT = REPO_ROOT / "config" / "pod_placement.toml"
 
 # A 300-dpi A4 scan as each chair is actually shown it.  DAI is act-scoped and
-# its adapter's own ceilings (`pipeline/3_attestatores/feeding.dai_dimensions`:
-# width <= 1500, height <= 4096, area <= 2359296) bind before any serving row's
-# `max_pixels`, so the page it is charged for is 1291x1826.  Every other chair
+# its adapter's own width ceiling (`pipeline/3_attestatores/feeding.dai_dimensions`:
+# width <= 1500) binds before any serving row's `max_pixels`, so the page it is
+# charged for is 1500x2122.  Every other chair
 # is shown the sealed page unchanged.
 PAGE_AS_PRESENTED = {
     "designator_structure": A4_300DPI,
     "attestator_1": A4_300DPI,
-    "attestator_2": (1291, 1826),
+    "attestator_2": (1500, 2122),
     "attestator_3": A4_300DPI,
     "perlector": A4_300DPI,
 }
@@ -361,3 +361,133 @@ def test_no_shipped_row_serves_below_its_tiers_stated_vram_floor():
             f"({need_gib} GiB of {_TIER_VRAM_GIB[row.tier]})"
         )
     assert checked == len(_STATED_VRAM_NEED_GIB), "a stated VRAM floor went unchecked"
+
+
+# --- the Perlector's page render against the row, shape by shape ------------------
+
+from operations.corpus import perlector_request_fit as fit  # noqa: E402
+
+LETTER = (2550, 3300)
+WHOLE = (0, 0, 2550, 3300)
+TOP, BOTTOM = (0, 0, 2550, 1700), (0, 1600, 2550, 1700)
+_PROSE = (
+    "L'an mil sept cent quarante et un, le douzième jour de février, a été baptisée "
+    "par nous soussigné prêtre curé de cette paroisse Marie Anne, fille légitime de "
+)
+# Two pages of register text per witness (twice the longest gold act, 2,972
+# characters), a full neighbour cap, and a fed prior draft longer than the reading
+# cap, so it is charged the cap.
+DENSE = (_PROSE * 60)[:5944]
+# Each neighbour sits on the act's own page.
+NEIGHBOUR = ([(_PROSE * 10)[:800]] * 3, True)
+PRIOR = (_PROSE * 60)[:6000]
+
+# (pages as (size, crops), prior) -> (need under the sealed rule, fits; need with
+# every page at the old 1,024 edge, fits). Needs are pinned so a prompt or render
+# change that moves them is seen here.
+SHAPES = {
+    "over a page turn, whole-page crops": (
+        [(LETTER, [WHOLE]), (LETTER, [WHOLE])],
+        None,
+        (29064, True),
+        (29064, True),
+    ),
+    "dense over a page turn, half-page crops, fed prior": (
+        [(LETTER, [BOTTOM]), (LETTER, [TOP])],
+        PRIOR,
+        (31514, True),
+        (31514, True),
+    ),
+    "dense over a page turn, a whole-page recovery crop, fed prior": (
+        [(LETTER, [BOTTOM]), (LETTER, [TOP, WHOLE])],
+        PRIOR,
+        (36617, False),
+        (36617, False),
+    ),
+    "three pages, whole-page crops": (
+        [(LETTER, [WHOLE])] * 3,
+        None,
+        (34967, False),
+        (34967, False),
+    ),
+}
+
+
+@pytest.mark.parametrize("name", SHAPES)
+def test_each_pinned_request_shape_against_the_row_under_both_page_renders(name):
+    """What the sealed `[page_context]` rule costs, shape by shape, against the old render.
+
+    A page the act's crops cover whole, and every page of an act spanning more than
+    one page, is rendered at the layout edge, so each shape here costs exactly what
+    it did at 1,024: the page render refuses no act the old render admitted. The two
+    shapes the row does not hold were refused at 1,024 too. Every gold act fits
+    under both (`operations/corpus/perlector_request_fit.py`).
+    """
+    pages, prior, sealed_rule, old = SHAPES[name]
+    row, sealed = fit.perlector_row(), fit.sealed_protocol()
+    arguments = dict(
+        pages=pages,
+        witness_texts=[DENSE] * 3,
+        neighbours=(NEIGHBOUR, NEIGHBOUR),
+        prior_text=prior,
+    )
+    now = fit.request_record(row, sealed, edge=None, **arguments)
+    before = fit.request_record(row, sealed, edge=fit.OLD_EDGE, **arguments)
+    assert (now["need"], now["fits"]) == sealed_rule
+    assert (before["need"], before["fits"]) == old
+    assert row.max_model_len == 32768
+
+
+def test_a_legible_render_stays_inside_the_rows_pixel_bound():
+    """So the chair sees exactly the rendered pixels, on a letter leaf and on A4."""
+    row, sealed = fit.perlector_row(), fit.sealed_protocol()
+    for page in (LETTER, A4_300DPI):
+        width, height = fit._rendered(page, sealed["page_context"]["maximum_edge"])
+        assert width * height <= row.max_pixels
+
+
+# --- vendor-fidelity pins for the shipped rows -----------------------------------
+
+
+def test_dai_rows_carry_the_vendor_processors_own_pixel_range_and_hold_a_tall_act():
+    """`processor_config.json` at the pinned DAI revision: shortest_edge 3,136,
+    longest_edge 12,845,056.  A 1500x2500 act is about 4.8k image tokens, and it
+    fits the 8,192-token row beside DAI's prompt and 1,024-token answer."""
+
+    rows = [row for row in _shipped_rows() if row.chair == "attestator_2"]
+    assert len(rows) == 3
+    for row in rows:
+        assert (row.min_pixels, row.max_pixels) == (3_136, 12_845_056), row.tier
+        record = request_fits(
+            row, [(1500, 2500)], PROMPT_TOKENS[row.chair], DECLARED_ANSWER_BOUND_TOKENS[row.chair]
+        )
+        assert record["image_prompt_tokens"] == 4_806, row.tier
+        assert record["fits"] is True, record["reason"]
+        assert row.max_model_len == 8_192
+
+
+def test_every_churro_row_holds_the_vendors_whole_answer_bound_beside_a_full_page():
+    """25,000 (`DEFAULT_OCR_MAX_TOKENS`, Churro v0.3.0) + the largest image the
+    row's own `max_pixels` allows + the prompt, at every tier."""
+
+    rows = [row for row in _shipped_rows() if row.chair == "attestator_3"]
+    assert {row.tier for row in rows} == {"generic-24gb", "generic-48gb", "generic-80gb-plus"}
+    assert DECLARED_ANSWER_BOUND_TOKENS["attestator_3"] == 25_000
+    for row in rows:
+        widest = row.max_pixels // 784 * 784  # a token-exact square-ish bound
+        side = int(widest**0.5)
+        capacity = request_fits(row, [(side, side)], PROMPT_TOKENS[row.chair], 25_000)
+        assert capacity["fits"] is True, (row.tier, capacity["reason"])
+        assert sendable_max_tokens(row.chair, capacity) == {"max_tokens": 25_000}
+
+
+def test_perlector_min_pixels_is_the_vendors_shortest_edge_and_no_row_trusts_remote_code():
+    """Qwen3.8-27B `preprocessor_config.json`: size.shortest_edge 65,536.  None of
+    the four pinned repositories ships a `.py` file or an `auto_map`."""
+
+    rows = _shipped_rows()
+    assert all(not row.trust_remote_code for row in rows)
+    perlector = [row for row in rows if row.chair == "perlector"]
+    assert [row.min_pixels for row in perlector] == [65_536]
+    tiny = request_fits(perlector[0], [(40, 40)], 100, 100)["images"][0]
+    assert tiny["resized_width"] * tiny["resized_height"] >= 65_536

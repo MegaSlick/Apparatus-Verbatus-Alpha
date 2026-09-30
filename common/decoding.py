@@ -39,7 +39,7 @@ def _validate_decoding_policy(policy: Any) -> None:
     that pass may vary, sealed and recorded -- whether a value can actually be
     executed is the pass's own refusal to make, not this loader's. The section
     is required: `common/stage.py` binds the name `structure` to the sealed
-    digest of these bytes on every structural seal.
+    seal of this configuration on every structural seal.
     """
     if not isinstance(policy, dict):
         raise ContractError("decoding configuration is not a table")

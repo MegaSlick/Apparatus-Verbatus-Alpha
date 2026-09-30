@@ -30,11 +30,47 @@ BUILDER_SHA256: Final[str] = code_digest(Path(__file__).resolve().read_text(enco
 _DEFAULT_PROTOCOL: Final = {
     "page_shared_prefix_policy": "page-shared-prefix-first.v1",
     "pass_b_fragment": "",
+    "neighbours": {"fragment": ""},
 }
 
 
+def _neighbour_lines(dossier: dict[str, Any], protocol_config: dict[str, Any]) -> list[str]:
+    """The neighbouring acts' witness readings, labelled as clues, then the sealed
+    fragment that says what they are for. Nothing when the dossier carries none."""
+    neighbours = dossier.get("neighbours")
+    if neighbours is None:
+        return []
+    lines = ["neighbouring_acts:"]
+    for side in ("preceding", "following"):
+        entry = neighbours[side]
+        if entry is None:
+            lines.append(f"  {side}: none")
+            continue
+        where = "same page" if entry["same_page"] else "another page"
+        lines.append(f"  {side}: {entry['act_key']} ({where})")
+        if entry["unavailable"] is not None:
+            lines.append("    witness readings unavailable")
+        for witness in entry["witnesses"]:
+            if witness["reported"] is None:
+                lines.append(f"    - {witness['witness_label']}: no reading")
+                continue
+            part = f" ({witness['shown']})" if witness["shown"] in ("head", "tail") else ""
+            lines.append(f"    - {witness['witness_label']}: {witness['reported']!r}{part}")
+    lines.append(protocol_config["neighbours"]["fragment"])
+    return lines
+
+
+def neighbour_block(dossier: dict[str, Any], protocol_config: dict[str, Any] | None = None) -> str:
+    """The neighbour lines exactly as they sit in the rendered prompt, or "".
+
+    The live reader charges this span one token per UTF-8 byte
+    (`perlector_prompt_bound`), a bound no byte-level tokenizer exceeds.
+    """
+    return "\n".join(_neighbour_lines(dossier, protocol_config or _DEFAULT_PROTOCOL))
+
+
 def _neutral_dossier_lines(
-    chair_role: str, dossier: dict[str, Any], protocol_config: dict[str, str]
+    chair_role: str, dossier: dict[str, Any], protocol_config: dict[str, Any]
 ) -> list[str]:
     """The structure every registered Perlector template shares: testimonia
     presented as labelled clues, the sealed neutral fragment around a fed
@@ -55,6 +91,7 @@ def _neutral_dossier_lines(
             f"model={testimonium['model_name']!r}; "
             f"provenance={canonical_text(testimonium['resolved_provenance'])}"
         )
+    lines.extend(_neighbour_lines(dossier, protocol_config))
     if dossier.get("prior_draft_view") == "fed":
         lines.extend(
             [
@@ -68,7 +105,7 @@ def _neutral_dossier_lines(
 
 
 def _fake_perlector_v0(
-    chair_role: str, dossier: dict[str, Any], protocol_config: dict[str, str]
+    chair_role: str, dossier: dict[str, Any], protocol_config: dict[str, Any]
 ) -> str:
     """The declared byte template for the walking skeleton's fixture recipe."""
     return "\n".join(_neutral_dossier_lines(chair_role, dossier, protocol_config))
@@ -80,14 +117,16 @@ def _fake_perlector_v0(
 # parses.
 TRANSCRIPTION_INSTRUCTION: Final = (
     "Transcribe the ink exactly as it is written on the page. Do not modernize spelling, "
-    "expand abbreviations, or correct the scribe. Read through to the end of the act. "
+    "expand abbreviations, or correct the scribe. Read this act's ink through to its end "
+    "within the act's crop; where the act's ink continues past the edge of the crop, stop "
+    "at the edge and write [[?]] there. "
     "Where ink cannot be read, write [[?]] in its place. Where a reading is uncertain, "
     "write it as [[reading]], or as [[reading|other|other]] to add other possible readings."
 )
 
 
 def _unproven_real_perlector_v0(
-    chair_role: str, dossier: dict[str, Any], protocol_config: dict[str, str]
+    chair_role: str, dossier: dict[str, Any], protocol_config: dict[str, Any]
 ) -> str:
     """`unproven-real-perlector`'s declared template (`config/models-real.toml:18`).
 
@@ -100,7 +139,8 @@ def _unproven_real_perlector_v0(
     Reads only fields a delivered dossier and its retained twin carry
     identically: `witness_regime`; each `testimonia[*]` row's
     `witness_label`/`training_domain`/`reported`/`model_name`/
-    `resolved_provenance`; `prior_draft`/`prior_draft_view`; `act_key`. Never
+    `resolved_provenance`; `neighbours`; `prior_draft`/`prior_draft_view`;
+    `act_key`. Never
     `dossier_digest`, `cross_capture_autopsia`, or `logical_act_id` -- fields
     sealed onto the retained dossier that a delivered one does not carry
     identically, so a builder that read them would render bytes the
@@ -115,13 +155,13 @@ def _unproven_real_perlector_v0(
     )
 
 
-_BUILDERS: Final[dict[str, Callable[[str, dict[str, Any], dict[str, str]], str]]] = {
+_BUILDERS: Final[dict[str, Callable[[str, dict[str, Any], dict[str, Any]], str]]] = {
     "fake-perlector-v0": _fake_perlector_v0,
     "unproven-real-perlector": _unproven_real_perlector_v0,
 }
 
 
-def _builder_for(serving_recipe: str) -> Callable[[str, dict[str, Any], dict[str, str]], str]:
+def _builder_for(serving_recipe: str) -> Callable[[str, dict[str, Any], dict[str, Any]], str]:
     builder = _BUILDERS.get(serving_recipe)
     if builder is None:
         raise ValueError(
@@ -135,7 +175,7 @@ def build_prompt(
     serving_recipe: str,
     chair_role: str,
     dossier: dict[str, Any],
-    protocol_config: dict[str, str] | None = None,
+    protocol_config: dict[str, Any] | None = None,
 ) -> str:
     """Build one chair's declared prompt, byte-exact, or refuse by name."""
     return _builder_for(serving_recipe)(chair_role, dossier, protocol_config or _DEFAULT_PROTOCOL)
@@ -144,7 +184,7 @@ def build_prompt(
 def prompt_evidence(
     chair: ChairIdentity,
     dossier: dict[str, Any],
-    protocol_config: dict[str, str] | None = None,
+    protocol_config: dict[str, Any] | None = None,
     protocol_sha256: str = "unsealed-test",
 ) -> dict[str, str]:
     """The record of the prompt one reading was actually produced through.

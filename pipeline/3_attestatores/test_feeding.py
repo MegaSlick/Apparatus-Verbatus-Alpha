@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import churro
@@ -14,7 +13,6 @@ import pytest
 from feeding import (
     CHURRO_OUTPUT_TOKENS,
     DAI_FORMAT_CAPABILITIES,
-    DAI_MAX_TOTAL_PIXELS,
     DAI_MAX_WIDTH_PX,
     SCHEDULING_POLICY,
     SingleChairResidency,
@@ -124,8 +122,8 @@ def test_churro_records_its_declared_bound_and_detects_repetition_after_complete
         transport_stop_reason="eos",
         parser="xml",
     )
-    # The CHURRO paper section B.2's own bound, not a number of ours.
-    assert CHURRO_OUTPUT_TOKENS == 20_000
+    # The vendor's own `DEFAULT_OCR_MAX_TOKENS` (Churro v0.3.0), not a number of ours.
+    assert CHURRO_OUTPUT_TOKENS == 25_000
     # The retained view actually carries that bound, not only the module
     # constant this test could otherwise check in isolation from it.
     assert record["view"]["generation"]["max_new_tokens"] == CHURRO_OUTPUT_TOKENS
@@ -990,65 +988,32 @@ def test_every_dai_ceiling_seals_where_it_came_from():
         generation_config_ref=_ref("models/dai/generation_config.json"),
     )
     limits = view["image_limits"]
-    # No height ceiling: nothing states one. The width ceiling is sourced to
-    # the model card, and the total-pixel ceiling to the shipped serving
-    # catalogue -- a served row's own ceiling is not redundant with width alone.
-    assert limits["schema"] == "dai-image-limits.v4"
+    # Width only: the model card states no height or area ceiling.
+    assert limits["schema"] == "dai-image-limits.v5"
     ceilings = set(limits) - {"schema", "sources"}
-    assert ceilings == {"max_width_px", "max_total_pixels"}
+    assert ceilings == {"max_width_px"}
     assert ceilings == set(limits["sources"]), "every ceiling names a source, and only ceilings do"
-    assert all(limits["sources"][name].strip() for name in ceilings)
     assert "Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR" in limits["sources"]["max_width_px"]
     assert "1500 pixels (max)" in limits["sources"]["max_width_px"]
-    assert "serving_recipes_real.toml" in limits["sources"]["max_total_pixels"]
-    assert limits["max_total_pixels"] == DAI_MAX_TOTAL_PIXELS
     assert view["image_limits_sha256"] == digest_of(limits)
-
-
-def test_dai_total_pixel_ceiling_is_the_smallest_shipped_rows_max_pixels():
-    """`DAI_MAX_TOTAL_PIXELS` is read off the file, not retyped from memory.
-
-    The floor every deployed tier's engine actually admits: the smallest
-    `max_pixels` shipped for the dai.v1 (`attestator_2`) row across every
-    tier in the real serving catalogue. A tier added below this floor, or a
-    lowered existing one, must move this constant with it or this test fails
-    before a stale ceiling ships.
-    """
-    import tomllib
-
-    repo_root = Path(__file__).resolve().parents[2]
-    recipes = tomllib.loads(
-        (repo_root / "config" / "serving_recipes_real.toml").read_text(encoding="utf-8")
-    )
-    dai_max_pixels = [
-        profile["max_pixels"]
-        for profile in recipes["profiles"]
-        if profile.get("chair") == "attestator_2"
-    ]
-    assert dai_max_pixels, "the real serving catalogue ships no attestator_2 (DAI) row"
-    assert DAI_MAX_TOTAL_PIXELS == min(dai_max_pixels)
 
 
 @pytest.mark.parametrize(
     ("width_px", "height_px", "expected", "resized"),
     [
-        # A width already under 1,500 is not by itself an identity view:
-        # this crop's 5,000,000px is over the smallest shipped row's
-        # `max_pixels` (2,359,296), so the second pass catches it:
-        # beta = sqrt(5_000_000 / 2_359_296) ~= 1.45577, floored.
-        (500, 10_000, (343, 6_869), True),
-        # Also over the total-pixel ceiling alone (4,500,000px), even though
-        # its width sits exactly at the width ceiling and neither `v2` nor
-        # `v3` would have resized it a second time for total pixels here.
-        (1_500, 3_000, (1_086, 2_172), True),
-        # Over the width ceiling alone: floor-rounded aspect-preserving
-        # resize -- 1,000 x 1,500 // 4,501 truncates to 333, not 334 -- and
-        # its result (499,500px) is well under the total-pixel ceiling, so
-        # only the first pass runs.
+        # Under the width ceiling: identity however tall. The serving row's
+        # `max_pixels` and `request_capacity` bound the rest; there is no
+        # second, area-based shrink.
+        (500, 10_000, (500, 10_000), False),
+        (1_500, 3_000, (1_500, 3_000), False),
+        # Over the width ceiling: one floor-rounded aspect-preserving resize --
+        # 1,000 x 1,500 // 4,501 truncates to 333, not 334.
         (4_501, 1_000, (1_500, 333), True),
     ],
 )
-def test_dai_resize_applies_its_two_sealed_ceilings(width_px, height_px, expected, resized):
+def test_dai_resize_applies_only_the_model_cards_width_ceiling(
+    width_px, height_px, expected, resized
+):
     source = _ref("designator/crops/tall.png")
     model = _ref("attestatores/model-views/tall.jpg", "b" * 64) if resized else source
     view = dai_model_view(
@@ -1063,7 +1028,6 @@ def test_dai_resize_applies_its_two_sealed_ceilings(width_px, height_px, expecte
     target = (view["transform"]["target_width_px"], view["transform"]["target_height_px"])
     assert target == expected
     assert target[0] <= DAI_MAX_WIDTH_PX
-    assert target[0] * target[1] <= DAI_MAX_TOTAL_PIXELS
     assert (view["transform"]["kind"] == "identity") != resized
 
 
