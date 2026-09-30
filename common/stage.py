@@ -7,6 +7,7 @@ another through a side door.  The fixture is read as TOML data, not imported.
 """
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -19,7 +20,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Final, Protocol
 
-from common import fixture_identity, page_accounting
+from common import fixture_identity, page_accounting, page_path
 from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH, load_alignment_limits
 from common.armarium_formats import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
@@ -56,7 +57,6 @@ from common.contracts.identities import (
     act_bindings,
     artifact_id,
     attempt_id,
-    perlector_attempt_id,
 )
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import verify as verify_identity
@@ -84,6 +84,7 @@ from common.contracts.stages import (
     DESIGNATOR,
     DOOR,
     EXEMPLAR,
+    INK_MAP,
     PERLECTOR,
     RECENSOR,
     SEAL_PREDECESSORS,
@@ -2279,36 +2280,33 @@ def expected_acts(context) -> list[dict[str, Any]]:
 # A run sealed with `reading_unit = "page"` counts the acts the Perlector
 # established on each page it read whole, not the Designator's expected acts.
 # The records are the Perlector's page path (`pipeline/4_perlector/CONTRACT.md`,
-# "Page reading"); every one is re-read here from evidence, never trusted.
+# "Page reading"); every one is recomputed here from the sealed evidence with
+# stage 4's own derivations (`common/page_path.py`), never trusted. The run
+# tree binds every record read to this run's configuration. The contract is in
+# `common/README.md`, "Page-read denominator".
 
 READING_UNIT_ACT: Final = "act"
-READING_UNIT_PAGE: Final = "page"
-PAGE_FEED_KIND: Final = "page-feed"
-PAGE_READING_KIND: Final = "page-reading"
-PAGE_ACCOUNTING_KIND: Final = "page-accounting"
-ACT_REGION_KIND: Final = "act-region"
-PERLECTIO_KIND: Final = "perlectio"
-PAGE_READING_SCHEMA: Final = "perlector-page-reading.v1"
-ACT_REGION_SCHEMA: Final = "perlector-act-region.v1"
-PAGE_PERLECTIO_SCHEMA: Final = "perlectio.v2"
-PAGE_READ_OPERATION: Final = "page-read"
-PAGE_READ_ORDINAL: Final = 1
-READING_REGION_OPERATION: Final = "reading-region"
+READING_UNIT_PAGE: Final = page_path.READING_UNIT
 
-READING_CLASS: Final = "reading"
-READING_UNPLACED_CLASS: Final = "reading-unplaced"
+READING_CLASS: Final = page_path.READING_CLASS
+READING_UNPLACED_CLASS: Final = page_path.UNPLACED_CLASS
 PAGE_UNREAD_CLASS: Final = "page-unread"
 PAGE_BLANK_CLASS: Final = "page-blank"
-# The hold each page row carries on top of the page's own codes.
+# The row of a page the Exemplar refused: not an act and never counted as one,
+# but a row, so no consumer can miss the page.
+PAGE_REFUSED_CLASS: Final = "page-refused"
+# The classes whose rows are counted units; a `page-refused` row is not one.
+COUNTED_READING_CLASSES: Final = frozenset(
+    {READING_CLASS, READING_UNPLACED_CLASS, PAGE_UNREAD_CLASS, PAGE_BLANK_CLASS}
+)
+# The hold each page-level row carries on top of the page's own codes, and the
+# hold on every entry of a read page that names only `other` entries.
 PAGE_UNREAD_HOLD: Final = "page-unread"
 PAGE_BLANK_HOLD: Final = "page-blank-unconfirmed"
-# The entry holds the Perlector derives from the answer and the feed alone.
-_UNPLACED_HOLD: Final = "reading-unplaced"
-_DUPLICATE_REGION_HOLD: Final = "duplicate-region"
-_NO_AUTOPSIA_HOLD: Final = "no-autopsia"
-_NO_STOP_REASON: Final = "no-stop-reason"
+NO_ACT_ON_PAGE_HOLD: Final = "no-act-on-page-unconfirmed"
 
-READING_DISPOSITIONS: Final = frozenset({"read", "held"})
+READING_DISPOSITIONS: Final = frozenset({page_path.READ, page_path.HELD})
+PAGE_REFUSED_DISPOSITION: Final = "refused"
 PAGE_READING_ROW_FIELDS: Final = frozenset(
     {
         "page_id",
@@ -2319,7 +2317,7 @@ PAGE_READING_ROW_FIELDS: Final = frozenset(
         "reading_ref",
         "feed_ref",
         "accounting_ref",
-        "act_count",
+        "entry_count",
     }
 )
 READING_ACT_FIELDS: Final = frozenset(
@@ -2345,6 +2343,10 @@ READING_ACT_FIELDS: Final = frozenset(
 
 def sealed_reading_unit(context) -> str:
     """What one Perlector call read in this run, `act` or `page`, from its sealed protocol."""
+    return _sealed_perlector_protocol(context)[0]
+
+
+def _sealed_perlector_protocol(context) -> tuple[str, dict[str, Any]]:
     protocol, digest = read_sealed_toml(
         context.perlector_protocol_config_path, "Perlector protocol declaration"
     )
@@ -2355,7 +2357,7 @@ def sealed_reading_unit(context) -> str:
             f"the sealed Perlector protocol names reading_unit {unit!r}, neither 'act' nor "
             "'page', so which records count as this run's acts cannot be decided"
         )
-    return unit
+    return unit, protocol
 
 
 def reading_denominator(context) -> dict[str, Any]:
@@ -2364,17 +2366,13 @@ def reading_denominator(context) -> dict[str, Any]:
     `{"reading_unit": "act", "acts": expected_acts(context)}` for a run whose
     Perlector read Designator acts, and `{"reading_unit": "page", "pages":
     page_readings rows, "acts": reading_acts rows}` for one that read pages
-    whole. The two are never mixed: an act-read tree holding page readings,
-    or a page-read tree holding a Perlectio of an act the Designator cut, is
-    refused, since either would count one page two ways.
+    whole, verified once. The two are never mixed: an act-read tree holding
+    any page-path record, or a page-read tree holding a Perlectio of an act
+    the Designator cut, is refused, since either would count one page two ways.
     """
     unit = sealed_reading_unit(context)
     if unit == READING_UNIT_ACT:
-        if _stage_records(context.tree, PERLECTOR, PAGE_READING_KIND):
-            raise FatalAccounting(
-                "the sealed Perlector protocol reads Designator acts, but the Perlector "
-                "published page readings; one run's acts are counted one way, never both"
-            )
+        _refuse_page_records_in_an_act_read_tree(context.tree)
         return {"reading_unit": READING_UNIT_ACT, "acts": expected_acts(context)}
     pages, acts = _page_read_denominator(context)
     return {"reading_unit": READING_UNIT_PAGE, "pages": pages, "acts": acts}
@@ -2385,10 +2383,12 @@ def page_readings(context) -> dict[int, dict[str, Any]]:
 
     Each sealed page has exactly one `page-reading` (attempt `page-read:1`) and
     its `page-accounting`; a sealed page with none is refused, never counted as
-    zero acts. Row: `page_id`, `page_ordinal`, `parse_state`, `disposition`
-    (`read` for a parsed, valid answer, else `held`), `finish_reason`,
-    `reading_ref`, `feed_ref`, `accounting_ref`, and `act_count` (the answer's
-    entries, `act` and `other`; `None` for a page whose answer was not read).
+    zero acts. Row (`PAGE_READING_ROW_FIELDS`): `page_id`, `page_ordinal`,
+    `parse_state`, `disposition` (`read` for a parsed, valid answer, else
+    `held`), `finish_reason`, `reading_ref`, `feed_ref`, `accounting_ref`, and
+    `entry_count` (the answer's entries, `act` and `other` alike; `None` for a
+    page whose answer was not read). It verifies the whole run, as
+    `reading_acts` does; a caller needing both takes `reading_denominator`.
     """
     return _page_read_denominator(context)[0]
 
@@ -2398,65 +2398,124 @@ def reading_acts(context) -> list[dict[str, Any]]:
 
     One row per entry of a read page's answer (class `reading`, or
     `reading-unplaced` when it cites no boxed id), one `page-unread` row for a
-    sealed page whose reading is not a parsed, valid answer, and one
-    `page-blank` row for a read page whose answer names nothing; every sealed
-    page contributes at least one row. Fields are `READING_ACT_FIELDS`; see
-    `pipeline/orchestrator/CONTRACT.md`, "Page-read denominator".
+    sealed page whose reading is not a parsed, valid answer, one `page-blank`
+    row for a read page whose answer names nothing, and one `page-refused` row,
+    not counted, for a page the Exemplar refused; every submitted page has at
+    least one row. Fields are `READING_ACT_FIELDS`; see `common/README.md`,
+    "Page-read denominator". A caller needing `page_readings` too takes
+    `reading_denominator`, which verifies the run once.
     """
     return _page_read_denominator(context)[1]
+
+
+# A stage pass may ask for its denominator more than once; its records are
+# sealed before it runs, so it is verified once per context.
+_LAST_DENOMINATOR: list[tuple[Any, tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]]] = []
 
 
 def _page_read_denominator(
     context,
 ) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
-    index = _PageReadRecords.of(context)
+    if not (_LAST_DENOMINATOR and _LAST_DENOMINATOR[0][0] is context):
+        _LAST_DENOMINATOR[:] = [(context, _verify_page_read_denominator(context))]
+    return copy.deepcopy(_LAST_DENOMINATOR[0][1])
+
+
+def _refuse_page_records_in_an_act_read_tree(tree: RunTree) -> None:
+    manifest = tree.build_manifest(PERLECTOR, verify_inputs=False)
+    for entry in manifest["artifacts"]:
+        kind = entry["kind"]
+        page_record = kind in page_path.PAGE_PATH_KINDS or (
+            kind == page_path.PERLECTIO_KIND
+            and _payload_of(_manifest_artifact(tree, PERLECTOR, entry)).get("schema")
+            == page_path.PERLECTIO_SCHEMA
+        )
+        if page_record:
+            raise FatalAccounting(
+                "the sealed Perlector protocol reads Designator acts, but the Perlector "
+                f"published a page-path {kind} ({entry['artifact_id']}); one run's acts are "
+                "counted one way, never both"
+            )
+
+
+def _verify_page_read_denominator(
+    context,
+) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+    index = _PageReadRecords(context)
     pages = exemplar_page_ids(context)
-    sealed: dict[int, str] = {}
-    for ordinal, page_id in pages.items():
-        page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
-        if page.get("outcome") == "sealed":
-            sealed[ordinal] = page_id
-        else:
-            _verify_unsealed_page_is_unread(index, page_id)
-    if not sealed:
+    submitted = {
+        row.get("ordinal")
+        for row in context.run.get("source_manifest", [])
+        if isinstance(row, Mapping)
+    }
+    if set(pages) != submitted:
         raise FatalAccounting(
-            "the Exemplar sealed no page, so a page-read run has nothing to count"
+            f"submitted page ordinal(s) {sorted(submitted - set(pages), key=str)} have no "
+            "Exemplar page; a submitted page is never silently absent from the count"
         )
     index.refuse_strays(set(pages.values()))
     rows: dict[int, dict[str, Any]] = {}
     acts: list[dict[str, Any]] = []
-    for ordinal, page_id in sealed.items():
+    for ordinal, page_id in sorted(pages.items()):
+        page = context.tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+        if page.get("outcome") != "sealed":
+            acts.append(_refused_page_row(context, index, ordinal, page_id))
+            continue
         row, page_acts = _verify_page_reading(context, index, ordinal, page_id)
         rows[ordinal] = row
         acts.extend(page_acts)
-    act_ids = [act["act_id"] for act in acts]
+    if not rows:
+        raise FatalAccounting(
+            "the Exemplar sealed no page, so a page-read run has nothing to count"
+        )
+    act_ids = [act["act_id"] for act in acts if act["class"] in COUNTED_READING_CLASSES]
     if len(set(act_ids)) != len(act_ids):
         raise FatalAccounting("two counted units of a page-read run share one act identity")
     return rows, acts
 
 
 class _PageReadRecords:
-    """The Perlector's page-path records, read once and grouped for the denominator."""
+    """The page-read run's sealed evidence, read once and grouped for the denominator."""
 
-    def __init__(self, tree: RunTree) -> None:
+    def __init__(self, context) -> None:
+        tree = context.tree
         self.tree = tree
         manifest = tree.build_manifest(PERLECTOR, verify_inputs=False)
+        _verify_stage_seal(
+            tree, PERLECTOR, "the page-read denominator", "reading", manifest=manifest
+        )
         self.by_kind: dict[str, list[dict[str, Any]]] = {
             kind: _stage_records(tree, PERLECTOR, kind, manifest=manifest)
-            for kind in (PAGE_READING_KIND, PAGE_ACCOUNTING_KIND, ACT_REGION_KIND, PERLECTIO_KIND)
+            for kind in (
+                page_path.PAGE_READING_KIND,
+                page_path.PAGE_ACCOUNTING_KIND,
+                page_path.ACT_REGION_KIND,
+                page_path.PERLECTIO_KIND,
+            )
         }
-        for record in self.by_kind[PERLECTIO_KIND]:
+        for record in self.by_kind[page_path.PERLECTIO_KIND]:
             schema = _payload_of(record).get("schema")
-            if schema != PAGE_PERLECTIO_SCHEMA:
+            if schema != page_path.PERLECTIO_SCHEMA:
                 raise FatalAccounting(
                     f"the sealed Perlector protocol reads whole pages, but Perlectio "
                     f"{record.get('artifact_id')!r} has schema {schema!r}, a reading of an act "
                     "the Designator cut; one run's acts are counted one way, never both"
                 )
-
-    @classmethod
-    def of(cls, context) -> "_PageReadRecords":
-        return cls(context.tree)
+        _unit, protocol = _sealed_perlector_protocol(context)
+        self.truncation_policy = protocol.get("truncation")
+        self.accounting_policy = page_accounting.require_page_accounting_policy(
+            context, context.page_accounting_config_path
+        )
+        self.designator_entries = tree.build_manifest(DESIGNATOR, verify_inputs=False)["artifacts"]
+        self.ink_entries = tree.build_manifest(INK_MAP, verify_inputs=False)["artifacts"]
+        self.surya_census = page_path.sealed_surya_census(context, self.designator_entries)
+        self.record_detector_configured = isinstance(
+            context.registry.resolve(SECONDARY_PROPOSER_CHAIR), ChairIdentity
+        )
+        self.fixture_placeholders = not is_real_ingress(context.run)
+        self.testimonia: dict[str, list[dict[str, Any]]] = {}
+        for record in _stage_records(tree, ATTESTATORES, "page-testimonium"):
+            self.testimonia.setdefault(record.get("subject_id"), []).append(record)
 
     def by_subject(self, kind: str, subject: str) -> list[dict[str, Any]]:
         return [record for record in self.by_kind[kind] if record.get("subject_id") == subject]
@@ -2476,7 +2535,7 @@ class _PageReadRecords:
             for record in records:
                 page = (
                     record.get("subject_id")
-                    if kind in (PAGE_READING_KIND, PAGE_ACCOUNTING_KIND)
+                    if kind in (page_path.PAGE_READING_KIND, page_path.PAGE_ACCOUNTING_KIND)
                     else _payload_of(record).get("page_id")
                 )
                 if page not in page_ids:
@@ -2484,31 +2543,6 @@ class _PageReadRecords:
                         f"Perlector {kind} {record.get('artifact_id')!r} names page {page!r}, "
                         "which this run's Exemplar never published"
                     )
-
-
-def _verify_unsealed_page_is_unread(index: _PageReadRecords, page_id: str) -> None:
-    """A page the Exemplar refused has at most a `not-run` reading and nothing counted on it.
-
-    The Exemplar's refusal is that page's account; nothing was read from it.
-    """
-    for kind in (PAGE_ACCOUNTING_KIND, ACT_REGION_KIND, PERLECTIO_KIND):
-        found = (
-            index.by_subject(kind, page_id)
-            if kind == PAGE_ACCOUNTING_KIND
-            else index.on_page(kind, page_id)
-        )
-        if found:
-            raise FatalAccounting(
-                f"page {page_id} was refused by the Exemplar, yet the Perlector published a "
-                f"{kind} for it; there are no sealed pixels it could have been read from"
-            )
-    for reading in index.by_subject(PAGE_READING_KIND, page_id):
-        payload = _payload_of(reading)
-        if payload.get("parse_state") != "not-run" or payload.get("disposition") != "held":
-            raise FatalAccounting(
-                f"page {page_id} was refused by the Exemplar, yet its page reading says it was "
-                "read; only a not-run reading can stand for a page with no sealed pixels"
-            )
 
 
 def _one(records: list[dict[str, Any]], what: str, attempt: str) -> dict[str, Any]:
@@ -2534,13 +2568,84 @@ def _require(condition: bool, message: str) -> None:
         raise FatalAccounting(message)
 
 
+def _problem_codes(problems: Any, what: str) -> list[str]:
+    """The code of each recorded problem; a problem without a non-empty string code refuses."""
+    _require(isinstance(problems, list), f"{what} records no list of problems")
+    codes = [problem.get("code") if isinstance(problem, Mapping) else None for problem in problems]
+    _require(
+        all(isinstance(code, str) and code for code in codes),
+        f"{what} records a problem with no code; a hold is named or it is not a hold",
+    )
+    return codes
+
+
+def _refused_page_row(
+    context, index: _PageReadRecords, ordinal: int, page_id: str
+) -> dict[str, Any]:
+    """The row of a page the Exemplar refused, proven from its one `not-run` reading.
+
+    The Exemplar's refusal is that page's account; nothing was read from it, so
+    no accounting or act record may name it.
+    """
+    what = f"refused page {ordinal} ({page_id})"
+    for kind in (page_path.ACT_REGION_KIND, page_path.PERLECTIO_KIND):
+        _require(
+            not index.on_page(kind, page_id),
+            f"{what} has no sealed pixels, yet the Perlector published a {kind} for it",
+        )
+    _require(
+        not index.by_subject(page_path.PAGE_ACCOUNTING_KIND, page_id),
+        f"{what} has no sealed pixels, yet the Perlector published a page-accounting for it",
+    )
+    reading = _one(
+        index.by_subject(page_path.PAGE_READING_KIND, page_id),
+        f"{what}'s page reading",
+        page_path.page_reading_attempt(page_id),
+    )
+    payload = _payload_of(reading)
+    exemplar_ref = context.artifact_ref(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+    _require(
+        payload.get("schema") == page_path.PAGE_READING_SCHEMA
+        and payload.get("page_id") == page_id
+        and payload.get("page_ordinal") == ordinal
+        and payload.get("reading_unit") == READING_UNIT_PAGE
+        and payload.get("parse_state") == page_path.NOT_RUN
+        and payload.get("disposition") == page_path.HELD
+        and reading.get("outcome") == page_path.HELD
+        and payload.get("feed_ref") is None
+        and payload.get("answer") is None
+        and _problem_codes(payload.get("problems"), f"{what}'s page reading")
+        == [page_path.PAGE_NOT_SEALED]
+        and reading.get("inputs") == [exemplar_ref],
+        f"{what}'s page reading is not the not-run reading of that refused page under this "
+        "run; only a not-run reading can stand for a page with no sealed pixels",
+    )
+    return {
+        "act_id": None,
+        "act_key": f"p{ordinal}:refused",
+        "page_id": page_id,
+        "page_ordinal": ordinal,
+        "n": None,
+        "kind": None,
+        "class": PAGE_REFUSED_CLASS,
+        "disposition": PAGE_REFUSED_DISPOSITION,
+        "region_ref": None,
+        "reading_ref": index.ref(reading),
+        "perlectio_ref": None,
+        "accounting_ref": None,
+        "hold_codes": [],
+        "continues_from_previous_page": None,
+        "continues_to_next_page": None,
+    }
+
+
 def _verify_page_reading(
     context, index: _PageReadRecords, ordinal: int, page_id: str
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """One sealed page's reading, accounting and act records, recomputed from the feed."""
+    """One sealed page's reading, accounting and act records, recomputed from the evidence."""
     what = f"page {ordinal} ({page_id})"
-    attempt = attempt_id(page_id, PAGE_READ_OPERATION, PAGE_READ_ORDINAL)
-    readings = index.by_subject(PAGE_READING_KIND, page_id)
+    attempt = page_path.page_reading_attempt(page_id)
+    readings = index.by_subject(page_path.PAGE_READING_KIND, page_id)
     if not readings:
         raise FatalAccounting(
             f"sealed {what} has no page reading; a sealed page nobody read is never counted "
@@ -2549,17 +2654,16 @@ def _verify_page_reading(
     reading = _one(readings, f"{what}'s page reading", attempt)
     payload = _payload_of(reading)
     _require(
-        reading.get("config_digest") == context.config_digest
-        and payload.get("schema") == PAGE_READING_SCHEMA
+        payload.get("schema") == page_path.PAGE_READING_SCHEMA
         and payload.get("page_id") == page_id
         and payload.get("page_ordinal") == ordinal
         and payload.get("reading_unit") == READING_UNIT_PAGE
         and payload.get("disposition") in READING_DISPOSITIONS
         and reading.get("outcome") == payload.get("disposition")
-        and payload.get("parse_state") in page_accounting.PARSE_STATES
-        and isinstance(payload.get("problems"), list),
+        and payload.get("parse_state") in page_accounting.PARSE_STATES,
         f"{what}'s page reading is not a page-path reading of this page under this run",
     )
+    codes = _problem_codes(payload.get("problems"), f"{what}'s page reading")
     reading_ref = index.ref(reading)
     feed_ref = payload.get("feed_ref")
     _require(
@@ -2568,7 +2672,7 @@ def _verify_page_reading(
     )
     try:
         feed_record = context.tree.read_artifact_reference(
-            feed_ref, stage=PERLECTOR, kind=PAGE_FEED_KIND, subject_id=page_id
+            feed_ref, stage=PERLECTOR, kind=page_path.PAGE_FEED_KIND, subject_id=page_id
         )
     except ContractError as error:
         raise FatalAccounting(f"{what}'s page feed does not verify: {error}") from error
@@ -2578,22 +2682,26 @@ def _verify_page_reading(
         f"{what}'s page feed is not this page's",
     )
     accounting = _one(
-        index.by_subject(PAGE_ACCOUNTING_KIND, page_id), f"{what}'s page accounting", attempt
+        index.by_subject(page_path.PAGE_ACCOUNTING_KIND, page_id),
+        f"{what}'s page accounting",
+        attempt,
     )
-    accounting_payload = _payload_of(accounting)
-    page_holds = accounting_payload.get("holds")
-    _require(
-        accounting.get("config_digest") == context.config_digest
-        and accounting_payload.get("page_reading_ref") == reading_ref
-        and accounting_payload.get("feed_ref") == feed_ref
-        and isinstance(page_holds, list)
-        and all(isinstance(code, str) and code for code in page_holds)
-        and accounting.get("outcome") == ("held" if page_holds else "read"),
-        f"{what}'s page accounting does not account for this reading of this feed",
+    _verify_disposition(what, payload, feed)
+    plans = (
+        page_path.entry_plans(
+            payload["answer"],
+            feed,
+            page_id=page_id,
+            stop_reason=payload.get("stop_reason"),
+            truncation_policy=index.truncation_policy,
+        )
+        if payload["disposition"] == page_path.READ
+        else []
+    )
+    page_holds = _verify_accounting(
+        context, index, what, accounting, feed_record, feed_ref, payload, reading_ref, plans
     )
     accounting_ref = index.ref(accounting)
-    validated = _verify_disposition(what, payload, feed)
-    entries = validated["entries"] if validated is not None else []
     row = {
         "page_id": page_id,
         "page_ordinal": ordinal,
@@ -2603,65 +2711,165 @@ def _verify_page_reading(
         "reading_ref": reading_ref,
         "feed_ref": feed_ref,
         "accounting_ref": accounting_ref,
-        "act_count": len(entries) if payload["disposition"] == "read" else None,
+        "entry_count": len(plans) if payload["disposition"] == page_path.READ else None,
     }
     refs = {"reading_ref": reading_ref, "accounting_ref": accounting_ref, "feed_ref": feed_ref}
-    if payload["disposition"] == "held" or not entries:
+    if not plans:
         _require(
-            not index.on_page(ACT_REGION_KIND, page_id)
-            and not index.on_page(PERLECTIO_KIND, page_id),
+            not index.on_page(page_path.ACT_REGION_KIND, page_id)
+            and not index.on_page(page_path.PERLECTIO_KIND, page_id),
             f"{what} has no act entry to count, yet the Perlector published act records for it",
         )
-        return row, [_page_row(context, ordinal, page_id, payload, page_holds, refs)]
-    acts = _verify_entries(
-        context, index, ordinal, page_id, attempt, validated, feed, refs, page_holds
-    )
+        return row, [_page_row(context, ordinal, page_id, payload, codes, page_holds, refs)]
+    acts = _verify_entries(context, index, ordinal, page_id, payload, plans, refs, page_holds)
     return row, acts
 
 
-def _verify_disposition(
-    what: str, payload: Mapping[str, Any], feed: Mapping[str, Any]
-) -> dict[str, Any] | None:
-    """Recompute whether the page's answer is read, from the answer and the sealed feed.
+def _verify_disposition(what: str, payload: Mapping[str, Any], feed: Mapping[str, Any]) -> None:
+    """Recompute whether the page's answer is read, from the answer, the feed and the finish.
 
-    Returns `validate_answer`'s result for a parsed answer, else `None`. The
-    reading's `problems` must be exactly the recomputed ones and its
-    disposition `read` exactly when there are none.
+    A parsed answer's `problems` must be exactly what `page_path.answer_problems`
+    gives and its disposition `read` exactly when there are none. An answer
+    the engine cut at its output cap is `cut-off`, never parsed.
     """
-    if payload["parse_state"] != page_accounting.PARSED:
+    if payload["parse_state"] != page_path.PARSED:
         _require(
-            payload["disposition"] == "held",
+            payload["disposition"] == page_path.HELD,
             f"{what}'s reading is {payload['parse_state']!r} yet says it was read",
         )
-        return None
+        return
+    _require(
+        payload.get("stop_reason") != "length",
+        f"{what}'s reading was cut at the output cap (stop reason 'length') yet is parsed; "
+        "a cut answer is held whole as cut-off",
+    )
     try:
-        validated = page_accounting.validate_answer(
-            payload.get("answer"), page_accounting.feed_candidates(feed)
+        problems = page_path.answer_problems(
+            payload.get("answer"), feed, payload.get("stop_reason")
         )
     except (ContractError, KeyError, TypeError) as error:
         raise FatalAccounting(
             f"{what}'s answer cannot be read against its feed: {error}"
         ) from error
-    problems = [
-        problem
-        for problem in validated["problems"]
-        if problem["code"] != page_accounting.DUPLICATE_REGION
-    ]
-    recorded = payload["problems"]
-    tail = [problem.get("code") for problem in recorded[len(problems) :]]
-    no_stop_reason = payload.get("stop_reason") is None
     _require(
-        recorded[: len(problems)] == problems
-        and tail == ([_NO_STOP_REASON] if no_stop_reason else []),
+        payload["problems"] == problems,
         f"{what}'s reading records problems other than its answer and feed give",
     )
-    expected = "read" if not recorded else "held"
+    expected = page_path.READ if not problems else page_path.HELD
     _require(
         payload["disposition"] == expected,
         f"{what}'s reading says {payload['disposition']!r}, but its answer against its feed "
         f"is {expected!r}",
     )
-    return validated
+
+
+def _verify_accounting(
+    context,
+    index: _PageReadRecords,
+    what: str,
+    accounting: Mapping[str, Any],
+    feed_record: Mapping[str, Any],
+    feed_ref: dict[str, str],
+    reading: Mapping[str, Any],
+    reading_ref: dict[str, str],
+    plans: list[dict[str, Any]],
+) -> list[str]:
+    """The page accounting measured again must be exactly the sealed one; return its holds."""
+    recomputed, inputs = _measure_page_accounting(
+        context, index, what, feed_record, feed_ref, reading, reading_ref, plans
+    )
+    holds = recomputed["holds"]
+    _require(
+        page_path.refs_by_path(accounting.get("inputs", [])) == page_path.refs_by_path(inputs)
+        and _payload_of(accounting) == recomputed
+        and accounting.get("outcome") == (page_path.HELD if holds else page_path.READ),
+        f"{what}'s page accounting is not what its sealed inputs measure: the page's holds "
+        "are recomputed, never taken from the record",
+    )
+    return holds
+
+
+def _measure_page_accounting(
+    context,
+    index: _PageReadRecords,
+    what: str,
+    feed_record: Mapping[str, Any],
+    feed_ref: dict[str, str],
+    reading: Mapping[str, Any],
+    reading_ref: dict[str, str],
+    plans: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """The page accounting of one reading and its inputs, measured as stage 4 measured it.
+
+    Every input is read as stage 4 read it (`page_path.accounting_inputs`):
+    the feed, the reading and its entry plans, each chair's current page
+    Testimonium, the Designator's Surya and detector records and the Ink Map's
+    runs, under the sealed policy. Rule (e) runs under the policy's deadline
+    here too; a page whose measurement hit it on one side and not the other
+    does not reproduce, and is refused.
+    """
+    witnesses = _accounting_page_witnesses(context, index, what, feed_record)
+    try:
+        measured, inputs = page_path.accounting_inputs(
+            context,
+            feed=_payload_of(feed_record),
+            feed_ref=feed_ref,
+            reading=reading,
+            reading_ref=reading_ref,
+            witnesses=witnesses,
+            plans=plans,
+            surya_census=index.surya_census,
+            designator_entries=index.designator_entries,
+            ink_entries=index.ink_entries,
+            record_detector_configured=index.record_detector_configured,
+            fixture_placeholders=index.fixture_placeholders,
+        )
+        recomputed = page_accounting.page_accounting(**measured, policy=index.accounting_policy)
+    except ContractError as error:
+        raise FatalAccounting(
+            f"{what}'s page accounting cannot be measured again: {error}"
+        ) from error
+    return recomputed, inputs
+
+
+def _accounting_page_witnesses(
+    context, index: _PageReadRecords, what: str, feed_record: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Each chair's current page Testimonium of the page, as the accounting measures it.
+
+    The page feed was built from exactly these (each is among its inputs); the
+    accounting's own inputs are then held to them by `_verify_accounting`.
+    """
+    # `witness_regime` reads this module's regime names, so it is imported here.
+    from common.witness_regime import witness_label
+
+    page_id = feed_record["subject_id"]
+    current = latest_per_chair(
+        index.testimonia.get(page_id, []), f"page Testimonium for page {page_id}"
+    )
+    witnesses = []
+    for record in current:
+        chair = record["payload"]["chair"]
+        reference = context.artifact_ref(ATTESTATORES, "page-testimonium", record["artifact_id"])
+        _require(
+            reference in feed_record.get("inputs", []),
+            f"{what}'s page feed was not built from chair {chair!r}'s current page Testimonium",
+        )
+        witnesses.append(
+            {
+                "chair": chair,
+                "witness_label": witness_label(
+                    chair,
+                    regime=context.witness_context,
+                    run_id=context.tree.run_id,
+                    config_digest=context.config_digest,
+                ),
+                "adapter": context.registry.resolve(chair).witness_adapter,
+                "testimonium": record,
+                "testimonium_ref": reference,
+            }
+        )
+    return witnesses
 
 
 def _page_row(
@@ -2669,15 +2877,14 @@ def _page_row(
     ordinal: int,
     page_id: str,
     payload: Mapping[str, Any],
+    problem_codes: list[str],
     page_holds: list[str],
     refs: dict[str, dict[str, str]],
 ) -> dict[str, Any]:
     """The one row that stands for a page with no act entry, over the page rectangle."""
-    unread = payload["disposition"] == "held"
+    unread = payload["disposition"] == page_path.HELD
     act_class = PAGE_UNREAD_CLASS if unread else PAGE_BLANK_CLASS
-    codes = {PAGE_UNREAD_HOLD} if unread else {PAGE_BLANK_HOLD}
-    if unread:
-        codes |= {problem.get("code") for problem in payload["problems"]}
+    codes = {PAGE_UNREAD_HOLD, *problem_codes} if unread else {PAGE_BLANK_HOLD}
     rectangle = _sealed_page_rectangle(context, page_id, ordinal, f"page {ordinal}")
     return {
         "act_id": derive_act_id(page_id, act_class, rectangle),
@@ -2687,12 +2894,12 @@ def _page_row(
         "n": None,
         "kind": "act",
         "class": act_class,
-        "disposition": "held",
+        "disposition": page_path.HELD,
         "region_ref": None,
         "reading_ref": refs["reading_ref"],
         "perlectio_ref": None,
         "accounting_ref": refs["accounting_ref"],
-        "hold_codes": sorted(code for code in codes | set(page_holds) if isinstance(code, str)),
+        "hold_codes": sorted(codes | set(page_holds)),
         "continues_from_previous_page": None,
         "continues_to_next_page": None,
     }
@@ -2703,59 +2910,44 @@ def _verify_entries(
     index: _PageReadRecords,
     ordinal: int,
     page_id: str,
-    attempt: str,
-    validated: dict[str, Any],
-    feed: Mapping[str, Any],
+    reading: Mapping[str, Any],
+    plans: list[dict[str, Any]],
     refs: dict[str, dict[str, str]],
     page_holds: list[str],
 ) -> list[dict[str, Any]]:
     """Each entry of a read answer, proven against its act-region and its Perlectio."""
     what = f"page {ordinal} ({page_id})"
-    entries = validated["entries"]
     _require(
-        [entry["n"] for entry in entries] == list(range(1, len(entries) + 1)),
-        f"{what}'s answer does not number its entries 1..{len(entries)}",
+        [plan["act"]["n"] for plan in plans] == list(range(1, len(plans) + 1)),
+        f"{what}'s answer does not number its entries 1..{len(plans)}",
     )
-    shared = {
-        n
-        for problem in validated["problems"]
-        if problem["code"] == page_accounting.DUPLICATE_REGION
-        for n in problem["ns"]
-    }
-    autopsia = feed.get("page_render") is not None
+    # A page naming no act is held until the Recensor confirms nothing on it is one.
+    no_act = {NO_ACT_ON_PAGE_HOLD} if all(p["act"]["kind"] != "act" for p in plans) else set()
     feed_ref = refs["feed_ref"]
-    expected_ids = []
+    attempt = page_path.page_reading_attempt(page_id)
     rows = []
-    for entry in entries:
-        n, union = entry["n"], entry["union_box_px"]
-        act_class = READING_CLASS if union is not None else READING_UNPLACED_CLASS
-        act_id = derive_act_id(
-            page_id, act_class, {"page_reading": attempt, "n": n, "union_box_px": union}
-        )
-        expected_ids.append(act_id)
-        region_holds = [_UNPLACED_HOLD] if union is None else []
-        if n in shared:
-            region_holds.append(_DUPLICATE_REGION_HOLD)
-        if not autopsia:
-            region_holds.append(_NO_AUTOPSIA_HOLD)
+    for plan in plans:
+        act, act_id, union = plan["act"], plan["act_id"], plan["union_box_px"]
+        n = act["n"]
         entry_what = f"{what}'s entry {n} ({act_id})"
         region = _one(
-            index.by_subject(ACT_REGION_KIND, act_id),
+            index.by_subject(page_path.ACT_REGION_KIND, act_id),
             f"{entry_what} act-region",
-            attempt_id(act_id, READING_REGION_OPERATION, 1),
+            page_path.region_attempt(act_id),
         )
         region_payload = _payload_of(region)
+        region_holds = plan["region_holds"]
         expected_region = {
-            "schema": ACT_REGION_SCHEMA,
+            "schema": page_path.ACT_REGION_SCHEMA,
             "page_id": page_id,
             "page_ordinal": ordinal,
             "reading_unit": READING_UNIT_PAGE,
             "n": n,
-            "kind": entry["kind"],
-            "label": entry["label"],
-            "cites": entry["cites"],
-            "cited_ids": entry["cited_ids"],
-            "act_class": act_class,
+            "kind": act["kind"],
+            "label": act.get("label"),
+            "cites": act["cites"],
+            "cited_ids": plan["cited_ids"],
+            "act_class": plan["act_class"],
             "page_reading_attempt": attempt,
             "union_box_px": union,
             "page_reading_ref": refs["reading_ref"],
@@ -2768,12 +2960,13 @@ def _verify_entries(
             name for name, value in expected_region.items() if region_payload.get(name) != value
         )
         _require(
-            not mismatched and region.get("config_digest") == context.config_digest,
+            not mismatched,
             f"{entry_what} act-region does not match its answer entry and page records "
-            f"({', '.join(mismatched) or 'config_digest'})",
+            f"({', '.join(mismatched)})",
         )
         _require(
-            region.get("outcome") == ("held" if region_holds or page_holds else "read"),
+            region.get("outcome")
+            == (page_path.HELD if region_holds or page_holds else page_path.READ),
             f"{entry_what} act-region's outcome does not follow its holds",
         )
         if union is None:
@@ -2799,13 +2992,15 @@ def _verify_entries(
                 ) from error
         region_ref = index.ref(region)
         perlectio = _one(
-            index.by_subject(PERLECTIO_KIND, act_id),
+            index.by_subject(page_path.PERLECTIO_KIND, act_id),
             f"{entry_what} Perlectio",
-            perlector_attempt_id(act_id, "perlegere", 1),
+            page_path.perlectio_attempt(act_id),
         )
-        reading_payload = _payload_of(perlectio)
-        expected_reading = {
-            "schema": PAGE_PERLECTIO_SCHEMA,
+        perlectio_payload = _payload_of(perlectio)
+        assessment = plan["assessment"]
+        reading_holds = plan["reading_holds"]
+        expected_perlectio = {
+            "schema": page_path.PERLECTIO_SCHEMA,
             "page_id": page_id,
             "page_ordinal": ordinal,
             "reading_unit": READING_UNIT_PAGE,
@@ -2814,30 +3009,37 @@ def _verify_entries(
             "page_accounting_ref": refs["accounting_ref"],
             "feed_ref": feed_ref,
             "n": n,
-            "kind": entry["kind"],
-            "label": entry["label"],
-            "continues_from_previous_page": entry["continues_from_previous_page"],
-            "continues_to_next_page": entry["continues_to_next_page"],
+            "kind": act["kind"],
+            "label": act.get("label"),
+            "text": plan["text"],
+            "uncertain_spans": assessment["uncertain_spans"],
+            "gaps": assessment["gaps"],
+            "uncertainty_assessment": assessment,
+            "truncation": plan["truncation"],
+            "autopsia": plan["autopsia"],
+            "continues_from_previous_page": act["continues_from_previous_page"],
+            "continues_to_next_page": act["continues_to_next_page"],
+            "holds": reading_holds,
             "page_holds": page_holds,
+            "engine_call": reading.get("engine_call"),
+            "provenance": reading.get("provenance"),
         }
         mismatched = sorted(
-            name for name, value in expected_reading.items() if reading_payload.get(name) != value
+            name
+            for name, value in expected_perlectio.items()
+            if perlectio_payload.get(name) != value
         )
-        holds = reading_payload.get("holds")
         _require(
-            not mismatched
-            and perlectio.get("config_digest") == context.config_digest
-            and isinstance(holds, list)
-            and all(isinstance(code, str) and code for code in holds)
-            and set(region_holds) <= set(holds),
+            not mismatched,
             f"{entry_what} Perlectio does not match its act-region, answer entry and page "
-            f"records ({', '.join(mismatched) or 'config_digest or holds'})",
+            f"records ({', '.join(mismatched)})",
         )
         _require(
-            perlectio.get("outcome") == ("held" if holds or page_holds else "read"),
+            perlectio.get("outcome")
+            == (page_path.HELD if reading_holds or page_holds else page_path.READ),
             f"{entry_what} Perlectio's outcome does not follow its holds",
         )
-        hold_codes = sorted(set(holds) | set(page_holds))
+        hold_codes = sorted(set(reading_holds) | set(page_holds) | no_act)
         rows.append(
             {
                 "act_id": act_id,
@@ -2845,23 +3047,24 @@ def _verify_entries(
                 "page_id": page_id,
                 "page_ordinal": ordinal,
                 "n": n,
-                "kind": entry["kind"],
-                "class": act_class,
-                "disposition": "held" if hold_codes else "read",
+                "kind": act["kind"],
+                "class": plan["act_class"],
+                "disposition": page_path.HELD if hold_codes else page_path.READ,
                 "region_ref": region_ref,
                 "reading_ref": refs["reading_ref"],
                 "perlectio_ref": index.ref(perlectio),
                 "accounting_ref": refs["accounting_ref"],
                 "hold_codes": hold_codes,
-                "continues_from_previous_page": entry["continues_from_previous_page"],
-                "continues_to_next_page": entry["continues_to_next_page"],
+                "continues_from_previous_page": act["continues_from_previous_page"],
+                "continues_to_next_page": act["continues_to_next_page"],
             }
         )
-    for kind in (ACT_REGION_KIND, PERLECTIO_KIND):
+    expected_ids = sorted(plan["act_id"] for plan in plans)
+    for kind in (page_path.ACT_REGION_KIND, page_path.PERLECTIO_KIND):
         found = sorted(record.get("subject_id") for record in index.on_page(kind, page_id))
         _require(
-            found == sorted(expected_ids),
-            f"{what}'s {kind} records do not match its answer's {len(entries)} entries",
+            found == expected_ids,
+            f"{what}'s {kind} records do not match its answer's {len(plans)} entries",
         )
     return rows
 
