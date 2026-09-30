@@ -73,6 +73,47 @@ stage-seal` with its context already opened, writing nothing;
 `pipeline/5_recensor/test_recensor_real_ingress.py` pins that for this stage beside the
 Recensor and the Perlector.
 
+## Page-read runs
+
+A run sealed with `reading_unit = "page"` (`config/perlector_protocol.toml`) takes
+its denominator from `common.stage.reading_acts` instead of `expected_acts`, and
+its reviews through `common/page_review.py`, the one reader of the Recensor's
+page path (`current_page_reviews`: one current `review` per row, every row
+reviewed, no review of an uncounted unit, each naming its row's key, kind and
+reading). A `page-refused` row is the census's and is never reviewed
+(`reviewed_rows`). The act path is unchanged.
+
+- **Which rows are established.** A row whose current review is `accepted`. Every
+  decision is checked before any record is written: an accepted row with no
+  reading (`page-unread`, `page-blank`) or one the denominator holds
+  (`disposition` other than `read`) is fatal, because a stage may not resurrect a
+  held reading. Held and page rows end at the Recensor with no record and count
+  toward held; `EXIT_HELD` only for an outcome the algebra leaves open.
+- **`other` readings are established too.** The Perlector names `act` and `other`
+  entries on a page; both are established here, so every export shows the one
+  established reading of each. The record gains `kind` (`act` | `other`); its
+  closed field set is the act record's plus `kind`.
+- **The constructor** is `establish_from_accepted_page_reading(context, row,
+  review_ref)`. The reading is the row's `perlectio.v2`, which the review must name
+  and input; it must be `read` with no `holds` or `page_holds`, of the row's kind.
+  Its one region is the `act-region` the reading names (and the row counted),
+  proven from the Exemplar by `verify_reading_region_lineage`; the record's region
+  is exactly what that returns (`region_id`, `image_path`, `image_sha256`,
+  `verified_dimensions`, `source_page_ordinal`, `source_page_id`, `transform`),
+  a closed set of its own. There is no act-attachment requirement.
+- **Witness custody** is the act path's check re-pointed to the page: every
+  witness row of the feed the reading names must carry its chair's current
+  `page-testimonium` of that page, and every dissent row must compare against a
+  witness the feed showed. The annotation roster is those page Testimonia.
+- **Uncertainty** is `common.contracts.uncertainty.from_page_perlectio`: the
+  reading's spans and gaps with its `{state, problem}` assessment. A page reader is
+  shown no Pass-A draft, so, like a draft-withheld act reading, `self_revisions`
+  is `null` (not measured) and `lectio_kind` is `primed-draft-withheld`.
+- **Inputs** are the review, the reading, its act-region and the crop.
+- **Index.** `accepted_act_ids` follows the tree: a tree whose Perlector
+  published page readings reconciles against the page rows the Recensor accepted,
+  1:1, exactly as the act path does.
+
 ## `kind="archetypus"`
 
 The artifact subject is the stable act identity. Its payload is separately self-hashed,
