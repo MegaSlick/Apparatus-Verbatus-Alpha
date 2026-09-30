@@ -506,7 +506,11 @@ in `initial_pass` regardless of scenario or configuration), which is what makes
 the optional *chair* possible without a mandatory *code path* ever being
 skippable: the chair is optional, its resolution is not.
 
-`secondary-proposal` exists only when the chair is configured, one held record
+`secondary-proposal` exists only when the chair is answered by the fixture: the
+pixel-scan rescue is the fixture pass's offline stand-in for a model proposer
+and runs under that fixture's receipt. An in-process record detector never
+switches it on and never lends it its provenance, so a real run publishes
+neither kind. When it runs there is one held record
 per rescue candidate the secondary scan finds outside authoritative coverage —
 `authoritative: false`, always, at the schema level and in fact. A candidate
 wholly contained by one claimed act is ordinary coverage and is not published;
@@ -619,7 +623,9 @@ difference meets the RunTree's immutable publish boundary and refuses.
 
 **They decide nothing.** No detector record holds, rescues, or enters an act, an
 `act-group`, a `region` or the proposal seal, and `act_overlaps` is recorded,
-never acted on. The pixel-scan rescue above runs beside the detector unchanged.
+never acted on. The pixel-scan rescue above is not the detector: it runs only
+beside the fixture detector, as the offline stand-in it has always been, and a
+real run's in-process detector leaves it off (`_pixel_rescue_provenance`).
 Leaving the chair absent publishes none of the three kinds and changes no
 authoritative outcome (`pipeline/2_designator/test_secondary_proposer.py`).
 
@@ -1025,10 +1031,11 @@ value — a declared moment on a path that called the chair would be a fabricate
 one) plus `engine_call`, the closed `structure-chair-call.v1`
 posture `{schema, call_kind, decoding_policy = "structure",
 decoding_config_sha256}` that `validate_serving_provenance` binds to the run's
-sealed decoding digest. The secondary proposer is resolved on this path too and
-must be absent; a configured row is refused by name before
-any chair starts, because nothing serves it and no fixture receipt may be
-written for it.
+sealed decoding digest. The secondary proposer is resolved on this path too:
+absent, or DAI's own record detector on an `in-process` row, whose catalogue
+row, pinned package versions and weights digest are checked before the
+structure chair starts and which loads only once that chair has closed. A
+`fixture` or `vllm` row is refused by name before any chair starts.
 
 **Decoding.** The pass runs under `config/decoding.toml`'s `[structure]`
 section and never under `reading_of_record`: the Attestatores keep the fixed
@@ -2009,7 +2016,7 @@ adjacency rule, not of how the rule is computed.)
 The secondary proposer is optional, but its declared sensitivity is still the
 most inclusive threshold this stage has. Reconciliation therefore counts the
 faint band that `primary_scan` does not propose and mints it as residual held
-evidence when no crop claims it. A configured secondary chair may additionally
+evidence when no crop claims it. A fixture-answered secondary chair may additionally
 publish a review-only rescue crop over the same area; that changes no authority
 decision and no pixel escapes the conservation denominator when the chair is
 absent. This closes a silent `EXIT_COMPLETE` path found by manual review; the

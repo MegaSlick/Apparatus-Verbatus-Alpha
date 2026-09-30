@@ -2,7 +2,8 @@
 
 The `secondary_proposer` chair is DAI's own project's record detector. The
 Designator runs it and publishes what it found as page evidence that decides
-nothing; its configured pixel-scan rescue is unchanged beside it. Three levels,
+nothing; the pixel-scan rescue runs only beside the fixture detector, as its
+offline stand-in. Three levels,
 cheapest first: the pure rules with no I/O, records and rescue crops published
 over a real run tree, and a full orchestrator run proving configuring the chair
 changes no authoritative outcome relative to leaving it absent.
@@ -525,6 +526,37 @@ def test_a_secondary_rescue_makes_the_initial_pass_held_without_changing_act_aut
         designator._seal_artifact_id(),
     )
     assert {row["outcome"] for row in seal["payload"]["expected_acts"]} == {"proposed"}
+
+
+def test_an_in_process_detector_never_switches_on_the_pixel_rescue(tmp_path, monkeypatch):
+    """The rescue is the fixture's stand-in: a real detector neither runs it nor lends
+    it provenance, so a stray mark that would be rescued under the fixture is not.
+    """
+    import dataclasses
+
+    designator = load_stage("2_designator")
+    root = tmp_path / "runs"
+    context = _prepared_context(designator, root, _configured(tmp_path), "rescue decoupling test")
+    real_secondary = designator.secondary_provenance
+
+    def as_in_process(context):
+        record, detector = real_secondary(context)
+        return record, dataclasses.replace(
+            detector, run_facts={**detector.run_facts, "engine": "ultralytics"}
+        )
+
+    def one_stray_candidate(width, height, rows, *, background, gap_tolerance_px):
+        return [{"bounds": {"x": width - 2, "y": height - 2, "w": 1, "h": 1}, "pixel_count": 1}]
+
+    monkeypatch.setattr(designator, "secondary_provenance", as_in_process)
+    monkeypatch.setattr(designator.structure, "secondary_scan", one_stray_candidate)
+    assert designator.initial_pass(context) is False
+    context.finish()
+    kinds = {
+        entry["kind"] for entry in context.tree.build_manifest(designator.DESIGNATOR)["artifacts"]
+    }
+    assert "detector-page" in kinds
+    assert not kinds & {"secondary-proposal", "rescue-crop"}
 
 
 def test_detector_records_alone_never_hold_the_designator(tmp_path):

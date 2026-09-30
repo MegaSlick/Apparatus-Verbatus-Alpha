@@ -91,6 +91,7 @@ from common.stage import (  # noqa: E402
 from operations.serving.assembly import bound_serving_recipes  # noqa: E402
 from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
 from operations.serving.detector import (  # noqa: E402
+    FIXTURE_ENGINE,
     RecordDetector,
     fixture_record_detector,
     load_ultralytics_record_detector,
@@ -1467,16 +1468,19 @@ def _publish_secondary_proposals(
     page_record: dict,
     analysis: dict,
     claimed: list[dict],
-    secondary: dict,
+    secondary: dict | None,
     grouping_policy: dict,
 ) -> bool:
     """Cut non-authoritative rescue candidates for review, up to the page bound.
+
+    `secondary` is the provenance the pixel-scan rescue runs under, or None
+    when it does not run (`_pixel_rescue_provenance`).
 
     A speckled page could otherwise mint thousands of crops. Beyond the bound,
     keep one held count and cut none; candidates are counted, never filtered.
     Enumeration distinguishes no candidate from counted but not cut.
     """
-    if secondary["chair_state"] != "configured":
+    if secondary is None:
         return False
     validate_serving_provenance(
         context,
@@ -2020,7 +2024,7 @@ def _publish_conservation_and_secondary(
     page_record: dict,
     analysis: dict,
     claimed: list[dict],
-    secondary: dict,
+    secondary: dict | None,
     grouping_policy: dict,
 ) -> tuple[list[dict], bool]:
     """Reconcile ink against crops, then publish conservation and rescue evidence.
@@ -2140,7 +2144,7 @@ def _publish_page_conservation(
     pages: dict[int, dict],
     failures: dict[int, str],
     page_cache: dict[int, dict],
-    secondary: dict,
+    secondary: dict | None,
     grouping_policy: dict,
 ) -> tuple[list[dict], bool, bool]:
     """Reconcile every sealed page and return rows plus named hold facts."""
@@ -2454,7 +2458,12 @@ def initial_pass(context) -> bool:
 
     # Every sealed page, including pages no act touched; residuals join the seal.
     residual_rows, secondary_held, unmeasured = _publish_page_conservation(
-        context, pages, failures, page_cache, secondary, grouping_policy
+        context,
+        pages,
+        failures,
+        page_cache,
+        _pixel_rescue_provenance(secondary, detector),
+        grouping_policy,
     )
     expected.extend(residual_rows)
     seal_inputs.extend(_evidence_of(residual_rows))
@@ -2465,6 +2474,19 @@ def initial_pass(context) -> bool:
     return _initial_pass_has_holds(
         expected, failures, secondary_held=secondary_held, unmeasured=unmeasured
     )
+
+
+def _pixel_rescue_provenance(secondary: dict, detector: RecordDetector | None) -> dict | None:
+    """The provenance the pixel-scan rescue runs under, or None when it does not run.
+
+    The rescue is the fixture pass's offline stand-in for a model proposer, so
+    it runs only when the secondary chair is answered by the fixture, under that
+    fixture's receipt. An in-process record detector never switches it on and
+    never lends it its provenance: a real run cuts no rescue crop.
+    """
+    if detector is None or detector.run_facts.get("engine") != FIXTURE_ENGINE:
+        return None
+    return secondary
 
 
 def _published_secondary_provenance(context) -> dict | None:
@@ -3157,7 +3179,12 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
         _publish_detector_records(context, pages, secondary, detector)
 
     residual_rows, secondary_held, unmeasured = _publish_page_conservation(
-        context, pages, failures, page_cache, secondary, grouping_policy
+        context,
+        pages,
+        failures,
+        page_cache,
+        _pixel_rescue_provenance(secondary, detector),
+        grouping_policy,
     )
     expected.extend(residual_rows)
     if not expected:
