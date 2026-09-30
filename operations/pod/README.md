@@ -206,9 +206,12 @@ it saw and how long it waited in a local evidence file. Boot A uses it.
 as `completed-early` and closes the pod. A red step exits non-zero at once, which is the
 correct immediate close.
 
-- **Chair cache.** `CHAIR_CACHE` records the pinned source plan without copying weights.
-  PREFLIGHT and each stage copy one role from the volume store to the container-local cache,
-  verify the copy against its pinned manifest, and evict other roles before the next fill.
+- **Chair cache.** `CHAIR_CACHE` records the pinned source plan of each Hugging Face
+  chair without copying its weights, and copies each local-repository chair (Surya's
+  bundle) from the volume store to where the roster binds it on container-local disk,
+  verified against its manifest. For the Hugging Face chairs, PREFLIGHT and each stage
+  copy one role from the volume store to the container-local cache, verify the copy
+  against its pinned manifest, and evict other roles before the next fill.
   An adapter base remains available while its adapter is filled. The at-most-one same-pin
   re-fetch is not wired (04-8); a mismatch is red and names the chair.
 - **Transfer is optional.** No submission manifest on the volume is a vacuous success; a
@@ -412,9 +415,12 @@ pinned manifest, then runs the chair's own runner once on the golden page, on th
 the sync command as the remedy, and the versions, CPU instruction set and machine the
 run measured go in the report's `subprocess_receipts`. Bootstrap's UV_ENVIRONMENT step
 builds that environment right after the project's own, with
-`uv sync --locked --project operations/serving/surya`, only when the checked-out
-catalogue has a subprocess row for a chair the roster configures, and then counts its
-14 GiB in the container disk it checks first. The MODEL_STORE step then fetches Surya's
+`uv sync --locked --project operations/serving/surya`, when the checked-out catalogue
+has a subprocess row for a chair the roster configures and the pod's selected roles
+include, or whenever the model store still lacks Surya's bundle, and counts its 14 GiB
+in the container disk it checks first. The store fetches the bundle whatever the roster
+configures, so a fresh store costs those 14 GiB even on a pod whose stages never run
+Surya. The MODEL_STORE step then fetches Surya's
 weight bundle onto the network volume by running `operations/serving/surya/prefetch.py`
 in that environment, and refuses it unless its measured manifest is the pinned one, so
 MODEL_STORE needs that environment synced first. The CHAIR_CACHE step copies the
