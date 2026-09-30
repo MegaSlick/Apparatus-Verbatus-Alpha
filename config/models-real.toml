@@ -15,6 +15,7 @@ attestatores = "unproven-real-attestatores"
 perlector = "unproven-real-perlector"
 recensor = "unproven-real-recensor"
 archetypus = "unproven-real-archetypus"
+coniector = "unproven-real-coniector"
 armarium = "unproven-real-armarium"
 
 # Which framing each witness chair is asked in, for the one chair whose adapter
@@ -114,6 +115,18 @@ revision = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
 digest_manifest = "ace17319b4f843f3b746e6039e1c3dfc5e47b4e17bd935b030722a1d96a17f70"
 manifest = "manifests/qwen3.8-27B.json"
 serving_recipe = "unproven-real-perlector"
+license_note = "Apache-2.0, read from the repository card 2026-08-20; accepted under the research track (2026-08-20)"
+
+# The Coniector's chair: the Perlector's model at the same revision, asked text
+# only. Whether the stage asks it is `mode` in config/reconstruction.toml.
+[chairs.reconstructor]
+state = "configured"
+source = "huggingface"
+repo = "Qwen/Qwen3.8-27B"
+revision = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+digest_manifest = "ace17319b4f843f3b746e6039e1c3dfc5e47b4e17bd935b030722a1d96a17f70"
+manifest = "manifests/qwen3.8-27B.json"
+serving_recipe = "unproven-real-reconstructor"
 license_note = "Apache-2.0, read from the repository card 2026-08-20; accepted under the research track (2026-08-20)"
 
 [chairs.annotator]

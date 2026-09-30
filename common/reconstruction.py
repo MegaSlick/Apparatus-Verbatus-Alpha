@@ -94,6 +94,8 @@ _POLICY_INTEGERS: Final = (
 
 @dataclass(frozen=True)
 class ReconstructionPolicy:
+    mode: str
+    pages_are_consecutive: bool
     max_departures_per_act: int
     max_departure_characters: int
     max_changed_share_bp: int
@@ -107,12 +109,16 @@ def load_reconstruction_policy(
 ) -> ReconstructionPolicy:
     """Read the closed, sealed reconstruction configuration, with its seal."""
     record, digest = read_sealed_toml(path, "reconstruction configuration")
-    expected = set(_POLICY_INTEGERS)
+    expected = set(_POLICY_INTEGERS) | {"mode", "pages_are_consecutive"}
     if set(record) != expected:
         raise ContractError(
             "the reconstruction configuration is not its closed schema: "
             f"{sorted(set(record) ^ expected)}"
         )
+    if record["mode"] not in MODES:
+        raise ContractError(f"reconstruction mode must be one of {sorted(MODES)}")
+    if not isinstance(record["pages_are_consecutive"], bool):
+        raise ContractError("reconstruction pages_are_consecutive must be true or false")
     for field in _POLICY_INTEGERS:
         value = record[field]
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:

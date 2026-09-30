@@ -172,6 +172,12 @@ COLLECTION_BOOT_SCHEDULE: tuple[ScheduledStage, ...] = (
     ScheduledStage("perlector", True, (ScheduledChair("perlector", "Qwen3.8-27B"),)),
     ScheduledStage("recensor", False),
     ScheduledStage("archetypus", False),
+    # A pod only for a run sealed with the Coniector's mode on; off, it reads nothing.
+    ScheduledStage(
+        "coniector",
+        True,
+        (ScheduledChair("reconstructor", "Qwen3.8-27B, text only, when the sealed mode is on"),),
+    ),
     ScheduledStage("armarium", False),
 )
 POD_REQUIRED_STAGES = frozenset(

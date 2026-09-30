@@ -133,6 +133,15 @@ REQUIRED_ARTIFACTS = (
         "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
         "apache-2.0",
     ),
+    # The Coniector's chair: the Perlector's model at the same revision.
+    RequiredArtifact(
+        "reconstructor",
+        "qwen3.8-27B",
+        "huggingface",
+        "Qwen/Qwen3.8-27B",
+        "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+        "apache-2.0",
+    ),
 )
 SURYA_OCR_2_REFUSAL = MappingProxyType(
     {

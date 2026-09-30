@@ -19,6 +19,7 @@ from common.decoding import (
     load_decoding_policy,
     perlector_max_tokens,
     perlector_page_max_tokens,
+    reconstructor_max_tokens,
     recorded_sampling,
     refuse_retired_call_record,
     structure_recovery_policy,
@@ -54,6 +55,15 @@ MAKERS_SAMPLING = {
     },
     # Qwen/Qwen3.8-27B model card @ 1d4bf0f, non-thinking mode.
     "perlector": {
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+        "repetition_penalty": 1.0,
+    },
+    # The same card and mode, asked text only.
+    "reconstructor": {
         "temperature": 0.7,
         "top_p": 0.8,
         "top_k": 20,
@@ -130,7 +140,7 @@ def test_a_sampling_value_change_moves_the_decoding_digest(tmp_path: Path):
 def test_shipped_decoding_policy_declares_its_sections_and_variance_shape():
     policy, digest = load_decoding_policy()
     assert policy["variance_experiment"] == {"seed": 20260820}
-    assert policy["schema"] == "decoding.v5"
+    assert policy["schema"] == "decoding.v6"
     assert policy["perlector_generation"] == {
         "reading_max_tokens": 4096,
         "reproof_max_tokens": 8192,
@@ -138,6 +148,8 @@ def test_shipped_decoding_policy_declares_its_sections_and_variance_shape():
     }
     assert perlector_max_tokens(policy) == (4096, 8192)
     assert perlector_page_max_tokens(policy) == 12288
+    assert policy["reconstructor_generation"] == {"answer_max_tokens": 8192}
+    assert reconstructor_max_tokens(policy) == 8192
     assert policy["chandra_native_inference"] == recipe_record()
     assert policy["structure"] == {
         "recovery_schedule": "chandra-native-retry",

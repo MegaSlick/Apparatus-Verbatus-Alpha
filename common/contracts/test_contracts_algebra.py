@@ -29,7 +29,15 @@ from common.contracts.outcomes import (
     terminal_category,
     witness_coverage,
 )
-from common.contracts.stages import ARMARIUM, ATTESTATORES, DESIGNATOR, INK_MAP, PERLECTOR, RECENSOR
+from common.contracts.stages import (
+    ARMARIUM,
+    ATTESTATORES,
+    CONIECTOR,
+    DESIGNATOR,
+    INK_MAP,
+    PERLECTOR,
+    RECENSOR,
+)
 from common.recensor_receipt import _validate_coverage
 
 # The exact shape of the algebra as this spec defines it. Pinned as counts so that
@@ -45,6 +53,7 @@ EXPECTED_VOCABULARY_SIZES = {
     "perlector": 8,
     "recensor": 7,
     "archetypus": 4,
+    "coniector": 7,
     "armarium": 7,
 }
 
@@ -62,6 +71,11 @@ def test_ink_map_names_edge_evidence_without_owning_unit_14s_hold():
 def test_unmeasurable_ink_remains_unresolved_page_evidence_that_flows_onward():
     assert classify(INK_MAP, "ink-not-measurable") is OutcomeClass.UNRESOLVED
     assert terminal_category(INK_MAP, "ink-not-measurable") is None
+
+
+def test_no_coniector_outcome_decides_where_an_act_ends():
+    for outcome in outcomes.VOCABULARIES[CONIECTOR]:
+        assert terminal_category(CONIECTOR, outcome) is None
 
 
 def test_vocabulary_shape_is_pinned():

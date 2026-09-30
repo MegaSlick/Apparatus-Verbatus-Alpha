@@ -2,8 +2,17 @@
 # diplomatic reading (common/reconstruction.py). The Coniector returns departures
 # from the sealed diplomatic text; these bounds decide which departures code
 # applies, and past them the act's reconstruction is not made. Closed: every key
-# below is required and no other is read. Every value is a starting value, to be
+# below is required and no other is read. Every bound is a starting value, to be
 # measured on the proof run.
+
+# Whether the Coniector's model chair (`reconstructor`) runs: "on" or "off". Off,
+# the stage plans no call and loads no model, and no act carries a reconstruction.
+mode = "off"
+
+# Whether the submitted pages are consecutive leaves of one register. Only then
+# does the Coniector see a neighbouring page's edge act or join an act across a
+# page break; otherwise each page is reconstructed from its own text alone.
+pages_are_consecutive = false
 
 # Most departures one act or one join may carry.
 max_departures_per_act = 5

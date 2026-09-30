@@ -538,12 +538,14 @@ def test_the_measured_real_roster_pins_each_shipped_manifest():
         "attestator_2",
         "attestator_3",
         "perlector",
+        "reconstructor",
         "secondary_proposer",
     }
     assert (
         configured["designator_structure"].digest_manifest
         == configured["attestator_1"].digest_manifest
     )
+    assert configured["perlector"].digest_manifest == configured["reconstructor"].digest_manifest
     for role, identity in configured.items():
         assert identity.digest_manifest != PRE_MATERIALIZATION_SENTINEL, role
         assert read_manifest(

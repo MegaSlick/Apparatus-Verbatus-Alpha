@@ -34,6 +34,7 @@ from .stages import (
     ARCHETYPUS,
     ARMARIUM,
     ATTESTATORES,
+    CONIECTOR,
     DESIGNATOR,
     DOOR,
     EXEMPLAR,
@@ -238,6 +239,18 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
         "established": _C.COMPLETED,
         "refused": _C.FAILED,
     },
+    # The Coniector's records describe a reconstruction beneath an act, never the
+    # act: none of them decides where an act ends.
+    CONIECTOR: {
+        # The run's plan: which calls it asks, under which switches.
+        "planned": _C.COMPLETED,
+        # One page's call: answered in the grammar, or not (named problems).
+        "answered": _C.COMPLETED,
+        "not-answered": _C.FAILED,
+        # One act's or one join's reconstruction; not made carries its reason.
+        "made": _C.COMPLETED,
+        "not-made": _C.UNRESOLVED,
+    },
     ARMARIUM: {
         category.value: klass
         for category, klass in (
@@ -311,6 +324,11 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (RECENSOR, "failed"): _A.REFUSED_WITH_REASON,
     (ARCHETYPUS, "established"): _A.DELIVERED,
     (ARCHETYPUS, "refused"): _A.REFUSED_WITH_REASON,
+    (CONIECTOR, "planned"): None,
+    (CONIECTOR, "answered"): None,
+    (CONIECTOR, "not-answered"): None,
+    (CONIECTOR, "made"): None,
+    (CONIECTOR, "not-made"): None,
     (ARMARIUM, _A.DELIVERED.value): _A.DELIVERED,
     (ARMARIUM, _A.HELD_FOR_REVIEW.value): _A.HELD_FOR_REVIEW,
     (ARMARIUM, _A.EXCLUDED_WITH_APPROVAL.value): _A.EXCLUDED_WITH_APPROVAL,

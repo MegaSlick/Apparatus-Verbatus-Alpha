@@ -38,6 +38,7 @@ from common.contracts.stages import (
     ARCHETYPUS,
     ARMARIUM,
     ATTESTATORES,
+    CONIECTOR,
     DESIGNATOR,
     DOOR,
     EXEMPLAR,
@@ -4470,6 +4471,7 @@ HANDOFF_ARTIFACTS = (
     (DESIGNATOR, ATTESTATORES, "region"),
     (ATTESTATORES, PERLECTOR, "testimonium"),
     (PERLECTOR, RECENSOR, "perlectio"),
+    (PERLECTOR, CONIECTOR, "perlectio"),
     (RECENSOR, ARCHETYPUS, "review"),
     (ARCHETYPUS, ARMARIUM, "archetypus"),
 )
@@ -4485,6 +4487,7 @@ SEAL_ARTIFACTS = (
     (PERLECTOR, RECENSOR),
     (RECENSOR, ARCHETYPUS),
     (ARCHETYPUS, ARMARIUM),
+    (CONIECTOR, ARMARIUM),
     (ARMARIUM, "orchestrator"),
 )
 
@@ -4496,6 +4499,7 @@ CONSUMER_PROGRAMS = {
     PERLECTOR: "pipeline/4_perlector/run.py",
     RECENSOR: "pipeline/5_recensor/run.py",
     ARCHETYPUS: "pipeline/6_archetypus/run.py",
+    CONIECTOR: "pipeline/4b_coniector/run.py",
     ARMARIUM: "pipeline/7_armarium/run.py",
 }
 
@@ -4774,14 +4778,14 @@ def test_every_handoff_in_the_contract_is_covered_by_this_table():
 
     assert {(producer, consumer) for producer, consumer, _ in HANDOFF_ARTIFACTS} == set(HANDOFFS)
     assert {consumer for _, consumer, _ in HANDOFF_ARTIFACTS} == set(CONSUMER_PROGRAMS)
-    assert len(HANDOFF_ARTIFACTS) == 8
+    assert len(HANDOFF_ARTIFACTS) == 9
 
 
 def test_every_stage_has_one_seal_battery_row():
     from common.contracts.stages import STAGES
 
     assert {producer for producer, _ in SEAL_ARTIFACTS} == set(STAGES)
-    assert len(SEAL_ARTIFACTS) == 9
+    assert len(SEAL_ARTIFACTS) == 10
 
 
 def test_the_run_authority_is_never_rewritten_by_any_stage(happy_run):

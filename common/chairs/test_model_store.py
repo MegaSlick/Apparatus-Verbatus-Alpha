@@ -714,7 +714,7 @@ def test_a_store_whose_surya_bundle_has_not_landed_verifies_and_says_so(tmp_path
     assert inventory["complete"] is False
     assert inventory["pending"] == ["surya2-detection"]
     rows = {row["chair"]: row for row in inventory["artifacts"]}
-    assert len(rows) == 7
+    assert len(rows) == 8
     assert rows["designator_surya"]["state"] == "pending-fetch"
     assert rows["designator_surya"]["reason"] == "s3 bundle not yet fetched by the host"
     assert "snapshot" not in rows["designator_surya"]
@@ -1536,6 +1536,8 @@ def test_the_real_roster_carries_the_licence_notes_it_was_drafted_with():
     # below -- a missing dictionary key in a licence test, with nothing pointing
     # at comment formatting in a config file, and the comparison the docstring is
     # about never running at all.
+    # The reconstructor sits on the Perlector's repository, so it carries that note.
+    drafted["reconstructor"] = drafted["perlector"]
     unparsed = sorted(set(carried) - set(drafted))
     assert not unparsed, (
         f"no commented `license_note` was parsed for {unparsed}; the drafted roster in "
@@ -1543,7 +1545,7 @@ def test_the_real_roster_carries_the_licence_notes_it_was_drafted_with():
         "notes were not compared"
     )
     assert carried == {role: drafted[role] for role in carried}
-    assert len(carried) == 6
+    assert len(carried) == 7
 
 
 def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothing():
@@ -1585,7 +1587,8 @@ def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
 
     plan = pod_materialization_plan(tmp_path)
 
-    # Six Hugging Face chairs over five snapshots: the two chandra chairs each
+    # Seven Hugging Face chairs over five snapshots: the two chandra chairs and the
+    # two Qwen chairs each
     # need their own role-keyed cache entry, both made from the one stored
     # snapshot, because a cache entry is keyed by role and a store is not.
     assert {chair: row["snapshot"] for chair, row in plan["cache_root_entries"].items()} == {
@@ -1595,6 +1598,7 @@ def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
         "attestator_2": "hf/dai-recordgold-atr",
         "attestator_3": "hf/churro-3B",
         "perlector": "hf/qwen3.8-27B",
+        "reconstructor": "hf/qwen3.8-27B",
     }
     assert len({row["snapshot"] for row in plan["cache_root_entries"].values()}) == 5
     # model_root is local-repository only; it is not a second cache.

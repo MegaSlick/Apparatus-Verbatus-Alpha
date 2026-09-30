@@ -255,7 +255,7 @@ def test_green_qualification_renders_marks_for_only_the_measured_tier(tmp_path: 
 
     assert record["schema"] == "serving-qualification-candidates.v1"
     candidates = record["candidates"]
-    assert isinstance(candidates, list) and len(candidates) == 5
+    assert isinstance(candidates, list) and len(candidates) == 6
     assert {item["tier"] for item in candidates} == {PROVEN_TIER}
     for candidate in candidates:
         reference = candidate["page_witness_reference"]
@@ -275,11 +275,11 @@ def test_green_qualification_renders_marks_for_only_the_measured_tier(tmp_path: 
             row["preflight_identity_digest"] = by_key[key]["preflight_identity_digest"]
             row["preflight_digest"] = by_key[key]["preflight_digest"]
     parsed = parse_serving_recipes(raw)
-    # The five served chairs; the Surya subprocess row has no proof state at all.
+    # The six served chairs; the Surya subprocess row has no proof state at all.
     assert SURYA_CHAIR not in {item["chair"] for item in candidates}
     assert (
         sum(getattr(profile, "preflight_state", None) == "proven" for profile in parsed.profiles)
-        == 5
+        == 6
     )
 
 
@@ -350,7 +350,7 @@ def test_qualification_accepts_green_hold_report(tmp_path: Path) -> None:
     paths, wrapper = _qualification_fixture(tmp_path)
     wrapper.update(schema="pod-bootstrap-hold.v1", state="holding")
     paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
-    assert len(_qualify(paths)["candidates"]) == 5
+    assert len(_qualify(paths)["candidates"]) == 6
 
 
 _ABSENT_SECONDARY = """[chairs.secondary_proposer]
@@ -398,7 +398,7 @@ def test_an_in_process_chair_needs_no_smoke_receipt_and_is_never_a_candidate(
 ) -> None:
     paths, _ = _with_in_process_detector(tmp_path)
     candidates = _qualify(paths)["candidates"]
-    assert len(candidates) == 5
+    assert len(candidates) == 6
     assert "secondary_proposer" not in {item["chair"] for item in candidates}
 
 
