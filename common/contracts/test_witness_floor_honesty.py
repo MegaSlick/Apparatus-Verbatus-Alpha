@@ -1,9 +1,7 @@
-"""R0 contract tests: floor honesty (D2/D3, brief priority 2).
+"""Witness floor honesty: coverage says at which granularity a floor was met.
 
-Written blind, from /out/R0_CONTRACT_NOTE.md (v2) before the R0 build chamber ran, so
-every test here failed red on the chamber's base commit. The behaviour has since landed:
-`_validate_coverage` carries the granularity fields and `witness_coverage` takes
-attachment facts. The file now guards that behaviour instead of falsifying its absence.
+`witness_coverage` takes act-level attachment facts, and the Recensor receipt's
+`_validate_coverage` carries and rederives the granularity fields it computes.
 
 D2 (interim floor arithmetic): fixture-declared attachments COUNT toward the act floor
 in the skeleton. On any path where a page-witness has NO attachment for an act, that
@@ -46,12 +44,10 @@ def _base_coverage(**overrides) -> dict:
 
 # --- Real inputs to the real writer -------------------------------------------
 #
-# The three D2/D3 tests below used to hand `_validate_coverage` a hand-built
-# record and assert only that the field was admitted. A regression that kept the
-# field names and ignored their values passed all three.
-# They now generate the record from `witness_coverage` itself and assert the
-# value it computes, so ignoring an attachment fact, an unrecorded health flag or
-# an uncovered span turns a test red.
+# The D2/D3 tests below generate the record from `witness_coverage` itself and
+# assert the value it computes, not merely that `_validate_coverage` admits the
+# field, so ignoring an attachment fact, an unrecorded health flag or an
+# uncovered span turns a test red.
 
 CHAIRS: Final = {"chair_1": "read", "chair_2": "read", "chair_3": "read"}
 
@@ -86,20 +82,15 @@ def test_coverage_schema_has_room_for_a_page_granularity_only_contribution():
     """D2: an act-level floor met only by page-granularity contributions is named
     as such in the receipt, distinct from a genuine act-level completed read.
 
-    The v2 coverage schema carries `page_granularity_only`, so `_validate_coverage`
+    The coverage schema carries `page_granularity_only`, so `_validate_coverage`
     accepts the field and checks it against the rest of the record rather than
     refusing the whole record for naming it. This is what "the floor is never
     lowered" means structurally: the honest, narrower claim has somewhere to live.
     """
-    # under_witnessed=True is the internally-consistent value here (audit fix,
-    # F-S4): with 3 completed chairs and 1 of them page-granularity-only, only 2
-    # act-level reads meet the floor of 3, so the act IS under-witnessed. The
-    # original fixture left `under_witnessed=False` (from `_base_coverage`'s
-    # default) uncorrected, which happened to validate before this audit's fix
-    # only because the rederivation check was itself skippable for a record
-    # naming just one of the three granularity fields -- exactly the gap F-S4
-    # closes. This test's own assertion (a new field is accepted, not refused)
-    # is unchanged; only its previously-inconsistent input is corrected.
+    # under_witnessed=True is the internally consistent value: with 3 completed
+    # chairs and 1 of them page-granularity-only, only 2 act-level reads meet the
+    # floor of 3, so the act IS under-witnessed, and `_validate_coverage`
+    # rederives that even for a record naming one granularity field.
     coverage = _base_coverage(page_granularity_only=1, under_witnessed=True)
     try:
         _validate_coverage(coverage)
@@ -108,7 +99,7 @@ def test_coverage_schema_has_room_for_a_page_granularity_only_contribution():
             "the Recensor partition receipt's coverage schema refused a "
             f"page-granularity-only field ({error}); D2 requires floor accounting "
             "to record a page-granularity-only contribution that never satisfies "
-            "an act-level floor, and the v2 schema carries that field"
+            "an act-level floor, and the schema carries that field"
         )
 
 
@@ -143,7 +134,7 @@ def test_health_unrecorded_is_counted_and_is_not_a_shortfall():
     assert unrecorded["under_witnessed"] is healthy["under_witnessed"] is False
     assert unrecorded["page_granularity_only"] == healthy["page_granularity_only"] == 0
 
-    # And the v2 receipt schema carries the record the writer actually produced.
+    # And the receipt schema carries the record the writer actually produced.
     for coverage in (healthy, unrecorded):
         try:
             _validate_coverage(coverage)
@@ -152,7 +143,7 @@ def test_health_unrecorded_is_counted_and_is_not_a_shortfall():
                 "the Recensor partition receipt's coverage schema refused a record "
                 f"`witness_coverage` itself produced ({error}); D3 requires "
                 "content_health.truncated == None to be visibly distinguished from a "
-                "healthy read, and the v2 schema carries that field"
+                "healthy read, and the schema carries that field"
             )
 
 
@@ -190,7 +181,7 @@ def test_an_unaligned_shortfall_is_counted_from_attachment_and_span_evidence():
                 "the Recensor partition receipt's coverage schema refused a record "
                 f"`witness_coverage` itself produced ({error}); D3 requires "
                 "failed/truncated/unaligned to be named shortfall classes the "
-                "receipt can carry, and the v2 schema carries those counts"
+                "receipt can carry, and the schema carries those counts"
             )
 
 
@@ -255,26 +246,17 @@ def test_an_unattached_chair_does_not_satisfy_the_act_level_floor():
     assert unattached["configured"] == 3
 
 
-# --- Audit-and-repair regression (F-S4) ------------------------------------------
-#
-# S4 prime suspect: "the permissive partial-
-# granularity path (has_complete_granularity guard) skips the under_witnessed
-# rederivation for records carrying SOME granularity fields. Can a dishonest
-# record thread that needle?" -- yes, confirmed and fixed.
+# --- A partial granularity record still has under_witnessed rederived --------
 
 
 def test_an_under_witnessed_act_cannot_claim_otherwise_by_omitting_two_of_three_granularity_fields():
-    """F-S4 (tampering battery): "an under-witnessed act whose receipt says
-    otherwise" must be refused, even when the record supplies only
-    `page_granularity_only` and omits `health_unrecorded`/`shortfalls`.
+    """An under-witnessed act whose receipt says otherwise is refused, even when the
+    record supplies only `page_granularity_only` and omits
+    `health_unrecorded`/`shortfalls`.
 
-    Before this audit's fix, `_validate_coverage`'s under_witnessed rederivation
-    ran only when a coverage record carried ALL THREE granularity fields
-    (`has_complete_granularity = granularity_fields <= set(coverage)`) or NONE of
-    them. A record naming exactly one or two -- itself never produced by the real
-    writer (`witness_coverage()` always emits all three together), but nothing
-    stopped a hand-built or tampered record from doing so -- skipped the check
-    entirely. This record claims `under_witnessed=False` with 3 completed chairs,
+    The real writer (`witness_coverage()`) always emits all three granularity
+    fields together, but a hand-built or tampered record may name only one or
+    two, and the rederivation must not depend on which it names. This record claims `under_witnessed=False` with 3 completed chairs,
     a floor of 3, and 1 of them page-granularity-only: only 2 act-level reads
     actually met the floor, so the act IS under-witnessed, and the record is lying.
     """
