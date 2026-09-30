@@ -95,8 +95,16 @@ class PreflightedActions(FakeActions):
                     )
                 ],
                 # The record detector runs in-process: a verified cache, no smoke read.
-                "placements": [{"chair": "secondary_proposer", "state": "in-process"}],
-                "cache_receipts": [{"chair": "secondary_proposer"}],
+                # Surya runs as a subprocess: a verified cache and its own golden-page run.
+                "placements": [
+                    {"chair": "secondary_proposer", "state": "in-process"},
+                    {"chair": "designator_surya", "state": "subprocess"},
+                ],
+                "cache_receipts": [
+                    {"chair": "secondary_proposer"},
+                    {"chair": "designator_surya"},
+                ],
+                "subprocess_receipts": [{"chair": "designator_surya"}],
             },
         )
 
@@ -385,6 +393,7 @@ def test_small_models_selects_cheap_stages_and_returns_after_selection(tmp_path:
         "attestator_2",
         "attestator_3",
         "designator_structure",
+        "designator_surya",
         "secondary_proposer",
     ]
 
@@ -499,7 +508,12 @@ def test_attestatores_preflight_roles_follow_the_configured_roster(
         == EXIT_DRY_RUN
     )
     roles = json.loads(capsys.readouterr().out)["bootstrap"]["preflight_roles"]
-    assert roles == ["attestator_7", "designator_structure", "secondary_proposer"]
+    assert roles == [
+        "attestator_7",
+        "designator_structure",
+        "designator_surya",
+        "secondary_proposer",
+    ]
 
 
 def test_selection_refuses_missing_chair_smoke_after_preflight(tmp_path: Path) -> None:
@@ -530,6 +544,37 @@ def test_selection_refuses_missing_chair_smoke_after_preflight(tmp_path: Path) -
     assert code == EXIT_REFUSED
     assert runner.calls == []
     assert "attestator_2" in _report(ws)["reason"]
+
+
+@pytest.mark.parametrize(
+    "drop",
+    ["subprocess_receipts", "cache_receipts", "placements"],
+)
+def test_the_designator_needs_surya_s_measured_subprocess_run(tmp_path: Path, drop: str) -> None:
+    """Surya is never smoke-read: a selection with the Designator needs its verified
+    cache and its own golden-page run, and a Surya not placed as a subprocess would
+    need a smoke receipt it can never have."""
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+
+    class NoSuryaRun(PreflightedActions):
+        def run_preflight(self) -> dict[str, object]:
+            receipt = PreflightedActions().run_preflight()
+            receipt[drop] = [row for row in receipt[drop] if row["chair"] != "designator_surya"]
+            return self._step(BootstrapStep.PREFLIGHT, receipt)
+
+    code = main(
+        _run_argv(ws, extra=("--models", "small")),
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: NoSuryaRun(),
+        runner=runner,
+    )
+    assert code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "['designator_surya']" in _report(ws)["reason"]
 
 
 def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(

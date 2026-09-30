@@ -416,7 +416,10 @@ builds that environment right after the project's own, with
 catalogue has a subprocess row for a chair the roster configures, and then counts its
 14 GiB in the container disk it checks first. Its weight bundle is fetched once onto the
 network volume by `operations/serving/surya/prefetch.py`
-(`operations/serving/surya/README.md`, "On the pod").
+(`operations/serving/surya/README.md`, "On the pod"). `pod_run` counts Surya among the
+Designator's chairs: a selection that runs the Designator with Surya configured is
+refused unless the preflight report places Surya as a subprocess, verified its cache and
+carries its golden-page run in `subprocess_receipts`.
 
 ## The pod guard: every pod deletes itself when idle or out of time
 
