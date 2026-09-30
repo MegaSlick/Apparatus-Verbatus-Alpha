@@ -23,6 +23,7 @@ from common.request_capacity import (
     DECLARED_ANSWER_BOUND_TOKENS,
     MEASURED_PROMPT_TOKENS,
     PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
+    TEXT_TURN_OVERHEAD_TOKENS,
     act_answer_budget,
     dense_page_answer_budget,
     request_fits,
@@ -77,7 +78,12 @@ PROMPT_TOKENS = {
     # run sends unless it names another (`churro.DEFAULT_FRAMING`).
     **{chair: entries[0].tokens for chair, entries in MEASURED_PROMPT_TOKENS.items()},
     "perlector": PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
+    # The Coniector is charged one token per byte: a dense page's text and the two
+    # neighbouring pages' edge acts, 12,000 bytes each, and its fixed instructions.
+    "reconstructor": TEXT_TURN_OVERHEAD_TOKENS + 3 * 12_000 + 4_000,
 }
+# The Coniector's sealed answer cap (config/decoding.toml).
+RECONSTRUCTOR_ANSWER_TOKENS = 8192
 # The comment above is true only because entry 0 happens to be Churro's
 # default framing's own measurement today; nothing enforces the order, so a
 # tuple reordered on a later edit would silently swap in the wrong framing's
@@ -118,6 +124,8 @@ def _request_shapes(row):
     """
 
     chair = row.chair
+    if chair == "reconstructor":
+        return [("a dense page's text, no image", [], RECONSTRUCTOR_ANSWER_TOKENS)]
     page = PAGE_AS_PRESENTED[chair]
     if chair != "perlector":
         return [("a dense A4 page", [page], dense_page_answer_budget(chair))]

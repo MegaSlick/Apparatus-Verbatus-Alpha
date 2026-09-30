@@ -43,7 +43,7 @@ import page_run  # noqa: E402
 import prompts  # noqa: E402
 import protocol  # noqa: E402
 import regime  # noqa: E402
-from live_reader import EngineSignalRefusal, VLLMReader  # noqa: E402
+from live_reader import VLLMReader  # noqa: E402
 from reader import FixtureReader, validate_audit_delivery  # noqa: E402
 from throughput import PLANNED_SECONDS_PER_CALL  # noqa: E402
 
@@ -54,6 +54,7 @@ from common.alignment import bracket_marker_view, markup_text_view  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.chandra_native_retry import validate_trace as validate_chandra_trace  # noqa: E402
+from common.chat_request import EngineSignalRefusal  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
     ApprovalRecordBinding,
     ApprovalRecordReference,

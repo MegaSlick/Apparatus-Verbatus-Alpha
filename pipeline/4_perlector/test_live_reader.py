@@ -21,10 +21,11 @@ import live_reader
 import prompts
 import protocol
 import pytest
-from live_reader import EngineSignalRefusal, VLLMReader
+from live_reader import VLLMReader
 from reader import FixtureReader
 
 from common.chairs.models import ChairIdentity
+from common.chat_request import EngineSignalRefusal
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
