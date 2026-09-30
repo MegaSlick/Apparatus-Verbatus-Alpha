@@ -5068,8 +5068,7 @@ def _verify_product_accounting(
             _COMPARISON_BOUNDS
         ],
         delivered_witnesses={
-            act_keys[act_id]: citations[act_id]["evidence"].get("witnesses")
-            for act_id in delivered
+            act_keys[act_id]: citations[act_id]["evidence"].get("witnesses") for act_id in delivered
         },
         coverage_records=sources["aggregate_basis"].get("coverage_records"),
         self_revision_stopped=fed_stops,

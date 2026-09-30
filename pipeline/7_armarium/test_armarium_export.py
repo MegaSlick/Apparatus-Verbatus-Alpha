@@ -5739,6 +5739,7 @@ def test_the_clean_machine_verifier_recomputes_the_comparison_bounds(tmp_path, m
 def test_the_verifier_rechecks_the_self_revision_stop_without_jsonl(tmp_path):
     """The acts database carries the uncertainty layer too, so a package without
     `jsonl` still has its self-revision stops recomputed rather than believed."""
+
     def unstop(detail):
         detail["delivered_acts"][0]["self_revision_stopped"] = False
         detail["delivered_self_revisions_stopped"] = 0
