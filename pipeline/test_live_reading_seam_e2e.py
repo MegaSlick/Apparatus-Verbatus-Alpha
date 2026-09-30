@@ -1214,7 +1214,12 @@ def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_se
         # DAI by its presented region, Churro by the anchor line another chair's
         # response located. No shortfall of any kind.
         assert coverage["by_outcome"] == {"read": 3}
-        assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0}
+        assert coverage["shortfalls"] == {
+            "failed": 0,
+            "truncated": 0,
+            "unaligned": 0,
+            "unmeasured": 0,
+        }
 
 
 def test_a_geometry_free_page_witness_attaches_is_comparable_and_meets_the_floor(live_seam):
@@ -1485,7 +1490,7 @@ def test_an_engine_prompt_too_long_400_is_a_retained_failed_perlectio_held_downs
 ):
     """The engine is the true gate: its context-length 400 is a visible failed act.
 
-    The body is the shape vLLM 0.27.1 returned on the 2026-09-27 run. Each act
+    The body is the shape observed from vLLM 0.27.1. Each act
     gets one request, no retry; its Perlectio is `failed`, names the retained
     refusing bytes, the stage completes, and the Recensor holds every act for
     review rather than delivering or dropping it.

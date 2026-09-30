@@ -330,7 +330,6 @@ def _page_fact(*, ordinal, attached, anchor_basis=None, comparable=None):
             "line_geometry": [],
             "loss": {},
             "offset_maps": {},
-            "deadline_in_force": False,
         }
         if attached
         else {"status": "unaligned", "reason": "continuation-page-no-act-anchor"}
@@ -1202,6 +1201,34 @@ def test_an_ordinary_unaligned_row_still_measures_a_real_shortfall(monkeypatch):
         under_witnessed=False,
     )
     assert outcome == "held-for-review"
+
+
+@pytest.mark.parametrize(
+    "reason", ["alignment-step-limit", "character-limit", "character-pair-limit"]
+)
+def test_a_page_row_stopped_on_the_alignment_bound_is_recorded_unmeasured(monkeypatch, reason):
+    """An aligner that gave up compared nothing, so the uncovered text is no shortfall.
+
+    Same page and text as the ordinary unaligned row, which does route: only the
+    reason differs, and it names the aligner's own bound rather than the witness.
+    """
+    context = _continuation_page_context(monkeypatch, reason=reason)
+
+    finding = RUN.testimony_content_findings(context)[1]
+
+    assert finding["by_chair"]["attestator_1"]["uncovered_non_whitespace"]["count"] == 9
+    assert finding["shortfall"] is None
+    assert "page 1's testimony content coverage is unmeasured" in finding["reason"]
+    assert f"act-1 ({reason})" in finding["reason"]
+    assert "chair 'attestator_1' saw 9 uncovered" in finding["reason"]
+    assert (
+        RUN.review_route_from_findings(
+            testimony_shortfall=finding["shortfall"],
+            audit_unresolved=False,
+            under_witnessed=False,
+        )
+        is None
+    )
 
 
 def test_a_measured_shortfall_on_the_same_page_outranks_the_unmeasured_one(monkeypatch):

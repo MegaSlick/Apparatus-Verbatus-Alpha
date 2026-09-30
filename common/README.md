@@ -90,7 +90,7 @@ the classes that are), proven from its one `not-run` reading (attempt
 `page-read:1`, problem `page-not-sealed`, the Exemplar's refused page its only
 input), with no accounting or act record naming the page.
 
-The Recensor's v3 receipt (`recensor_receipt.py`) counts these units. A held
+The Recensor's v4 receipt (`recensor_receipt.py`) counts these units. A held
 unit whose review is completed with a named `release_reason` is resolved and
 adds no reason; a held unit with no completed review keeps the receipt
 `partial`. A run whose genuinely blank page the Recensor confirmed can
@@ -127,9 +127,10 @@ writer and the counter cannot read a page two ways:
   and number the entries `1..k` with no record beyond them; every field of the
   Perlectio but its dissent must be `page_path.expected_perlectio`'s, the
   function stage 4 publishes and adopts it by, and its dissent is computed
-  again (`page_path.dissent_holds`) and must be exactly the sealed one: each
-  alignment is bounded by a counted step budget, never a clock, so the same
-  texts align the same way everywhere. Neither record
+  again (`page_path.dissent_holds`) under the run's sealed `[dissent]
+  max_comparison_steps` (`config/alignment.toml`) and must be exactly the
+  sealed one: the budget counts the matcher's work, never a clock, so the same
+  texts and budget align the same way everywhere. Neither record
   may carry a field beyond its schema. A placed region's crop is proven from
   the Exemplar by `exemplar_boundary.verify_reading_region_lineage`.
 

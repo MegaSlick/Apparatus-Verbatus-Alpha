@@ -35,7 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common import page_path  # noqa: E402
-from common.alignment import markup_text_view  # noqa: E402
+from common.alignment import markup_text_view, sealed_dissent_budget  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.annotations import (  # noqa: E402, F401  (re-export)
     ANNOTATION_KINDS,
@@ -59,7 +59,10 @@ from common.contracts.outcomes import (  # noqa: E402
     terminal_category,
 )
 from common.contracts.outcomes import derive_text_status as derive_text_status  # noqa: E402
-from common.contracts.prior_draft import validate_establishing_view  # noqa: E402
+from common.contracts.prior_draft import (  # noqa: E402
+    budget_stopped_comparisons,
+    validate_establishing_view,
+)
 from common.contracts.stages import (  # noqa: E402
     ARCHETYPUS,
     ATTESTATORES,
@@ -1696,6 +1699,9 @@ def establish_from_accepted_primed_perlectio(
         text,
         witnesses,
         f"accepted reading of {act['act_id']} annotations",
+    )
+    budget_stopped_comparisons(
+        payload, sealed_dissent_budget(context), f"accepted reading of {act['act_id']}"
     )
     uncertainty = from_perlectio(payload)
     text_status = derive_record_text_status(text, annotations, uncertainty)

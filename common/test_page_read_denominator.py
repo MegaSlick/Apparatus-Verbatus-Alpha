@@ -21,6 +21,7 @@ import pytest
 
 from common import dissent, page_path, page_testimonia
 from common import stage as stage_module
+from common.alignment import load_dissent_limits
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
 from common.contracts.errors import ContractError, FatalAccounting, IdentityRefusal
 from common.contracts.identities import act_id as derive_act_id
@@ -908,7 +909,8 @@ def test_a_sealed_not_compared_row_where_the_alignment_fits_its_budget_is_refuse
     feed = _one(root, "page-feed", 1)[1]["payload"]
     [witness] = [w for w in feed["witnesses"] if w["letter"] == row["letter"]]
     reported = "\n".join(u["text"] for u in witness["units"] if u["id"] in row["cited_units"])
-    unaligned = dissent.unaligned_row(row["letter"], perlectio["payload"]["text"], reported)
+    budget = load_dissent_limits()[0].max_comparison_steps
+    unaligned = dissent.unaligned_row(row["letter"], perlectio["payload"]["text"], reported, budget)
     unaligned.pop("chair")
 
     def not_compared(record):

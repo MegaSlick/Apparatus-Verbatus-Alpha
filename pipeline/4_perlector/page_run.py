@@ -55,7 +55,7 @@ from common import (
     page_path,
 )
 from common.chairs.models import AbsentChair, ChairIdentity
-from common.contracts.errors import ContractError
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import (
     artifact_id,
     region_id,
@@ -538,7 +538,8 @@ def publish_act_records(
     Every record carries `page_accounting_ref` and the page's hold codes as
     `page_holds`, and is held when those or its own holds are non-empty. A
     `perlectio` already sealed for the entry is adopted when every field but
-    its dissent is the expected one, so a resumed pass aligns nothing again.
+    its dissent is the expected one and its dissent is a valid page dissent under
+    the run's sealed budget, so a resumed pass aligns nothing again.
     """
     if not plans:
         return
@@ -622,6 +623,20 @@ def publish_act_records(
         adopted = _sealed(context, PERLECTIO_KIND, act_id, perlectio_attempt)
         if adopted is not None:
             _check_adopted_perlectio(adopted, expected, act_id)
+            try:
+                page_path.validate_page_dissent(
+                    adopted["payload"].get("dissent"),
+                    text=adopted["payload"].get("text"),
+                    feed=page.feed,
+                    cited_ids=plan["cited_ids"],
+                    max_comparison_steps=state.run.dissent_steps,
+                )
+            except SchemaRefusal as error:
+                raise ContractError(
+                    f"act {act_id}'s retained perlectio carries a dissent record this run "
+                    f"cannot stand behind ({error}); it is not adopted. Read this page in a "
+                    "new run"
+                ) from error
             continue
         context.publish(
             kind=PERLECTIO_KIND,
@@ -634,7 +649,11 @@ def publish_act_records(
             payload={
                 **expected,
                 "dissent": page_path.page_dissent(
-                    plan["text"], page.feed, plan["cited_ids"], page.witnesses
+                    plan["text"],
+                    page.feed,
+                    plan["cited_ids"],
+                    page.witnesses,
+                    state.run.dissent_steps,
                 ),
             },
         )

@@ -22,7 +22,11 @@ from types import MappingProxyType
 from typing import Any, Callable, Final, Protocol
 
 from common import chandra_layout, fixture_identity, page_accounting, page_path
-from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH, load_alignment_limits
+from common.alignment import (
+    DEFAULT_ALIGNMENT_CONFIG_PATH,
+    load_alignment_limits,
+    sealed_dissent_budget,
+)
 from common.armarium_formats import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     ArmariumFormats,
@@ -3287,6 +3291,7 @@ def _verify_entries(
     no_act = {NO_ACT_ON_PAGE_HOLD} if all(p["act"]["kind"] != "act" for p in plans) else set()
     feed_ref = refs["feed_ref"]
     attempt = page_path.page_reading_attempt(page_id)
+    dissent_budget = sealed_dissent_budget(context)
     rows = []
     for plan in plans:
         act, act_id, union = plan["act"], plan["act_id"], plan["union_box_px"]
@@ -3399,6 +3404,7 @@ def _verify_entries(
                 feed,
                 plan["cited_ids"],
                 witnesses,
+                dissent_budget,
             )
         except ContractError as error:
             raise FatalAccounting(f"{entry_what} dissent cannot be computed: {error}") from error

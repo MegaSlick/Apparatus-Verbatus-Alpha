@@ -198,3 +198,60 @@ def test_a_geometrically_attached_witness_may_not_be_relabelled_anchor_line(
     result = _invoke(root, "basis-relabelled", "pipeline/4_perlector/run.py")
     assert result.returncode != 0
     assert "attached it by 'geometric-overlap'" in result.stderr
+
+
+def test_an_aligned_record_carrying_the_retired_deadline_field_is_refused_by_name(
+    tmp_path, rebind_stage_seal
+):
+    """A record aligned under a wall-clock deadline says whether it aligned
+    depended on the machine. The Perlector names the retired field, so the
+    remedy is plain, rather than comparing against it or refusing it as an
+    anonymous shape error."""
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "retired-deadline")
+
+    def carry_deadline(row):
+        if not (
+            row["chair"] == PAGE_CHAIR
+            and row["attached"]
+            and isinstance(row["alignment"], dict)
+            and row["alignment"].get("status") == "aligned"
+        ):
+            return False
+        row["alignment"]["deadline_in_force"] = True
+        return True
+
+    _forge_attachments(tree, rebind_stage_seal, carry_deadline)
+
+    result = _invoke(root, "retired-deadline", "pipeline/4_perlector/run.py")
+    assert result.returncode != 0
+    assert "retired alignment field(s) ['deadline_in_force']" in result.stderr
+
+
+def test_an_unaligned_record_carrying_the_retired_deadline_reason_is_refused_by_name(
+    tmp_path, rebind_stage_seal
+):
+    """A page stopped by a wall-clock deadline measured nothing, yet its
+    `{status: unaligned}` shape would read as a comparison made. The Perlector
+    names the retired reason rather than reading it as one."""
+    root = tmp_path / "runs"
+    tree = _through_attestatores(root, "retired-deadline-reason")
+
+    def stopped_on_the_clock(row):
+        if not (
+            row["chair"] == PAGE_CHAIR
+            and row["attached"]
+            and isinstance(row["alignment"], dict)
+            and row["alignment"].get("status") == "aligned"
+        ):
+            return False
+        row["alignment"] = {"status": "unaligned", "reason": "alignment-deadline-exceeded"}
+        row["span"] = None
+        row["comparable"] = False
+        return True
+
+    _forge_attachments(tree, rebind_stage_seal, stopped_on_the_clock)
+
+    result = _invoke(root, "retired-deadline-reason", "pipeline/4_perlector/run.py")
+    assert result.returncode != 0
+    assert "retired unaligned reason 'alignment-deadline-exceeded'" in result.stderr

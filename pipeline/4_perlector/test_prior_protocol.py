@@ -3,12 +3,14 @@
 import copy
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
 import protocol
 import pytest
 
+from common.alignment import load_dissent_limits
 from common.chairs import load_models_toml
 from common.contracts.approval import (
     ApprovalRecordBinding,
@@ -18,6 +20,7 @@ from common.contracts.approval import (
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import perlector_attempt_id
+from common.contracts.prior_draft import self_revision_for_view, unmeasured_comparison
 from common.contracts.stages import PERLECTOR
 from common.runtree.store import RunTree
 from common.stage import load_fixture, run_config_bindings
@@ -408,14 +411,28 @@ def test_fed_empty_text_reproof_retains_measured_self_revision(monkeypatch):
         "_published_doubt",
         lambda *_args, **_kwargs: ({"state": "assessed", "problem": None}, [], []),
     )
-    run = SimpleNamespace(protocol_config={protocol.TRUNCATION_TABLE: {}}, context=None)
+    budget = load_dissent_limits()[0].max_comparison_steps
+    run = SimpleNamespace(
+        protocol_config={protocol.TRUNCATION_TABLE: {}}, context=None, dissent_steps=budget
+    )
     reproof = SimpleNamespace(reply={"stop_reason": "stop"}, text="", call_record=None)
 
     perlector._adopt_reproof_text(run, row, reproof)
 
     assert payload["text"] == ""
-    assert payload["self_revision"] == perlector.departures("", prior_text)
+    assert payload["self_revision"] == perlector.departures("", prior_text, budget)
     assert payload["self_revision"]
+
+
+def test_a_fed_self_revision_past_the_budget_is_the_explicit_non_verdict():
+    """`self_revision` is measured the way every call site measures it, under
+    the sealed dissent budget. Past it, the fed draft records that nothing was
+    measured -- never `[]`, which says the reading did not revise its draft."""
+    measure = partial(perlector.departures, max_comparison_steps=1)
+    assert self_revision_for_view("fed", "alpha beta", "alpha bota", measure) == (
+        unmeasured_comparison(1)
+    )
+    assert self_revision_for_view("withheld", "alpha beta", "alpha bota", measure) == []
 
 
 def test_control_selection_has_no_run_id_input_at_all():

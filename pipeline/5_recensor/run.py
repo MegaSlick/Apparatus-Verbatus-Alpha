@@ -17,7 +17,7 @@ never supplies characters.
 
 import copy
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -28,6 +28,10 @@ from common.act_visibility_geometry import (  # noqa: E402
     MAX_POLYGON_POINTS,
     classify_capture_visibility,
     expected_surface_cells,
+)
+from common.alignment import (  # noqa: E402
+    UNMEASURED_REASONS,
+    refuse_retired_alignment_record,
 )
 from common.background import (  # noqa: E402
     BackgroundInferenceRefusal,
@@ -53,6 +57,7 @@ from common.contracts.outcomes import (  # noqa: E402
     page_attachment_basis,
     terminal_category,
     witness_coverage,
+    witness_failure_shortfall,
 )
 from common.contracts.stages import (  # noqa: E402
     ATTESTATORES,
@@ -650,6 +655,10 @@ def act_attachment_facts(
                 if page_witness and entry["attached"]
                 else None
             ),
+            # The aligner stopped on its own bound, so this page was never compared.
+            "alignment_unmeasured": page_witness
+            and entry["alignment"]["status"] == "unaligned"
+            and entry["alignment"]["reason"] in UNMEASURED_REASONS,
         }
         if chair in facts:
             if not (page_witness and facts[chair]["page_witness"]):
@@ -664,9 +673,16 @@ def act_attachment_facts(
                     "across its pages; one act attempt cannot have two health records; "
                     "restore the attempt's single recorded health"
                 )
-            # Merge whole page rows; OR-ing flags would invent an unseen combination.
+            # Merge whole page rows: OR-ing `attached` and `comparable` separately
+            # would invent a pair no page recorded.
             previous = facts[chair]
             merged = dict(_merge_page_attachment_fact(previous, fact))
+            # `alignment_unmeasured` is not one of that pair. It is read only when the
+            # merged row has no comparable text, and then any page the aligner stopped
+            # on is a page never compared, so it is OR-ed across pages.
+            merged["alignment_unmeasured"] = (
+                previous["alignment_unmeasured"] or fact["alignment_unmeasured"]
+            )
             # One failed page means the shared attempt cannot claim a located act line.
             bases_seen = (previous["anchor_basis"], fact["anchor_basis"])
             if "act-line-not-located" in bases_seen:
@@ -808,7 +824,6 @@ _ALIGNED_KEYS = frozenset(
         "line_geometry",
         "loss",
         "offset_maps",
-        "deadline_in_force",
     }
 )
 # `detector-record`: the act's slice is the records a page witness's own detector
@@ -824,6 +839,12 @@ def _require_alignment_shape(act_id: str, chair: str, alignment: dict) -> None:
     An attached record missing its geometry or `anchor_basis` must not count, and an
     unaligned record needs a reason.
     """
+    try:
+        refuse_retired_alignment_record(
+            alignment, f"act {act_id} page witness {chair!r}'s alignment record"
+        )
+    except SchemaRefusal as error:
+        raise FatalAccounting(str(error)) from error
     if alignment["status"] == "aligned":
         if (
             set(alignment) != _ALIGNED_KEYS
@@ -837,8 +858,6 @@ def _require_alignment_shape(act_id: str, chair: str, alignment: dict) -> None:
                 alignment["anchor_basis"] != "act-anchor"
                 and alignment.get("anchor_chair") is not None
             )
-            # The SIGALRM backstop fact, as the Perlector requires it.
-            or not isinstance(alignment.get("deadline_in_force"), bool)
         ):
             raise FatalAccounting(
                 f"act {act_id} page witness {chair!r} carries a malformed aligned "
@@ -1005,6 +1024,22 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
     Callable before anything is published, so an ambiguity found at a later act never
     leaves a partial set of reviews for a retry to mistake for history.
     """
+    return _chair_coverage_and_facts(context, act_id, floor)[0]
+
+
+def alignment_unmeasured_chairs(attachments: dict[str, dict]) -> list[str]:
+    """The chairs short of the floor only because the aligner stopped on its own bound."""
+    return sorted(
+        chair
+        for chair, fact in attachments.items()
+        if fact["alignment_unmeasured"] and not (fact["attached"] and fact["comparable"])
+    )
+
+
+def _chair_coverage_and_facts(
+    context, act_id: str, floor: int
+) -> tuple[dict[str, object], dict[str, dict]]:
+    """`validate_chair_coverage`, with the per-chair attachment facts it counted."""
     current_attempts = chair_current_attempts(context, act_id)
     outcomes = chair_outcomes(current_attempts)
     sealed = set(context.witness_chairs)
@@ -1077,7 +1112,7 @@ def validate_chair_coverage(context, act_id: str, floor: int) -> dict[str, objec
             "single-component witness floor; the two must agree while every logical act "
             "is one capture"
         )
-    return coverage
+    return coverage, attachments
 
 
 def preflight_witness_denominator(context, floor: int) -> None:
@@ -2407,6 +2442,22 @@ def continuation_unmeasured_reason(
     )
 
 
+def alignment_stop_unmeasured_reason(
+    ordinal: int, observations: list[tuple[str, int, list]]
+) -> str:
+    """Say why text beside an alignment that stopped on its own bound has no verdict."""
+    observed = "; ".join(
+        f"chair {chair!r} saw {count} uncovered non-whitespace character(s) beside "
+        f"{', '.join(acts)} whose alignment stopped on its bound"
+        for chair, count, acts in sorted(observations)
+    )
+    return (
+        f"page {ordinal}'s testimony content coverage is unmeasured where the page witness "
+        "alignment stopped on its own bound before comparing the text, so what is uncovered "
+        f"there is not a measured shortfall ({observed})"
+    )
+
+
 def _proposal_pages_of_acts(context) -> tuple[dict[int, list[dict]], dict[int, list[dict]]]:
     """Each page's expected acts and sealed proposal regions, from one seal read."""
     acts_by_page: dict[int, list[dict]] = {}
@@ -2482,10 +2533,14 @@ def _page_rows_by_chair(
     return rows_by_page_chair
 
 
-def _aligned_spans(rows: list[tuple[str, dict]]) -> tuple[list[tuple[int, int, str]], list[str]]:
-    """The aligned witness spans of these rows, and the acts declared unanchored."""
+def _aligned_spans(
+    rows: list[tuple[str, dict]],
+) -> tuple[list[tuple[int, int, str]], list[str], list[str]]:
+    """The aligned witness spans of these rows, the acts declared unanchored, and the
+    acts whose alignment stopped on its own bound before it compared anything."""
     spans = []
     declared_unanchored: list[str] = []
+    budget_stopped: list[str] = []
     for act_id, row in rows:
         alignment = row.get("alignment")
         if (
@@ -2507,7 +2562,15 @@ def _aligned_spans(rows: list[tuple[str, dict]]) -> tuple[list[tuple[int, int, s
             # Not conditional on `attached`: unattached continuation rows would
             # otherwise read as a measured shortfall.
             declared_unanchored.append(act_id)
-    return spans, declared_unanchored
+        elif (
+            isinstance(alignment, dict)
+            and alignment.get("status") == "unaligned"
+            and alignment.get("reason") in UNMEASURED_REASONS
+        ):
+            # The aligner gave up, so the act's text was never compared: what it
+            # leaves uncovered is an absent measurement, not a shortfall.
+            budget_stopped.append(f"{act_id} ({alignment['reason']})")
+    return spans, declared_unanchored, budget_stopped
 
 
 def testimony_content_findings(context) -> dict[int, dict]:
@@ -2526,6 +2589,7 @@ def testimony_content_findings(context) -> dict[int, dict]:
     reconcile_page_roles(context, attachments, page_testimonia)
     findings: dict[int, dict] = {}
     unanchored_by_page: dict[int, list[tuple[str, int, list[str]]]] = {}
+    budget_stopped_by_page: dict[int, list[tuple[str, int, list[str]]]] = {}
     for (ordinal, chair), record in page_testimonia.items():
         payload = _payload(record, f"page Testimonium {record['artifact_id']}")
         try:
@@ -2588,7 +2652,9 @@ def testimony_content_findings(context) -> dict[int, dict]:
         if not isinstance(text, str):
             # Structured testimony cannot supply comparable text for the floor.
             continue
-        spans, declared_unanchored = _aligned_spans(rows_by_page_chair.get((ordinal, chair), []))
+        spans, declared_unanchored, budget_stopped = _aligned_spans(
+            rows_by_page_chair.get((ordinal, chair), [])
+        )
         covered_intervals = _covered_intervals(spans, len(text))
         uncovered = uncovered_non_whitespace_ranges(text, covered_intervals)
         finding = findings.setdefault(ordinal, {"by_chair": {}, "shortfall": False})
@@ -2603,9 +2669,13 @@ def testimony_content_findings(context) -> dict[int, dict]:
             unanchored_by_page.setdefault(ordinal, []).append(
                 (chair, uncovered["count"], sorted(declared_unanchored))
             )
-        if covered_intervals or not declared_unanchored:
+        if budget_stopped and uncovered["count"]:
+            budget_stopped_by_page.setdefault(ordinal, []).append(
+                (chair, uncovered["count"], sorted(budget_stopped))
+            )
+        if covered_intervals or not (declared_unanchored or budget_stopped):
             # Only an empty covered union is unmeasured; a neighbour's unanchored
-            # declaration may not hide this chair's real measurement.
+            # declaration or stopped alignment may not hide this chair's real measurement.
             finding["shortfall"] = finding["shortfall"] or bool(uncovered["count"])
     for finding in findings.values():
         if finding["by_chair"]:
@@ -2613,20 +2683,27 @@ def testimony_content_findings(context) -> dict[int, dict]:
         # No chair reported text: `False` would publish a measurement nobody took.
         finding["shortfall"] = None
         finding.setdefault("reason", NO_PAGE_CONTENT_COVERAGE["reason"])
-    for ordinal, observations in unanchored_by_page.items():
+    for ordinal in sorted(unanchored_by_page.keys() | budget_stopped_by_page.keys()):
         finding = findings[ordinal]
-        if finding["shortfall"]:
-            # A measured shortfall outranks the unmeasured verdict, which rides beside it.
-            finding.setdefault(
-                "unmeasured_reason",
+        beside = bool(finding["shortfall"])
+        reasons = []
+        if ordinal in unanchored_by_page:
+            reasons.append(
                 continuation_unmeasured_reason(
-                    ordinal, observations, beside_a_measured_verdict=True
-                ),
+                    ordinal, unanchored_by_page[ordinal], beside_a_measured_verdict=beside
+                )
             )
+        if ordinal in budget_stopped_by_page:
+            reasons.append(
+                alignment_stop_unmeasured_reason(ordinal, budget_stopped_by_page[ordinal])
+            )
+        if beside:
+            # A measured shortfall outranks the unmeasured verdict, which rides beside it.
+            finding.setdefault("unmeasured_reason", "; ".join(reasons))
             continue
-        # Measured against a union the Perlector declared empty: not a shortfall.
+        # Measured against a union that was declared empty or never computed: not a shortfall.
         finding["shortfall"] = None
-        finding.setdefault("reason", continuation_unmeasured_reason(ordinal, observations))
+        finding.setdefault("reason", "; ".join(reasons))
     return findings
 
 
@@ -2736,6 +2813,8 @@ def review_route_from_findings(
     audit_reproof_truncation: dict | None = None,
     assessment_malformed: bool = False,
     assessment_problem: str | None = None,
+    unmeasured_chairs: Sequence[str] = (),
+    witness_failure: bool = False,
 ) -> tuple[str, str] | None:
     """Compose every independent review cause in stable priority order.
 
@@ -2824,9 +2903,22 @@ def review_route_from_findings(
             reason = f"{reason} ({assessment_problem})"
         reasons.append(reason)
     if under_witnessed:
-        reasons.append(
-            "the configured act-level witness floor is not met; a witness failure is not coverage"
-        )
+        if unmeasured_chairs:
+            # The aligner's stop is named apart: it is not the witness falling short.
+            reason = (
+                "the configured act-level witness floor is not met; chair(s) "
+                f"{sorted(unmeasured_chairs)} were never compared with this act on at least "
+                "one page because the aligner stopped on its own bound, so their coverage is "
+                "unmeasured, not failed, and an unmeasured chair is not coverage"
+            )
+            if witness_failure:
+                reason += "; other chairs fell short as well, and a witness failure is not coverage"
+            reasons.append(reason)
+        else:
+            reasons.append(
+                "the configured act-level witness floor is not met; a witness failure is not "
+                "coverage"
+            )
     if unreconciled:
         reasons.append("the act did not reconcile and needs a human")
     if not reasons:
@@ -3386,7 +3478,7 @@ def _verify_ink_recovery_request(
 
 
 def review_a_page_read_run(context, denominator: dict) -> int:
-    """The page path (`page_review.py`): every counted unit reviewed, then the v3 receipt."""
+    """The page path (`page_review.py`): every counted unit reviewed, then the v4 receipt."""
     held = page_review.review_pages(
         context,
         denominator,
@@ -3444,7 +3536,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     for act in acts:
         act_id, act_key = act["act_id"], act["act_key"]
 
-        coverage = validate_chair_coverage(context, act_id, floor)
+        coverage, attachment_facts = _chair_coverage_and_facts(context, act_id, floor)
         content_coverage = testimony_content_for_page(content_findings, act["page_ordinal"])
         geometry_coverage = geometry_coverage_for(geometry_inputs, act["page_ordinal"])
 
@@ -3534,6 +3626,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             audit_reproof_truncation=audit_facts.get("reproof_truncation"),
             assessment_malformed=(assessment_record or {}).get("state") == "malformed",
             assessment_problem=(assessment_record or {}).get("problem"),
+            unmeasured_chairs=alignment_unmeasured_chairs(attachment_facts),
+            witness_failure=witness_failure_shortfall(coverage["shortfalls"]),
         )
         reading_class = classify(PERLECTOR, latest["outcome"])
         reading_ref = context.artifact_ref(PERLECTOR, "perlectio", latest["artifact_id"])

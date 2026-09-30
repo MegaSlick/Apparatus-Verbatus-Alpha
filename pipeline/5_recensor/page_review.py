@@ -116,13 +116,13 @@ def page_testimonia(context, chairs: set[str]) -> dict[str, list[dict[str, Any]]
 
 
 def page_witness_coverage(records: list[dict[str, Any]], floor: int, chairs: set[str]) -> dict:
-    """One page's witness coverage over the sealed page roster, in the v3 receipt's shape.
+    """One page's witness coverage over the sealed page roster, in the v4 receipt's shape.
 
     `witness_coverage` over each roster chair's current outcome, judged on page
     reads: a page-read run's witnesses read the whole page, so none is
     attached to an act. A roster chair with no Testimonium for the page is
     `not-run`. The floor counts chairs that read the page (`read` or
-    `genuinely-empty`) and were not cut off, by the v3 receipt's own formula
+    `genuinely-empty`) and were not cut off, by the v4 receipt's own formula
     (`recensor_receipt.witnessed_count`). A reading chair whose Testimonium
     records no truncation state counts toward the floor, and is named in
     `health_unrecorded`; `shortfalls` counts the failed and truncated ones.
@@ -146,7 +146,7 @@ def page_witness_coverage(records: list[dict[str, Any]], floor: int, chairs: set
             "unaligned": 0,
         },
     }
-    # The page-read floor formula the v3 receipt checks, not `witness_coverage`'s own.
+    # The page-read floor formula the v4 receipt checks, not `witness_coverage`'s own.
     coverage["under_witnessed"] = witnessed_count(coverage, page_read=True) < floor
     return coverage
 
@@ -532,7 +532,7 @@ def plan_reviews(
 
     Every fact is measured from disk: the page witnesses, the residual ink,
     each unit's page accounting and uncertainty assessment, and whether a page
-    said to hold no act is confirmed so. The Recensor publishes these; its v3
+    said to hold no act is confirmed so. The Recensor publishes these; its v4
     receipt measures them again and requires the reviews on disk to be them.
     """
     pages = denominator["pages"]
@@ -753,7 +753,7 @@ def current_links(context, expected: list[tuple[str, dict]], by_id, pages) -> li
 def write_reading_receipt(
     context, *, page_coverage_findings: Callable[..., dict[int, dict]]
 ) -> None:
-    """Rebuild the v3 partition receipt from disk: units, reviews, coverage, page breaks.
+    """Rebuild the v4 partition receipt from disk: units, reviews, coverage, page breaks.
 
     The units are re-derived through `reading_denominator` and every review is
     measured again (`plan_reviews`): its coverage, residual ink, confirmation,

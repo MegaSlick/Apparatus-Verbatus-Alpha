@@ -705,7 +705,7 @@ def test_a_floor_met_only_by_trivially_attached_empty_readings_completes_only_as
 
     assert coverage["under_witnessed"] is False
     assert coverage["by_outcome"] == {"genuinely-empty": 3}
-    assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0}
+    assert coverage["shortfalls"] == {"failed": 0, "truncated": 0, "unaligned": 0, "unmeasured": 0}
     # The blank door, open only because the Perlector itself found no ink.
     assert RECENSOR_RUN.blank_corroboration(coverage, outcomes, {}, _proved(outcomes)) == sorted(
         outcomes

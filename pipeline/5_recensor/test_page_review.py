@@ -181,7 +181,7 @@ def test_a_happy_page_tree_accepts_every_unit_with_its_evidence(happy, tmp_path)
     assert not (tree.root / RUN_ID / "5_recensor" / "artifacts" / "recovery-request").exists()
 
     receipt = tree.receipt()
-    assert receipt["schema"] == "recensor-partition-receipt.v3"
+    assert receipt["schema"] == "recensor-partition-receipt.v4"
     assert receipt["recensor_status"] == "complete" and receipt["reasons"] == []
     assert len(receipt["page_reading_refs"]) == 2
     assert receipt["expected_unit_count"] == 3 and "expected_act_count" not in receipt

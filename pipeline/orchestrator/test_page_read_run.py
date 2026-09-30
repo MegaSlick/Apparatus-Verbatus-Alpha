@@ -45,7 +45,7 @@ def test_the_orchestrator_reads_pages_and_the_recensor_accepts_every_unit(tmp_pa
         (root / "r" / "run-health" / "recensor-partition-receipt.json").read_text()
     )
     assert (receipt["schema"], receipt["recensor_status"]) == (
-        "recensor-partition-receipt.v3",
+        "recensor-partition-receipt.v4",
         "complete",
     )
     assert not (root / "r" / "6_archetypus").exists()

@@ -3132,8 +3132,6 @@ def _blank_reading_alignment(
         "line_geometry": _line_geometry(act_anchor) if located else [],
         "loss": {"witness": _ZERO_ALIGNMENT_LOSS, "anchor": _ZERO_ALIGNMENT_LOSS},
         "offset_maps": {"witness": [], "anchor": []},
-        # Alignment never ran, so no deadline applied.
-        "deadline_in_force": False,
     }
 
 
@@ -3187,7 +3185,6 @@ def _act_span_alignment(
             "witness": result["witness"]["offset_map"],
             "anchor": result["anchor"]["offset_map"],
         },
-        "deadline_in_force": result["deadline_in_force"],
     }
 
 
@@ -3228,7 +3225,6 @@ def _page_witness_alignment(
         page_alignments[page_key] = result
     if result["status"] == "aligned":
         return _act_span_alignment(result, act_anchor, anchor_chair)
-    # No `deadline_in_force`: `reason` already names a fired deadline.
     return {"status": "unaligned", "reason": result["reason"]}
 
 
@@ -5217,7 +5213,6 @@ def detector_record_alignment(
         "line_geometry": [{"bbox": dict(item["bounds"])} for item in owned],
         "loss": {"witness": _ZERO_ALIGNMENT_LOSS, "anchor": _ZERO_ALIGNMENT_LOSS},
         "offset_maps": {"witness": [], "anchor": []},
-        "deadline_in_force": False,
     }
 
 

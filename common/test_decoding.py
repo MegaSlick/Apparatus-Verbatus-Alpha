@@ -32,7 +32,7 @@ from common.decoding import (
 _VLLM_UNSENT = {"top_k": 0, "min_p": 0.0, "repetition_penalty": 1.0}
 MAKERS_SAMPLING = {
     # datalab-to/chandra@d4f7467, chandra/model/vllm.py::generate_vllm defaults,
-    # sent to a vLLM server; the rest are vllm==0.27.1's request defaults.
+    # sent to a vLLM server; the rest are vllm==0.30.0's request defaults.
     "designator_structure": {"temperature": 0.0, "top_p": 0.1, **_VLLM_UNSENT},
     "attestator_1": {"temperature": 0.0, "top_p": 0.1, **_VLLM_UNSENT},
     # Teklia DAI generation_config.json @ e371095; min_p unset in transformers.
@@ -65,7 +65,7 @@ MAKERS_SAMPLING = {
 
 
 def test_every_row_names_every_field_the_engine_would_otherwise_fill():
-    """vllm==0.27.1's `get_diff_sampling_param` fills these from a generation config."""
+    """vllm==0.30.0's `get_diff_sampling_param` fills these from a generation config."""
     assert ENGINE_FILLED_SAMPLING_FIELDS == {
         "temperature",
         "top_p",
@@ -359,16 +359,16 @@ def test_each_variance_arm_draws_under_its_own_seed():
         ),
     ],
 )
-def test_the_engine_effective_mapping_is_vllm_0_27_1s(sent, effective):
+def test_the_engine_effective_mapping_is_vllm_0_30_0s(sent, effective):
     assert engine_effective_sampling(sent) == effective
 
 
 def test_the_engine_effective_mapping_agrees_with_the_pinned_engine_when_installed():
-    """Run where the pod's `vllm==0.27.1` is installed; the unit cases above hold offline."""
+    """Run where the pod's `vllm==0.30.0` is installed; the unit cases above hold offline."""
     sampling_params = pytest.importorskip("vllm.sampling_params")
     import vllm
 
-    assert vllm.__version__ == "0.27.1"
+    assert vllm.__version__ == "0.30.0"
     policy, _digest = load_decoding_policy()
     for chair in sorted(READING_CHAIRS):
         sent = chair_decoding(policy, chair)

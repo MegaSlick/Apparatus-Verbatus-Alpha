@@ -110,6 +110,21 @@ missing configured chair, an unsealed extra chair, or a duplicate ordinal is a
 fatal accounting error; it is never resolved by sort order. Completed coverage is
 `read` plus `genuinely-empty`, while failed and not-run outcomes remain visible
 shortfalls.
+A chair not attached with comparable text is a shortfall in one of two buckets.
+`unmeasured` holds a chair whose page alignment stopped on one of the aligner's
+own bounds (`character-limit`, `character-pair-limit`, `alignment-step-limit`),
+so nobody knows whether it covered the act. `unaligned` holds every other such
+chair: a reading compared that did not cover the act (`no-common-anchor-text`,
+`no-overlap-with-act-anchor`); a comparison that could not be placed in this act
+alone (`ambiguous-overlapping-act-alignment`,
+`no-raw-counterpart-for-aligned-span`); a reading with no act anchor to compare
+against (`missing-chandra-page-anchor`, `act-anchor-line-not-located`,
+`continuation-page-no-act-anchor`); and a chair with nothing to compare (a
+non-reading outcome, an unattached chair, a report that is not text). Either
+bucket leaves the floor. The partition receipt carries the split from
+`recensor-partition-receipt.v3`. An alignment record carrying the retired
+`alignment-deadline-exceeded` reason or `deadline_in_force` field is refused by
+name, never counted in either bucket.
 
 The act-attachment mirror is checked against those exact current records before
 the witness floor is counted. For a page witness, geometry against the sealed
@@ -521,7 +536,7 @@ roster chair with no Testimonium for the page counted `not-run`, so `configured`
 the sealed page roster's size. The floor counts chairs that read the page (`read` or
 `genuinely-empty`) and were not truncated, against the sealed `witness_floor`;
 `health_unrecorded` and `shortfalls` (`failed`, `truncated`, `unaligned: 0`) complete
-the shape the v3 receipt recomputes. DAI's page on which its own record detector
+the shape the v4 receipt recomputes. DAI's page on which its own record detector
 found no record below its stated cap is `genuinely-empty` with empty text, bound to
 the detector's census (Attestatores CONTRACT, "A page the detector found nothing
 on"): it counts toward the floor, and the validation above re-derives the census
@@ -613,8 +628,8 @@ holds nothing; its review records it in `notes`.
 `recoveries_used: 0`, and the orchestrator's recovery member finds nothing to
 dispatch.
 
-**The v3 receipt.** `page_review.write_reading_receipt` rebuilds
-`recensor-partition-receipt.v3` from disk: the units re-derived through
+**The v4 receipt.** `page_review.write_reading_receipt` rebuilds
+`recensor-partition-receipt.v4` from disk: the units re-derived through
 `reading_denominator` (`expected_unit_count` of them), `page_reading_refs` keyed by
 page ordinal in page order (`[{page_ordinal, reading_ref}]`), each item's
 `page_disposition`, review and coverage recomputed from the Testimonia, and its

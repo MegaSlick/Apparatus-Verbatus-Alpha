@@ -72,14 +72,14 @@ descriptor is passed to the vLLM child, so a controller crash cannot release the
 the child is resident.
 
 The command is `sys.executable -m vllm.entrypoints.cli.main serve`. **Not `python -m vllm`**:
-vLLM 0.27.1's wheel has no `vllm/__main__.py`, and `vllm.entrypoints.cli.main` is what its
+vLLM 0.30.0's wheel has no `vllm/__main__.py`, and `vllm.entrypoints.cli.main` is what its
 `vllm` console script points at. The launching interpreter must be the inspected one: a
 `command_prefix` naming another interpreter is refused unless the caller also supplies a
 `PackageInspector` for that environment, or the pin check and the audit's
 `runtime_packages.observed` would measure the wrong Python.
 
 This package asserts pins; it never installs them. For the real catalogue the pod installs
-them: the `pod` dependency group (`vllm 0.27.1`, `transformers 5.14.1`,
+them: the `pod` dependency group (`vllm 0.30.0`, `transformers 5.14.1`,
 `qwen-vl-utils 0.0.14`) is locked in `uv.lock` and synced by `operations/pod/bootstrap.py`,
 and `operations/pod/test_pod_run.py` fails if it drifts from the catalogue's
 `required_packages` (a drifted group would download ~10 GB and then be refused on a billing
@@ -87,10 +87,10 @@ card). `operations/pod/README.md`, "The serving stack, re-planned and locked", e
 versions. No real row has been served yet.
 
 The command uses the verified base snapshot, a stable `--served-model-name`, and the typed
-profile flags. A Hugging Face chair gets its exact commit in `--revision` and
-`--tokenizer-revision`, which stop vLLM resolving a mutable Hub ref. A local-repository
-chair (the Perlector, a locally trained checkpoint "called like any other model") gets
-neither: its pin is the digest manifest, and naming a revision it lacks would invent
+profile flags. A Hugging Face chair, which is every vLLM chair in the real roster including the Perlector,
+gets its exact commit in `--revision` and `--tokenizer-revision`, which stop vLLM resolving
+a mutable Hub ref. A local-repository chair (a locally trained checkpoint "called like any
+other model") gets neither: its pin is the digest manifest, and naming a revision it lacks would invent
 provenance. Adapters are static: one `--lora-modules` entry, `--max-loras 1`, a supported
 `--max-lora-rank`; the dynamic adapter-update endpoint is never called. The manager always
 passes `--no-enable-log-requests`, because golden-page bytes and transcriptions are not
@@ -106,7 +106,8 @@ cleanup; it cannot launch another chair around it.
 
 Readiness is a bounded poll of the exact child and its fresh launch log. It fails early on
 an exited child or a named log signature: `CUDA out of memory`, `EngineDeadError`,
-`LORA_UNSUPPORTED` (`does not support LoRA`), `UNKNOWN_MODEL`, or `VLLM_ERROR` (reserved for
+`LORA_UNSUPPORTED` (`does not support LoRA`), `UNKNOWN_MODEL` (the registry's
+`are not supported for now. Supported architectures:`), or `VLLM_ERROR` (reserved for
 a launch wrapper that writes to this log; vLLM never prints it). Broad words like
 `RuntimeError` are deliberately not matched: the poll re-reads the whole tail, so one benign
 line would abort a good start. Success requires all of:
@@ -165,7 +166,7 @@ evidence.
 
 ## `generation_config`: `"vllm"` only
 
-Every row is `"vllm"`, and the catalogue parser refuses `"auto"`. Under `"auto"`, vLLM 0.27.1
+Every row is `"vllm"`, and the catalogue parser refuses `"auto"`. Under `"auto"`, vLLM 0.30.0
 (`ModelConfig.get_diff_sampling_param`) fills any of `temperature`, `top_p`, `top_k`, `min_p`,
 `repetition_penalty` and `max_tokens` a request leaves out from the model's
 `generation_config.json`, unseen on the wire. Under `"vllm"` nothing is filled from the file,
@@ -178,13 +179,21 @@ tokens; the file's bytes are pinned by the chair's verified snapshot manifest.
 
 Chandra-2 (`datalab-to/chandra-ocr-2`, serving `attestator_1` and `designator_structure`)
 and the Perlector (`Qwen/Qwen3.8-27B`) are hybrid Mamba/attention (`qwen3_5`) checkpoints.
-`manager.start` refuses either with `enable_prefix_caching` on: prefix caching over
-recurrent state costs memory, and this catalogue's rows run up to four sequences. vLLM
-v0.27.1 itself keeps it opt-in for hybrid models (`arg_utils.py`: `not
-model_config.is_hybrid`). The check keys on the exact `repo`, never the role, because test
-fixtures reuse role names under `example/...` repositories.
-`config/serving_recipes_real.toml` sets `enable_prefix_caching = false` for those three
-rows, so the refusal guards against a future edit.
+`manager.start` refuses either with `enable_prefix_caching` on, because of memory: with
+it on, vLLM 0.30.0 runs the recurrent layers in `mamba_cache_mode = "align"`, which
+reserves two recurrent-state pages per sequence instead of one
+(`vllm/v1/kv_cache_interface.py`, `MambaSpec.max_memory_usage_bytes`), and this
+catalogue's rows spend that memory on KV and up to four sequences. vLLM 0.30.0 enables
+prefix caching by default for hybrid models as for any other (`arg_utils.py`,
+`_set_default_chunked_prefill_and_prefix_caching_args`: `default_prefix_caching =
+model_config.is_prefix_caching_supported`, which is true for a generative hybrid), so the
+rendered `--no-enable-prefix-caching` and this refusal are what keep it off. The check
+keys on the exact `repo`, never the role, because test fixtures reuse role names under
+`example/...` repositories. `config/serving_recipes_real.toml` sets
+`enable_prefix_caching = false` on all seven live rows for those two checkpoints (the
+Designator's and Attestator 1's three tiers each, and the Perlector's 80 GB tier), and
+`operations/serving/test_manager.py` checks that in CI, so the refusal guards against a
+future edit.
 
 `manager.assert_processor_geometry` also checks a row's `patch_size`/`merge_size` against
 the chair's own `processor_config.json`/`preprocessor_config.json` at launch, offline.
@@ -354,7 +363,7 @@ sends them unchanged.
    attempt's values on Chandra's retry schedule, and the Perlector's `variance_arm` picks
    that arm's seed; every other request sends the profile's seed. Both are on the call
    record's `generation_sent`, and `sampling_effective` beside them holds what the pinned
-   engine samples under (`common.decoding.engine_effective_sampling`: vLLM 0.27.1 raises a
+   engine samples under (`common.decoding.engine_effective_sampling`: vLLM 0.30.0 raises a
    temperature in (0, 0.01) to 0.01, as for Churro's 1e-06, and a greedy request runs at
    `top_p` 1, `top_k` 0, `min_p` 0, as for Chandra's first request). vLLM samples a seeded
    request from that request's own generator, so the same request on the same engine build,
@@ -395,7 +404,7 @@ client's one decoding policy), and the stage must publish and pass a durable att
 POST; `chandra-native-call-record.v2` binds it, so the three identical 0.8/0.95 attempts stay
 distinct. These calls send no per-request seed because the pinned upstream client sends
 none (the launch seed stays on the serving receipt).
-`chat_template_kwargs.enable_thinking=false` is a local compatibility field for vLLM 0.27
+`chat_template_kwargs.enable_thinking=false` is a local compatibility field for vLLM 0.30
 and this template, recorded as such, not attributed to the upstream vLLM 0.17 recipe. Each
 call is still one HTTP request; the Attestatores stage owns the vendor retry loop and its
 evidence.

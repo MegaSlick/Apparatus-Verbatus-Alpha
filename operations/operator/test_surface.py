@@ -5685,7 +5685,7 @@ def _served_stage_leavings(volume: Path, run_id: str = "brought-home") -> dict[s
     """
 
     written = {
-        key: f"INFO 09-14 00:00:00 api_server.py:1 vLLM API server 0.27.1 ({stage})\n".encode()
+        key: f"INFO 09-14 00:00:00 api_server.py:1 vLLM API server 0.30.0 ({stage})\n".encode()
         for stage, key in _served_stage_log_keys(run_id).items()
     }
     for key, payload in written.items():

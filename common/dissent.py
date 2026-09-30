@@ -32,57 +32,24 @@ from wholesale disagreement.
 from __future__ import annotations
 
 import unicodedata
-from bisect import bisect_left
-from difflib import SequenceMatcher
 from typing import Any, Final
 
-from common.alignment import markup_text_view
+from common.alignment import AlignmentStepLimit, StepCountedMatcher, markup_text_view
 from common.contracts.errors import SchemaRefusal
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES
+from common.contracts.prior_draft import unmeasured_comparison
 
-# A cheap refusal before any alignment: a witness stuck in a repetition loop
-# until its token cap can report far more text than any act holds.
+# `SequenceMatcher`'s alignment cost is not simply the product of the two
+# lengths: a reading and a report that differ in many scattered places --
+# exactly what a systematically-mistaken witness produces, the case this
+# instrument exists to catch -- can cost far more than the square. This
+# constant is a cheap prefilter for a witness stuck in a repetition loop until
+# its token cap -- the witness stage puts no ceiling on report length, and
+# Churro's own 24,000-token cap can run well over a hundred thousand
+# characters. It does not bound the matcher's work on its own; the sealed
+# `[dissent] max_comparison_steps` in `config/alignment.toml`, which every
+# caller passes in, does that.
 MAX_COMPARISON_CHARACTER_PAIRS: Final = 100_000_000
-
-# The work one alignment may do, counted in steps: a step is one position of
-# the witness report `SequenceMatcher`'s longest-match search visits. A report
-# that differs from the reading in many scattered places costs close to the
-# cube of its length, far more than the pair bound above admits, so the count
-# is what bounds it. Charged before the work is done, so whether a comparison
-# aligns depends only on its two texts, never on the machine or the clock.
-MAX_COMPARISON_STEPS: Final = 50_000_000
-
-
-class _OutOfSteps(Exception):
-    """Raised only inside `_bounded_departures`, never let escape it."""
-
-
-class _CountedMatcher(SequenceMatcher):
-    """`SequenceMatcher` whose longest-match searches spend a counted budget."""
-
-    def __init__(self, a: str, b: str, steps: int) -> None:
-        self.steps_left = steps
-        super().__init__(None, a, b, autojunk=False)
-
-    def find_longest_match(self, alo=0, ahi=None, blo=0, bhi=None):
-        ahi = len(self.a) if ahi is None else ahi
-        bhi = len(self.b) if bhi is None else bhi
-        # The search visits, for each character of `a[alo:ahi]`, every position
-        # of that character in `b` before `bhi`, and one more to stop.
-        self.steps_left -= sum(
-            bisect_left(self.b2j.get(self.a[i], ()), bhi) + 1 for i in range(alo, ahi)
-        )
-        if self.steps_left < 0:
-            raise _OutOfSteps()
-        return super().find_longest_match(alo, ahi, blo, bhi)
-
-
-def _bounded_departures(reading: str, reported: str, *, steps: int) -> list | None:
-    """`departures(reading, reported)`, or `None` when its alignment needs more than `steps`."""
-    try:
-        return _departure_spans(_CountedMatcher(reading, reported, steps))
-    except _OutOfSteps:
-        return None
 
 
 def comparison_view(text: str) -> dict[str, object]:
@@ -109,31 +76,43 @@ def comparison_view(text: str) -> dict[str, object]:
     return {"normalized": normalized, "dropped_characters": len(composed) - len(normalized)}
 
 
-def departures(reading: str, reported: str) -> list[dict[str, dict[str, int]]]:
+def departures(
+    reading: str, reported: str, max_comparison_steps: int
+) -> list[dict[str, dict[str, int]]] | dict[str, Any]:
     """Every span where the established reading and one witness's report differ.
 
-    `autojunk=False` is load-bearing rather than stylistic: with it on,
-    `SequenceMatcher` treats any element appearing in more than 1% of a
-    sequence longer than 200 characters as junk, which on French prose means
-    spaces and common letters stop counting as matches. The alignment would
-    then change shape purely because the act was long, and a dissent record
-    that means something different on long acts than on short ones is not a
-    structural record.
+    `autojunk=False` (the `StepCountedMatcher` default) is load-bearing rather
+    than stylistic: with it on, `SequenceMatcher` treats any element appearing
+    in more than 1% of a sequence longer than 200 characters as junk, which on
+    French prose means spaces and common letters stop counting as matches. The
+    alignment would then change shape purely because the act was long, and a
+    dissent record that means something different on long acts than on short
+    ones is not a structural record.
+
+    The matcher's work is counted against `max_comparison_steps`, the sealed
+    dissent budget. A comparison that would pass it returns the explicit
+    non-verdict `unmeasured_comparison` instead of spans: nothing about either
+    text is touched, the comparison simply did not finish, and whether it
+    finishes depends only on the two texts and the budget.
 
     An equal reading and report produce no departures at all -- the correct
     output on the easy line every witness agrees about (ARCHITECTURE: "a metric
     that rewards disagreement rewards hallucination").
     """
-    return _departure_spans(SequenceMatcher(a=reading, b=reported, autojunk=False))
+    try:
+        opcodes = StepCountedMatcher(reading, reported, max_comparison_steps).get_opcodes()
+    except AlignmentStepLimit:
+        return unmeasured_comparison(max_comparison_steps)
+    return _departure_spans(opcodes)
 
 
-def _departure_spans(matcher: SequenceMatcher) -> list[dict[str, dict[str, int]]]:
+def _departure_spans(opcodes: list) -> list[dict[str, dict[str, int]]]:
     return [
         {
             "reading_span": {"start": reading_start, "end": reading_end},
             "testimonium_span": {"start": witness_start, "end": witness_end},
         }
-        for tag, reading_start, reading_end, witness_start, witness_end in matcher.get_opcodes()
+        for tag, reading_start, reading_end, witness_start, witness_end in opcodes
         if tag != "equal"
     ]
 
@@ -165,7 +144,7 @@ def is_comparable(record: dict[str, Any]) -> bool:
 
 
 def dissent_against(
-    reading: str, testimonia: list[dict], *, steps: int = MAX_COMPARISON_STEPS
+    reading: str, testimonia: list[dict], *, max_comparison_steps: int
 ) -> list[dict]:
     """Where the reading departed from each witness that actually reported.
 
@@ -176,10 +155,10 @@ def dissent_against(
     retained testimony that is not text, a declared format that cannot be reduced
     to a comparison view, a page witness unattached to this act and carrying no
     `comparison_reported`, a report large enough to refuse outright
-    (`MAX_COMPARISON_CHARACTER_PAIRS`), and an alignment that needed more than
-    `steps` counted steps (`MAX_COMPARISON_STEPS`). The same texts always give
-    the same rows. Never guessed at, and never silently dropped from the record
-    either.
+    (`MAX_COMPARISON_CHARACTER_PAIRS`), and an alignment that would pass
+    `max_comparison_steps`, the sealed dissent budget, which that row records
+    beside its reason. Never guessed at, and never silently dropped from the
+    record either.
     """
     reading_view = comparison_view(reading)
     rows = []
@@ -254,9 +233,9 @@ def dissent_against(
                 }
             )
             continue
-        spans = _bounded_departures(reading, reported, steps=steps)
-        if spans is None:
-            rows.append(unaligned_row(chair, reading, reported, steps))
+        spans = departures(reading, reported, max_comparison_steps)
+        if not isinstance(spans, list):
+            rows.append(unaligned_row(chair, reading, reported, max_comparison_steps))
             continue
         markup_view = markup_text_view(reported)
         witness_view = comparison_view(markup_view["text"])
@@ -289,28 +268,39 @@ def dissent_against(
 
 
 def unaligned_row(
-    chair: str, reading: str, reported: str, steps: int = MAX_COMPARISON_STEPS
+    chair: str, reading: str, reported: str, max_comparison_steps: int
 ) -> dict[str, Any]:
-    """The row of a comparison whose alignment needed more than `steps` counted steps."""
+    """The row of a comparison the sealed dissent budget stopped before it finished."""
     return {
         "chair": chair,
         "compared": "unknown",
         "reason": (
             f"a {len(reading)}-character reading against a {len(reported)}-"
-            f"character report needs more than this module's {steps}-step "
-            "alignment bound; neither text is clipped and neither is changed, the "
-            "alignment simply did not run"
+            f"character report did not align within the sealed "
+            f"{max_comparison_steps}-step dissent budget; neither text is clipped "
+            "and neither is changed, the alignment simply did not finish"
         ),
+        "max_comparison_steps": max_comparison_steps,
     }
 
 
-def validate_dissent(rows: Any, *, text: str, basis_testimonia: list[dict]) -> None:
+def validate_dissent(
+    rows: Any,
+    *,
+    text: str,
+    basis_testimonia: list[dict],
+    max_comparison_steps: int | None = None,
+) -> None:
     """Refuse a dissent record that loses or duplicates a witness.
 
     Agreement is represented by one row with an empty ``departures`` list, not
     by omitting the row.  Otherwise an empty dissent list makes "all witnesses
     agreed" indistinguishable from "the instrument did not run" -- exactly the
     silent loss this record exists to prevent.
+
+    Given `max_comparison_steps`, the run's sealed dissent budget, a row the
+    budget stopped must name exactly that budget: any other is one the run
+    never sealed.
     """
     if not isinstance(rows, list):
         raise SchemaRefusal("a Perlector reading carries no dissent record")
@@ -397,11 +387,26 @@ def validate_dissent(rows: Any, *, text: str, basis_testimonia: list[dict]) -> N
                             f"dissent[{index}].departures[{span_index}].{name} has invalid bounds"
                         )
         elif compared is False or compared == "unknown":
+            # Only a row the step budget stopped carries the budget it ran out of.
+            budget = row.get("max_comparison_steps")
             if (
-                set(row) != {"chair", "compared", "reason"}
+                set(row) - {"max_comparison_steps"} != {"chair", "compared", "reason"}
                 or not isinstance(row.get("reason"), str)
                 or not row["reason"]
+                or (
+                    "max_comparison_steps" in row
+                    and (compared != "unknown" or type(budget) is not int or budget <= 0)
+                )
             ):
                 raise SchemaRefusal(f"dissent[{index}] is not the closed uncomputed-row schema")
+            if (
+                "max_comparison_steps" in row
+                and max_comparison_steps is not None
+                and budget != max_comparison_steps
+            ):
+                raise SchemaRefusal(
+                    f"dissent[{index}] records a {budget}-step dissent budget, but this run "
+                    f"sealed {max_comparison_steps}"
+                )
         else:
             raise SchemaRefusal(f"dissent[{index}] has an invalid comparison state")

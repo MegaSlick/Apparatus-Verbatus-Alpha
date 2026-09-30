@@ -1,4 +1,4 @@
-"""The v3 Recensor receipt: a page-read run's units and configured witnesses, beside v2."""
+"""The v4 Recensor receipt: a page-read run's units and configured witnesses, beside v2."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.outcomes import OutcomeClass, classify
 from common.contracts.stages import ATTESTATORES, RECENSOR
 from common.recensor_receipt import (
-    RECENSOR_PARTITION_RECEIPT_SCHEMA_V3,
+    RECENSOR_PARTITION_RECEIPT_SCHEMA_V4,
     RECENSOR_READING_RECEIPT_SCOPE,
     build_recensor_reading_receipt,
     validate_recensor_partition_receipt,
@@ -85,9 +85,9 @@ def _receipt(items, links=()):
 TWO_READ = (("act_a", "p1:1"), ("act_b", "p2:1"))
 
 
-def test_a_v3_receipt_names_its_page_readings_and_each_units_page_disposition():
+def test_a_v4_receipt_names_its_page_readings_and_each_units_page_disposition():
     receipt = _receipt([_item("act_b", "p1:1"), _item("act_a", "p2:1")])
-    assert receipt["schema"] == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
+    assert receipt["schema"] == RECENSOR_PARTITION_RECEIPT_SCHEMA_V4
     assert receipt["scope"] == RECENSOR_READING_RECEIPT_SCOPE
     assert [
         (row["page_ordinal"], row["reading_ref"]["relative_path"][-7:])
@@ -99,7 +99,7 @@ def test_a_v3_receipt_names_its_page_readings_and_each_units_page_disposition():
     assert receipt["recensor_status"] == "complete"
 
 
-def test_a_v3_receipt_judges_the_witness_floor_on_page_reads():
+def test_a_v4_receipt_judges_the_witness_floor_on_page_reads():
     receipt = _receipt([_item("act_a", "p1:1", reads=2), _item("act_b", "p2:1")])
     assert receipt["recensor_status"] == "partial"
     assert receipt["reasons"] == ["unit act_a is under-witnessed (2 page reads of a floor of 3)"]
@@ -162,7 +162,7 @@ def test_a_release_reason_is_given_exactly_when_a_held_unit_is_completed(item):
         _receipt([_item("act_b", "p1:1"), item])
 
 
-def test_a_v3_receipt_with_a_page_without_a_unit_is_refused():
+def test_a_v4_receipt_with_a_page_without_a_unit_is_refused():
     for items in (
         [_item("act_a", "p1:1")],
         [_item("act_a", "p1:1"), _item("act_b", "p1:2")],
@@ -172,7 +172,7 @@ def test_a_v3_receipt_with_a_page_without_a_unit_is_refused():
             _receipt(items)
 
 
-def test_a_v3_receipt_with_a_unit_on_a_page_it_does_not_name_is_refused():
+def test_a_v4_receipt_with_a_unit_on_a_page_it_does_not_name_is_refused():
     items = [_item("act_a", "p1:1"), _item("act_b", "p2:1"), _item("act_c", "p3:1")]
     with pytest.raises(SchemaRefusal, match=r"units on page\(s\) \[3\], which name no sealed"):
         _receipt(items)
@@ -265,7 +265,7 @@ def test_a_v3_receipt_with_a_unit_on_a_page_it_does_not_name_is_refused():
         "link-reason-unstated",
     ],
 )
-def test_a_malformed_v3_receipt_is_refused(change, refusal):
+def test_a_malformed_v4_receipt_is_refused(change, refusal):
     forged = copy.deepcopy(_receipt([_item("act_a", "p1:1"), _item("act_b", "p2:1")]))
     change(forged)
     forged["self_hash"] = self_hash({k: v for k, v in forged.items() if k != "self_hash"})

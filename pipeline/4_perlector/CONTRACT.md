@@ -202,7 +202,11 @@ blank add nothing: the `no-readable-text` outcome's whole-act gap already says i
 By default there is no Pass A; `--blind-read fed` opts in to Pass A and to Pass B seeing its
 clean text (`--blind-read saved` makes Pass A but never shows it to Pass B). When the
 draft is fed, `self_revision` offsets index it: `reading_span` in the final text,
-`testimonium_span` in the draft. When it is withheld, `self_revision` is not measured. Pass A's marks stay on its own
+`testimonium_span` in the draft. When it is withheld, `self_revision` is not measured.
+When a fed draft's comparison would pass the sealed dissent step budget,
+`self_revision` is the explicit non-verdict `{measured: false, reason:
+"comparison-step-limit", max_comparison_steps}`, never an empty list, and the
+canonical `self_revisions` is null. Pass A's marks stay on its own
 record. Truncation is measured on the clean text. The re-proof answers in JSON and
 reports no doubts; a replacement carrying a mark, or a replacement over text Pass B
 marked, publishes `malformed`, because the marks cannot be re-anchored through the
@@ -405,16 +409,16 @@ long to align against this reading at all: a witness's report is a model's own
 output that nothing upstream bounds, and a repetition loop running to a
 32k-token cap would hold the stage for tens of minutes per act.
 `dissent.MAX_COMPARISON_CHARACTER_PAIRS` refuses that case cheaply, before any
-alignment starts. It is **not**, on its own, a wall-clock bound: `SequenceMatcher`'s
-cost on text that differs in many scattered places — exactly the shape a
-systematically-mistaken witness produces — runs close to the *cube* of the
-length rather than the square the pair count assumes, so a comparison well
-under the pair bound can still run for minutes. `dissent.MAX_COMPARISON_STEPS`
-is the real backstop: a counted work budget, each longest-match search charged
-before it runs for every position of the report it will visit, so a comparison
-that would need more is abandoned rather than awaited. It is counted, never
-timed, so the same texts give the same dissent on any machine, and a reader
-recomputing a sealed dissent requires it exactly.
+alignment starts. It does **not**, on its own, bound the matcher's work:
+`SequenceMatcher`'s cost on low-entropy or scattered-difference text can run far
+past the square the pair count assumes, so a comparison well under the pair
+bound can still run for minutes. The sealed `[dissent] max_comparison_steps` in
+`config/alignment.toml` is the real backstop: the matcher's work counted in
+`common.alignment.StepCountedMatcher` steps and charged before it is done, so a
+comparison that would pass it stops before the work, and whether a row is
+compared depends only on the two texts, never on the machine that ran it. A row
+it stopped carries the budget as `max_comparison_steps` beside its reason, and a
+reader recomputing a sealed dissent under the same budget requires it exactly.
 Either bound is on the **comparison**, never the text — nothing is clipped, no
 reading changes, and the row says in words which bound stopped it and that it
 did not run.
@@ -1409,7 +1413,10 @@ held:
   (`common.alignment.bracket_marker_view`) when its Testimonium's
   `format_capabilities.can_express_uncertainty` is true, so a witness's own doubt is
   never counted as departure; a witness with no cited unit, or whose page outcome is
-  not `read`, is a row with `compared: false` and its reason.
+  not `read`, is a row with `compared: false` and its reason. Each comparison runs
+  under the run's sealed `[dissent] max_comparison_steps`; a row it stopped is
+  `compared: "unknown"` and carries that budget, and `page_path.validate_page_dissent`
+  refuses a record that loses a shown witness or names a budget the run never sealed.
 - `truncation` is `truncation.classify` over the union box's pixels against the page's;
   null for an unplaced entry. A `truncated` or `unknown` classification adds hold
   `reading-incomplete`; the page accounting's rule (g) records an entry with no
@@ -1427,10 +1434,11 @@ was made under this run's configuration from this page's feed and, for a live
 reading, its call record still holds to the sealed Perlector row and the reading
 names that row as its `sampling`. Its `page-accounting`
 and each entry's `perlectio`, when already sealed, are adopted rather than measured
-again -- dissent is bounded by a clock, so a second measurement could differ -- and
-refused by name only when they name other inputs than the page has now
-(another feed, reading, region, accounting, policy, configuration or input set); a
-missing one is computed and published. Act-regions are deterministic and re-published
+again, and refused by name when they name other inputs than the page has now
+(another feed, reading, region, accounting, policy, configuration or input set) or
+when a sealed dissent is not a valid page dissent under this run's sealed budget; a
+missing one is computed and published. The page-read denominator recomputes each
+adopted dissent under that budget and requires it exactly. Act-regions are deterministic and re-published
 byte-identical. Before a live chair starts, a page it will send with `reader-sent`
 records and no `page-reading` is sent again only when no retained reply could be its
 answer (`_unrecorded_replies`, `_answers_a_send`); otherwise the pass refuses by

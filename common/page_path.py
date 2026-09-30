@@ -692,13 +692,18 @@ def _comparison_text(text: str, capabilities: Any) -> str:
 
 
 def page_dissent(
-    text: str, feed: Mapping[str, Any], cited_ids: list[str], witnesses: list[dict[str, Any]]
+    text: str,
+    feed: Mapping[str, Any],
+    cited_ids: list[str],
+    witnesses: list[dict[str, Any]],
+    max_comparison_steps: int,
 ) -> list[dict[str, Any]]:
     """Where an entry's reading departed from each shown witness's cited units.
 
-    Each alignment runs under `dissent.MAX_COMPARISON_STEPS`, a counted bound,
-    so the same entry and feed always give the same dissent; one that needs
-    more is recorded as not compared (`dissent.unaligned_row`).
+    Each alignment runs under `max_comparison_steps`, the run's sealed
+    `[dissent] max_comparison_steps`, a counted bound, so the same entry, feed
+    and budget always give the same dissent; one that needs more is recorded as
+    not compared (`dissent.unaligned_row`).
     """
     capabilities = {
         witness["witness_label"]: witness["testimonium"]["payload"].get("format_capabilities")
@@ -728,13 +733,73 @@ def page_dissent(
                     "payload": {"chair": witness["letter"], "comparison_reported": reported},
                 }
             ],
+            max_comparison_steps=max_comparison_steps,
         )
         if len(compared) != 1:
             raise ContractError(f"dissent gave {len(compared)} rows for one witness, not one")
         row = dict(compared[0])
         row.pop("chair")
         rows.append({**head, "cited_units": [unit["id"] for unit in units], **row})
+    validate_page_dissent(
+        rows, text=text, feed=feed, cited_ids=cited_ids, max_comparison_steps=max_comparison_steps
+    )
     return rows
+
+
+_PAGE_DISSENT_HEAD: Final = ("letter", "witness_label", "cited_units")
+
+
+def validate_page_dissent(
+    rows: Any,
+    *,
+    text: str,
+    feed: Mapping[str, Any],
+    cited_ids: list[str],
+    max_comparison_steps: int,
+) -> None:
+    """Refuse a page-path dissent record that loses a shown witness or misstates one row.
+
+    One row per shown witness, in the feed's order. A witness with no reading or
+    no unit this entry cites was not compared, and says so; every other row is
+    an act-path dissent row under the witness's letter and goes through
+    `dissent.validate_dissent`, the run's sealed budget included.
+    """
+    if not isinstance(rows, list) or len(rows) != len(feed["witnesses"]):
+        raise SchemaRefusal("a page-path dissent record does not have one row per shown witness")
+    cited = set(cited_ids)
+    for index, (row, witness) in enumerate(zip(rows, feed["witnesses"], strict=True)):
+        if not isinstance(row, dict) or any(field not in row for field in _PAGE_DISSENT_HEAD):
+            raise SchemaRefusal(f"page dissent[{index}] has no witness head")
+        if (row["letter"], row["witness_label"]) != (witness["letter"], witness["witness_label"]):
+            raise SchemaRefusal(f"page dissent[{index}] names another witness than the feed's")
+        units = [
+            unit["id"]
+            for unit in witness["units"]
+            if witness["outcome"] == READ_OUTCOME and unit["id"] in cited
+        ]
+        if row["cited_units"] != units:
+            raise SchemaRefusal(f"page dissent[{index}] misstates the units this entry cites")
+        rest = {key: value for key, value in row.items() if key not in _PAGE_DISSENT_HEAD}
+        if not units:
+            if (
+                set(rest) != {"compared", "reason"}
+                or rest["compared"] is not False
+                or not isinstance(rest["reason"], str)
+                or not rest["reason"]
+            ):
+                raise SchemaRefusal(
+                    f"page dissent[{index}] claims a comparison for a witness it could not compare"
+                )
+            continue
+        try:
+            dissent.validate_dissent(
+                [{"chair": row["letter"], **rest}],
+                text=text,
+                basis_testimonia=[{"chair": row["letter"], "outcome": READ_OUTCOME}],
+                max_comparison_steps=max_comparison_steps,
+            )
+        except SchemaRefusal as error:
+            raise SchemaRefusal(f"page dissent[{index}]: {error}") from error
 
 
 def dissent_holds(
@@ -743,9 +808,10 @@ def dissent_holds(
     feed: Mapping[str, Any],
     cited_ids: list[str],
     witnesses: list[dict[str, Any]],
+    max_comparison_steps: int,
 ) -> bool:
-    """Whether a sealed Perlectio's dissent is exactly the one its entry and feed give."""
-    return rows == page_dissent(text, feed, cited_ids, witnesses)
+    """Whether a sealed Perlectio's dissent is exactly the one its entry, feed and budget give."""
+    return rows == page_dissent(text, feed, cited_ids, witnesses, max_comparison_steps)
 
 
 def expected_perlectio(
