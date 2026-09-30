@@ -188,3 +188,54 @@ def test_a_non_string_kind_is_malformed_not_a_crash():
         raw = _with(lambda a, kind=kind: a["acts"][0].update(kind=kind))
         state, answer, problems = page_answer.parse_page_answer(raw)
         assert (state, answer, _codes(problems)) == ("malformed", None, ["kind-unknown"])
+
+
+_SURROGATE = "\\ud800"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("acts", 0, "kind"),
+        ("acts", 0, "label"),
+        ("acts", 0, "cites", 0),
+        ("acts", 0, "text"),
+        ("set_aside", 0, "id"),
+        ("set_aside", 0, "reason"),
+    ],
+)
+def test_a_lone_surrogate_in_any_string_field_is_malformed_not_a_later_crash(path):
+    answer = copy.deepcopy(GOOD)
+    target = answer
+    for step in path[:-1]:
+        target = target[step]
+    target[path[-1]] = "MARK"
+    raw = json.dumps(answer).replace("MARK", f"x{_SURROGATE}y")
+    assert _SURROGATE in raw
+    state, parsed, problems = page_answer.parse_page_answer(raw)
+    assert (state, parsed, _codes(problems)) == ("malformed", None, ["lone-surrogate"])
+
+
+def test_a_lone_surrogate_in_a_key_or_an_unknown_field_is_malformed():
+    for raw in (
+        json.dumps(GOOD)[:-1] + f', "{_SURROGATE}": 1}}',
+        json.dumps(GOOD).replace('"n": 2', f'"n": 2, "note": "{_SURROGATE}"'),
+    ):
+        state, _parsed, problems = page_answer.parse_page_answer(raw)
+        assert (state, _codes(problems)) == ("malformed", ["lone-surrogate"])
+
+
+def test_a_surrogate_pair_is_one_character_and_is_read():
+    raw = json.dumps(GOOD).replace('"12"', '"\\ud83d\\ude00"')
+    state, parsed, _problems = page_answer.parse_page_answer(raw)
+    assert state == "parsed" and parsed["acts"][1]["text"] == "\U0001f600"
+
+
+def test_fence_detection_reads_a_long_near_fence_in_linear_time():
+    import time
+
+    near = "```" + " " * 200_000 + "``"
+    started = time.perf_counter()
+    state, _parsed, problems = page_answer.parse_page_answer(near)
+    assert time.perf_counter() - started < 1.0
+    assert (state, _codes(problems)) == ("malformed", ["not-json"])
