@@ -11,7 +11,6 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.outcomes import OutcomeClass, classify
 from common.contracts.stages import ATTESTATORES, RECENSOR
 from common.recensor_receipt import (
-    EMPTY_READING_DENOMINATOR_REASON,
     RECENSOR_PARTITION_RECEIPT_SCHEMA_V3,
     RECENSOR_READING_RECEIPT_SCOPE,
     build_recensor_reading_receipt,
@@ -25,14 +24,22 @@ def _ref(name: str) -> dict[str, str]:
     return {"relative_path": f"r/4_perlector/artifacts/page-reading/{name}.json", "sha256": DIGEST}
 
 
-def _item(act_id: str, *, disposition: str = "read", outcome: str = "accepted", reads: int = 3):
+def _item(
+    act_id: str,
+    key: str,
+    *,
+    disposition: str = "read",
+    outcome: str = "accepted",
+    reads: int = 3,
+    release: str | None = None,
+):
     by_outcome = {"read": reads, "failed": 3 - reads}
     by_class = {klass.value: 0 for klass in OutcomeClass}
     for name, count in by_outcome.items():
         by_class[classify(ATTESTATORES, name).value] += count
     return {
         "act_id": act_id,
-        "act_key": "p1:1",
+        "act_key": key,
         "page_disposition": disposition,
         "review_ref": {"relative_path": f"r/5_recensor/{act_id}.json", "sha256": DIGEST},
         "review_outcome": outcome,
@@ -47,6 +54,7 @@ def _item(act_id: str, *, disposition: str = "read", outcome: str = "accepted", 
             "health_unrecorded": 0,
             "shortfalls": {"failed": 3 - reads, "truncated": 0, "unaligned": 0},
         },
+        "release_reason": release,
     }
 
 
@@ -57,7 +65,7 @@ def _receipt(items):
 
 
 def test_a_v3_receipt_names_its_page_readings_and_each_units_page_disposition():
-    receipt = _receipt([_item("act_b"), _item("act_a", disposition="held")])
+    receipt = _receipt([_item("act_b", "p1:1"), _item("act_a", "p2:1")])
     assert receipt["schema"] == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
     assert receipt["scope"] == RECENSOR_READING_RECEIPT_SCOPE
     assert [ref["relative_path"][-7:] for ref in receipt["page_reading_refs"]] == [
@@ -70,14 +78,44 @@ def test_a_v3_receipt_names_its_page_readings_and_each_units_page_disposition():
 
 
 def test_a_v3_receipt_judges_the_witness_floor_on_page_reads():
-    receipt = _receipt([_item("act_a", reads=2)])
+    receipt = _receipt([_item("act_a", "p1:1", reads=2), _item("act_b", "p2:1")])
     assert receipt["recensor_status"] == "partial"
     assert receipt["reasons"] == ["act act_a is under-witnessed (2 page reads of a floor of 3)"]
 
 
-def test_an_empty_v3_receipt_is_partial_by_name():
-    receipt = _receipt([])
-    assert receipt["reasons"] == [EMPTY_READING_DENOMINATOR_REASON]
+def test_a_held_unit_keeps_the_receipt_partial_even_when_its_review_released_it():
+    released = _item(
+        "act_a", "p2:blank", disposition="held", outcome="confirmed-blank", release="blank paper"
+    )
+    receipt = _receipt([_item("act_b", "p1:1"), released])
+    assert receipt["recensor_status"] == "partial"
+    assert receipt["reasons"] == [
+        "act act_a was held by its page reading and released at review: blank paper"
+    ]
+    held = _item("act_c", "p2:1", disposition="held", outcome="held-for-review")
+    reasons = _receipt([_item("act_b", "p1:1"), held])["reasons"]
+    assert reasons[0] == "act act_c was held by its page reading"
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        _item("act_a", "p2:1", disposition="held"),
+        _item("act_a", "p2:1", disposition="held", release="  "),
+        _item("act_a", "p2:1", release="nothing held it"),
+        _item("act_a", "p2:1", disposition="held", outcome="held-for-review", release="x"),
+    ],
+    ids=["no-reason", "blank-reason", "read-unit-released", "unreleased-with-reason"],
+)
+def test_a_release_reason_is_given_exactly_when_a_held_unit_is_completed(item):
+    with pytest.raises(SchemaRefusal, match="release"):
+        _receipt([_item("act_b", "p1:1"), item])
+
+
+def test_a_v3_receipt_counting_fewer_units_than_pages_is_refused():
+    for items in ([_item("act_a", "p1:1")], []):
+        with pytest.raises(SchemaRefusal, match="every sealed page is at least one unit"):
+            _receipt(items)
 
 
 @pytest.mark.parametrize(
@@ -85,24 +123,36 @@ def test_an_empty_v3_receipt_is_partial_by_name():
     [
         lambda r: r["items"][0].update(page_disposition="maybe"),
         lambda r: r["items"][0].update(designator_outcome="proposed"),
+        lambda r: r["items"][0].pop("release_reason"),
         lambda r: r["items"][0]["coverage"].update(page_granularity_only=0),
         lambda r: r.update(page_reading_refs=[]),
         lambda r: r.update(page_reading_refs=[_ref("p1"), _ref("p1")]),
+        lambda r: r.update(page_reading_refs=[_ref("p1"), _ref("p2"), _ref("p3")]),
+        lambda r: r["items"][1].update(act_key=r["items"][0]["act_key"]),
+        lambda r: r["items"][0].update(act_key="1:1"),
+        lambda r: r["items"][0].update(act_key="p1:0"),
+        lambda r: r["items"][0].update(act_key="p1:refused"),
         lambda r: r.update(proposal_seal_ref=_ref("seal")),
         lambda r: r.update(scope="proposal-acts-and-configured-witnesses"),
     ],
     ids=[
         "disposition",
         "designator-outcome",
+        "no-release-field",
         "act-granularity",
         "no-page",
         "page-twice",
+        "more-pages-than-units",
+        "act-key-twice",
+        "act-key-no-page",
+        "act-key-zero",
+        "act-key-refused-page",
         "proposal-seal",
         "scope",
     ],
 )
 def test_a_malformed_v3_receipt_is_refused(change):
-    forged = copy.deepcopy(_receipt([_item("act_a")]))
+    forged = copy.deepcopy(_receipt([_item("act_a", "p1:1"), _item("act_b", "p2:1")]))
     change(forged)
     forged["self_hash"] = self_hash({k: v for k, v in forged.items() if k != "self_hash"})
     with pytest.raises(SchemaRefusal):

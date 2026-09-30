@@ -46,7 +46,7 @@ from __future__ import annotations
 
 from typing import Any, Final, Protocol, TypedDict
 
-import annotations
+from common import reading_annotations as annotations
 
 from common.background import SECONDARY_MARGIN
 from common.contracts.errors import ContractError

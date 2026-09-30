@@ -33,55 +33,64 @@ time; they do not run here. A run sealed with a blind read or either sampling
 rate on refuses at stage open by name; a sealed audit policy is recorded on
 every `page-reading` as not run.
 
-The record shapes are in CONTRACT.md, "Page reading".
+What the records derive rather than state -- an answer's problems, each
+entry's plan, the accounting's inputs -- is `common/page_path.py`, the one
+derivation the page-read denominator recomputes them with. The record shapes
+are in CONTRACT.md, "Page reading".
 """
 
 from __future__ import annotations
 
-import json
-import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Callable, Final
 
-import annotations
 import dossier
 import page_feed
 import page_overlay
 import page_prompt
-import truncation
 from dissent import dissent_against
 from live_reader import EngineSignalRefusal, send_page_request
 from throughput import planned_seconds_per_page
 
 import operations.serving.errors as serving_errors
-from common import page_accounting, page_answer
+from common import page_accounting, page_answer, page_path
 from common.alignment import bracket_marker_view
-from common.background import validate_measured_ink_map_payload
 from common.chairs.models import AbsentChair, ChairIdentity
-from common.contracts.canonical import digest_bytes, digest_of, is_plain_int
+from common.contracts.canonical import digest_bytes, digest_of
 from common.contracts.envelope import read_verified
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
-from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import (
     artifact_id,
-    attempt_id,
-    perlector_attempt_id,
     region_id,
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, INK_MAP, PERLECTOR
 from common.decoding import chair_decoding, engine_effective_sampling, recorded_sampling
 from common.exemplar_boundary import cut_exemplar_crop, read_sealed_page
 from common.imaging import dimensions
-from common.request_capacity import RequestCapacityRefusal, page_request_capacity
-from common.residual_ink import (
-    INK_NOT_MEASURABLE,
-    MINIMUM_CONTRAST_BELOW_BACKGROUND,
-    load_coverage_audit_config,
-    resolve_coverage_audit_policy,
+from common.page_path import (
+    ACT_REGION_KIND,
+    ACT_REGION_SCHEMA,
+    CALL_FAILED,
+    CUT_OFF,
+    HELD,
+    NOT_RUN,
+    PAGE_ACCOUNTING_KIND,
+    PAGE_FEED_KIND,
+    PAGE_NOT_SEALED,
+    PAGE_READ_ORDINAL,
+    PAGE_READING_KIND,
+    PAGE_READING_SCHEMA,
+    PARSED,
+    PERLECTIO_KIND,
+    PERLECTIO_SCHEMA,
+    READ,
+    READING_UNIT,
+    REFUSED_CAPACITY,
 )
+from common.request_capacity import RequestCapacityRefusal, page_request_capacity
 from common.stage import (
     SECONDARY_PROPOSER_CHAIR,
     exemplar_page_ids,
@@ -93,57 +102,14 @@ from operations.serving.assembly import bound_serving_recipes
 from operations.serving.errors import ChairResponseRefusal
 from operations.serving.http import EndpointUnavailable
 
-READING_UNIT: Final = "page"
-
-PAGE_FEED_KIND: Final = "page-feed"
-PAGE_READING_KIND: Final = "page-reading"
-PAGE_ACCOUNTING_KIND: Final = "page-accounting"
-ACT_REGION_KIND: Final = "act-region"
-PERLECTIO_KIND: Final = "perlectio"
-PAGE_READING_SCHEMA: Final = "perlector-page-reading.v1"
-ACT_REGION_SCHEMA: Final = "perlector-act-region.v1"
-PERLECTIO_SCHEMA: Final = "perlectio.v2"
-
-# The `reader-sent` pass a page's call is recorded under, and the attempt a
-# page reading is. One reading per page; a second is later work.
+# The `reader-sent` pass a page's call is recorded under.
 PAGE_READING_PASS: Final = "page-reading"
-PAGE_READ_OPERATION: Final = "page-read"
-PAGE_READ_ORDINAL: Final = 1
-ACT_REGION_OPERATION: Final = "reading-region"
 
-# What became of a page's call, on its `page-reading`.
-PARSED: Final = page_answer.PARSED
-MALFORMED: Final = page_answer.MALFORMED
-CUT_OFF: Final = "cut-off"
-REFUSED_CAPACITY: Final = "refused-capacity"
-CALL_FAILED: Final = "call-failed"
-NOT_RUN: Final = "not-run"
-READ: Final = "read"
-HELD: Final = "held"
-
-# Why a page is not asked (`not-run`), and why a parsed answer is held whole.
-PAGE_NOT_SEALED: Final = "page-not-sealed"
+# Why a page is not asked (`not-run`); the page path's other names are in
+# `common/page_path.py`.
 CHAIR_ABSENT: Final = "chair-absent"
 NO_WITNESS_TESTIMONY: Final = "no-witness-testimony"
 NOTHING_TO_SHOW: Final = "nothing-to-show"
-NO_STOP_REASON: Final = "no-stop-reason"
-
-# Why one entry of a parsed, valid answer is held.
-UNPLACED: Final = "reading-unplaced"
-DUPLICATE_REGION: Final = "duplicate-region"
-READING_INCOMPLETE: Final = "reading-incomplete"
-DOUBT_MARKS_MALFORMED: Final = "doubt-marks-malformed"
-ENTRY_NO_READABLE_TEXT: Final = "entry-no-readable-text"
-NO_AUTOPSIA: Final = "no-autopsia"
-
-READING_CLASS: Final = "reading"
-UNPLACED_CLASS: Final = "reading-unplaced"
-
-# The Designator's stage-2 Surya records (`surya-page` census per page,
-# `surya-line` and `surya-block` per detection).
-SURYA_PAGE_KIND: Final = "surya-page"
-SURYA_LINE_KIND: Final = "surya-line"
-SURYA_BLOCK_KIND: Final = "surya-block"
 
 _PAGE_LOCAL_CALL_FAILURES: Final = (
     EngineSignalRefusal,
@@ -277,167 +243,6 @@ def _page_witnesses(
     ]
 
 
-_SURYA_SUBJECT: Final = re.compile(r"^(?P<page>.+)-surya-(?P<kind>line|block)-(?P<n>[1-9][0-9]*)$")
-_SURYA_CENSUS_FIELDS: Final = (
-    "page_id",
-    "line_count",
-    "block_count",
-    "line_subjects",
-    "block_subjects",
-    "reading_order",
-    "reading_order_reason",
-)
-_SURYA_DETECTION_FIELDS: Final = {
-    SURYA_LINE_KIND: ("page_id", "n", "bounds", "confidence_bp"),
-    SURYA_BLOCK_KIND: (
-        "page_id",
-        "n",
-        "bounds",
-        "confidence_bp",
-        "label",
-        "reading_order_position",
-        "reading_order",
-    ),
-}
-
-
-def _fields(payload: Any, names: tuple[str, ...], what: str) -> dict[str, Any]:
-    """The named fields of a sealed payload, or a refusal naming the first one missing."""
-    if not isinstance(payload, dict):
-        raise FatalAccounting(f"{what} carries no payload object")
-    for name in names:
-        if name not in payload:
-            raise FatalAccounting(f"{what} carries no {name!r}")
-    return {name: payload[name] for name in names}
-
-
-def _surya_detections(
-    context,
-    kind: str,
-    page_id: str,
-    subjects: Any,
-    count: Any,
-    entries: dict[tuple[str, str], dict[str, Any]],
-    reading_order: str,
-) -> list[dict[str, Any]]:
-    """One page's Surya lines or blocks, in the census's order, checked against it."""
-    what = f"page {page_id}'s Surya census"
-    if (
-        not isinstance(subjects, list)
-        or not isinstance(count, int)
-        or isinstance(count, bool)
-        or len(subjects) != count
-    ):
-        raise FatalAccounting(f"{what} names {kind} subjects that are not a list of its count")
-    rows = []
-    for n, subject in enumerate(subjects, start=1):
-        match = _SURYA_SUBJECT.match(subject) if isinstance(subject, str) else None
-        if (
-            match is None
-            or match["page"] != page_id
-            or f"surya-{match['kind']}" != kind
-            or int(match["n"]) != n
-        ):
-            raise FatalAccounting(f"{what} names {subject!r} as its {kind} {n}")
-        entry = entries.get((kind, subject))
-        if entry is None:
-            raise FatalAccounting(f"{what} names {subject!r}, which the Designator never sealed")
-        record = context.tree.read_artifact(DESIGNATOR, kind, entry["artifact_id"])
-        payload = _fields(record["payload"], _SURYA_DETECTION_FIELDS[kind], f"Surya {subject}")
-        if payload["page_id"] != page_id or payload["n"] != n:
-            raise FatalAccounting(
-                f"Surya {subject} states page {payload['page_id']!r}, n {payload['n']!r}, "
-                f"where its census places it on page {page_id!r} as {n}"
-            )
-        row = {
-            "box_px": payload["bounds"],
-            "confidence_bp": payload["confidence_bp"],
-            "ref": context.artifact_ref(DESIGNATOR, kind, entry["artifact_id"]),
-        }
-        if kind == SURYA_BLOCK_KIND:
-            if payload["reading_order"] != reading_order:
-                raise FatalAccounting(
-                    f"Surya {subject} states reading order {payload['reading_order']!r}, "
-                    f"but its page census states {reading_order!r}"
-                )
-            row["label"] = payload["label"]
-            row["position"] = payload["reading_order_position"]
-        rows.append(row)
-    return rows
-
-
-def sealed_surya_census(context) -> dict[str, dict[str, Any]] | None:
-    """Every page's Surya census as the page feed takes it, or `None` when the run has none.
-
-    Read from the Designator's stage-2 records: each `surya-page` (subject
-    page_id) names its `line_subjects` and `block_subjects` in Surya's order
-    with their counts, and how Surya ordered the blocks (`reading_order`, and
-    `reading_order_reason` for a raster fallback; the feed calls them
-    `block_sequence`); each `surya-line` and `surya-block` carries `n`, its
-    `bounds` and `confidence_bp`, and a block its `label`,
-    `reading_order_position` and the page's `reading_order`. The census and
-    its detections must agree exactly, and every sealed detection must be
-    named by its page's census. This is the one place that shape is read.
-    """
-    records = stage_manifest(context, DESIGNATOR)["artifacts"]
-    censuses = [entry for entry in records if entry["kind"] == SURYA_PAGE_KIND]
-    if not censuses:
-        return None
-    entries: dict[tuple[str, str], dict[str, Any]] = {}
-    for entry in records:
-        if entry["kind"] in (SURYA_LINE_KIND, SURYA_BLOCK_KIND):
-            key = (entry["kind"], entry["subject_id"])
-            if key in entries:
-                raise FatalAccounting(f"the Designator sealed {key[1]!r} twice")
-            entries[key] = entry
-    by_page: dict[str, dict[str, Any]] = {}
-    named: set[tuple[str, str]] = set()
-    for entry in censuses:
-        page_id = entry["subject_id"]
-        record = context.tree.read_artifact(DESIGNATOR, SURYA_PAGE_KIND, entry["artifact_id"])
-        census = _fields(record["payload"], _SURYA_CENSUS_FIELDS, f"page {page_id}'s Surya census")
-        if census["page_id"] != page_id:
-            raise FatalAccounting(f"page {page_id}'s Surya census names another page")
-        if census["reading_order"] not in (page_feed.ORDER_HEAD, page_feed.RASTER_FALLBACK):
-            raise FatalAccounting(
-                f"page {page_id}'s Surya census states reading order "
-                f"{census['reading_order']!r}, which is not one Surya gives"
-            )
-        lines = _surya_detections(
-            context,
-            SURYA_LINE_KIND,
-            page_id,
-            census["line_subjects"],
-            census["line_count"],
-            entries,
-            census["reading_order"],
-        )
-        blocks = _surya_detections(
-            context,
-            SURYA_BLOCK_KIND,
-            page_id,
-            census["block_subjects"],
-            census["block_count"],
-            entries,
-            census["reading_order"],
-        )
-        named |= {(SURYA_LINE_KIND, s) for s in census["line_subjects"]}
-        named |= {(SURYA_BLOCK_KIND, s) for s in census["block_subjects"]}
-        by_page[page_id] = {
-            "census_ref": context.artifact_ref(DESIGNATOR, SURYA_PAGE_KIND, entry["artifact_id"]),
-            "block_sequence": census["reading_order"],
-            "block_sequence_reason": census["reading_order_reason"],
-            "lines": lines,
-            "blocks": blocks,
-        }
-    unnamed = sorted(subject for _kind, subject in set(entries) - named)
-    if unnamed:
-        raise FatalAccounting(
-            f"the Designator sealed Surya detections {unnamed} that no page census names"
-        )
-    return by_page
-
-
 def _surya_for(census: dict[str, dict[str, Any]] | None, page_id: str) -> Any:
     if census is None:
         return page_feed.SURYA_ABSENT
@@ -464,17 +269,6 @@ def _page_render(context, protocol_config: dict[str, Any], page_id: str, ordinal
     )
 
 
-def _distinct(references: list[dict[str, str] | None]) -> list[dict[str, str]]:
-    seen: dict[str, dict[str, str]] = {}
-    for reference in references:
-        if reference is None:
-            continue
-        known = seen.setdefault(reference["relative_path"], dict(reference))
-        if known != reference:
-            raise SchemaRefusal(f"two digests are claimed for input {reference['relative_path']!r}")
-    return list(seen.values())
-
-
 def feed_inputs(
     context, feed: dict[str, Any], witnesses: list[dict[str, Any]]
 ) -> list[dict[str, str]]:
@@ -497,28 +291,13 @@ def feed_inputs(
     if surya is not None:
         named.append(surya["census_ref"])
         named += [row["ref"] for row in surya["lines"] + surya["blocks"]]
-    references = _distinct(named)
+    references = page_path.distinct_refs(named)
     for reference in references:
         if context.input_ref(reference["relative_path"]) != reference:
             raise SchemaRefusal(
                 f"the page feed names {reference!r}, but the bytes at that path differ"
             )
     return references
-
-
-# --- the answer's ids ---------------------------------------------------------------
-#
-# The answer is read by `common/page_accounting.py`'s `validate_answer` against
-# `feed_candidates`, the placement map the accounting measures against too.
-
-
-def page_problems(validated: dict[str, Any]) -> list[dict[str, Any]]:
-    """The problems that hold the page reading whole; a shared union box holds its entries."""
-    return [
-        problem
-        for problem in validated["problems"]
-        if problem["code"] != page_accounting.DUPLICATE_REGION
-    ]
 
 
 # --- one page ---------------------------------------------------------------------
@@ -571,10 +350,6 @@ class _PagePass:
         return not isinstance(self.run.chair, AbsentChair)
 
 
-def page_reading_attempt(page_id: str) -> str:
-    return attempt_id(page_id, PAGE_READ_OPERATION, PAGE_READ_ORDINAL)
-
-
 def _artifact(kind: str, subject: str, attempt: str | None) -> str:
     return artifact_id(PERLECTOR, kind, subject, attempt)
 
@@ -588,7 +363,7 @@ def _sealed(context, kind: str, subject: str, attempt: str | None) -> dict[str, 
 
 
 def _existing_reading(context, page_id: str) -> dict[str, Any] | None:
-    return _sealed(context, PAGE_READING_KIND, page_id, page_reading_attempt(page_id))
+    return _sealed(context, PAGE_READING_KIND, page_id, page_path.page_reading_attempt(page_id))
 
 
 def _fixture_answer(context, ordinal: int) -> dict[str, Any]:
@@ -819,17 +594,7 @@ def _read_reply(content: str, stop_reason: str | None, feed: dict[str, Any]):
         )
     state, answer, problems = page_answer.parse_page_answer(content)
     if state == PARSED:
-        problems = page_problems(
-            page_accounting.validate_answer(answer, page_accounting.feed_candidates(feed))
-        )
-        if stop_reason is None:
-            problems.append(
-                {
-                    "code": NO_STOP_REASON,
-                    "detail": "the engine gave no finish reason, so whether the answer ran to "
-                    "its own end is unknown; the answer is kept and held whole",
-                }
-            )
+        problems = page_path.answer_problems(answer, feed, stop_reason)
     return state, answer, problems
 
 
@@ -842,7 +607,18 @@ def _finish(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | 
         reading = _publish_reading(state, page, result)
     if page.feed is None:
         return
-    plans = entry_plans(state, page, reading) if reading["payload"]["disposition"] == READ else []
+    payload = reading["payload"]
+    plans = (
+        page_path.entry_plans(
+            payload["answer"],
+            page.feed,
+            page_id=page.page_id,
+            stop_reason=payload["stop_reason"],
+            truncation_policy=state.run.protocol_config["truncation"],
+        )
+        if payload["disposition"] == READ
+        else []
+    )
     accounting = publish_page_accounting(state, page, reading, plans)
     publish_act_records(state, page, reading, plans, accounting)
 
@@ -915,13 +691,13 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
             context, run.chair, attempted=attempted, receipt_ref=receipt_ref
         ),
     }
-    attempt = page_reading_attempt(page.page_id)
+    attempt = page_path.page_reading_attempt(page.page_id)
     context.publish(
         kind=PAGE_READING_KIND,
         subject_id=page.page_id,
         outcome=disposition,
         attempt=attempt,
-        inputs=_distinct(inputs),
+        inputs=page_path.distinct_refs(inputs),
         payload=payload,
     )
     return context.tree.read_artifact(
@@ -972,91 +748,6 @@ def _check_adopted(state: _PagePass, page: _Page, record: dict[str, Any]) -> Non
 
 
 # --- the answer's entries -----------------------------------------------------------
-
-
-def answer_entries(answer: dict[str, Any], feed: dict[str, Any]) -> list[dict[str, Any]]:
-    """Each entry of a valid answer: the entry, its expanded ids, union box and entry holds."""
-    validated = page_accounting.validate_answer(answer, page_accounting.feed_candidates(feed))
-    shared = {
-        n
-        for problem in validated["problems"]
-        if problem["code"] == page_accounting.DUPLICATE_REGION
-        for n in problem["ns"]
-    }
-    entries = []
-    for act, entry in zip(answer["acts"], validated["entries"], strict=True):
-        union = entry["union_box_px"]
-        holds = [] if union is not None else [UNPLACED]
-        if entry["n"] in shared:
-            holds.append(DUPLICATE_REGION)
-        entries.append(
-            {"act": act, "cited_ids": entry["cited_ids"], "union_box_px": union, "holds": holds}
-        )
-    return entries
-
-
-def entry_plans(state: _PagePass, page: _Page, reading: dict[str, Any]) -> list[dict[str, Any]]:
-    """Each entry of a read page as it will be published, computed without publishing.
-
-    Per entry: its act id and class, its union box, its text and doubt layers
-    (`annotations.read_doubt_marks`), its truncation classification over its
-    region, and its own holds: the region's (`reading-unplaced`,
-    `duplicate-region`, and `no-autopsia` when no page image was shown) and the
-    reading's (`doubt-marks-malformed`, `reading-incomplete`,
-    `entry-no-readable-text`). The page accounting reads the truncations from
-    here, before any act record exists.
-    """
-    run, feed = state.run, page.feed
-    payload = reading["payload"]
-    page_pixels = feed["page_size"]["w"] * feed["page_size"]["h"]
-    attempt = page_reading_attempt(page.page_id)
-    autopsia = feed["page_render"] is not None
-    plans = []
-    for entry in answer_entries(payload["answer"], feed):
-        act, union = entry["act"], entry["union_box_px"]
-        act_class = READING_CLASS if union is not None else UNPLACED_CLASS
-        region_holds = list(entry["holds"])
-        if not autopsia:
-            region_holds.append(NO_AUTOPSIA)
-        text, assessment = annotations.read_doubt_marks(act["text"])
-        reading_holds = list(region_holds)
-        if assessment["state"] == annotations.ASSESSMENT_MALFORMED:
-            reading_holds.append(DOUBT_MARKS_MALFORMED)
-        record = (
-            truncation.classify(
-                text,
-                region_pixels=union["w"] * union["h"],
-                page_pixels=page_pixels,
-                truncation_policy=run.protocol_config["truncation"],
-                stop_reason=payload["stop_reason"],
-            )
-            if union is not None
-            else None
-        )
-        if record is not None and truncation.holds_as_failure(record["classification"]):
-            reading_holds.append(READING_INCOMPLETE)
-        if not text.strip():
-            reading_holds.append(ENTRY_NO_READABLE_TEXT)
-        plans.append(
-            {
-                "act": act,
-                "act_id": derive_act_id(
-                    page.page_id,
-                    act_class,
-                    {"page_reading": attempt, "n": act["n"], "union_box_px": union},
-                ),
-                "act_class": act_class,
-                "cited_ids": list(entry["cited_ids"]),
-                "union_box_px": union,
-                "region_holds": region_holds,
-                "reading_holds": reading_holds,
-                "text": text,
-                "assessment": assessment,
-                "truncation": record,
-                "autopsia": autopsia,
-            }
-        )
-    return plans
 
 
 def _comparison_text(text: str, capabilities: Any) -> str:
@@ -1167,7 +858,7 @@ def publish_act_records(
     engine_inputs = state.hooks.engine_call_inputs(
         context, payload["engine_call"], variance_arm=None
     )
-    attempt = page_reading_attempt(page.page_id)
+    attempt = page_path.page_reading_attempt(page.page_id)
     for plan in plans:
         act, union, act_id = plan["act"], plan["union_box_px"], plan["act_id"]
         crop = (
@@ -1209,8 +900,8 @@ def publish_act_records(
             kind=ACT_REGION_KIND,
             subject_id=act_id,
             outcome=HELD if region_holds or page_holds else READ,
-            attempt=attempt_id(act_id, ACT_REGION_OPERATION, 1),
-            inputs=_distinct(region_inputs),
+            attempt=page_path.region_attempt(act_id),
+            inputs=page_path.distinct_refs(region_inputs),
             payload=region_payload,
         )
         region_ref = context.input_ref(published.relative_path)
@@ -1220,7 +911,7 @@ def publish_act_records(
             "page_accounting_ref": accounting_ref,
             "feed_ref": page.feed_ref,
         }
-        perlectio_attempt = perlector_attempt_id(act_id, "perlegere", 1)
+        perlectio_attempt = page_path.perlectio_attempt(act_id)
         adopted = _sealed(context, PERLECTIO_KIND, act_id, perlectio_attempt)
         if adopted is not None:
             _check_adopted_perlectio(adopted, refs, act_id)
@@ -1233,7 +924,7 @@ def publish_act_records(
             subject_id=act_id,
             outcome=outcome,
             attempt=perlectio_attempt,
-            inputs=_distinct(
+            inputs=page_path.distinct_refs(
                 [region_ref, reading_ref, accounting_ref, page.feed_ref, *engine_inputs]
             ),
             payload={
@@ -1265,241 +956,6 @@ def publish_act_records(
 # --- the page accounting -----------------------------------------------------------
 
 
-def _accounting_witnesses(state: _PagePass, page: _Page) -> list[dict[str, Any]]:
-    """Every sealed page witness as the accounting measures it, shown or hidden.
-
-    A shown witness is its feed row. A hidden one is read by the feed's own
-    extraction and takes the next letter the feed did not use, in sorted
-    `witness_label` order, so its ids never collide with a shown one's.
-    """
-    shown = {row["witness_label"]: row for row in page.feed["witnesses"]}
-    used = {row["letter"] for row in shown.values()}
-    free = iter(letter for letter in page_feed.WITNESS_LETTERS if letter not in used)
-    rows = []
-    for witness in sorted(page.witnesses, key=lambda item: item["witness_label"]):
-        testimonium = witness["testimonium"]
-        outcome = testimonium["outcome"]
-        health = testimonium["payload"].get("content_health")
-        blank = health.get("blank") if outcome == "read" and isinstance(health, dict) else None
-        row = shown.get(witness["witness_label"])
-        if row is not None:
-            letter = row["letter"]
-            units = [
-                {"id": unit["id"], "box_px": unit["box_px"], "text": unit["text"]}
-                for unit in row["units"]
-            ]
-        else:
-            letter = next(free)
-            reading = page_feed.witness_reading(
-                testimonium,
-                adapter=witness["adapter"],
-                page_size=page.page_size,
-                read_bytes=state.context.tree.read_bytes,
-                fixture_placeholders=not state.hooks.real_ingress(state.context),
-            )
-            units = [
-                {"id": f"{letter}{number}", "box_px": unit["box_px"], "text": unit["text"]}
-                for number, unit in enumerate(reading["units"], start=1)
-            ]
-        rows.append({"letter": letter, "outcome": outcome, "blank": blank, "units": units})
-    return rows
-
-
-def _one_record(entries: list[dict[str, Any]], kind: str, subject: str) -> dict[str, Any]:
-    found = [entry for entry in entries if entry["kind"] == kind and entry["subject_id"] == subject]
-    if len(found) != 1:
-        raise FatalAccounting(
-            f"the Designator sealed {len(found)} {kind} records for {subject!r}, not one"
-        )
-    return found[0]
-
-
-def _dai_unit_ids(page: _Page) -> dict[tuple[int, int, int, int], list[str]]:
-    """The feed ids of DAI's units by box, in the feed's order.
-
-    DAI reads one unit per detector record it was shown, boxed by that record's
-    bounds, so a detector record and the DAI unit with its box are one record.
-    A DAI the feed hides has no row and names none.
-    """
-    labels = {w["witness_label"] for w in page.witnesses if w["adapter"] == page_feed.DAI}
-    ids: dict[tuple[int, int, int, int], list[str]] = {}
-    for row in page.feed["witnesses"]:
-        if row["witness_label"] not in labels:
-            continue
-        for unit in row["units"]:
-            box = unit["box_px"]
-            if box is not None:
-                ids.setdefault((box["x"], box["y"], box["w"], box["h"]), []).append(unit["id"])
-    return ids
-
-
-def _record_detections(context, page: _Page) -> tuple[Any, Any, list[dict[str, str]]]:
-    """The record detector's records and census for one page, and the records read.
-
-    Records and census are `None` when the detector published no
-    `detector-page` for the page, or when its run facts state no `max_det`, so
-    whether it stopped at its cap is unknown; the accounting then holds rule
-    (i) as not measured, and the `detector-page` read is still an input. A
-    record whose corners enclose no crop is given with no box, and the
-    accounting reports it not measured. A record carries the feed id of the
-    DAI unit that is that record, so setting that unit aside is seen as
-    setting the record aside. The census and its records must agree exactly --
-    count, subjects, order, page -- and every sealed record of the page must be
-    named by its census, or the stage refuses by name.
-    """
-    page_id = page.page_id
-    entries = stage_manifest(context, DESIGNATOR)["artifacts"]
-    prefix = f"{page_id}-detector-"
-    sealed = {
-        e["subject_id"]
-        for e in entries
-        if e["kind"] == "detector-record" and e["subject_id"].startswith(prefix)
-    }
-    pages = [e for e in entries if e["kind"] == "detector-page" and e["subject_id"] == page_id]
-    if not pages:
-        if sealed:
-            raise FatalAccounting(
-                f"the Designator sealed detector records {sorted(sealed)} but no "
-                f"detector-page for page {page_id}"
-            )
-        return None, None, []
-    entry = _one_record(entries, "detector-page", page_id)
-    page_ref = context.artifact_ref(DESIGNATOR, "detector-page", entry["artifact_id"])
-    what = f"page {page_id}'s detector-page"
-    census = _fields(
-        context.tree.read_artifact(DESIGNATOR, "detector-page", entry["artifact_id"])["payload"],
-        ("page_ordinal", "raw_output_ref", "record_subjects", "detection_count"),
-        what,
-    )
-    subjects, count = census["record_subjects"], census["detection_count"]
-    if (
-        not isinstance(subjects, list)
-        or not all(isinstance(subject, str) for subject in subjects)
-        or not is_plain_int(count)
-        or len(subjects) != count
-    ):
-        raise FatalAccounting(f"{what} names record subjects that are not a list of its count")
-    if census["page_ordinal"] != page.ordinal:
-        raise FatalAccounting(f"{what} states page ordinal {census['page_ordinal']!r}")
-    unnamed = sorted(sealed - set(subjects))
-    if unnamed:
-        raise FatalAccounting(
-            f"the Designator sealed detector records {unnamed} that {what} does not name"
-        )
-    output = json.loads(
-        read_verified(context.tree.read_bytes, census["raw_output_ref"], "a detector output")
-    )
-    if not isinstance(output, dict) or not isinstance(output.get("run"), dict):
-        raise FatalAccounting(f"page {page_id}'s detector output carries no run facts")
-    if "max_det" not in output["run"]:
-        return None, None, [page_ref]
-    max_det = output["run"]["max_det"]
-    if not is_plain_int(max_det) or max_det < 1:
-        raise FatalAccounting(f"page {page_id}'s detector run facts state a max_det of {max_det!r}")
-    unit_ids = _dai_unit_ids(page)
-    references = [page_ref]
-    records = []
-    for position, subject in enumerate(subjects):
-        if subject != f"{prefix}{position}":
-            raise FatalAccounting(f"{what} names {subject!r} as its record {position}")
-        row = _one_record(entries, "detector-record", subject)
-        record = context.tree.read_artifact(DESIGNATOR, "detector-record", row["artifact_id"])
-        fields = _fields(
-            record["payload"],
-            ("page_ordinal", "detector_ordinal", "bounds"),
-            f"detector record {subject}",
-        )
-        if (fields["page_ordinal"], fields["detector_ordinal"]) != (page.ordinal, position):
-            raise FatalAccounting(
-                f"detector record {subject} states page {fields['page_ordinal']!r}, "
-                f"ordinal {fields['detector_ordinal']!r}"
-            )
-        bounds = fields["bounds"]
-        reference = context.artifact_ref(DESIGNATOR, "detector-record", row["artifact_id"])
-        references.append(reference)
-        item: dict[str, Any] = {"box_px": bounds, "ref": reference}
-        if isinstance(bounds, dict):
-            same_box = unit_ids.get(tuple(bounds.get(name) for name in ("x", "y", "w", "h")))
-            if same_box:
-                item["id"] = same_box.pop(0)
-        records.append(item)
-    return (
-        records,
-        {"detection_count": count, "max_det": max_det, "max_det_reached": count >= max_det},
-        references,
-    )
-
-
-def _accounting_detections(state: _PagePass, page: _Page) -> tuple[dict[str, Any], list]:
-    """The page's sealed detections as the accounting takes them, and their references."""
-    context, feed = state.context, page.feed
-    surya, references = None, []
-    if state.surya is not None:
-        census = state.surya[page.page_id]
-        shown = feed["surya"] or {"lines": [], "blocks": []}
-        surya = {
-            kind: [
-                {"id": row["id"], "box_px": row["box_px"], "ref": row["ref"]} for row in shown[kind]
-            ]
-            if shown[kind]
-            else [{"box_px": row["box_px"], "ref": row["ref"]} for row in census[kind]]
-            for kind in ("lines", "blocks")
-        }
-        references = [census["census_ref"]] + [
-            row["ref"] for row in census["lines"] + census["blocks"]
-        ]
-    configured = isinstance(context.registry.resolve(SECONDARY_PROPOSER_CHAIR), ChairIdentity)
-    records, record_census, record_refs = (
-        _record_detections(context, page) if configured else (None, None, [])
-    )
-    return {
-        "surya": surya,
-        "records": records,
-        "record_detector": "configured" if configured else "absent",
-        "record_census": record_census,
-    }, references + record_refs
-
-
-def _accounting_ink(context, page: _Page) -> tuple[dict[str, Any] | None, list]:
-    """The page's retained ink runs and resolved coverage policy, or `None` when unmeasured."""
-    found = []
-    for entry in stage_manifest(context, INK_MAP)["artifacts"]:
-        if entry["kind"] != "ink-map":
-            continue
-        record = context.tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
-        if record["payload"].get("page_ordinal") == page.ordinal:
-            found.append((entry, record))
-    if len(found) > 1:
-        raise FatalAccounting(
-            f"the Ink Map sealed {len(found)} ink maps for page {page.page_id}, not one; the "
-            "page's residual ink cannot be measured against one of them by choice"
-        )
-    if not found:
-        return None, []
-    [(entry, record)] = found
-    reference = context.artifact_ref(INK_MAP, "ink-map", entry["artifact_id"])
-    if record["outcome"] == INK_NOT_MEASURABLE:
-        return None, [reference]
-    measured = validate_measured_ink_map_payload(
-        record["payload"], audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
-    )
-    coverage = load_coverage_audit_config(context.args.ink_map_config)
-    context.require_sealed_config("ink-map", coverage["config_sha256"])
-    if coverage["config_sha256"] != measured["background_config_sha256"]:
-        raise ContractError(
-            f"page {page.page_id}'s ink map and the coverage policy read different sealed bytes"
-        )
-    runs = record["payload"]["edge_findings"]
-    return {
-        "runs": runs,
-        "coverage_policy": resolve_coverage_audit_policy(coverage, runs["width"], runs["height"]),
-    }, [reference]
-
-
-def _by_path(references: list[dict[str, str]]) -> list[dict[str, str]]:
-    return sorted(references, key=lambda reference: reference["relative_path"])
-
-
 def publish_page_accounting(
     state: _PagePass, page: _Page, reading: dict[str, Any], plans: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -1512,25 +968,30 @@ def publish_page_accounting(
     """
     context = state.context
     reading_ref = context.artifact_ref(PERLECTOR, PAGE_READING_KIND, reading["artifact_id"])
-    detections, detection_refs = _accounting_detections(state, page)
-    ink, ink_refs = _accounting_ink(context, page)
-    inputs = _distinct(
-        [
-            page.feed_ref,
-            reading_ref,
-            *(witness["testimonium_ref"] for witness in page.witnesses),
-            *detection_refs,
-            *ink_refs,
-        ]
+    measured, inputs = page_path.accounting_inputs(
+        context,
+        feed=page.feed,
+        feed_ref=page.feed_ref,
+        reading=reading["payload"],
+        reading_ref=reading_ref,
+        witnesses=page.witnesses,
+        plans=plans,
+        surya_census=state.surya,
+        designator_entries=stage_manifest(context, DESIGNATOR)["artifacts"],
+        ink_entries=stage_manifest(context, INK_MAP)["artifacts"],
+        record_detector_configured=isinstance(
+            context.registry.resolve(SECONDARY_PROPOSER_CHAIR), ChairIdentity
+        ),
+        fixture_placeholders=not state.hooks.real_ingress(context),
     )
     # Bound to the reading's attempt: a later reading of the page is accounted apart.
-    attempt = page_reading_attempt(page.page_id)
+    attempt = page_path.page_reading_attempt(page.page_id)
     sealed = _sealed(context, PAGE_ACCOUNTING_KIND, page.page_id, attempt)
     if sealed is not None:
         payload = sealed["payload"]
         if (
             sealed["config_digest"] != context.config_digest
-            or _by_path(sealed["inputs"]) != _by_path(inputs)
+            or page_path.refs_by_path(sealed["inputs"]) != page_path.refs_by_path(inputs)
             or not isinstance(payload, dict)
             or payload.get("feed_ref") != page.feed_ref
             or payload.get("page_reading_ref") != reading_ref
@@ -1542,26 +1003,7 @@ def publish_page_accounting(
                 "page in a new run"
             )
         return sealed
-    payload = reading["payload"]
-    accounting = page_accounting.page_accounting(
-        feed=page.feed,
-        witnesses=_accounting_witnesses(state, page),
-        detections=detections,
-        reading={
-            "parse_state": payload["parse_state"],
-            "finish_reason": payload["finish_reason"],
-            "answer": payload["answer"],
-        },
-        entry_truncation={
-            plan["act"]["n"]: plan["truncation"]["classification"]
-            for plan in plans
-            if plan["truncation"] is not None
-        },
-        ink=ink,
-        policy=state.accounting_policy,
-        feed_ref=page.feed_ref,
-        page_reading_ref=reading_ref,
-    )
+    accounting = page_accounting.page_accounting(**measured, policy=state.accounting_policy)
     context.publish(
         kind=PAGE_ACCOUNTING_KIND,
         subject_id=page.page_id,
@@ -1622,7 +1064,9 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         audit=audit_not_run(run.audit_policy, run.audit_sha256),
         page_chairs=hooks.declared_page_witness_chairs(context),
         testimonia=current_page_testimonia(context, hooks, run.all_proposal_regions),
-        surya=sealed_surya_census(context),
+        surya=page_path.sealed_surya_census(
+            context, stage_manifest(context, DESIGNATOR)["artifacts"]
+        ),
         accounting_policy=page_accounting.require_page_accounting_policy(
             context, context.page_accounting_config_path
         ),

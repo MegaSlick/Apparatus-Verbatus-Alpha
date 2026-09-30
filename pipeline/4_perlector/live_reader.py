@@ -51,7 +51,7 @@ beside the bound with both bases named, because it is what says a refused
 request was refused by a measurement and not by a margin.
 
 **The stop-reason mapping is where an unrecognized engine answer becomes a
-loud stop, not a silent guess.** ``truncation.py::classify``'s docstring
+loud stop, not a silent guess.** ``common/truncation.py::classify``'s docstring
 documents the rule this implements: an engine's own word is authoritative for
 ``length``, but a
 string this seam does not recognize is not folded into either bucket -- it is
@@ -66,7 +66,7 @@ from __future__ import annotations
 import base64
 from typing import Any, Mapping
 
-import annotations
+from common import reading_annotations as annotations
 import prompts
 from reader import PASS_KINDS, DeliveredPixels, LectioResult, validate_audit_delivery
 
@@ -136,7 +136,7 @@ def _image_content_blocks(images: list[bytes]) -> list[dict[str, Any]]:
 
 def _mapped_stop_reason(finish_reason: str | None, *, act_key: object, response: Any) -> str | None:
     """The engine's own word, translated into the reader-protocol's closed
-    vocabulary (``truncation.py``'s own ``"stop"``/``"length"``/``None``), or
+    vocabulary (``common/truncation.py``'s own ``"stop"``/``"length"``/``None``), or
     a named refusal for anything else."""
     if finish_reason is None:
         return None

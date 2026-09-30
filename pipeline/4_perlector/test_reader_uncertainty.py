@@ -20,7 +20,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-import annotations
+from common import reading_annotations as annotations
 import audit
 import pytest
 import reader as reader_module
