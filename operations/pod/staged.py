@@ -1,6 +1,8 @@
 """Per-stage fake-provider lifecycles and the honest collection boot schedule.
 
-This module deliberately has no CLI and no provider factory.  A caller supplies
+No launch or collection path calls this module; its tests are its only
+caller, and wiring it to a real provider is paid-infrastructure work.  It
+deliberately has no CLI and no provider factory.  A caller supplies
 the already-gated :class:`~operations.pod.launch.PodRuntime`; this layer adds
 the narrower rule that one explicit authorization can create at most one pod
 for one collection stage.  It never turns a first confirmation into authority
@@ -46,7 +48,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol, Sequence, TypeVar, cast
+from typing import Callable, Protocol, Sequence, TypeVar
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import SchemaRefusal
@@ -134,9 +136,9 @@ class ScheduledStage:
     chairs: tuple[ScheduledChair, ...] = ()
 
 
-# This is stage order, not a model preference.  The one model-order ruling is
-# represented only inside the Attestatores block: Chandra reaches its checkpoint
-# before Churro, then DAI.  No model is co-resident in that block.
+# This is stage order, not a model preference.  Inside the Attestatores stage
+# the witnesses are served one at a time on that stage's one pod -- Chandra to
+# its checkpoint, then Churro, then DAI -- so no two models hold the card at once.
 #
 # The chairs named per stage are the real roster's, not the fixture roster's:
 # the fixture roster resolves to local snapshots and boots nothing, so a
@@ -374,10 +376,9 @@ class StageCostStore:
         except FileExistsError:
             # Read the scope back off the claim, never off the authorization
             # just presented. The address is keyed on the grant reference
-            # alone, so the same grant offered for a second stage lands here --
-            # and reporting the presented scope sent the operator looking for a
-            # pod in a stage that never booted one. The refusal was right; only
-            # its address was wrong.
+            # alone, so the same grant offered for a second stage lands here,
+            # and the refusal must name the stage that actually spent it: that
+            # is where a pod may be billing.
             try:
                 spent = json.loads(target.read_bytes())
                 scope = f"collection {spent['collection_id']!r} stage {spent['stage']!r}"
@@ -427,7 +428,6 @@ class StageCostStore:
 
 
 WorkResult = TypeVar("WorkResult")
-_MISSING_WORK_RESULT = object()
 
 
 def _reraise_control_flow_signal(error: BaseException) -> None:
@@ -478,8 +478,8 @@ class PerStagePodLifecycle:
         unbindable lease, a runtime contract the pod does not prove, a price
         that moved between preview and create -- and closes it itself. Those
         refusals carry the record and usually the close report, and this
-        lifecycle lands both as money evidence before it raises. Dropping them
-        was a real path to a pod that billed and left nothing on the volume.
+        lifecycle lands both as money evidence before it raises, so a pod that
+        billed always leaves a record on the volume.
         """
 
         if authorization.stage not in POD_REQUIRED_STAGES:
@@ -680,34 +680,30 @@ class PerStagePodLifecycle:
         confirmation: str | None,
         work: Callable[[PodRecord], WorkResult],
     ) -> tuple[WorkResult, StageCostRecord]:
-        """Run work on one pod and always return it to pod-down before returning."""
+        """Run work on one pod and always return it to pod-down before returning.
+
+        When the work and the close both fail, the work's error is raised with
+        its own cause intact and the close failure attached as a note: the
+        close did not cause the work to fail, and its durable close-failure
+        record is already on the volume. An interrupt or exit raised by the
+        close is the exception, and stands as itself.
+        """
 
         active = self.boot(authorization, request, confirmation=confirmation)
-        work_error: BaseException | None = None
-        result: WorkResult | object = _MISSING_WORK_RESULT
+        reason = f"stage {authorization.stage} finished; default pod-down"
         try:
             result = work(active.record)
-        except BaseException as error:
-            work_error = error
-        close_error: BaseException | None = None
-        cost: StageCostRecord | None = None
-        try:
-            cost = self.close(
-                active, reason=f"stage {authorization.stage} finished; default pod-down"
-            )
-        except BaseException as error:
-            close_error = error
-        if work_error is not None:
-            if close_error is not None:
-                raise work_error from close_error
+        except BaseException as work_error:
+            try:
+                self.close(active, reason=reason)
+            except BaseException as close_error:
+                # An operator's interrupt during the close stands as itself;
+                # its context still carries the work error.
+                if isinstance(work_error, Exception):
+                    _reraise_control_flow_signal(close_error)
+                work_error.add_note(f"the stage pod-down also failed: {close_error!r}")
             raise work_error
-        if close_error is not None:
-            raise close_error
-        if (
-            result is _MISSING_WORK_RESULT or cost is None
-        ):  # pragma: no cover - defensive type narrowing
-            raise StageBootRefusal("stage lifecycle ended without a work result or cost record")
-        return cast(WorkResult, result), cost
+        return result, self.close(active, reason=reason)
 
 
 def resolve_volume_inputs(tree: object, references: Sequence[dict[str, str]]) -> tuple[bytes, ...]:

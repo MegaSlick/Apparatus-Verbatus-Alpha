@@ -30,12 +30,8 @@ from common.chairs.model_store import (
     load_download_record,
     materialize_real_roster,
     pending_local_artifacts,
-    pod_materialization_plan,
     promote_verified_snapshot,
-    read_derived_inventory,
-    require_complete_store,
     verify_store,
-    write_derived_inventory,
     write_download_record,
 )
 from common.chairs.models import ChairIdentity
@@ -127,31 +123,6 @@ def test_host_download_record_fixture_derives_seven_chair_inventory_and_verifies
     assert len({row["artifact"] for row in inventory["artifacts"]}) == 6
 
 
-def test_derived_inventory_cannot_restate_divergent_store_facts(tmp_path):
-    record = _store(tmp_path)
-    path = tmp_path / "inventory.json"
-    write_derived_inventory(record, path)
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    raw["artifacts"][0]["revision"] = "0" * 40
-    path.write_bytes(canonical_bytes(raw))
-
-    with pytest.raises(DigestMismatchRefusal, match="diverges"):
-        read_derived_inventory(tmp_path, path)
-
-
-def test_derived_inventory_reader_reverifies_snapshot_bytes(tmp_path):
-    record = _store(tmp_path)
-    path = tmp_path / "inventory.json"
-    write_derived_inventory(record, path)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "chandra-ocr-2")
-    (tmp_path / entry["snapshot"] / "config.json").write_text(
-        '{"fixture":"swapped"}', encoding="utf-8"
-    )
-
-    with pytest.raises(DigestMismatchRefusal, match="config.json"):
-        read_derived_inventory(tmp_path, path)
-
-
 def test_store_refuses_a_pinned_licence_whose_bytes_are_gone(tmp_path):
     # The manifest still pins LICENSE; only the snapshot's bytes vanished, so
     # this is byte-verification failing, not record validation.
@@ -167,31 +138,22 @@ def test_store_refuses_a_pinned_licence_whose_bytes_are_gone(tmp_path):
 # --- S1: publish-once custody (evidence is never overwritten) -----
 
 
-def test_write_derived_inventory_reuses_identical_bytes_silently(tmp_path):
-    record = _store(tmp_path)
-    path = tmp_path / "inventory.json"
+def test_publication_reuses_identical_bytes_silently(tmp_path):
+    path = tmp_path / "evidence.json"
 
-    first = write_derived_inventory(record, path)
-    second = write_derived_inventory(record, path)
+    model_store._publish_once(path, b"evidence", chair="model-store", label="evidence")
+    model_store._publish_once(path, b"evidence", chair="model-store", label="evidence")
 
-    assert first == second
-    assert json.loads(path.read_bytes()) == derived_inventory(record)
+    assert path.read_bytes() == b"evidence"
 
 
-def test_write_derived_inventory_refuses_a_differing_republish_and_leaves_the_file(tmp_path):
-    record = _store(tmp_path)
-    path = tmp_path / "inventory.json"
-    write_derived_inventory(record, path)
-    original_bytes = path.read_bytes()
-
-    other = copy.deepcopy(record)
-    other["artifacts"][0]["required_files"] = sorted(
-        [*other["artifacts"][0]["required_files"], "config.json"]
-    )
+def test_publication_refuses_a_differing_republish_and_leaves_the_file(tmp_path):
+    path = tmp_path / "evidence.json"
+    model_store._publish_once(path, b"evidence", chair="model-store", label="evidence")
 
     with pytest.raises(DigestMismatchRefusal, match="already exists with different bytes"):
-        write_derived_inventory(other, path)
-    assert path.read_bytes() == original_bytes
+        model_store._publish_once(path, b"other", chair="model-store", label="evidence")
+    assert path.read_bytes() == b"evidence"
 
 
 def _promotion_artifact(
@@ -536,19 +498,16 @@ def test_materializer_refuses_a_staged_symlink_before_reading_its_target(tmp_pat
             (destination / "LICENSE").write_text("terms", encoding="utf-8")
             (destination / "model.safetensors.index.json").symlink_to(outside_index)
 
-    # `_indexed_shards` does not use `Path.read_text`; it reads through
-    # `_read_limited_bytes`. Guarding the wrong call left the claim in this
-    # test's name -- that the external index was never read -- asserted nowhere,
-    # so a change that read the symlinked index before the symlink check would
-    # have passed here.
-    real_read_limited_bytes = model_store._read_limited_bytes
+    # `_indexed_shards` reads through `read_limited_bytes`, so guarding that call
+    # is what proves the symlinked index is never read.
+    real_read_limited_bytes = model_store.read_limited_bytes
 
     def refuse_external_read(path, *args, **kwargs):
         if Path(path).resolve() == outside_index:
             raise AssertionError("the external shard index was read")
         return real_read_limited_bytes(path, *args, **kwargs)
 
-    monkeypatch.setattr(model_store, "_read_limited_bytes", refuse_external_read)
+    monkeypatch.setattr(model_store, "read_limited_bytes", refuse_external_read)
 
     with pytest.raises(DigestMismatchRefusal, match="symlink"):
         materialize_real_roster(tmp_path, _SymlinkedShardIndex(), _FakeBundleFetcher())
@@ -739,22 +698,6 @@ def test_a_store_whose_surya_bundle_has_not_landed_verifies_and_says_so(tmp_path
     # The artifacts that did land are verified exactly as before.
     assert all(rows[chair]["state"] == "present" for chair in rows if chair != "designator_surya")
     assert inventory == derived_inventory(record)
-
-
-def test_require_complete_store_refuses_a_partial_store_by_name(tmp_path):
-    _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
-
-    with pytest.raises(DigestMismatchRefusal, match="surya2-detection"):
-        require_complete_store(tmp_path)
-
-
-def test_require_complete_store_accepts_a_store_with_every_roster_artifact(tmp_path):
-    _store(tmp_path)
-
-    inventory = require_complete_store(tmp_path)
-
-    assert inventory["complete"] is True
-    assert inventory["pending"] == []
 
 
 def test_write_download_record_refuses_what_its_readers_would_refuse(tmp_path):
@@ -1822,47 +1765,6 @@ def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothin
         assert declares_nothing == (requirement.license_declaration is None), requirement.chair
 
 
-def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
-    record = _store(tmp_path)
-
-    plan = pod_materialization_plan(tmp_path)
-
-    # Six Hugging Face chairs over five snapshots: the two chandra chairs each
-    # need their own role-keyed cache entry, both made from the one stored
-    # snapshot, because a cache entry is keyed by role and a store is not.
-    assert {chair: row["snapshot"] for chair, row in plan["cache_root_entries"].items()} == {
-        "designator_structure": "hf/chandra-ocr-2",
-        "secondary_proposer": "hf/yolov26-record-detection",
-        "attestator_1": "hf/chandra-ocr-2",
-        "attestator_2": "hf/dai-recordgold-atr",
-        "attestator_3": "hf/churro-3B",
-        "perlector": "hf/qwen3.8-27B",
-    }
-    assert len({row["snapshot"] for row in plan["cache_root_entries"].values()}) == 5
-    # model_root is local-repository only; it is not a second cache.
-    assert plan["model_root_entries"]["designator_surya"]["snapshot"] == ("local/surya2-detection")
-    assert plan["download_record_sha256"] == derived_inventory(record)["download_record_sha256"]
-    assert plan["provenance_scope"] == "verified-store-source-only"
-
-
-def test_pod_materialization_plan_refuses_a_chair_not_fetched_yet(tmp_path):
-    _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "not fetched yet")
-
-    with pytest.raises(DigestMismatchRefusal, match="surya2-detection"):
-        pod_materialization_plan(tmp_path)
-
-
-def test_pod_materialization_plan_reverifies_source_bytes(tmp_path):
-    record = _store(tmp_path)
-    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
-    (tmp_path / entry["snapshot"] / "config.json").write_text(
-        '{"fixture":"swapped"}', encoding="utf-8"
-    )
-
-    with pytest.raises(DigestMismatchRefusal, match="config.json"):
-        pod_materialization_plan(tmp_path)
-
-
 def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(
     tmp_path, monkeypatch
 ):
@@ -2012,23 +1914,25 @@ def test_store_names_a_licence_missing_from_its_manifest_as_the_licence(tmp_path
 def test_publication_into_a_read_only_store_refuses_inside_the_taxonomy(tmp_path):
     """Write failures must remain inside the complete public refusal taxonomy."""
 
-    record = _store(tmp_path)
     locked = tmp_path / "locked"
     locked.mkdir()
     locked.chmod(0o500)
     try:
         with pytest.raises(DigestMismatchRefusal, match="cannot publish"):
-            write_derived_inventory(record, locked / "inventory.json")
+            model_store._publish_once(
+                locked / "evidence.json", b"evidence", chair="model-store", label="evidence"
+            )
     finally:
         locked.chmod(0o700)
 
 
 def test_publication_onto_a_name_already_taken_by_a_directory_refuses(tmp_path):
-    record = _store(tmp_path)
-    (tmp_path / "inventory.json").mkdir()
+    (tmp_path / "evidence.json").mkdir()
 
     with pytest.raises(DigestMismatchRefusal, match="cannot publish"):
-        write_derived_inventory(record, tmp_path / "inventory.json")
+        model_store._publish_once(
+            tmp_path / "evidence.json", b"evidence", chair="model-store", label="evidence"
+        )
 
 
 def test_the_ad_hoc_download_record_refusal_names_the_v2_schema_it_needs(tmp_path):

@@ -108,7 +108,7 @@ from common.chairs.config import parse_models_config
 from common.chairs.errors import ChairRefusal
 from common.chairs.manifests import verify_snapshot
 from common.chairs.model_store import StoreRoleFetcher, pending_local_artifacts
-from common.chairs.models import ChairIdentity, ModelsConfig, ServingReceipt
+from common.chairs.models import ChairIdentity, DigestManifest, ModelsConfig, ServingReceipt
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
     ChairRegistry,
@@ -318,6 +318,9 @@ class RegistryChairCacheVerifier:
             "manifest_digest": snapshot.manifest_digest,
             "root": str(snapshot.root),
         }
+
+    def manifest(self, identity: ChairIdentity) -> DigestManifest:
+        return self.registry.manifest(identity)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1773,18 +1776,32 @@ def refuse(
     return EXIT_REFUSED
 
 
+@dataclass(frozen=True, slots=True)
+class BootstrapRefused:
+    """A bootstrap that ends in a refusal rather than a green or red report.
+
+    ``reason`` says which refusal it was, so a caller's own record names it
+    rather than guessing. ``report`` is the journal's report when the steps
+    ran and only writing their result failed; ``None`` when nothing ran.
+    """
+
+    reason: str
+    report: BootstrapReport | None = None
+
+
 def run_bootstrap(
     plan: Plan,
     *,
     now: Callable[[], datetime],
     actions_factory: Callable[[Plan], BootstrapActions],
     environment: MutableMapping[str, str] | None = None,
-) -> BootstrapReport | int:
-    """Run the journaled steps and return the report, or the exit code of a refusal.
+) -> BootstrapReport | BootstrapRefused:
+    """Run the journaled steps and return the report, or the refusal that ended them.
 
-    A red step is a returned red report -- the caller decides its exit -- and
-    an action factory that cannot be built is ``EXIT_REFUSED`` with the reason
-    left on the volume.
+    A red step is a returned red report -- the caller decides its exit. An
+    action factory that cannot be built, or a result that cannot be written
+    after the steps ran, is a ``BootstrapRefused`` naming which; the first
+    also leaves its reason on the volume where that is possible.
     """
 
     journal = BootstrapJournal(
@@ -1795,9 +1812,12 @@ def run_bootstrap(
     try:
         actions = actions_factory(plan)
     except Exception as error:
-        print(f"bootstrap_main could not build its actions: {error}", file=sys.stderr)
-        _write_refusal_report(plan.report_path, f"could not build actions: {error}", now=now)
-        return EXIT_REFUSED
+        reason = f"bootstrap actions could not be built: {error}"
+        print(f"bootstrap_main refused: {reason}", file=sys.stderr)
+        failure = _write_refusal_report(plan.report_path, reason, now=now)
+        if failure is not None:
+            print(f"bootstrap_main refusal report could not be written: {failure}", file=sys.stderr)
+        return BootstrapRefused(reason)
     report = Bootstrapper(journal, actions, environment=environment).run()
     result_record = {
         "schema": BOOTSTRAP_RESULT_SCHEMA,
@@ -1808,10 +1828,12 @@ def run_bootstrap(
     try:
         atomic_write(plan.report_path, canonical_json(result_record))
     except OSError as error:
-        print(
-            f"bootstrap result could not be written to {plan.report_path}: {error}", file=sys.stderr
+        reason = (
+            f"the bootstrap ran ({result_record['state']}) but its result could not be written "
+            f"to {plan.report_path}: {error}"
         )
-        return EXIT_REFUSED
+        print(reason, file=sys.stderr)
+        return BootstrapRefused(reason, report)
     if not report.green:
         print(f"bootstrap step {report.failure_step}: {report.detail}", file=sys.stderr)
     return report
@@ -1849,8 +1871,8 @@ def main(
         return 0
 
     report = run_bootstrap(plan, now=now, actions_factory=actions_factory, environment=environment)
-    if isinstance(report, int):
-        return report
+    if isinstance(report, BootstrapRefused):
+        return EXIT_REFUSED
     if not report.green:
         return EXIT_BOOTSTRAP_RED
 

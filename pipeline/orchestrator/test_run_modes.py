@@ -189,7 +189,7 @@ def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attem
     # `review` spends only its declared a1 recovery. The scenario's marginal
     # page-1 witness box (x 0..10 / y 200..240) sits over zero ink -- measured
     # directly against `proof.synthetic_pages.page_bytes(1)` via
-    # `common.residual_ink.ink_runs`, the same control
+    # `common.residual_ink.ink_map_page`, the same control
     # `test_coverage_recovery_origin.py` proves at the unit level -- so consult
     # §4.5's ink-confirmation conjunct (`unclaimed_ink_observations`, read
     # through `outside_ink_requests`) correctly refuses it a second recovery

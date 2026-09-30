@@ -35,13 +35,9 @@ class PdfRenderSettings(NamedTuple):
 class PdfRenderBinding(NamedTuple):
     """One run's resolved render target and the seal of the policy it came from.
 
-    The two travel together because they must be of the *same read*. The door used
-    to parse the settings here and then let `run_config_bindings` open the file
-    again for its digest; a rewrite between those two reads produced a run whose
-    `render_settings` recorded one target and whose `config_digest` bound the bytes
-    of another, so a proof run claimed a configuration it did not execute (audit
-    S6, reproduced with a one-DPI rewrite landing between the reads while the door
-    still exited 0).
+    Settings and digest come from one read, so the sealed digest always names the
+    bytes the settings were parsed from; a second open for the digest could see a
+    rewrite and seal a configuration the run did not execute.
     """
 
     settings: PdfRenderSettings

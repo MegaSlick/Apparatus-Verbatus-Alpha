@@ -785,7 +785,9 @@ def ink_map_page_rows(
             continue
         try:
             measured = validate_measured_ink_map_payload(
-                payload, audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
+                payload,
+                audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND,
+                ink_margin_bp=coverage_config["ink_margin_bp"],
             )
             context.require_sealed_config(
                 "designator-grouping", measured["background_config_sha256"]
@@ -806,16 +808,6 @@ def ink_map_page_rows(
             # which artifact to restore.
             if not isinstance(evidence, dict):
                 raise ContractError("the measured payload has no ink-run evidence object")
-            sealed_page = census.get(ordinal)
-            sealed_dimensions = (
-                sealed_page.get("_pixel_dimensions")
-                if isinstance(sealed_page, dict) and sealed_page.get("outcome") == "sealed"
-                else None
-            )
-            if (evidence.get("width"), evidence.get("height")) != sealed_dimensions:
-                raise ContractError(
-                    "the retained ink-run dimensions do not match the sealed Exemplar pixels"
-                )
             coverage_policy = resolve_coverage_audit_policy(
                 coverage_config, evidence.get("width"), evidence.get("height")
             )
@@ -823,6 +815,7 @@ def ink_map_page_rows(
                 payload.get("edge"),
                 evidence,
                 coverage_policy=coverage_policy,
+                expected_dimensions=census[ordinal]["_pixel_dimensions"],
             )
         except (ContractError, KeyError, TypeError, ValueError) as error:
             raise FatalAccounting(

@@ -1,15 +1,13 @@
-"""Spec 02, test 3 — Receipts.
+"""Receipts: the schema round-trips, a receipt missing the revision, the digest or
+any serving field is refused, and the receipt is refused by
+`StageContext.publish` and accepted by the run receipt writer.
 
-"Schema round-trip; a receipt missing revision, digest or any #41 field is
-refused (#42); the receipt is refused by `StageContext.publish` and accepted by
-the run receipt writer."
-
-The last clause is the load-bearing one. A serving receipt carries a live
+The last of these is the load-bearing one. A serving receipt carries a live
 endpoint and a start moment; `envelope.py`'s docstring already settles where such
 a thing may live — "in an approval record or a run receipt, both of which are
 honestly non-deterministic and neither of which is a stage artifact" — so
-publishing one through `StageContext.publish` would break spec 01's determinism
-test. The refusal side of that lives in `common/test_stage_chairs.py`, which has a
+publishing one through `StageContext.publish` would break the guarantee that
+repeating an identical command leaves every stage byte unchanged. The refusal side of that lives in `common/test_stage_chairs.py`, which has a
 `StageContext` to call; what is checked here is the value, its schema, and every
 way an incomplete one is refused.
 """
@@ -31,9 +29,9 @@ from .conftest import (
 
 DIGEST = "d" * 64
 
-# Exactly the fields spec 02's "serving receipt" section names, with the four it
-# calls out in bold — tokenizer revision, seed, and the context and pixel caps —
-# among them. A receipt missing any one of these is refused (#42).
+# Every field a serving receipt carries, including the four that reproduce what
+# answered — tokenizer revision, seed, and the context and pixel caps. A receipt
+# missing any one of these is refused.
 REQUIRED_FIELDS = (
     "schema",
     "chair",
@@ -121,7 +119,7 @@ def test_an_adapter_identity_travels_in_full_or_not_at_all(tmp_path):
         build_receipt(base, serving_details(adapter_identity=adapter))
 
 
-# --- Every omission is refused (#42) ------------------------------------------------
+# --- Every omission is refused ------------------------------------------------------
 
 
 @pytest.mark.parametrize("field", REQUIRED_FIELDS)

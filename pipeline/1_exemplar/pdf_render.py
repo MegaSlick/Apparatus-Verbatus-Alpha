@@ -27,18 +27,15 @@ from PIL import Image
 from render_config import PdfRenderSettings
 
 from common.image_sniff import PDF_HEADER_PREFIX_BYTES, PDF_SIGNATURE
-
-# The floor this module will not render below. A page is capped *downward* toward
-# it rather than refused for being large: a huge legitimate page captured at reduced
-# resolution is a poorly read act, and refusing it outright is a missed one. Only a
-# page whose declared size is degenerate even at the floor refuses.
-MIN_RENDER_DPI: Final = 72
-POINTS_PER_INCH: Final = 72
-RENDER_COLOR_MODE: Final = "RGB"
-RENDER_CODEC: Final = "png"
-RENDER_BACKGROUND: Final = "white"
-DRAW_ANNOTATIONS: Final = True
-DRAW_FORMS: Final = True
+from common.imaging import (
+    DRAW_ANNOTATIONS,
+    DRAW_FORMS,
+    MIN_RENDER_DPI,
+    POINTS_PER_INCH,
+    RENDER_BACKGROUND,
+    RENDER_CODEC,
+    RENDER_COLOR_MODE,
+)
 
 
 class PdfRefusal(ValueError):
@@ -333,10 +330,9 @@ def render_page(opened: OpenPdf, page_index: int, settings: PdfRenderSettings) -
             **renderer_recipe(settings),
             "container_page_index": page_index,
             # What this page was *actually* rendered at, which is the target unless
-            # the page was too large for it. Without this the sealed record could
-            # not say how these pixels were made, and ARCHITECTURE's invariant 3 —
-            # the image a model saw is reproducible from the Exemplar plus the
-            # recorded transforms — would hold only for pages that happened to fit.
+            # the page was too large for it. Without it the image a model saw could
+            # be reproduced from the Exemplar and its recorded transforms only for
+            # pages that happened to fit the target.
             "effective_dpi": dpi,
             "width": width,
             "height": height,
@@ -361,15 +357,18 @@ def _render_dimensions(
     and height independently, so a scale chosen to land exactly
     on the analytic limit can still produce a bitmap a pixel over it; and the render
     is always RGB, so the PNG it becomes is bound by `MAX_PNG_DECODED_BYTES` at
-    three bytes a pixel, which is tighter. `admission.inspect_source` re-checks
-    exactly that PNG one step later, and a page that passed here only to refuse
-    there would be a worse answer than choosing the smaller resolution up front.
+    three bytes a pixel, which is tighter. `admission.inspect_rendered_page`
+    decodes exactly that PNG one step later, and a page that passed here only to
+    refuse there would be a worse answer than choosing the smaller resolution up
+    front. The encoded size needs no budget of its own: a PNG of at most
+    `MAX_PNG_DECODED_BYTES` of samples stays under `MAX_RENDERED_PAGE_BYTES`.
     """
     if not isinstance(points_wide, (int, float)) or not isinstance(points_high, (int, float)):
         raise PdfRefusal(RefusalReason.CORRUPT, "the PDF page has no numeric dimensions")
     if points_wide <= 0 or points_high <= 0:
         raise PdfRefusal(RefusalReason.CORRUPT, "the PDF page has a zero or negative dimension")
-    budget = min(MAX_PIXELS, MAX_PNG_DECODED_BYTES // 3) * 0.99
+    pixel_bound = min(MAX_PIXELS, MAX_PNG_DECODED_BYTES // 3)
+    budget = pixel_bound * 0.99
     # Keep the configured integer out of floating-point conversion. An arbitrarily
     # large positive TOML integer must still cap downward to what this page can
     # hold, not overflow before the code-owned pixel limits get a say.
@@ -390,7 +389,8 @@ def _render_dimensions(
             RefusalReason.UNSUPPORTED_VARIANT,
             f"the PDF page is {points_wide}x{points_high} points; even at the "
             f"{MIN_RENDER_DPI}-DPI floor it would exceed the {MAX_DIMENSION}-per-side "
-            f"and {MAX_PIXELS}-pixel limits",
+            f"limit or the {pixel_bound}-pixel RGB page bound (the "
+            f"{MAX_PNG_DECODED_BYTES}-byte decoded-page limit at three bytes a pixel)",
         )
     scale = dpi / POINTS_PER_INCH
     return dpi, ceil(points_wide * scale), ceil(points_high * scale)

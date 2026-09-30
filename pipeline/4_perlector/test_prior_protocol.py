@@ -18,7 +18,7 @@ from common.contracts.approval import (
     build_approval_record,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes
-from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.errors import ContractError, IdentityRefusal, SchemaRefusal
 from common.contracts.identities import perlector_attempt_id
 from common.contracts.prior_draft import self_revision_for_view, unmeasured_comparison
 from common.contracts.stages import PERLECTOR
@@ -528,7 +528,7 @@ def test_each_prior_protocol_pass_has_a_distinct_closed_attempt_operation():
         for operation in ("lectio-prior", "primed-without-prior", "perlegere")
     }
     assert len(ids) == 3
-    with pytest.raises(ValueError, match="unknown Perlector reading operation"):
+    with pytest.raises(IdentityRefusal, match="unknown Perlector reading operation"):
         perlector_attempt_id("act", "prior", 1)
 
 

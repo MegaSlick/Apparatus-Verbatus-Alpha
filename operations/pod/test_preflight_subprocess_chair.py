@@ -10,7 +10,12 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from common.chairs.config import load_models_toml
+from common.chairs.errors import DigestMismatchRefusal
+from common.chairs.manifests import build_manifest
+from common.chairs.models import DigestManifest, ManifestRow
 from operations.pod.preflight import (
     GpuProfile,
     PreflightRunner,
@@ -20,6 +25,7 @@ from operations.pod.preflight import (
 )
 from operations.serving.config import load_serving_recipes
 from operations.serving.errors import ServingConfigurationError
+from operations.serving.surya_detector import SuryaOutputRefusal
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -48,13 +54,22 @@ def _catalogue(tmp_path: Path) -> Path:
     return path
 
 
+PINNED_ROWS = [{"path": "weights.bin", "sha256": "0" * 64, "size": 1}]
+
+
 class Cache:
-    def __init__(self) -> None:
+    def __init__(self, *, manifest_error: Exception | None = None) -> None:
         self.verified: list[str] = []
+        self.manifest_error = manifest_error
 
     def verify(self, identity):  # type: ignore[no-untyped-def]
         self.verified.append(identity.role)
         return {"manifest_digest": identity.digest_manifest, "root": f"/store/{identity.role}"}
+
+    def manifest(self, identity):  # type: ignore[no-untyped-def]
+        if self.manifest_error is not None:
+            raise self.manifest_error
+        return DigestManifest(tuple(ManifestRow(**row) for row in PINNED_ROWS))
 
 
 class Smoke:
@@ -86,8 +101,8 @@ MEASURED = {
 }
 
 
-def _run(tmp_path: Path, checker, golden_page: Path = GOLDEN_PAGE):
-    cache, smoke = Cache(), Smoke()
+def _run(tmp_path: Path, checker, golden_page: Path = GOLDEN_PAGE, cache: Cache | None = None):
+    cache, smoke = cache or Cache(), Smoke()
     runner = PreflightRunner(
         load_models_toml(ROOT / "config" / "models.toml"),
         load_placement_table(ROOT / "config/pod_placement.toml"),
@@ -106,10 +121,12 @@ def _run(tmp_path: Path, checker, golden_page: Path = GOLDEN_PAGE):
 def test_a_subprocess_chair_runs_once_on_the_golden_page_and_is_never_smoke_read(
     tmp_path,
 ):
-    checked: list[tuple[str, str, Path, Path]] = []
+    checked: list[tuple[str, str, Path, Path, list[dict[str, object]]]] = []
 
-    def checker(identity, profile, weights_root, golden_page):  # type: ignore[no-untyped-def]
-        checked.append((identity.role, profile.environment, weights_root, golden_page))
+    def checker(identity, profile, weights_root, golden_page, manifest_rows):  # type: ignore[no-untyped-def]
+        checked.append(
+            (identity.role, profile.environment, weights_root, golden_page, manifest_rows)
+        )
         return MEASURED
 
     report, cache, smoke = _run(tmp_path, checker)
@@ -127,6 +144,7 @@ def test_a_subprocess_chair_runs_once_on_the_golden_page_and_is_never_smoke_read
             "operations/serving/surya",
             Path("/store/designator_surya"),
             GOLDEN_PAGE,
+            PINNED_ROWS,
         )
     ]
     assert not [issue for issue in report.issues if issue.chair == "designator_surya"]
@@ -137,7 +155,7 @@ def test_a_subprocess_chair_runs_once_on_the_golden_page_and_is_never_smoke_read
 
 
 def test_an_environment_that_does_not_answer_its_pins_turns_preflight_red(tmp_path):
-    def checker(identity, profile, weights_root, golden_page):  # type: ignore[no-untyped-def]
+    def checker(identity, profile, weights_root, golden_page, manifest_rows):  # type: ignore[no-untyped-def]
         raise ServingConfigurationError("Surya's environment reports surya-ocr 0.22.0")
 
     report, _cache, _smoke = _run(tmp_path, checker)
@@ -148,13 +166,43 @@ def test_an_environment_that_does_not_answer_its_pins_turns_preflight_red(tmp_pa
 
 
 def test_a_missing_golden_page_runs_nothing_and_is_already_red(tmp_path):
-    def checker(identity, profile, weights_root, golden_page):  # type: ignore[no-untyped-def]
+    def checker(identity, profile, weights_root, golden_page, manifest_rows):  # type: ignore[no-untyped-def]
         raise AssertionError("nothing may run without the golden page")
 
     report, _cache, _smoke = _run(tmp_path, checker, tmp_path / "missing.png")
     assert report.color == "red"
     assert "proof-fixture-missing" in {issue.code for issue in report.issues}
     assert report.to_record()["subprocess_receipts"] == []
+
+
+def test_an_unreadable_pinned_manifest_runs_nothing_and_is_a_cache_issue(tmp_path):
+    def checker(identity, profile, weights_root, golden_page, manifest_rows):  # type: ignore[no-untyped-def]
+        raise AssertionError("nothing may run without the pinned manifest")
+
+    cache = Cache(manifest_error=DigestMismatchRefusal("designator_surya", "manifest differs"))
+    report, _cache, _smoke = _run(tmp_path, checker, cache=cache)
+    assert report.color == "red"
+    (issue,) = [issue for issue in report.issues if issue.chair == "designator_surya"]
+    assert issue.code == "cache-mismatch"
+    assert report.to_record()["subprocess_receipts"] == []
+
+
+def test_the_production_check_refuses_a_run_over_weights_the_pin_does_not_name(
+    tmp_path, monkeypatch
+):
+    from operations.pod import preflight
+    from operations.serving import surya_detector
+    from operations.serving.fakes import InProcessSurya
+
+    monkeypatch.setattr(surya_detector, "run_surya_subprocess", InProcessSurya([], []))
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "weights.bin").write_bytes(b"w")
+    recipes = load_serving_recipes(_catalogue(tmp_path))
+    identity = load_models_toml(ROOT / "config" / "models.toml").chairs["designator_surya"]
+    profile = recipes.for_identity(identity, "generic-48gb")
+    with pytest.raises(SuryaOutputRefusal, match="digest manifest pins"):
+        preflight.check_subprocess_environment(identity, profile, bundle, GOLDEN_PAGE, PINNED_ROWS)
 
 
 def test_the_production_check_runs_the_runner_on_the_golden_page(tmp_path, monkeypatch):
@@ -167,16 +215,21 @@ def test_the_production_check_runs_the_runner_on_the_golden_page(tmp_path, monke
     (bundle / "weights.bin").write_bytes(b"w")
     seen = []
 
-    def run(profile, weights_root, pages, sizes, identity):  # type: ignore[no-untyped-def]
-        seen.append((weights_root, sorted(pages), sizes))
-        return InProcessSurya([], [])(profile, weights_root, pages, sizes, identity)
+    def run(profile, weights_root, pages, sizes, identity, *, manifest_rows):  # type: ignore[no-untyped-def]
+        seen.append((weights_root, sorted(pages), sizes, manifest_rows))
+        return InProcessSurya([], [])(
+            profile, weights_root, pages, sizes, identity, manifest_rows=manifest_rows
+        )
 
     monkeypatch.setattr(surya_detector, "run_surya_subprocess", run)
     recipes = load_serving_recipes(_catalogue(tmp_path))
-    identity = load_models_toml(ROOT / "config" / "models.toml").chairs["designator_surya"]
-    profile = recipes.for_identity(identity, "generic-48gb")
-    measured = preflight.check_subprocess_environment(identity, profile, bundle, GOLDEN_PAGE)
-    assert seen == [(bundle, [1], {1: (200, 260)})]
+    configured = load_models_toml(ROOT / "config" / "models.toml").chairs["designator_surya"]
+    rows = build_manifest(bundle).to_record()
+    profile = recipes.for_identity(configured, "generic-48gb")
+    measured = preflight.check_subprocess_environment(
+        configured, profile, bundle, GOLDEN_PAGE, rows
+    )
+    assert seen == [(bundle, [1], {1: (200, 260)}, rows)]
     assert measured["versions"]["surya_ocr"] == "0.22.1"
     assert measured["golden_page"] == {
         "lines": 0,

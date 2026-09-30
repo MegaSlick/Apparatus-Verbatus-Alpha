@@ -22,10 +22,8 @@ from common.contracts.errors import ApprovalRefusal, ContractError, FatalAccount
 from common.contracts.outcomes import ArmariumCategory
 from common.contracts.stages import ARMARIUM, DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
 from common.residual_ink import (
-    edge_ink,
-    ink_runs_from_rows,
+    ink_map_page,
     load_coverage_audit_config,
-    residual_ink,
     resolve_coverage_audit_policy,
 )
 from common.runtree.store import RunTree
@@ -64,6 +62,7 @@ def _accepted_review() -> dict:
         "payload": {
             "coverage": {
                 "under_witnessed": False,
+                "unresolved_chairs": 0,
                 "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0, "unmeasured": 0},
             },
             "testimony_content_coverage": {
@@ -148,23 +147,7 @@ class _RecordingContext:
         coverage_config = load_coverage_audit_config(self.args.designator_grouping_config)
         background_policy = resolve_background_policy(background_config, width, height)
         coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
-        ink_measure = residual_ink(
-            width,
-            height,
-            rows,
-            [],
-            background_policy=background_policy,
-            coverage_policy=coverage_policy,
-        )
-        edge_measure = edge_ink(
-            width,
-            height,
-            rows,
-            background_policy=background_policy,
-            coverage_policy=coverage_policy,
-        )
-        assert edge_measure["background"] == ink_measure["background"]
-        edge_findings = ink_runs_from_rows(
+        measured = ink_map_page(
             width,
             height,
             rows,
@@ -204,12 +187,11 @@ class _RecordingContext:
                     "page_ordinal": 1,
                     "ink_measurable": True,
                     "background": {
-                        **ink_measure["background"],
+                        **measured["background"],
                         "config_sha256": self.sealed_config_digests["designator-grouping"],
                     },
-                    "ink": INK_MAP_RUN.artifact_finding(ink_measure),
-                    "edge": INK_MAP_RUN.artifact_finding(edge_measure),
-                    "edge_findings": edge_findings,
+                    "edge": INK_MAP_RUN.artifact_finding(measured["edge"]),
+                    "edge_findings": measured["edge_findings"],
                 },
             }
         }

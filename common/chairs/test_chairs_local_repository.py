@@ -1,9 +1,7 @@
-"""Spec 02, test 5 — Local-repository chair.
+"""Local-repository chair: path resolution under the model root, escape attempts
+refused, digest verification, no network.
 
-"Path resolution under the model root, escape attempts refused, digest
-verification, no network."
-
-The clause behind it is ARCHITECTURE's, not CLAUDE.md's Quarantine: weights are
+The reason is ARCHITECTURE's: weights are
 never vendored, a locally trained checkpoint is *called* like any other model
 from its own model repository, and trained weights are "a candidate, never a
 privileged inheritance". A local chair is therefore an ordinary chair that happens

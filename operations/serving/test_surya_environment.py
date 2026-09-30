@@ -105,7 +105,9 @@ def test_two_runs_over_the_same_pages_write_byte_identical_documents(bundle):
     first = run_surya_subprocess(
         _profile(), bundle, pages, sizes, _identity(), manifest_rows=_manifest(bundle)
     )
-    second = run_surya_subprocess(_profile(), bundle, pages, sizes, _identity())
+    second = run_surya_subprocess(
+        _profile(), bundle, pages, sizes, _identity(), manifest_rows=_manifest(bundle)
+    )
     assert {n: page.raw for n, page in first.pages.items()} == {
         n: page.raw for n, page in second.pages.items()
     }
@@ -196,7 +198,14 @@ def test_a_bundle_whose_order_head_does_not_load_is_refused(tmp_path):
     broken = _standin(tmp_path / "broken", "--broken-order")
     pages, sizes = _pages()
     with pytest.raises(SuryaRunFailure, match="reading-order head did not load"):
-        run_surya_subprocess(_profile(), broken, {1: pages[1]}, {1: sizes[1]}, _identity())
+        run_surya_subprocess(
+            _profile(),
+            broken,
+            {1: pages[1]},
+            {1: sizes[1]},
+            _identity(),
+            manifest_rows=_manifest(broken),
+        )
 
 
 def _drive(driver: str, bundle: Path, output: Path, page: Path) -> subprocess.CompletedProcess:

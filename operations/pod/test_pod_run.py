@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import tomllib
 from argparse import Namespace
@@ -131,6 +130,8 @@ class RecordedRunner:
     journal_run_id: str | None = "first-real-run"
     journal_entries: int = 1
     transcript_failure: str | None = None
+    dropped_bytes: int = 0
+    tick_liveness: bool = True
     calls: list[tuple[list[str], Path, dict[str, str]]] = field(default_factory=list)
     supervision: list[dict[str, object]] = field(default_factory=list)
 
@@ -164,10 +165,15 @@ class RecordedRunner:
                 ),
                 encoding="utf-8",
             )
-        for _ in range(self.ticks):
-            liveness(self.pid, True)
-        liveness(self.pid, False)
-        return subprocess.CompletedProcess(argv, self.returncode, stderr=self.transcript_failure)
+        if self.tick_liveness:
+            for _ in range(self.ticks):
+                liveness(self.pid, True)
+            liveness(self.pid, False)
+        return pod_run.RunnerResult(
+            self.returncode,
+            transcript_failure=self.transcript_failure,
+            transcript_dropped_bytes=self.dropped_bytes,
+        )
 
 
 def _policy(ws: Workspace, *, roots: list[str] | None = None) -> Path:
@@ -336,6 +342,7 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
     # Then it held: the run finished at once, and the process still ticked to
     # the shared hard deadline rather than exiting into `completed-early`.
     assert report["held_to_hard_deadline"] is True
+    assert "pod guard deletes an idle pod" in report["hold_detail"]
     assert clock.seconds == 4.0
     hold = _report(ws, "pod-run-report-hold.json")
     assert hold["state"] == "holding-after-complete"
@@ -387,6 +394,8 @@ def test_small_models_selects_cheap_stages_and_returns_after_selection(tmp_path:
     report = _report(ws)
     assert report["state"] == "selection-complete"
     assert report["held_to_hard_deadline"] is False
+    assert report["hold_detail"].startswith("the selected stages completed")
+    assert "did not finish" not in report["hold_detail"]
     assert report["plan"]["selection"]["models"] == "small"
     assert report["plan"]["bootstrap"]["preflight_roles"] == [
         "attestator_1",
@@ -455,8 +464,9 @@ def test_big_models_maps_to_perlector_through_armarium(tmp_path: Path, monkeypat
     assert _report(ws)["plan"]["bootstrap"]["preflight_roles"] == ["perlector"]
 
 
-def test_a_held_selection_closes_without_paid_idle_time(tmp_path: Path) -> None:
+def test_a_held_selection_closes_without_paid_idle_time(tmp_path: Path, monkeypatch) -> None:
     ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
     clock = Clock()
     code = main(
         _run_argv(ws, extra=("--stage", "attestatores")),
@@ -468,8 +478,75 @@ def test_a_held_selection_closes_without_paid_idle_time(tmp_path: Path) -> None:
     )
     assert code == EXIT_HELD
     assert clock.seconds == 0
-    assert _report(ws)["held_to_hard_deadline"] is False
+    report = _report(ws)
+    assert report["held_to_hard_deadline"] is False
+    assert report["hold_detail"].startswith("the selection held")
     assert not (ws.volume / "pod-run-report-hold.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("runner", "missing"),
+    [
+        (RecordedRunner(write_transcript=False), "transcript"),
+        (RecordedRunner(transcript_failure="the transcript write failed"), "transcript"),
+        (RecordedRunner(tick_liveness=False), "liveness"),
+    ],
+)
+def test_a_selection_whose_records_did_not_come_home_is_held_not_complete(
+    tmp_path: Path, runner: RecordedRunner, missing: str
+) -> None:
+    """A selection is downgraded exactly as a full run is, and still returns at once."""
+
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    code = main(
+        _run_argv(ws, extra=("--models", "small")),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+    assert code == EXIT_HELD
+    assert clock.seconds == 0
+    report = _report(ws)
+    assert report["state"] == "held"
+    assert report["records_missing"] == [missing]
+    assert report["detail"].startswith("the orchestrator completed, but")
+    assert report["held_to_hard_deadline"] is False
+    assert report["hold_detail"].startswith("the selection held")
+    assert not (ws.volume / "pod-run-report-hold.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("selection", "predecessor"),
+    [
+        (("--stage", "exemplar"), "door"),
+        (("--from", "designator", "--to", "attestatores"), "ink-map"),
+        (("--stage", "recensor"), "perlector"),
+        (("--stage", "recovery"), "recensor"),
+        (("--from", "archetypus", "--to", "armarium"), "recensor"),
+    ],
+)
+def test_every_selection_after_the_door_requires_its_predecessor_seal_before_bootstrap(
+    tmp_path: Path, selection: tuple[str, ...], predecessor: str
+) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    actions = PreflightedActions()
+    runner = RecordedRunner()
+    code = main(
+        _run_argv(ws, extra=selection),
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: actions,
+        runner=runner,
+    )
+    assert code == EXIT_REFUSED
+    assert f"sealed {predecessor} stage" in _report(ws)["reason"]
+    assert actions.calls == []
+    assert runner.calls == []
 
 
 def test_auto_and_empty_selection_preflight_roles(tmp_path: Path, capsys) -> None:
@@ -919,7 +996,7 @@ def test_the_run_report_is_written_before_the_orchestrator_starts(tmp_path: Path
 
     def runner(argv, *, cwd, env, transcript, liveness, interval_seconds):  # type: ignore[no-untyped-def]
         seen.append(_report(ws)["state"])
-        return subprocess.CompletedProcess(argv, 0)
+        return pod_run.RunnerResult(0)
 
     main(
         _run_argv(ws),
@@ -1323,7 +1400,44 @@ def test_actions_that_cannot_be_built_are_a_refusal_not_a_started_run(
     report = _report(ws)
     assert report["state"] == "refused"
     assert report["exit_code"] == EXIT_REFUSED
-    assert "actions could not be built" in report["reason"]
+    assert report["reason"] == "bootstrap actions could not be built: the workspace has no uv"
+    assert report["bootstrap"] is None
+
+
+def test_a_bootstrap_whose_result_could_not_be_written_says_so_not_unbuildable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The steps ran; only writing their result failed, and the run report names that."""
+
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner(returncode=0)
+    real_write = pod_run.bootstrap_main.atomic_write
+
+    def refuse_the_bootstrap_result(path, data):  # type: ignore[no-untyped-def]
+        if Path(path) == ws.report_path:
+            raise OSError(28, "No space left on device")
+        return real_write(path, data)
+
+    monkeypatch.setattr(pod_run.bootstrap_main, "atomic_write", refuse_the_bootstrap_result)
+
+    exit_code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    report = _report(ws)
+    assert report["state"] == "refused"
+    assert "the bootstrap ran (bootstrap-green)" in report["reason"]
+    assert "No space left on device" in report["reason"]
+    assert "could not be built" not in report["reason"]
+    assert report["bootstrap"]["color"] == "green"
 
 
 def test_refuses_a_credential_looking_value_in_either_half(
@@ -1459,6 +1573,38 @@ def test_the_real_runner_tees_the_child_output_into_the_transcript(tmp_path: Pat
     # Whatever the scheduling, the last call says the child is gone.
     assert seen[-1][1] is False
     assert seen[-1][0] > 0
+
+
+@pytest.mark.parametrize(
+    "close_error",
+    [OSError(28, "No space left on device"), ValueError("I/O operation on closed file")],
+    ids=["full-volume", "closed-under-the-reader"],
+)
+def test_a_transcript_close_failure_keeps_the_orchestrator_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, close_error: Exception
+) -> None:
+    """A close that fails after the child ran is a transcript failure, not a failed start."""
+
+    real_close = pod_run.BoundedTranscript.close
+
+    def close_then_fail(self: pod_run.BoundedTranscript) -> None:
+        real_close(self)
+        raise close_error
+
+    monkeypatch.setattr(pod_run.BoundedTranscript, "close", close_then_fail)
+    completed = pod_run._run(
+        [sys.executable, "-c", "import sys; sys.exit(3)"],
+        cwd=tmp_path,
+        env={"PATH": os.environ.get("PATH", "")},
+        transcript=tmp_path / "report-transcript.log",
+        liveness=lambda pid, alive: None,
+        interval_seconds=0.01,
+    )
+
+    assert completed.returncode == 3
+    assert completed.transcript_failure is not None
+    assert "transcript close failed" in completed.transcript_failure
+    assert type(close_error).__name__ in completed.transcript_failure
 
 
 def test_a_transcript_past_its_head_bound_keeps_the_tail_and_says_what_it_dropped(
@@ -2263,6 +2409,37 @@ def test_a_held_run_keeps_its_own_reason_and_appends_the_missing_records(
     assert "transcript, timing_journal" in report["detail"]
 
 
+def test_a_transcript_that_dropped_its_middle_says_so_in_the_report(tmp_path: Path) -> None:
+    """A bounded transcript is a stated partial record: complete, never read as whole."""
+
+    ws = _prepared(tmp_path)
+    report = _run_with(ws, RecordedRunner(returncode=0, dropped_bytes=4096))
+
+    assert report["state"] == "complete"
+    assert report["records_missing"] == []
+    assert report["records_at_close"]["transcript"]["dropped_bytes"] == 4096
+
+
+def test_the_real_runner_reports_the_bytes_its_transcript_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pod_run, "TRANSCRIPT_HEAD_BYTES", 16)
+    monkeypatch.setattr(pod_run, "TRANSCRIPT_TAIL_BYTES", 8)
+    program = "import sys; sys.stdout.write('x' * 100); sys.stdout.flush()"
+
+    completed = pod_run._run(
+        [sys.executable, "-c", program],
+        cwd=tmp_path,
+        env={"PATH": os.environ.get("PATH", "")},
+        transcript=tmp_path / "report-transcript.log",
+        liveness=lambda pid, alive: None,
+        interval_seconds=0.01,
+    )
+
+    assert completed.transcript_failure is None
+    assert completed.transcript_dropped_bytes == 100 - 16 - 8
+
+
 def test_a_transcript_the_runner_reports_incomplete_holds_the_run(tmp_path: Path) -> None:
     """A transcript file that exists but lost text part-way is not a record that
     came home; the runner says so and the run is held rather than complete."""
@@ -2450,8 +2627,8 @@ def test_a_transcript_write_that_fails_part_way_is_reported_and_the_pipe_still_d
     )
 
     assert completed.returncode == 0
-    assert "the transcript write failed part-way" in completed.stderr
-    assert "No space left on device" in completed.stderr
+    assert "the transcript write failed part-way" in completed.transcript_failure
+    assert "No space left on device" in completed.transcript_failure
 
 
 def test_a_descendant_holding_the_pipe_cannot_stop_the_runner_from_returning(
@@ -2478,7 +2655,7 @@ def test_a_descendant_holding_the_pipe_cannot_stop_the_runner_from_returning(
     )
 
     assert completed.returncode == 0
-    assert "still attached" in completed.stderr
+    assert "still attached" in completed.transcript_failure
     assert "parent" in transcript.read_text(encoding="utf-8")
 
 

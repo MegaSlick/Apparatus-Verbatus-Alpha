@@ -8,6 +8,7 @@ and remains in `test_door.py`.
 
 from io import BytesIO
 
+import admission
 import image_formats
 import pytest
 from admission import (
@@ -19,12 +20,19 @@ from admission import (
     RefusalReason,
     _refusal_code,
     classify_detected_format,
+    inspect_rendered_page,
     inspect_source,
     load_format_policy,
     reason,
     reason_code,
 )
-from image_formats import MAX_DIMENSION, MAX_SOURCE_BYTES, FormatRefusal, FormatVerdict
+from image_formats import (
+    MAX_DIMENSION,
+    MAX_RENDERED_PAGE_BYTES,
+    MAX_SOURCE_BYTES,
+    FormatRefusal,
+    FormatVerdict,
+)
 from PIL import Image
 from synthetic_sources import (
     heic,
@@ -36,6 +44,7 @@ from synthetic_sources import (
 from common import image_sniff
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
+from common.runtree import store as runtree_store
 
 POLICY = load_format_policy()
 
@@ -104,18 +113,14 @@ def test_the_decoder_routes_cover_exactly_the_formats_the_door_can_detect():
             assert classify_detected_format(detected, POLICY) == POLICY[name]
 
 
-def test_a_reader_route_does_not_require_a_bespoke_structural_walker():
-    """A reader gap is an alarm at byte admission, never a load-time format ban.
-
-    Every sniffable raster format loads without this module owning a hand-written
-    validator for it: HEIC and WebP have no bespoke structural walker here and are
-    still routed to a decoder attempt rather than banned when the routing is read.
-    """
-    loaded = load_format_policy()
-    assert loaded["pdf"] == RENDER_PAGES
-    assert {name: action for name, action in loaded.items() if name != "pdf"} == {
-        name: ADMIT_OR_FAN_OUT for name in sorted(SNIFFABLE_FORMATS - {"pdf"})
-    }
+@pytest.mark.parametrize(("encoder", "sniffed"), [("WEBP", "webp"), ("HEIF", "heic")])
+def test_a_reader_route_does_not_require_a_bespoke_structural_walker(encoder, sniffed):
+    """HEIC and WebP have no hand-written structural walker here, and an
+    encoder-made file of each still admits through the installed decoder."""
+    data = _synthetic_decoder_image(encoder)
+    assert image_formats.sniff(data) == sniffed
+    assert sniffed not in image_formats.VALIDATORS
+    assert inspect_source(data, declared_sha256=None, policy=POLICY).outcome == "admitted"
 
 
 def test_an_unknown_magic_or_handbuilt_missing_route_gets_a_generic_raster_attempt():
@@ -268,8 +273,7 @@ def _exercised() -> dict[RefusalReason, str]:
 
 
 def test_every_refusal_reason_in_the_closed_set_is_exercised():
-    """An unused member would be an untested refusal path, which is exactly the gap
-    invariant #3 exists to close. Asserted rather than trusted."""
+    """Every closed-set refusal reason has a path that produces it."""
     exercised = _exercised()
     assert set(exercised) == set(RefusalReason)
     for code, text in exercised.items():
@@ -365,3 +369,39 @@ def test_a_format_with_a_reader_that_still_fails_is_worded_about_the_bytes():
     assert "installed decoder could not decode" in outcome.reason
     assert "has no reader" not in outcome.reason
     assert image_formats.has_reader("gif")
+
+
+# --- frame counts and the rendered-page bound ------------------------------------
+
+
+def _two_frame_tiff() -> bytes:
+    output = BytesIO()
+    Image.new("L", (3, 2), 10).save(
+        output, format="TIFF", save_all=True, append_images=[Image.new("L", (3, 2), 200)]
+    )
+    return output.getvalue()
+
+
+def test_a_multi_frame_raster_is_never_admitted_whole():
+    """Sealing a multi-frame source as its own bytes would keep frame one only."""
+    outcome = inspect_source(_two_frame_tiff(), declared_sha256=None, policy=POLICY)
+
+    assert outcome.outcome == "refused"
+    assert reason_code(outcome.reason) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "2 frames" in outcome.reason
+
+
+def test_a_rendered_page_is_bounded_by_the_rendered_page_limit(monkeypatch):
+    data = png(4, 3)
+    monkeypatch.setattr(admission, "MAX_SOURCE_BYTES", 1)
+    assert inspect_rendered_page(data, policy=POLICY).outcome == "admitted"
+
+    monkeypatch.setattr(admission, "MAX_RENDERED_PAGE_BYTES", 1)
+    refused = inspect_rendered_page(data, policy=POLICY)
+    assert refused.outcome == "refused"
+    assert reason_code(refused.reason) is RefusalReason.TOO_LARGE
+    assert "rendered-page limit" in refused.reason
+
+
+def test_every_later_stage_can_read_back_a_page_at_the_rendered_page_bound():
+    assert MAX_SOURCE_BYTES < MAX_RENDERED_PAGE_BYTES <= runtree_store._MAX_TREE_READ_BYTES

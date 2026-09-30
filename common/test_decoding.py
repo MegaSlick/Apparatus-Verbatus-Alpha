@@ -15,11 +15,12 @@ from common.decoding import (
     VARIANCE_ARMS,
     chair_attempt_decoding,
     chair_decoding,
+    decoded_wire_decimals,
     engine_effective_sampling,
     load_decoding_policy,
     perlector_max_tokens,
     perlector_page_max_tokens,
-    recorded_sampling,
+    recorded_wire_decimals,
     refuse_retired_call_record,
     structure_recovery_policy,
     variance_arm_seed,
@@ -379,13 +380,13 @@ def test_the_engine_effective_mapping_agrees_with_the_pinned_engine_when_install
 def _call(chair: str, attempt: int = 1, seed: int | None = 7) -> dict:
     policy, _digest = load_decoding_policy()
     sampling = chair_attempt_decoding(policy, chair, attempt)
-    sent = {**recorded_sampling(sampling), "max_tokens": 10}
+    sent = {**recorded_wire_decimals(sampling), "max_tokens": 10}
     if seed is not None:
         sent["seed"] = seed
     return {
         "schema": "chair-call-record.v3",
         "generation_sent": sent,
-        "sampling_effective": recorded_sampling(engine_effective_sampling(sampling)),
+        "sampling_effective": recorded_wire_decimals(engine_effective_sampling(sampling)),
     }
 
 
@@ -402,7 +403,7 @@ def test_a_call_record_at_its_sealed_row_verifies(chair):
         (lambda call: call["generation_sent"].update(top_k=5), "not the sealed"),
         (
             lambda call: call["generation_sent"].update(
-                temperature=recorded_sampling({"t": 0.2})["t"]
+                temperature=recorded_wire_decimals({"t": 0.2})["t"]
             ),
             "not the sealed",
         ),
@@ -475,3 +476,49 @@ def test_a_retired_call_record_is_refused_by_its_schema_name(schema):
     with pytest.raises(SchemaRefusal, match=schema):
         refuse_retired_call_record(schema, subject="a record", error_type=SchemaRefusal)
     refuse_retired_call_record("chair-call-record.v3", subject="a record")
+
+
+def test_decoded_wire_decimals_restores_each_canonical_tagged_float() -> None:
+    recorded = {
+        "top_p": {"schema": "wire-decimal.v1", "decimal": "0.001"},
+        "stop": [{"schema": "wire-decimal.v1", "decimal": "1.05"}, "x"],
+        "seed": 7,
+    }
+    assert decoded_wire_decimals(recorded) == {"top_p": 0.001, "stop": [1.05, "x"], "seed": 7}
+
+
+def test_recorded_wire_decimals_tags_every_float_at_any_depth_and_decodes_back() -> None:
+    view = {"top_p": 0.001, "stop": [1.05, "x"], "nested": {"t": 0.2}, "seed": 7, "on": True}
+
+    recorded = recorded_wire_decimals(view)
+
+    assert recorded == {
+        "top_p": {"schema": "wire-decimal.v1", "decimal": "0.001"},
+        "stop": [{"schema": "wire-decimal.v1", "decimal": "1.05"}, "x"],
+        "nested": {"t": {"schema": "wire-decimal.v1", "decimal": "0.2"}},
+        "seed": 7,
+        "on": True,
+    }
+    assert decoded_wire_decimals(recorded) == view
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_recorded_wire_decimals_refuses_a_value_its_inverse_would_refuse(value: float) -> None:
+    with pytest.raises(ContractError, match="not finite"):
+        recorded_wire_decimals({"nested": [{"t": value}]})
+
+
+@pytest.mark.parametrize(
+    ("decimal", "reason"),
+    [
+        (1.0, "not text"),
+        ("abc", "not a number"),
+        ("NaN", "not canonical"),
+        ("0.10", "not canonical"),
+    ],
+)
+def test_decoded_wire_decimals_refuses_every_form_but_the_one_canonical_text(
+    decimal: object, reason: str
+) -> None:
+    with pytest.raises(ContractError, match=reason):
+        decoded_wire_decimals({"t": {"schema": "wire-decimal.v1", "decimal": decimal}})

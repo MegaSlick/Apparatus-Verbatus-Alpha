@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Final, TypedDict
 
 from common.background import round_half_up_bp
-from common.calibration import calibrated_claim_has_sample_evidence
+from common.calibration import validate_provenance_block
 from common.contracts.canonical import digest_of, is_plain_int
 from common.contracts.errors import ContractError
 from common.sealed_config import read_sealed_toml
@@ -42,19 +42,6 @@ BP_DENOMINATOR: Final = 10_000
 _DEFAULT_ANISOTROPY_TOLERANCE_BP: Final = 50
 
 _PADDING_FIELDS: Final = ("top_bp", "bottom_bp", "left_bp", "right_bp")
-
-# Closed schema for a padding config's [padding.provenance] table: a config
-# that can silently omit provenance lets an unvalidated number pass as this
-# project's own. `caveat` is free text; the rest answer a specific question.
-_PROVENANCE_FIELDS: Final = (
-    "source",
-    "corpus",
-    "sample_unit",
-    "sample_count",
-    "statistic",
-    "calibrated_for_this_corpus",
-    "caveat",
-)
 
 
 class Bounds(TypedDict):
@@ -106,52 +93,10 @@ def load_padding_config(path: str | Path = DEFAULT_PADDING_CONFIG_PATH) -> dict[
         raise ContractError(
             f"the padding configuration has invalid non-negative integer field(s) {invalid}"
         )
-    provenance = _load_padding_provenance(padding.get("provenance"))
+    provenance = validate_provenance_block(
+        padding.get("provenance"), where="[padding.provenance]", owner="the padding configuration"
+    )
     return {"config_sha256": digest, "provenance": provenance, **values}
-
-
-def _load_padding_provenance(provenance: Any) -> dict[str, Any]:
-    """Validate a padding config's declared provenance against its closed schema.
-
-    Every field is required and checked for shape, so a table that is present
-    but says nothing (an empty string, an unexplained zero sample count) still
-    fails validation.
-    """
-    if not isinstance(provenance, dict):
-        raise ContractError(
-            "the padding configuration has no [padding.provenance] table; a padding "
-            "fraction with no declared source may not be shipped as a default"
-        )
-    unexpected = sorted(set(provenance) - set(_PROVENANCE_FIELDS))
-    if unexpected:
-        raise ContractError(
-            f"the padding configuration's provenance carries unknown field(s) {unexpected}; "
-            "provenance is a closed schema so an unread field cannot be trusted"
-        )
-    missing = sorted(set(_PROVENANCE_FIELDS) - set(provenance))
-    if missing:
-        raise ContractError(f"the padding configuration's provenance is missing field(s) {missing}")
-    for field in ("source", "corpus", "sample_unit", "statistic", "caveat"):
-        if not isinstance(provenance[field], str) or not provenance[field].strip():
-            raise ContractError(
-                f"the padding configuration's provenance field {field!r} is not a non-empty string"
-            )
-    if not is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
-        raise ContractError(
-            "the padding configuration's provenance sample_count is not a non-negative integer"
-        )
-    if not isinstance(provenance["calibrated_for_this_corpus"], bool):
-        raise ContractError(
-            "the padding configuration's provenance calibrated_for_this_corpus is not a boolean"
-        )
-    if not calibrated_claim_has_sample_evidence(
-        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
-    ):
-        raise ContractError(
-            "the padding configuration's provenance says calibrated_for_this_corpus but "
-            "sample_count is zero"
-        )
-    return dict(provenance)
 
 
 def _pad_amount(dimension: int, bp: int) -> int:

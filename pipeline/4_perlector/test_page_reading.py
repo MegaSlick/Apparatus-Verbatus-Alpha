@@ -42,12 +42,13 @@ from common.decoding import (
     chair_decoding,
     engine_effective_sampling,
     load_decoding_policy,
-    recorded_sampling,
+    recorded_wire_decimals,
 )
 from common.exemplar_boundary import read_sealed_page
 from common.imaging import crop_png
 from common.page_accounting import is_inside, load_page_accounting_policy, placement_boxes
 from common.runtree.store import RunTree
+from common.stage import DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH
 from conftest import file_bytes_snapshot, load_stage, programs_through
 from operations.serving.config import profile_preflight_digest
 from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
@@ -877,6 +878,79 @@ def test_two_ink_maps_for_one_page_are_refused(page_tree):
         page_run._accounting_ink(context, _first_page(root))
 
 
+def _ink_context(root: Path, edit=None) -> SimpleNamespace:
+    context = _reading_context(root, edit)
+    context.args = SimpleNamespace(
+        designator_grouping_config=DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH
+    )
+    context.require_sealed_config = lambda _name, _digest: None
+    return context
+
+
+def _sized_first_page(root: Path) -> SimpleNamespace:
+    page = _first_page(root)
+    [record] = [
+        record
+        for path in (root / "r" / "1_ink_map" / "artifacts" / "ink-map").glob("*.json")
+        if (record := json.loads(path.read_text(encoding="utf-8")))["payload"]["page_ordinal"]
+        == page.ordinal
+    ]
+    runs = record["payload"]["edge_findings"]
+    page.page_size = (runs["width"], runs["height"])
+    return page
+
+
+def test_the_ink_maps_runs_are_read_when_they_span_the_sealed_page(page_tree):
+    root, _protocol = page_tree
+    context = _ink_context(root)
+    ink, references = page_run._accounting_ink(context, _sized_first_page(root))
+    assert ink is not None and len(references) == 1
+
+
+def test_ink_runs_sized_for_another_page_are_refused(page_tree):
+    root, _protocol = page_tree
+    context = _ink_context(root)
+    page = _sized_first_page(root)
+    page.page_size = (page.page_size[0] + 1, page.page_size[1])
+    with pytest.raises(ContractError, match="not the sealed page"):
+        page_run._accounting_ink(context, page)
+
+
+def test_ink_runs_that_disagree_with_their_edge_finding_are_refused(page_tree):
+    root, _protocol = page_tree
+
+    def recount(kind, payload):
+        if kind == "ink-map":
+            payload["edge"]["total_ink_pixels"] += 1
+            payload["edge"]["page_ink_pixels"] += 1
+
+    context = _ink_context(root, recount)
+    with pytest.raises(ContractError):
+        page_run._accounting_ink(context, _sized_first_page(root))
+
+
+def test_a_malformed_ink_not_measurable_record_is_refused(page_tree):
+    root, _protocol = page_tree
+
+    def refused_without_a_reason(kind, payload):
+        if kind == "ink-map" and payload["page_ordinal"] == 1:
+            payload.clear()
+            payload.update({"page_ordinal": 1, "ink_measurable": False})
+
+    context = _ink_context(root, refused_without_a_reason)
+    read = context.tree.read_artifact
+
+    def refused(*key):
+        record = read(*key)
+        if record["payload"].get("ink_measurable") is False:
+            record["outcome"] = "ink-not-measurable"
+        return record
+
+    context.tree.read_artifact = refused
+    with pytest.raises(ContractError, match="ink-not-measurable payload is not closed"):
+        page_run._accounting_ink(context, _first_page(root))
+
+
 # --- the answer's entries -----------------------------------------------------------
 
 
@@ -1170,8 +1244,8 @@ def test_a_live_page_is_sent_the_perlectors_sealed_row_and_names_it(
     for reading in readings:
         assert reading["payload"]["sampling"] == {
             "chair": "perlector",
-            "sent": recorded_sampling(row),
-            "effective": recorded_sampling(engine_effective_sampling(row)),
+            "sent": recorded_wire_decimals(row),
+            "effective": recorded_wire_decimals(engine_effective_sampling(row)),
         }
         call = json.loads(
             (

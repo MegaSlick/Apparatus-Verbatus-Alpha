@@ -1,16 +1,15 @@
-"""Spec 02, test 7 — No substitution. The one this whole system exists for.
+"""No substitution: the property this whole package exists for.
 
-"Every refusal in the clause above, injected: each raises with the chair named,
-and no other configured chair is invoked. This is the test the picker warning
-never had."
+Every refusal, injected, raises with the chair named, and no other configured
+chair is invoked while it is handled.
 
-The clause names seven doors, and each is a refusal and never a substitution:
+Seven doors lead to a refusal, and each is a refusal and never a substitution:
 
   1. a chair whose digest does not verify
   2. a chair that will not resolve — never a fake, never a base, never a
      neighbouring revision
-  3. a cache holding a different revision than the pin (harvest #43: a pin is a
-     constant the artifact must MATCH, never a value the artifact supplies)
+  3. a cache holding a different revision than the pin (a pin is a constant the
+     artifact must MATCH, never a value the artifact supplies)
   4. an adapter that will not fetch — never the bare base under the adapter's
      chair name
   5. a serving recipe that will not start — never a second route under the same
@@ -68,14 +67,13 @@ class Traced(ChairRegistry):
     on the way — resolving it, fetching it, receipting it — and the raised error
     would look identical. This is what makes the difference visible.
 
-    **A subclass, not a wrapper, and that is the whole point of it.** A delegating
-    wrapper only ever saw the calls the *test* made through it; the registry's own
-    internal `self.resolve(...)` — `_require_current_identity`, and
-    `_cache_descriptor` resolving an adapter's configured base — went straight to
-    the real method and left no entry, so a substitution introduced inside
-    `ensure()` or `receipt()` would have satisfied every assertion below. Because
-    Python binds `self.resolve` on the instance, overriding here puts the log on
-    the inside of the registry rather than in front of it.
+    **A subclass, not a wrapper.** It overrides `resolve`, `ensure` and `receipt`
+    so the registry's own internal calls — `_require_current_identity`, and
+    `_cache_descriptor` resolving an adapter's configured base — are logged too.
+    Python binds `self.resolve` on the instance, so the log sits inside the
+    registry rather than in front of it, and a substitution introduced inside
+    `ensure()` or `receipt()` shows up in it. A delegating wrapper would see only
+    the calls the test made through it.
     """
 
     def __init__(self, *args, **kwargs):
@@ -124,9 +122,9 @@ def world(tmp_path):
 def _assert_no_other_chair_was_reached_for(traced: Traced, fetcher: RecordingFetcher, chair: str):
     """The whole of "no other configured chair is invoked", in four assertions.
 
-    `resolve` is here now, and it is the one the wrapper could not see: a
-    substitution reaches for its replacement by resolving it, and every internal
-    resolution the registry makes runs through the override above.
+    `resolve` matters most: a substitution reaches for its replacement by
+    resolving it, and every internal resolution the registry makes runs through
+    the override above.
     """
     assert traced.roles("resolve") <= {chair}
     assert traced.roles("ensure") <= {chair}
@@ -193,7 +191,7 @@ def test_a_chair_whose_snapshot_cannot_be_fetched_at_all_refuses(world):
 
 
 def test_a_cache_describing_a_different_pin_refuses_and_fetches_nothing(world):
-    """Harvest #43. The cache is never authoritative over the pin, and the pin is
+    """The cache is never authoritative over the pin, and the pin is
     never quietly updated to whatever the cache turned out to hold."""
     traced, fetcher = world
     identity = traced.resolve("attestator_1")
@@ -257,13 +255,18 @@ def test_an_adapter_that_will_not_fetch_is_never_served_as_its_bare_base(adapter
     assert traced.roles("receipt") == set()
 
 
-def test_filling_an_adapter_base_keeps_its_adapter_and_foreign_directories(adapter_world, tmp_path):
+def test_filling_a_base_keeps_its_adapter_and_foreign_dirs_and_evicts_work_dirs(
+    adapter_world, tmp_path
+):
     traced, _fetcher = adapter_world
     adapter = traced.resolve("attestator_1")
     base = traced.resolve("base")
     traced.ensure(adapter)
     cache = tmp_path / "cache"
     (cache / ".base.candidate-abandoned").mkdir()
+    orphaned_backup = cache / ".base.prior-4242"
+    orphaned_backup.mkdir()
+    (orphaned_backup / "weights").write_bytes(b"a promote that died mid-swap")
     foreign = cache / "no-longer-configured"
     foreign.mkdir()
     (foreign / "user-data").write_text("keep", encoding="utf-8")
@@ -273,6 +276,7 @@ def test_filling_an_adapter_base_keeps_its_adapter_and_foreign_directories(adapt
     assert (cache / "attestator_1" / CACHE_DESCRIPTOR).is_file()
     assert (cache / "base" / CACHE_DESCRIPTOR).is_file()
     assert not (cache / ".base.candidate-abandoned").exists()
+    assert not orphaned_backup.exists()
     assert (foreign / "user-data").read_text(encoding="utf-8") == "keep"
 
 
@@ -350,11 +354,40 @@ def test_an_adapter_whose_base_became_absent_is_refused(adapter_world, tmp_path)
         registry.ensure(registry.resolve("attestator_1"))
 
 
+def test_a_hidden_role_is_refused_before_it_names_a_cache_directory(world, tmp_path):
+    """A leading dot would name `.`, `..` or one of the registry's own hidden work
+    directories under the cache root."""
+    traced, fetcher = world
+
+    # Built directly rather than through the parser, which refuses this role
+    # outright: the question here is what `ensure` does if it ever sees one.
+    from dataclasses import replace
+
+    from common.chairs.models import ModelsConfig
+
+    hidden = replace(traced.resolve("attestator_1"), role=".hidden")
+    config = ModelsConfig(
+        witness_floor=0,
+        chairs={".hidden": hidden},
+        source_path=tmp_path / "models.toml",
+    )
+    registry = ChairRegistry(
+        config, manifest_root=tmp_path, cache_root=traced.cache_root, fetcher=fetcher
+    )
+
+    with pytest.raises(CacheRevisionRefusal, match="unsafe as a cache path") as caught:
+        registry.ensure(registry.resolve(".hidden"))
+
+    assert caught.value.chair == ".hidden"
+    assert fetcher.calls == []
+    assert not (traced.cache_root / ".hidden").exists()
+
+
 # --- 5. A serving recipe that will not start ------------------------------------------
 
 
 def test_a_recipe_that_will_not_start_refuses_without_trying_a_second_route(world):
-    """Starting is spec 04's business; this only refuses to let a failed start
+    """Starting belongs to the serving manager; this only refuses to let a failed start
     look like a receipt for something that ran, or become a second attempt under
     the same role name."""
     traced, fetcher = world
@@ -428,9 +461,53 @@ def test_a_local_path_escaping_the_model_root_refuses_without_touching_the_netwo
 # --- The taxonomy is closed --------------------------------------------------------------
 
 
-def test_every_refusal_this_package_raises_is_a_member_of_the_closed_taxonomy():
-    """A new failure mode has to be spelled as one of these, so a reader of the
-    seven doors above can be sure the list is the whole list."""
+def test_every_raise_in_this_package_names_a_member_of_the_closed_taxonomy():
+    """A new failure mode raised by the package has to be spelled as one of these.
+
+    Every `raise` with an expression in the package's non-test modules is read
+    from source and must construct a named member of `ALL_REFUSAL_TYPES`. A bare
+    `raise` passes unread: this proves the raise sites, not the type of every
+    exception that can escape through one. `conftest.py` is fixture code and is
+    left out: its deterministic registry raises `RuntimeError` when constructed
+    outside a pytest session, and its fetcher raises whatever failure a test
+    injects."""
+    import ast
+    from pathlib import Path
+
+    from common.chairs.errors import ALL_REFUSAL_TYPES
+
+    allowed = {refusal.__name__ for refusal in ALL_REFUSAL_TYPES}
+    package = Path(__file__).resolve().parent
+    modules = [
+        path
+        for path in sorted(package.glob("*.py"))
+        if not path.name.startswith("test_") and path.name != "conftest.py"
+    ]
+    constructed: list[str] = []
+    outside: list[str] = []
+    for path in modules:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Raise) or node.exc is None:
+                continue
+            exc = node.exc
+            name = (
+                exc.func.id
+                if isinstance(exc, ast.Call) and isinstance(exc.func, ast.Name)
+                else None
+            )
+            if name in allowed:
+                constructed.append(name)
+            else:
+                outside.append(f"{path.name}:{node.lineno}: {ast.unparse(exc)}")
+
+    assert constructed, "no refusal construction was found; the scan read nothing"
+    assert outside == []
+
+
+def test_the_closed_taxonomy_is_every_refusal_errors_py_declares():
+    """`ALL_REFUSAL_TYPES` is the whole of what `errors.py` defines, and every
+    member names the chair and is a `ContractError`."""
     import common.chairs.errors as errors_module
     from common.chairs.errors import ALL_REFUSAL_TYPES
 

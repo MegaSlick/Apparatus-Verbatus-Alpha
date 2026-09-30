@@ -54,4 +54,8 @@ def exercise_contract(
         raise ProtocolClauseRefusal(
             role, "receipt clause: receipt does not name the resolved identity"
         )
+    if receipt.details != serving:
+        raise ProtocolClauseRefusal(
+            role, "receipt clause: receipt does not carry the serving details it was given"
+        )
     return snapshot

@@ -15,7 +15,7 @@ import pypdfium2.internal
 import pytest
 import render_config
 from admission import RefusalReason
-from image_formats import MAX_DIMENSION, MAX_PIXELS, validate_png
+from image_formats import MAX_DIMENSION, MAX_PIXELS, MAX_PNG_DECODED_BYTES, validate_png
 from pdf_render import PdfRefusal, close_document, count_pages, open_document
 from PIL import Image
 from synthetic_sources import (
@@ -216,6 +216,19 @@ def test_an_oversized_page_is_an_alarm_before_a_bitmap_is_returned():
     assert "floor" in str(caught.value)
 
 
+def test_the_floor_refusal_names_the_pixel_bound_it_actually_applied():
+    """A page under `MAX_PIXELS` at the floor can still pass the RGB decoded-page
+    bound, and the refusal must name that tighter bound, not the looser one."""
+    side = 7_000
+    assert side * side < MAX_PIXELS and side < MAX_DIMENSION
+    with pytest.raises(PdfRefusal) as caught:
+        pdf_render._render_dimensions(side, side, PDF_SETTINGS.target_dpi)
+
+    message = str(caught.value)
+    assert f"{MAX_PNG_DECODED_BYTES // 3}-pixel RGB page bound" in message
+    assert f"{MAX_PIXELS}-pixel" not in message
+
+
 def test_a_large_legitimate_page_renders_at_reduced_resolution_rather_than_refusing():
     """A page too big for the target DPI is captured, not lost.
 
@@ -224,8 +237,8 @@ def test_a_large_legitimate_page_renders_at_reduced_resolution_rather_than_refus
     the contract records what it was actually rendered at — a recipe naming only
     the target would describe pixels these are not.
     """
-    # An A0-sized page: legitimate, and far past what 400 DPI would fit inside the
-    # project's pixel bounds.
+    # An A0-sized page: legitimate, and far past what the configured target DPI
+    # would fit inside the project's pixel bounds.
     rendered = render_page(content_page_pdf(b"", width=2384, height=3370))
 
     assert 72 <= rendered.contract["effective_dpi"] < PDF_SETTINGS.target_dpi
@@ -252,27 +265,24 @@ def test_a_non_positive_page_dimension_is_a_corrupt_alarm(width: int, height: in
     assert caught.value.reason is RefusalReason.CORRUPT
 
 
-def test_a_pdf_page_count_past_the_retired_policy_cap_remains_the_fan_out_denominator():
-    """A long reel's declared page tree, not an old 5,000-page policy, fans out."""
+def test_a_long_pdf_page_count_is_the_fan_out_denominator_with_no_page_cap():
+    """A long reel's declared page tree, not a project page cap, sets its fan-out."""
     pages = 5_001
     assert count_pages(blank_pages_pdf(pages)) == pages
 
 
 def test_a_page_tree_that_shares_one_leaf_declares_no_more_pages_than_its_bytes_allow():
-    """Ruling 17 retired the absolute page cap for a genuine reel; it did not clear a
-    few-KB file to declare hundreds of thousands of pages via shared page-tree
-    nodes. PDFium itself trusts the declared, compounding ``/Count`` -- confirmed
-    directly: a 19-level, 2-way fan-out tree (22 objects, ~2KB) opens and reports
-    524,288 pages -- so nothing stops `door.expand_sources` from fanning out and
-    rendering that many pages from an attacker-sized file unless something checks
-    plausibility before the fan-out denominator is trusted.
+    """A genuine reel's page count is the document's own, but a few-KB file may not
+    declare hundreds of thousands of pages through shared page-tree nodes. PDFium
+    trusts the declared, compounding ``/Count`` (a 19-level, 2-way fan-out tree of
+    22 objects, about 2KB, reports 524,288 pages), so plausibility is checked before
+    the fan-out denominator is trusted.
 
-    The refusal is `UNSUPPORTED_VARIANT`, not `CORRUPT`, and that is not a detail.
-    A blind audit built a *valid* PDF 1.5 at 9.4 bytes per page -- 10,000 distinct
-    page objects, true `/Count`, packed into a Flate object stream -- which PDFium
-    opens and renders. So this ratio cannot establish damage, and `CORRUPT` is the
-    code that tells the operator their original is broken. What the ratio does establish is
-    that this reader cannot yet tell the two apart, which is a gap in this pipeline.
+    The refusal is `UNSUPPORTED_VARIANT`, not `CORRUPT`: a valid PDF 1.5 can pack
+    10,000 distinct page objects with a true `/Count` into a Flate object stream at
+    about 9.4 bytes per page, and PDFium opens and renders it. A density ratio
+    therefore cannot establish damage; it establishes only that this reader cannot
+    yet tell the two apart, which is a gap in this pipeline.
     """
     data, declared = page_tree_bomb_pdf(19, fanout=2)
     assert declared == 524_288
@@ -396,16 +406,15 @@ def test_invalid_page_indexes_are_named_alarms(page_index):
 
 
 def test_counting_a_page_does_not_rasterise_it(monkeypatch):
-    renders = 0
+    """Counting opens the document only; PDFium never loads or renders a page."""
 
-    def unexpected_render(*args, **kwargs):
-        nonlocal renders
-        renders += 1
-        raise AssertionError("page counting reached the rasteriser")
+    def unexpected_page(*args, **kwargs):
+        raise AssertionError("page counting reached a PDFium page")
 
-    monkeypatch.setattr(pdf_render, "render_page", unexpected_render)
+    monkeypatch.setattr(pdf_render.pdfium.PdfDocument, "__getitem__", unexpected_page)
+    monkeypatch.setattr(pdf_render.pdfium.PdfDocument, "get_page", unexpected_page)
+    monkeypatch.setattr(pdf_render.pdfium.PdfPage, "render", unexpected_page)
     assert count_pages(single_gray_page_pdf()) == 1
-    assert renders == 0
 
 
 # --- A locked document is not a damaged one -------------------------------------

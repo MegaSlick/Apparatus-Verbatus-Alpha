@@ -25,15 +25,25 @@ def pod(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     calls = tmp_path / "calls.txt"
+    curl_calls = tmp_path / "curl-calls.txt"
+    curl_configs = tmp_path / "curl-configs.txt"
     stubs = {
         "runpodctl": (
             f'printf "%s\\n" "$*" >> "{calls}"\n'
             'case "$*" in "$FAKE_RUNPODCTL_FAIL"*) exit 1 ;; esac\n'
         ),
         "nvidia-smi": 'echo "${FAKE_GPU_UTIL:-0}"\n',
+        # Records its argv and the contents of any -K config, which the caller deletes.
         "curl": (
+            f'printf "%s\\n" "$*" >> "{curl_calls}"\n'
             '[ "${FAKE_CURL_FAIL:-}" = yes ] && exit 22\n'
-            'while [ $# -gt 0 ]; do [ "$1" = -o ] && { cp "$FAKE_GUARD" "$2"; exit 0; }; shift; done\n'
+            "while [ $# -gt 0 ]; do\n"
+            '  case "$1" in\n'
+            '    -o) cp "$FAKE_GUARD" "$2"; exit 0 ;;\n'
+            f'    -K) cat "$2" >> "{curl_configs}" ;;\n'
+            "  esac\n"
+            "  shift\n"
+            "done\n"
             "exit 0\n"
         ),
     }
@@ -151,7 +161,8 @@ def test_network_download_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     stop = threading.Event()
 
     def download():
-        received = 0
+        # Past 2^31, where an awk that clamps %d would read every sample alike.
+        received = 3_000_000_000
         while not stop.is_set():
             received += 5_000_000
             staged = tmp_path / "netdev.new"
@@ -176,6 +187,171 @@ def test_network_download_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     assert "no GPU, CPU or network work" not in log_of(state)
 
 
+def netdev_writer(netdev, staging, line, stop):
+    """Rewrites a fake /proc/net/dev every half second with `line(n)` as its only device."""
+
+    def write():
+        n = 0
+        while not stop.is_set():
+            n += 1
+            staging.write_text(
+                "Inter-|   Receive\n face |bytes packets\n"
+                "    lo: 999 1 0 0 0 0 0 0 999 1 0 0 0 0 0 0\n" + line(n)
+            )
+            staging.replace(netdev)
+            time.sleep(0.5)
+
+    return threading.Thread(target=write)
+
+
+def test_a_download_on_a_long_interface_name_keeps_the_pod(pod, tmp_path):
+    env, calls, state = pod
+    stop = threading.Event()
+    # The kernel pads names to six characters, so a longer one runs into the colon.
+    writer = netdev_writer(
+        tmp_path / "netdev",
+        tmp_path / "netdev.new",
+        lambda n: (
+            f"enp0s31f6:{n * 5_000_000:8d}       10    0    0    0     0          0         0      100 1 0 0 0 0 0 0\n"
+        ),
+        stop,
+    )
+    writer.start()
+    try:
+        run_until(
+            ["sh", str(GUARD), "0.002", "30"], env, lambda: "pod delete testpod" in lines(calls)
+        )
+    finally:
+        stop.set()
+        writer.join()
+    assert "approved time is up" in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
+
+
+def test_loopback_traffic_is_not_work(pod, tmp_path):
+    env, calls, state = pod
+    netdev = tmp_path / "netdev"
+    stop = threading.Event()
+
+    def loopback():
+        sent = 0
+        while not stop.is_set():
+            sent += 50_000_000
+            staged = tmp_path / "netdev.new"
+            staged.write_text(
+                "Inter-|   Receive\n face |bytes packets\n"
+                f"    lo: {sent} 1 0 0 0 0 0 0 {sent} 1 0 0 0 0 0 0\n"
+                "  eth0: 100 10 0 0 0 0 0 0 100 1 0 0 0 0 0 0\n"
+            )
+            staged.replace(netdev)
+            time.sleep(0.5)
+
+    writer = threading.Thread(target=loopback)
+    writer.start()
+    try:
+        run_until(["sh", str(GUARD), "5", "30"], env, lambda: "pod delete testpod" in lines(calls))
+    finally:
+        stop.set()
+        writer.join()
+    assert "no GPU, CPU or network work" in log_of(state)
+
+
+def test_cgroup_v1_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
+    env, calls, state = pod
+    usage = tmp_path / "cgroup" / "cpuacct" / "cpuacct.usage"
+    usage.parent.mkdir(parents=True)
+    stop = threading.Event()
+
+    def burn():
+        # 3e12 ns is 3e9 usec, past 2^31, where an awk that clamps %d would read
+        # every sample alike.
+        used_ns = 3_000_000_000_000
+        while not stop.is_set():
+            used_ns += 2_000_000_000
+            staged = usage.with_name("cpuacct.usage.new")
+            staged.write_text(f"{used_ns}\n")
+            staged.replace(usage)
+            time.sleep(0.5)
+
+    writer = threading.Thread(target=burn)
+    writer.start()
+    try:
+        run_until(
+            ["sh", str(GUARD), "0.002", "30"], env, lambda: "pod delete testpod" in lines(calls)
+        )
+    finally:
+        stop.set()
+        writer.join()
+    assert "approved time is up" in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
+
+
+def test_a_deadline_rewritten_while_running_ignores_garbage_and_honours_an_extension(pod):
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    state.mkdir()
+    deadline = state / "deadline-testpod"
+    staging = state / "deadline-testpod.new"
+
+    def rewrite(value):
+        staging.write_text(f"{value}\n")
+        staging.replace(deadline)
+
+    def schedule():
+        time.sleep(1)
+        rewrite("soon")
+        time.sleep(1.5)
+        rewrite(int(time.time()) + 3600)
+        time.sleep(3.5)
+        rewrite(int(time.time()))
+
+    started = time.monotonic()
+    writer = threading.Thread(target=schedule)
+    writer.start()
+    try:
+        # The first deadline is 3.6 s out; only the extension keeps the pod past it.
+        run_until(
+            ["sh", str(GUARD), "0.001", "30"], env, lambda: "pod delete testpod" in lines(calls)
+        )
+    finally:
+        writer.join()
+    log = log_of(state)
+    assert "ignored deadline file value 'soon'" in log
+    assert log.count("deadline now") == 2
+    assert "approved time is up" in log
+    assert time.monotonic() - started > 5.5
+
+
+def test_the_rest_api_deletes_the_pod_when_both_runpodctl_forms_fail(pod, tmp_path):
+    env, calls, state = pod
+    env["FAKE_RUNPODCTL_FAIL"] = ""  # the empty prefix matches every runpodctl call
+    env["RUNPOD_API_KEY"] = "test-key-not-real"
+    curl_calls = tmp_path / "curl-calls.txt"
+    run_until(["sh", str(GUARD), "5", "30"], env, lambda: "DELETE" in "".join(lines(curl_calls)))
+    delete = next(line for line in lines(curl_calls) if "DELETE" in line)
+    assert delete.endswith("-X DELETE https://api.runpod.io/v2/pods/testpod")
+    assert "test-key-not-real" not in "".join(lines(curl_calls))
+    assert 'header = "Authorization: Bearer test-key-not-real"' in lines(
+        tmp_path / "curl-configs.txt"
+    )
+    assert lines(calls)[:2] == ["pod delete testpod", "remove pod testpod"]
+    assert "delete requested (attempt 1)" in log_of(state)
+
+
+def test_a_topic_file_sends_one_notification_when_the_guard_deletes(pod, tmp_path):
+    env, calls, state = pod
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    curl_calls = tmp_path / "curl-calls.txt"
+    run_until(["sh", str(GUARD), "5", "30"], env, lambda: bool(lines(curl_calls)))
+    [notification] = lines(curl_calls)
+    assert "-H Title: Pod guard" in notification
+    assert "Pod testpod: its guard requested deletion (no GPU, CPU or network work" in notification
+    # Assembled from pieces so the ingress check does not read a topic URL here.
+    topic_url = "https://ntfy" + ".sh/" + "guard-test-topic"
+    assert lines(tmp_path / "curl-configs.txt") == [f'url = "{topic_url}"']
+
+
 def test_a_deadline_more_than_a_week_out_is_ignored(pod):
     env, calls, state = pod
     state.mkdir()
@@ -185,13 +361,39 @@ def test_a_deadline_more_than_a_week_out_is_ignored(pod):
     assert "approved time is up" in log_of(state)
 
 
-def test_a_fresh_keepalive_holds_off_the_idle_delete(pod):
+def test_a_keepalive_touched_while_idle_holds_off_the_idle_delete(pod):
+    env, calls, state = pod
+    state.mkdir()
+    keepalive = state / "keepalive-testpod"
+    stop = threading.Event()
+
+    def touch():
+        while not stop.is_set():
+            keepalive.touch()
+            time.sleep(0.5)
+
+    toucher = threading.Thread(target=touch)
+    toucher.start()
+    try:
+        run_until(
+            ["sh", str(GUARD), "0.002", "30"], env, lambda: "pod delete testpod" in lines(calls)
+        )
+    finally:
+        stop.set()
+        toucher.join()
+    assert "approved time is up" in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
+
+
+def test_the_idle_limit_runs_from_the_last_keepalive_touch(pod):
     env, calls, state = pod
     state.mkdir()
     (state / "keepalive-testpod").touch()
-    run_until(["sh", str(GUARD), "0.001", "30"], env, lambda: "pod delete testpod" in lines(calls))
-    assert "approved time is up" in log_of(state)
-    assert "no GPU, CPU or network work" not in log_of(state)
+    started = time.monotonic()
+    run_until(["sh", str(GUARD), "5", "30"], env, lambda: "pod delete testpod" in lines(calls))
+    assert "no GPU, CPU or network work" in log_of(state)
+    # One idle limit (2 s) after the touch, not a further idle limit after the touch expires.
+    assert time.monotonic() - started < 10
 
 
 def test_a_garbled_deadline_file_is_replaced_not_trusted(pod):

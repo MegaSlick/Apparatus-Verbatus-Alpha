@@ -101,7 +101,6 @@ def real_sealed_bindings() -> dict:
     """
     from common.chairs.registry import ChairRegistry
     from common.stage import real_run_bindings, stage_parser
-    from operations.submit import gate
 
     registry = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml"))
     args = stage_parser("real bindings").parse_args(
@@ -247,7 +246,6 @@ def build_refused_real_door_run(
 
 def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineage(tmp_path):
     """Every split part must seal independently while retaining one shared master."""
-    from common.exemplar_boundary import verify_sealed_page_pixels
 
     output = BytesIO()
     image = Image.new("RGB", (10, 4), (255, 0, 0))
@@ -371,17 +369,17 @@ def test_a_noop_derivative_and_its_master_share_one_content_address(tmp_path):
 def test_a_derivative_naming_a_master_other_than_its_submitted_row_refuses(tmp_path):
     """The parent-frame back-link must name the master this row actually submitted.
 
-    That comparison sat unpinned: replacing it with `False` left 427 tests green.
-    Its siblings in the same conjunction hide it under the obvious forgeries —
-    editing `source["sha256"]` trips the earlier Door-admission comparison, and
+    Its siblings in the same conjunction hide this comparison under the obvious
+    forgeries — editing `source["sha256"]` trips the earlier Door-admission comparison, and
     editing the back-link's digest alone trips the sibling `stored_at` check with
     the very same message. So the forgery here is made *internally consistent*:
     the back-link names another digest and the blob path that digest would have,
     leaving the submitted row the only thing it disagrees with.
 
     The admission is re-sealed rather than edited in place, and the page's own
-    input reference is re-pointed at the forged bytes, because `_read_checked`
-    holds the admission to the digest the page recorded for it.
+    input reference is re-pointed at the forged bytes, because
+    `common.exemplar_boundary.verify_sealed_page_pixels` reads the admission through
+    `read_verified`, holding it to the digest the page recorded for it.
     """
     master = encode_image_deterministic(Image.new("L", (4, 3), 37))
     digest = digest_bytes(master)
@@ -443,7 +441,7 @@ def test_a_derivative_naming_a_master_other_than_its_submitted_row_refuses(tmp_p
 def test_exemplar_rederives_a_derivative_recipe_before_sealing_it(tmp_path, rebind_stage_seal):
     """A rehashed but false Door recipe cannot acquire an Exemplar seal.
 
-    `rebind_stage_seal` because the Door now witnesses its own boundary: without
+    `rebind_stage_seal` because the Door witnesses its own boundary: without
     it the Exemplar correctly stops on the Door's stage-seal and the recipe
     re-derivation this test is named for is never reached. Rebinding models the
     other hypothesis -- a Door that wrote the false recipe and honestly witnessed
@@ -541,9 +539,9 @@ def test_the_run_carries_exactly_one_corpus_seal_naming_every_page(tmp_path):
 
 
 def test_a_sealed_page_is_named_by_the_digest_that_was_actually_admitted(tmp_path):
-    """Audit Q12's defect was a truncated hash of the *path*. Identity binds the
-    immutable source digest and whole-image transform — and the digest of the bytes
-    the door admitted, not the submission ordinal or what anybody declared."""
+    """Identity binds the immutable source digest and whole-image transform — the
+    digest of the bytes the door admitted, never a hash of the path, the submission
+    ordinal or what anybody declared."""
     tree, files = build_door_run(tmp_path / "runs")
     assert run_exemplar(tmp_path / "runs").returncode == 0
 
@@ -677,11 +675,10 @@ def test_an_admitted_blob_whose_bytes_changed_refuses(tmp_path, rebind_stage_sea
 def test_an_admitted_blob_that_is_gone_refuses_by_name_rather_than_crashing(
     tmp_path, rebind_stage_seal
 ):
-    """The *deleted* blob, beside the *changed* one above. It escaped as a
-    FileNotFoundError traceback and CPython's exit 1, where `common/stage.py` says
-    an exit code carries cause and reserves 2 for a named contract failure. A
-    stage that dies by traceback has still failed loudly — but it has told the
-    orchestrator "something went wrong" instead of "this run does not reconcile"."""
+    """The *deleted* blob, beside the *changed* one above, is a named contract
+    failure with exit 2, never a FileNotFoundError traceback and CPython's exit 1:
+    `common/stage.py` makes the exit code carry the cause, so the orchestrator is
+    told "this run does not reconcile" rather than "something went wrong"."""
     tree, _ = build_door_run(tmp_path / "runs")
     admission = tree.read_artifact(DOOR, "admission", artifact_id(DOOR, "admission", "source-1"))
     tree.resolve(admission["payload"]["stored_at"]).unlink()
@@ -835,6 +832,87 @@ def test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar(tmp_path)
     assert (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
 
 
+def test_the_exemplar_seals_nothing_when_only_canary_pages_were_admitted(tmp_path):
+    """Canary pages are controls: a run whose real submission was wholly refused
+    has no page to seal, however many canaries admitted beside it."""
+    from admission import load_format_policy
+
+    real = {"real.png": b"not an image"}
+    canary = {"bird.png": png(3, 2)}
+    files = real | canary
+    ledgers = {
+        name: submit.build_manifest(
+            [
+                {"relative_path": path, "sha256": digest_bytes(data), "bytes": len(data)}
+                for path, data in group.items()
+            ]
+        )["self_hash"]
+        for name, group in (("real", real), ("canary", canary))
+    }
+    sources = [
+        SourceEntry(
+            ordinal,
+            path,
+            digest_bytes(data),
+            declared_size=len(data),
+            ledger_sha256=ledgers["real" if path in real else "canary"],
+        )
+        for ordinal, (path, data) in enumerate([*real.items(), *canary.items()], start=1)
+    ]
+    bindings = sealed_bindings() | real_sealed_bindings()
+    tree = RunTree.create(
+        tmp_path / "runs",
+        "r1",
+        source_manifest=[
+            {
+                "relative_path": entry.declared_path,
+                "sha256": entry.declared_sha256,
+                "ordinal": entry.ordinal,
+                "ledger_sha256": entry.ledger_sha256,
+                "bytes": entry.declared_size,
+            }
+            for entry in sources
+        ],
+        config_digest=bindings["config_digest"],
+        adapter_recipes=bindings["adapter_recipes"],
+        witness_chairs=bindings["witness_chairs"],
+        ingress=real_ingress_record(),
+        sealed_config_digests={
+            **bindings["sealed_config_digests"],
+            "canary-ledger": ledgers["canary"],
+        },
+    )
+    context = StageContext(
+        tree=tree,
+        run=tree.read_run(),
+        fixture={},
+        scenario="happy",
+        stage=DOOR,
+        adapter_revision=bindings["adapter_recipes"][DOOR],
+        args=None,
+        registry=None,
+    )
+    assert (
+        process_sources(
+            context,
+            tree,
+            sources,
+            lambda path: files[path],
+            policy=load_format_policy(),
+            pdf_settings=PDF_SETTINGS,
+        )
+        == 1
+    )
+    context.seal_boundary()
+    context.finish(DOOR)
+
+    result = run_exemplar(tmp_path / "runs")
+
+    assert result.returncode != 0
+    assert "only canary pages were admitted" in result.stderr
+    assert not (tree.root / "1_exemplar" / "artifacts" / "seal").exists()
+
+
 def test_the_exemplar_refuses_a_sealed_door_boundary_that_admitted_nothing(
     tmp_path, rebind_stage_seal
 ):
@@ -937,9 +1015,8 @@ def test_a_malformed_render_origin_in_a_sealed_page_is_a_named_refusal(tmp_path)
     )
     page["payload"]["rendered_from"] = {"container_page_index": 0}
 
-    # The surviving validator (`_validate_rendered_origin`) is the stricter of the
-    # two that met at this merge -- it type-checks every render field rather than
-    # only closing the key set -- and it names the refusal in its own words.
+    # `_validate_rendered_origin` type-checks every render field rather than only
+    # closing the key set, and names the refusal in its own words.
     with pytest.raises(ContractError, match="complete rendered-container origin"):
         verify_sealed_page_pixels(tree, run, source, page)
 
@@ -1048,7 +1125,6 @@ def test_the_merged_page_verifies_at_the_pixel_boundary_for_each_row_it_cites(tm
     must cover the page's complete submitted-row set rather than assume exactly
     one Door admission.
     """
-    from common.exemplar_boundary import verify_sealed_page_pixels
 
     data = png(4, 3)
     tree, _ = build_door_run(tmp_path / "runs", files={"dup-a.png": data, "dup-b.png": data})
@@ -1172,12 +1248,12 @@ def test_a_real_ingress_exemplar_refuses_to_open_over_a_door_that_did_not_comple
 def test_the_real_route_still_seals_behind_a_completed_door_and_reaches_the_designator(
     tmp_path,
 ):
-    """The only real path that works today, driven program by program.
+    """The real path, driven program by program.
 
     Door, Exemplar and Ink Map complete over a real submission opened through
     the shared constructor, and the Designator reaches its honest real-input
     refusal -- the ledger reconciled, nothing fabricated -- without ever
-    touching the refusing fixture accessor a real context now carries.
+    touching the refusing fixture accessor a real context carries.
     """
     run_root, door_argv = _real_submission(tmp_path, {"FS-1.png": png(4, 3), "FS-2.png": png(5, 2)})
 

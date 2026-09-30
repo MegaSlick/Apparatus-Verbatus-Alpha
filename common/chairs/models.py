@@ -14,12 +14,31 @@ from typing import Mapping
 from common.contracts.canonical import digest_of
 from common.contracts.canonical import is_sha256 as is_sha256  # re-exported to this package
 
+RECEIPT_SCHEMA = "chair-serving-receipt.v1"
+
 
 def is_hf_revision(value: object) -> bool:
     return (
         isinstance(value, str)
         and len(value) == 40
         and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def is_plain_role(role: object) -> bool:
+    """A role names exactly one cache directory, so it is a single visible name.
+
+    Path separators would reach outside the cache root, and a leading dot would
+    name `.`, `..` or the registry's own hidden `.{role}.candidate-` and
+    `.{role}.prior-` work directories.
+    """
+
+    return (
+        isinstance(role, str)
+        and bool(role)
+        and "/" not in role
+        and "\\" not in role
+        and not role.startswith(".")
     )
 
 
@@ -170,7 +189,7 @@ class ServingReceipt:
     def to_record(self) -> dict[str, object]:
         adapter = self.details.adapter_identity
         return {
-            "schema": "chair-serving-receipt.v1",
+            "schema": RECEIPT_SCHEMA,
             "chair": self.identity.role,
             "source": self.identity.source,
             "resolved": self.identity.source_reference,

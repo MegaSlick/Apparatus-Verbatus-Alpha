@@ -1,15 +1,12 @@
 """The Archetypus's transcription annotation layer, shared by its two halves.
 
-`pipeline/6_archetypus/run.py` seals this layer onto the established record
-(and re-exports these names so its own API is unchanged);
+`pipeline/6_archetypus/run.py` seals this layer onto the established record;
 `pipeline/7_armarium/run.py` reconciles a record's layer against its accepted
 reading's, and `pipeline/7_armarium/armarium_export.py` validates the carried
 copy in every packaged product on a clean machine. A stage may not import
 another stage's uniquely named module
-(`pipeline/test_stage_import_boundaries.py`), so the one spelling lives here —
-the same move `common/perlector_audit.py` made for the Pass-C audit surface,
-and for the same reason: two spellings of one layer's rules is the pair that
-drifts.
+(`pipeline/test_stage_import_boundaries.py`), so the layer's rules have their
+one spelling here, shared by every stage that writes or checks it.
 
 `validate_annotations` also NORMALIZES: an `illegible` note may legally arrive
 without `witness_evidence`, and the validated form always carries it
@@ -78,7 +75,7 @@ def validate_annotations(annotations, text: str, witnesses: dict | None, what: s
         if not isinstance(note, dict):
             raise SchemaRefusal(f"{label} is not an object")
         kind = note.get("kind")
-        if kind not in ANNOTATION_KINDS:
+        if type(kind) is not str or kind not in ANNOTATION_KINDS:
             raise SchemaRefusal(
                 f"{label} has kind {kind!r}, which is not one of {sorted(ANNOTATION_KINDS)}"
             )
@@ -125,7 +122,7 @@ def validate_annotations(annotations, text: str, witnesses: dict | None, what: s
 
 def _validate_certainty(note: dict, label: str) -> str:
     certainty = note.get("certainty")
-    if certainty not in CERTAINTIES:
+    if type(certainty) is not str or certainty not in CERTAINTIES:
         raise SchemaRefusal(
             f"{label} has certainty {certainty!r}, which is not one of {sorted(CERTAINTIES)}"
         )
@@ -137,8 +134,8 @@ def _validate_alternatives(note: dict, text: str, start: int, end: int, label: s
 
     The Perlector's alternatives and not a witness's: it reads the ink
     (ARCHITECTURE), so its uncertainty about a span it did read is its own.
-    Witness material attaches to a *gap*, which is the only place spec 10 asks
-    for it.
+    Witness material attaches only to a *gap*, where the reader saw nothing and a
+    witness's variant is the only evidence of what stood there.
 
     The span must cover a readable character rather than merely a width, because
     a span over blank text is where the silences collapse: `derive_text_status`

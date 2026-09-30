@@ -215,11 +215,10 @@ def test_zero_gap_tolerance_still_connects_diagonal_neighbours():
 
 
 def test_two_components_sharing_a_top_left_origin_still_sort_deterministically():
-    """`label_components` sorts by (top, left) only, a component's own origin,
-    not its full bounding box. Two disjoint components (a lone pixel and a
-    diagonal staircase) can tie on that origin; without a tiebreak beyond
-    (y, x), their order would fall back to dict-iteration order -- a function
-    of Python's pixel-tuple hashing, not a documented property.
+    """Two disjoint components (a lone pixel and a diagonal staircase) can tie
+    on their (top, left) origin. `label_components` breaks the tie on each
+    component's smallest pixel, so the order never falls back to
+    dict-iteration order -- a function of Python's pixel-tuple hashing.
     """
     pixels = {(0, 0), (0, 3), (1, 2), (2, 1), (3, 0)}
     components = label_components(pixels, gap_tolerance_px=0)
@@ -237,6 +236,23 @@ def test_two_components_sharing_a_top_left_origin_still_sort_deterministically()
     for order in itertools.permutations(sorted(pixels)):
         reordered = dict.fromkeys(order).keys()
         assert label_components(reordered, gap_tolerance_px=0) == components
+
+
+def test_components_sharing_an_origin_that_neither_inks_are_ordered_by_their_smallest_pixel():
+    """The tie-break reads each component's smallest `(x, y)` pixel, rows included.
+
+    Neither component inks its shared origin `(0, 0)`, and their last rows
+    differ (1 and 8), so an order keyed on anything but the true smallest
+    pixel -- `(0, 1)` against `(0, 8)` -- disagrees with the oracle.
+    """
+    corner = {(1, 0), (0, 1)}
+    hook = {(x, 0) for x in range(4, 7)} | {(6, y) for y in range(9)} | {(x, 8) for x in range(7)}
+    pixels = corner | hook
+    for gap in (0, 1):
+        components = label_components(pixels, gap_tolerance_px=gap)
+        assert components == label_components_reference(pixels, gap_tolerance_px=gap)
+        assert [c["pixel_count"] for c in components] == [len(corner), len(hook)]
+        assert {(c["bounds"]["x"], c["bounds"]["y"]) for c in components} == {(0, 0)}
 
 
 def test_the_reference_labeller_refuses_what_the_production_one_refuses():

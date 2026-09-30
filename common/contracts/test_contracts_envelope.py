@@ -1,11 +1,10 @@
 """The envelope, and what a consumer must refuse.
 
-These are the unit-level halves of the seven-handoff boundary test: the four
-corruption kinds spec 01 names — schema, identity, input digest, duplicate
-accounting — checked here against the validator directly, and driven again at every
-one of the seven real handoffs by the boundary test in the orchestrator's suite. A
-validator that refuses in isolation and is never called at a boundary would be
-meta-invariant #89's vacuous pass, so both exist on purpose.
+These are the unit-level halves of the handoff boundary test: four corruption
+kinds — schema, identity, input digest, duplicate accounting — checked here against
+the validator directly, and driven again at every real handoff by the boundary test
+in the orchestrator's suite. A validator that refuses in isolation and is never
+called at a boundary would pass vacuously, so both exist on purpose.
 """
 
 import contextlib
@@ -479,7 +478,21 @@ def test_inputs_are_stored_in_a_stable_order():
 
 def test_an_excluded_artifact_without_an_approval_reference_is_refused():
     with pytest.raises(ApprovalRefusal):
-        validate_envelope(sound_envelope(outcome="excluded"))
+        validate_envelope(reseal(sound_envelope(outcome="excluded")))
+
+
+@pytest.mark.parametrize("outcome", ("excluded", "no-such-outcome"))
+def test_an_outcome_edited_after_sealing_is_refused_as_tampering(outcome):
+    """An edited outcome is a changed artifact, named as one, not an approval gap
+    or an accounting imbalance that stops the run."""
+    with pytest.raises(SchemaRefusal, match="fails its self-hash") as refused:
+        validate_envelope(sound_envelope(outcome=outcome))
+    assert not isinstance(refused.value, ApprovalRefusal)
+
+
+def test_a_sealed_outcome_in_no_vocabulary_is_fatal():
+    with pytest.raises(FatalAccounting):
+        validate_envelope(reseal(sound_envelope(outcome="no-such-outcome")))
 
 
 def test_an_excluded_artifact_with_an_approval_reference_validates():

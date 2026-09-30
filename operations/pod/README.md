@@ -311,8 +311,11 @@ stage on the volume before bootstrap. The two model toggles use the same range v
 **It holds only for a finished full run.** A selection ending before Armarium records
 `selection-complete` and returns at once so the pod timer closes the card. A held
 selection ending before Armarium also closes promptly. A full `complete` or terminal
-`held` holds to the hard deadline (paid idle time), because the pod timer
-treats an early exit as non-green. After
+`held` holds toward the hard deadline (paid idle time), because the pod timer
+treats an early exit as non-green. The hold does no work and touches no keep-alive, so the
+pod guard deletes the pod once its idle window passes and the hold ends there;
+`held_to_hard_deadline` records the choice to hold, and the last tick in the `-hold.json`
+record below says when the hold ended. After
 `halted`, `failed` or a failed start it returns at once and lets the timer close the pod:
 holding a card for a run that will produce nothing more is paying for nothing. Everything
 stays on the volume. `held_to_hard_deadline` in the report says which way it went.
@@ -385,7 +388,8 @@ in the launch record's `balance_notification`, not refused.
 ### Per-stage boots, transfer and preflight
 
 `staged.py` runs one collection stage per independently authorized boot, then takes the pod
-down; it never adopts. Its durable records on the run volume: a **claim** keyed by the grant
+down; it never adopts. No launch or collection path calls it; its tests are its only
+caller. Its durable records on the run volume: a **claim** keyed by the grant
 reference, written before the provider is touched, so one grant cannot buy a second pod
 (a retry after a refused create records a fresh reference); an explicitly unknown **cost
 intent**, fsynced first, so a lost create response never reads as zero; a **boot record**

@@ -12,9 +12,8 @@ an unbounded inflate or iteration over a file-declared number is a loop counter 
 attacker controls. The limits below are admission policy — a source past one of
 them is refused outright, never partially inspected.
 
-Door-private (`pipeline/1_exemplar/`): nothing outside this stage imports it, so
-this stage is the only caller — a raster page can still be decoded, and checked,
-more than once, as `render_raster_page` does.
+Door-private: only `pipeline/1_exemplar/` imports it, which
+`test_import_boundaries.py` pins.
 """
 
 import struct
@@ -35,7 +34,11 @@ from common.image_sniff import (
     PNG_SIGNATURE,
     sniff,
 )
-from common.imaging import imaging_library_versions, render_triage_derivative
+from common.imaging import (
+    imaging_library_versions,
+    raster_mode_transform,
+    render_triage_derivative,
+)
 
 pillow_heif.register_heif_opener()
 
@@ -48,6 +51,12 @@ MAX_DIMENSION: Final = 100_000
 MAX_PIXELS: Final = 100_000_000
 MAX_PNG_CHUNKS: Final = 10_000
 MAX_PNG_DECODED_BYTES: Final = 128 * 1024 * 1024
+# A page the Door renders itself (a PDF page, one frame of a multi-frame raster)
+# is not a submitted file, so `MAX_SOURCE_BYTES` does not bound it: a lossless
+# page of a large-format scan can encode past 64 MiB. It must still be readable
+# by every later stage, whose run-tree page-blob read ceiling
+# (`common/runtree/store.py`) is sized to hold exactly this bound.
+MAX_RENDERED_PAGE_BYTES: Final = MAX_PNG_DECODED_BYTES * 3 // 2
 MAX_TIFF_DATA_SEGMENTS: Final = 100_000
 # A declared page count must fit in the bytes that arrived; a reel's own page count
 # is still the document's to declare. Pillow's smallest real page costs ~128 bytes,
@@ -304,10 +313,8 @@ def _is_png_chunk_type(kind: bytes) -> bool:
     """Four ASCII letters, with PNG's reserved bit clear.
 
     Byte 3's case is the *reserved* bit, and the specification requires it to be
-    uppercase in this version of the format. Checking only "four letters" accepted a
-    chunk typed `abcd` — a name no conforming encoder can emit — as an ordinary
-    ancillary chunk to be skipped, which is a claim of "genuine, uncorrupted
-    instance" this module makes and was not performing.
+    uppercase in this version of the format, so a chunk typed `abcd` is one no
+    conforming encoder can emit, not an ancillary chunk to skip.
     """
     if len(kind) != 4 or not all(65 <= byte <= 90 or 97 <= byte <= 122 for byte in kind):
         return False
@@ -338,7 +345,7 @@ _JPEG_ARITHMETIC_MARKERS: Final = frozenset({0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
 _JPEG_LOSSLESS_MARKERS: Final = frozenset({0xC3, 0xC7, 0xCB, 0xCF})
 
 
-def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> ImageGeometry:
+def validate_jpeg(data: bytes) -> ImageGeometry:
     """Walk marker segments to an EOI, reading geometry off SOF.
 
     Proven: SOI framing an EOI marker somewhere in the file; every marker segment's declared
@@ -356,10 +363,6 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
 
     Trailing bytes after EOI are retained: some scanners append metadata or padding,
     and the EOI still closes the image.
-
-    `expected_components` lets a caller that already knows the container's own
-    component count cross-check it; the current PDF renderer never extracts
-    embedded JPEG streams, so no caller passes it today.
     """
     if not data.startswith(JPEG_SIGNATURE):
         raise corrupt("JPEG: missing SOI")
@@ -416,11 +419,6 @@ def validate_jpeg(data: bytes, *, expected_components: int | None = None) -> Ima
                 )
             if len(payload) != 6 + 3 * components:
                 raise corrupt("JPEG: SOF component count disagrees with its length")
-            if expected_components is not None and components != expected_components:
-                raise corrupt(
-                    f"JPEG: the frame declares {components} component(s), but the "
-                    f"container around it declares {expected_components}"
-                )
             geometry = _geometry("jpeg", width, height)
             progressive = marker in _JPEG_PROGRESSIVE_MARKERS
             arithmetic = marker in _JPEG_ARITHMETIC_MARKERS
@@ -980,7 +978,7 @@ VALIDATORS: Final = {
 # Derived from what this module can actually do, never hand-copied: the table
 # sniff() walks (WebP included, by its RIFF/WEBP prefix), plus HEIC/HEIF/AVIF,
 # whose detection is a brand check rather than a signature prefix. admission.py
-# re-exports it for its policy-coverage check.
+# derives its route table from it.
 SNIFFABLE_FORMATS: Final = frozenset(
     {name for name, _ in _SIGNATURES} | {"heic", "heif", "avif", "webp"}
 )
@@ -1226,18 +1224,6 @@ def raster_renderer_recipe() -> dict[str, Any]:
     }
 
 
-# Pillow's PNG encoder cannot represent I (unbounded signed) or F (float); the
-# 16-bit modes just exceed PNG's 8-bit RGB. TIFF holds all four without clipping.
-# Pillow normalises a little-endian 16-bit TIFF to "I;16" when re-opened.
-_HIGH_PRECISION_TIFF_MODES: Final = {
-    "I": "I",
-    "F": "F",
-    "I;16B": "I;16B",
-    "I;16L": "I;16",
-}
-_PNG_IDENTITY_MODES: Final = frozenset({"1", "L", "LA", "RGB", "RGBA", "I;16"})
-
-
 def render_raster_page(
     data: bytes, page_index: int, split_part: dict[str, Any] | None = None
 ) -> tuple[bytes, ImageGeometry, dict[str, Any]]:
@@ -1297,29 +1283,14 @@ def render_raster_page(
                     image.load()
                     source_mode = image.mode
                     source_bands = list(image.getbands())
-                    if source_mode in _HIGH_PRECISION_TIFF_MODES:
-                        rendered = image.copy()
-                        mode_transform = "lossless-tiff-samples"
-                        output_codec = "tiff"
-                    elif source_mode in _PNG_IDENTITY_MODES:
-                        rendered = image.copy()
-                        mode_transform = "identity"
-                        output_codec = "png"
-                    else:
-                        # Premultiplied alpha is its own case: Pillow spells that
-                        # band lowercase, so a plain "A" in source_bands check misses
-                        # it and asks for RGB, a conversion Pillow refuses outright.
-                        # "La" converts only to "LA" and "RGBa" only to "RGBA".
-                        premultiplied = {"La": "LA", "RGBa": "RGBA"}.get(source_mode)
-                        if premultiplied is not None:
-                            target_mode = premultiplied
-                        elif any(band.upper() == "A" for band in source_bands):
-                            target_mode = "RGBA"
-                        else:
-                            target_mode = "RGB"
-                        rendered = image.convert(target_mode)
-                        mode_transform = f"convert-to-{target_mode.lower()}"
-                        output_codec = "png"
+                    mode_transform, target_mode, output_codec = raster_mode_transform(
+                        source_mode, source_bands
+                    )
+                    rendered = (
+                        image.convert(target_mode)
+                        if mode_transform.startswith("convert-to-")
+                        else image.copy()
+                    )
                     output = BytesIO()
                     if output_codec == "tiff":
                         rendered.save(output, format="TIFF", compression="raw")
@@ -1338,6 +1309,16 @@ def render_raster_page(
         raise unsupported(
             f"{decoded.format}: the installed decoder could not rasterise page {page_index} ({error})"
         ) from error
+    # The record names the mode the sealed bytes decode as, which the Exemplar
+    # checks against the same table; a Pillow that encodes another mode must
+    # refuse here, not seal a mislabelled page.
+    with Image.open(BytesIO(output.getvalue())) as sealed:
+        sealed_mode = sealed.mode
+    if sealed_mode != target_mode:
+        raise unsupported(
+            f"{decoded.format}: page {page_index} in mode {source_mode} encodes as "
+            f"{sealed_mode}, not the {target_mode} its mode policy seals"
+        )
     return (
         output.getvalue(),
         ImageGeometry(decoded.format, decoded.width, decoded.height),
@@ -1346,7 +1327,7 @@ def render_raster_page(
             "source_mode": source_mode,
             "source_bands": source_bands,
             "mode_transform": mode_transform,
-            "output": {"codec": output_codec, "color_mode": rendered.mode},
+            "output": {"codec": output_codec, "color_mode": target_mode},
             "container_page_index": page_index,
             "width": decoded.width,
             "height": decoded.height,

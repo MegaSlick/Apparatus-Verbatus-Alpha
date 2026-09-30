@@ -104,18 +104,19 @@ passes `--no-enable-log-requests`, because golden-page bytes and transcriptions 
 diagnostics and a recipe must not turn request logging on.
 
 **Shutdown.** The lease spans probing, launch and verified shutdown. It is released only
-after the child exits and a bounded `/health` poll sees a definite TCP connection refusal; a
+once the launch's whole process group has no running member (vLLM's engine process can
+outlive the server the manager launched) and a bounded `/health` poll sees a definite TCP connection refusal; a
 timeout or other ambiguous failure is not proof of absence. Otherwise the stop reports
-`VLLM_STOP_FAILED` and keeps the lease. `recover_failed_start()` retries only that same
-cleanup; it cannot launch another chair around it.
+`VLLM_STOP_FAILED` and keeps the lease. `recover()` retries only that same cleanup, for a
+failed start or a failed stop, on the process the manager launched; it cannot launch
+another chair around it.
 
 ## Readiness and adapter proof
 
 Readiness is a bounded poll of the exact child and its fresh launch log. It fails early on
 an exited child or a named log signature: `CUDA out of memory`, `EngineDeadError`,
-`LORA_UNSUPPORTED` (`does not support LoRA`), `UNKNOWN_MODEL` (the registry's
-`are not supported for now. Supported architectures:`), or `VLLM_ERROR` (reserved for
-a launch wrapper that writes to this log; vLLM never prints it). Broad words like
+`LORA_UNSUPPORTED` (`does not support LoRA`) or `UNKNOWN_MODEL` (the registry's
+`are not supported for now. Supported architectures:`). Broad words like
 `RuntimeError` are deliberately not matched: the poll re-reads the whole tail, so one benign
 line would abort a good start. Success requires all of:
 
@@ -196,7 +197,9 @@ prefix caching by default for hybrid models as for any other (`arg_utils.py`,
 model_config.is_prefix_caching_supported`, which is true for a generative hybrid), so the
 rendered `--no-enable-prefix-caching` and this refusal are what keep it off. The check
 keys on the exact `repo`, never the role, because test fixtures reuse role names under
-`example/...` repositories. `config/serving_recipes_real.toml` sets
+`example/...` repositories. An adapter row is judged by the base checkpoint whose weights
+it loads: vLLM takes the adapter row's flags over the base's weights, so an adapter over a
+hybrid base with prefix caching on is refused too. `config/serving_recipes_real.toml` sets
 `enable_prefix_caching = false` on all seven live rows for those two checkpoints (the
 Designator's and Attestator 1's three tiers each, and the Perlector's 80 GB tier), and
 `operations/serving/test_manager.py` checks that in CI, so the refusal guards against a

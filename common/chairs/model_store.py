@@ -20,7 +20,6 @@ import shutil
 import stat
 import tempfile
 import time
-import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -31,6 +30,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.durability import atomic_create, atomic_replace
 
 from .errors import DigestMismatchRefusal
+from .filesystem import apfs_alias, apfs_key, read_limited_bytes
 from .manifests import (
     build_manifest,
     read_manifest,
@@ -587,9 +587,8 @@ def _refuse_staged_symlinks(snapshot: Path, artifact: str) -> None:
         for name in [*directories, *filenames]:
             candidate = parent / name
             relative = candidate.relative_to(snapshot).as_posix()
-            folded = unicodedata.normalize("NFD", relative).casefold()
-            previous = identities.setdefault(folded, relative)
-            if previous != relative:
+            previous = apfs_alias(identities, relative)
+            if previous is not None:
                 raise DigestMismatchRefusal(
                     artifact,
                     "the fetched revision carries paths that collide on default APFS: "
@@ -681,7 +680,7 @@ def _indexed_shards(snapshot: Path, artifact: str) -> list[str]:
             continue
         try:
             index = json.loads(
-                _read_limited_bytes(
+                read_limited_bytes(
                     path,
                     MAX_SHARD_INDEX_BYTES,
                     artifact,
@@ -917,13 +916,13 @@ def _licence_observation_text(requirement: RequiredArtifact) -> str:
 def _write_licence_observation(path: Path, text: str, artifact: str) -> None:
     """Create synthetic evidence once, never overwriting repository bytes or a concurrent writer's."""
 
-    folded_name = unicodedata.normalize("NFD", path.name).casefold()
+    folded_name = apfs_key(path.name)
     try:
         collision = next(
             (
                 candidate.name
                 for candidate in path.parent.iterdir()
-                if unicodedata.normalize("NFD", candidate.name).casefold() == folded_name
+                if apfs_key(candidate.name) == folded_name
             ),
             None,
         )
@@ -984,34 +983,6 @@ def _materialization_receipt(entry: Mapping[str, Any]) -> dict[str, str | None]:
     }
 
 
-def _read_limited_bytes(path: Path, limit: int, chair: str, label: str) -> bytes:
-    """Read one small control artifact without allowing boundary amplification."""
-
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
-        )
-        status = os.fstat(descriptor)
-        if not stat.S_ISREG(status.st_mode):
-            raise DigestMismatchRefusal(chair, f"{label} must be a regular file")
-        with os.fdopen(descriptor, "rb") as handle:
-            descriptor = None
-            payload = handle.read(limit + 1)
-    except OSError as error:
-        raise DigestMismatchRefusal(chair, f"cannot read {label}: {error}") from error
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-    if len(payload) > limit:
-        raise DigestMismatchRefusal(
-            chair,
-            f"{label} exceeds the {limit}-byte control-artifact limit",
-        )
-    return payload
-
-
 def load_download_record(store_root: str | Path) -> dict[str, Any]:
     """Load the canonical active record and prove its immutable version exists."""
 
@@ -1025,7 +996,7 @@ def _load_custodied(root: Path, validate: Callable[[Mapping[str, Any]], None]) -
             "model-store", "download_record.json must be a regular in-store active copy"
         )
     try:
-        raw_bytes = _read_limited_bytes(
+        raw_bytes = read_limited_bytes(
             active,
             MAX_DOWNLOAD_RECORD_BYTES,
             "model-store",
@@ -1051,7 +1022,7 @@ def _load_custodied(root: Path, validate: Callable[[Mapping[str, Any]], None]) -
             "model-store", "immutable download record version must be a regular in-store file"
         )
     try:
-        archived_bytes = _read_limited_bytes(
+        archived_bytes = read_limited_bytes(
             archive,
             MAX_DOWNLOAD_RECORD_BYTES,
             "model-store",
@@ -1166,99 +1137,12 @@ def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def pod_materialization_plan(store_root: str | Path) -> dict[str, Any]:
-    """Return a byte-verified source plan for materializing a complete pod cache.
-
-    ``ChairRegistry`` reads a Hugging Face chair from ``cache_root/<role>``,
-    while this store keeps one directory per artifact (chandra-ocr-2 serves two
-    chairs), so a pod builds a role-keyed cache from this plan and never points
-    ``cache_root`` at ``hf/``. ``model_root`` is local-repository only, resolved
-    beside ``config/models.toml``, so the Surya bundle is bound by a chair
-    ``path``. Every source byte is re-verified; a pending artifact cannot pass.
-    The plan copies nothing and proves nothing about a pod, which
-    ``provenance_scope`` says; only a :class:`ServingReceipt` proves what served.
-    """
-
-    inventory = require_complete_store(store_root)
-    cache_root_entries: dict[str, dict[str, Any]] = {}
-    model_root_entries: dict[str, dict[str, Any]] = {}
-    for row in inventory["artifacts"]:
-        source = {
-            "artifact": row["artifact"],
-            "snapshot": row["snapshot"],
-            "manifest": row["manifest"],
-            "digest_manifest": row["digest_manifest"],
-            "revision": row["revision"],
-        }
-        if row["source"] == "huggingface":
-            cache_root_entries[row["chair"]] = source
-        else:
-            model_root_entries[row["chair"]] = source
-    return {
-        "provenance_scope": "verified-store-source-only",
-        "download_record_sha256": inventory["download_record_sha256"],
-        "cache_root_entries": cache_root_entries,
-        "model_root_entries": model_root_entries,
-    }
-
-
-def require_complete_store(store_root: str | Path) -> dict[str, Any]:
-    """Verify the store's real bytes and refuse a partial result by name.
-
-    Takes the store root, not an inventory, so a caller cannot flip a derived
-    ``complete`` flag.
-    """
-
-    if isinstance(store_root, Mapping):
-        raise DigestMismatchRefusal(
-            "model-store",
-            "require_complete_store takes the store root path and re-verifies real "
-            "bytes; an inventory-shaped mapping carries no authority here",
-        )
-    inventory = verify_store(store_root)
-    if not inventory["complete"]:
-        raise DigestMismatchRefusal(
-            "model-store",
-            f"model store is not complete; still pending fetch: {', '.join(inventory['pending'])}",
-        )
-    return inventory
-
-
-def write_derived_inventory(record: Mapping[str, Any], path: str | Path) -> str:
-    """Publish a derived record once; readers must call :func:`read_derived_inventory`.
-
-    Identical bytes are reused; differing bytes are refused.
-    """
-
-    payload = canonical_bytes(derived_inventory(record))
-    _publish_once(Path(path), payload, chair="model-store", label="derived inventory")
-    return digest_bytes(payload)
-
-
-def read_derived_inventory(store_root: str | Path, path: str | Path) -> dict[str, Any]:
-    """Refuse an inventory not backed by the store's current verified bytes."""
-
-    try:
-        actual = Path(path).read_bytes()
-    except OSError as error:
-        raise DigestMismatchRefusal(
-            "model-store", f"cannot read derived inventory: {error}"
-        ) from error
-    expected = canonical_bytes(verify_store(store_root))
-    if actual != expected:
-        raise DigestMismatchRefusal(
-            "model-store", "derived inventory diverges from download_record.json"
-        )
-    return json.loads(actual)
-
-
 def verify_store(store_root: str | Path) -> dict[str, Any]:
     """Verify every declared manifest against its existing bytes; never fetch.
 
     A `pending-fetch` entry has no bytes to verify, so it is passed over and
     reported: the returned inventory is then a verified inventory of a
-    *partial* store, marked `complete: false`.  Call
-    :func:`require_complete_store` where every roster artifact must be on disk.
+    *partial* store, marked `complete: false`, with every pending artifact named.
     """
 
     root = Path(store_root).resolve()
@@ -1324,9 +1208,8 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
                 item["artifact"],
                 f"the chair registry's cache descriptor {CACHE_DESCRIPTOR!r} is inside this "
                 "store snapshot: a store directory is keyed by artifact and is not a "
-                "cache_root entry, which is keyed by chair role. Materialize "
-                "cache_root/<role> from this snapshot instead — see "
-                "pod_materialization_plan",
+                "cache_root entry, which is keyed by chair role. Fill "
+                "cache_root/<role> from this snapshot through StoreRoleFetcher instead",
             )
         identity = ChairIdentity(
             role=item["artifact"],
@@ -1382,9 +1265,9 @@ def promote_verified_snapshot(store_root: str | Path, artifact: Mapping[str, Any
 
     This is where a pin is *born*, and it is the one place in this package that
     derives one from bytes rather than checking bytes against one.  That is not
-    an exception to "a pin is a constant the artifact must match" (harvest #43,
-    `README.md`): the first manifest of a fetch has nothing to be checked
-    against, which is why `config/models.toml` leaves `digest_manifest` unfilled
+    an exception to a pin being a constant the artifact must match: the first
+    manifest of a fetch has nothing to be checked against, which is why
+    `config/models.toml` leaves `digest_manifest` unfilled
     until a verified fetch exists.  Every later use of that manifest — a second
     promotion, `verify_store`, `ChairRegistry.ensure` — is a constant the
     artifact must match, and a second promotion of differing bytes is refused
@@ -1433,7 +1316,7 @@ def _publish_once(destination: Path, payload: bytes, *, chair: str, label: str) 
     """Publish ``payload`` at ``destination`` without ever overwriting a difference.
 
     Every filesystem failure is a refusal against a named chair, not a bare
-    ``OSError``: ``errors.py`` calls its list "the complete public taxonomy".
+    ``OSError``, so a caller that catches ``ChairRefusal`` records it.
     """
 
     try:

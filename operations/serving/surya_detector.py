@@ -30,8 +30,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from common.chairs.models import ChairIdentity, ServingDetails
+from common.stage import FIXTURE_DECLARATION
 
-from .config import SubprocessProfile
+from .config import SubprocessProfile, package_release
 from .errors import ServingConfigurationError, ServingError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -85,7 +86,6 @@ _SURYA_RUN_FIELDS = {
     "weights",
 }
 _FIXTURE_RUN_FIELDS = {"engine", "declared_by"}
-_FIXTURE_DECLARATION = "proof/skeleton_fixture.toml"
 
 
 class SuryaOutputRefusal(ServingConfigurationError):
@@ -230,9 +230,14 @@ def validate_page_document(
     page = _closed(document, _PAGE_FIELDS, "$")
     if page["schema"] != PAGE_SCHEMA:
         raise _refuse("$.schema", f"is {page['schema']!r}, not {PAGE_SCHEMA!r}")
-    if page["input_ordinal"] != input_ordinal:
+    if _count(page["input_ordinal"], "$.input_ordinal") != input_ordinal:
         raise _refuse("$.input_ordinal", f"is not {input_ordinal}")
-    if page["image_size"] != [width, height]:
+    image_size = page["image_size"]
+    if (
+        not isinstance(image_size, list)
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in image_size)
+        or image_size != [width, height]
+    ):
         raise _refuse("$.image_size", f"is not the sealed page's {width}x{height}")
     _check_run(page["run"])
     lines = _closed(page["text_detection"], _LINES_FIELDS, "$.text_detection")
@@ -401,7 +406,8 @@ def fixture_surya_run(
     the runner's shape and checked like the runner's, so the fixture proves the
     same reader the real detector feeds.
     """
-    run_facts = {"engine": FIXTURE_ENGINE, "declared_by": _FIXTURE_DECLARATION}
+    # The run's config_digest seals the declaration's content itself.
+    run_facts = {"engine": FIXTURE_ENGINE, "declared_by": FIXTURE_DECLARATION}
     documents = _parsed(declared_page_documents(lines, blocks, pages, run_facts), pages)
     return SuryaRun(run_facts=run_facts, serving_details=details, pages=documents)
 
@@ -459,11 +465,6 @@ def _run_child(
         raise SuryaRunFailure(f"Surya's {what} could not be started: {error}") from error
 
 
-def _release(version: str) -> str:
-    """`2.14.0+cu130` and `2.14.0` are the same release."""
-    return version.split("+", 1)[0]
-
-
 def environment_versions(
     profile: SubprocessProfile, *, runner: Runner = subprocess.run
 ) -> dict[str, str]:
@@ -486,7 +487,7 @@ def environment_versions(
     expected = {"surya_ocr": profile.required_packages["surya-ocr"]}
     expected["torch"] = profile.required_packages["torch"]
     if not isinstance(found, dict) or any(
-        _release(str(found.get(key))) != value for key, value in expected.items()
+        package_release(str(found.get(key))) != value for key, value in expected.items()
     ):
         raise ServingConfigurationError(
             f"Surya's environment reports {found}, and the serving row pins {expected}; the "
@@ -502,7 +503,7 @@ def run_surya_subprocess(
     sizes: Mapping[int, tuple[int, int]],
     identity: ChairIdentity,
     *,
-    manifest_rows: Sequence[Mapping[str, Any]] | None = None,
+    manifest_rows: Sequence[Mapping[str, Any]],
     runner: Runner = subprocess.run,
 ) -> SuryaRun:
     """Run Surya once over every page, in page order, and check what it wrote.
@@ -557,15 +558,15 @@ def surya_run(
     written: Mapping[int, bytes],
     sizes: Mapping[int, tuple[int, int]],
     *,
-    manifest_rows: Sequence[Mapping[str, Any]] | None = None,
+    manifest_rows: Sequence[Mapping[str, Any]],
 ) -> SuryaRun:
     """The run the parent records from what Surya's runner wrote, page by page.
 
     `written` maps each page ordinal to its document's bytes; `versions` is
     what the environment reported. Every document is checked against the
-    closed shape, and all must name the one run this row asked for. Given the
-    chair's digest manifest, the weights the run names must be exactly the
-    files it pins, less the bundle's own lock.
+    closed shape, and all must name the one run this row asked for. The weights
+    the run names must be exactly the files the chair's digest manifest pins,
+    less the bundle's own lock.
     """
     _require_pages(written)
     documents = _parsed(written, sizes)
@@ -579,19 +580,18 @@ def surya_run(
         or run_facts["torch"] != versions["torch"]
     ):
         raise SuryaOutputRefusal("Surya's run facts do not describe the run this row asked for")
-    if manifest_rows is not None:
-        pinned = sorted(
-            (
-                {"path": row["path"], "sha256": row["sha256"], "size": row["size"]}
-                for row in manifest_rows
-                if row["path"] != contract.BUNDLE_FILE
-            ),
-            key=lambda row: row["path"],
+    pinned = sorted(
+        (
+            {"path": row["path"], "sha256": row["sha256"], "size": row["size"]}
+            for row in manifest_rows
+            if row["path"] != contract.BUNDLE_FILE
+        ),
+        key=lambda row: row["path"],
+    )
+    if run_facts["weights"] != pinned:
+        raise SuryaOutputRefusal(
+            "the weights Surya's run names are not the files the chair's digest manifest pins"
         )
-        if run_facts["weights"] != pinned:
-            raise SuryaOutputRefusal(
-                "the weights Surya's run names are not the files the chair's digest manifest pins"
-            )
     details = ServingDetails(
         tokenizer_revision=identity.receipt_revision,
         seed=0,
@@ -736,7 +736,7 @@ class SuryaSubprocess:
         sizes: Mapping[int, tuple[int, int]],
         identity: ChairIdentity,
         *,
-        manifest_rows: Sequence[Mapping[str, Any]] | None = None,
+        manifest_rows: Sequence[Mapping[str, Any]],
     ) -> SuryaRun:
         return run_surya_subprocess(
             profile, bundle_root, pages, sizes, identity, manifest_rows=manifest_rows
