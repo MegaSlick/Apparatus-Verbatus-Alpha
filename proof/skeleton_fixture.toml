@@ -788,6 +788,132 @@ raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
 transport_stop_reason = "eos"
 
 [[churro_page_response]]
+scenario = "reask-recovers"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-recovers"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-sets-aside"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-sets-aside"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-malformed"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-malformed"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-cut-off"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-cut-off"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-off"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-off"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-duplicate"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-duplicate"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-cited-forgot"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-cited-forgot"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-continuation"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "reask-continuation"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "blank-then-recovered"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "blank-then-recovered"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
 scenario = "churro-native"
 page_ordinal = 1
 chair = "attestator_3"
@@ -1007,6 +1133,60 @@ hold_acts = []
 # page-runs-past-end: happy, answered otherwise.
 [[scenario]]
 name = "page-runs-past-end"
+recover_acts = []
+hold_acts = []
+
+# reask-recovers: happy, answered otherwise.
+[[scenario]]
+name = "reask-recovers"
+recover_acts = []
+hold_acts = []
+
+# reask-sets-aside: happy, answered otherwise.
+[[scenario]]
+name = "reask-sets-aside"
+recover_acts = []
+hold_acts = []
+
+# reask-malformed: happy, answered otherwise.
+[[scenario]]
+name = "reask-malformed"
+recover_acts = []
+hold_acts = []
+
+# reask-cut-off: happy, answered otherwise.
+[[scenario]]
+name = "reask-cut-off"
+recover_acts = []
+hold_acts = []
+
+# reask-off: happy, answered otherwise.
+[[scenario]]
+name = "reask-off"
+recover_acts = []
+hold_acts = []
+
+# reask-duplicate: happy, answered otherwise.
+[[scenario]]
+name = "reask-duplicate"
+recover_acts = []
+hold_acts = []
+
+# reask-cited-forgot: happy, answered otherwise.
+[[scenario]]
+name = "reask-cited-forgot"
+recover_acts = []
+hold_acts = []
+
+# reask-continuation: happy, answered otherwise.
+[[scenario]]
+name = "reask-continuation"
+recover_acts = []
+hold_acts = []
+
+# blank-then-recovered: happy, answered otherwise.
+[[scenario]]
+name = "blank-then-recovered"
 recover_acts = []
 hold_acts = []
 
@@ -1368,6 +1548,145 @@ answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"
 scenario = "page-runs-past-end"
 page_ordinal = 2
 answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-recovers"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-recovers"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-sets-aside"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-sets-aside"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-malformed"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-malformed"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-cut-off"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-cut-off"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-off"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-off"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-duplicate"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-duplicate"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-cited-forgot"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-cited-forgot"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-continuation"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "reask-continuation"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "blank-then-recovered"
+page_ordinal = 1
+answer = "{\"acts\":[],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "blank-then-recovered"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+# The fake Perlector's answer to a page's one re-ask, one per re-asked scenario
+# and page, read only with the re-ask on. `answer` is the reply text exactly.
+
+[[page_reask_answer]]
+scenario = "reask-recovers"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"L5-L9\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_reask_answer]]
+scenario = "reask-sets-aside"
+page_ordinal = 1
+answer = "{\"acts\":[],\"set_aside\":[{\"id\":\"A2\",\"reason\":\"no entry here\"},{\"id\":\"B2\",\"reason\":\"no entry here\"},{\"id\":\"L5-L9\",\"reason\":\"no entry here\"}]}"
+
+[[page_reask_answer]]
+scenario = "reask-malformed"
+page_ordinal = 1
+answer = "the re-ask reply is not JSON"
+
+[[page_reask_answer]]
+scenario = "reask-cut-off"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"L5-L9\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+stop_reason = "length"
+
+[[page_reask_answer]]
+scenario = "reask-duplicate"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"L5-L9\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_reask_answer]]
+scenario = "reask-continuation"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"L1-L4\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_reask_answer]]
+scenario = "blank-then-recovered"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"L1-L4\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"L5-L9\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_reask_answer]]
+scenario = "page-review"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"B1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_reask_answer]]
+scenario = "page-review-other"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"B1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
 
 # One declared provider RESPONSE per row: an empty body from that chair on
 # that act. The Attestatores derives `genuinely-empty` from the retained

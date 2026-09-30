@@ -2651,7 +2651,7 @@ def _refused_page_row(
     reading = _one(
         index.by_subject(page_path.PAGE_READING_KIND, page_id),
         f"{what}'s page reading",
-        page_path.page_reading_attempt(page_id),
+        page_path.page_reading_attempt(page_id, page_path.FIRST_READING),
     )
     payload = _payload_of(reading)
     exemplar_ref = context.artifact_ref(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
@@ -2706,7 +2706,7 @@ def _verify_page_reading(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """One sealed page's reading, accounting and act records, recomputed from the evidence."""
     what = f"page {ordinal} ({page_id})"
-    attempt = page_path.page_reading_attempt(page_id)
+    attempt = page_path.page_reading_attempt(page_id, page_path.FIRST_READING)
     readings = index.by_subject(page_path.PAGE_READING_KIND, page_id)
     if not readings:
         raise FatalAccounting(
@@ -3286,7 +3286,7 @@ def _verify_entries(
     # A page naming no act is held until the Recensor confirms nothing on it is one.
     no_act = {NO_ACT_ON_PAGE_HOLD} if all(p["act"]["kind"] != "act" for p in plans) else set()
     feed_ref = refs["feed_ref"]
-    attempt = page_path.page_reading_attempt(page_id)
+    attempt = page_path.page_reading_attempt(page_id, page_path.FIRST_READING)
     rows = []
     for plan in plans:
         act, act_id, union = plan["act"], plan["act_id"], plan["union_box_px"]

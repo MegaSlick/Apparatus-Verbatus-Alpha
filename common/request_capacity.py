@@ -857,6 +857,25 @@ def page_request_capacity(
     return {"capacity": record, "answer_reserve": answer_reserve, "max_tokens": min(cap, room)}
 
 
+def reask_answer_measure(named_units: Sequence[tuple[str, str]], named_ids: int) -> dict[str, int]:
+    """What a page re-ask's answer is reserved on, as ``page_request_capacity`` takes it.
+
+    ``named_units`` are ``(witness letter, text)`` of each witness unit the
+    re-ask names, and ``named_ids`` how many distinct ids it names. Its answer
+    transcribes only the ink at those ids, so its text is measured by the most
+    text one witness gave for them, and its entries are at most one per named
+    id. With no named witness text (only lines or records named) nothing
+    measures the ink, and the reserve is the whole page cap.
+    """
+    by_witness: dict[str, int] = {}
+    for letter, text in named_units:
+        by_witness[letter] = by_witness.get(letter, 0) + len(text)
+    return {
+        "longest_witness_characters": max(by_witness.values(), default=0),
+        "act_entries": _nonnegative(named_ids, "named_ids"),
+    }
+
+
 # What a dense page's answer costs, per chair, in the chair's own response
 # grammar: the same 800-word `FRENCH_ACT` body for every row, so the rows stay
 # comparable.  DAI and the Perlector use their page-fallback act, the demanding

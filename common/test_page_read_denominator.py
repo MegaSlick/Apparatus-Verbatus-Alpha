@@ -48,6 +48,7 @@ from common.stage import (
 from conftest import (
     page_roster_options,
     programs_through,
+    reask_recovery_config,
     rebind_stage_seal_artifact,
     rewitness_stage_boundary,
     run_stage,
@@ -73,10 +74,11 @@ def _protocol(directory: Path, unit: str, lines: dict[str, str]) -> Path:
 def _tree(
     base: Path, scenario: str, unit: str = "page", lines: dict[str, str] | None = None
 ) -> tuple[Path, dict[str, Path], str]:
-    """A tree read by `unit`; a page-read one on the page-read roster."""
+    """A tree read by `unit`; a page-read one on the page-read roster, with the re-ask off."""
     options = {"perlector_protocol_config": _protocol(base / "config", unit, lines or {})}
     if unit == "page":
         options.update(page_roster_options(base / "models"))
+        options["recovery_config"] = reask_recovery_config(base / "config", 0)
     root = base / "runs"
     for program in programs_through("perlector"):
         result = run_stage(root, RUN_ID, scenario, program, **options)
