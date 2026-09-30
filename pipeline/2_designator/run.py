@@ -32,6 +32,8 @@ import grouping  # noqa: E402
 import grouping_config  # noqa: E402
 import structure  # noqa: E402
 import structure_pass  # noqa: E402
+import surya_detection  # noqa: E402
+from no_text import refuse_text_fields as _refuse_text_fields  # noqa: E402
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -97,27 +99,6 @@ DESCRIPTION = "Designator: marks out the acts and cuts the crops. It establishes
 ABSOLUTE_STRUCTURE_ATTEMPT_CEILING = 3
 STRUCTURE_ATTEMPT_KIND = "structure-attempt"
 
-# Fields a Designator artifact may never carry, at any depth: this stage
-# establishes no text, and a transcription would otherwise pass as geometry-shaped
-# JSON. "reason" and "rationale" describe which rule fired, not ink, so they stay.
-_FORBIDDEN_TEXT_KEYS = frozenset(
-    {
-        "text",
-        "reported",
-        "transcription",
-        "transcript",
-        "content",
-        "reading",
-        "literal",
-        "token",
-        "tokens",
-        # Not text: the retired picker's words for an elected witness
-        # (GLOSSARY, "Retired terms"). No stage elects a witness.
-        "chosen",
-        "pivot",
-    }
-)
-
 # How much of a page's secondary rescue pass its records enumerate. Kept here,
 # not in `common/`, because nothing outside this stage reads it.
 SECONDARY_ENUMERATION_COMPLETE = "complete"
@@ -136,21 +117,6 @@ HOLD_REASON_CODES = frozenset(
         PAGE_RESIDUAL_AGGREGATE_REASON_CODE,
     }
 )
-
-
-def _refuse_text_fields(value, path: str = "$", *, kind: str = "act-group") -> None:
-    """Walk a payload and refuse any forbidden content-bearing key, at any depth."""
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if isinstance(key, str) and key.lower() in _FORBIDDEN_TEXT_KEYS:
-                raise ContractError(
-                    f"payload at {path}.{key} carries a forbidden content field; a "
-                    f"Designator {kind} artifact carries no text at the schema boundary"
-                )
-            _refuse_text_fields(item, f"{path}.{key}", kind=kind)
-    elif isinstance(value, (list, tuple)):
-        for index, item in enumerate(value):
-            _refuse_text_fields(item, f"{path}[{index}]", kind=kind)
 
 
 # What an act-group's `detected_bounds` rests on, as a field so consumers can
@@ -2303,6 +2269,7 @@ def initial_pass(context) -> bool:
     records, pages, padding, grouping_policy = _initial_pages_and_policies(context)
     provenance = structure_provenance(context)
     secondary = _publish_secondary_provenance(context, secondary_provenance(context))
+    surya_detection.publish_surya_detections(context, pages, live=False)
     # Decided once, before any crop is cut.
     failures = structure_failures(context, pages)
     page_cache: dict[int, dict] = {}
@@ -2804,6 +2771,8 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
                 error_type=ContractError,
             )
     secondary = _publish_secondary_provenance(context, _live_secondary_provenance(context))
+    # Checked before the structure chair starts; Surya itself runs once it has closed.
+    surya_detection.check_surya_runnable(context)
 
     page_cache: dict[int, dict] = {}
     for ordinal, page_record in pages.items():
@@ -2820,6 +2789,7 @@ def live_initial_pass(context, serving_factory, tier: str) -> bool:
         serving_factory,
         tier,
     )
+    surya_detection.publish_surya_detections(context, pages, live=True)
 
     failures: dict[int, str] = {}
     status_answers: dict[int, tuple[str | None, dict[str, str]]] = {}

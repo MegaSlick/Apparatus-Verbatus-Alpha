@@ -1891,6 +1891,10 @@ PERLECTOR_CHAIR = PERLECTOR
 # enabling a real detector must not silently turn every run `partial`.
 SECONDARY_PROPOSER_CHAIR = "secondary_proposer"
 
+# Surya's text-line and layout detector: the Designator runs it beside its
+# structure chair, as a check that no ink goes unseen. It decides nothing.
+DESIGNATOR_SURYA_CHAIR = "designator_surya"
+
 
 def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
     """Configured roles no stage in this pipeline will ever ask for.
@@ -1903,6 +1907,7 @@ def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
         DESIGNATOR_CHAIR,
         PERLECTOR_CHAIR,
         SECONDARY_PROPOSER_CHAIR,
+        DESIGNATOR_SURYA_CHAIR,
     }
     for role in list(addressed):
         value = models.chairs.get(role)

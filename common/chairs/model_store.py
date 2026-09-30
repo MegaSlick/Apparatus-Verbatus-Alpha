@@ -113,7 +113,10 @@ REQUIRED_ARTIFACTS = (
     ),
     # No `secondary_proposer` row: the real roster configures no such chair, and
     # requiring its bytes would leave the store permanently incomplete.
-    RequiredArtifact("proposer_surya2", "surya2-detection", "local-repository", None, None),
+    # Surya's detection and layout weight bundle: fetched by its own prefetch from
+    # Datalab's model host and the Hub, so it has no single Hub pin and is kept
+    # as a local repository (operations/serving/surya/README.md).
+    RequiredArtifact("designator_surya", "surya2-detection", "local-repository", None, None),
     RequiredArtifact(
         "perlector",
         "qwen3.8-27B",
@@ -122,18 +125,6 @@ REQUIRED_ARTIFACTS = (
         "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
         "apache-2.0",
     ),
-)
-# `chair` is a `config/models.toml` role key. Surya 2 is the sole store-only
-# artifact because the Designator adapter depends on it but the settled roster
-# names no Surya chair; the reconciliation test fixes that exception at one.
-CHAIRS_WITHOUT_ROSTER_ROLE = MappingProxyType(
-    {
-        "proposer_surya2": (
-            "config/models.toml configures no Surya detection chair, in its live "
-            "fixture roster or its commented real roster, and the project "
-            "lead's roster ruling named none"
-        )
-    }
 )
 SURYA_OCR_2_REFUSAL = MappingProxyType(
     {
@@ -327,7 +318,7 @@ def _materialize_real_roster_locked(root: Path, fetcher: MaterializationFetcher)
         # could have moved.
         "download_record_sha256": inventory["download_record_sha256"],
         "complete": inventory["complete"],
-        # Narrower than `complete`, which includes the non-roster Surya adapter.
+        # Narrower than `complete`, which includes the Surya bundle no Hub pin fetches.
         "real_roster_complete": real_roster_complete,
         "unattributed_staging_entries": _unattributed_staging_entries(root),
     }

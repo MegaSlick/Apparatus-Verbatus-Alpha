@@ -112,6 +112,15 @@ license_note = "fixture identity only; no model weights or model license apply"
 state = "absent"
 reason = "no secondary proposer is configured for the offline walking skeleton"
 
+# Surya's text-line and layout detector. The walking skeleton runs without it:
+# a configured fixture chair would put a fixture-answered chair into every live
+# and real-submission run made under this roster. The synthetic fixture still
+# declares its `[[surya_line]]` and `[[surya_block]]` rows, which a run
+# configuring this chair against a fixture row answers from.
+[chairs.designator_surya]
+state = "absent"
+reason = "no Surya detector is configured for the offline walking skeleton"
+
 # The real roster's membership was ruled on 2026-08-20, quoted here because the
 # ruling itself does not travel with this file: "For now we will have qwen 3.8
 # 27b as the perlector model and churro,dai and chandra as the first three."
