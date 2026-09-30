@@ -431,6 +431,28 @@ def test_a_read_page_naming_only_other_entries_is_held_until_confirmed(happy_tre
     )
 
 
+def test_a_page_with_one_act_and_one_other_entry_is_not_held_for_naming_no_act(
+    happy_tree, tmp_path
+):
+    tree = _copy(happy_tree, tmp_path)
+    root = tree[0]
+
+    def second_is_other(record):
+        payload = record["payload"]
+        if "answer" in payload:
+            payload["answer"]["acts"][1]["kind"] = "other"
+        elif payload["n"] == 2:
+            payload["kind"] = "other"
+
+    _forge(root, "page-reading", 1, None, second_is_other)
+    for kind in ("act-region", "perlectio"):
+        _forge(root, kind, 1, 2, second_is_other)
+    _reaccount(tree, 1)
+    rows = [act for act in reading_acts(_context(tree)) if act["page_ordinal"] == 1]
+    assert [row["kind"] for row in rows] == ["act", "other"]
+    assert all("no-act-on-page-unconfirmed" not in row["hold_codes"] for row in rows)
+
+
 def test_a_reading_with_no_stop_reason_is_held_whole_by_that_tail(happy_tree, tmp_path):
     tree = _copy(happy_tree, tmp_path)
     root = tree[0]
