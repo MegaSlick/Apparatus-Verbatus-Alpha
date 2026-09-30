@@ -24,6 +24,7 @@ from common.native_witness import (
     derive_churro_capture,
     detect_repetition,
     parse_churro_response,
+    validate_capture_text_view,
 )
 from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
 from operations.serving.preflight import assert_generation_config_key_coverage
@@ -536,7 +537,8 @@ def retain_model_view(
         "findings": [],
         "parse": {"state": "not-requested" if parser is None else "pending", "parser": parser},
     }
-    # The view the parse below reads under, so a later build can refuse it by name.
+    # The view this grammar reads under, so a later build can refuse it by name;
+    # replaced below by the view the parser itself reports wherever it reports one.
     if (text_view := capture_text_view(adapter, parser)) is not None:
         record["text_view"] = text_view
     if adapter == "churro.v1":
@@ -569,6 +571,7 @@ def retain_model_view(
                 parsed = {"parse_outcome": parsed_layout["parse_outcome"]}
             else:
                 parsed = parsed_layout["page_text"]
+                record["text_view"] = parsed_layout["text_view"]
                 # The grammar's own findings (malformed box, blank page, text
                 # outside every block, ...) travel with the reading.
                 record["findings"] = list(parsed_layout["findings"])
@@ -594,7 +597,9 @@ def retain_model_view(
         except SchemaRefusal as error:
             record["parse"] = {"state": "failed", "parser": "text", "reason": str(error)}
             record["stop_reason"] = "partial-parse-failed"
-    return record
+    # A parser reporting a view this build does not read under refuses here, at
+    # the seam, rather than in the first reader of the sealed record.
+    return validate_capture_text_view(record)
 
 
 def stage_major_schedule(

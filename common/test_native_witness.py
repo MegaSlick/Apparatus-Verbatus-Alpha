@@ -37,6 +37,7 @@ from common.native_witness import (
     validate_reportable_observations,
     validate_retained_response_refs,
     validate_vendor_identity,
+    validate_capture_text_view,
     verify_native_capture_bytes,
 )
 from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
@@ -926,6 +927,7 @@ def test_a_capture_may_record_a_shape_its_parser_ran_over_and_could_not_place():
 
     value = _native_capture()
     value["adapter"] = "chandra.v1"
+    del value["text_view"]  # Churro's view; this capture is Chandra's.
     value["view"] = {"prompt": {"instruction": "Transcribe this complete page."}}
     value["transport_stop_reason"] = "stop"
     value["stop_reason"] = "partial-parse-unrecognized-shape"
@@ -956,6 +958,7 @@ def test_a_capture_may_record_a_shape_its_parser_ran_over_and_could_not_place():
 def test_an_unrecognized_shape_capture_must_name_the_shape_and_nothing_else(parse):
     value = _native_capture()
     value["adapter"] = "chandra.v1"
+    del value["text_view"]  # Churro's view; this capture is Chandra's.
     value["view"] = {"prompt": {"instruction": "Transcribe this complete page."}}
     value["stop_reason"] = "partial-parse-unrecognized-shape"
     value["parse"] = parse
@@ -1851,6 +1854,7 @@ def test_an_unhashable_colour_mode_is_a_named_refusal_too(colour_mode):
 def test_an_unhashable_parser_name_is_a_named_refusal_too(parser):
     capture = _native_capture()
     capture["adapter"] = "chandra.v1"
+    del capture["text_view"]  # Churro's view; this capture is Chandra's.
     capture["parse"] = {"state": "parsed", "parser": parser, "text": "read"}
     with pytest.raises(SchemaRefusal, match="which no vendor grammar"):
         validate_native_capture(capture)
@@ -2257,6 +2261,7 @@ def test_the_capture_validator_admits_one_parser_per_vendor_grammar():
 def test_every_vendor_grammar_name_is_recordable_on_a_capture(parser):
     capture = _native_capture()
     capture["adapter"] = "chandra.v1"
+    del capture["text_view"]  # Churro's view; this capture is Chandra's.
     capture["parse"] = {"state": "parsed", "parser": parser, "text": "read"}
     assert validate_native_capture(capture) is capture
 
@@ -2279,6 +2284,7 @@ def test_a_capture_naming_a_parser_no_grammar_answers_to_is_refused_by_name(pars
     """
     capture = _native_capture()
     capture["adapter"] = "chandra.v1"
+    del capture["text_view"]  # Churro's view; this capture is Chandra's.
     capture["parse"] = parse
     with pytest.raises(SchemaRefusal, match="which no vendor grammar"):
         validate_native_capture(capture)
@@ -2287,6 +2293,7 @@ def test_a_capture_naming_a_parser_no_grammar_answers_to_is_refused_by_name(pars
 def test_a_not_requested_parse_still_names_no_parser_at_all():
     capture = _native_capture()
     capture["adapter"] = "chandra.v1"
+    del capture["text_view"]  # Churro's view; this capture is Chandra's.
     capture["parse"] = {"state": "not-requested", "parser": None}
     assert validate_native_capture(capture) is capture
     capture["parse"] = {"state": "not-requested", "parser": "html"}
@@ -2317,6 +2324,7 @@ def test_every_parse_state_this_contract_names_stays_recordable(parse):
     """
     capture = _native_capture()
     capture["adapter"] = "chandra.v1"
+    del capture["text_view"]  # Churro's view; this capture is Chandra's.
     capture["parse"] = parse
     assert validate_native_capture(capture) is capture
 
@@ -2447,8 +2455,57 @@ def test_a_capture_read_under_an_older_parser_is_refused_by_name(adapter, parser
         )
     value["text_view"] = retired
     assert validate_native_capture(value) is value
-    with pytest.raises(SchemaRefusal, match=f"the retired text view {retired}.*from the Door"):
+    with pytest.raises(SchemaRefusal, match=f"the retired text view {retired}.*re-run the submission from the Door"):
         verify_native_capture_bytes(value, b"")
     del value["text_view"]
-    with pytest.raises(SchemaRefusal, match="no recorded text view.*from the Door"):
+    with pytest.raises(SchemaRefusal, match="no recorded text view.*re-run the submission from the Door"):
         verify_native_capture_bytes(value, b"")
+
+
+@pytest.mark.parametrize(
+    ("adapter", "parse", "stop_reason"),
+    [
+        ("chandra.v1", {"state": "failed", "parser": "html", "reason": "cut"}, "stop"),
+        (
+            "chandra.v1",
+            {"state": "unrecognized-shape", "parser": "html", "outcome": "no-blocks"},
+            "stop",
+        ),
+        (
+            "churro.v1",
+            {"state": "failed", "parser": "xml", "reason": "cut"},
+            "partial-parse-failed",
+        ),
+    ],
+)
+def test_a_retired_capture_is_refused_whatever_its_parse_state(adapter, parse, stop_reason):
+    value = _native_capture()
+    if adapter == "chandra.v1":
+        value.update(adapter=adapter, view={})
+    value.update(parse=parse, stop_reason=stop_reason)
+    value["text_view"] = {
+        "chandra.v1": "chandra-layout-text.v1",
+        "churro.v1": "churro-historical-document-text.v1",
+    }[adapter]
+    with pytest.raises(SchemaRefusal, match="the retired text view"):
+        validate_capture_text_view(validate_native_capture(value))
+
+
+@pytest.mark.parametrize(
+    ("adapter", "parse"),
+    [
+        ("dai.v1", {"state": "parsed", "parser": "text", "text": "read"}),
+        ("chandra.v1", {"state": "parsed", "parser": "json", "text": "read"}),
+        ("chandra.v1", {"state": "not-requested", "parser": None}),
+    ],
+)
+def test_a_text_view_on_a_grammar_read_under_none_is_refused(adapter, parse):
+    """Only a grammar with a mapped view records one; any other would name a view
+    nothing checks."""
+    value = _native_capture()
+    value.update(adapter=adapter, view={}, parse=parse)
+    value["text_view"] = "chandra-layout-text.v2"
+    with pytest.raises(SchemaRefusal, match="is read under no text view"):
+        validate_native_capture(value)
+    del value["text_view"]
+    assert validate_capture_text_view(validate_native_capture(value)) is value

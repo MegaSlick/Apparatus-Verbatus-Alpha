@@ -2099,6 +2099,63 @@ def test_a_damaged_native_capture_is_a_named_refusal_not_a_keyerror():
         )
 
 
+def _v1_chandra_capture() -> dict:
+    """A Chandra capture sealed under the retired text view, which dropped a
+    `Blank-Page` block's text."""
+    reference = {"relative_path": "3_attestatores/blobs/sha256/" + "a" * 64, "sha256": "a" * 64}
+    return {
+        "schema": "attestatores-model-view.v1",
+        "adapter": "chandra.v1",
+        "view": {},
+        "transport_stop_reason": "stop",
+        "stop_reason": "stop",
+        "findings": [],
+        "parse": {"state": "parsed", "parser": "html", "text": "read"},
+        "raw_response_ref": reference,
+        "text_view": "chandra-layout-text.v1",
+    }
+
+
+def _refuse_read(relative_path):
+    raise AssertionError(f"a retired capture's bytes must not be reused: {relative_path}")
+
+
+@pytest.mark.parametrize("resume_point", ["page record", "retained act record", "terminal"])
+def test_a_resumed_pass_refuses_a_capture_read_under_a_retired_text_view(resume_point):
+    """Every place a resumed live pass reuses a sealed capture refuses one read
+    under a view this build no longer produces, by name, before its bytes are
+    reused."""
+    capture = _v1_chandra_capture()
+    tree = SimpleNamespace(
+        read_run_receipt=lambda reference: {"endpoint": "https://live.example/chair"},
+        read_bytes=_refuse_read,
+    )
+    record = {
+        "outcome": "read",
+        "payload": {
+            "payload": "read",
+            "witness_reported": None,
+            "content_health": {},
+            "format_capabilities": attestatores.DEFAULT_FORMAT_CAPABILITIES,
+            "raw_response_ref": capture["raw_response_ref"],
+            "native_capture": capture,
+            "provenance": {"receipt_ref": {"relative_path": "receipts/x.json", "sha256": "a" * 64}},
+        },
+    }
+    refusal = "the retired text view chandra-layout-text.v1.*re-run the submission from the Door"
+    with pytest.raises(SchemaRefusal, match=refusal):
+        if resume_point == "page record":
+            attestatores._page_capture_from_record(
+                SimpleNamespace(tree=tree), record, "the page Testimonium"
+            )
+        elif resume_point == "retained act record":
+            attestatores._attempt_from_retained_testimonium(tree, record)
+        else:
+            evidence = dict.fromkeys(attestatores._CHANDRA_RESULT_FIELDS)
+            evidence["native_capture"] = capture
+            attestatores._attempt_from_evidence_record(SimpleNamespace(tree=tree), evidence)
+
+
 def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path):
     """DAI's shipped floats are recorded as the exact decimal text the wire carries.
 

@@ -112,7 +112,7 @@ def _sealed(blobs: _Blobs, rows: list[dict]) -> list[dict]:
     return sealed
 
 
-def _capture(adapter: str, ref: dict, parser: str, text: str) -> dict:
+def _capture(adapter: str, ref: dict, parser: str, text: str, findings=()) -> dict:
     return {
         "schema": "attestatores-model-view.v1",
         "adapter": adapter,
@@ -120,7 +120,7 @@ def _capture(adapter: str, ref: dict, parser: str, text: str) -> dict:
         "raw_response_ref": ref,
         "transport_stop_reason": "stop",
         "stop_reason": "stop",
-        "findings": [],
+        "findings": list(findings),
         "parse": {"state": "parsed", "parser": parser, "text": text},
         **({"text_view": view} if (view := capture_text_view(adapter, parser)) is not None else {}),
     }
@@ -134,9 +134,10 @@ def chandra_testimonium(blobs: _Blobs, blocks: list[tuple[str, str, str]], outco
     ).encode()
     from common.chandra_layout import parse_layout_html
 
-    page_text = parse_layout_html(html)["page_text"]
+    parsed = parse_layout_html(html)
     ref = blobs.retain(html)
-    return _record(outcome, {"native_capture": _capture("chandra.v1", ref, "html", page_text)})
+    capture = _capture("chandra.v1", ref, "html", parsed["page_text"], parsed["findings"])
+    return _record(outcome, {"native_capture": capture})
 
 
 def churro_testimonium(blobs: _Blobs, body: str, outcome="read"):
@@ -442,6 +443,58 @@ def test_a_retained_response_whose_bytes_changed_is_refused():
     blobs.files[path] = b'<div data-bbox="1 1 2 2" data-label="Text">forged</div>'
     with pytest.raises(SchemaRefusal, match="bytes changed"):
         feed_for(blobs, rows=rows)
+
+
+def test_a_chandra_capture_whose_findings_differ_from_its_bytes_is_refused():
+    blobs = _Blobs()
+    rows = witnesses(blobs)
+    capture = rows[0]["testimonium"]["payload"]["native_capture"]
+    capture["findings"].append({"kind": "content-outside-blocks", "characters": 1})
+    with pytest.raises(SchemaRefusal, match="findings differ from its retained raw response"):
+        feed_for(blobs, rows=rows)
+
+
+@pytest.mark.parametrize(
+    ("witness", "retired"),
+    [
+        (0, "chandra-layout-text.v1"),
+        (2, "churro-historical-document-text.v1"),
+    ],
+)
+def test_a_capture_read_under_a_retired_text_view_is_refused_by_name(witness, retired):
+    blobs = _Blobs()
+    rows = witnesses(blobs)
+    capture = rows[witness]["testimonium"]["payload"]["native_capture"]
+    capture["text_view"] = retired
+    with pytest.raises(
+        SchemaRefusal,
+        match=f"the retired text view {retired}.*re-run the submission from the Door",
+    ):
+        page_feed._checked_capture(capture, capture["adapter"], blobs.read_bytes)
+    with pytest.raises(SchemaRefusal, match=f"the retired text view {retired}"):
+        feed_for(blobs, rows=rows)
+
+
+def test_the_perlector_refuses_a_page_capture_read_under_a_retired_text_view():
+    from conftest import load_stage
+
+    perlector = load_stage("4_perlector")
+    blobs = _Blobs()
+    record = churro_testimonium(blobs, CHURRO_XML)
+    capture = record["payload"]["native_capture"]
+    testimonium = {"inputs": [capture["raw_response_ref"]]}
+    context = SimpleNamespace(
+        registry=SimpleNamespace(resolve=lambda chair: SimpleNamespace(witness_adapter="churro.v1")),
+        tree=blobs,
+    )
+    perlector._verify_page_native_capture(context, "act-1", "attestator_3", testimonium, capture)
+    capture["text_view"] = "churro-historical-document-text.v1"
+    with pytest.raises(
+        SchemaRefusal, match="the retired text view churro-historical-document-text.v1"
+    ):
+        perlector._verify_page_native_capture(
+            context, "act-1", "attestator_3", testimonium, capture
+        )
 
 
 def test_witness_record_order_changes_no_id_and_no_byte():
@@ -889,8 +942,9 @@ def test_chandra_text_outside_its_blocks_is_a_unit_of_its_own_with_the_finding()
     )
     from common.chandra_layout import parse_layout_html
 
+    parsed = parse_layout_html(html)
     capture = _capture(
-        "chandra.v1", blobs.retain(html), "html", parse_layout_html(html)["page_text"]
+        "chandra.v1", blobs.retain(html), "html", parsed["page_text"], parsed["findings"]
     )
     rows[0]["testimonium"] = _record("read", {"native_capture": capture})
     feed = feed_for(blobs, rows=rows)

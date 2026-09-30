@@ -136,6 +136,30 @@ def test_churro_records_its_declared_bound_and_detects_repetition_after_complete
     assert tree.blobs[record["raw_response_ref"]["relative_path"]] == raw
 
 
+@pytest.mark.parametrize(
+    ("raw", "parser", "state", "text_view"),
+    [
+        (_DOCUMENT, "xml", "parsed", "churro-historical-document-text.v2"),
+        (b"a" * (CHURRO_MAX_RESPONSE_BYTES + 1), "xml", "failed", "churro-historical-document-text.v2"),
+        (_DOCUMENT, None, "not-requested", None),
+    ],
+)
+def test_a_churro_capture_records_the_text_view_its_grammar_reads_under(
+    raw, parser, state, text_view
+):
+    """Named whatever the parse state, so a later build can refuse it by that name."""
+    record = retain_model_view(
+        _Context(tree=_Tree()),
+        adapter="churro.v1",
+        view=_churro_view(),
+        raw_response=raw,
+        transport_stop_reason="eos",
+        parser=parser,
+    )
+    assert record["parse"]["state"] == state
+    assert record.get("text_view") == text_view
+
+
 def test_an_undecodable_churro_capture_records_uninspected_without_claiming_repetition():
     """An undecodable response was never inspected for repetition; the record
     says so as its own finding kind, and the transport's stop reason survives —

@@ -1557,6 +1557,8 @@ def test_an_unplaced_block_keeps_its_text_and_its_finding_and_reports_no_box():
     ]
     assert record["findings"][0]["data_bbox"] == "1_0 2 3 4"
     assert record["vendor_identity"] == chandra.vendor_identity()
+    # The view the layout parser itself reports reading the page under.
+    assert record["text_view"] == "chandra-layout-text.v2"
     # The whole capture is a shape the shared contract accepts, findings and
     # vendor pin included -- not merely a dict this module built.
     validate_native_capture(record)

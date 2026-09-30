@@ -95,6 +95,7 @@ from common.native_witness import (  # noqa: E402
     reported_geometry_overlaps,
     split_page_edge_overshoots,
     unpresented_region_ids,
+    validate_capture_text_view,
     validate_native_capture,
     validate_native_witness_geometry,
     validate_presented_page_binding,
@@ -1919,6 +1920,11 @@ def pending_live_attempt(context, act, chair, resolved, declarations) -> Any:
 def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
     """Rehydrate digest-identical Chandra bytes needed for the derived page record."""
     payload = record["payload"]
+    capture = payload.get("native_capture")
+    if capture is not None:
+        # Reused as this pass's own capture, so one read under a view this build
+        # no longer produces is refused by that name before its bytes are reused.
+        capture = validate_capture_text_view(validate_native_capture(capture))
     raw_response_ref = payload.get("raw_response_ref")
     observation_payload = None
     # A live attempt carries geometry bytes only where its response parsed; the
@@ -1948,7 +1954,7 @@ def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
         raw_response_ref=raw_response_ref,
         observation_payload=observation_payload,
         # Lets a resumed live pass rebuild the page record without re-asking.
-        native_capture=payload.get("native_capture"),
+        native_capture=capture,
         serving_call_ref=payload.get("serving_call_ref"),
         receipt_ref=provenance.get("receipt_ref") if isinstance(provenance, dict) else None,
         raw_response_kind=payload.get("raw_response_kind"),
@@ -3937,7 +3943,7 @@ def _page_capture_from_record(
         )
     capture = payload.get("native_capture")
     if capture is not None:
-        capture = validate_native_capture(capture)
+        capture = validate_capture_text_view(validate_native_capture(capture))
     observation_payload = None
     if (
         capture is not None
@@ -5015,7 +5021,7 @@ def _attempt_from_evidence_record(context, value: Any) -> Attempt:
     observation_payload = None
     capture = value["native_capture"]
     if capture is not None:
-        validate_native_capture(capture)
+        validate_capture_text_view(validate_native_capture(capture))
         reference = validate_raw_response_ref(capture["raw_response_ref"])
         observation_payload = read_verified(
             context.tree.read_bytes,

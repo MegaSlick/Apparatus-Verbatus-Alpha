@@ -352,6 +352,17 @@ def _chandra_reading(
         raise SchemaRefusal(
             "a Chandra page capture's parsed text differs from its retained raw response"
         )
+    # The repetition scan's finding is the Attestatores' own; the rest are the
+    # grammar's and must be what this parse finds in the same bytes.
+    grammar_findings = [
+        finding
+        for finding in capture["findings"]
+        if finding.get("kind") not in REPETITION_FINDING_KINDS
+    ]
+    if grammar_findings != parsed["findings"]:
+        raise SchemaRefusal(
+            "a Chandra page capture's findings differ from its retained raw response"
+        )
     units = [
         _unit(
             block["ordinal"],

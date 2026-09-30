@@ -1198,6 +1198,17 @@ run (committed `round_cap = 1`) can read pages.
   it is fed with `witness_testimony: "none"` and no witness row, and held by name
   (`no-witness-testimony`). A roster chair missing beside others that testified is a
   shortened roster and refuses.
+- Each shown witness's units are re-derived from its capture's retained bytes
+  (`page_feed._checked_capture`), never taken from the capture's own fields. A
+  capture read under a vendor grammar names the `text_view` its parse was read
+  under (`pipeline/3_attestatores/CONTRACT.md`, "The capture's text view"); one
+  naming a retired view, or none where its grammar has one, is refused by that
+  name, whatever its parse state, before it is re-derived, here and in
+  `run.py::_verify_page_native_capture` alike, and the refusal says to re-run the
+  submission from the Door. Past that, a Chandra capture's parsed text and its
+  grammar findings (every finding but the repetition scan's) must be what a fresh
+  parse of its bytes gives, as a Churro capture's parse, findings and stop reason
+  must be.
 - Surya's stage-2 records, read in one place (`page_run.sealed_surya_census`): each
   `surya-page` census (`page_id`, `line_count`, `block_count`, `line_subjects`,
   `block_subjects`, `reading_order`, `reading_order_reason`) and every `surya-line`

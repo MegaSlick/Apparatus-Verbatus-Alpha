@@ -1194,13 +1194,15 @@ _NATIVE_CAPTURE_FIELDS: Final = frozenset(
         "parse",
     }
 )
-# Optional so earlier records stay valid; each adapter's tests require it for
-# that chair. `text_view` is the view a vendor grammar's parse was read under.
+# `vendor_identity` is the vendor pin a chair's request carried, where it
+# carries one. `text_view` names the view a vendor grammar's parse was read
+# under; only an adapter and parser in `CAPTURE_TEXT_VIEWS` has one, and there it
+# is required whenever the bytes are re-derived.
 _NATIVE_CAPTURE_OPTIONAL_FIELDS: Final = frozenset({"vendor_identity", "text_view"})
 # The text view each vendor grammar's capture must name, by (adapter, parser),
 # and the views it retires. A capture made before its view was recorded, or
-# under a retired one, is refused by name: its text and findings are not what
-# this build's parser reads from the same bytes.
+# under a retired one, is refused by name whatever its parse state: its text and
+# findings are not what this build's parser reads from the same bytes.
 CAPTURE_TEXT_VIEWS: Final = {
     ("chandra.v1", "html"): (
         chandra_layout.LAYOUT_TEXT_VIEW,
@@ -1219,23 +1221,29 @@ def capture_text_view(adapter: str, parser: str | None) -> str | None:
     return None if views is None else views[0]
 
 
-def _validate_capture_text_view(value: dict[str, Any], parser: Any) -> None:
-    views = CAPTURE_TEXT_VIEWS.get((value["adapter"], parser))
+def validate_capture_text_view(capture: dict[str, Any]) -> dict[str, Any]:
+    """Refuse a capture not read under this build's text view for its grammar, by name.
+
+    Called wherever a retained capture is reused or re-derived, so a capture
+    read under a retired view, or before views were recorded, is refused as
+    that rather than as a capture that differs from its own bytes.
+    """
+    views = CAPTURE_TEXT_VIEWS.get((capture["adapter"], capture["parse"].get("parser")))
     if views is None:
-        return
+        return capture
     current, retired = views
-    named = value.get("text_view")
+    named = capture.get("text_view")
     if named == current:
-        return
+        return capture
     if named is None or named in retired:
         under = "no recorded text view" if named is None else f"the retired text view {named}"
         raise SchemaRefusal(
-            f"a {value['adapter']} page capture was read under {under}, not {current}, "
-            "which this build no longer reads; its text and findings are not this parser's. "
-            "Re-run the run from the Door"
+            f"a {capture['adapter']} page capture was read under {under}, not {current}, "
+            "which this build no longer reads; its text and findings are not this parser's; "
+            "re-run the submission from the Door"
         )
     raise SchemaRefusal(
-        f"a {value['adapter']} page capture names unknown text view {named!r}, not {current}"
+        f"a {capture['adapter']} page capture names unknown text view {named!r}, not {current}"
     )
 
 
@@ -1398,12 +1406,14 @@ def derive_churro_capture(
 
     parse: dict[str, Any] = {"state": "not-requested", "parser": None}
     findings: list[dict[str, Any]] = []
+    text_view: str | None = None
     if parser is not None:
         document = document_parser(raw, system_prompt=system_prompt)
         # Copied: an injected parser may hand back records it keeps.
         findings.extend(dict(finding) for finding in document["findings"])
         if document["state"] == "parsed":
             parse = {"state": "parsed", "parser": parser, "text": document["text"]}
+            text_view = document["view"]
         elif document["state"] == "failed":
             parse = {"state": "failed", "parser": parser, "reason": document["reason"]}
         else:
@@ -1423,13 +1433,17 @@ def derive_churro_capture(
     if finding := repetition_detector(inspected):
         findings.append({**finding, "inspected": basis})
         repeated = finding["kind"] == "post-hoc-repetition"
-    return {
+    derived = {
         "parse": parse,
         "findings": findings,
         "stop_reason": _churro_stop_reason(
             transport_stop_reason, parse["state"], repeated=repeated
         ),
     }
+    # The view the parser says it read under, where it read the document at all.
+    if text_view is not None:
+        derived["text_view"] = text_view
+    return derived
 
 
 def _churro_stop_reason(transport_stop_reason: str, parse_state: str, *, repeated: bool) -> str:
@@ -1462,8 +1476,7 @@ def verify_native_capture_bytes(value: Any, raw: bytes) -> dict[str, Any]:
     A capture read under a text view this build no longer produces is refused by
     that name first, rather than reported as differing from its bytes.
     """
-    capture = validate_native_capture(value)
-    _validate_capture_text_view(capture, capture["parse"].get("parser"))
+    capture = validate_capture_text_view(validate_native_capture(value))
     if capture["adapter"] != "churro.v1":
         return capture
     derived = derive_churro_capture(
@@ -1682,6 +1695,11 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         raise SchemaRefusal("a page Testimonium native capture names a blank text view")
     if value["adapter"] == "churro.v1":
         _validate_churro_capture(value)
+    if "text_view" in value and (value["adapter"], parser) not in CAPTURE_TEXT_VIEWS:
+        raise SchemaRefusal(
+            f"a {value['adapter']} page capture under parser {parser!r} names text view "
+            f"{value['text_view']!r}, but that grammar's parse is read under no text view"
+        )
     return value
 
 
