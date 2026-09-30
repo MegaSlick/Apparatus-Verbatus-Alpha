@@ -31,11 +31,7 @@ from .model_store import (
     derived_inventory,
     load_download_record,
     materialize_real_roster,
-    pod_materialization_plan,
-    read_derived_inventory,
-    require_complete_store,
     verify_store,
-    write_derived_inventory,
     write_download_record,
 )
 from .models import (
@@ -107,16 +103,12 @@ __all__ = [
     "load_models_toml",
     "manifest_digest",
     "parse_models_config",
-    "pod_materialization_plan",
-    "read_derived_inventory",
     "read_manifest",
     "receipt_record",
-    "require_complete_store",
     "resolve_local_path",
     "validate_receipt",
     "verify_snapshot",
     "verify_store",
-    "write_derived_inventory",
     "write_download_record",
     "write_manifest",
 ]

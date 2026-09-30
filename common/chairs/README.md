@@ -11,7 +11,7 @@ in code.
 | `models.py` | the typed values: `ChairIdentity`, `AbsentChair`, the digest manifest, `VerifiedSnapshot`, `ServingDetails`, `ServingReceipt`, `ModelsConfig` |
 | `config.py` | the one schema `config/models.toml` must match, and every refusal a malformed pin earns |
 | `manifests.py` | building, writing, reading and verifying the per-file digest manifest |
-| `model_store.py` | validation of the host's durable model store, its derived seven-chair inventory, licence snapshots, and carried DAI prompts; versions canonical download records immutably and publishes derived inventories and promoted manifests once, never overwriting evidence |
+| `model_store.py` | validation of the host's durable model store, its derived seven-chair inventory, licence snapshots, and carried DAI prompts; versions canonical download records immutably and publishes promoted manifests once, never overwriting evidence |
 | `registry.py` | resolution and verification against the filesystem and Hugging Face |
 | `receipts.py` | what a serving receipt must carry before it is one |
 | `filesystem.py` | the bounded control-file read and the APFS name key (case and Unicode normalization folded) the other modules share |
@@ -95,13 +95,10 @@ differently: a store directory is per **artifact** (chandra-ocr-2 fills two
 chairs at one revision and is stored once), a `cache_root` entry is per **role**.
 Each present snapshot and manifest is held to its artifact-keyed canonical path,
 so one roster row cannot claim another artifact's verified directory and pin.
-`pod_materialization_plan` re-verifies the complete source store, then states
-which chairs a pod materializes into `cache_root` and which into `model_root` —
-the local-repository half, resolved relative to `config/models.toml` and never a
-second cache. It is explicitly a source-only plan, not proof that a pod served
-those weights; only a serving receipt can make that claim. `verify_store`
-refuses a store snapshot used as a cache entry directly, naming that cause
-rather than reporting an extra file.
+`model_root` is the local-repository half, resolved relative to
+`config/models.toml` and never a second cache. `verify_store` refuses a store
+snapshot used as a cache entry directly, naming that cause rather than reporting
+an extra file.
 
 Each configured Hugging Face role is bound to its exact repository, revision and
 manifest when its stage fills its cache. `StoreRoleFetcher` copies these sources
@@ -117,9 +114,8 @@ A store is materialized one snapshot at a time, so a record entry is either
 `present` — snapshot, manifest, pin, licence and carried content — or
 `pending-fetch`, which names the artifact, its roster origin, and the reason its
 bytes are not there yet. `verify_store` proves what exists and marks the derived
-inventory `complete: false` with every pending artifact named;
-`require_complete_store` is the door for a consumer that needs the whole roster
-on disk. A half-fetched store is therefore recordable and visibly partial rather
+inventory `complete: false` with every pending artifact named, and
+`StoreRoleFetcher` refuses to fill a chair whose artifact is not present. A half-fetched store is therefore recordable and visibly partial rather
 than unrepresentable. A pending entry also refuses if its
 artifact-keyed snapshot or manifest exists, so replaying an older pending record
 cannot relabel acquired or lost bytes as “not yet fetched.”

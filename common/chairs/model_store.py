@@ -983,99 +983,12 @@ def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def pod_materialization_plan(store_root: str | Path) -> dict[str, Any]:
-    """Return a byte-verified source plan for materializing a complete pod cache.
-
-    ``ChairRegistry`` reads a Hugging Face chair from ``cache_root/<role>``,
-    while this store keeps one directory per artifact (chandra-ocr-2 serves two
-    chairs), so a pod builds a role-keyed cache from this plan and never points
-    ``cache_root`` at ``hf/``. ``model_root`` is local-repository only, resolved
-    beside ``config/models.toml``, so the Surya bundle is bound by a chair
-    ``path``. Every source byte is re-verified; a pending artifact cannot pass.
-    The plan copies nothing and proves nothing about a pod, which
-    ``provenance_scope`` says; only a :class:`ServingReceipt` proves what served.
-    """
-
-    inventory = require_complete_store(store_root)
-    cache_root_entries: dict[str, dict[str, Any]] = {}
-    model_root_entries: dict[str, dict[str, Any]] = {}
-    for row in inventory["artifacts"]:
-        source = {
-            "artifact": row["artifact"],
-            "snapshot": row["snapshot"],
-            "manifest": row["manifest"],
-            "digest_manifest": row["digest_manifest"],
-            "revision": row["revision"],
-        }
-        if row["source"] == "huggingface":
-            cache_root_entries[row["chair"]] = source
-        else:
-            model_root_entries[row["chair"]] = source
-    return {
-        "provenance_scope": "verified-store-source-only",
-        "download_record_sha256": inventory["download_record_sha256"],
-        "cache_root_entries": cache_root_entries,
-        "model_root_entries": model_root_entries,
-    }
-
-
-def require_complete_store(store_root: str | Path) -> dict[str, Any]:
-    """Verify the store's real bytes and refuse a partial result by name.
-
-    Takes the store root, not an inventory, so a caller cannot flip a derived
-    ``complete`` flag.
-    """
-
-    if isinstance(store_root, Mapping):
-        raise DigestMismatchRefusal(
-            "model-store",
-            "require_complete_store takes the store root path and re-verifies real "
-            "bytes; an inventory-shaped mapping carries no authority here",
-        )
-    inventory = verify_store(store_root)
-    if not inventory["complete"]:
-        raise DigestMismatchRefusal(
-            "model-store",
-            f"model store is not complete; still pending fetch: {', '.join(inventory['pending'])}",
-        )
-    return inventory
-
-
-def write_derived_inventory(record: Mapping[str, Any], path: str | Path) -> str:
-    """Publish a derived record once; readers must call :func:`read_derived_inventory`.
-
-    Identical bytes are reused; differing bytes are refused.
-    """
-
-    payload = canonical_bytes(derived_inventory(record))
-    _publish_once(Path(path), payload, chair="model-store", label="derived inventory")
-    return digest_bytes(payload)
-
-
-def read_derived_inventory(store_root: str | Path, path: str | Path) -> dict[str, Any]:
-    """Refuse an inventory not backed by the store's current verified bytes."""
-
-    try:
-        actual = Path(path).read_bytes()
-    except OSError as error:
-        raise DigestMismatchRefusal(
-            "model-store", f"cannot read derived inventory: {error}"
-        ) from error
-    expected = canonical_bytes(verify_store(store_root))
-    if actual != expected:
-        raise DigestMismatchRefusal(
-            "model-store", "derived inventory diverges from download_record.json"
-        )
-    return json.loads(actual)
-
-
 def verify_store(store_root: str | Path) -> dict[str, Any]:
     """Verify every declared manifest against its existing bytes; never fetch.
 
     A `pending-fetch` entry has no bytes to verify, so it is passed over and
     reported: the returned inventory is then a verified inventory of a
-    *partial* store, marked `complete: false`.  Call
-    :func:`require_complete_store` where every roster artifact must be on disk.
+    *partial* store, marked `complete: false`, with every pending artifact named.
     """
 
     root = Path(store_root).resolve()
@@ -1141,9 +1054,8 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
                 item["artifact"],
                 f"the chair registry's cache descriptor {CACHE_DESCRIPTOR!r} is inside this "
                 "store snapshot: a store directory is keyed by artifact and is not a "
-                "cache_root entry, which is keyed by chair role. Materialize "
-                "cache_root/<role> from this snapshot instead — see "
-                "pod_materialization_plan",
+                "cache_root entry, which is keyed by chair role. Fill "
+                "cache_root/<role> from this snapshot through StoreRoleFetcher instead",
             )
         identity = ChairIdentity(
             role=item["artifact"],
