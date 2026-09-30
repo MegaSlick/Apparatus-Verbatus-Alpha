@@ -395,7 +395,7 @@ labelled layer that is never counted as an act, never enters `act_partition`,
 with an act. Its readings still reach the aggregate as reasons: on a page with no
 act row, until every one is delivered; on a page with acts, one not delivered is a
 reason too, since a held `other` reading may be an act the reading did not
-establish, as the Recensor's v3 receipt also counts it. A `page-unread` or `page-blank` row is an act
+establish, as the Recensor's page-read receipt (v3 or v4) also counts it. A `page-unread` or `page-blank` row is an act
 partition unit with no text: `held-for-review` with the review's reason and the
 row's hold codes, or `confirmed-blank` (a `page-blank` row only) when the
 Recensor confirms it. A `page-refused` row must be a page the census refused; it
