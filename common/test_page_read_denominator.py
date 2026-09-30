@@ -72,13 +72,17 @@ def _protocol(directory: Path, unit: str, lines: dict[str, str]) -> Path:
 
 
 def _tree(
-    base: Path, scenario: str, unit: str = "page", lines: dict[str, str] | None = None
+    base: Path,
+    scenario: str,
+    unit: str = "page",
+    lines: dict[str, str] | None = None,
+    reask: int = 0,
 ) -> tuple[Path, dict[str, Path], str]:
-    """A tree read by `unit`; a page-read one on the page-read roster, with the re-ask off."""
+    """A tree read by `unit`; a page-read one on the page-read roster, re-ask budget `reask`."""
     options = {"perlector_protocol_config": _protocol(base / "config", unit, lines or {})}
     if unit == "page":
         options.update(page_roster_options(base / "models"))
-        options["recovery_config"] = reask_recovery_config(base / "config", 0)
+        options["recovery_config"] = reask_recovery_config(base / "config", reask)
     root = base / "runs"
     for program in programs_through("perlector"):
         result = run_stage(root, RUN_ID, scenario, program, **options)
@@ -320,6 +324,7 @@ def _second_attempt(root: Path, ordinal: int, keep: bool) -> None:
     page = record["subject_id"]
     record["attempt_id"] = attempt_id(page, "page-read", 2)
     record["artifact_id"] = artifact_id(PERLECTOR, "page-reading", page, record["attempt_id"])
+    record["payload"]["attempt_ordinal"] = 2
     if keep:
         _write(path.with_name(f"{record['artifact_id']}.json"), record)
         _rewitness(root)
@@ -470,6 +475,8 @@ def test_a_page_whose_answer_was_not_read_is_one_held_page_unread_row(
         "hold_codes": sorted({*reply_codes, "page-unread", *page_holds}),
         "continues_from_previous_page": None,
         "continues_to_next_page": None,
+        "reading_attempt": None,
+        "reading_n": None,
     }
 
 
@@ -769,7 +776,11 @@ def test_a_sealed_page_with_no_page_reading_is_refused_never_zero(happy_tree, tm
 def test_a_second_page_reading_attempt_is_refused(happy_tree, tmp_path, keep):
     tree = _copy(happy_tree, tmp_path)
     _second_attempt(tree[0], 1, keep=keep)
-    match = "has 2 records" if keep else "is attempt .*, not the page path's attempt"
+    match = (
+        r"carries page reading attempts \[1, 2\] .* plan no re-ask"
+        if keep
+        else r"attempt ordinals \[2\], which is not the contiguous run"
+    )
     with pytest.raises(FatalAccounting, match=match):
         reading_acts(_context(tree))
 
@@ -1136,7 +1147,7 @@ def test_an_act_record_beyond_the_answer_s_entries_is_refused(happy_tree, tmp_pa
     record["artifact_id"] = artifact_id(PERLECTOR, kind, record["subject_id"], record["attempt_id"])
     _write(path.with_name(f"{record['artifact_id']}.json"), record)
     rebind_stage_seal_artifact(RunTree(root, RUN_ID), PERLECTOR)
-    with pytest.raises(FatalAccounting, match=f"{kind} records do not match its answer's 2"):
+    with pytest.raises(FatalAccounting, match=f"{kind} records do not match the 2 entries"):
         reading_acts(_context(tree))
 
 
@@ -1271,3 +1282,137 @@ def test_the_page_row_classes_bind_the_page_rectangle_and_nothing_else():
         derive_act_id(page, "page-unread", {"page_reading": "att_" + "0" * 16, "n": 1})
     with pytest.raises(IdentityRefusal, match="act class must be one of"):
         derive_act_id(page, "page-missing", rectangle)
+
+
+# --- a re-asked page ---------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def reask_tree(tmp_path_factory) -> tuple[Path, dict[str, Path], str]:
+    """reask-recovers with the re-ask on: page 1 is re-asked and recovers one act."""
+    return _tree(tmp_path_factory.mktemp("reask"), "reask-recovers", reask=1)
+
+
+def _attempt(root: Path, kind: str, ordinal: int, attempt: int) -> tuple[Path, dict[str, Any]]:
+    """Page `ordinal`'s reading or accounting at `attempt`."""
+    [found] = [
+        item
+        for item in _records(root, kind)
+        if item[1]["payload"]["page_ordinal"] == ordinal
+        and item[1]["attempt_id"] == attempt_id(item[1]["subject_id"], "page-read", attempt)
+    ]
+    return found
+
+
+def _names(ref: dict[str, str], record: dict[str, Any]) -> bool:
+    return ref["relative_path"].endswith(f"/{record['artifact_id']}.json")
+
+
+def test_a_re_asked_page_counts_both_readings_entries_as_its_last_accounting_does(reask_tree):
+    root = reask_tree[0]
+    denominator = reading_denominator(_context(reask_tree))
+    pages, acts = denominator["pages"], denominator["acts"]
+    first = _attempt(root, "page-reading", 1, 1)[1]
+    second = _attempt(root, "page-reading", 1, 2)[1]
+    trigger = _attempt(root, "page-accounting", 1, 1)[1]
+    last = _attempt(root, "page-accounting", 1, 2)[1]
+    page = pages[1]
+    assert set(page) == PAGE_READING_ROW_FIELDS
+    assert _names(page["reading_ref"], first) and _names(page["reask_ref"], second)
+    assert _names(page["trigger_accounting_ref"], trigger)
+    assert _names(page["accounting_ref"], last)
+    assert page["entry_count"] == 2
+    assert pages[2]["reask_ref"] is None and pages[2]["trigger_accounting_ref"] is None
+    rows = [row for row in acts if row["page_ordinal"] == 1]
+    assert all(set(row) == READING_ACT_FIELDS for row in acts)
+    assert [(r["act_key"], r["n"], r["reading_attempt"], r["reading_n"]) for r in rows] == [
+        ("p1:1", 1, 1, 1),
+        ("p1:2", 2, 2, 1),
+    ]
+    assert rows[0]["reading_ref"] == page["reading_ref"]
+    assert rows[1]["reading_ref"] == page["reask_ref"]
+    assert all(row["accounting_ref"] == page["accounting_ref"] for row in rows)
+    assert all(set(last["payload"]["holds"]) <= set(row["hold_codes"]) for row in rows)
+    [page_two] = [row for row in acts if row["page_ordinal"] == 2]
+    assert (page_two["reading_attempt"], page_two["reading_n"]) == (1, 1)
+
+
+def test_a_page_first_read_blank_and_recovered_counts_its_recovered_entries(tmp_path):
+    tree = _tree(tmp_path, "blank-then-recovered", reask=1)
+    denominator = reading_denominator(_context(tree))
+    rows = [row for row in denominator["acts"] if row["page_ordinal"] == 1]
+    assert [(r["act_key"], r["class"], r["reading_attempt"]) for r in rows] == [
+        ("p1:1", "reading", 2),
+        ("p1:2", "reading", 2),
+    ]
+    assert denominator["pages"][1]["entry_count"] == 2
+
+
+def test_a_re_ask_the_accounting_does_not_count_adds_no_row(tmp_path):
+    tree = _tree(tmp_path, "reask-sets-aside", reask=1)
+    denominator = reading_denominator(_context(tree))
+    page = denominator["pages"][1]
+    assert page["reask_ref"] is not None
+    rows = [row for row in denominator["acts"] if row["page_ordinal"] == 1]
+    assert [(r["act_key"], r["reading_attempt"]) for r in rows] == [("p1:1", 1)]
+    assert "reask-set-aside" in rows[0]["hold_codes"]
+
+
+def test_a_re_asked_page_whose_re_ask_is_gone_is_refused(reask_tree, tmp_path):
+    tree = _copy(reask_tree, tmp_path)
+    root = tree[0]
+    _drop_act_records(root, 1)
+    for kind in ("page-reading", "page-accounting"):
+        _attempt(root, kind, 1, 2)[0].unlink()
+    rebind_stage_seal_artifact(RunTree(root, RUN_ID), PERLECTOR)
+    with pytest.raises(FatalAccounting, match=r"attempts \[1\] .* plan one re-ask"):
+        reading_acts(_context(tree))
+
+
+def test_a_third_page_reading_of_a_re_asked_page_is_refused(reask_tree, tmp_path):
+    tree = _copy(reask_tree, tmp_path)
+    root = tree[0]
+    path, record = _attempt(root, "page-reading", 1, 2)
+    page = record["subject_id"]
+    record["attempt_id"] = attempt_id(page, "page-read", 3)
+    record["artifact_id"] = artifact_id(PERLECTOR, "page-reading", page, record["attempt_id"])
+    record["payload"]["attempt_ordinal"] = 3
+    _write(path.with_name(f"{record['artifact_id']}.json"), record)
+    _rewitness(root)
+    with pytest.raises(FatalAccounting, match=r"reading attempts \[1, 2, 3\]"):
+        reading_acts(_context(tree))
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        (lambda p: p["reask"].update(budget=0), "records another re-ask"),
+        (lambda p: p["reask"]["named"].pop(), "records another re-ask"),
+        (lambda p: p["reask"]["prior_entries"][0].update(label="x"), "records another re-ask"),
+        (lambda p: p.update(attempt_ordinal=1), "not a page-path reading of this page"),
+    ],
+    ids=["budget", "named", "prior-entries", "ordinal"],
+)
+def test_a_forged_re_ask_is_refused(reask_tree, tmp_path, change, match):
+    tree = _copy(reask_tree, tmp_path)
+    path, record = _attempt(tree[0], "page-reading", 1, 2)
+    change(record["payload"])
+    _write(path, record)
+    _rewitness(tree[0])
+    with pytest.raises(FatalAccounting, match=match):
+        reading_acts(_context(tree))
+
+
+def test_a_recovered_entry_recorded_under_its_re_ask_number_is_refused(reask_tree, tmp_path):
+    tree = _copy(reask_tree, tmp_path)
+    root = tree[0]
+    [(path, record)] = [
+        item
+        for item in _records(root, "act-region")
+        if item[1]["payload"].get("reading_attempt") == 2
+    ]
+    record["payload"]["n"] = record["payload"]["reading_n"]
+    _write(path, record)
+    _rewitness(root)
+    with pytest.raises(FatalAccounting, match=r"act-region does not match .*\(n\)"):
+        reading_acts(_context(tree))
