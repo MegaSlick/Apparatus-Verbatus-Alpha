@@ -1172,7 +1172,9 @@ Every configured chair has one explicit outcome per act per attempt:
   response to that exact request** — same boundary, same retention, and the only
   difference between them is whether the retained body has characters in it. No
   act, page, or identity reaches either outcome by being a particular kind of
-  thing.
+  thing. The one `genuinely-empty` with no response is a record reader's page
+  on which its own detector looked and found nothing (DAI, below): the
+  detector's sealed census is the testimony, and the record binds it.
 - `failed` means an attempt reached the response boundary but produced no usable
   Testimonium. It also carries the attempted region inputs and a receipt.
 - `dead` means an `AbsentChair`: the chair was unavailable and no attempt reached
@@ -1454,11 +1456,33 @@ presentation `dai.v1` resizes and sends; every response is retained as it
 arrives. A unit refused for capacity before it is sent is a `failed` unit with
 no capture. The page record is sealed only once every unit on the page has
 been answered, so a pass interrupted inside a page asks that page's units
-again, and a page record already sealed is resumed and never asked again. A
-page with no unit is sealed `not-run` without a request, with reason "DAI's own
-record detector found no record on this page, so DAI was shown nothing here",
-or, when the census counts records none of which enclosed a crop, a reason
-naming that count.
+again, and a page record already sealed is resumed and never asked again.
+
+**A page the detector found nothing on.** When the census counts no record and
+the detector's retained run facts state its cap (`max_det`), the detector
+stopped because it saw nothing, not because it reached the cap: DAI looked and
+the page holds nothing for it. That is testimony. The page is sealed without a
+request as `genuinely-empty`: native `payload` `""`, content health of empty
+text (blank, not truncated), `presented={}`, no observed box, no receipt, and
+one input, the page's `detector-page` census, with reason "DAI's own record
+detector looked at this page and found no record below its cap, so the page
+holds nothing for DAI". Every reader re-derives it
+(`common.page_testimonia.is_detector_blank_testimony`,
+`common.page_path.empty_detector_page`): such a record whose text is not empty,
+whose census names a record or states no cap, or which binds anything but that
+census is refused. It counts toward the witness floor like any reading, the
+page accounting records it `witness-read-blank` rather than holding it
+unread, and a blank page's confirmation counts it as a witness that read
+blank text. The page's testimony is not a reading of any act's crop: an act
+view on such a page is `not-run`, with no receipt and reason "DAI's own record
+detector found no record on this act's page below its cap, so DAI was never
+asked about this act; its page testimony is that the page holds nothing for
+it". A page that is not such testimony stays `not-run` without a
+request, and its act is held under-witnessed: a detector that states no cap
+(reason naming that whether it saw nothing is unknown), or a census that
+counts records none of which enclosed a crop (a reason naming that count). A
+page with no census is refused, as above. A detector record inside an `other`
+reading is still held by the page accounting's rule (i).
 
 **The fixture posture.** A fixture row reads each record exactly as a served
 one is read -- the same presentation, the same closed model view and the same

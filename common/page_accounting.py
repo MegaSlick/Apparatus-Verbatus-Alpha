@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Final, Protocol
 
 from common.contracts.errors import ContractError
+from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
 from common.imaging import Bounds
 from common.page_answer import grammar_problems
@@ -141,7 +142,6 @@ RULES: Final = ("a", "b", "c", "d", "e", "f", "g", "h", "i")
 PARSED: Final = "parsed"
 FAILED_PARSE_STATES: Final = frozenset({"cut-off", "call-failed", "refused-capacity", "not-run"})
 PARSE_STATES: Final = FAILED_PARSE_STATES | {PARSED, "malformed"}
-WITNESS_READ: Final = "read"
 RECORD_DETECTOR_CONFIGURED: Final = "configured"
 RECORD_DETECTOR_ABSENT: Final = "absent"
 
@@ -1178,10 +1178,11 @@ def page_accounting(
       units}]`, `units[]` of `{id, box_px | None, text}` with ids of the
       witness's own letter numbered `1..n`, and `blank` the witness's own
       report that its page text is blank (its content health `blank`; `None`
-      when it did not read). A witness the feed shows is here with the same
-      outcome and the same units; one it hides is measured by rule (e) against
-      every reading on the page, and rule (c) does not apply to it (its units'
-      disposition is `not-shown`).
+      when it did not read, `read` and `genuinely-empty` being reading). A
+      witness the feed shows is here with the same outcome and the same
+      units; one it hides is measured by rule (e) against every reading on
+      the page, and rule (c) does not apply to it (its units' disposition is
+      `not-shown`).
     - `detections`: the page's sealed detections, whatever the feed showed the
       model: `{"surya": {"lines": [...], "blocks": [...]}
       | None, "records": [...] | None, "record_detector": "configured" |
@@ -1383,13 +1384,14 @@ def page_accounting(
 def _witness_findings(witnesses: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Each witness that did not read the page, or read it and gave no unit.
 
-    A witness that read the page and gave no unit holds unless its own report
-    says the page text is blank; then it is recorded.
+    A witness that read the page (`read` or `genuinely-empty`) and gave no unit
+    holds unless its own report says the page text is blank; then it is
+    recorded.
     """
     findings = []
     for witness in witnesses:
         where = {"letter": witness["letter"], "outcome": witness["outcome"]}
-        if witness["outcome"] != WITNESS_READ:
+        if witness["outcome"] not in WITNESS_READING_OUTCOMES:
             findings.append({"code": WITNESS_NOT_READ, **where})
         elif not witness["units"]:
             code = WITNESS_READ_BLANK if witness["blank"] is True else WITNESS_READ_NO_UNITS

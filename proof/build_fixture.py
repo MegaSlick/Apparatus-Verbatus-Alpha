@@ -462,11 +462,10 @@ def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=Fa
 # `review` holds a2 in act mode.
 # `page-no-act` reads page 1 as `happy` and page 2's one entry, placed as in
 # `happy`, as `other`: a page the reading says holds no act, and on which the
-# record detector finds nothing, so DAI is shown nothing there. `page-other`
+# record detector finds nothing below its cap, so DAI saw nothing there. `page-other`
 # reads a1 as `other`: the detector finds no record over a1, so DAI's one
 # record on page 1 is a2's (B1), and no record lies in the `other` reading.
 # Proves wiring only, never reading ink.
-_WITHOUT_DAI = ["attestator_1", "attestator_3"]
 _PAGE_ONE_ANSWER = {
     "acts": [
         _page_entry(
@@ -501,33 +500,6 @@ PAGE_ANSWERS = (
         "page_ordinal": 2,
         "answer": {
             "acts": [_page_entry(1, "a2", ["A1", "C1", "L1-L3"], from_previous=True, kind="other")],
-            "set_aside": [],
-        },
-    },
-    # `page-no-act` read by Chandra (A) and Churro (B) alone, with DAI absent
-    # from the roster: the page witnesses a confirmed no-act page can have,
-    # since DAI either reads a record inside the `other` reading (rule i) or is
-    # shown nothing on the page (rule e).
-    {
-        "scenario": "page-no-act",
-        "page_ordinal": 1,
-        "witnesses": _WITHOUT_DAI,
-        "answer": {
-            "acts": [
-                _page_entry(
-                    1, "a1", ["A1", "B1"], text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]"
-                ),
-                _page_entry(2, "a2", ["A2", "B2"], to_next=True),
-            ],
-            "set_aside": [],
-        },
-    },
-    {
-        "scenario": "page-no-act",
-        "page_ordinal": 2,
-        "witnesses": _WITHOUT_DAI,
-        "answer": {
-            "acts": [_page_entry(1, "a2", ["A1", "B1", "L1-L3"], from_previous=True, kind="other")],
             "set_aside": [],
         },
     },
@@ -1518,8 +1490,7 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         lines.append("")
     lines += [
         "# The fake Perlector's answer to a whole-page reading, one per scenario and page,",
-        '# read only under reading_unit = "page". `answer` is the reply text exactly. A',
-        "# row naming `witnesses` answers only a run whose page witnesses are those chairs.",
+        '# read only under reading_unit = "page". `answer` is the reply text exactly.',
         "",
     ]
     for row in PAGE_ANSWERS:
@@ -1527,7 +1498,6 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             "[[page_answer]]",
             f"scenario = {toml_string(row['scenario'])}",
             f"page_ordinal = {row['page_ordinal']}",
-            *([f"witnesses = {toml_value(row['witnesses'])}"] if "witnesses" in row else []),
             "answer = "
             + toml_string(
                 row["answer"]

@@ -1,9 +1,8 @@
 """The Armarium on a page-read run: acts, the other layer, page rows and page accounting.
 
-The trees are the fixture's `happy`, `page-review` and `page-other` scenarios
-read with `reading_unit = "page"` and reviewed by the real Recensor, and
-`page-no-act` read by Chandra and Churro alone, the page witnesses a confirmed
-no-act page can have (see `no_act`). A reader that answered a page otherwise
+The trees are the fixture's `happy`, `page-review`, `page-other` and
+`page-no-act` scenarios read with `reading_unit = "page"` and reviewed by the
+real Recensor. A reader that answered a page otherwise
 is a scenario of its own (`proof/build_fixture.py`, `PAGE_ANSWER_VARIANTS`),
 since every later stage reads the answer again from what the reader said. A
 test that needs a decision the Recensor does not make on the fixture forges it
@@ -68,15 +67,9 @@ def page_other(tmp_path_factory) -> tuple[Path, dict]:
 
 @pytest.fixture(scope="module")
 def no_act(tmp_path_factory) -> tuple[Path, dict]:
-    """`page-no-act` read by Chandra and Churro alone, DAI absent.
-
-    With DAI a page witness, a page of `other` entries either has a record
-    inside one (rule i) or DAI was shown nothing on it (rule e), and neither is
-    confirmed; on this roster the page's record detector finds nothing on page 2.
-    """
-    return build_page_tree(
-        tmp_path_factory.mktemp("page-no-act"), "page-no-act", floor=2, absent=("attestator_2",)
-    )
+    """Page 2 read as one `other` entry; the record detector finds nothing there, so DAI saw
+    nothing on it."""
+    return build_page_tree(tmp_path_factory.mktemp("page-no-act"), "page-no-act")
 
 
 @pytest.fixture(scope="module")
@@ -501,25 +494,24 @@ def test_a_held_other_reading_keeps_the_run_partial(tmp_path):
     ] == ("held-for-review")
 
 
-def test_a_page_of_other_readings_is_held_until_the_recensor_confirms_no_act(
-    tmp_path_factory, tmp_path
+def test_a_confirmed_no_act_page_is_delivered_while_its_one_sided_break_holds_the_run(
+    no_act, tmp_path
 ):
     # The fixture's page-no-act scenario: page 2's answer names one `other`
-    # entry, which says it runs on from page 1.
-    root, options = build_page_tree(tmp_path_factory.mktemp("page-no-act"), "page-no-act")
+    # entry, which says it runs on from page 1, and DAI saw nothing on the page.
+    root, options = _copy(no_act, tmp_path)
     result = _export(root, options, "page-no-act")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     manifest = bundle["manifest"]
-    reasons = manifest["aggregate"]["reasons"]
-    assert not any("no act was marked out" in reason for reason in reasons)
-    [held] = [reason for reason in reasons if reason.startswith("page 2 ")]
-    assert "carries no act" in held and "held until the Recensor confirms" in held
     page_two = _unit(manifest, "page:2")
-    assert page_two["category"] == "held-for-review"
-    assert "carries no act" in page_two["reason"]
-    assert manifest["claims"]["other_readings"]["by_category"] == {"held-for-review": 1}
-    assert "p2:1" not in bundle["established"]
+    assert page_two["category"] == "delivered"
+    assert "confirmed it carries no act" in page_two["reason"]
+    assert manifest["claims"]["other_readings"]["by_category"] == {"delivered": 1}
+    assert bundle["established"]["p2:1"]["kind"] == "other"
+    # Page 1's last act says it runs on and page 2 has no act to join.
+    [join] = json.loads(bundle["members"]["sources.json"])["continuation_joins"]
+    assert join["status"] == "not-reconstructed"
     # The Recensor's note on the `other` entry's flag reaches its manifest entry.
     tree = RunTree(root, RUN_ID)
     entries = [
@@ -534,11 +526,9 @@ def test_a_page_of_other_readings_is_held_until_the_recensor_confirms_no_act(
 
 
 def test_a_confirmed_no_act_page_delivers_its_other_readings_and_completes(tmp_path):
-    # `page-no-act` with nothing running across the break, read by Chandra and
-    # Churro alone (see `no_act`); the real Recensor confirms the page holds no act.
-    root, options = build_page_tree(
-        tmp_path, "page-no-act-unbroken", floor=2, absent=("attestator_2",)
-    )
+    # `page-no-act` with nothing running across the break; the real Recensor
+    # confirms the page holds no act.
+    root, options = build_page_tree(tmp_path, "page-no-act-unbroken")
     result = _export(root, options, "page-no-act-unbroken")
     assert result.returncode == 0, result.stderr
     bundle = _bundle(root, tmp_path / "clean")

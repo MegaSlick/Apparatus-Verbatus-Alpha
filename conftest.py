@@ -443,13 +443,13 @@ _ABSENT_RECORD_DETECTOR = (
 )
 
 
-def page_models_config(directory: Path, floor: int = 3, absent: tuple[str, ...] = ()) -> Path:
+def page_models_config(directory: Path, floor: int = 3) -> Path:
     """The page-read roster, written under `directory`: every witness chair page-scoped.
 
     The committed roster with DAI (`attestator_2`) page-scoped and its record
     detector (`secondary_proposer`) configured on the `fake-secondary-proposer-v0`
-    fixture row, standing on the structure chair's fixture snapshot; the witness
-    floor set to `floor`, and each chair in `absent` configured absent. Beside
+    fixture row, standing on the structure chair's fixture snapshot, and the
+    witness floor set to `floor`. Beside
     it, `serving_recipes.toml` (`page_serving_recipes_config`) is the committed
     catalogue with that fixture row at every tier: the committed catalogue
     matches the committed roster, where the detector is absent.
@@ -466,14 +466,9 @@ def page_models_config(directory: Path, floor: int = 3, absent: tuple[str, ...] 
         'serving_recipe = "fake-secondary-proposer-v0"\n'
         'license_note = "fixture identity only; no model weights or model license apply"\n',
     )
-    for chair in absent:
-        start = text.index(f"[chairs.{chair}]\n")
-        end = text.index("\n\n", start) + 1
-        text = f'{text[:start]}[chairs.{chair}]\nstate = "absent"\nreason = "absent under test"\n{text[end:]}'
     path.write_text(text, encoding="utf-8")
     config = tomllib.loads(text)
     assert config["chairs"]["attestator_2"].get("witness_scope", "page") == "page"
-    assert all(config["chairs"][chair]["state"] == "absent" for chair in absent)
     tiers = [
         tier["id"]
         for tier in tomllib.loads(
@@ -498,11 +493,9 @@ def page_serving_recipes_config(models_config: Path) -> Path:
     return Path(models_config).parent / "serving_recipes.toml"
 
 
-def page_roster_options(
-    directory: Path, floor: int = 3, absent: tuple[str, ...] = ()
-) -> dict[str, Path]:
+def page_roster_options(directory: Path, floor: int = 3) -> dict[str, Path]:
     """The stage options that run on the page-read roster: its models config and catalogue."""
-    models = page_models_config(directory, floor, absent)
+    models = page_models_config(directory, floor)
     return {"models_config": models, "serving_recipes_config": page_serving_recipes_config(models)}
 
 
@@ -512,19 +505,17 @@ def build_page_tree(
     run_id: str = "r",
     *,
     floor: int = 3,
-    absent: tuple[str, ...] = (),
     **options,
 ) -> tuple[Path, dict[str, object]]:
     """A fixture tree read page by page, through the Perlector; returns (root, stage options).
 
     The options, which every later stage of the run takes too, name the page
     protocol and the page-read roster (`page_models_config`) with witness floor
-    `floor` and each chair in `absent` absent; `options` adds others (for
-    example `witness_context="blinded"`).
+    `floor`; `options` adds others (for example `witness_context="blinded"`).
     """
     options = {
         "perlector_protocol_config": page_protocol_config(base / "config"),
-        **page_roster_options(base / "models", floor, absent),
+        **page_roster_options(base / "models", floor),
         **options,
     }
     root = base / "runs"

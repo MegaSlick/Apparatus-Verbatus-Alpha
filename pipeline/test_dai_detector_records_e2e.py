@@ -16,6 +16,7 @@ shown and each unit's capture; and each act's slice is the records it owns.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import subprocess
 import sys
@@ -141,8 +142,12 @@ def _run_main(module, argv: list[str], **kwargs) -> int:
         sys.argv = original
 
 
-def _witness(work: Path, detections, dai_answers: list[str]):
-    """Run the Door through the Attestatores with these declared detections."""
+def _witness(work: Path, detections, dai_answers: list[str], *, cap_stated: bool = True):
+    """Run the Door through the Attestatores with these declared detections.
+
+    `cap_stated=False` drops `max_det` from the detector's run facts, so it
+    states no cap.
+    """
     models = _config(work)
     catalogue = _catalogue(work / "serving_recipes.toml", models)
     run_root = work / "runs"
@@ -162,8 +167,17 @@ def _witness(work: Path, detections, dai_answers: list[str]):
         context.fixture["detector_record"] = [dict(row) for row in detections]
         return context, real_input
 
+    real_detector = designator.fixture_record_detector
+
+    def uncapped_detector(rows, identity, details):
+        detector = real_detector(rows, identity, details)
+        facts = {key: value for key, value in detector.run_facts.items() if key != "max_det"}
+        return dataclasses.replace(detector, run_facts=facts)
+
     patch = pytest.MonkeyPatch()
     patch.setattr(designator, "_open", open_with_detections)
+    if not cap_stated:
+        patch.setattr(designator, "fixture_record_detector", uncapped_detector)
     try:
         assert _run_main(designator, _argv(run_root, catalogue, models)) == EXIT_COMPLETE
     finally:
@@ -322,7 +336,81 @@ def test_a_page_whose_records_enclose_no_crop_is_not_run_with_its_census_count(t
     assert page_two["outcome"] == "not-run"
     assert page_two["payload"]["reason"] == attestatores.no_detector_unit_reason(1)
     assert "found 1 record(s)" in page_two["payload"]["reason"]
-    assert attestatores.no_detector_unit_reason(0) == attestatores.NO_DETECTOR_RECORD_REASON
+    assert page_two["inputs"] == []
+
+
+def _dai_page(tree: RunTree, page_ordinal: int) -> dict:
+    [page] = [
+        record
+        for record in _records(tree, ATTESTATORES, "page-testimonium")
+        if record["payload"]["chair"] == DAI and record["payload"]["page_ordinal"] == page_ordinal
+    ]
+    return page
+
+
+def test_a_page_the_detector_found_nothing_on_below_its_cap_is_dais_blank_testimony(tmp_path):
+    """DAI looked and saw nothing: `genuinely-empty`, empty text, bound to the census.
+
+    It is never asked about the page, shown no image and names no serving
+    moment; its testimony is the detector's census of no record below its cap.
+    """
+    tree, world = _witness(tmp_path, DETECTIONS[:2], [DAI_ACT_TWO, DAI_ACT_ONE])
+    readings = [json.loads(body)["choices"][0] for body in world.served(DAI)]
+    assert [answer["message"]["content"] for answer in readings if "finish_reason" in answer] == [
+        DAI_ACT_TWO,
+        DAI_ACT_ONE,
+    ]
+    page_two = _dai_page(tree, 2)
+    payload = page_two["payload"]
+    assert page_two["outcome"] == "genuinely-empty"
+    assert payload["payload"] == ""
+    assert payload["reason"] == attestatores.NO_DETECTOR_RECORD_REASON
+    assert (payload["content_health"]["blank"], payload["content_health"]["truncated"]) == (
+        True,
+        False,
+    )
+    assert payload["presented"] == {} and payload["observed"] == []
+    assert payload["provenance"]["receipt_ref"] is None
+    [census] = [
+        entry
+        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == designator.DETECTOR_PAGE_KIND
+        and tree.read_artifact(DESIGNATOR, entry["kind"], entry["artifact_id"])["payload"][
+            "page_ordinal"
+        ]
+        == 2
+    ]
+    [bound] = page_two["inputs"]
+    assert bound["relative_path"].endswith(census["artifact_id"] + ".json")
+
+
+def test_an_act_on_a_page_dai_saw_nothing_on_is_not_run_for_dai_and_names_no_receipt(tmp_path):
+    """Blank testimony is the page's: DAI was never asked about either act's crop on page 1."""
+    tree, world = _witness(tmp_path, DETECTIONS[2:], [DAI_CONTINUATION])
+    assert _dai_page(tree, 1)["outcome"] == "genuinely-empty"
+    views = [
+        record
+        for record in _records(tree, ATTESTATORES, "testimonium")
+        if record["payload"]["chair"] == DAI
+    ]
+    assert len(views) == 2
+    for view in views:
+        assert view["outcome"] == "not-run"
+        assert view["payload"]["reason"] == attestatores.BLANK_DETECTOR_ACT_REASON
+        assert view["payload"]["provenance"]["receipt_ref"] is None
+        assert view["inputs"] == []
+
+
+def test_a_detector_that_states_no_cap_leaves_dai_not_run_on_a_page_it_found_nothing_on(
+    tmp_path,
+):
+    """With no stated cap, whether the detector saw nothing is unknown: DAI is held `not-run`."""
+    tree, _world = _witness(tmp_path, DETECTIONS[:2], [DAI_ACT_TWO, DAI_ACT_ONE], cap_stated=False)
+    page_two = _dai_page(tree, 2)
+    assert page_two["outcome"] == "not-run"
+    assert page_two["payload"]["reason"] == attestatores.UNCAPPED_DETECTOR_REASON
+    assert page_two["payload"]["payload"] is None
+    assert page_two["inputs"] == []
 
 
 def test_each_unit_call_is_bound_and_held_to_the_sealed_sampling_on_resume(tmp_path, monkeypatch):

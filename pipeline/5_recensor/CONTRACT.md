@@ -521,7 +521,12 @@ roster chair with no Testimonium for the page counted `not-run`, so `configured`
 the sealed page roster's size. The floor counts chairs that read the page (`read` or
 `genuinely-empty`) and were not truncated, against the sealed `witness_floor`;
 `health_unrecorded` and `shortfalls` (`failed`, `truncated`, `unaligned: 0`) complete
-the shape the v3 receipt recomputes. An act-scoped witness testifies to no page-read
+the shape the v3 receipt recomputes. DAI's page on which its own record detector
+found no record below its stated cap is `genuinely-empty` with empty text, bound to
+the detector's census (Attestatores CONTRACT, "A page the detector found nothing
+on"): it counts toward the floor, and the validation above re-derives the census
+it rests on. A DAI page whose detector states no cap, or whose records enclosed no
+crop, is `not-run` and does not count. An act-scoped witness testifies to no page-read
 unit and is not counted.
 
 **Residual ink.** `page_coverage_findings` measures every sealed page's own pixels
@@ -548,7 +553,8 @@ confirmed only when the page accounting's rules (d), (e) and (f) pass. A page of
 `other` region; with no record detector (`not-applicable`) or none measured it stays
 held. A blank page needs rule (i) to pass or not apply, no detected Surya line, and
 every witness that read the page to have retained blank text, with at least one such
-witness. Blankness is measured from each witness's retained text (`payload`), never
+witness; DAI's page on which its detector found nothing is such a witness. Blankness
+is measured from each witness's retained text (`payload`), never
 its `content_health`; a witness whose retained payload is not text cannot confirm a
 blank. The floor and residual ink must hold as for any unit, and nothing else may
 hold the row. A confirmed blank is `confirmed-blank`; a confirmed `other` entry is

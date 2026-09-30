@@ -501,6 +501,22 @@ def test_a_witness_that_reports_a_blank_page_is_recorded_not_held():
         account(case)
 
 
+def test_a_witness_that_looked_and_found_the_page_empty_is_recorded_not_held():
+    # `genuinely-empty` is a reading, as DAI's page on which its own detector
+    # found nothing below its cap is: never `witness-not-read`.
+    case = page()
+    witness(case, "C").update(units=[], outcome="genuinely-empty", blank=True)
+    for entry in acts(case):
+        entry["cites"] = [cite for cite in entry["cites"] if not cite.startswith("C")]
+
+    record = account(case)
+
+    expected = {"code": "witness-read-blank", "letter": "C", "outcome": "genuinely-empty"}
+    assert record["rules"]["c"] == {"status": "pass", "findings": [expected]}
+    assert expected in record["rules"]["e"]["findings"]
+    assert record["holds"] == []
+
+
 def hide_witness(case: dict, letter: str) -> None:
     """The feed's `witnesses` switch hides one sealed witness from the model."""
     case["feed"]["witnesses"] = [w for w in case["feed"]["witnesses"] if w["letter"] != letter]

@@ -1,9 +1,9 @@
 """The Archetypus on a page-read run: every accepted reading, act or other, established once.
 
-The trees are the fixture's `happy`, `page-review` and `page-other` scenarios
-read with `reading_unit = "page"` and reviewed by the real Recensor, and
+The trees are the fixture's `happy`, `page-review`, `page-other` and
 `page-no-act-unbroken` (`page-no-act` with nothing running across the page
-break) read by Chandra and Churro alone. Two tests forge a review the
+break) scenarios read with `reading_unit = "page"` and reviewed by the real
+Recensor. Two tests forge a review the
 Recensor does not write on the fixture (`conftest.forge_page_review`), each
 saying why.
 """
@@ -203,11 +203,9 @@ def test_a_perlectio_carrying_a_layer_no_page_reading_records_stops_the_review(h
 
 
 def test_a_confirmed_no_act_page_establishes_its_other_reading(tmp_path):
-    # `page-no-act` with nothing running across the break, read by Chandra and
-    # Churro alone, the page witnesses a confirmed no-act page can have.
-    root, options = build_page_tree(
-        tmp_path, "page-no-act-unbroken", floor=2, absent=("attestator_2",)
-    )
+    # `page-no-act` with nothing running across the break; DAI saw nothing on
+    # page 2, and the real Recensor confirms the page holds no act.
+    root, options = build_page_tree(tmp_path, "page-no-act-unbroken")
     result = _establish(root, options, "page-no-act-unbroken")
     assert result.returncode == 0, result.stderr
     context = page_context(root, RUN_ID, "page-no-act-unbroken", options)

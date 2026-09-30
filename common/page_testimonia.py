@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from common.chairs.models import ChairIdentity
 from common.chandra_native_retry import validate_trace as validate_chandra_trace
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
@@ -27,6 +28,7 @@ from common.native_witness import (
 from common.page_path import (
     PAGE_TESTIMONIUM_KIND,
     distinct_refs,
+    empty_detector_page,
     refs_by_path,
 )
 
@@ -34,6 +36,7 @@ from common.page_path import (
 # consumer reads them through this module too.
 from common.page_path import declared_page_witness_chairs as declared_page_witness_chairs
 from common.page_path import require_page_roster as require_page_roster
+from common.page_witness_units import UNIT_KINDS
 from common.stage import (
     ATTEMPTED_WITNESS_OUTCOMES,
     latest_per_chair,
@@ -118,6 +121,44 @@ def validate_presented_page(context, payload: dict, presentations: list[dict]) -
         )
 
 
+def reads_detector_records(context, chair: Any) -> bool:
+    """Whether the sealed configuration's chair reads its page one detector record at a time."""
+    identity = context.registry.config.chairs.get(chair) if isinstance(chair, str) else None
+    return (
+        isinstance(identity, ChairIdentity)
+        and identity.witness_scope == "page"
+        and UNIT_KINDS.get(identity.witness_adapter) == "detector-record"
+    )
+
+
+def is_detector_blank_testimony(context, record: dict[str, Any]) -> bool:
+    """Whether a page Testimonium is a record reader's testimony that its page holds nothing.
+
+    A chair that reads its page one detector record at a time is shown nothing
+    on a page its detector found no record on. When the detector stopped below
+    its cap, it looked and saw nothing: the chair's page record is
+    `genuinely-empty` with no presentation, and binds the detector's census.
+    """
+    payload = record.get("payload")
+    return (
+        record.get("outcome") == "genuinely-empty"
+        and isinstance(payload, dict)
+        and payload.get("presented") == {}
+        and reads_detector_records(context, payload.get("chair"))
+    )
+
+
+def chair_was_served(context, record: dict[str, Any]) -> bool:
+    """Whether a page Testimonium's outcome says its chair was served, so it names a receipt.
+
+    Blank testimony is `genuinely-empty` without a serving moment: the
+    detector's census, not the chair, found the page empty.
+    """
+    return record.get("outcome") in ATTEMPTED_WITNESS_OUTCOMES and not (
+        is_detector_blank_testimony(context, record)
+    )
+
+
 def validate_page_testimonium_record(
     context,
     record: dict[str, Any],
@@ -130,7 +171,8 @@ def validate_page_testimonium_record(
         testimonium_id=record.get("artifact_id"),
         read_bytes=context.tree.read_bytes,
     )
-    attempted = record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES
+    blank_testimony = is_detector_blank_testimony(context, record)
+    attempted = chair_was_served(context, record)
     presented = payload["presented"]
     if payload["regions"] != []:
         raise SchemaRefusal(
@@ -138,6 +180,22 @@ def validate_page_testimonium_record(
             "an act identity the page record does not own. Keep act associations in the "
             "digest-bound attachments"
         )
+    if blank_testimony:
+        census = empty_detector_page(
+            context, stage_manifest(context, DESIGNATOR)["artifacts"], record["subject_id"]
+        )
+        if census is None or payload.get("payload") != "":
+            raise SchemaRefusal(
+                "a record reader's page Testimonium says the page holds nothing for it, but its "
+                "text is not empty or its record detector's census for the page is not one of no "
+                "record below a stated cap. Only such a census is blank testimony; any other page "
+                "is read record by record or not at all"
+            )
+        if record.get("inputs") != [census]:
+            raise SchemaRefusal(
+                "a record reader's blank page Testimonium does not bind exactly its record "
+                "detector's census for the page, the one input its testimony rests on"
+            )
     if not attempted:
         # As in the act-scoped check: before the image-evidence refusal, which a
         # stripped record that kept its response would pass.
@@ -148,7 +206,11 @@ def validate_page_testimonium_record(
                 "its own input set. Record the attempted outcome that produced the response, or "
                 "remove the retained capture"
             )
-        if presented != {} or payload["observed"] != [] or record.get("inputs") != []:
+        if (
+            presented != {}
+            or payload["observed"] != []
+            or (record.get("inputs") != [] and not blank_testimony)
+        ):
             raise SchemaRefusal(
                 "a non-attempted page Testimonium carries image evidence. The record would say "
                 "a chair saw pixels when its outcome says it was not served. Remove the image "

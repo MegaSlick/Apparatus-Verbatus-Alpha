@@ -1247,8 +1247,7 @@ stop_reason = "length"
 pass_kind = "audit-reproof"
 
 # The fake Perlector's answer to a whole-page reading, one per scenario and page,
-# read only under reading_unit = "page". `answer` is the reply text exactly. A
-# row naming `witnesses` answers only a run whose page witnesses are those chairs.
+# read only under reading_unit = "page". `answer` is the reply text exactly.
 
 [[page_answer]]
 scenario = "happy"
@@ -1279,18 +1278,6 @@ answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"
 scenario = "page-no-act"
 page_ordinal = 2
 answer = "{\"acts\":[{\"n\":1,\"kind\":\"other\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
-
-[[page_answer]]
-scenario = "page-no-act"
-page_ordinal = 1
-witnesses = ["attestator_1", "attestator_3"]
-answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
-
-[[page_answer]]
-scenario = "page-no-act"
-page_ordinal = 2
-witnesses = ["attestator_1", "attestator_3"]
-answer = "{\"acts\":[{\"n\":1,\"kind\":\"other\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
 
 [[page_answer]]
 scenario = "page-other"
@@ -1361,18 +1348,6 @@ answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"
 scenario = "page-no-act-unbroken"
 page_ordinal = 2
 answer = "{\"acts\":[{\"n\":1,\"kind\":\"other\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
-
-[[page_answer]]
-scenario = "page-no-act-unbroken"
-page_ordinal = 1
-witnesses = ["attestator_1", "attestator_3"]
-answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
-
-[[page_answer]]
-scenario = "page-no-act-unbroken"
-page_ordinal = 2
-witnesses = ["attestator_1", "attestator_3"]
-answer = "{\"acts\":[{\"n\":1,\"kind\":\"other\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
 
 [[page_answer]]
 scenario = "page-flags-disagree"

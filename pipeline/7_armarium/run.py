@@ -96,6 +96,7 @@ from common.page_review import (  # noqa: E402
     reviewed_rows,
 )
 from common.page_testimonia import (  # noqa: E402
+    chair_was_served,
     current_page_testimonia,
     declared_page_witness_chairs,
     sealed_proposal_regions,
@@ -2023,7 +2024,7 @@ def export_page_witnesses(context, reading: dict, page_testimonia: list[dict]) -
             context,
             record["payload"].get("provenance"),
             producer_stage=ATTESTATORES,
-            require_receipt=record["outcome"] in ATTEMPTED_WITNESS_OUTCOMES,
+            require_receipt=chair_was_served(context, record),
         )
         witnesses.append(
             {

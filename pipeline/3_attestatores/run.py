@@ -104,7 +104,11 @@ from common.native_witness import (  # noqa: E402
 from common.native_witness import (
     validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
 )
-from common.page_testimonia import declared_page_witness_chairs  # noqa: E402
+from common.page_path import empty_detector_page  # noqa: E402
+from common.page_testimonia import (  # noqa: E402
+    declared_page_witness_chairs,
+    is_detector_blank_testimony,
+)
 from common.request_capacity import RequestCapacityRefusal  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -473,12 +477,17 @@ def _sealed_source_page(
 
 
 def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
-    """Re-derive the presentation's sealed page, blob binding, and region wall."""
+    """Re-derive the presentation's sealed page, blob binding, and region wall.
+
+    An unpresented record binds no input, except a record reader's blank
+    testimony, whose one input is its detector's census
+    (`common.page_testimonia.validate_page_testimonium_record` checks it).
+    """
     payload = record["payload"]
     presented = payload["presented"]
     validate_native_witness_geometry(payload)
     if presented == {}:
-        if record.get("inputs") != []:
+        if record.get("inputs") != [] and not is_detector_blank_testimony(context, record):
             raise SchemaRefusal("an unpresented Testimonium carries image inputs")
         return
     page, page_bytes, page_size = _sealed_source_page(context, presented)
@@ -4075,7 +4084,8 @@ def _prepared_detector_pages(
     """Each page's DAI units, with every page that needs no request settled first.
 
     A page record sealed by an interrupted pass is resumed, never asked again,
-    and a page with no record crop is sealed `not-run` without a request. Both then feed their act views like any answered page.
+    and a page with no record crop is sealed without a request (`publish_detector_page_testimonium`
+    says how). Both then feed their act views like any answered page.
     """
     units_by_page, detections_by_page = detector_units_by_page(context)
     sealed = _sealed_page_testimonia(context, ordinal)
@@ -4407,7 +4417,20 @@ def publish_page_act_views(
     regions_by_act: dict[str, tuple[list[dict], str | None]],
     attempts_by_pair: dict[tuple[str, str], Attempt],
 ) -> int:
-    """Publish pending primary-page act views; continuations use the page record."""
+    """Publish pending primary-page act views; continuations use the page record.
+
+    An act view of DAI's blank page testimony is `not-run`: the chair was never
+    asked about the act's crop, so its view names no serving moment.
+    """
+    if is_blank_detector_page_attempt(attempt):
+        attempt = Attempt(
+            outcome="not-run",
+            native_payload=None,
+            witness_reported=None,
+            format_capabilities=attempt.format_capabilities,
+            health=no_response_health(reason=BLANK_DETECTOR_ACT_REASON),
+            reason=BLANK_DETECTOR_ACT_REASON,
+        )
     recorded = 0
     for act in page_acts:
         pair = (act["act_id"], chair)
@@ -4444,14 +4467,40 @@ DETECTOR_REGION_KIND: Final = "detector-region"
 NO_DETECTOR_RECORD_OWNED: Final = "no-detector-record-owned"
 DETECTOR_RECORD_ANCHOR_BASIS: Final = "detector-record"
 NO_DETECTOR_RECORD_REASON: Final = (
-    "DAI's own record detector found no record on this page, so DAI was shown nothing here"
+    "DAI's own record detector looked at this page and found no record below its cap, so "
+    "the page holds nothing for DAI"
+)
+# Why DAI's act view on a page its detector found nothing on is `not-run`.
+BLANK_DETECTOR_ACT_REASON: Final = (
+    "DAI's own record detector found no record on this act's page below its cap, so DAI "
+    "was never asked about this act; its page testimony is that the page holds nothing for it"
+)
+UNCAPPED_DETECTOR_REASON: Final = (
+    "DAI's own record detector found no record on this page but states no cap, so whether it "
+    "saw nothing is unknown, and DAI was shown nothing here"
 )
 
 
+def is_blank_detector_page_attempt(attempt: Any) -> bool:
+    """Whether a page attempt is DAI's blank testimony, sealed without a request.
+
+    Its reason says so; a page DAI was asked about and answered empty carries none.
+    """
+    return (
+        isinstance(attempt, Attempt)
+        and attempt.outcome == "genuinely-empty"
+        and attempt.reason == NO_DETECTOR_RECORD_REASON
+    )
+
+
 def no_detector_unit_reason(detection_count: int) -> str:
-    """Why a page's DAI record is `not-run`: no record found, or none that enclosed a crop."""
+    """Why a page's DAI record is `not-run` with no request.
+
+    The detector states no cap and found no record, or the records it found
+    enclosed no crop.
+    """
     if detection_count == 0:
-        return NO_DETECTOR_RECORD_REASON
+        return UNCAPPED_DETECTOR_REASON
     return (
         f"DAI's own record detector found {detection_count} record(s) on this page and none "
         "enclosed a crop, so DAI was shown nothing here"
@@ -4662,9 +4711,11 @@ def publish_detector_page_testimonium(
 ) -> Attempt:
     """Seal one DAI page record over every unit it read; return the page attempt.
 
-    A page with no unit is sealed `not-run`; ``detection_count`` is its census
-    count, which says whether the detector found nothing or found records that
-    enclosed no crop.
+    A page with no unit is DAI's blank testimony when its detector found no
+    record below a stated cap: `genuinely-empty`, empty text, binding the
+    detector's census. Otherwise it is sealed `not-run`; ``detection_count``
+    is its census count, which says whether the detector found nothing or found
+    records that enclosed no crop.
     """
     # First, so a bad roster or a chair the run did not seal page-scoped refuses
     # before any record is built.
@@ -4686,13 +4737,25 @@ def publish_detector_page_testimonium(
     adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
     capabilities = _declared_format_capabilities(adapter)
     if not served:
-        outcome, reason = "not-run", no_detector_unit_reason(detection_count)
+        census = (
+            empty_detector_page(
+                context, stage_manifest(context, DESIGNATOR)["artifacts"], page_subject_id
+            )
+            if detection_count == 0
+            else None
+        )
+        if census is not None:
+            outcome, reason, native = "genuinely-empty", NO_DETECTOR_RECORD_REASON, ""
+            health = content_health(native, completed=True)
+        else:
+            outcome, reason, native = "not-run", no_detector_unit_reason(detection_count), None
+            health = no_response_health(reason=reason)
         attempt = Attempt(
             outcome=outcome,
-            native_payload=None,
+            native_payload=native,
             witness_reported=None,
             format_capabilities=capabilities,
-            health=no_response_health(reason=reason),
+            health=health,
             reason=reason,
         )
         payload = page_testimonium_payload(
@@ -4707,13 +4770,13 @@ def publish_detector_page_testimonium(
             regions=[],
             provenance=provenance_for(context, resolved, attempted=False),
             format_capabilities=capabilities,
-            native_payload=None,
+            native_payload=native,
             witness_reported=None,
             health=attempt.health,
             outcome=outcome,
             reason=reason,
         )
-        inputs: list[dict[str, str]] = []
+        inputs: list[dict[str, str]] = [] if census is None else [census]
     else:
         text, observed = _detector_page_reading(served, page_ordinal, page_acts, regions_by_act)
         outcome, reason, completed = _detector_page_outcome(served, text)
@@ -4777,7 +4840,9 @@ def publish_detector_page_testimonium(
             + [reference for reference in unit_call_refs if reference is not None]
         )
         verify_unit_call_sampling(context, payload, chair)
-    validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
+    validate_testimonium_presentation(
+        context, {"outcome": outcome, "payload": payload, "inputs": inputs}
+    )
     context.publish(
         kind="page-testimonium",
         subject_id=page_subject_id,
@@ -4995,7 +5060,7 @@ def fixture_detector_pages(
     """The fixture pass's detector readers: each page read record by record, then its act views.
 
     A page record already sealed is resumed and never read again, and a page
-    the detector found nothing on is sealed `not-run`, as on the live pass.
+    with no record crop is sealed without a request, as on the live pass.
     """
     page_chairs = declared_page_witness_chairs(context)
     detector_chairs = sorted(

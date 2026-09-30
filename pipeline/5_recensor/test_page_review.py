@@ -329,43 +329,38 @@ def test_a_page_read_as_blank_with_ink_and_witness_text_is_not_confirmed(tmp_pat
     assert "the page is not confirmed to hold no act" in payload["reason"]
 
 
-def test_a_page_of_other_entries_dai_was_shown_nothing_on_is_held_unconfirmed(no_act, tmp_path):
+def test_a_page_of_other_entries_dai_saw_nothing_on_is_confirmed_holding_no_act(no_act, tmp_path):
     tree = no_act.copy(tmp_path)
     assert tree.recensor().returncode == 3
     reviews = tree.reviews()
     assert {key: r["outcome"] for key, r in reviews.items()} == {
         "p1:1": "accepted",
         "p1:2": "accepted",
-        "p2:1": "held-for-review",
+        "p2:1": "accepted",
     }
     payload = reviews["p2:1"]["payload"]
     assert (payload["unit_class"], payload["kind"]) == ("reading", "other")
-    # The record detector found nothing on page 2, so DAI was shown nothing
-    # there: the page is under-witnessed and rule (e) holds its witness unread.
-    assert payload["hold_codes"] == [
-        page_review.NO_ACT_HOLD,
-        "under-witnessed",
-        "unresolved-witness",
-        "witness-not-read",
-    ]
-    assert payload["release"] is None
+    # The record detector found no record on page 2 below its cap, so DAI's page
+    # there is blank testimony: it counts toward the floor, and rule (e) records
+    # it as a witness that read blank rather than holding it unread.
+    assert payload["coverage"]["under_witnessed"] is False
+    assert payload["hold_codes"] == []
+    assert payload["release"]["hold_codes"] == [page_review.NO_ACT_HOLD]
     confirmation = payload["confirmation"]
-    assert confirmation["confirms"] == "no-act-on-page" and confirmation["confirmed"] is False
-    assert confirmation["rules"] == {"d": "pass", "e": "hold", "f": "pass", "i": "pass"}
-    assert confirmation["failures"] == ["page accounting rule (e) is hold, not pass"]
+    assert confirmation["confirms"] == "no-act-on-page" and confirmation["confirmed"] is True
+    assert confirmation["rules"] == {"d": "pass", "e": "pass", "f": "pass", "i": "pass"}
+    assert confirmation["failures"] == []
+    [dai] = [w for w in confirmation["witnesses"] if w["chair"] == "attestator_2"]
+    assert dai == {"chair": "attestator_2", "outcome": "genuinely-empty", "blank": True}
     # The `other` entry's own continuation flag is a note, never a side of a break.
     assert payload["notes"] == [
         {"code": page_review.CONTINUATION_ON_OTHER, "flags": ["continues_from_previous_page"]}
     ]
+    # Page 1's last act says it runs on and page 2 has no act: the break stays held.
     [link] = tree.records("5_recensor", "continuation-link")
     assert link["outcome"] == "held-for-review"
     assert (link["payload"]["from_act_key"], link["payload"]["to_act_id"]) == ("p1:2", None)
-    receipt = tree.receipt()
-    assert receipt["recensor_status"] == "partial"
-    assert (
-        f"unit {reviews['p2:1']['subject_id']} is unresolved at the Recensor"
-        in (receipt["reasons"])
-    )
+    assert tree.receipt()["recensor_status"] == "partial"
 
 
 # --- refusals ---------------------------------------------------------------------------

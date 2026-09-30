@@ -38,6 +38,7 @@ from common.contracts.envelope import read_verified
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import attempt_id, perlector_attempt_id
+from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.serving import reading_stop_reason
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP
 from common.page_witness_units import DAI, READ_OUTCOME, WITNESS_LETTERS, witness_reading
@@ -184,25 +185,16 @@ def not_run_problems(
 
 
 def fixture_page_answer(context, ordinal: int) -> dict[str, Any]:
-    """The synthetic fixture's one declared answer to page `ordinal` under this scenario.
-
-    The answer is keyed by how the page's witnesses were lettered: a row naming
-    `witnesses` answers only a run whose page witnesses are exactly those
-    chairs, and replaces a row that names none.
-    """
+    """The synthetic fixture's one declared answer to page `ordinal` under this scenario."""
     rows = [
         row
         for row in context.fixture.get("page_answer", [])
         if row.get("scenario") == context.scenario and row.get("page_ordinal") == ordinal
     ]
-    roster = sorted(declared_page_witness_chairs(context))
-    rows = [row for row in rows if row.get("witnesses") == roster] or [
-        row for row in rows if "witnesses" not in row
-    ]
     if len(rows) != 1:
         raise ContractError(
             f"the fixture declares {len(rows)} page answers for scenario {context.scenario!r}, "
-            f"page {ordinal} and page witnesses {roster}; a page read offline needs exactly one"
+            f"page {ordinal}; a page read offline needs exactly one"
         )
     row = rows[0]
     if not isinstance(row.get("answer"), str) or row.get("stop_reason", "stop") not in (
@@ -796,7 +788,11 @@ def accounting_witnesses(
         testimonium = witness["testimonium"]
         outcome = testimonium["outcome"]
         health = testimonium["payload"].get("content_health")
-        blank = health.get("blank") if outcome == "read" and isinstance(health, dict) else None
+        blank = (
+            health.get("blank")
+            if outcome in WITNESS_READING_OUTCOMES and isinstance(health, dict)
+            else None
+        )
         row = shown.get(witness["witness_label"])
         if row is not None:
             letter = row["letter"]
@@ -1001,6 +997,52 @@ def _dai_unit_ids(
     return ids
 
 
+def detector_max_det(read_bytes, raw_output_ref: Any, page_id: str) -> int | None:
+    """The cap the record detector ran at on one page, from its retained output's run facts.
+
+    `None` when the run facts state no `max_det`, so whether the detector
+    stopped at its cap is unknown; a stated cap that is not a positive integer
+    refuses by name.
+    """
+    output = json.loads(read_verified(read_bytes, raw_output_ref, "a detector output"))
+    if not isinstance(output, dict) or not isinstance(output.get("run"), dict):
+        raise FatalAccounting(f"page {page_id}'s detector output carries no run facts")
+    if "max_det" not in output["run"]:
+        return None
+    max_det = output["run"]["max_det"]
+    if not is_plain_int(max_det) or max_det < 1:
+        raise FatalAccounting(f"page {page_id}'s detector run facts state a max_det of {max_det!r}")
+    return max_det
+
+
+def empty_detector_page(
+    context, designator_entries: list[dict[str, Any]], page_id: str
+) -> dict[str, str] | None:
+    """The page's `detector-page` reference when the record detector saw nothing on it.
+
+    That is a census of no record from a detector that states its cap, so it
+    stopped because it found nothing, not because it reached the cap. `None`
+    when the detector published no census for the page, found records, or
+    states no cap.
+    """
+    pages = [
+        e for e in designator_entries if e["kind"] == "detector-page" and e["subject_id"] == page_id
+    ]
+    if not pages:
+        return None
+    entry = _one_record(designator_entries, "detector-page", page_id)
+    census = _fields(
+        context.tree.read_artifact(DESIGNATOR, "detector-page", entry["artifact_id"])["payload"],
+        ("raw_output_ref", "record_subjects", "detection_count"),
+        f"page {page_id}'s detector-page",
+    )
+    if census["detection_count"] != 0 or census["record_subjects"] != []:
+        return None
+    if detector_max_det(context.tree.read_bytes, census["raw_output_ref"], page_id) is None:
+        return None
+    return context.artifact_ref(DESIGNATOR, "detector-page", entry["artifact_id"])
+
+
 def _record_detections(
     context,
     designator_entries: list[dict[str, Any]],
@@ -1059,16 +1101,9 @@ def _record_detections(
         raise FatalAccounting(
             f"the Designator sealed detector records {unnamed} that {what} does not name"
         )
-    output = json.loads(
-        read_verified(context.tree.read_bytes, census["raw_output_ref"], "a detector output")
-    )
-    if not isinstance(output, dict) or not isinstance(output.get("run"), dict):
-        raise FatalAccounting(f"page {page_id}'s detector output carries no run facts")
-    if "max_det" not in output["run"]:
+    max_det = detector_max_det(context.tree.read_bytes, census["raw_output_ref"], page_id)
+    if max_det is None:
         return None, None, [page_ref]
-    max_det = output["run"]["max_det"]
-    if not is_plain_int(max_det) or max_det < 1:
-        raise FatalAccounting(f"page {page_id}'s detector run facts state a max_det of {max_det!r}")
     unit_ids = {box: list(ids) for box, ids in unit_ids.items()}
     references = [page_ref]
     records = []
