@@ -1364,7 +1364,7 @@ def _engine_call_world(tree, *, seed: int, schema: str = "chair-call-record.v3")
         chair_decoding,
         engine_effective_sampling,
         load_decoding_policy,
-        recorded_sampling,
+        recorded_wire_decimals,
     )
 
     policy, _digest = load_decoding_policy()
@@ -1373,8 +1373,8 @@ def _engine_call_world(tree, *, seed: int, schema: str = "chair-call-record.v3")
     call = {
         "schema": schema,
         "receipt_ref": receipt_ref,
-        "generation_sent": {**recorded_sampling(sampling), "max_tokens": 10, "seed": seed},
-        "sampling_effective": recorded_sampling(engine_effective_sampling(sampling)),
+        "generation_sent": {**recorded_wire_decimals(sampling), "max_tokens": 10, "seed": seed},
+        "sampling_effective": recorded_wire_decimals(engine_effective_sampling(sampling)),
     }
     _digest, raw = tree.put_blob(PERLECTOR, b"a retained response")
     _digest, retained_call = tree.put_blob(PERLECTOR, json.dumps(call).encode())

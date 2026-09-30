@@ -20,7 +20,7 @@ import hashlib
 import stat
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Final, Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from common.chairs.models import ChairIdentity, is_sha256
 
@@ -40,18 +40,12 @@ from operations.pod.preflight import (
     _mint_runtime_provenance,
 )
 
-from .config import ServingProfile
+from .config import ServingProfile, thawed_json
 from .errors import AdapterActivityError, ServiceStopError, ServingConfigurationError
 from .manager import AdapterCalibration, ServiceHandle, ServingManager
 
 SmokeCall = Callable[[ServiceHandle, ChairIdentity, Path, PlacementTier], SmokeResult]
 CalibrationFor = Callable[[ChairIdentity, Path], AdapterCalibration | None]
-
-# How deep a launch audit may nest before `_plain_mapping` refuses it. A real
-# audit is a handful of levels; the bound exists so a pathological one is named
-# rather than crashing the copy, the same way `operations/submit/inventory.py`
-# bounds a submission's directory tree.
-MAX_AUDIT_DEPTH: Final = 64
 
 
 def prepare_log_root(log_root: str | Path) -> Path:
@@ -539,7 +533,7 @@ def _with_service_evidence(
         {
             "service_receipt": handle.receipt.to_record(),
             "receipt_reference": dict(handle.receipt_reference),
-            "serving_launch_audit": _plain_mapping(handle.launch_audit),
+            "serving_launch_audit": thawed_json(handle.launch_audit),
             "serving_launch_audit_reference": dict(handle.audit_reference),
             "serving_evidence_reference": dict(handle.evidence_reference),
             "supplied_fixture_sha256": fixture_sha256,
@@ -562,52 +556,6 @@ def _with_service_evidence(
         # module started, proved fixture-bound and will stop in its `finally`.
         provenance=_mint_runtime_provenance(f"service handle receipt: {served_by}"),
     )
-
-
-def _plain_mapping(value: Mapping[str, object], depth: int = 0) -> dict[str, object]:
-    """Copy nested mappings/lists out of immutable operational audit values.
-
-    Bounded rather than rewritten with an explicit stack. What this walks is a
-    launch audit this package assembled itself, so its depth is known and small
-    -- but "known and small" is a claim about today's code, and the walk that
-    trusts it has no way to say so if a later edit is wrong. The bound is the
-    same shape `operations/submit/inventory.py::_walk` uses for a directory
-    tree: an audit that nests past it is refused by name rather than by running
-    out of stack, which is a crash naming neither the audit nor the field.
-    """
-
-    _refuse_audit_depth(depth)
-    return {key: _plain_value(item, depth + 1) for key, item in value.items()}
-
-
-def _plain_value(item: object, depth: int) -> object:
-    """One audit value, detached: mappings become dicts, sequences become lists.
-
-    Recurses fully rather than scanning one level deep, so a mapping nested
-    under several tuple levels is copied rather than left as a live
-    `MappingProxyType` that `json.dumps` cannot serialize. Depth is counted per
-    sequence level too, so a pathological chain of tuples is named rather than
-    exhausting the stack. Lists convert beside tuples since the copy's job is
-    to fully detach from the handle's own evidence.
-    """
-
-    if isinstance(item, Mapping):
-        return _plain_mapping(item, depth)
-    if isinstance(item, (tuple, list)):
-        _refuse_audit_depth(depth)
-        return [_plain_value(entry, depth + 1) for entry in item]
-    return item
-
-
-def _refuse_audit_depth(depth: int) -> None:
-    """The one bound both halves of the copy are checked against."""
-
-    if depth > MAX_AUDIT_DEPTH:
-        raise ServingConfigurationError(
-            f"a serving launch audit nests deeper than {MAX_AUDIT_DEPTH} levels; an audit "
-            "value that deep is a defect in whatever assembled it, not evidence a receipt "
-            "can carry"
-        )
 
 
 def _fixture_digest(fixture: Path) -> str:

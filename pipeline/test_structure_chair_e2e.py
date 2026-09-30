@@ -110,6 +110,7 @@ from common.decoding import (  # noqa: E402
     chair_decoding,
     engine_effective_sampling,
     load_decoding_policy,
+    recorded_wire_decimals,  # noqa: E402
 )
 from common.runtree.store import RECEIPTS_DIR, RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -122,7 +123,7 @@ from common.stage import (  # noqa: E402
     verify_final_seal,
 )
 from operations.serving.assembly import retain_chair_bytes  # noqa: E402
-from operations.serving.client import ChairClient, recorded_generation  # noqa: E402
+from operations.serving.client import ChairClient  # noqa: E402
 from operations.serving.config import (  # noqa: E402
     ServingConfigInputs,
     chair_preflight_identity_digest,
@@ -616,7 +617,7 @@ def test_the_sealed_structure_sampling_is_sent_and_recorded_on_every_call(marked
     """
     policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
     sampling = chair_decoding(policy, "designator_structure")
-    sealed = recorded_generation(sampling)
+    sealed = recorded_wire_decimals(sampling)
     endpoint = marked_out.world.endpoint
     assert endpoint is not None
     assert len(endpoint.requests) == 2
@@ -634,7 +635,7 @@ def test_the_sealed_structure_sampling_is_sent_and_recorded_on_every_call(marked
         assert call["chair"] == "designator_structure"
         assert call["decoding_config_sha256"] == decoding_sha256
         assert {key: call["generation_sent"][key] for key in sampling} == sealed
-        assert call["sampling_effective"] == recorded_generation(
+        assert call["sampling_effective"] == recorded_wire_decimals(
             engine_effective_sampling(sampling)
         )
         # The bytes the record names are the bytes the endpoint served.

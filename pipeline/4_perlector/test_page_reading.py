@@ -41,7 +41,7 @@ from common.decoding import (
     chair_decoding,
     engine_effective_sampling,
     load_decoding_policy,
-    recorded_sampling,
+    recorded_wire_decimals,
 )
 from common.exemplar_boundary import read_sealed_page
 from common.imaging import crop_png
@@ -1164,8 +1164,8 @@ def test_a_live_page_is_sent_the_perlectors_sealed_row_and_names_it(
     for reading in readings:
         assert reading["payload"]["sampling"] == {
             "chair": "perlector",
-            "sent": recorded_sampling(row),
-            "effective": recorded_sampling(engine_effective_sampling(row)),
+            "sent": recorded_wire_decimals(row),
+            "effective": recorded_wire_decimals(engine_effective_sampling(row)),
         }
         call = json.loads(
             (

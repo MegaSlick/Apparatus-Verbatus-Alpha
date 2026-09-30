@@ -103,7 +103,7 @@ from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 
 from common.chairs.config import parse_models_config
 from common.chairs.model_store import StoreRoleFetcher
-from common.chairs.models import ChairIdentity, ServingReceipt
+from common.chairs.models import ChairIdentity, DigestManifest, ServingReceipt
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
     ChairRegistry,
@@ -311,6 +311,9 @@ class RegistryChairCacheVerifier:
             "manifest_digest": snapshot.manifest_digest,
             "root": str(snapshot.root),
         }
+
+    def manifest(self, identity: ChairIdentity) -> DigestManifest:
+        return self.registry.manifest(identity)
 
 
 @dataclass(frozen=True, slots=True)

@@ -34,7 +34,7 @@ from common.decoding import (
     chair_decoding,
     engine_effective_sampling,
     load_decoding_policy,
-    recorded_sampling,
+    recorded_wire_decimals,
     variance_arm_seed,
 )
 from common.sealed_config import table_seal
@@ -44,8 +44,6 @@ from .client import (
     ChairRequest,
     ReceiptDriftRefusal,
     ServingModeRefusal,
-    _plain_capacity,
-    recorded_generation,
     serving_mode_for,
 )
 from .config import (
@@ -53,6 +51,7 @@ from .config import (
     chair_preflight_identity_digest,
     parse_serving_recipes,
     profile_preflight_digest,
+    thawed_json,
 )
 from .errors import (
     ChairRequestRefusal,
@@ -333,10 +332,10 @@ def test_each_sealed_chair_row_is_sent_exactly_and_retained(tmp_path: Path) -> N
         )
         assert {key: posted[key] for key in SAMPLING_FIELDS if key in posted} == sampling
         assert posted["seed"] == 7
-        assert record["generation_sent"] == recorded_generation(
+        assert record["generation_sent"] == recorded_wire_decimals(
             {"max_tokens": 10, **sampling, "seed": 7}
         )
-        assert record["sampling_effective"] == recorded_sampling(
+        assert record["sampling_effective"] == recorded_wire_decimals(
             engine_effective_sampling(sampling)
         )
 
@@ -415,7 +414,7 @@ def test_chandra_native_capability_is_attestator_1_only_and_omits_request_seed(
     assert record["schema"] == CHANDRA_NATIVE_CALL_RECORD_SCHEMA
     assert set(record) == CHANDRA_NATIVE_CALL_RECORD_FIELDS
     assert record["native_attempt_intent_ref"] == intent_ref
-    assert record["sampling_effective"] == recorded_sampling(expected)
+    assert record["sampling_effective"] == recorded_wire_decimals(expected)
 
 
 def test_chandra_native_dispatch_is_a_one_use_client_minted_capability(tmp_path: Path) -> None:
@@ -533,7 +532,7 @@ def test_a_structure_recovery_attempt_sends_chandras_own_retry_request(
     record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
     posted = endpoint.requests[0]
     assert (posted["temperature"], posted["top_p"], posted["seed"]) == (temperature, top_p, 7)
-    assert record["generation_sent"] == recorded_generation(
+    assert record["generation_sent"] == recorded_wire_decimals(
         {
             **chair_decoding(SHIPPED_POLICY, "designator_structure"),
             "temperature": temperature,
@@ -839,7 +838,7 @@ def test_transport_timeout_retains_the_known_request_and_explicit_response_uncer
     assert set(record) == CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS
     assert record["request_sha256"] == excinfo.value.request_sha256
     assert record["image_sha256s"] == []
-    assert record["generation_sent"] == recorded_generation(
+    assert record["generation_sent"] == recorded_wire_decimals(
         {**chair_decoding(SHIPPED_POLICY, "attestator_1"), "seed": 7}
     )
     assert record["generation_declared"] == {}
@@ -1017,10 +1016,10 @@ def test_call_record_has_the_exact_closed_field_set_and_canonical_bytes(tmp_path
     assert record["kind"] == "chat-completions"
     assert record["request_sha256"] == response.request_sha256
     assert record["image_sha256s"] == []
-    assert record["generation_sent"] == recorded_generation(
+    assert record["generation_sent"] == recorded_wire_decimals(
         {**chair_decoding(SHIPPED_POLICY, "attestator_1"), "seed": 7}
     )
-    assert record["sampling_effective"] == recorded_sampling(
+    assert record["sampling_effective"] == recorded_wire_decimals(
         {**chair_decoding(SHIPPED_POLICY, "attestator_1"), "top_p": 1.0}
     )
     assert record["generation_declared"] == {"top_k": 1}
@@ -1093,7 +1092,7 @@ def test_a_capacity_record_mutated_after_construction_does_not_reach_the_call_re
     capacity["fits"] = False
 
     assert request.capacity is not None
-    assert _plain_capacity(request.capacity) == admitted
+    assert thawed_json(request.capacity) == admitted
     # And the request's own view refuses a write rather than taking one.
     with pytest.raises(TypeError):
         request.capacity["images"][0]["image_prompt_tokens"] = 1  # type: ignore[index]
@@ -1141,15 +1140,13 @@ _DAI_GENERATION: dict[str, object] = {
 def test_a_vendors_float_generation_values_are_recorded_as_the_wire_carried_them(
     tmp_path: Path,
 ) -> None:
-    """The whole of the Attestatores contract's first owed gap, closed and proven.
+    """A float in a generation view is recorded as the exact decimal text found in the posted bytes.
 
-    A live `dai.v1` request could not be recorded at all: the call record goes
-    through `canonical_bytes`, which refuses floats outright, so writing it
-    raised and the request was therefore never made. The record now carries
-    each float as the exact decimal text the request body itself contains,
-    tagged `wire-decimal.v1`, and this test reads that text back out of the
-    *bytes the endpoint actually received* rather than out of the client's own
-    Python values.
+    The call record goes through `canonical_bytes`, which refuses floats, so a
+    live `dai.v1` request records each float as the decimal text the request
+    body itself contains, tagged `wire-decimal.v1`. This test reads that text
+    back out of the *bytes the endpoint actually received* rather than out of
+    the client's own Python values.
     """
 
     client, endpoint, blob_store, _ = _built(tmp_path, chair=_identity(role="attestator_2"))
@@ -1211,16 +1208,25 @@ def test_a_declared_float_that_is_never_sent_is_still_recorded_exactly(tmp_path:
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    ("view", "field"),
+    [("generation_sent", "max_tokens"), ("generation_declared", "temperature")],
+)
 def test_a_nonfinite_generation_value_is_refused_before_anything_is_sent(
-    tmp_path: Path, value: float
+    tmp_path: Path, value: float, view: str, field: str
 ) -> None:
-    """NaN and Infinity are not JSON; Python's encoder emits them anyway."""
+    """NaN and Infinity are not JSON; Python's encoder emits them anyway.
+
+    Each value sits in a field the caller may otherwise name, so only the
+    non-finite check can refuse it.
+    """
 
     client, endpoint, blob_store, _ = _built(tmp_path)
     with client:
-        with pytest.raises(ChairRequestRefusal) as excinfo:
-            client.read(_request(generation_sent={"top_p": value}))
+        with pytest.raises(ChairRequestRefusal, match="not a finite number") as excinfo:
+            client.read(_request(**{view: {field: value}}))
         assert excinfo.value.code == "CHAIR_REQUEST_INVALID"
+        assert f"{view}[{field!r}]" in str(excinfo.value)
     assert endpoint.requests == []
     assert len(blob_store) == 0
 
@@ -1439,6 +1445,31 @@ def test_receipt_drift_refusal_survives_an_unverifiable_shutdown(tmp_path: Path)
             pass
     assert excinfo.value.code == "CHAIR_RECEIPT_DRIFT"
     assert isinstance(excinfo.value.__cause__, ServiceStopError)
+
+    # The unstopped service is still reachable through its manager: once the
+    # endpoint goes away, recovery stops it and frees the card for the next start.
+    endpoint.sticky_after_stop = False
+    manager.recover()
+    FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(chair).release()
+
+
+def test_a_failed_stop_on_exit_can_be_retried_through_the_client(tmp_path: Path) -> None:
+    client, endpoint, _, chair = _built(tmp_path)
+    client._manager.shutdown_timeout_seconds = 0.01
+    client.__enter__()
+    endpoint.sticky_after_stop = True
+    with pytest.raises(ServiceStopError):
+        client.__exit__(None, None, None)
+    # A service whose stop failed is kept for the retry, never read from.
+    with pytest.raises(ServingConfigurationError, match="being stopped"):
+        _ = client.handle
+
+    endpoint.sticky_after_stop = False
+    client.__exit__(None, None, None)
+    with pytest.raises(ServingConfigurationError, match="no active service"):
+        _ = client.handle
+    # The retried stop was verified, so the card's lease is free again.
+    FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(chair).release()
 
 
 # --- never a retry ------------------------------------------------------------

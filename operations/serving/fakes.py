@@ -113,11 +113,13 @@ class FakeProcess:
 
     def terminate(self) -> None:
         self.terminate_calls += 1
-        self.exit_code = 0
+        if self.exit_code is None:
+            self.exit_code = 0
 
     def kill(self) -> None:
         self.kill_calls += 1
-        self.exit_code = -9
+        if self.exit_code is None:
+            self.exit_code = -9
 
     def wait(self, timeout_seconds: float) -> int:
         del timeout_seconds
@@ -754,7 +756,7 @@ class InProcessSurya:
         sizes: Mapping[int, tuple[int, int]],
         identity: ChairIdentity,
         *,
-        manifest_rows: Sequence[Mapping[str, Any]] | None = None,
+        manifest_rows: Sequence[Mapping[str, Any]],
     ) -> SuryaRun:
         self.calls.append((tuple(sorted(pages)), profile.threads))
         versions = self._versions(profile)

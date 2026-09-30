@@ -3,8 +3,9 @@
 It never ranks chairs, retries with another recipe, or falls back from an adapter
 to its base. Pre-launch validation errors (such as a discoverable local environment
 file) propagate as they are; after that, every start failure becomes a refusal naming
-the requested chair; a refusal the registry raised is re-raised unchanged so its reason survives. An
-interrupt is not a chair refusal, because the operator caused it.
+the requested chair; a refusal the registry raised is re-raised unchanged so its reason
+survives, unless cleanup could not be verified, in which case both reasons travel in one new
+refusal. An interrupt is not a chair refusal, because the operator caused it.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ from .config import (
     SubprocessProfile,
     UnsupportedProfile,
     chair_preflight_identity_digest,
+    frozen_json,
     model_and_tokenizer_pins,
     seal_json_object,
 )
@@ -80,13 +82,11 @@ from .residency import ResidencyHandle, ResidencyLease
 # by repository, not role, since tests reuse role names for fixture chairs.
 _HYBRID_ATTENTION_REPOSITORIES = frozenset({"datalab-to/chandra-ocr-2", "Qwen/Qwen3.8-27B"})
 
-# Parses the status out of `parse_openai_answer`'s probe error message. If that
-# wording changes the match stops firing and probe rejections fall back to
-# retrying until the watchdog, which is safe.
-_PROBE_HTTP_STATUS = re.compile(r"HTTP (\d{3})$")
-
-# Only the serving smoke assembly holds this token. It lets an unproven row run
-# start, fixture read and verified stop without a general bypass in ``start``.
+# Two launch-purpose tokens admit an `unproven` row; every other check still
+# runs. The private one is held only by the serving smoke assembly (preflight
+# qualification). The public one is passed by stage assembly for a run under
+# --mechanics-qualification. The launch audit's `launch_purpose` records which
+# token started the service, and `start` has no other bypass.
 _PREFLIGHT_QUALIFICATION_PURPOSE: Final = object()
 MECHANICS_QUALIFICATION_PURPOSE: Final = object()
 _NORMAL_LAUNCH = "normal"
@@ -171,7 +171,9 @@ class AdapterCalibration:
     """A declared deterministic base-versus-adapter activation check.
 
     A vision adapter must set ``requires_image`` so a text-only probe cannot
-    count as evidence for its visual path.
+    count as evidence for its visual path. ``fixture_sha256`` names the bytes
+    the probe carried: the image for a vision probe, and the canonical payload
+    itself for a text probe (:meth:`from_text_payload`).
     """
 
     kind: str
@@ -207,6 +209,11 @@ class AdapterCalibration:
                 raise ServingConfigurationError(
                     "adapter calibration image bytes do not match fixture_sha256"
                 )
+        elif _text_calibration_sha256(canonical_payload) != self.fixture_sha256:
+            raise ServingConfigurationError(
+                "text adapter calibration fixture_sha256 must be the digest of its "
+                "canonical payload"
+            )
 
     def request_payload(self) -> Mapping[str, object]:
         """Return a fresh, revalidated request from the sealed calibration bytes."""
@@ -217,6 +224,17 @@ class AdapterCalibration:
                 "sealed adapter calibration image bytes no longer match fixture_sha256"
             )
         return payload
+
+    @classmethod
+    def from_text_payload(cls, *, kind: str, payload: Mapping[str, object]) -> "AdapterCalibration":
+        """Build a text-only probe whose fixture digest is its own canonical payload."""
+
+        _, canonical_payload = seal_json_object(payload, label="adapter calibration payload")
+        return cls(
+            kind=kind,
+            payload=payload,
+            fixture_sha256=_text_calibration_sha256(canonical_payload),
+        )
 
     @classmethod
     def from_image_fixture(
@@ -257,6 +275,10 @@ class AdapterCalibration:
             fixture_sha256=hashlib.sha256(data).hexdigest(),
             requires_image=True,
         )
+
+
+def _text_calibration_sha256(canonical_payload: str) -> str:
+    return hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,7 +350,11 @@ class ServiceHandle:
 
     @property
     def requests_completed(self) -> int:
-        """Successful page-specific requests, excluding manager readiness probes."""
+        """Successful answers parsed by :meth:`request` and :meth:`request_fixture_image`.
+
+        Readiness probes are not counted, and neither are readings sent through
+        :meth:`request_reading`, whose responses this manager does not parse.
+        """
 
         return self._requests_completed
 
@@ -641,7 +667,7 @@ class ServingManager:
                 runtime_packages=observed_packages,
                 started_at=started_at,
             )
-            sealed_audit = _immutable_json_value(audit)
+            sealed_audit = frozen_json(audit)
             publication = self._publish(receipt, audit)
             handle = ServiceHandle(
                 self,
@@ -764,14 +790,17 @@ class ServingManager:
         else:
             self._active = None
 
-    def recover_failed_start(self) -> None:
-        """Retry cleanup after a failed start kept the pod lease; never a launch path.
+    def recover(self) -> None:
+        """Retry the cleanup a failed start or a failed stop left; never a launch path.
 
-        Once the child and endpoint are proved gone, the lease is released.
+        The manager keeps the process it launched, so recovery does not depend
+        on a caller still holding the service handle. Once the child and
+        endpoint are proved gone, the lease is released.
         """
 
         if self._active is not None:
-            raise ServiceStopError("active service must be stopped through its ServiceHandle")
+            self.stop(self._active)
+            return
         if self._residency_handle is None:
             return
         error = self._attempt_cleanup(self._unready_process, self._unready_endpoint)
@@ -797,6 +826,9 @@ class ServingManager:
             raise ServingConfigurationError(
                 f"adapter chair {identity.role!r} has no resolved base identity"
             )
+        # vLLM is launched with the adapter row's flags over the base's weights,
+        # so the base checkpoint decides whether the adapter row may cache prefixes.
+        _refuse_hybrid_prefix_caching(identity.role, configured_base, profile)
         return configured_base, self._launchable_profile(configured_base, tier)
 
     def _launchable_profile(self, identity: ChairIdentity, tier: str) -> ServingProfile:
@@ -1150,7 +1182,7 @@ class ServingManager:
 
         Stop, verify the endpoint is absent, then release the lease; releasing
         first would let another start run beside a live process. On failure the
-        process and endpoint are kept for :meth:`recover_failed_start`. The error
+        process and endpoint are kept for :meth:`recover`. The error
         is returned, not raised, so it joins the start failure in one refusal.
         """
 
@@ -1186,22 +1218,23 @@ class ServingManager:
         self._residency_handle = None
 
     def _stop_process(self, process: ServerProcess) -> None:
-        if process.poll() is None:
+        # Signalled even when the direct child has already exited: another
+        # member of its process group may still hold the card.
+        try:
+            process.terminate()
+            process.wait(self.shutdown_timeout_seconds)
+        except TimeoutError:
+            process.kill()
             try:
-                process.terminate()
                 process.wait(self.shutdown_timeout_seconds)
-            except TimeoutError:
-                process.kill()
-                try:
-                    process.wait(self.shutdown_timeout_seconds)
-                except TimeoutError as error:
-                    raise ServiceStopError(
-                        f"owned process pid={process.pid} did not exit after TERM and KILL"
-                    ) from error
-            except Exception as error:
+            except TimeoutError as error:
                 raise ServiceStopError(
-                    f"could not stop owned process pid={process.pid}: {error}"
+                    f"owned process pid={process.pid} did not exit after TERM and KILL"
                 ) from error
+        except Exception as error:
+            raise ServiceStopError(
+                f"could not stop owned process pid={process.pid}: {error}"
+            ) from error
         if process.poll() is None:
             raise ServiceStopError(f"owned process pid={process.pid} remains live after stop")
 
@@ -1303,7 +1336,12 @@ def assert_processor_geometry(snapshot: VerifiedSnapshot, profile: ServingProfil
                 f"{error}"
             ) from error
         if not isinstance(document, dict):
-            continue
+            raise ServingConfigurationError(
+                f"chair {profile.chair!r} declares {declared} on its serving row, and "
+                f"{filename} in its verified snapshot is not a JSON object; every image's "
+                "prompt-token cost is computed from the row's numbers, so nothing here "
+                "could confirm them"
+            )
         nested = document.get("image_processor")
         sections = [document] + ([nested] if isinstance(nested, dict) else [])
         observed = {
@@ -1427,18 +1465,30 @@ def _launchable(
             f"digests to {observed_identity_digest!r}; the checkpoint changed after this "
             "profile was proven, so it must be preflighted again before launch"
         )
+    _refuse_hybrid_prefix_caching(identity.role, identity, profile)
+    return profile
+
+
+def _refuse_hybrid_prefix_caching(
+    role: str, weights: ChairIdentity, profile: ServingProfile
+) -> None:
+    """Refuse prefix caching on a row that serves a hybrid Mamba/attention checkpoint.
+
+    ``weights`` is the identity whose checkpoint vLLM loads: the chair itself,
+    or an adapter's base.
+    """
+
     if (
-        identity.source == "huggingface"
-        and identity.repo in _HYBRID_ATTENTION_REPOSITORIES
+        weights.source == "huggingface"
+        and weights.repo in _HYBRID_ATTENTION_REPOSITORIES
         and profile.enable_prefix_caching
     ):
         raise ServingConfigurationError(
-            f"chair {identity.role!r} serves {identity.repo!r}, a hybrid Mamba/attention "
+            f"chair {role!r} serves {weights.repo!r}, a hybrid Mamba/attention "
             "(qwen3_5) checkpoint; vLLM keeps prefix caching over recurrent state opt-in "
             f"for hybrid models, and it only costs recurrent-state memory here -- "
             f"enable_prefix_caching must be false for this chair"
         )
-    return profile
 
 
 def render_vllm_argv(
@@ -1555,8 +1605,6 @@ def _fatal_log_signature(tail: str) -> str | None:
     match aborts a good start every time. `RuntimeError`, `ValueError` and bare
     `traceback` are excluded because vLLM logs harmless ones at startup
     (vllm-project/vllm#12513); a process they kill is caught as exited.
-    `VLLM_ERROR` has no producer in vLLM itself; it is reserved for a launch
-    wrapper that writes into this log.
     """
 
     normalized = tail.lower()
@@ -1568,8 +1616,6 @@ def _fatal_log_signature(tail: str) -> str | None:
         return "LORA_UNSUPPORTED"
     if "unknown model:" in normalized:
         return "UNKNOWN_MODEL"
-    if "vllm_error" in normalized:
-        return "VLLM_ERROR"
     return None
 
 
@@ -1757,10 +1803,8 @@ def _is_deterministic_probe_rejection(error: ReadinessError) -> bool:
     A 5xx while booting is still worth retrying.
     """
 
-    if error.code != "VLLM_PROBE_HTTP_ERROR":
-        return False
-    match = _PROBE_HTTP_STATUS.search(error.detail)
-    return match is not None and 400 <= int(match.group(1)) < 500
+    status = error.http_status
+    return status is not None and 400 <= status < 500
 
 
 def _immutable_reference(value: Mapping[str, str], label: str) -> Mapping[str, str]:
@@ -1815,32 +1859,9 @@ def _active_chat_image_bytes(payload: Mapping[str, object], *, label: str) -> by
     The image rules live in :func:`chat_image_bytes_all`.
     """
 
-    try:
-        images = chat_image_bytes_all(payload, label=label)
-    except ServingConfigurationError as error:
-        # Reword a stray image_url refusal as this caller's single refusal.
-        if "outside a role=user content list" in str(error):
-            raise ServingConfigurationError(
-                f"{label} must contain exactly one active image_url "
-                "content block and no ignored image_url fields"
-            ) from error
-        raise
+    images = chat_image_bytes_all(payload, label=label)
     if len(images) != 1:
         raise ServingConfigurationError(
             f"{label} must contain exactly one active image_url content block and no ignored image_url fields"
         )
     return images[0]
-
-
-def _immutable_json_value(value: object) -> object:
-    """Deep-freeze one already-validated JSON value.
-
-    Used for a live handle's launch audit and for the chair client's capacity and
-    dispatch records.
-    """
-
-    if isinstance(value, Mapping):
-        return MappingProxyType({key: _immutable_json_value(item) for key, item in value.items()})
-    if isinstance(value, (list, tuple)):
-        return tuple(_immutable_json_value(item) for item in value)
-    return value

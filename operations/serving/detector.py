@@ -24,7 +24,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from common.chairs.models import ChairIdentity, ServingDetails
 
-from .config import InProcessProfile
+from .config import InProcessProfile, package_release
 from .errors import ServingConfigurationError
 
 # The one weights file the pinned revision ships, and its bytes, pinned here as
@@ -121,8 +121,7 @@ def _installed_versions(profile: InProcessProfile) -> dict[str, str]:
                 f"the in-process record detector needs {package}=={expected}, and it is not "
                 "installed; sync the pod dependency group before running the Designator"
             ) from error
-        # A local build tag such as `2.13.0+cu130` is the same release.
-        if found.split("+", 1)[0] != expected:
+        if package_release(found) != expected:
             raise ServingConfigurationError(
                 f"the in-process record detector pins {package}=={expected}, and {found} is "
                 "installed; the sealed catalogue would describe an engine that did not run"

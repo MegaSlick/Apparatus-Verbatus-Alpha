@@ -97,17 +97,18 @@ passes `--no-enable-log-requests`, because golden-page bytes and transcriptions 
 diagnostics and a recipe must not turn request logging on.
 
 **Shutdown.** The lease spans probing, launch and verified shutdown. It is released only
-after the child exits and a bounded `/health` poll sees a definite TCP connection refusal; a
+once the launch's whole process group has no running member (vLLM's engine process can
+outlive the server the manager launched) and a bounded `/health` poll sees a definite TCP connection refusal; a
 timeout or other ambiguous failure is not proof of absence. Otherwise the stop reports
-`VLLM_STOP_FAILED` and keeps the lease. `recover_failed_start()` retries only that same
-cleanup; it cannot launch another chair around it.
+`VLLM_STOP_FAILED` and keeps the lease. `recover()` retries only that same cleanup, for a
+failed start or a failed stop, on the process the manager launched; it cannot launch
+another chair around it.
 
 ## Readiness and adapter proof
 
 Readiness is a bounded poll of the exact child and its fresh launch log. It fails early on
 an exited child or a named log signature: `CUDA out of memory`, `EngineDeadError`,
-`LORA_UNSUPPORTED` (`does not support LoRA`), `UNKNOWN_MODEL`, or `VLLM_ERROR` (reserved for
-a launch wrapper that writes to this log; vLLM never prints it). Broad words like
+`LORA_UNSUPPORTED` (`does not support LoRA`) or `UNKNOWN_MODEL`. Broad words like
 `RuntimeError` are deliberately not matched: the poll re-reads the whole tail, so one benign
 line would abort a good start. Success requires all of:
 

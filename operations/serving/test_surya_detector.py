@@ -154,6 +154,9 @@ def _mutated(path: tuple, value=None, *, delete: bool = False) -> dict:
         (("schema",), "surya-page.v0", False, "schema"),
         (("input_ordinal",), 2, False, "input_ordinal"),
         (("image_size",), [WIDTH, HEIGHT + 1], False, "image_size"),
+        (("input_ordinal",), True, False, "input_ordinal"),
+        (("image_size",), [float(WIDTH), float(HEIGHT)], False, "image_size"),
+        (("image_size",), None, False, "image_size"),
         (("heatmap",), None, False, "unknown field"),
         (("layout", "raw"), None, True, "missing field"),
         (("text_detection", "bboxes", 0, "text"), "INK", False, "unknown field"),
@@ -265,7 +268,7 @@ def test_the_fixture_detector_answers_every_page_including_an_empty_one():
     assert first["layout"]["bboxes"][0]["bbox"] == [20.0, 20.0, 180.0, 100.0]
     assert (empty["input_ordinal"], empty["text_detection"]["bboxes"]) == (2, [])
     assert empty["layout"]["bboxes"] == []
-    assert run.run_facts == {"engine": "fixture", "declared_by": "proof/skeleton_fixture.toml"}
+    assert run.run_facts == {"engine": "fixture", "declared_by": "skeleton_fixture.toml"}
 
 
 # --- the serving row -----------------------------------------------------------
@@ -425,6 +428,7 @@ def test_the_runner_runs_under_its_own_interpreter_with_nothing_inherited(enviro
         {1: b"page one", 2: b"page two"},
         {1: (WIDTH, HEIGHT), 2: (WIDTH, HEIGHT)},
         _identity(),
+        manifest_rows=_pinned(),
         runner=child,
     )
     (check_argv, _), (run_argv, child_env) = child.calls
@@ -461,6 +465,7 @@ def test_a_page_the_runner_wrote_nothing_for_is_refused(environment):
             {1: b"a", 2: b"b"},
             {1: (WIDTH, HEIGHT), 2: (WIDTH, HEIGHT)},
             _identity(),
+            manifest_rows=_pinned(),
             runner=child,
         )
 
@@ -476,11 +481,13 @@ def test_documents_that_disagree_about_their_run_are_refused(environment):
             {1: b"a", 2: b"b"},
             {1: (WIDTH, HEIGHT), 2: (WIDTH, HEIGHT)},
             _identity(),
+            manifest_rows=_pinned(),
             runner=child,
         )
 
 
 def _one_page(child, **kwargs):
+    kwargs.setdefault("manifest_rows", _pinned())
     return run_surya_subprocess(
         _profile(), Path("/b"), {1: b"a"}, {1: (WIDTH, HEIGHT)}, _identity(), runner=child, **kwargs
     )
@@ -511,6 +518,7 @@ def test_the_runner_s_timeout_grows_with_the_pages_it_reads(environment):
         {1: b"a", 2: b"b", 3: b"c"},
         {ordinal: (WIDTH, HEIGHT) for ordinal in (1, 2, 3)},
         _identity(),
+        manifest_rows=_pinned(),
         runner=child,
     )
     # The version check gets the startup allowance; the run adds 60 s a page.
@@ -519,13 +527,20 @@ def test_the_runner_s_timeout_grows_with_the_pages_it_reads(environment):
 
 def test_an_empty_page_set_is_refused_by_name(environment):
     with pytest.raises(SuryaOutputRefusal, match="no page to run on"):
-        run_surya_subprocess(_profile(), Path("/b"), {}, {}, _identity(), runner=FakeChild())
+        run_surya_subprocess(
+            _profile(), Path("/b"), {}, {}, _identity(), manifest_rows=_pinned(), runner=FakeChild()
+        )
     with pytest.raises(SuryaOutputRefusal, match="no page to run on"):
         fixture_surya_run([], [], {}, _identity(), None)
 
 
 def _manifest(weights):
     return [{"path": contract.BUNDLE_FILE, "sha256": "b" * 64, "size": 9}, *weights]
+
+
+def _pinned():
+    """The manifest whose weights are the ones `_run_facts` names."""
+    return _manifest(_run_facts()["weights"])
 
 
 def test_the_weights_a_run_names_must_be_the_files_the_manifest_pins(environment):
@@ -539,9 +554,18 @@ def test_the_weights_a_run_names_must_be_the_files_the_manifest_pins(environment
         _one_page(FakeChild(), manifest_rows=_manifest(extra))
 
 
-def test_run_facts_that_name_another_version_than_the_environment_are_refused(environment):
+@pytest.mark.parametrize(
+    "run",
+    [
+        {**_run_facts(), "surya_ocr": "0.22.0"},
+        {**_run_facts(), "torch": "2.14.1"},
+        {**_run_facts(), "threads": 3},
+        {"engine": "fixture", "declared_by": "skeleton_fixture.toml"},
+    ],
+)
+def test_run_facts_that_do_not_describe_the_requested_run_are_refused(environment, run):
     document = _document(1)
-    document["run"]["surya_ocr"] = "0.22.0"
+    document["run"] = run
     with pytest.raises(SuryaOutputRefusal, match="do not describe the run"):
         _one_page(FakeChild(documents={1: document}))
 

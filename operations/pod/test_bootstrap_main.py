@@ -1806,9 +1806,9 @@ def _render_recipes(rows: list[dict[str, object]]) -> str:
 SURYA_CHAIR = "designator_surya"
 
 
-def _surya_environment_answers(identity, profile, weights_root, golden_page):  # type: ignore[no-untyped-def]
+def _surya_environment_answers(identity, profile, weights_root, golden_page, manifest_rows):  # type: ignore[no-untyped-def]
     """Surya's runner answering its golden-page run with the row's own pins."""
-    del identity, weights_root, golden_page
+    del identity, weights_root, golden_page, manifest_rows
     return {
         "versions": {
             "surya_ocr": profile.required_packages["surya-ocr"],
