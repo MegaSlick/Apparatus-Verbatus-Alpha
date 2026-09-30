@@ -10,6 +10,7 @@ from retained bytes".
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -392,7 +393,7 @@ def witness_reading(
     if "outcome" not in testimonium:
         raise SchemaRefusal("a page Testimonium records no outcome")
     if testimonium["outcome"] != READ_OUTCOME:
-        return {"units": [], "findings": [], "answer_health": {"truncated": None, "repetition": []}}
+        return {"units": [], "findings": [], "answer_health": copy.deepcopy(NO_ANSWER_HEALTH)}
     payload = testimonium.get("payload")
     if not isinstance(payload, dict):
         raise SchemaRefusal("a page Testimonium has no payload to read units from")
@@ -408,21 +409,3 @@ def witness_reading(
         f"witness adapter {adapter!r} has no page-unit reader; its page cannot be shown in its "
         f"own units (the readers are {sorted(UNIT_KINDS)})"
     )
-
-
-def witness_units(
-    testimonium: dict[str, Any],
-    *,
-    adapter: str,
-    page_size: tuple[int, int],
-    read_bytes: Callable[[str], bytes],
-    fixture_placeholders: bool = False,
-) -> list[dict[str, Any]]:
-    """`witness_reading`'s units alone."""
-    return witness_reading(
-        testimonium,
-        adapter=adapter,
-        page_size=page_size,
-        read_bytes=read_bytes,
-        fixture_placeholders=fixture_placeholders,
-    )["units"]
