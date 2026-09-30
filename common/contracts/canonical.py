@@ -28,6 +28,7 @@ import ast
 import hashlib
 import json
 from collections.abc import Iterator
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 from .errors import SchemaRefusal
@@ -255,6 +256,15 @@ def walk_dicts(value: Any, cycle_refusal: str) -> Iterator[dict]:
 def is_plain_int(value: Any) -> bool:
     """An `int` that is not a `bool`, which `isinstance` alone would admit."""
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def half_even_bp(value: float) -> int:
+    """A score in [0, 1] as integer basis points, rounded half to even on its decimal text.
+
+    Records hold no floats, so a model's score enters one through this rule:
+    ``0.00015`` is 2 bp, where ``round(0.00015 * 10_000)`` gives 1.
+    """
+    return int((Decimal(repr(value)) * 10_000).quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
 
 
 def is_sha256(value: Any) -> bool:

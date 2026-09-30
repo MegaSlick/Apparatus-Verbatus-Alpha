@@ -43,6 +43,7 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import REAL_INGRESS, parse_ingress_record  # noqa: E402
 from common.contracts.canonical import (  # noqa: E402
     digest_of,
+    half_even_bp,
     is_plain_int,
     self_hash,
 )
@@ -2574,7 +2575,7 @@ def _publish_detector_records(
             receipt_ref=secondary["receipt_ref"],
             response_ref=raw_ref,
             detections=[
-                {"obb": quantized[index], "score_bp": round(detections[index]["score"] * 10_000)}
+                {"obb": quantized[index], "score_bp": half_even_bp(detections[index]["score"])}
                 for index in cuttable
             ],
         )
@@ -2601,7 +2602,7 @@ def _publish_detector_records(
                 "raw_output_ref": raw_ref,
                 "quantization": DETECTOR_QUANTIZATION,
                 "score_quantization": DETECTOR_SCORE_QUANTIZATION,
-                "score_bp": round(detection["score"] * 10_000),
+                "score_bp": half_even_bp(detection["score"]),
                 "class_id": detection["class_id"],
                 "class_name": detection["class_name"],
                 "raw_proposal": proposal,

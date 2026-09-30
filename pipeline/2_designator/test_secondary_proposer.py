@@ -559,6 +559,37 @@ def test_an_in_process_detector_never_switches_on_the_pixel_rescue(tmp_path, mon
     assert not kinds & {"secondary-proposal", "rescue-crop"}
 
 
+def test_a_detector_score_enters_its_record_and_proposal_rounded_half_to_even(
+    tmp_path, monkeypatch
+):
+    """0.00015 is 2 bp on its decimal text, where float arithmetic gives 1.4999... and 1."""
+    import dataclasses
+
+    designator = load_stage("2_designator")
+    context = _prepared_context(
+        designator, tmp_path / "runs", _configured(tmp_path), "score rounding test"
+    )
+    real_secondary = designator.secondary_provenance
+    corners = DECLARED_DETECTIONS[0]["corners"]
+
+    def scoring(context):
+        record, detector = real_secondary(context)
+        return record, dataclasses.replace(
+            detector,
+            _detect=lambda _png, ordinal: (
+                [{"corners": corners, "score": 0.00015, "class_id": 0}] if ordinal == 1 else []
+            ),
+        )
+
+    monkeypatch.setattr(designator, "secondary_provenance", scoring)
+    assert round(0.00015 * 10_000) == 1
+    assert designator.initial_pass(context) is False
+    context.finish()
+    [record] = _records(context, designator, "detector-record")
+    assert record["payload"]["score_bp"] == 2
+    assert record["payload"]["raw_proposal"]["score_bp"] == 2
+
+
 def test_detector_records_alone_never_hold_the_designator(tmp_path):
     """Records are evidence, not holds: a clean page with records still exits complete."""
     designator = load_stage("2_designator")
