@@ -739,13 +739,30 @@ def check_subprocess_environment(
 
     The run starts with the environment's version check against the row's
     pins, then loads the verified weights and reads one small page, so a broken
-    environment or bundle fails here rather than in the paid run after it.
+    environment or bundle fails here rather than in the paid run after it. The
+    weights the run names are checked against the files under the weights root,
+    whose manifest must digest to the chair's pin.
     """
+    from common.chairs.manifests import build_manifest, manifest_digest
     from common.imaging import dimensions
+    from operations.serving.errors import ServingConfigurationError
     from operations.serving.surya_detector import run_surya_subprocess
 
+    manifest = build_manifest(weights_root)
+    if manifest_digest(manifest) != identity.digest_manifest:
+        raise ServingConfigurationError(
+            f"the weights under {weights_root} do not digest to chair {identity.role}'s "
+            "pinned manifest"
+        )
     data = golden_page.read_bytes()
-    run = run_surya_subprocess(profile, weights_root, {1: data}, {1: dimensions(data)}, identity)
+    run = run_surya_subprocess(
+        profile,
+        weights_root,
+        {1: data},
+        {1: dimensions(data)},
+        identity,
+        manifest_rows=manifest.to_record(),
+    )
     page = run.pages[1].document
     return {
         "versions": {key: run.run_facts[key] for key in _MEASURED_RUN_FACTS},

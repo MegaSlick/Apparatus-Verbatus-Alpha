@@ -1068,3 +1068,9 @@ def thawed_json(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return [thawed_json(item) for item in value]
     return value
+
+
+def package_release(version: str) -> str:
+    """The release a package version names: a local build tag such as `+cu130` is dropped."""
+
+    return version.split("+", 1)[0]

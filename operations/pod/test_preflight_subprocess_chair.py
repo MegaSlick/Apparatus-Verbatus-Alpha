@@ -7,10 +7,14 @@ the CPU, and records what that run measured.
 
 from __future__ import annotations
 
+import dataclasses
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from common.chairs.config import load_models_toml
+from common.chairs.manifests import build_manifest, manifest_digest
 from operations.pod.preflight import (
     GpuProfile,
     PreflightRunner,
@@ -157,6 +161,19 @@ def test_a_missing_golden_page_runs_nothing_and_is_already_red(tmp_path):
     assert report.to_record()["subprocess_receipts"] == []
 
 
+def test_the_production_check_refuses_weights_that_are_not_the_pinned_bundle(tmp_path):
+    from operations.pod import preflight
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "weights.bin").write_bytes(b"w")
+    recipes = load_serving_recipes(_catalogue(tmp_path))
+    identity = load_models_toml(ROOT / "config" / "models.toml").chairs["designator_surya"]
+    profile = recipes.for_identity(identity, "generic-48gb")
+    with pytest.raises(ServingConfigurationError, match="pinned manifest"):
+        preflight.check_subprocess_environment(identity, profile, bundle, GOLDEN_PAGE)
+
+
 def test_the_production_check_runs_the_runner_on_the_golden_page(tmp_path, monkeypatch):
     from operations.pod import preflight
     from operations.serving import surya_detector
@@ -167,16 +184,20 @@ def test_the_production_check_runs_the_runner_on_the_golden_page(tmp_path, monke
     (bundle / "weights.bin").write_bytes(b"w")
     seen = []
 
-    def run(profile, weights_root, pages, sizes, identity):  # type: ignore[no-untyped-def]
-        seen.append((weights_root, sorted(pages), sizes))
-        return InProcessSurya([], [])(profile, weights_root, pages, sizes, identity)
+    def run(profile, weights_root, pages, sizes, identity, *, manifest_rows):  # type: ignore[no-untyped-def]
+        seen.append((weights_root, sorted(pages), sizes, manifest_rows))
+        return InProcessSurya([], [])(
+            profile, weights_root, pages, sizes, identity, manifest_rows=manifest_rows
+        )
 
     monkeypatch.setattr(surya_detector, "run_surya_subprocess", run)
     recipes = load_serving_recipes(_catalogue(tmp_path))
-    identity = load_models_toml(ROOT / "config" / "models.toml").chairs["designator_surya"]
+    configured = load_models_toml(ROOT / "config" / "models.toml").chairs["designator_surya"]
+    manifest = build_manifest(bundle)
+    identity = dataclasses.replace(configured, digest_manifest=manifest_digest(manifest))
     profile = recipes.for_identity(identity, "generic-48gb")
     measured = preflight.check_subprocess_environment(identity, profile, bundle, GOLDEN_PAGE)
-    assert seen == [(bundle, [1], {1: (200, 260)})]
+    assert seen == [(bundle, [1], {1: (200, 260)}, manifest.to_record())]
     assert measured["versions"]["surya_ocr"] == "0.22.1"
     assert measured["golden_page"] == {
         "lines": 0,

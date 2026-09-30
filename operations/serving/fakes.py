@@ -756,7 +756,7 @@ class InProcessSurya:
         sizes: Mapping[int, tuple[int, int]],
         identity: ChairIdentity,
         *,
-        manifest_rows: Sequence[Mapping[str, Any]] | None = None,
+        manifest_rows: Sequence[Mapping[str, Any]],
     ) -> SuryaRun:
         self.calls.append((tuple(sorted(pages)), profile.threads))
         versions = self._versions(profile)

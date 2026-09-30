@@ -195,7 +195,7 @@ def test_the_fixture_path_publishes_one_census_per_page_and_one_record_per_detec
             f"{page_id}-surya-block-{n}" for n in range(1, len(declared_blocks) + 1)
         ]
         assert payload["authoritative"] is False
-        assert payload["run"] == {"engine": "fixture", "declared_by": "proof/skeleton_fixture.toml"}
+        assert payload["run"] == {"engine": "fixture", "declared_by": "skeleton_fixture.toml"}
         for n, (subject, row) in enumerate(
             zip(payload["line_subjects"], declared_lines, strict=True), 1
         ):
@@ -400,7 +400,7 @@ def test_the_live_pass_runs_surya_only_after_the_structure_chair_has_answered(
             seen["checked_before"] = len(endpoint.requests)
             return super().check(profile)
 
-        def __call__(self, profile, bundle_root, pages, sizes, identity, *, manifest_rows=None):
+        def __call__(self, profile, bundle_root, pages, sizes, identity, *, manifest_rows):
             seen["answers_before"] = len(_artifacts(root, DESIGNATOR, STRUCTURE_ANSWER_KIND))
             seen["requests_before"] = len(endpoint.requests)
             seen["profile"] = (profile.kind, profile.device, profile.threads)
