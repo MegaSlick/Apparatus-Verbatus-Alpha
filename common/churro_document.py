@@ -678,6 +678,53 @@ def parse_churro_document(
     }
 
 
+def _outside_runs(page: ET.Element) -> list[str]:
+    """The text `_page_sections` finds outside this page's sections, in document order."""
+    runs = [page.text]
+    stack: list[tuple[str, ET.Element]] = [("enter", child) for child in reversed(page)]
+    while stack:
+        step, element = stack.pop()
+        if step == "tail":
+            runs.append(element.tail)
+            continue
+        stack.append(("tail", element))
+        name = _local(element.tag)
+        if name == PAGE_ELEMENT or name in PAGE_SECTIONS:
+            continue
+        runs.append(element.text)
+        stack.extend(("enter", child) for child in reversed(element))
+    return [run for run in runs if run]
+
+
+def text_outside_sections(
+    raw: bytes, *, system_prompt: str | None = None, max_bytes: int | None = None
+) -> str:
+    """The text a `HistoricalDocument` answer wrote outside every page section.
+
+    What `page-text-outside-sections` names without quoting: a `Page`'s own
+    text, the tails of its children and the text of any element that is not a
+    section, over every page in document order, each run's ASCII whitespace
+    collapsed to one space as a line's is, the non-empty runs joined by a
+    newline. Empty for any other shape or state, which has no sections.
+    """
+    document = parse_churro_document(raw, system_prompt=system_prompt, max_bytes=max_bytes)
+    if document["state"] != "parsed" or document["shape"] != "historical-document":
+        return ""
+    body = trim_leading_prompt(bytes(raw).decode("utf-8"), system_prompt).lstrip()
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        # It parsed after the lossless escape, as `parse_churro_document` read it.
+        root = ET.fromstring(_escape_stray_markup(body)[0])
+    runs = (
+        " ".join(part for part in _WHITESPACE_RUN.split(run) if part)
+        for page in root.iter()
+        if page is not root and _local(page.tag) == PAGE_ELEMENT
+        for run in _outside_runs(page)
+    )
+    return "\n".join(run for run in runs if run)
+
+
 _PARSED_FIELDS: Final = frozenset(
     {
         "state",
