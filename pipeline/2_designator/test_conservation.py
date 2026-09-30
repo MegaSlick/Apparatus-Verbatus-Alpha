@@ -9,7 +9,7 @@ reconciliation is supposed to be checking would not be testing anything.
 import random
 
 import pytest
-from _test_support import label_components_reference
+from common.test_background_components import label_components_reference
 from conservation import reconcile
 from structure import (
     PRIMARY_MARGIN,
@@ -47,7 +47,7 @@ def paint_pixel(rows: list[bytearray], x: int, y: int, value: int = INK) -> None
 def _legacy_reference(width, height, rows, claimed_bounds, gap_tolerance_px):
     """The old pixel-set algorithm, kept as an independent equivalence oracle.
 
-    Labels through `_test_support.label_components_reference`, not the current
+    Labels through `common/test_background_components.py::label_components_reference`, not the current
     row-oriented `structure.label_components` -- otherwise this would compare
     `conservation`'s row runs against the same row-run labeller
     rather than the independent pixel-set definition both answer to.

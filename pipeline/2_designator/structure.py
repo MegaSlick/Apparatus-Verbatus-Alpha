@@ -21,7 +21,7 @@ other are treated as one component. This is an ordinary morphological "close"
 before labelling.
 
 `label_components` is a fast row-run labeller, checked against the retired
-per-pixel implementation kept in `_test_support.py` as the oracle.
+per-pixel implementation kept in `common/test_background_components.py`.
 """
 
 from common.background import (  # noqa: F401  (re-exported: see the note above)

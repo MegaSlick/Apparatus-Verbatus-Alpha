@@ -90,7 +90,7 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
     here.
 
     A row-run substitution over the retired per-pixel union-find
-    (kept in `pipeline/2_designator/_test_support.py` as this one's oracle), made on
+    (kept in `common/test_background_components.py` as this one's oracle), made on
     measurement: the per-pixel version cost `ink_pixels x radius^2` dictionary
     operations, measured at 383 s and 2.17 GB for one photographed page at the
     sealed `gap_tolerance_px = 3`. Real ink is horizontally contiguous, so a
@@ -99,7 +99,7 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
 
     The contract is unchanged and proved, not asserted: same components, same
     bounds, same `gap_tolerance_px` semantics, and the same total order (origin
-    `(top, left)`, ties broken by sorted `(x, y)` ink), with `test_structure.py`
+    `(top, left)`, ties broken by sorted `(x, y)` ink), with `test_background_components.py`
     comparing the two implementations directly on every page shape.
     """
     return [
