@@ -1,4 +1,12 @@
-"""The sealed, non-model policy for R5a's prior-draft protocol."""
+"""The sealed, non-model policy for R5a's prior-draft protocol.
+
+It also seals what one Perlector call reads (`reading_unit`) and, for the page
+path, the feed switches (`[feed]`, `validate_feed_table`). The page feed shows
+witnesses under the run's witness regime: `blinded` hides chair and model
+names, so a witness is a pseudonymous label and a letter; the labels a witness
+wrote on its own units (a layout block's label, a section name) are part of
+its report and are shown as given under either regime.
+"""
 
 from __future__ import annotations
 
@@ -61,7 +69,7 @@ _STRING_FIELDS: Final = frozenset(
 PAGE_IMAGE_SETTINGS: Final = frozenset({"legible", "full", "off"})
 WITNESS_UNIT_SETTINGS: Final = frozenset({"own", "flat"})
 ALL_WITNESSES: Final = "all"
-# Crops on request are later work; until then the only accepted value is off.
+# Crops: off is the only setting this build applies.
 CROP_SETTINGS: Final = frozenset({"off"})
 # "boxes" adds a second image: a copy of the page render with every shown boxed
 # candidate outlined and labelled with its id (`page_overlay.py`).
