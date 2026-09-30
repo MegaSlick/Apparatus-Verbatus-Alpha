@@ -96,6 +96,7 @@ from .manager import (
     _ENDPOINT_ANSWERED_UNREADY,
     _ENDPOINT_REFUSED,
     _ENDPOINT_UNREACHABLE,
+    _HYBRID_ATTENTION_REPOSITORIES,
     _WATCHDOG_TAIL_BYTES,
     MECHANICS_QUALIFICATION_PURPOSE,
     PROCESSOR_CONFIG_FILENAMES,
@@ -2637,7 +2638,12 @@ def test_real_catalogue_covers_each_chair_and_names_unservable_tiers():
             assert isinstance(profile, ServingProfile)
             assert profile.preflight_state == "unproven"
             assert profile.required_packages["vllm"] == "0.30.0"
+            if identity.repo in _HYBRID_ATTENTION_REPOSITORIES:
+                assert profile.enable_prefix_caching is False, (identity.role, tier)
             assert serving_mode_for(real_catalogue, identity, tier) == "live"
+    # A hybrid repository missing from the real roster would make the check
+    # above pass without checking anything.
+    assert _HYBRID_ATTENTION_REPOSITORIES <= {identity.repo for identity in configured}
 
 
 def test_an_in_process_row_is_never_launched_as_a_server() -> None:
@@ -5045,33 +5051,47 @@ def test_generation_config_vllm_is_rendered_on_the_launch(tmp_path: Path) -> Non
     assert argv[argv.index("--generation-config") + 1] == "vllm"
 
 
+@pytest.mark.parametrize(
+    ("role", "repo", "recipe", "served_model_id"),
+    [
+        (
+            "attestator_1",
+            "datalab-to/chandra-ocr-2",
+            "unproven-real-attestatores",
+            "attestator-1-api",
+        ),
+        ("perlector", "Qwen/Qwen3.8-27B", "unproven-real-perlector", "perlector-api"),
+    ],
+)
 def test_a_hybrid_attention_checkpoint_refuses_to_launch_with_prefix_caching_on(
-    tmp_path: Path,
+    tmp_path: Path, role: str, repo: str, recipe: str, served_model_id: str
 ) -> None:
     """Chandra-2 and the Perlector, named by repository -- never by role.
 
     Role names are reused across this whole suite as generic fixture
     identifiers (``test_client.py``'s default identity is literally
     ``attestator_1``), so this refusal must be keyed on the exact real
-    checkpoint, not on a role a fixture happens to share.
+    checkpoint, not on a role a fixture happens to share. With the switch off,
+    the launch must pass the explicit off flag: vLLM turns prefix caching on
+    for hybrids when the flag is absent.
     """
 
     chair = ChairIdentity(
-        role="attestator_1",
+        role=role,
         source="huggingface",
-        repo="datalab-to/chandra-ocr-2",
+        repo=repo,
         path=None,
         revision=REVISION,
         digest_manifest=MANIFEST,
-        manifest="manifests/attestator_1.json",
+        manifest=f"manifests/{role}.json",
         adapter_of=None,
-        serving_recipe="unproven-real-attestatores",
+        serving_recipe=recipe,
         license_note="test identity only",
     )
     row = profile_row(
-        recipe="unproven-real-attestatores",
-        chair="attestator_1",
-        served_model_id="attestator-1-api",
+        recipe=recipe,
+        chair=role,
+        served_model_id=served_model_id,
         port=8102,
     )
     row["enable_prefix_caching"] = True
@@ -5079,7 +5099,7 @@ def test_a_hybrid_attention_checkpoint_refuses_to_launch_with_prefix_caching_on(
         tmp_path,
         identities={chair.role: chair},
         profiles=(row,),
-        model_ids=("attestator-1-api",),
+        model_ids=(served_model_id,),
     )
 
     with pytest.raises(ServingRecipeRefusal, match="hybrid Mamba/attention"):
@@ -5093,10 +5113,12 @@ def test_a_hybrid_attention_checkpoint_refuses_to_launch_with_prefix_caching_on(
         tmp_path / "off",
         identities={chair.role: chair},
         profiles=(off_row,),
-        model_ids=("attestator-1-api",),
+        model_ids=(served_model_id,),
     )
     manager.start(chair, TIER).stop()
-    assert launcher.calls
+    argv, _log_path = launcher.calls[0]
+    assert "--no-enable-prefix-caching" in argv
+    assert "--enable-prefix-caching" not in argv
 
 
 def test_a_fixture_role_sharing_the_same_name_is_unaffected_by_the_hybrid_check(
