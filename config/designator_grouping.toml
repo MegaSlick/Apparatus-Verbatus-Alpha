@@ -4,22 +4,21 @@
 # left absolute wherever it is not.
 #
 # `[grouping.page_fraction_bp]` holds thresholds that scale with the page:
-# integer basis points (1/10000), never a float -- canonical artifacts carry
-# integers, never floats (`common/contracts/canonical.py`), and
-# `config/designator_padding.toml` already ruled this project's fractional
-# policy values are basis points for exactly that reason. Resolve a field to
+# integer basis points (1/10000), never a float, because canonical artifacts
+# carry integers, never floats (`common/contracts/canonical.py`); every
+# fractional policy value in this project is basis points for that reason,
+# as in `config/designator_padding.toml`. Resolve a field to
 # pixels with `geometry._pad_amount(dimension, bp)` -- round-half-up, pure
 # integer arithmetic -- never write a second rounding rule.
 #
 # Each field's basis is named below because it is NOT uniform: five fields
 # are a fraction of the page's own HEIGHT and one (`margin_bp`) is a fraction
-# of the page's own WIDTH. `page_edge_reach_bp` was the sixth height-based
-# field until 2026-09-06 and is now `[grouping.continuation]`'s only field,
-# because it was re-derived on 44 real pages and this table's provenance says, truthfully of
-# everything left in it, that its values are unmeasured fixture conversions. This basis is a design decision recorded in
-# SPEC_C section 2, chosen from what each threshold is compared against in
-# code -- vertical extents for the six height-based fields, the page-width
-# margin lane for `margin_bp` -- not a property recovered from the retired
+# of the page's own WIDTH. `page_edge_reach_bp`, also height-based, lives in
+# `[grouping.continuation]` because it is measured on real pages, while this
+# table's provenance covers unmeasured fixture conversions only. Each basis is
+# chosen from what the threshold is compared against in code -- vertical
+# extents for the height-based fields, the page-width margin lane for
+# `margin_bp` -- not a property recovered from the retired
 # pixel constants themselves: six of the seven were bare pixel counts with no
 # dimension to measure against, and `review_priority_min_dimension_bp`'s own
 # retired constant (`conservation.DEFAULT_REVIEW_PRIORITY_MIN_DIMENSION_PX`)

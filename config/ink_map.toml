@@ -23,9 +23,7 @@
 #   max_interior_dark_bp   how little of the complementary interior may be dark
 #                          for the page's dark population to enter the existing
 #                          interior-mode branch. It does not identify a frame,
-#                          bezel, or page boundary. The retired border-side bound
-#                          refused 52 of 127 historical calibration pages and no
-#                          control that this bound does not.
+#                          bezel, or page boundary.
 #   max_ink_bp             and, on every page whichever branch inferred it, how
 #                          much of the page the inferred paper may leave at or
 #                          below the ink threshold before that value stops being a

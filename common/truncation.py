@@ -1,19 +1,18 @@
 """Truncation is detected by an instrument, not assumed.
 
-ARCHITECTURE: the Perlector "reads through to the end"; truncation is a failure,
-not an output. Spec 08 requires the signals to be declared, each response
-classified `complete | truncated | unknown`, and `unknown` held -- never passed
-as complete. Nothing here decides between witnesses; every signal is computed
+The Perlector reads through to the end, so a truncated reading is a failure,
+not an output. Every signal is declared, each response is classified
+`complete | truncated | unknown`, and `unknown` is held -- never passed as
+complete. Nothing here decides between witnesses; every signal is computed
 over the candidate reading and the region it came from, never over a witness's
 testimony.
 
 Four declared signals. Three are genuinely computed, over the actual reading
 text and the actual region area. The fourth -- the serving engine's own
-stop-reason -- needs a real engine to observe honestly, which this chamber does
-not have; it is reported by the reader implementation
-(`pipeline/4_perlector/reader.py`), which is where a real engine's own answer
-will arrive, and named here as a stand-in rather than disguised as a computed
-one.
+stop-reason -- is observed, not computed: the reader
+(`pipeline/4_perlector/reader.py`) passes on the engine's own answer, and a
+fixture run's declared stand-in is named as one rather than disguised as a
+computed signal.
 
 **A reading whose engine reported nothing is never `complete`.** The three
 computed signals can only ever say a reading does not *look* cut off, and
@@ -52,8 +51,8 @@ from common.perlector_audit import (
     truncation_classification,
 )
 
-# The one vocabulary, owned by the shared surface every consumer re-derives the
-# sealed verdict with; these names stay for this stage's own readers.
+# The one vocabulary, from the shared surface every consumer re-derives the
+# sealed verdict with, under the names this module's readers use.
 COMPLETE: Final = TRUNCATION_COMPLETE
 TRUNCATED: Final = TRUNCATION_TRUNCATED
 UNKNOWN: Final = TRUNCATION_UNKNOWN

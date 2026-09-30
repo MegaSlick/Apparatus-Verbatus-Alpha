@@ -24,38 +24,9 @@ Surya's reading order.
 ## Units, re-derived from retained bytes
 
 A unit is `{ordinal, box_px | None, label | None, text}` in the witness's own
-order. Each adapter's units are re-derived from the raw response the page
-Testimonium retains, read digest-checked, never taken from a field the record
-merely states:
-
-* Chandra (`chandra.v1`): the top-level layout blocks of its answer
-  (`chandra_layout.parse_layout_html`), each mapped to sealed-page pixels by
-  `chandra_layout.block_page_bounds`, as the adapter's own `observe` maps them.
-  A blank-page or malformed-bbox block is a unit with no box. A block's text is
-  Chandra's text view of its blocks (`chandra-layout-text.v1`): markup removed,
-  character references resolved, whitespace runs outside `<pre>` made one
-  space and block-level tags made line breaks.
-* Churro (`churro.v1`): the non-blank lines of its parsed document text in
-  document order (`churro_document`), labelled with the `Header`/`Body`/`Footer`
-  section they sit in, no box: Churro reports no coordinates.
-* The synthetic fixture's Chandra page, joined from its declared act
-  placeholders with no native capture: one unit per placeholder, read only
-  when the caller says the run is synthetic (`fixture_placeholders`).
-* DAI (`dai.v1`): one unit per record its own detector found
-  (`unit_captures`), box = that record's bounds, text = DAI's response for it
-  decoded exactly, and checked against the span the record states. Two
-  records whose spans overlap are refused by name.
-
-Text a witness's own parse places outside its units -- Chandra's character
-data outside every block (`content-outside-blocks`), Churro's text outside
-every section or every page (`page-text-outside-sections`,
-`document-text-outside-pages`), DAI's page text outside every record's span --
-is one more unit at the end of that witness's order, with no ordinal, no box
-and the label `OUTSIDE_UNITS_LABEL`, shown and accounted like any other:
-nothing a witness said is absent from the feed. Each row also carries the
-findings its parse of the retained bytes names, and its `answer_health`: the
-Testimonium's `content_health.truncated` and every repetition finding its
-native captures carry, which the prompt states on the witness's line.
+order, re-derived from the raw response the page Testimonium retains by
+`common.page_witness_units.witness_reading`; its docstring describes each
+adapter's units.
 
 A shown witness whose page outcome is not `read` is a row with its outcome
 and no units: it is never silently absent. Every chair of the sealed

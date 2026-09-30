@@ -507,8 +507,8 @@ def _validate_reference(reference: Any, what: str) -> None:
 
 EMPTY_DENOMINATOR_REASON: Final = (
     "the Designator proposed no acts at all, so this receipt has no denominator to "
-    "reconcile; a run that marked nothing out on its pages cannot be complete "
-    "(goal 2: a missed act is worse than a poorly read one)"
+    "reconcile; a run that marked nothing out on its pages cannot be complete, "
+    "since a missed act is worse than a poorly read one"
 )
 
 
