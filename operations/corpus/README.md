@@ -115,6 +115,31 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   exactly as if those acts had been misread. `denominators.exported_acts_by_category`
   and `reference_records_scored_by_export_category` are where a reader separates the
   two.
+- `exactly_once.py` — the proof metric of a run read by page (`reading_unit =
+  "page"`). It reads the Perlector's `page-feed`, `page-reading`, `act-region`,
+  `perlectio` (`perlectio.v2`) and `page-accounting` records beside the admitted
+  records of an admission ledger and their `gold.jsonl` text, and gives each gold
+  record one outcome: **exactly once** (one `act` region holds at least half of it and
+  its text is read there), **lost** (no act region holds it, or its text is not in the
+  readings of those that do) or **duplicated** (two or more hold it and its text is
+  read). "Inside" and "text read" are `common/page_accounting.py`'s own rules under the
+  sealed policy the run's accountings name; an accounting sealed under another policy is
+  refused. Beside the outcomes: records split by merge case (a detector record or another
+  witness's boxed unit holding two gold records), how often rule (i) `merged-detection`
+  fired on act regions that truly hold two gold records and on those that hold one,
+  which rules held the pages where records were lost, hold codes, admitted prompt tokens
+  against the engine's `usage.prompt_tokens`, the `length` finish rate, the pages that
+  would fit a 65,536-token context, and seconds per page when `--seconds-per-page` names
+  a `{page_id: seconds}` file (the tree records no durations). The gate is at least 95%
+  of records exactly once and no record lost on a page nothing held; the exit status is 0
+  only when it passes. The JSON report and the printed summary carry counts and
+  identifiers, never text.
+
+  ```sh
+  .venv/bin/python -m operations.corpus.exactly_once --run-root runs --run-id <run> \
+    --gold /path/to/set/gold.jsonl --ledger /path/to/admission-ledger.json \
+    --out /path/outside/the/tree/exactly-once.json
+  ```
 
 All four units exist as of this commit; the fetch protocol, comparator, and
 hold-out sections below describe behaviour that runs, not a shape still to be
