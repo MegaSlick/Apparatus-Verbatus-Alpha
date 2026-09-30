@@ -409,10 +409,12 @@ A chair whose serving row is `kind = "subprocess"` (Surya, run by stage 2 on the
 never served, so preflight reads no golden page through it: it verifies the chair's
 weights against the pinned manifest and asks the chair's own environment for its
 versions (`operations/serving/surya_detector.py::environment_versions`), and goes red
-with the sync command as the remedy when they differ. That environment is built on the
-pod with `uv sync --frozen --project operations/serving/surya`, and its weight bundle is
-fetched once onto the network volume by `operations/serving/surya/prefetch.py`
-(`operations/serving/surya/README.md`, "On the pod").
+with the sync command as the remedy when they differ. Bootstrap's UV_ENVIRONMENT step
+builds that environment on every pod, right after the project's own, with
+`uv sync --locked --project operations/serving/surya`, and counts it in the container
+disk it checks first. Its weight bundle is fetched once onto the network volume by
+`operations/serving/surya/prefetch.py` (`operations/serving/surya/README.md`, "On the
+pod").
 
 ## The pod guard: every pod deletes itself when idle or out of time
 

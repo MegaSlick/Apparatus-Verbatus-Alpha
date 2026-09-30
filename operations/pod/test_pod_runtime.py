@@ -5546,13 +5546,28 @@ def test_new_enough_cuda_host_keeps_library_path_untouched(tmp_path: Path) -> No
     assert environment == {"LD_LIBRARY_PATH": "/original"}
 
 
+# The two environments a pod syncs: the project's serving stack, then Surya's own.
+EXPECTED_SYNCS = [
+    ["/usr/local/bin/uv", "sync", "--locked", "--group", "pod"],
+    ["/usr/local/bin/uv", "sync", "--locked", "--project", "operations/serving/surya"],
+]
+
+
+def _checkout_with_locks(tmp_path: Path) -> tuple[Path, Path]:
+    """A checkout holding the project's uv.lock and Surya's."""
+    repository = tmp_path / "repository"
+    surya = repository / "operations" / "serving" / "surya"
+    surya.mkdir(parents=True)
+    (surya / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    lockfile = repository / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    return repository, lockfile
+
+
 def test_sync_uv_environment_never_pairs_locked_with_frozen(tmp_path: Path) -> None:
     """uv's own CLI refuses `--locked` and `--frozen` together."""
 
-    repository = tmp_path / "repository"
-    repository.mkdir()
-    lockfile = repository / "uv.lock"
-    lockfile.write_text("version = 1\n", encoding="utf-8")
+    repository, lockfile = _checkout_with_locks(tmp_path)
     observed: list[list[str]] = []
 
     def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -5576,11 +5591,31 @@ def test_sync_uv_environment_never_pairs_locked_with_frozen(tmp_path: Path) -> N
 
     result = actions.sync_uv_environment(lockfile)
 
-    assert observed == [["/usr/local/bin/uv", "sync", "--locked", "--group", "pod"]]
-    (argv,) = observed
-    assert "--group" in argv and "pod" in argv
-    assert not ("--locked" in argv and "--frozen" in argv)
+    assert observed == EXPECTED_SYNCS
+    for argv in observed:
+        assert not ("--locked" in argv and "--frozen" in argv)
     assert result["mode"] == "locked"
+    assert result["surya_lockfile"] == str(repository / "operations/serving/surya/uv.lock")
+
+
+def test_sync_uv_environment_refuses_a_checkout_without_suryas_lock(tmp_path: Path) -> None:
+    """Surya's environment is synced from its own lock, or not at all."""
+
+    repository, lockfile = _checkout_with_locks(tmp_path)
+    (repository / "operations/serving/surya/uv.lock").unlink()
+    actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
+        repository=repository,
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,  # type: ignore[arg-type]
+        preflight=lambda: {"color": "green"},
+        runner=lambda argv, cwd: pytest.fail(f"nothing may run: {argv}"),
+        free_bytes=lambda _path: 512 * 1024**3,
+    )
+
+    with pytest.raises(BootstrapStepFailure, match="Surya's lockfile .* is missing"):
+        actions.sync_uv_environment(lockfile)
 
 
 def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
@@ -6105,10 +6140,7 @@ def test_uv_sync_refuses_a_container_disk_too_small_for_the_serving_stack(
 ) -> None:
     """Named before the download, not ENOSPC part way through one already paid for."""
 
-    repository = tmp_path / "repository"
-    repository.mkdir()
-    lockfile = repository / "uv.lock"
-    lockfile.write_text("version = 1\n", encoding="utf-8")
+    repository, lockfile = _checkout_with_locks(tmp_path)
 
     actions = SubprocessBootstrapActions(
         configuration=lambda: {"profile": "fixture"},
@@ -6136,10 +6168,7 @@ def test_uv_sync_adds_up_the_two_copies_that_share_one_filesystem(tmp_path: Path
     them independently would pass the same free bytes twice.
     """
 
-    repository = tmp_path / "repository"
-    repository.mkdir()
-    lockfile = repository / "uv.lock"
-    lockfile.write_text("version = 1\n", encoding="utf-8")
+    repository, lockfile = _checkout_with_locks(tmp_path)
     ran: list[list[str]] = []
 
     def record(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -6165,7 +6194,7 @@ def test_uv_sync_adds_up_the_two_copies_that_share_one_filesystem(tmp_path: Path
     assert ran == []
 
     actions_with(64 * 1024**3).sync_uv_environment(lockfile)
-    assert ran == [["/usr/local/bin/uv", "sync", "--locked", "--group", "pod"]]
+    assert ran == EXPECTED_SYNCS
 
 
 def test_production_bootstrap_refuses_an_incomplete_model_store_receipt(tmp_path: Path) -> None:

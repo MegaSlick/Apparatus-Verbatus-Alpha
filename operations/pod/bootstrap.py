@@ -97,6 +97,20 @@ PREFLIGHT and fails on a missing pin *after* the ten-gigabyte download.
 UV_CACHE_REQUIRED_BYTES = 12 * 1024**3
 REPOSITORY_VENV_REQUIRED_BYTES = 20 * 1024**3
 
+SURYA_ENVIRONMENT = "operations/serving/surya"
+"""Surya's own uv project, synced beside the project's environment.
+
+Surya pins Pillow and OpenCV versions the project cannot share, so the
+Designator runs it through this environment's interpreter
+(``operations/serving/surya/README.md``); preflight asks that interpreter for
+the versions its serving row pins.
+"""
+# Its locked wheels are about 3.1 GB compressed, summed from the sizes its
+# `uv.lock` records for linux x86_64 (torch 2.14.0 and its CUDA libraries are
+# most of it); installed, roughly twice that. Bounds, like the two above.
+SURYA_UV_CACHE_REQUIRED_BYTES = 4 * 1024**3
+SURYA_VENV_REQUIRED_BYTES = 8 * 1024**3
+
 
 def _existing_ancestor(path: Path) -> Path:
     """The nearest existing directory at or above ``path``.
@@ -1067,6 +1081,13 @@ class SubprocessBootstrapActions:
                 f"lockfile {supplied_lockfile} is missing",
                 "Restore the pinned uv.lock before creating an environment.",
             )
+        surya_lockfile = self.repository / SURYA_ENVIRONMENT / "uv.lock"
+        if not surya_lockfile.is_file():
+            raise BootstrapStepFailure(
+                BootstrapStep.UV_ENVIRONMENT,
+                f"Surya's lockfile {surya_lockfile} is missing",
+                "Restore the pinned checkout; Surya's environment is synced from its own uv.lock.",
+            )
         self._require_container_disk()
         # `--group pod` is the serving stack: vLLM, transformers, qwen-vl-utils and
         # everything they drag in, including torch and the CUDA libraries. It is
@@ -1088,11 +1109,19 @@ class SubprocessBootstrapActions:
             ["uv", "sync", "--locked", "--group", "pod"],
             BootstrapStep.UV_ENVIRONMENT,
         )
+        # Surya's environment, from its own committed lock, so preflight finds
+        # the interpreter its subprocess row runs.
+        self._command(
+            ["uv", "sync", "--locked", "--project", SURYA_ENVIRONMENT],
+            BootstrapStep.UV_ENVIRONMENT,
+        )
         return {
             "lockfile": str(supplied_lockfile),
             "sha256": hashlib.sha256(supplied_lockfile.read_bytes()).hexdigest(),
             "mode": "locked",
             "groups": ["pod"],
+            "surya_lockfile": str(surya_lockfile),
+            "surya_sha256": hashlib.sha256(surya_lockfile.read_bytes()).hexdigest(),
         }
 
     def _require_container_disk(self) -> None:
@@ -1122,6 +1151,10 @@ class SubprocessBootstrapActions:
         # this check cannot name. The venv is still checked, and it is the
         # larger of the two.
         wanted[venv_path] = wanted.get(venv_path, 0) + REPOSITORY_VENV_REQUIRED_BYTES
+        if cache_directory:
+            wanted[Path(cache_directory)] += SURYA_UV_CACHE_REQUIRED_BYTES
+        surya_venv = self.repository / SURYA_ENVIRONMENT / REPOSITORY_VENV_DIRECTORY
+        wanted[surya_venv] = wanted.get(surya_venv, 0) + SURYA_VENV_REQUIRED_BYTES
         shared: dict[int, int] = {}
         for path, required in wanted.items():
             try:
@@ -1143,7 +1176,8 @@ class SubprocessBootstrapActions:
                     f"container-local disk is too small for the serving stack: "
                     f"{_gib(free)} GiB free under {path}, and this sync needs about "
                     f"{_gib(shared[key])} GiB there (the wheel cache and the installed "
-                    f"{REPOSITORY_VENV_DIRECTORY} are two copies of it)",
+                    f"{REPOSITORY_VENV_DIRECTORY}s, the project's and Surya's, are two "
+                    "copies of it)",
                     "Create the pod with a larger container disk (container_disk_gb in "
                     "the pod request) and boot again; uv would otherwise fill this disk "
                     "part way through the download and fail with no space left.",

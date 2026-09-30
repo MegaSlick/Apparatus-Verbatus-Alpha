@@ -71,8 +71,9 @@ No file digest is recorded yet: none can be until the first fetch.
 
 None of these steps has been run yet.
 
-1. Build the environment on container-local disk, beside the project's own:
-   `uv sync --frozen --project operations/serving/surya`.
+1. The environment is built on container-local disk, beside the project's own, by the
+   pod bootstrap's UV_ENVIRONMENT step (`uv sync --locked --project
+   operations/serving/surya`); by hand, the same command.
 2. Fetch the bundle once onto the network volume, into the model store's staging area:
    `operations/serving/surya/.venv/bin/python operations/serving/surya/prefetch.py
    --out <volume>/store/staging/surya2-detection`. It refuses to overwrite a bundle that
