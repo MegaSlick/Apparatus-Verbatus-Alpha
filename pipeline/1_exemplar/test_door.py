@@ -2198,7 +2198,7 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
     ]
     assert {page["payload"]["ledger_sha256"] for page in pages} == {ledger["self_hash"]}
 
-    # The Designator now demands its predecessor ink-map seal before it reads
+    # The Designator demands its predecessor ink-map seal before it reads
     # anything, so the ledger boundary this test aims at is reachable only
     # behind a sealed ink map.
     ink_map = subprocess.run(
@@ -3648,9 +3648,9 @@ def test_a_real_admission_names_the_data_handling_policy_that_governed_it(tmp_pa
     storage roots the corpus was admitted under — a real gap even though the
     gate itself works from one in-memory record.
 
-    The run now names it. Not an approval record: nothing here refuses a submission
-    for want of a sign-off, and the per-run approval requirement stays cut, not
-    reinstated. This is provenance, and it travels with the record.
+    The run names it. It is not an approval record: nothing here refuses a
+    submission for want of a sign-off. This is provenance, and it travels with the
+    record.
     """
     files = {"FS-9001.png": png(4, 3)}
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
@@ -4075,7 +4075,7 @@ def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(t
 
 
 # The insert covers the middle of the frame at its own angle; the page around it is
-# the exact complement, decomposed into four axis-aligned rectangles. Unit 5's
+# the exact complement, decomposed into four axis-aligned rectangles. The manifest
 # validator proves the partition, so these numbers are the whole geometry claim.
 _TAPED_FRAME = {"width": 64, "height": 48}
 _TAPED_INSERT = {"x": 20, "y": 12, "w": 24, "h": 16}
@@ -4122,7 +4122,7 @@ def _taped_frames():
 
 
 def _taped_confirmation(frames):
-    """A confirmation over the taped pair, traced to the real Unit 6A instrument."""
+    """A confirmation over the taped pair, traced to the real co-visibility instrument."""
     config = instrument_config()
     proxies = [instrument.build_proxies_from_bytes(item.data, config) for item in frames]
     evidence, evidence_manifest = instrument.candidate_evidence(proxies, config)
@@ -4235,7 +4235,7 @@ def test_synthetic_63_64_65_plus_66_closes_instrument_confirmation_register_and_
 
 
 def test_a_taped_insert_proposal_survives_produce_validation_and_the_door_fan_out():
-    """Unit 5's own structural case, carried end to end without a frame-level crop.
+    """The triage manifest's structural case, carried end to end without a frame-level crop.
 
     A document taped over the page at its own angle has no single gutter for
     auto-split and no global deskew that straightens both surfaces. The proposal is
@@ -4342,7 +4342,7 @@ def test_the_producer_measures_a_cluster_span_in_door_ordinals_not_in_frames():
 
 
 def test_a_submitted_frame_with_no_triage_row_is_refused_and_a_row_outside_the_shard_is_not():
-    """The Door's half of Unit 6B's coverage invariant, in both directions.
+    """The Door's half of the triage producer's coverage invariant, in both directions.
 
     The producer proves exact coverage over what it was handed; the Door proves it
     again over what was actually submitted, because the two sets are only the same
@@ -4693,9 +4693,9 @@ def test_an_undecodable_split_frame_keeps_every_declared_page_ordinal(tmp_path):
 def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(tmp_path):
     """Binding and point-of-use checks must resolve the same triage-modes bytes.
 
-    Both sides now resolve `DEFAULT_TRIAGE_MODES_CONFIG_PATH`, so this holds the
-    weaker remaining coupling: that the binding digest and the point-of-use check
-    still agree about the bytes, whatever that constant later names. Drift would
+    Both sides resolve `DEFAULT_TRIAGE_MODES_CONFIG_PATH`, so this holds the
+    remaining coupling: that the binding digest and the point-of-use check agree
+    about the bytes, whatever that constant names. Drift would
     otherwise compare a run against bytes that did not govern it.
     """
 
@@ -5178,6 +5178,40 @@ def test_a_rendered_pdf_page_is_not_held_to_the_submitted_file_limit(monkeypatch
     assert decision.outcome == "admitted"
 
 
+def test_a_triage_derivative_is_not_held_to_the_submitted_file_limit(monkeypatch):
+    master = jpeg(6, 4)
+    row = _single_part_triage_row(master, frame=(6, 4))
+    monkeypatch.setattr(door.admission, "MAX_SOURCE_BYTES", 1)
+
+    decision = _triage_decision(master, row)
+
+    assert decision.outcome == "admitted"
+
+
+def test_a_fanned_out_raster_page_is_not_held_to_the_submitted_file_limit(monkeypatch):
+    data = multipage_tiff()
+    source = SourceEntry(1, "scan.tif", digest_bytes(data), container_page_index=1)
+    monkeypatch.setattr(door.admission, "MAX_SOURCE_BYTES", 1)
+
+    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+
+    assert decision.outcome == "admitted"
+
+
+def test_a_triage_derivative_past_its_byte_bound_is_refused_in_the_rendered_page_wording(
+    monkeypatch,
+):
+    master = jpeg(6, 4)
+    row = _single_part_triage_row(master, frame=(6, 4))
+    monkeypatch.setattr(door.admission, "MAX_RENDERED_PAGE_BYTES", 1)
+
+    decision = _triage_decision(master, row)
+
+    assert decision.outcome == "refused"
+    assert reason_code(decision.reason) is RefusalReason.TOO_LARGE
+    assert "the rendered page did not itself admit" in decision.reason
+
+
 def test_a_rendered_page_past_its_byte_bound_is_too_large_not_corrupt(monkeypatch):
     data = single_gray_page_pdf()
     source = SourceEntry(1, "reel.pdf", digest_bytes(data), container_page_index=0)
@@ -5241,6 +5275,58 @@ def test_a_source_expansion_could_not_read_is_refused_unreadable_not_re_read(tmp
     assert reason_code(reason) is RefusalReason.UNREADABLE
     assert "the transfer was still settling" in reason
     assert calls == 1
+
+
+def test_a_pdf_whose_pages_could_not_be_counted_is_refused_not_admitted_as_one_page(
+    tmp_path, monkeypatch
+):
+    """A page count that failed once leaves the later pages without ordinals, so a
+    later clean open must not admit page 0 and let the rest disappear."""
+    folder = tmp_path / "pdfs"
+    folder.mkdir()
+    data = two_page_pdf()
+    (folder / "reel.pdf").write_bytes(data)
+    real_count = door.pdf_render.count_pages
+    calls = 0
+
+    def flaky_count(source):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise door.pdf_render.PdfRefusal(
+                RefusalReason.UNREADABLE, "the transfer was still settling"
+            )
+        return real_count(source)
+
+    monkeypatch.setattr(door.pdf_render, "count_pages", flaky_count)
+
+    def unexpected_reader(relative_path: str) -> bytes:
+        raise AssertionError(f"streamed PDF {relative_path} was read into one bytes object")
+
+    def open_source(relative_path: str):
+        return door.inventory.open_submission_source(folder, relative_path)
+
+    files = [{"relative_path": "reel.pdf", "sha256": digest_bytes(data), "bytes": len(data)}]
+    sources = expand_sources(files, unexpected_reader, POLICY, open_source=open_source)
+    assert [source.container_page_index for source in sources] == [0]
+
+    tree, context = open_door(tmp_path, sources)
+    assert (
+        process_sources(
+            context,
+            tree,
+            sources,
+            unexpected_reader,
+            policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
+            open_source=open_source,
+        )
+        == 0
+    )
+    context.finish(DOOR)
+    reason = admissions(tree)[1]["payload"]["reason"]
+    assert reason_code(reason) is RefusalReason.UNREADABLE
+    assert "the transfer was still settling" in reason
 
 
 def test_a_source_grown_past_the_read_bound_does_not_report_a_capped_size(tmp_path, monkeypatch):

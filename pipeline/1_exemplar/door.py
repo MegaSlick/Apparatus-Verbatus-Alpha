@@ -141,9 +141,10 @@ class SourceEntry(NamedTuple):
     # Set during expansion so membership binds inspected bytes before the run
     # seals; None for unreadable and oversized sources.
     computed_sha256: str | None = None
-    # Why expansion could not read this source. Its page count was never
-    # established, so admission refuses it as unreadable rather than re-reading
-    # it under checks meant for a source whose pages were counted.
+    # The published refusal reason, with its own code, when expansion could not
+    # read this source or count its pages. Admission refuses from this record
+    # rather than re-reading: a later read that succeeds would admit one page of
+    # a source whose other pages were never assigned ordinals.
     expansion_refusal: str | None = None
 
 
@@ -569,12 +570,7 @@ def decide(
                 },
             },
         }
-        checked = admission.inspect_rendered_page(page_bytes, policy=policy)
-        if checked.outcome != "admitted":
-            return _refused(checked.reason)
-        return _Decision(
-            "admitted", None, checked.digest, page_bytes, checked.geometry, rendered_from
-        )
+        return _rendered_page_decision(page_bytes, policy, rendered_from)
 
     if source.container_page_index is None:
         if verdict == admission.RENDER_PAGES:
@@ -635,6 +631,13 @@ def decide(
     except FormatRefusal as error:
         return _format_refused(error)
 
+    return _rendered_page_decision(page_bytes, policy, rendered_from)
+
+
+def _rendered_page_decision(
+    page_bytes: bytes, policy: dict[str, str], rendered_from: dict[str, Any]
+) -> _Decision:
+    """Admit a page the Door rendered, or refuse it in one wording for every renderer."""
     checked = admission.inspect_rendered_page(page_bytes, policy=policy)
     if checked.outcome != "admitted":
         # The check's own code stands: a rendered page over its byte bound is
@@ -781,7 +784,9 @@ def expand_sources(
                 data = read_bytes(path)
                 detected = sniff(data)
         except (OSError, inventory.SubmissionInputError) as error:
-            append_declared_pages(None, expansion_refusal=str(error))
+            append_declared_pages(
+                None, expansion_refusal=admission.reason(RefusalReason.UNREADABLE, str(error))
+            )
             continue
         route = admission.classify_detected_format(detected, policy)
         if data is not None and len(data) > MAX_SOURCE_BYTES:
@@ -826,9 +831,20 @@ def expand_sources(
                 page_count = (
                     pdf_render.count_pages(data) if detected == "pdf" else count_raster_pages(data)
                 )
-        except (pdf_render.PdfRefusal, FormatRefusal, inventory.SubmissionInputError, OSError):
+        except pdf_render.PdfRefusal as error:
+            count_refusal = str(error)
+        except FormatRefusal as error:
+            count_refusal = _format_refused(error).reason
+        except (inventory.SubmissionInputError, OSError) as error:
+            count_refusal = admission.reason(RefusalReason.UNREADABLE, str(error))
+        else:
+            count_refusal = None
+        if count_refusal is not None:
             append(
-                0 if route == admission.RENDER_PAGES else None, detected, computed_sha256=computed
+                0 if route == admission.RENDER_PAGES else None,
+                detected,
+                computed_sha256=computed,
+                expansion_refusal=count_refusal,
             )
             continue
         # PDF and TIFF always fan out. Any other multi-frame image fans out too,
@@ -1008,9 +1024,7 @@ def process_sources(
                 active_pdf_key = active_pdf_digest = None
                 active_pdf_document = active_opened_source = None
             if source.expansion_refusal is not None:
-                _publish_refusal(
-                    context, source, RefusalReason.UNREADABLE, source.expansion_refusal
-                )
+                _publish(context, source, outcome="refused", reason=source.expansion_refusal)
                 continue
             if (
                 source.declared_size is not None

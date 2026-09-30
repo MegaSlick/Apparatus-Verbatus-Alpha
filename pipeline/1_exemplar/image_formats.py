@@ -1309,6 +1309,16 @@ def render_raster_page(
         raise unsupported(
             f"{decoded.format}: the installed decoder could not rasterise page {page_index} ({error})"
         ) from error
+    # The record names the mode the sealed bytes decode as, which the Exemplar
+    # checks against the same table; a Pillow that encodes another mode must
+    # refuse here, not seal a mislabelled page.
+    with Image.open(BytesIO(output.getvalue())) as sealed:
+        sealed_mode = sealed.mode
+    if sealed_mode != target_mode:
+        raise unsupported(
+            f"{decoded.format}: page {page_index} in mode {source_mode} encodes as "
+            f"{sealed_mode}, not the {target_mode} its mode policy seals"
+        )
     return (
         output.getvalue(),
         ImageGeometry(decoded.format, decoded.width, decoded.height),
@@ -1317,7 +1327,7 @@ def render_raster_page(
             "source_mode": source_mode,
             "source_bands": source_bands,
             "mode_transform": mode_transform,
-            "output": {"codec": output_codec, "color_mode": rendered.mode},
+            "output": {"codec": output_codec, "color_mode": target_mode},
             "container_page_index": page_index,
             "width": decoded.width,
             "height": decoded.height,

@@ -53,7 +53,16 @@ from common.exemplar_boundary import (  # noqa: E402
     is_triage_derivative_contract,
     verify_triage_derivative,
 )
-from common.imaging import raster_mode_transform  # noqa: E402
+from common.imaging import (  # noqa: E402
+    DRAW_ANNOTATIONS,
+    DRAW_FORMS,
+    MIN_RENDER_DPI,
+    POINTS_PER_INCH,
+    RENDER_BACKGROUND,
+    RENDER_CODEC,
+    RENDER_COLOR_MODE,
+    raster_mode_transform,
+)
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -722,14 +731,14 @@ def _verify_render_contract(
                 for value in (configured, target, minimum)
             )
             or target != max(configured, minimum)
-            or minimum != 72
+            or minimum != MIN_RENDER_DPI
             or contract["configured_target_dpi"] != configured
             or contract["dpi"] != target
             or contract["min_dpi"] != minimum
-            or contract["scale"] != {"numerator": target, "denominator": 72}
-            or contract["background"] != "white"
-            or contract["draw_annotations"] is not True
-            or contract["draw_forms"] is not True
+            or contract["scale"] != {"numerator": target, "denominator": POINTS_PER_INCH}
+            or contract["background"] != RENDER_BACKGROUND
+            or contract["draw_annotations"] is not DRAW_ANNOTATIONS
+            or contract["draw_forms"] is not DRAW_FORMS
         ):
             raise ContractError("a PDF page's render contract changes the sealed pixel recipe")
         effective = contract["effective_dpi"]
@@ -745,7 +754,7 @@ def _verify_render_contract(
                 "a PDF page's render contract does not name the whole DPI it was "
                 "actually rendered at, inside the recipe's own floor and target"
             )
-        if output["codec"] != "png" or output["color_mode"] != "RGB":
+        if output["codec"] != RENDER_CODEC or output["color_mode"] != RENDER_COLOR_MODE:
             raise ContractError("a PDF page's render contract changes its RGB pixel recipe")
     elif contract["renderer"] == "Pillow":
         if container_format == "pdf":

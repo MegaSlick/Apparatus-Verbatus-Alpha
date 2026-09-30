@@ -27,18 +27,15 @@ from PIL import Image
 from render_config import PdfRenderSettings
 
 from common.image_sniff import PDF_HEADER_PREFIX_BYTES, PDF_SIGNATURE
-
-# The floor this module will not render below. A page is capped *downward* toward
-# it rather than refused for being large: a huge legitimate page captured at reduced
-# resolution is a poorly read act, and refusing it outright is a missed one. Only a
-# page whose declared size is degenerate even at the floor refuses.
-MIN_RENDER_DPI: Final = 72
-POINTS_PER_INCH: Final = 72
-RENDER_COLOR_MODE: Final = "RGB"
-RENDER_CODEC: Final = "png"
-RENDER_BACKGROUND: Final = "white"
-DRAW_ANNOTATIONS: Final = True
-DRAW_FORMS: Final = True
+from common.imaging import (
+    DRAW_ANNOTATIONS,
+    DRAW_FORMS,
+    MIN_RENDER_DPI,
+    POINTS_PER_INCH,
+    RENDER_BACKGROUND,
+    RENDER_CODEC,
+    RENDER_COLOR_MODE,
+)
 
 
 class PdfRefusal(ValueError):
@@ -333,10 +330,9 @@ def render_page(opened: OpenPdf, page_index: int, settings: PdfRenderSettings) -
             **renderer_recipe(settings),
             "container_page_index": page_index,
             # What this page was *actually* rendered at, which is the target unless
-            # the page was too large for it. Without this the sealed record could
-            # not say how these pixels were made, and ARCHITECTURE's invariant 3 —
-            # the image a model saw is reproducible from the Exemplar plus the
-            # recorded transforms — would hold only for pages that happened to fit.
+            # the page was too large for it. Without it the image a model saw could
+            # be reproduced from the Exemplar and its recorded transforms only for
+            # pages that happened to fit the target.
             "effective_dpi": dpi,
             "width": width,
             "height": height,

@@ -24,6 +24,7 @@ from image_formats import (
     MIN_BYTES_PER_DECLARED_TIFF_PAGE,
     DecodedRaster,
     FormatRefusal,
+    FormatVerdict,
     ImageGeometry,
     _tiff_unsigned_values,
     count_raster_pages,
@@ -50,6 +51,7 @@ from synthetic_sources import (
 )
 
 from common import image_sniff
+from common.imaging import RasterModeTransform
 
 # --- sniff -----------------------------------------------------------------------
 
@@ -892,6 +894,24 @@ def test_bigtiff_leaves_its_page_count_to_the_decoder():
 # These tests take an admitted source through to the `common/imaging.py` reader
 # that later stages use, so they show the reader's handling on a page the door
 # actually seals.
+
+
+def test_a_page_whose_encoding_leaves_its_policy_mode_is_refused_not_mislabelled(monkeypatch):
+    """The renderer and the Exemplar read one mode table; when the sealed bytes
+    decode as another mode, the renderer refuses rather than record the table's."""
+    output = BytesIO()
+    Image.new("RGB", (2, 2), (1, 2, 3)).save(output, format="PNG")
+    monkeypatch.setattr(
+        image_formats,
+        "raster_mode_transform",
+        lambda mode, bands: RasterModeTransform("identity", "RGBA", "png"),
+    )
+
+    with pytest.raises(FormatRefusal) as refused:
+        render_raster_page(output.getvalue(), 0)
+
+    assert refused.value.verdict is FormatVerdict.UNSUPPORTED
+    assert "encodes as RGB, not the RGBA" in str(refused.value)
 
 
 def test_a_16bit_tiff_seals_samples_a_grayscale_read_does_not_clip():

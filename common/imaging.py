@@ -1023,6 +1023,22 @@ def _to_display_mode(crop: Image.Image) -> Image.Image:
 ENCODER_LOSSLESS_MODES: Final = frozenset(_PNG_LAYOUT) | {"P"}
 
 
+# The Door's PDF page recipe, shared by its PDFium renderer
+# (`pipeline/1_exemplar/pdf_render.py`) and the Exemplar's render-contract check.
+# The DPI floor is the lowest the renderer will go: a page is capped downward
+# toward it rather than refused for being large, since a huge legitimate page
+# captured at reduced resolution is a poorly read act and refusing it outright is
+# a missed one. Only a page whose declared size is degenerate even at the floor
+# refuses.
+MIN_RENDER_DPI: Final = 72
+POINTS_PER_INCH: Final = 72
+RENDER_COLOR_MODE: Final = "RGB"
+RENDER_CODEC: Final = "png"
+RENDER_BACKGROUND: Final = "white"
+DRAW_ANNOTATIONS: Final = True
+DRAW_FORMS: Final = True
+
+
 # The Door's whole-page raster mode policy, shared by its renderer
 # (`pipeline/1_exemplar/image_formats.py`) and the Exemplar's render-contract
 # check, so the two cannot drift. PNG cannot hold I (signed 32-bit), F (float) or
