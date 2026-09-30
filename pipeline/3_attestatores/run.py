@@ -103,6 +103,7 @@ from common.native_witness import (  # noqa: E402
 from common.native_witness import (
     validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
 )
+from common.page_testimonia import declared_page_witness_chairs  # noqa: E402
 from common.request_capacity import RequestCapacityRefusal  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -2372,39 +2373,6 @@ def resolve_attempt(
                 outcome = "read"
 
     return Attempt(outcome, native_payload, witness_reported, capabilities, health, reason)
-
-
-def declared_page_witness_chairs(context) -> set[str]:
-    """Use sealed roster scope; an immutable wrong-scope record cannot be repaired."""
-    roster = context.witness_chairs
-    # Exact `str`, not `isinstance`: a subclass could override hashing or
-    # formatting used below.
-    if (
-        not isinstance(roster, list)
-        or any(type(chair) is not str for chair in roster)
-        or len(roster) != len(set(roster))
-    ):
-        raise SchemaRefusal(
-            "the sealed witness roster is not a unique list of chair names. Page-witness scope "
-            "cannot be derived from this run authority. Start a new run from the sealed models "
-            "configuration; do not edit the existing run"
-        )
-    configured = context.registry.config.chairs
-    unknown = set(roster) - set(configured)
-    if unknown:
-        raise SchemaRefusal(
-            "the sealed witness roster names chair(s) absent from the current models "
-            "configuration: "
-            f"{sorted(unknown)} not in {sorted(configured)}. The run authority and current models "
-            "configuration do not describe the same witness set. Reopen the run with its original "
-            "models configuration or start a new run; do not edit sealed evidence"
-        )
-    return {
-        chair
-        for chair in roster
-        if isinstance(configured[chair], ChairIdentity)
-        and configured[chair].witness_scope == "page"
-    }
 
 
 def _line_geometry(act_anchor: dict[str, Any]) -> list[dict[str, dict[str, int]]]:

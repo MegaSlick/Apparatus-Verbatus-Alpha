@@ -1336,9 +1336,9 @@ def test_two_digests_for_one_input_path_are_refused():
     """Content addressing makes this impossible, so it is a rewritten blob."""
     first = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "a" * 64}
     second = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "b" * 64}
-    assert perlector._distinct_inputs([first, first]) == [first]
+    assert perlector.distinct_inputs([first, first]) == [first]
     with pytest.raises(SchemaRefusal, match="two different digests"):
-        perlector._distinct_inputs([first, second])
+        perlector.distinct_inputs([first, second])
 
 
 def _engine_call_world(tree, *, seed: int, schema: str = "chair-call-record.v3"):

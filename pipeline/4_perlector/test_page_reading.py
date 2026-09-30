@@ -1283,8 +1283,8 @@ def _without_testimony(monkeypatch, ordinal: int) -> None:
     """Stage 3 serving no page Testimonium for one page, as for a page with no proposed act."""
     original = page_run.current_page_testimonia
 
-    def dropped(context, hooks, proposal_regions):
-        current = original(context, hooks, proposal_regions)
+    def dropped(context, proposal_regions):
+        current = original(context, proposal_regions)
         page_id = page_run.exemplar_page_ids(context)[ordinal]
         return {page: rows for page, rows in current.items() if page != page_id}
 
