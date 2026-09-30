@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from common import page_testimonia
 from common.contracts.approval import build_approval_record
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
@@ -293,9 +294,13 @@ def test_the_runwide_proposal_denominator_verifies_every_region_before_using_geo
         tree = Tree()
 
     checked = []
-    monkeypatch.setattr(perlector, "validate_serving_provenance", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        perlector, "verify_region", lambda context, record: checked.append(record["artifact_id"])
+        page_testimonia, "validate_serving_provenance", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        page_testimonia,
+        "verify_region",
+        lambda context, record: checked.append(record["artifact_id"]),
     )
     assert perlector.sealed_proposal_regions(Context()) == [proposal]
     assert checked == ["proposal", "recovery"]
