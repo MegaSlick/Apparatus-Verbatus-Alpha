@@ -9,7 +9,6 @@ reconciliation is supposed to be checking would not be testing anything.
 import random
 
 import pytest
-from common.test_background_components import label_components_reference
 from conservation import reconcile
 from structure import (
     PRIMARY_MARGIN,
@@ -18,6 +17,7 @@ from structure import (
 )
 
 from common.contracts.errors import ContractError
+from common.test_background_components import label_components_reference
 from conftest import load_stage
 
 BACKGROUND = 230
