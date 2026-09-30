@@ -192,8 +192,14 @@ def _uncertainty_lines(
     assessment_key: str,
     attributable: bool,
     outcome: Any,
+    canonical: bool,
 ) -> list[str]:
     """The reader's own doubt report, rendered the same way wherever it is carried.
+
+    `canonical` says the layer is the canonical one, where a fed reading's null
+    `self_revisions` has one meaning: its comparison ran out of the sealed step
+    budget. On the Perlectio row that stop is the explicit non-verdict, and a
+    missing field is only a field not recorded.
 
     `outcome` is the record's own word for whether a reading exists: only a
     `not-run` record carries no text, and any other outcome with no string
@@ -221,18 +227,18 @@ def _uncertainty_lines(
     spans = _uncertainty_entries(spans, f"{label}.uncertain_spans")
     gaps = _uncertainty_entries(gaps, f"{label}.gaps")
     withheld = lectio_kind == "primed-draft-withheld"
-    # A fed draft whose comparison ran out of its sealed step budget: the Perlectio
-    # carries the non-verdict, the canonical layer null.
-    unmeasured = lectio_kind == "primed-with-prior" and (
-        revisions is None or is_unmeasured_comparison(revisions)
+    fed = lectio_kind == "primed-with-prior"
+    budget_stopped = fed and (
+        is_unmeasured_comparison(revisions) or (canonical and revisions is None)
     )
+    unrecorded = fed and not canonical and revisions is None
     if withheld:
         if revisions is not None:
             raise ProjectionShapeError(
                 f"{label}.self_revisions", None, revisions, expected="null for a withheld draft"
             )
         revisions = []
-    elif unmeasured:
+    elif budget_stopped or unrecorded:
         revisions = []
     else:
         revisions = _uncertainty_entries(revisions, f"{label}.self_revisions")
@@ -285,10 +291,12 @@ def _uncertainty_lines(
             lines.append(f"      published beside that state, not by the reader: {counted}")
     if withheld:
         lines.append("      self-revisions not measured (primed-draft-withheld)")
-    elif unmeasured:
+    elif budget_stopped:
         lines.append(
             "      self-revisions not measured (the comparison ran out of its step budget)"
         )
+    elif unrecorded:
+        lines.append("      self-revisions not recorded (the reading carries no such field)")
     folded = _uncertainty_folds(spans)
     folded_source = [spans.index(span) for span, _ in folded]
     if len(folded) != len(spans):
@@ -488,6 +496,7 @@ def render(projection: dict[str, Any]) -> list[str]:
                     # says which instrument wrote it.
                     attributable=not isinstance(reading.get("audit"), dict),
                     outcome=reading.get("outcome"),
+                    canonical=False,
                 )
             )
         elif isinstance(row.get("text"), str):
@@ -513,6 +522,7 @@ def render(projection: dict[str, Any]) -> list[str]:
                     # A delivered act was read by definition; its text is the
                     # string this branch was entered on.
                     outcome="read",
+                    canonical=True,
                 )
             )
         review = _object(row, "review", "acts[].row.review")
