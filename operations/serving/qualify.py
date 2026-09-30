@@ -35,6 +35,9 @@ unproven row.
 
 SCHEMA = "serving-qualification-candidates.v1"
 QUALIFICATION_PURPOSE = "preflight-qualification"
+# Catalogue row kinds a stage runs itself; preflight records each chair's placement
+# under the same name.
+UNSERVED_KINDS = frozenset({"subprocess", "in-process"})
 
 
 class QualificationRefusal(ValueError):
@@ -120,24 +123,23 @@ def qualification_candidates(
             "base checkpoint as well as the adapter; no candidates were emitted for "
             + ", ".join(adapters)
         )
-    # A chair its stage runs as a subprocess (Surya) is never served: preflight
-    # checks its weights and runs its own runner once on the golden page, so it
-    # has a cache receipt and a placement but no smoke receipt, and no row of
+    # A chair its stage runs as a subprocess (Surya) or in-process (the record
+    # detector) is never served: preflight checks its weights (and runs a
+    # subprocess chair's own runner once on the golden page), so it has a cache
+    # receipt and a placement in that state but no smoke receipt, and no row of
     # its is ever proven here.
-    subprocess_chairs = {
-        role
+    unserved_states = {
+        role: row["kind"]
         for role, identity in identities.items()
-        if any(
-            isinstance(row, dict)
-            and row.get("kind") == "subprocess"
-            and row.get("recipe") == identity.serving_recipe
-            and row.get("chair") == role
-            and row.get("tier") == tier
-            for row in rows
-        )
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("kind") in UNSERVED_KINDS
+        and row.get("recipe") == identity.serving_recipe
+        and row.get("chair") == role
+        and row.get("tier") == tier
     }
     served = {
-        role: identity for role, identity in identities.items() if role not in subprocess_chairs
+        role: identity for role, identity in identities.items() if role not in unserved_states
     }
     smoke_rows = preflight.get("smoke_receipts")
     if not isinstance(smoke_rows, list):
@@ -155,7 +157,7 @@ def qualification_candidates(
             f"expected={sorted(served)}, observed={sorted(by_chair)}"
         )
     _verify_cache_receipts(preflight.get("cache_receipts"), identities)
-    _verify_placements(preflight.get("placements"), identities, tier, subprocess_chairs)
+    _verify_placements(preflight.get("placements"), identities, tier, unserved_states)
 
     root = Path(evidence_root)
     candidates: list[dict[str, object]] = []
@@ -477,7 +479,7 @@ def _verify_placements(
     raw_placements: object,
     identities: Mapping[str, ChairIdentity],
     tier: str,
-    subprocess_chairs: set[str],
+    unserved_states: Mapping[str, str],
 ) -> None:
     placements = _rows_by_chair(raw_placements, "placements", selected=set(identities))
     if set(placements) != set(identities):
@@ -487,7 +489,7 @@ def _verify_placements(
             len(rows) != 1
             or rows[0].get("configured_serving_recipe") != identities[role].serving_recipe
             or rows[0].get("tier") != tier
-            or rows[0].get("state") != ("subprocess" if role in subprocess_chairs else "planned")
+            or rows[0].get("state") != unserved_states.get(role, "planned")
         ):
             raise QualificationRefusal(f"chair {role!r} was not planned on the measured tier")
 

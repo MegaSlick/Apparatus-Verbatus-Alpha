@@ -51,9 +51,11 @@ def _replace_smoke_response(
 
 
 def _qualification_fixture(
-    tmp_path: Path, *, answer: str | None = None
+    tmp_path: Path, *, answer: str | None = None, adjust_workspace=None
 ) -> tuple[dict[str, Path], dict[str, object]]:
     ws, _ = _serving_workspace(tmp_path, preflight_state="unproven")
+    if adjust_workspace is not None:
+        adjust_workspace(ws)
     evidence_root = ws.volume / "preflight" / "qualification"
     recipes_config = ws.repository / "config" / "serving_recipes.toml"
     recipes_bytes = recipes_config.read_bytes()
@@ -77,9 +79,14 @@ def _qualification_fixture(
     for role, identity in sorted(models.chairs.items()):
         if not isinstance(identity, ChairIdentity):
             continue
-        if role == SURYA_CHAIR:
-            # A subprocess chair: preflight verifies its weights and places it,
-            # and reads no page through it, so it has no smoke receipt.
+        kind = next(
+            row["kind"]
+            for row in profile_rows
+            if row["chair"] == role and row["tier"] == PROVEN_TIER
+        )
+        if kind in ("subprocess", "in-process"):
+            # A chair its stage runs itself: preflight verifies its weights and
+            # places it, and reads no page through it, so it has no smoke receipt.
             cache_receipts.append(
                 {
                     "chair": role,
@@ -92,7 +99,7 @@ def _qualification_fixture(
                     "chair": role,
                     "configured_serving_recipe": identity.serving_recipe,
                     "tier": PROVEN_TIER,
-                    "state": "subprocess",
+                    "state": kind,
                 }
             )
             continue
@@ -344,6 +351,65 @@ def test_qualification_accepts_green_hold_report(tmp_path: Path) -> None:
     wrapper.update(schema="pod-bootstrap-hold.v1", state="holding")
     paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
     assert len(_qualify(paths)["candidates"]) == 5
+
+
+_ABSENT_SECONDARY = """[chairs.secondary_proposer]
+state = "absent"
+reason = "no secondary proposer is configured for the offline walking skeleton"
+"""
+
+
+def _with_in_process_detector(tmp_path: Path):
+    """The green fixture with `secondary_proposer` configured on an in-process row:
+    preflight verifies its weights and places it, and smoke-reads nothing through it."""
+
+    def configure(ws) -> None:
+        models = ws.models_config.read_text(encoding="utf-8")
+        assert _ABSENT_SECONDARY in models
+        manifest = tomllib.loads(models)["chairs"]["designator_structure"]["digest_manifest"]
+        ws.models_config.write_text(
+            models.replace(
+                _ABSENT_SECONDARY,
+                "[chairs.secondary_proposer]\n"
+                'state = "configured"\nsource = "local-repository"\n'
+                'path = "designator_structure"\n'
+                f'digest_manifest = "{manifest}"\n'
+                'manifest = "manifests/designator_structure.json"\n'
+                'serving_recipe = "in-process-detector-test"\n'
+                'license_note = "fixture identity only"\n',
+            ),
+            encoding="utf-8",
+        )
+        recipes = ws.repository / "config" / "serving_recipes.toml"
+        recipes.write_text(
+            recipes.read_text(encoding="utf-8")
+            + '\n[[profiles]]\nkind = "in-process"\nrecipe = "in-process-detector-test"\n'
+            f'chair = "secondary_proposer"\ntier = "{PROVEN_TIER}"\nengine = "ultralytics"\n'
+            'task = "obb"\ndevice = "cpu"\nimgsz = 1024\nconf_bp = 2500\niou_bp = 7000\n'
+            'max_det = 300\nrequired_packages = { torch = "2.13.0", ultralytics = "8.4.14" }\n',
+            encoding="utf-8",
+        )
+
+    return _qualification_fixture(tmp_path, adjust_workspace=configure)
+
+
+def test_an_in_process_chair_needs_no_smoke_receipt_and_is_never_a_candidate(
+    tmp_path: Path,
+) -> None:
+    paths, _ = _with_in_process_detector(tmp_path)
+    candidates = _qualify(paths)["candidates"]
+    assert len(candidates) == 5
+    assert "secondary_proposer" not in {item["chair"] for item in candidates}
+
+
+def test_an_in_process_chair_must_be_placed_in_process(tmp_path: Path) -> None:
+    paths, wrapper = _with_in_process_detector(tmp_path)
+    for placement in wrapper["bootstrap"]["receipts"]["preflight"]["placements"]:
+        if placement["chair"] == "secondary_proposer":
+            placement["state"] = "planned"
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="'secondary_proposer' was not planned"):
+        _qualify(paths)
 
 
 def test_qualification_refuses_record_without_producer_wrapper(tmp_path: Path) -> None:
