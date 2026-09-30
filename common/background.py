@@ -176,7 +176,8 @@ class BackgroundEvidence(TypedDict):
 
 # The two `source` values `infer_background_evidence` can return; a page that
 # reaches neither raises `BackgroundInferenceRefusal` instead. Spelled here
-# rather than translated in `run.py`, which publishes them as `background_source`.
+# rather than translated by `common.residual_ink.page_background`, which
+# publishes them as `background_source`.
 # Neither string may be renamed: existing records carry it as published.
 BACKGROUND_SOURCE_MODAL: Final = "inferred-modal"
 BACKGROUND_SOURCE_INTERIOR_MODE: Final = "inferred-interior-mode"

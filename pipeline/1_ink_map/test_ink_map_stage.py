@@ -14,7 +14,7 @@ from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify, terminal_category
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, INK_MAP
 from common.imaging import encode_grayscale_png
-from common.residual_ink import edge_ink, residual_ink
+from common.residual_ink import ink_map_page, residual_ink
 from common.runtree.store import RunTree
 from conftest import load_stage
 from operations.submit import gate, submit
@@ -102,9 +102,9 @@ def test_unclaimed_edge_ink_is_named_and_bounded_but_not_held():
     rows = [bytearray([230] * 200) for _ in range(200)]
     for y in range(10):
         rows[y][10:30] = bytes([170] * 20)
-    finding = edge_ink(
+    finding = ink_map_page(
         200, 200, rows, background_policy=_policy(200, 200), coverage_policy=_coverage(200, 200)
-    )
+    )["edge"]
     assert finding["flagged"] is True
     assert finding["named_finding"] == "unclaimed-edge-ink"
     # 2 pixels on a 200-pixel-square page: `edge_band_bp` is a fraction of the
@@ -291,7 +291,7 @@ def test_a_page_with_no_ink_at_all_still_measures_clean_rather_than_flagging():
     rows = [bytearray([230] * 200) for _ in range(200)]
     policy = _policy(200, 200)
     audit = _coverage(200, 200)
-    edge = edge_ink(200, 200, rows, background_policy=policy, coverage_policy=audit)
+    edge = ink_map_page(200, 200, rows, background_policy=policy, coverage_policy=audit)["edge"]
     ink = residual_ink(200, 200, rows, [], background_policy=policy, coverage_policy=audit)
 
     assert edge["flagged"] is False
@@ -512,7 +512,6 @@ def test_a_measure_that_omits_its_fraction_is_refused_by_name_not_by_key_error()
     measure emitting a string gets a clean refusal.
     """
     complete = {
-        "background_level": 230,
         "total_ink_pixels": 10,
         "outside_ink_pixels": 4,
         "fraction_outside": 0.4,
@@ -531,9 +530,9 @@ def test_a_one_pixel_wide_page_records_its_whole_width_as_edge():
     """The smallest legal width has an edge even though ``width // 2`` is zero."""
     rows = [bytearray([170 if y < 25 else 230]) for y in range(100)]
 
-    edge = edge_ink(
+    edge = ink_map_page(
         1, 100, rows, background_policy=_policy(1, 100), coverage_policy=_coverage(1, 100)
-    )
+    )["edge"]
 
     assert edge["edge_band_pixels"] == 1
     assert edge["total_ink_pixels"] == 25
@@ -563,11 +562,11 @@ def test_the_fixture_pages_carry_no_ink_in_the_sealed_perimeter_band():
         "says it is, and the edge findings on a fixture run mean something else"
     )
     for ordinal in (1, 2):
-        finding = edge_ink(
+        finding = ink_map_page(
             *grayscale_rows(page_bytes(ordinal)),
             background_policy=_policy(width, height),
             coverage_policy=_coverage(width, height),
-        )
+        )["edge"]
         assert finding["outside_ink_pixels"] == 0
         assert finding["flagged"] is False
 
@@ -700,7 +699,7 @@ def test_a_page_whose_paper_cannot_be_inferred_is_named_rather_than_mapped(monke
     page reported clean because its threshold could not be reached.
 
     What is asserted here is what the record does *not* carry as much as what it
-    does. `ink`, `edge` and `edge_findings` are absent, not zeroed, so the
+    does. `background`, `edge` and `edge_findings` are absent, not zeroed, so the
     Armarium's re-measurement and the Recensor's pointer confirmation both fail
     loudly on a consumer that assumed them rather than reading a zero nobody
     measured.
@@ -799,4 +798,4 @@ def test_a_real_submission_names_edge_ink_and_an_unmeasurable_page(tmp_path):
         if entry["kind"] == "ink-map":
             record = tree.read_artifact(INK_MAP, "ink-map", entry["artifact_id"])
             outcomes[record["payload"]["page_ordinal"]] = record["outcome"]
-    assert sorted(outcomes.values()) == ["ink-not-measurable", "unclaimed-edge-ink"]
+    assert outcomes == {1: "unclaimed-edge-ink", 2: "ink-not-measurable"}

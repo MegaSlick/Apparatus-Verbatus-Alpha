@@ -1705,7 +1705,7 @@ def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> 
                     "Ink Map artifact or restart the run before rerunning the Recensor."
                 )
             start, length = run
-            # Ordered and disjoint, as `ink_runs_from_rows` writes them; overlapping runs would
+            # Ordered and disjoint, as the Ink Map writes them; overlapping runs would
             # count ink twice.
             if start < previous_end or length <= 0 or start + length > width:
                 raise FatalAccounting(

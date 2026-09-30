@@ -19,10 +19,11 @@ cent of audited ink on 44 real pages, so counting it flagged every page. It is
 re-derived here at the page's own derived margin, because the Designator's record
 carries only whole-page boxes, and taken out of `total_ink_pixels` and
 `outside_ink_pixels`; `page_ink_pixels` and `page_spanning_ink_pixels` keep the
-whole-page figure. At this module's looser contrast it swallowed writing and hid
-missed ink on 41 of 44 real pages; a single contrast is welcome if
+whole-page figure. It is cut at the derived margin rather than at this module's
+looser contrast, which merges writing touching it into the component and hides
+missed ink;
 `test_writing_touching_a_faint_page_spanning_line_is_still_counted_outside_coverage`
-still passes.
+pins that.
 
 A page whose background the shared inference refuses raises
 `common.background.BackgroundInferenceRefusal`; the caller records it rather
@@ -506,26 +507,6 @@ def _residual_counts(
     }
 
 
-def ink_runs_from_rows(
-    width: int,
-    height: int,
-    rows: list[bytearray],
-    *,
-    background_policy: BackgroundPolicy,
-    coverage_policy: CoverageAuditPolicy,
-) -> dict[str, Any]:
-    """The ink map's reusable page-space evidence: this page's AUDITED ink.
-
-    Later consumers count these runs rather than decode the page again, so the
-    Armarium's release measure and the Ink Map's finding read one set. The
-    page-spanning component is removed here, as in `residual_ink`.
-    """
-    basis = _page_ink_basis(
-        width, height, rows, background_policy=background_policy, coverage_policy=coverage_policy
-    )
-    return _audited_runs(width, height, rows, basis)
-
-
 def _audited_runs(
     width: int, height: int, rows: list[bytearray], basis: PageInkBasis
 ) -> dict[str, Any]:
@@ -815,25 +796,6 @@ def reconcile_edge_finding_with_runs(
             "the ink-map edge finding fraction_outside_per_million disagrees with its retained runs"
         )
     return measured
-
-
-def edge_ink(
-    width: int,
-    height: int,
-    rows: list[bytearray],
-    *,
-    background_policy: BackgroundPolicy,
-    coverage_policy: CoverageAuditPolicy,
-) -> dict[str, Any]:
-    """Measure unclaimed ink in the bounded perimeter of one sealed page.
-
-    The central rectangle is the only covered area, so the ink predicate and the
-    gates are `residual_ink`'s. The finding assigns the ink to no act.
-    """
-    basis = _page_ink_basis(
-        width, height, rows, background_policy=background_policy, coverage_policy=coverage_policy
-    )
-    return _edge_counts(width, height, rows, basis, coverage_policy)
 
 
 def _edge_counts(
