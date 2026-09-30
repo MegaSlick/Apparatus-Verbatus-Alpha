@@ -10,8 +10,8 @@ from pathlib import Path
 
 import protocol
 import pytest
-from common import truncation
 
+from common import truncation
 from common.contracts.errors import ContractError
 
 ROOT = Path(__file__).resolve().parents[2]

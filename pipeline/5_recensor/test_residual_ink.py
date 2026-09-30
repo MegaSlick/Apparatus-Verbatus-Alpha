@@ -48,7 +48,7 @@ def _policy(width: int, height: int):
 
     Every measure here takes one: the ink predicate is taken below the
     background `common.background` infers, under the same sealed
-    `[grouping.background]` block the Designator runs under, and no call site is
+    ink map `[background]` block the Designator runs under, and no call site is
     allowed a default -- measuring under a policy nobody sealed is what the
     required keyword prevents.
     """

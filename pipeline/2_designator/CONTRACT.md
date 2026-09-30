@@ -1670,10 +1670,9 @@ The background policy lives in `config/ink_map.toml`'s `[background]`, sealed as
 `ink-map`. Every stage that infers paper reads it, validates it through one
 function (`common.background.validate_background_table`) and proves the bytes
 against the run's own `ink-map` seal, so each record names the policy it ran
-under. This stage also refuses a run whose `page_spanning_area_bp` or
-`gap_tolerance_px` differs from the ink map's `[page_spanning]` and
-`[connectivity]`, so the component it withholds is the one the coverage audit
-takes out.
+under. This stage also takes `page_spanning_area_bp` and `gap_tolerance_px` from
+the ink map's `[page_spanning]` and `[connectivity]`, so the component it
+withholds is the one the coverage audit takes out.
 
 A page this inference refuses is now refused by name at all three: this stage
 records `background_source: "not-inferable"` and `ink_measurable: false`, the Ink
@@ -1760,13 +1759,12 @@ the measured inverted and dark-core controls, but it does not classify arbitrary
 spatial arrangements as a frame, bezel, or page boundary. Where the interior is
 within the sealed bound, the paper value is the modal pixel at or above the
 page's own mean; that value still faces the `PRIMARY_MARGIN` guard and the final
-ink-fraction guard. The thresholds are sealed in
-`config/designator_grouping.toml`'s
-`[grouping.background]`. Its provenance has
+ink-fraction guard. The thresholds are sealed in `config/ink_map.toml`'s
+`[background]`. Its provenance has
 `calibrated_for_this_corpus = true` and a positive `sample_count`; the
-`[grouping.continuation]` and `[grouping.page_area_bp]` blocks also carry
-measured provenance, while other thresholds retain their own unmeasured
-provenance.
+grouping file's `[grouping.continuation]` and the ink map's `[page_spanning]`
+blocks also carry measured provenance, while other thresholds retain their own
+unmeasured provenance.
 
 **The fourth shape is the one the seven-page calibration could not see, and it is
 the quiet one.** On 6 of 127 real pages the modal pixel is 255 — a blown
@@ -1782,7 +1780,7 @@ its own page below the threshold it implies is not one. That bound is
 
 ### The background inference, calibrated on 127 pages
 
-This is the committed record `[grouping.background.provenance]`'s `source`
+This is the committed record `[background.provenance]`'s `source`
 points at. Measured over 60 RecordGold pages, 60 parish master pages and the
 seven review proxies, sampled by the fixed seed `designator-survey-2026-09-06`.
 Pages were read where they lie and never copied into this tree. Rows marked
@@ -1876,7 +1874,7 @@ The next section is that measurement.
 
 ### The ink margin, derived on 127 pages
 
-`[grouping.background] ink_margin_bp = 3333`. The page's ink threshold is
+`config/ink_map.toml`'s `[background] ink_margin_bp = 3333`. The page's ink threshold is
 `background - _derived_ink_margin(background, dark_mode, ink_margin_bp)`, that
 is `max(PRIMARY_MARGIN, (paper_mode - dark_mode) * 3333 // 10000)` below its own
 paper value. Measured on the same 127 pages, the same sample and seed, through
@@ -2234,7 +2232,7 @@ geometry; `common/test_designator_recensor_ink_calibration.py` cross-checks
 `SECONDARY_MARGIN` against the Recensor's own contrast constant, and a per-run value would make that
 cross-stage invariant unenforceable statically. The config's closed schema
 refuses both names wherever they are written. What the config *does* carry, since
-the ink margin became a per-page derivation, is `[grouping.background]
+the ink margin became a per-page derivation, is the ink map's `[background]
 ink_margin_bp` — a fraction of the distance between a page's own two grey-level
 population modes, not an offset, which is why it can be sealed while those two
 cannot. `SECONDARY_MARGIN` is not derived from it.

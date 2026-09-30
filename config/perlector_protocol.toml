@@ -14,7 +14,7 @@ max_images = 32
 # echoes this value.
 reading_unit = "act"
 
-# The truncation instrument's length signal (`pipeline/4_perlector/truncation.py`).
+# The truncation instrument's length signal (`common/truncation.py`).
 # A reading is length-suspicious when, scaled from its region to the whole page's
 # area, it would carry fewer than this many characters:
 #

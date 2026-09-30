@@ -1195,7 +1195,7 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
     lines += [
         "# The one declared, fixture-only truncation signal: a stand-in for a real",
         "# serving engine's own stop-reason, read by",
-        "# `pipeline/4_perlector/truncation.py` and authoritative for `truncated`",
+        "# `common/truncation.py` and authoritative for `truncated`",
         "# when it declares `length` -- named explicitly as a fixture stand-in",
         "# rather than a computed signal.",
         "",

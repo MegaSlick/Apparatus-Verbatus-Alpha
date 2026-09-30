@@ -32,7 +32,7 @@ CHAIN_GAP_PX = 6
 ANCHOR_REACH_PX = 2
 BRACE_MIN_HEIGHT_PX = 30
 PAGE_EDGE_REACH_PX = 4
-# The sealed [grouping.page_area_bp] value, spelled here rather than loaded so
+# The sealed ink map's [page_spanning] value, spelled here rather than loaded so
 # these tests stay a test of the module, not the config. test_grouping_config.py
 # is what holds the two to the same number.
 PAGE_SPANNING_AREA_BP = 5000
