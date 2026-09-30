@@ -391,8 +391,11 @@ read only through `common/page_review.py`.
 each: the manifest's `act_partition` names the denominator `page-read reading
 acts`, and `expected_count` is that number. Rows of kind `other` are a separate,
 labelled layer that is never counted as an act, never enters `act_partition`,
-the aggregate, `acts.jsonl`, `acts.sqlite` or `review-items.jsonl`, and may not
-share an identity with an act. A `page-unread` or `page-blank` row is an act
+`acts.jsonl`, `acts.sqlite` or `review-items.jsonl`, and may not share an identity
+with an act. Its readings still reach the aggregate as reasons: on a page with no
+act row, until every one is delivered; on a page with acts, one not delivered is a
+reason too, since a held `other` reading may be an act the reading did not
+establish, as the Recensor's v3 receipt also counts it. A `page-unread` or `page-blank` row is an act
 partition unit with no text: `held-for-review` with the review's reason and the
 row's hold codes, or `confirmed-blank` (a `page-blank` row only) when the
 Recensor confirms it. A `page-refused` row must be a page the census refused; it

@@ -1380,3 +1380,26 @@ def test_a_page_read_aggregate_names_its_pages_in_the_page_path_s_words() -> Non
     # Page 3's other readings were delivered: a confirmed no-act page names no reason.
     assert not any(reason.startswith("page 3") for reason in reasons)
     assert any(reason.startswith("act p1:1 says it continues onto") for reason in reasons)
+
+
+def test_a_held_other_reading_on_a_page_of_acts_keeps_the_aggregate_partial() -> None:
+    """A held `other` reading may be an act the reading did not establish, wherever it sits."""
+    sealed = {"outcome": "sealed"}
+
+    def aggregate(others: list[str]) -> dict:
+        return run_aggregate(
+            {"p1:1": ArmariumCategory.DELIVERED},
+            {"p1:1": {"under_witnessed": False, "unresolved_chairs": 0}},
+            {1: sealed},
+            act_pages={"p1:1": [1]},
+            act_text_status={"p1:1": "established"},
+            page_read=True,
+            other_categories_by_page={1: others},
+        )
+
+    assert aggregate(["delivered"])["status"] == "complete"
+    held = aggregate(["delivered", "held-for-review"])
+    assert held["status"] == "partial"
+    assert held["reasons"] == [
+        outcomes.HELD_OTHER_ON_ACT_PAGE_REASON.format(ordinal=1, categories="held-for-review")
+    ]

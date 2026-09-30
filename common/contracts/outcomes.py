@@ -607,6 +607,11 @@ NO_ACT_PAGE_HELD_REASON: Final = (
     "page; once it does, they are delivered in the other layer and the page counts as a "
     "confirmed no-act page"
 )
+HELD_OTHER_ON_ACT_PAGE_REASON: Final = (
+    "page {ordinal} carries acts and other readings that are {categories}, not delivered; "
+    "an other reading held for review may be an act the reading did not establish, so the "
+    "page's readings are not all accounted for"
+)
 CONFIRMED_NO_ACT_PAGE_REASON: Final = (
     "page {ordinal} was read and the Recensor confirmed it carries no act; its other "
     "readings are delivered in the other layer"
@@ -777,7 +782,9 @@ def run_aggregate(
     row is a page whose readings are all `other` (`other_categories_by_page`
     names their categories): held, with its reason, until every one is
     delivered, which the Recensor allows only once it confirms no act is on the
-    page. Each `unpaired_continuations` row `(act, flag)` is a delivered act
+    page. On a page with acts, an `other` reading that was not delivered is
+    a reason too: it may be an act the reading did not establish. Each
+    `unpaired_continuations` row `(act, flag)` is a delivered act
     whose continuation flag no link pairs, which keeps the run partial.
     """
     reasons: list[str] = []
@@ -906,6 +913,16 @@ def run_aggregate(
         if outcome != "sealed":
             reason = page_census[ordinal].get("reason") or "no reason was recorded"
             reasons.append(f"page {ordinal} was {outcome}: {reason}")
+        elif page_read and pages_with_acts is not None and ordinal in pages_with_acts:
+            held = set((other_categories_by_page or {}).get(ordinal) or ()) - {
+                ArmariumCategory.DELIVERED.value
+            }
+            if held:
+                reasons.append(
+                    HELD_OTHER_ON_ACT_PAGE_REASON.format(
+                        ordinal=ordinal, categories=", ".join(sorted(held))
+                    )
+                )
         elif pages_with_acts is not None and ordinal not in pages_with_acts:
             others = (other_categories_by_page or {}).get(ordinal)
             if not page_read:

@@ -443,7 +443,8 @@ def _page_roster_narrowed(members: dict) -> None:
                     category="held-for-review", reason="edited", text_status=None
                 ),
             ),
-            "terminal ledger",
+            # A held other reading is an aggregate reason, so the aggregate refuses first.
+            "aggregate does not match its measured accounting basis",
         ),
         (_other_text, "valid literal text hash"),
         (_held_page_one, "held by their page accounting yet delivered"),
