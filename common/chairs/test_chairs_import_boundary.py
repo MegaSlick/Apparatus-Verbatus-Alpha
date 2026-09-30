@@ -1,5 +1,4 @@
-"""Spec 02, test 8 — Import boundary. "The static import-boundary test covers
-`common/chairs/`."
+"""Import boundary: a static check that `common/chairs/` never imports a stage.
 
 `common/README.md`, verbatim: "It knows nothing about stages. Stages import it;
 it never imports back. Add an executable import-boundary check when real modules
@@ -17,7 +16,7 @@ They are executable imports just as much as a top-level statement is; letting a
 constant `pipeline...` string evade the AST walker would make the boundary a naming
 convention.
 
-Meta-invariant #88: no loop here reports success over an empty population.
+No loop here reports success over an empty population.
 """
 
 import ast

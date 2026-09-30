@@ -15,26 +15,28 @@ in code.
 | `registry.py` | resolution and verification against the filesystem and Hugging Face |
 | `receipts.py` | what a serving receipt must carry before it is one |
 | `filesystem.py` | the bounded control-file read and the APFS name key (case and Unicode normalization folded) the other modules share |
-| `errors.py` | the closed refusal taxonomy — one member per door "Resolution refuses; it never substitutes" names |
+| `errors.py` | the closed refusal taxonomy: every refusal the package raises, each naming the chair |
 | `protocol.py` | the caller-visible shape, and the contract exerciser that names the clause a broken implementation breaks |
 
 ## Four things worth knowing before you change anything here
 
 **Nothing here substitutes.** Every refusal names the chair and the concrete
 difference, and stops. No code path fetches or receipts a chair other than the one
-asked for, and the one place another chair is *resolved* is `_cache_descriptor`
-reading an adapter's configured `adapter_of` base — a configuration lookup, so that
-an old adapter cache cannot masquerade as compatible with a repinned base. It never
+asked for. Another chair is *resolved* only where `_cache_descriptor` and
+`receipt` read an adapter's configured `adapter_of` base — a configuration lookup,
+so that an old adapter cache or receipt cannot pass as compatible with a repinned
+base. It never
 fetches, serves, ranks or substitutes that base. A registry that fell back from one
 chair to a close-enough one would be a picker wearing an ops hat,
-and the closed taxonomy plus `test_chairs_no_substitution.py`
-are what keep one out. That test drives all seven doors through the *real* registry
+and the closed taxonomy (every `raise` in the package is checked against it) plus
+`test_chairs_no_substitution.py` are what keep one out. That test drives each of the seven ways a chair can
+fail to be served through the *real* registry
 and asserts, on a call log kept *inside* the registry rather than in front of it,
 that no other configured chair was resolved, fetched or receipted while each refusal
 was handled.
 
 **A pin is a constant the artifact must match.** Never a value the artifact
-supplies (harvest #43). A cache that holds a different revision than the pin is
+supplies. A cache that holds a different revision than the pin is
 refused rather than believed; the pin is never quietly updated to agree with
 whatever turned up. `digest_manifest` is the digest of the *manifest artifact's
 exact canonical bytes*, not of a structure that happens to parse the same way,
@@ -53,8 +55,8 @@ under the run root through `RunTree.write_run_receipt`, content-addressed, and
 `StageContext.publish` refuses one outright. A stage payload carries the
 receipt's digest-checked reference plus the immutable resolved identity and
 revision, never the timestamp or the endpoint. That is what keeps provenance
-travelling with every record without breaking spec 01's guarantee that
-repeating an identical command leaves every byte unchanged.
+travelling with every record without breaking the guarantee that repeating an
+identical command leaves every stage byte unchanged.
 
 ## Absence is a value, not a gap
 
@@ -68,12 +70,12 @@ witness is therefore visibly short one, all the way into the export.
 
 ## What this system does not own
 
-Lifecycle and health belong to the serving manager (spec 04). This package
+Lifecycle and health belong to the serving manager (`operations/serving/`). This package
 produces identity and verification; it does not start a process. `receipt()`
 accepts the serving details the serving manager observed, and
 `refuse_recipe_start()` is how a failed start is represented — as a refusal
 naming the chair, never as a second route under the same role name. Both are
-integration doors for spec 04's manager; neither chooses how a stage obtains
+integration doors for that manager; neither chooses how a stage obtains
 its serving details.
 
 The durable host model store is intentionally outside this repository. Its

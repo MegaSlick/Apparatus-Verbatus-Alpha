@@ -245,10 +245,9 @@ def _manifest_from_record(raw: Any, chair: str) -> DigestManifest:
 def file_size(path: Path, chair: str, relative: str) -> int:
     """One file's size, with a filesystem failure kept inside the taxonomy.
 
-    `errors.py` calls its list "the complete public taxonomy", and a caller that
-    catches `ChairRefusal` to record a refusal against a named chair got a bare
-    `PermissionError` instead — an error outside the taxonomy that names no chair
-    and no file. An unreadable pinned file is a snapshot that does not verify.
+    A caller catches `ChairRefusal` to record a refusal against a named chair, so
+    a bare `PermissionError` naming no chair and no file would escape it. An
+    unreadable pinned file is a snapshot that does not verify.
 
     Split from `file_digest` rather than returning both, so that a size that
     already disagrees with the pin refuses without reading the file. Model weights

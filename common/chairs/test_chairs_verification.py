@@ -1,13 +1,11 @@
-"""Spec 02, test 2 — Verification.
+"""Verification: a fixture snapshot with one flipped byte fails **naming the
+file**; a complete match passes; an extra file fails; a partial cache re-fetches
+exactly the missing files. Network is mocked, so this measures the call the mock
+received, not Hugging Face's behaviour.
 
-"A fixture snapshot with one flipped byte fails **naming the file**; a complete
-match passes; an extra file fails; a partial cache re-fetches exactly the missing
-files. Network is mocked, and the spec says plainly what that means: this
-measures the call the mock received, not Hugging Face's behaviour."
-
-Two more clauses from the same section are checked here, because nothing else
-would catch them: verification covers the *whole* fetched snapshot, and "a failed
-verification leaves the previously verified snapshot untouched".
+Two more properties are checked here, because nothing else would catch them:
+verification covers the *whole* fetched snapshot, and a failed verification
+leaves the previously verified snapshot untouched.
 
 Every fetch below goes through `RecordingFetcher`, the one seam. No test in this
 file asserts anything about Hugging Face; each asserts what the registry asked

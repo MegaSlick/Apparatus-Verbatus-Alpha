@@ -1,8 +1,6 @@
-"""Spec 02, test 1 — Resolution.
-
-"Every role in a fixture `models.toml` resolves to an exact identity or fails
-naming the missing field. Non-40-hex and branch-name revisions are refused. A
-role the schema has never seen resolves without a schema change."
+"""Resolution: every role in a fixture `models.toml` resolves to an exact
+identity or fails naming the missing field. Non-40-hex and branch-name revisions
+are refused. A role the schema has never seen resolves without a schema change.
 
 Resolution is pure and offline: it reads the configuration and returns an
 identity, an explicit absence, or a refusal. Nothing here touches a filesystem
@@ -205,9 +203,9 @@ def test_adapter_of_naming_a_real_sibling_chair_resolves(tmp_path):
 
 
 def test_a_role_the_schema_has_never_seen_resolves_without_a_schema_change(tmp_path):
-    """Spec 02: "The registry accepts a role added later without a schema
-    change — that is test 1's real requirement." Nothing in `common/chairs/`
-    holds a list of role names to add to, which is what makes this pass."""
+    """The registry accepts a role added later without a schema change. Nothing
+    in `common/chairs/` holds a list of role names to add to, which is what makes
+    this pass."""
     chairs = {
         "attestator_1": hf_chair("attestator_1", DIGEST),
         "haruspex_of_the_marginalia": hf_chair("haruspex_of_the_marginalia", DIGEST),

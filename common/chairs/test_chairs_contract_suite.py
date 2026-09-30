@@ -1,11 +1,9 @@
-"""Spec 02, test 6 — the contract suite.
+"""The contract suite: the full protocol against two independent implementations,
+with the calling stages parameterized over both, while a deliberately
+incompatible third fails naming the protocol clause it breaks.
 
-"The full protocol against two independent implementations, with the skeleton's
-calling stages parameterized over both; a deliberately incompatible third fails
-naming the protocol clause."
-
-Two implementations are independent, in the spec's own words, "when neither
-imports the other and both are exercised by the same contract suite". Here that
+Two implementations are independent when neither imports the other and both are
+exercised by the same contract suite. Here that
 is `common.chairs.registry.ChairRegistry` — real, filesystem- and Hugging
 Face-backed — and `DeterministicChairRegistry` in this package's `conftest.py`,
 in-memory and network-free. Every test below runs once per implementation, from
@@ -13,7 +11,7 @@ one body, so a claim that holds for one and not the other cannot pass.
 
 The clause about the *stages* is discharged where the stages are:
 `pipeline/test_chair_parameterization.py` runs all nine stage programs over both
-implementations. And the claim stays the size the spec sized it — exercising an
+implementations. And the claim stays its own size — exercising an
 interface against two implementations proves those two implement that interface,
 and nothing whatever about model churn.
 """
