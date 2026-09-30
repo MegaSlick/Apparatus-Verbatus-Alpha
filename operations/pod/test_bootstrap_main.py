@@ -1194,11 +1194,45 @@ def test_chair_cache_refuses_a_store_copy_that_does_not_match_the_roster_pin(
 ) -> None:
     from common.chairs.errors import ChairRefusal
 
-    plan, _placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
     (snapshot / "surya_layout2" / "rfdetr_layout.pth").write_bytes(b"other weights\n")
 
     with pytest.raises(ChairRefusal):
         bootstrap_main._build_cache(plan)
+    assert not placed.exists()
+    assert not (placed.parent / ".designator_surya.placing").exists()
+
+
+def test_chair_cache_leaves_no_staging_behind_when_the_copy_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, placed, _snapshot = _local_chair_setup(tmp_path, monkeypatch)
+
+    def failing(self, identity, destination: Path, paths) -> None:  # type: ignore[no-untyped-def]
+        (destination / "partial").write_bytes(b"half a copy")
+        raise OSError("store volume went away")
+
+    monkeypatch.setattr(bootstrap_main.StoreRoleFetcher, "fetch", failing)
+    with pytest.raises(OSError, match="went away"):
+        bootstrap_main._build_cache(plan)
+    assert not placed.exists()
+    assert not (placed.parent / ".designator_surya.placing").exists()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "file"])
+def test_chair_cache_refuses_a_bound_path_that_is_not_a_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    placed.parent.mkdir(parents=True)
+    if kind == "symlink":
+        placed.symlink_to(snapshot, target_is_directory=True)
+    else:
+        placed.write_bytes(b"not a bundle")
+
+    with pytest.raises(BootstrapStepFailure, match="designator_surya is bound at .*a link or not"):
+        bootstrap_main._build_cache(plan)
+    assert placed.is_symlink() or placed.is_file()
 
 
 def test_build_actions_does_not_read_models_config_before_configuration_runs(
@@ -1992,10 +2026,12 @@ def test_preflight_measures_the_placement_table_the_run_seals(tmp_path: Path) ->
 
 
 def test_bootstrap_syncs_a_subprocess_environment_only_for_a_row_that_runs_in_it(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from .bootstrap_main import _subprocess_environments, build_parser, resolve_plan
 
+    # A store that already holds every bundle needs no fetcher environment.
+    monkeypatch.setattr(bootstrap_main, "pending_local_artifacts", lambda root: ())
     ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
     plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
     assert _subprocess_environments(plan) == frozenset({"operations/serving/surya"})
@@ -2008,6 +2044,61 @@ def test_bootstrap_syncs_a_subprocess_environment_only_for_a_row_that_runs_in_it
         ws.repository / "config" / "serving_recipes.toml",
     )
     assert _subprocess_environments(plan) == frozenset()
+
+
+def test_bootstrap_syncs_surya_s_environment_only_for_a_stage_that_runs_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from .bootstrap_main import _subprocess_environments, build_parser, resolve_plan
+
+    monkeypatch.setattr(bootstrap_main, "pending_local_artifacts", lambda root: ())
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+
+    # A pod for the Attestatores or the Perlector never runs the Designator's Surya.
+    witnesses = replace(plan, preflight_roles=("attestator_1", "perlector"))
+    assert _subprocess_environments(witnesses) == frozenset()
+    designator = replace(
+        plan, preflight_roles=("designator_structure", "designator_surya", "secondary_proposer")
+    )
+    assert _subprocess_environments(designator) == frozenset({"operations/serving/surya"})
+
+
+def test_the_bundle_fetcher_s_environment_is_synced_while_the_store_lacks_a_bundle(
+    tmp_path: Path,
+) -> None:
+    """MODEL_STORE fetches Surya's bundle whatever the roster configures, so a pod
+    whose roster does not configure Surya still syncs the environment its
+    prefetch runs in, until the store holds the bundle."""
+    from .bootstrap import SUBPROCESS_ENVIRONMENT_REQUIRED_BYTES
+    from .bootstrap_main import (
+        _bundle_fetcher,
+        _subprocess_environments,
+        build_parser,
+        resolve_plan,
+    )
+
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    roster = ws.models_config.read_text(encoding="utf-8")
+    start = roster.index("[chairs.designator_surya]")
+    end = roster.index("\n\n", start)
+    ws.models_config.write_text(
+        roster[:start]
+        + '[chairs.designator_surya]\nstate = "absent"\nreason = "not on this roster"'
+        + roster[end:],
+        encoding="utf-8",
+    )
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    assert plan.store_root is not None and not plan.store_root.exists()
+
+    assert _subprocess_environments(plan) == frozenset({_bundle_fetcher().environment})
+    assert _bundle_fetcher().environment in SUBPROCESS_ENVIRONMENT_REQUIRED_BYTES
+
+    # A store record that cannot be read is named at this step, before any sync.
+    plan.store_root.mkdir(parents=True)
+    (plan.store_root / "download_record.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(BootstrapStepFailure, match="cannot say what it still needs"):
+        _subprocess_environments(plan)
 
 
 def test_preflight_goes_green_through_the_registry_and_the_serving_seam(

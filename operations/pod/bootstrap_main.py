@@ -11,7 +11,9 @@ correct immediate close for pod_timer to act on.
 Composition is deliberately **tracked**: every pinned input this process needs
 is an explicit flag, except the placement table, which is always the checkout's
 own ``config/pod_placement.toml`` because that is the table the stages seal.
-``CHAIR_CACHE`` records the role source plan without copying model bytes.
+``CHAIR_CACHE`` records the role source plan of each Hugging Face chair without
+copying its bytes, and copies each local-repository chair's verified bundle
+from the store to where the roster binds it.
 
 **What ``PREFLIGHT`` measures, and through what.**  The chair-cache half is
 :class:`RegistryChairCacheVerifier`: ``ChairRegistry.ensure`` over the plan's
@@ -105,7 +107,7 @@ from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 from common.chairs.config import parse_models_config
 from common.chairs.errors import ChairRefusal
 from common.chairs.manifests import verify_snapshot
-from common.chairs.model_store import StoreRoleFetcher
+from common.chairs.model_store import StoreRoleFetcher, pending_local_artifacts
 from common.chairs.models import ChairIdentity, ServingReceipt
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
@@ -1054,13 +1056,18 @@ def _build_transfer(plan: Plan) -> Callable[[], dict[str, object]]:
     return _transfer
 
 
+def _bundle_fetcher() -> SuryaBundleFetcher:
+    """The model store's fetcher for every local-repository artifact: Surya's own
+    prefetch, run in the environment UV_ENVIRONMENT syncs whenever the store
+    still lacks a bundle (``_store_environments``)."""
+    return SuryaBundleFetcher(SURYA_ENVIRONMENT)
+
+
 def _build_model_store(plan: Plan) -> ModelStoreBootstrapAction:
-    # Surya's bundle is fetched by its own prefetch, in the environment the
-    # UV_ENVIRONMENT step has already synced.
     return ModelStoreBootstrapAction(
         plan.store_root,  # type: ignore[arg-type]
         HuggingFaceMaterializationFetcher.from_huggingface_hub(),
-        SuryaBundleFetcher(SURYA_ENVIRONMENT),
+        _bundle_fetcher(),
     )
 
 
@@ -1105,6 +1112,13 @@ def _place_local_chair(
         )
     model_root = config.source_path.parent / config.model_root
     target = model_root / identity.path
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        raise BootstrapStepFailure(
+            BootstrapStep.CHAIR_CACHE,
+            f"chair {identity.role} is bound at {target}, which is a link or not a directory",
+            "Remove what is at that path, so the verified bundle can be placed there, then "
+            "resume.",
+        )
     if target.is_dir():
         try:
             snapshot = registry.ensure(identity)
@@ -1117,14 +1131,13 @@ def _place_local_chair(
     staged = model_root / f".{identity.path}.placing"
     shutil.rmtree(staged, ignore_errors=True)
     staged.mkdir()
-    manifest = registry.manifest(identity)
-    fetcher.fetch(identity, staged, tuple(row.path for row in manifest.rows))
     try:
+        manifest = registry.manifest(identity)
+        fetcher.fetch(identity, staged, tuple(row.path for row in manifest.rows))
         verify_snapshot(identity, staged, manifest)
-    except ChairRefusal:
+        os.replace(staged, target)
+    finally:
         shutil.rmtree(staged, ignore_errors=True)
-        raise
-    os.replace(staged, target)
     registry.ensure(identity)
     return {"chair": identity.role, "state": "local-placed", "snapshot": source["snapshot"]}
 
@@ -1505,9 +1518,34 @@ def _read_configuration_source(path: Path, label: str, repository: Path) -> byte
 
 
 def _subprocess_environments(plan: Plan) -> frozenset[str]:
+    """The subprocess environments this pod syncs: each one a chair its selected
+    stages run is served from, and the bundle fetcher's whenever the model store
+    still lacks a bundle. Read after CONFIGURATION has validated the roster and
+    the catalogue, so a pod syncs Surya's environment only when something runs in it."""
+
+    return _stage_environments(plan) | _store_environments(plan)
+
+
+def _store_environments(plan: Plan) -> frozenset[str]:
+    """The bundle fetcher's environment, when MODEL_STORE will fetch a local bundle."""
+
+    if plan.store_root is None:
+        return frozenset()
+    try:
+        pending = pending_local_artifacts(plan.store_root)
+    except ChairRefusal as error:
+        raise BootstrapStepFailure(
+            BootstrapStep.UV_ENVIRONMENT,
+            f"the model store at {plan.store_root} cannot say what it still needs: {error}",
+            "Repair the model store or start a fresh one on the volume, then resume.",
+        ) from error
+    return frozenset({_bundle_fetcher().environment}) if pending else frozenset()
+
+
+def _stage_environments(plan: Plan) -> frozenset[str]:
     """The environments the checked-out catalogue's subprocess rows run in, for
-    the chairs the checked-out roster configures; read after CONFIGURATION has
-    validated both, so a pod syncs Surya's environment only when it will run."""
+    the chairs the roster configures and this pod's preflight selects: every
+    chair, unless a stage selection named fewer."""
 
     if plan.repository is None or plan.models_config is None:
         return frozenset()
@@ -1521,10 +1559,11 @@ def _subprocess_environments(plan: Plan) -> frozenset[str]:
         source_path=plan.models_config,
     )
     recipes = load_serving_recipes(plan.serving_recipes_config)
+    selected = plan.preflight_roles
     configured = {
         (identity.serving_recipe, role)
         for role, identity in models.chairs.items()
-        if isinstance(identity, ChairIdentity)
+        if isinstance(identity, ChairIdentity) and (selected is None or role in selected)
     }
     return frozenset(
         profile.environment

@@ -102,8 +102,9 @@ UV_CACHE_REQUIRED_BYTES = 12 * 1024**3
 REPOSITORY_VENV_REQUIRED_BYTES = 20 * 1024**3
 
 SURYA_ENVIRONMENT = "operations/serving/surya"
-"""Surya's own uv project, synced beside the project's environment when a
-subprocess serving row for a configured chair runs in it.
+"""Surya's own uv project, synced beside the project's environment when a chair
+the pod's stages run is served from it, or when the model store still lacks
+Surya's weight bundle, which Surya's own prefetch fetches in it.
 
 Surya pins Pillow and OpenCV versions the project cannot share, so the
 Designator runs it through this environment's interpreter
@@ -422,7 +423,9 @@ class BootstrapStep(StrEnum):
     UV_ENVIRONMENT = "uv-environment"
     TRANSFER = "transfer"
     MODEL_STORE = "model-store"
-    CHAIR_CACHE = "chair-cache"  # Stable journal key; the receipt records source planning.
+    # Plans each Hugging Face chair's store source and places each local-repository
+    # chair's verified bundle where the roster binds it.
+    CHAIR_CACHE = "chair-cache"
     PREFLIGHT = "preflight"
 
 
