@@ -16,16 +16,21 @@ import pytest
 
 from common.contracts.approval import (
     ACTIONS,
+    FINDINGS,
     MAX_APPROVAL_REASON_BYTES,
     MAX_APPROVAL_SUBJECTS,
+    PAGE_DECISIONS,
     REAL_INGRESS,
     SYNTHETIC_FIXTURE_INGRESS,
+    UNIT_DECISIONS,
     build_approval_record,
+    build_review_decision_record,
     parse_ingress_record,
     real_ingress_record,
     synthetic_fixture_ingress_record,
     validate_approval_record,
 )
+from common.contracts.canonical import self_hash
 from common.contracts.errors import ApprovalRefusal
 
 
@@ -44,7 +49,7 @@ def test_data_gate_is_not_an_approvable_action():
     exists to claim one against. `exclusion` and `salvage-promotion` remain —
     the project lead's approval is still required for an exclusion."""
     assert "data-gate" not in ACTIONS
-    assert set(ACTIONS) == {"advance", "exclusion", "salvage-promotion", "other"}
+    assert set(ACTIONS) == {"advance", "exclusion", "salvage-promotion", "review", "other"}
     with pytest.raises(ApprovalRefusal, match="not one of"):
         approval(action="data-gate")
 
@@ -169,6 +174,165 @@ def test_a_non_string_extra_field_is_a_named_schema_refusal_not_a_sorting_crash(
         validate_approval_record(record)
 
 
+# --- approval-record.v1: an operator review decision ----------------------------
+
+
+def decision(**overrides):
+    fields = {
+        "run_id": "run-1",
+        "scope": "unit",
+        "subject_id": "act-1",
+        "page_id": "page-1",
+        "decision": "release",
+        "finding": None,
+        "basis_digest": "b" * 64,
+        "reason": "the reading matches the ink",
+        "timestamp": "2026-09-30T12:00:00Z",
+    }
+    fields.update(overrides)
+    return build_review_decision_record(**fields)
+
+
+def resealed(record):
+    record.pop("self_hash")
+    record["self_hash"] = self_hash(record)
+    return record
+
+
+def test_a_review_decision_is_v1_bound_to_its_basis_and_validates_unchanged():
+    record = decision()
+    assert record["schema"] == "approval-record.v1"
+    assert record["action"] == "review"
+    assert record["subject_ids"] == ["act-1"]
+    assert record["target_version_hash"] == "b" * 64
+    assert record["review"] == {
+        "run_id": "run-1",
+        "scope": "unit",
+        "page_id": "page-1",
+        "decision": "release",
+        "finding": None,
+    }
+    assert validate_approval_record(record) == record
+
+
+def test_v0_records_are_still_read_and_still_written_for_advance_and_exclusion():
+    for action in ("advance", "exclusion"):
+        record = approval(action=action)
+        assert record["schema"] == "approval-record.v0"
+        assert validate_approval_record(record) == record
+
+
+def test_the_v0_builder_refuses_the_review_action():
+    with pytest.raises(ApprovalRefusal, match="approval-record.v1"):
+        approval(action="review")
+
+
+def test_a_v0_record_claiming_the_review_action_is_refused():
+    record = approval()
+    record["action"] = "review"
+    with pytest.raises(ApprovalRefusal, match="the review action is approval-record.v1's"):
+        validate_approval_record(resealed(record))
+
+
+def test_a_v1_record_with_another_action_is_refused():
+    record = decision()
+    record["action"] = "exclusion"
+    with pytest.raises(ApprovalRefusal, match="the review action is approval-record.v1's"):
+        validate_approval_record(resealed(record))
+
+
+def test_a_v1_record_without_its_review_block_is_refused():
+    record = decision()
+    del record["review"]
+    with pytest.raises(ApprovalRefusal, match="missing"):
+        validate_approval_record(resealed(record))
+
+
+def test_a_v0_record_carrying_a_review_block_is_refused():
+    record = approval()
+    record["review"] = decision()["review"]
+    with pytest.raises(ApprovalRefusal, match="unexpected fields"):
+        validate_approval_record(resealed(record))
+
+
+def test_the_review_block_is_closed():
+    record = decision()
+    record["review"]["corrected_text"] = "a transcription"
+    with pytest.raises(ApprovalRefusal, match="review block must hold exactly"):
+        validate_approval_record(resealed(record))
+
+
+def test_an_edited_review_decision_fails_its_self_hash():
+    record = decision()
+    record["review"]["decision"] = "exclude"
+    with pytest.raises(ApprovalRefusal, match="self-hash"):
+        validate_approval_record(record)
+
+
+@pytest.mark.parametrize("name", UNIT_DECISIONS)
+def test_every_unit_decision_builds_in_unit_scope(name):
+    finding = "text-misread" if name == "hold" else None
+    assert validate_approval_record(decision(decision=name, finding=finding))
+
+
+@pytest.mark.parametrize("name", PAGE_DECISIONS)
+def test_every_page_decision_builds_in_page_scope(name):
+    finding = "other" if name == "hold" else None
+    record = decision(scope="page", subject_id="page-1", decision=name, finding=finding)
+    assert validate_approval_record(record)
+
+
+@pytest.mark.parametrize(
+    ("scope", "name"),
+    [("unit", "no-missed-act"), ("unit", "re-shoot"), ("page", "release"), ("page", "exclude")],
+)
+def test_a_decision_outside_its_scope_is_refused(scope, name):
+    with pytest.raises(ApprovalRefusal, match=f"is not a {scope} decision"):
+        decision(scope=scope, subject_id="page-1", decision=name)
+
+
+@pytest.mark.parametrize("name", ["correct-text", "split", "merge", "clear-continuation-link"])
+def test_correcting_splitting_merging_and_unlinking_are_not_decisions(name):
+    with pytest.raises(ApprovalRefusal, match="is not a unit decision"):
+        decision(decision=name)
+
+
+def test_a_hold_names_a_finding_from_the_closed_list():
+    assert "text-misread" in FINDINGS
+    with pytest.raises(ApprovalRefusal, match="names its finding"):
+        decision(decision="hold")
+    with pytest.raises(ApprovalRefusal, match="names its finding"):
+        decision(decision="hold", finding="the text should read Jean")
+
+
+def test_only_a_hold_names_a_finding():
+    with pytest.raises(ApprovalRefusal, match="only a hold names a finding"):
+        decision(finding="text-misread")
+
+
+def test_a_page_decision_names_its_own_page():
+    with pytest.raises(ApprovalRefusal, match="subject is the page it names"):
+        decision(scope="page", subject_id="page-2", decision="missed-act")
+
+
+def test_a_review_decision_names_exactly_one_subject():
+    record = decision()
+    record["subject_ids"] = ["act-1", "act-2"]
+    with pytest.raises(ApprovalRefusal, match="exactly one subject"):
+        validate_approval_record(resealed(record))
+
+
+@pytest.mark.parametrize("field", ["run_id", "page_id"])
+def test_a_review_decision_names_its_run_and_page(field):
+    with pytest.raises(ApprovalRefusal, match=f"{field} must be non-blank"):
+        decision(**{field: " "})
+
+
+def test_a_review_decision_is_bound_to_a_basis_digest():
+    with pytest.raises(ApprovalRefusal, match="lowercase sha256"):
+        decision(basis_digest="not-a-digest")
+
+
 # --- The closed ingress record: fixture or real, and nothing else ----------------
 
 
@@ -246,7 +410,14 @@ def test_no_pipeline_module_mints_its_own_approval_record():
                 continue
             source = path.read_text(encoding="utf-8")
             scanned += 1
-            if "build_approval_record" in source or "write_approval_record" in source:
+            if any(
+                name in source
+                for name in (
+                    "build_approval_record",
+                    "build_review_decision_record",
+                    "write_approval_record",
+                )
+            ):
                 offenders.append(relative)
     assert scanned > 20, f"only {scanned} modules were inspected; the scan lost its subject"
     assert not offenders, (

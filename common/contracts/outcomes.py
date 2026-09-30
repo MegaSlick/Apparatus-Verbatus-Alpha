@@ -233,6 +233,9 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
         "confirmed-blank": _C.COMPLETED,
         "held-for-review": _C.UNRESOLVED,
         "failed": _C.FAILED,
+        # Completed only because an operator review decision says the unit is not
+        # an act; `require_approval` refuses the word without its record.
+        "excluded": _C.COMPLETED,
     },
     ARCHETYPUS: {
         "established": _C.COMPLETED,
@@ -309,6 +312,7 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (RECENSOR, "confirmed-blank"): _A.CONFIRMED_BLANK,
     (RECENSOR, "held-for-review"): _A.HELD_FOR_REVIEW,
     (RECENSOR, "failed"): _A.REFUSED_WITH_REASON,
+    (RECENSOR, "excluded"): _A.EXCLUDED_WITH_APPROVAL,
     (ARCHETYPUS, "established"): _A.DELIVERED,
     (ARCHETYPUS, "refused"): _A.REFUSED_WITH_REASON,
     (ARMARIUM, _A.DELIVERED.value): _A.DELIVERED,
@@ -361,8 +365,9 @@ def terminal_category(stage: str, outcome: Any) -> ArmariumCategory | None:
 def require_approval(stage: str, outcome: Any, approval_ref: Any) -> None:
     """Refuse an approval-bound outcome that carries no approval-record reference.
 
-    Only two outcomes in the whole algebra are approval-bound, and both mean a unit
-    left the pipeline as `completed` without anyone reading its text. A claimed
+    Only two outcome words in the whole algebra are approval-bound, `excluded` (a
+    Designator or Recensor outcome) and its Armarium category, and both mean a unit
+    left the pipeline as `completed` without its text being established. A claimed
     approval with no artifact is no approval.
     """
     # The stage word and the Armarium category that names approval.
@@ -734,6 +739,51 @@ def _attached_reading_count(act: str, record: Mapping[str, Any]) -> int:
     raise FatalAccounting(f"act {act} coverage names unknown granularity basis {basis!r}")
 
 
+REVIEW_CLEARANCE_FIELDS: Final = frozenset({"scope", "subject", "decision", "cleared"})
+
+
+def _clearance_key(row: Any) -> tuple[str, str]:
+    if not isinstance(row, Mapping) or set(row) != REVIEW_CLEARANCE_FIELDS:
+        raise FatalAccounting(
+            f"a review clearance is not the closed {sorted(REVIEW_CLEARANCE_FIELDS)} row"
+        )
+    return (str(row["scope"]), repr(row["subject"]))
+
+
+def _clearance_reason(
+    row: Mapping[str, Any],
+    act_categories: Mapping[str, ArmariumCategory],
+    page_census: Mapping[int, Mapping[str, Any]],
+) -> str:
+    """The reason one operator clearance keeps the run partial."""
+    scope, subject, decision, cleared = (
+        row["scope"],
+        row["subject"],
+        row["decision"],
+        row["cleared"],
+    )
+    if scope == "unit" and isinstance(subject, str) and subject in act_categories:
+        what = f"act {subject}"
+    elif scope == "page" and is_plain_int(subject) and subject in page_census:
+        what = f"page {subject}"
+    else:
+        raise FatalAccounting(
+            f"a review clearance names {scope!r} {subject!r}, not a counted act or a census page"
+        )
+    if (
+        type(decision) is not str
+        or not decision
+        or not isinstance(cleared, list)
+        or not all(type(code) is str and code for code in cleared)
+    ):
+        raise FatalAccounting(f"the review clearance of {what} names no decision or codes")
+    codes = ", ".join(sorted(cleared)) or "no machine hold"
+    return (
+        f"{what} was cleared by an operator review decision ({decision}), clearing {codes}; "
+        "a person's decision, not a machine check"
+    )
+
+
 def run_aggregate(
     act_categories: Mapping[str, ArmariumCategory],
     coverage_records: Mapping[str, Mapping[str, Any]] | None = None,
@@ -747,6 +797,7 @@ def run_aggregate(
     page_read: bool = False,
     other_categories_by_page: Mapping[int, Sequence[str]] | None = None,
     unpaired_continuations: Sequence[tuple[str, str]] = (),
+    review_clearances: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
@@ -786,6 +837,12 @@ def run_aggregate(
     a reason too: it may be an act the reading did not establish. Each
     `unpaired_continuations` row `(act, flag)` is a delivered act
     whose continuation flag no link pairs, which keeps the run partial.
+
+    Each `review_clearances` row `{scope, subject, decision, cleared}` is a hold
+    an operator review decision cleared: a unit (`scope` "unit", `subject` a
+    counted act) or a page (`scope` "page", `subject` a census ordinal). A
+    person's decision is not a machine check, so every clearance is a reason
+    and a run whose every hold was cleared stays partial.
     """
     reasons: list[str] = []
     by_category: dict[str, int] = {}
@@ -865,6 +922,11 @@ def run_aggregate(
                 "continuation flag"
             )
         reasons.append(UNPAIRED_CONTINUATION_REASON.format(act=act, says=_CONTINUATION_SAYS[flag]))
+
+    reasons.extend(
+        _clearance_reason(row, act_categories, page_census or {})
+        for row in sorted(review_clearances, key=_clearance_key)
+    )
 
     for act in sorted(act_categories):
         category = act_categories[act]

@@ -43,7 +43,7 @@ EXPECTED_VOCABULARY_SIZES = {
     "designator": 6,
     "attestatores": 8,
     "perlector": 8,
-    "recensor": 7,
+    "recensor": 8,
     "archetypus": 4,
     "armarium": 7,
 }
@@ -1403,3 +1403,61 @@ def test_a_held_other_reading_on_a_page_of_acts_keeps_the_aggregate_partial() ->
     assert held["reasons"] == [
         outcomes.HELD_OTHER_ON_ACT_PAGE_REASON.format(ordinal=1, categories="held-for-review")
     ]
+
+
+def test_a_recensor_exclusion_is_completed_only_with_its_approval() -> None:
+    """An operator's `exclude` ends a unit as excluded-with-approval, never on the word alone."""
+    assert classify(RECENSOR, "excluded") is OutcomeClass.COMPLETED
+    assert terminal_category(RECENSOR, "excluded") is ArmariumCategory.EXCLUDED_WITH_APPROVAL
+    with pytest.raises(ApprovalRefusal, match="no approval-record reference"):
+        require_approval(RECENSOR, "excluded", None)
+    require_approval(RECENSOR, "excluded", "receipts/" + "a" * 64 + ".json")
+
+
+def _cleared_run(clearances: list[dict]) -> dict:
+    return run_aggregate(
+        {"a1": ArmariumCategory.DELIVERED},
+        {"a1": {"under_witnessed": False, "unresolved_chairs": 0}},
+        {1: {"outcome": "sealed"}},
+        act_pages={"a1": [1]},
+        act_text_status={"a1": "established"},
+        review_clearances=clearances,
+    )
+
+
+def test_a_run_whose_every_hold_was_cleared_stays_partial_and_names_each_clearance() -> None:
+    assert _cleared_run([])["status"] == "complete"
+    aggregate = _cleared_run(
+        [
+            {
+                "scope": "page",
+                "subject": 1,
+                "decision": "no-missed-act",
+                "cleared": ["unread-line"],
+            },
+            {"scope": "unit", "subject": "a1", "decision": "release", "cleared": ["no-autopsia"]},
+        ]
+    )
+    assert aggregate["status"] == "partial"
+    assert aggregate["reasons"] == [
+        "page 1 was cleared by an operator review decision (no-missed-act), clearing "
+        "unread-line; a person's decision, not a machine check",
+        "act a1 was cleared by an operator review decision (release), clearing no-autopsia; "
+        "a person's decision, not a machine check",
+    ]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"scope": "unit", "subject": "a2", "decision": "release", "cleared": []},
+        {"scope": "page", "subject": 2, "decision": "no-missed-act", "cleared": []},
+        {"scope": "page", "subject": "1", "decision": "no-missed-act", "cleared": []},
+        {"scope": "unit", "subject": "a1", "decision": "", "cleared": []},
+        {"scope": "unit", "subject": "a1", "decision": "release", "cleared": "x"},
+        {"scope": "unit", "subject": "a1", "decision": "release"},
+    ],
+)
+def test_a_clearance_of_nothing_the_run_counts_is_fatal(row: dict) -> None:
+    with pytest.raises(FatalAccounting):
+        _cleared_run([row])
