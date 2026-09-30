@@ -395,14 +395,14 @@ SHAPES = {
     "dense over a page turn, half-page crops, fed prior": (
         [(LETTER, [BOTTOM]), (LETTER, [TOP])],
         PRIOR,
-        (31514, True),
-        (31514, True),
+        (31515, True),
+        (31515, True),
     ),
     "dense over a page turn, a whole-page recovery crop, fed prior": (
         [(LETTER, [BOTTOM]), (LETTER, [TOP, WHOLE])],
         PRIOR,
-        (36617, False),
-        (36617, False),
+        (36618, False),
+        (36618, False),
     ),
     "three pages, whole-page crops": (
         [(LETTER, [WHOLE])] * 3,

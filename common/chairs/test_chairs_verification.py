@@ -538,6 +538,7 @@ def test_the_measured_real_roster_pins_each_shipped_manifest():
         "attestator_2",
         "attestator_3",
         "perlector",
+        "secondary_proposer",
     }
     assert (
         configured["designator_structure"].digest_manifest
