@@ -30,7 +30,6 @@ from common.contracts.stages import (
     EXEMPLAR,
     MAX_TRIAGE_SPLIT_PARTS,
     PERLECTOR,
-    RECENSOR,
     TRIAGE_ACTOR_FIELDS,
     TRIAGE_ACTOR_KINDS,
     TRIAGE_MODES,
@@ -523,35 +522,12 @@ def verify_exemplar_crop_lineage(
     _verify_act_identity_binding(tree, region, payload)
     page_pixels, expected_page_ref = _sealed_source_page(tree, run, transform, "crop region")
     inputs = region.get("inputs")
-    origin = payload.get("origin")
-    if origin == "proposal":
-        if inputs != [expected_page_ref]:
-            raise ContractError(
-                "a proposal crop region does not input only the Exemplar page its transform names"
-            )
-    elif origin == "recovery":
-        if not isinstance(inputs, list) or expected_page_ref not in inputs or len(inputs) != 2:
-            raise ContractError(
-                "a recovery crop region does not input its Exemplar page and one recovery request"
-            )
-        request_ref = next(reference for reference in inputs if reference != expected_page_ref)
-        request = tree.read_artifact_reference(
-            request_ref,
-            stage=RECENSOR,
-            kind="recovery-request",
-            subject_id=region["subject_id"],
+    if payload.get("origin") != "proposal":
+        raise ContractError("a crop region has no recognized proposal origin")
+    if inputs != [expected_page_ref]:
+        raise ContractError(
+            "a proposal crop region does not input only the Exemplar page its transform names"
         )
-        request_payload = request.get("payload")
-        if (
-            request["outcome"] != "recovery-requested"
-            or not isinstance(request_payload, dict)
-            or request_payload.get("act_key") != payload.get("act_key")
-        ):
-            raise ContractError(
-                "a recovery crop region is not bound to a matching Recensor request"
-            )
-    else:
-        raise ContractError("a crop region has no recognized proposal or recovery origin")
     width, height = _verify_stored_crop(
         page_pixels, transform["bounds"], payload, tree, "the sealed Designator crop"
     )

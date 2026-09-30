@@ -179,7 +179,7 @@ def cropped(tmp_path):
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-root",
             str(tmp_path / "runs"),
             "--run-id",
@@ -234,7 +234,6 @@ def reframed(crop_bytes, **save):
     return output.getvalue()
 
 
-@pytest.mark.act_path
 def test_the_crop_the_run_wrote_verifies(cropped):
     """The check passes on the real thing, so a failure below means what it says."""
     tree, run, region = cropped
@@ -244,7 +243,6 @@ def test_the_crop_the_run_wrote_verifies(cropped):
     assert verified["region_id"] == region["payload"]["region_id"]
 
 
-@pytest.mark.act_path
 def test_the_same_crop_written_by_another_encoder_is_not_forged_evidence(cropped):
     """The audit's red demonstration, as durable as the encoder it survives.
 
@@ -266,7 +264,6 @@ def test_the_same_crop_written_by_another_encoder_is_not_forged_evidence(cropped
     }
 
 
-@pytest.mark.act_path
 def test_the_same_crop_under_this_pipelines_previous_encoder_still_verifies(cropped):
     """Stated against the exact encoder a sealed tree on `main` was written with,
     rather than only against 'some other encoder': `encode_grayscale_png` is
@@ -281,7 +278,6 @@ def test_the_same_crop_under_this_pipelines_previous_encoder_still_verifies(crop
     verify_exemplar_crop_lineage(tree, run, restated(tree, region, previous))
 
 
-@pytest.mark.act_path
 def test_a_single_changed_pixel_is_still_refused_by_name(cropped):
     """The refusal that has to survive making the check tolerant of framing."""
     tree, run, region = cropped
@@ -296,7 +292,6 @@ def test_a_single_changed_pixel_is_still_refused_by_name(cropped):
         verify_exemplar_crop_lineage(tree, run, restated(tree, region, output.getvalue()))
 
 
-@pytest.mark.act_path
 def test_a_crop_carrying_payload_beside_its_pixels_is_refused(cropped):
     """What the byte comparison used to refuse for free. Accepting two framings
     of one image says nothing about a chunk travelling beside the picture, so
@@ -317,7 +312,6 @@ def test_a_crop_carrying_payload_beside_its_pixels_is_refused(cropped):
         verify_exemplar_crop_lineage(tree, run, restated(tree, region, smuggled))
 
 
-@pytest.mark.act_path
 def test_a_crop_that_is_not_an_image_at_all_refuses_as_that(cropped):
     """Undecodable is its own fault and says so, rather than arriving as a claim
     about pixels nobody could read."""
