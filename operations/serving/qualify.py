@@ -17,6 +17,12 @@ from common.sealed_config import parse_sealed_toml
 from operations.pod.durable import exclusive_write
 
 from .config import (
+    FixtureProfile,
+    InProcessProfile,
+    ServingProfile,
+    ServingRecipes,
+    SubprocessProfile,
+    UnsupportedProfile,
     chair_preflight_identity_digest,
     parse_serving_recipes,
     profile_preflight_digest,
@@ -94,16 +100,19 @@ def qualification_candidates(
         raise QualificationRefusal("preflight serving inputs do not match the supplied files")
 
     try:
-        parse_serving_recipes(
+        recipes = parse_serving_recipes(
             recipes_raw,
             source_path=recipes_config,
             source_sha256=expected_inputs["serving_recipes_sha256"],
         )
     except ServingConfigurationError as error:
         raise QualificationRefusal(f"serving recipes are invalid: {error}") from error
-    rows = recipes_raw.get("profiles")
-    if not isinstance(rows, list):  # parse_serving_recipes already names the ordinary case
-        raise QualificationRefusal("serving recipes have no profile rows")
+    # A parsed catalogue keeps its rows in file order, so each typed profile's
+    # raw row (the input to its preflight digest) sits at the same index.
+    raw_rows = {
+        id(profile): row
+        for profile, row in zip(recipes.profiles, recipes_raw["profiles"], strict=True)
+    }
 
     try:
         models = parse_models_config(models_raw, source_path=models_config)
@@ -128,15 +137,11 @@ def qualification_candidates(
     # subprocess chair's own runner once on the golden page), so it has a cache
     # receipt and a placement in that state but no smoke receipt, and no row of
     # its is ever proven here.
+    profiles = {
+        role: _profile_at_tier(recipes, identity, tier) for role, identity in identities.items()
+    }
     unserved_states = {
-        role: row["kind"]
-        for role, identity in identities.items()
-        for row in rows
-        if isinstance(row, dict)
-        and row.get("kind") in UNSERVED_KINDS
-        and row.get("recipe") == identity.serving_recipe
-        and row.get("chair") == role
-        and row.get("tier") == tier
+        role: profile.kind for role, profile in profiles.items() if profile.kind in UNSERVED_KINDS
     }
     served = {
         role: identity for role, identity in identities.items() if role not in unserved_states
@@ -166,20 +171,9 @@ def qualification_candidates(
         if len(matches) != 1:
             raise QualificationRefusal(f"chair {role!r} has {len(matches)} smoke receipts")
         smoke = matches[0]
-        profile_rows = [
-            row
-            for row in rows
-            if isinstance(row, dict)
-            and row.get("recipe") == identity.serving_recipe
-            and row.get("chair") == role
-            and row.get("tier") == tier
-        ]
-        if len(profile_rows) != 1:
-            raise QualificationRefusal(
-                f"chair {role!r} resolves to {len(profile_rows)} raw profile rows at tier {tier!r}"
-            )
-        row = dict(profile_rows[0])
-        if row.get("kind") != "vllm" or row.get("preflight_state") != "unproven":
+        profile = profiles[role]
+        row = dict(raw_rows[id(profile)])
+        if not isinstance(profile, ServingProfile) or profile.preflight_state != "unproven":
             raise QualificationRefusal(
                 f"chair {role!r} tier {tier!r} is not one unproven vLLM profile"
             )
@@ -259,6 +253,15 @@ def _bootstrap_record(report: Mapping[str, object]) -> Mapping[str, object]:
     raise QualificationRefusal("input is not a bootstrap result or hold report")
 
 
+def _profile_at_tier(
+    recipes: ServingRecipes, identity: ChairIdentity, tier: str
+) -> ServingProfile | InProcessProfile | SubprocessProfile | FixtureProfile | UnsupportedProfile:
+    try:
+        return recipes.for_identity(identity, tier)
+    except ServingConfigurationError as error:
+        raise QualificationRefusal(str(error)) from error
+
+
 def _verify_smoke(
     smoke: Mapping[str, object],
     *,
@@ -326,8 +329,8 @@ def _verify_smoke(
     answer = message.get("content") if isinstance(message, dict) else None
     if "page_witness_edit_distance" not in smoke:
         raise QualificationRefusal(
-            f"chair {identity.role!r} missing edit distance "
-            "(receipt predates distance recording; re-run preflight)"
+            f"chair {identity.role!r} smoke receipt records no page_witness_edit_distance; "
+            "re-run preflight"
         )
     distance = page_witness_edit_distance(answer, witness) if isinstance(answer, str) else None
     if distance is None:
