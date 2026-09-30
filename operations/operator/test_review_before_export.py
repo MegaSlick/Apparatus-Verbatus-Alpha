@@ -32,7 +32,9 @@ RUN_ID = "r"
 SCENARIO = "audit-reproof-cutoff"
 
 
-def _orchestrate(run_root: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+def _orchestrate(
+    run_root: Path, *extra: str, scenario: str = SCENARIO
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
@@ -40,7 +42,7 @@ def _orchestrate(run_root: Path, *extra: str) -> subprocess.CompletedProcess[str
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            SCENARIO,
+            scenario,
             "--run-id",
             RUN_ID,
             "--run-root",
@@ -171,135 +173,6 @@ def test_opening_an_unfinished_run_changes_no_path_bytes_size_or_mtime(witnessed
     projected = _projection(witnessed_run)
     assert projected.pages and projected.acts
     assert _census(witnessed_run / RUN_ID) == before
-
-
-@pytest.mark.act_path
-def test_the_failed_reproof_run_can_be_opened_and_understood_before_export(
-    witnessed_run: Path, tmp_path: Path
-):
-    """A held act remains visible before an export exists."""
-    run_root = _writable_copy(witnessed_run, tmp_path / "runs")
-    resumed = _orchestrate(run_root, "--from", "perlector", "--to", "recensor")
-    assert resumed.returncode == 3, resumed.stderr
-    assert "stopped at held recensor" in resumed.stdout
-
-    projected = _projection(run_root)
-    assert projected.export["present"] is False
-    states = {row["stage"]: row["state"] for row in projected.progress}
-    assert states["perlector"] == "sealed" and states["recensor"] == "sealed"
-    assert states["archetypus"] == "not-run" and states["armarium"] == "not-run"
-
-    (held,) = projected.holds
-    assert held["act_key"] == "a1"
-    assert held["source"] == "recensor"
-    assert held["outcome"] == "held-for-review"
-    assert held["audit_examination"] == "incomplete"
-    assert "audit re-proof of this act did not complete" in held["reason"]
-    assert held["record_ref"]["relative_path"].startswith("5_recensor/artifacts/review/")
-
-    by_key = {act["act_key"]: act for act in projected.acts}
-    cut = by_key["a1"]
-    assert cut["category"] == "held-for-review"
-    assert cut["reason"] == held["reason"]
-    assert cut["row"]["reading"]["outcome"] == "read"
-    assert cut["row"]["reading"]["truncation"]["classification"] == "complete"
-    assert cut["row"]["reading"]["audit"] == {"unresolved": True, "examination": "incomplete"}
-    assert isinstance(cut["row"]["reading"]["text"], str) and cut["row"]["reading"]["text"]
-    assert cut["row"]["review"]["outcome"] == "held-for-review"
-    assert cut["crops"], "the held act's crop is the image a person needs to see"
-    assert by_key["a2"]["category"] == "accepted, awaiting establishment"
-    assert by_key["a2"]["row"]["reading"]["audit"] == {
-        "unresolved": False,
-        "examination": "complete",
-    }
-
-    assert projected.next_action["held_acts"] == 1
-    assert projected.next_action["resume_from"] == "archetypus"
-    summary = projected.next_action["summary"]
-    assert "`advance` records permission to pass one sealed stage boundary" in summary
-    assert "neither certifies a reading nor clears a hold" in summary
-    assert "outside the pipeline" in summary
-
-    text = "\n".join(review_text.render(dataclasses.asdict(projected)))
-    assert "held-for-review by the recensor [Recensor review]; audit examination incomplete" in text
-    assert "did not complete" in text
-    assert "machine reading:" in text
-
-    # Between the two stages: the accepted act is established and waiting for an
-    # export that does not exist yet, which is its own sentence and not "read,
-    # awaiting the Recensor".
-    established_run = _orchestrate(run_root, "--stage", "archetypus")
-    assert established_run.returncode == 0, established_run.stderr
-    between = _projection(run_root)
-    assert between.export["present"] is False
-    by_key = {act["act_key"]: act for act in between.acts}
-    assert by_key["a2"]["category"] == "established, awaiting export"
-    assert "the Armarium has not exported it" in by_key["a2"]["reason"]
-    assert by_key["a2"]["row"]["established"]["text_status"]
-    assert between.next_action["resume_from"] == "armarium"
-    assert "established, awaiting export" in "\n".join(
-        review_text.render(dataclasses.asdict(between))
-    )
-
-    # The export arrives; the same surface now shows its accounting, and the
-    # hold neither disappears nor changes its reason.
-    exported = _orchestrate(run_root, "--stage", "armarium")
-    assert exported.returncode == 3, exported.stderr
-    after = _projection(run_root)
-    assert after.export["present"] is True
-    # A held act means a partial export, and this is the run that produces one:
-    # the surface says so in the record's own words instead of announcing "a
-    # completed export" over a bundle that claims otherwise.
-    assert after.export["complete"] is False
-    assert after.export["outcome"] == "held-for-review"
-    assert after.export["claims_status"] != "complete"
-    assert "partial export (held-for-review)" in after.export["note"]
-    assert after.export["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
-    assert after.export["review_items_absent_because"] is None
-    assert after.review_items is not None and len(after.review_items) == 1
-    assert [hold["act_key"] for hold in after.holds] == ["a1"]
-    assert after.holds[0]["reason"] == held["reason"]
-    assert {act["act_key"]: act["category"] for act in after.acts} == {
-        "a1": "held-for-review",
-        "a2": "delivered",
-    }
-    assert after.next_action["resume_from"] is None
-    assert after.next_action["held_acts"] == 1
-    assert {row["stage"]: row["state"] for row in after.progress} == {
-        stage: "sealed"
-        for stage in (
-            "door",
-            "exemplar",
-            "ink-map",
-            "designator",
-            "attestatores",
-            "perlector",
-            "recensor",
-            "archetypus",
-            "armarium",
-        )
-    }
-
-    # The post-export plain rendering -- the most common real use of this
-    # screen, and the one shape no test had ever rendered.
-    exported_text = "\n".join(review_text.render(dataclasses.asdict(after)))
-    assert "Export: present but partial" in exported_text
-    assert "partial export (held-for-review)" in exported_text
-    assert "Review queue (1)" in exported_text
-    assert "delivered text:" in exported_text
-    assert "Pages (2 of 2 declared)" in exported_text
-    # The witnesses survive the export: the same act shows its chairs before and
-    # after, under the export's own field name.
-    assert "witnesses:" in exported_text
-    before_chairs = {entry["chair"] for entry in by_key["a2"]["row"]["testimonia"]}
-    exported_a2 = next(act for act in after.acts if act["act_key"] == "a2")
-    exported_chairs = {entry["chair"] for entry in exported_a2["row"]["testimonia"]}
-    assert exported_chairs, "the witnesses do not vanish once the run exports"
-    assert exported_chairs <= before_chairs, (
-        "the export names the evidence-backed witness basis, never a chair the "
-        "Attestatores did not seal"
-    )
-    assert "review record:" in exported_text
 
 
 @pytest.mark.parametrize("what", ["page", "crop"])
@@ -1294,22 +1167,6 @@ def _reading_act(reading: dict) -> dict:
     }
 
 
-def test_withheld_reading_displays_unmeasured_self_revisions():
-    reading = {
-        "outcome": "read",
-        "text": "alpha beta",
-        "lectio_kind": "primed-draft-withheld",
-        "self_revision": None,
-        "uncertain_spans": [],
-        "gaps": [],
-        "uncertainty_assessment": {"state": "assessed", "problem": None},
-    }
-    text = "\n".join(review_text.render(_reading_act(reading)))
-    assert "self-revisions not measured (primed-draft-withheld)" in text
-    with pytest.raises(review_text.ProjectionShapeError, match="null for a withheld draft"):
-        review_text.render(_reading_act({**reading, "self_revision": []}))
-
-
 def test_a_delivered_act_with_no_uncertainty_layer_still_says_so():
     """An absent or damaged layer printed nothing at all after the export.
 
@@ -1526,21 +1383,20 @@ def test_a_gap_names_the_chairs_that_corroborate_it_and_the_layer_its_revisions(
 
 @pytest.fixture(scope="module")
 def exported_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """One run carried through the Armarium, holding at least one act.
+    """One run carried through the Armarium, holding at least one reading.
 
-    `audit-reproof-cutoff` holds a1 on a re-examination that did not finish, so
-    the run is partial, exits 3, and writes an export that delivers one act and
-    not the other -- which is the pair this screen has to show after the export.
+    `page-review` holds a reading at the Recensor, so the run is partial, exits
+    3, and writes an export that delivers some readings and not others -- the
+    pair this screen has to show after the export.
     """
     run_root = tmp_path_factory.mktemp("exported") / "runs"
-    completed = _orchestrate(run_root)
+    completed = _orchestrate(run_root, scenario="page-review")
     assert completed.returncode == 3, completed.stderr
     return run_root
 
 
-@pytest.mark.act_path
-def test_a_held_acts_reading_and_doubt_survive_the_export(exported_run: Path):
-    """The screen this exists for shows a held act; the export writes it no text."""
+def test_a_held_readings_text_and_doubt_survive_the_export(exported_run: Path):
+    """The screen this exists for shows a held reading; the export writes it no text."""
     projection = dataclasses.asdict(_projection(exported_run))
     assert projection["export"]["present"] is True
     held = [
@@ -1549,15 +1405,13 @@ def test_a_held_acts_reading_and_doubt_survive_the_export(exported_run: Path):
         if (act.get("row") or {}).get("text") is None and (act.get("row") or {}).get("reading")
     ]
     assert held, "this exported run must carry a non-delivered act with a sealed reading"
-    assert all(act["row"]["reading"]["lectio_kind"] == "primed-draft-withheld" for act in held)
-    assert all(act["row"]["reading"]["self_revision"] is None for act in held)
+    assert all(isinstance(act["row"]["reading"]["text"], str) for act in held)
+    assert all(act["crops"] for act in projection["acts"] if act["category"] == "delivered")
     text = "\n".join(review_text.render(projection))
 
-    # Both halves of the same screen: the delivered act's layer, and the held
+    # Both halves of the same screen: the delivered acts' layers, and the held
     # act's reading read back from the run tree.
     assert text.count("doubts:") == len(projection["acts"])
-    assert "doubts: not-assessed — the reader reports no doubt assessment" in text
-    assert "self-revisions not measured (primed-draft-withheld)" in text
 
 
 def test_the_pre_export_reading_path_prints_every_state_the_same_way():
@@ -1603,23 +1457,6 @@ def test_the_pre_export_reading_path_prints_every_state_the_same_way():
         )
     assert refused.value.field == "acts[].row.reading.uncertainty_assessment"
     assert refused.value.index is None
-
-
-@pytest.mark.act_path
-def test_a_stopped_runs_own_render_carries_a_doubt_line_for_every_reading(
-    witnessed_run: Path, tmp_path: Path
-):
-    """The projection keys are pinned by a real run, not only by hand-built rows."""
-    run_root = _writable_copy(witnessed_run, tmp_path / "runs")
-    resumed = _orchestrate(run_root, "--from", "perlector", "--to", "recensor")
-    assert resumed.returncode == 3, resumed.stderr
-    projection = dataclasses.asdict(_projection(run_root))
-    assert projection["export"]["present"] is False
-    text = "\n".join(review_text.render(projection))
-
-    assert "machine reading:" in text
-    assert text.count("doubts:") == len(projection["acts"])
-    assert "doubts: not-assessed — the reader reports no doubt assessment" in text
 
 
 def test_a_malformed_layer_beside_a_missing_assessment_is_still_refused():

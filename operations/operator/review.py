@@ -237,9 +237,6 @@ class ReadOnlyRun:
                 # The Armarium attaches `source_regions` to every delivered act
                 # and never to a non-delivered one: missing means damaged on a
                 # delivered row, and means the record as written otherwise.
-                # A page-read run's act regions are the Perlector's crops; an act-read
-                # run's are the Designator's.
-                region_stage = PERLECTOR if payload.get("reading_unit") == "page" else DESIGNATOR
                 acts = tuple(
                     _act_row(
                         tree,
@@ -247,7 +244,6 @@ class ReadOnlyRun:
                         export_ref,
                         budget,
                         stage_records=stage_records,
-                        region_stage=region_stage,
                     )
                     for row in payload["delivered"]
                 ) + tuple(
@@ -258,7 +254,6 @@ class ReadOnlyRun:
                         budget,
                         requires_crops=False,
                         stage_records=stage_records,
-                        region_stage=region_stage,
                     )
                     for row in payload["non_delivered"]
                 )
@@ -791,26 +786,16 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
     would print a broken layer as no doubt at all.
     """
     rows = _records_of(stage_records, PERLECTOR, "perlectio", act_id)
-    if rows and all(
-        _payload_of(row, "the Perlectio record").get("reading_unit") == "page" for row in rows
-    ):
-        # A page-read act id is minted per page-reading attempt, so it has one
-        # Perlectio and no attempt ordinal to choose between.
-        if len(rows) != 1:
-            raise SchemaRefusal(
-                f"page-read act {act_id} has {len(rows)} Perlectio records; it may have one"
-            )
-        reading_row = rows[0]
-    else:
-        reading_row = _latest(stage_records, PERLECTOR, "perlectio", act_id, operation="perlegere")
-    if reading_row is None:
+    # An act id is minted per page-reading attempt, so it has at most one
+    # Perlectio and no attempt ordinal to choose between.
+    if len(rows) > 1:
+        raise SchemaRefusal(f"act {act_id} has {len(rows)} Perlectio records; it may have one")
+    if not rows:
         return None
+    reading_row = rows[0]
     payload = _payload_of(reading_row, "the Perlectio record")
     truncation = payload.get("truncation")
     audit = payload.get("audit")
-    lectio_kind = payload.get("lectio_kind")
-    if lectio_kind == "primed-draft-withheld" and payload.get("self_revision") != []:
-        raise SchemaRefusal("a draft-withheld Perlectio cannot claim self-revisions")
     return {
         "outcome": reading_row["outcome"],
         "text": payload.get("text"),
@@ -821,10 +806,8 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
         # Kept as the producer's own field name, not the canonical layer's
         # `self_revisions`, to avoid a second copy of that rename free to
         # drift from it.
-        "self_revision": None
-        if lectio_kind == "primed-draft-withheld"
-        else payload.get("self_revision"),
-        "lectio_kind": lectio_kind,
+        "self_revision": payload.get("self_revision"),
+        "lectio_kind": payload.get("lectio_kind"),
         "truncation": truncation,
         # Absent stays absent; an object is projected to the two fields read
         # here; anything else is carried through exactly as the record holds
@@ -1434,7 +1417,6 @@ def _act_row(
     *,
     requires_crops: bool = True,
     stage_records: list[dict[str, Any]] | None = None,
-    region_stage: str = DESIGNATOR,
 ) -> dict[str, Any]:
     """One act as the export accounts for it, plus what only the run tree holds.
 
@@ -1481,7 +1463,8 @@ def _act_row(
             )
         image_digest = _verified_export_blob_digest(
             tree,
-            stage=region_stage,
+            # An exported act's regions are the Perlector's act-region crops.
+            stage=PERLECTOR,
             path=region.get("image_path"),
             expected_digest=region.get("image_sha256"),
             description=(f"act {row.get('act_id')!r} source region {region.get('region_id')!r}"),
