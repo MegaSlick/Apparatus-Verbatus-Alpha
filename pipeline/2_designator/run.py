@@ -103,6 +103,7 @@ from operations.serving.client import ChairClient, serving_mode_for  # noqa: E40
 from operations.serving.detector import (  # noqa: E402
     FIXTURE_ENGINE,
     RecordDetector,
+    check_record_detector_runnable,
     fixture_record_detector,
     load_ultralytics_record_detector,
 )
@@ -2458,6 +2459,22 @@ def _published_secondary_provenance(context) -> dict | None:
     return records[0]["payload"] if records else None
 
 
+def _check_record_detector_runnable(context) -> None:
+    """Refuse a configured record detector the live pass could not load: its row,
+    its pinned package versions and its weights digest, without loading the model."""
+    identity = _resolved_secondary(context)
+    if not isinstance(identity, ChairIdentity):
+        return
+    _record_detector_mode(context, identity, fixture_allowed=False)
+    profile = bound_serving_recipes(context, context.args.serving_recipes_config).for_identity(
+        identity, context.args.placement_tier
+    )
+    try:
+        check_record_detector_runnable(profile, context.registry.ensure(identity).root)
+    except ServingError as error:
+        raise ContractError(f"the record detector is not ready: {error}") from error
+
+
 def _live_secondary(context) -> tuple[dict, RecordDetector | None]:
     """The secondary proposer on the live path: recorded absent, or run in-process.
 
@@ -3081,12 +3098,10 @@ def live_initial_pass(
                 subject=f"page {row.get('subject_id')}'s structure answer",
                 error_type=ContractError,
             )
-    # Checked before the structure chair starts, so a detector row this stage
-    # cannot run refuses before any paid work; the detector itself loads only
-    # once the structure chair has closed, and Surya runs then too.
-    configured_secondary = _resolved_secondary(context)
-    if isinstance(configured_secondary, ChairIdentity):
-        _record_detector_mode(context, configured_secondary, fixture_allowed=False)
+    # Checked before the structure chair starts, so a detector this stage cannot
+    # run refuses before any paid work; the detector itself loads only once the
+    # structure chair has closed, and Surya runs then too.
+    _check_record_detector_runnable(context)
     surya_detection.check_surya_runnable(context, surya_runner)
 
     page_cache: dict[int, dict] = {}

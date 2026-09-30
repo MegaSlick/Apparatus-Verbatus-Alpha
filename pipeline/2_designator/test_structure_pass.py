@@ -2068,6 +2068,62 @@ def test_a_record_detector_the_live_pass_cannot_run_is_refused_before_any_reques
     assert _receipts(root) == []
 
 
+@pytest.mark.parametrize(
+    ("installed", "refusal"),
+    [
+        (False, "needs torch==2.13.0, and it is not installed"),
+        (True, "record detector weights are not at"),
+    ],
+)
+def test_a_record_detector_that_could_not_load_is_refused_before_any_request(
+    tmp_path, monkeypatch, installed, refusal
+):
+    """Its pinned packages and weights are checked before the structure chair starts,
+    without loading the model; the fixture snapshot carries no detector weights."""
+    import tomllib
+
+    from operations.serving import detector
+
+    pins = {"torch": "2.13.0", "ultralytics": "8.4.14"}
+    if installed:
+        monkeypatch.setattr(detector, "metadata", SimpleNamespace(version=pins.__getitem__))
+    config_root = tmp_path / "chair-config"
+    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
+    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
+    live = MODELS_CONFIG.read_text(encoding="utf-8")
+    digest_manifest = tomllib.loads(live)["chairs"]["designator_structure"]["digest_manifest"]
+    models = config_root / "models.toml"
+    configured = _CONFIGURED_SECONDARY.format(digest_manifest=digest_manifest).replace(
+        'serving_recipe = "fake-designator-v0"', 'serving_recipe = "in-process-detector-test"'
+    )
+    models.write_text(live.replace(_ABSENT_SECONDARY, configured), encoding="utf-8")
+    catalogue = _live_catalogue(tmp_path)
+    catalogue.write_text(
+        catalogue.read_text(encoding="utf-8")
+        + '\n[[profiles]]\nkind = "in-process"\nrecipe = "in-process-detector-test"\n'
+        f'chair = "secondary_proposer"\ntier = "{TIER}"\nengine = "ultralytics"\n'
+        'task = "obb"\ndevice = "cpu"\nimgsz = 1024\nconf_bp = 2500\niou_bp = 7000\n'
+        'max_det = 300\nrequired_packages = { torch = "2.13.0", ultralytics = "8.4.14" }\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "runs"
+    _chain(root, catalogue, "--models-config", str(models))
+    endpoint = FakeEndpoint(served_model_id=SERVED_MODEL_ID)
+    factory = _serving_factory(
+        endpoint, catalogue, tmp_path / "logs", tmp_path / "lock", ROOT / "config" / "decoding.toml"
+    )
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _argv(root, catalogue, "--placement-tier", TIER, "--models-config", str(models)),
+    )
+    with pytest.raises(ContractError, match=f"record detector is not ready: .*{refusal}"):
+        designator.main(serving_factory=factory, surya_runner=in_process_surya())
+    assert endpoint.requests == []
+    assert _receipts(root) == []
+
+
 # --- the fixture pass is the fixture pass ----------------------------------------------
 
 

@@ -133,6 +133,10 @@ def _installed_versions(profile: InProcessProfile) -> dict[str, str]:
 
 def _verified_weights(snapshot_root: Path) -> Path:
     path = snapshot_root / RECORD_DETECTOR_WEIGHTS_FILE
+    if not path.is_file():
+        raise ServingConfigurationError(
+            f"the record detector weights are not at {path}; nothing is loaded"
+        )
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     if digest != RECORD_DETECTOR_WEIGHTS_SHA256:
         raise ServingConfigurationError(
@@ -140,6 +144,13 @@ def _verified_weights(snapshot_root: Path) -> Path:
             f"{RECORD_DETECTOR_WEIGHTS_SHA256}; they are not loaded"
         )
     return path
+
+
+def check_record_detector_runnable(profile: InProcessProfile, snapshot_root: Path) -> None:
+    """Refuse a detector that could not load, without loading it: its pinned package
+    versions must be installed and its weights must hash to the pinned digest."""
+    _installed_versions(profile)
+    _verified_weights(snapshot_root)
 
 
 def load_ultralytics_record_detector(
