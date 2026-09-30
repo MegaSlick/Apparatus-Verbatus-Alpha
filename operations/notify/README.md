@@ -9,8 +9,9 @@ sessions here when a notification is needed.
 sh operations/notify/notify.sh <start|milestone|decision|done> "<one line>"
 ```
 
-The message must be a single non-empty line. A newline or a null in it is refused rather
-than truncated, so a multi-line message never arrives as a misleading fragment.
+The message must be a single non-empty line. A newline or carriage return in it is refused
+rather than truncated, so a multi-line message never arrives as a misleading fragment;
+`client.py` also refuses a null byte, which a command-line argument cannot carry.
 
 **Main session only. A subagent never notifies.** Nothing in the script enforces that;
 this file owns the rule.
@@ -31,10 +32,9 @@ Any other event name is refused.
 **Every event exits non-zero when delivery failed**, and prints `NOT DELIVERED` with the
 reason. There is no event whose failure is reported as success.
 
-That is deliberate and was not always true: `start` and `milestone` once exited 0 after
-printing `NOT DELIVERED`, so a caller checking the status was told the phone had it. Two
-reviewers found it. A milestone is often the only announcement of a long unattended
-result, which makes it the worst one to lie about.
+A caller checking the status must never be told the phone has a message it does not. A
+milestone is often the only announcement of a long unattended result, which makes it the
+worst one to misreport.
 
 A failing ping cannot kill a session: the `SessionStart` hook is declared `"async": true`
 in `.claude/settings.json`, so it runs detached. Keeping a caller non-blocking is the
@@ -44,12 +44,9 @@ caller's job — never buy it by misreporting delivery.
 waiting on a message that was never sent.
 
 **Success is reported too, on stderr.** A delivered post prints `notify: delivered
-(<event>)` and nothing else changes: exit 0, stdout untouched. Before 2026-09-06 the
-script printed nothing at all on success, so a caller reading silence after a stalled
-earlier command in the same chain could not tell "delivered" from "hung" — one session
-read the silence as failure twice and sent the same `done` ping three times for one
-close. Before resending anything, read this line (or the topic's own delivery log), never
-the absence of output. `operations/notify/client.py` is unaffected: it keys on the exit
+(<event>)`: exit 0, stdout untouched. Silence after a stalled earlier command in the same
+chain cannot be told apart from a hang, so before resending anything, read this line (or
+the topic's own delivery log), never the absence of output. `operations/notify/client.py` is unaffected: it keys on the exit
 code and on `NOTIFY_SUPPRESSED` on stdout, and this line never reaches that stream.
 
 ## The topic is a bearer secret
@@ -74,11 +71,10 @@ prefix — a near-miss like `verbatus-test-sink-2` notifies normally, because a 
 rule loose enough to catch a typo would be loose enough to silence him.
 
 It exists because the injected-runner seam every caller is meant to use is only as good
-as the caller. Three tests in `operations/pod/test_pod_runtime.py` drove the pod CLI with
-`--notify`, stubbed the launch hook, and left the balance hook real; a single gate run
-posted nine identical `pod balance` milestones to his phone. Every earlier gate had run in
-a worktree with no `private/ntfy.conf`, where the script failed "no topic configured" —
-so the missing stub read as a passing test for as long as it did.
+as the caller: a test that stubs one notifying hook and leaves another real would post to
+his phone from inside the suite. In a worktree with no `private/ntfy.conf` the same missing
+stub fails quietly with "no topic configured", so it can pass unnoticed until the suite
+runs in the checkout that holds the real topic.
 
 Two places set it, and both are deliberate rather than inherited:
 
@@ -92,15 +88,14 @@ Two places set it, and both are deliberate rather than inherited:
   `NTFY_TOPIC` is not "no sink", it is `private/ntfy.conf`
 
 **Exit 0, not a refusal.** A guard that failed the send would change what the suites it
-protects measure — several assert on delivered versus `NOT DELIVERED` — and an instrument
-that constrains its subject is what GOVERNANCE 10 refuses. The swallowed message goes to
-stderr instead, so a leak stays visible without being fatal.
+protects measure — several assert on delivered versus `NOT DELIVERED` — and a measuring
+instrument must not change the thing it measures. The swallowed message goes to stderr
+instead, so a leak stays visible without being fatal.
 
-**And exit 0 alone was a second lie.** Python callers once mapped exit 0 to
-`delivered=True`, so under the sink they printed "Phone notification: sent." for a
-notification that never left the machine. The exit code still stays 0, for the reason
-above; the distinction is carried on **stdout**, which nothing else in this script writes
-to: one stable line,
+**Exit 0 alone would read as delivered.** A caller mapping exit 0 to `delivered=True`
+would print "Phone notification: sent." for a notification that never left the machine.
+The exit code stays 0, for the reason above; the distinction is carried on **stdout**,
+which nothing else in this script writes to: one stable line,
 
     NOTIFY_SUPPRESSED verbatus-test-sink
 
@@ -130,10 +125,9 @@ pings for one sitting is noise, and noise is what teaches him to ignore the next
 swallow a real result.
 
 The stamp is treated as evidence rather than trusted for existing: it must be a regular
-file, not a symlink, holding a plausible past clock reading. A directory left by a
-crashed run, a FIFO, a symlink, or a future-dated stamp each silenced real notifications
-before that check existed. Every refusal returns "not fresh" and therefore *sends* the
-ping — the cost of being wrong that way is one duplicate, and the cost of the other way
+file, not a symlink, holding a plausible past clock reading, so a directory left by a
+crashed run, a FIFO, a symlink, or a future-dated stamp cannot silence a real
+notification. Every refusal returns "not fresh" and therefore *sends* the ping — the cost of being wrong that way is one duplicate, and the cost of the other way
 is a session start nobody hears about. The stamp records a clock reading and nothing
 else; the topic never enters it.
 
