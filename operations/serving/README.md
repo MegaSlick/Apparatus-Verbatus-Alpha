@@ -190,7 +190,9 @@ prefix caching by default for hybrid models as for any other (`arg_utils.py`,
 model_config.is_prefix_caching_supported`, which is true for a generative hybrid), so the
 rendered `--no-enable-prefix-caching` and this refusal are what keep it off. The check
 keys on the exact `repo`, never the role, because test fixtures reuse role names under
-`example/...` repositories. `config/serving_recipes_real.toml` sets
+`example/...` repositories. An adapter row is judged by the base checkpoint whose weights
+it loads: vLLM takes the adapter row's flags over the base's weights, so an adapter over a
+hybrid base with prefix caching on is refused too. `config/serving_recipes_real.toml` sets
 `enable_prefix_caching = false` on all seven live rows for those two checkpoints (the
 Designator's and Attestator 1's three tiers each, and the Perlector's 80 GB tier), and
 `operations/serving/test_manager.py` checks that in CI, so the refusal guards against a
