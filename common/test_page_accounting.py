@@ -68,22 +68,27 @@ def noisy(text: str, rate: float, seed: int) -> str:
     return "".join(out)
 
 
-def band(k: int) -> list[int]:
+def bx(x0: int, y0: int, x1: int, y1: int) -> dict[str, int]:
+    """A box as the accounting reads it, `{x, y, w, h}`, from its corners."""
+    return {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
+
+
+def band(k: int) -> dict[str, int]:
     """Record k's box: a 300-pixel band per record, 400 pixels apart."""
-    return [100, 100 + 400 * k, 900, 400 + 400 * k]
+    return bx(100, 100 + 400 * k, 900, 400 + 400 * k)
 
 
-def line_box(k: int, row: int) -> list[int]:
+def line_box(k: int, row: int) -> dict[str, int]:
     top = 100 + 400 * k + 100 * row
-    return [100, top, 900, top + 100]
+    return bx(100, top, 900, top + 100)
 
 
-def ink_runs(boxes: list[list[int]]) -> dict:
+def ink_runs(boxes: list[dict[str, int]]) -> dict:
     """Ink-run evidence with one 400-pixel run on every row of every box."""
     rows: list[list[list[int]]] = [[] for _ in range(HEIGHT)]
-    for x0, y0, _x1, y1 in boxes:
-        for y in range(y0, y1):
-            rows[y].append([x0 + 50, 400])
+    for box in boxes:
+        for y in range(box["y"], box["y"] + box["h"]):
+            rows[y].append([box["x"] + 50, 400])
     for row in rows:
         row.sort()
     return {"schema": INK_RUNS_SCHEMA, "width": WIDTH, "height": HEIGHT, "rows": rows}
@@ -113,12 +118,13 @@ def page(
     """
     texts = [record_text(seed * 100 + k) for k in range(records)]
 
-    def unit(letter: str, k: int, text: str, box: list[int] | None, offset: int) -> dict:
+    def unit(letter: str, k: int, text: str, box: dict | None, offset: int) -> dict:
         return {"id": f"{letter}{k + 1}", "box_px": box, "text": noisy(text, noise, offset + k)}
 
     feed = {
         "page_id": "page-1",
         "page_ordinal": 1,
+        "switches": {"witness_units": "own"},
         "witnesses": [
             {
                 "letter": "A",
@@ -156,6 +162,7 @@ def page(
             "blocks": [
                 {**block, "ref": f"surya-block-{block['id']}"} for block in feed["surya"]["blocks"]
             ],
+            "layout_error": False,
         },
         "records": [
             {"id": f"B{k + 1}", "box_px": band(k), "ref": f"record-{k}"} for k in range(records)
@@ -221,16 +228,16 @@ def witness(case: dict, letter: str) -> dict:
     return found
 
 
-def add_line(case: dict, identifier: str | None, box: list[int], *, shown: bool = True) -> None:
+def add_line(case: dict, identifier: str | None, box: dict, *, shown: bool = True) -> None:
     """A Surya line in the sealed census, and in the feed when `shown`."""
     if shown:
         case["feed"]["surya"]["lines"].append({"id": identifier, "box_px": box})
     case["detections"]["surya"]["lines"].append(
-        {"id": identifier if shown else None, "box_px": box, "ref": f"surya-line-{box[1]}"}
+        {"id": identifier if shown else None, "box_px": box, "ref": f"surya-line-{box['y']}"}
     )
 
 
-def set_block_box(case: dict, identifier: str, box: list[int]) -> None:
+def set_block_box(case: dict, identifier: str, box: dict) -> None:
     for block in case["feed"]["surya"]["blocks"] + case["detections"]["surya"]["blocks"]:
         if block["id"] == identifier:
             block["box_px"] = box
@@ -321,7 +328,9 @@ def test_an_invalid_answer_holds_under_rule_a():
     record = account(case)
 
     assert record["rules"]["a"]["status"] == "hold"
-    assert {"code": "non-contiguous-n"} in [f["problem"] for f in record["rules"]["a"]["findings"]]
+    assert [f["problem"]["grammar"] for f in record["rules"]["a"]["findings"]] == [
+        "n-not-contiguous"
+    ]
 
 
 # --- rule (b) -------------------------------------------------------------------------
@@ -569,7 +578,7 @@ def test_a_feed_witness_other_than_the_sealed_one_is_refused():
 
 def test_a_surya_line_outside_every_region_holds():
     case = page()
-    add_line(case, "L10", [100, 1300, 900, 1350])
+    add_line(case, "L10", bx(100, 1300, 900, 1350))
 
     record = account(case)
 
@@ -579,7 +588,7 @@ def test_a_surya_line_outside_every_region_holds():
             "code": "unread-line",
             "id": "L10",
             "ref": "surya-line-1300",
-            "box_px": [100, 1300, 900, 1350],
+            "box_px": bx(100, 1300, 900, 1350),
         }
     ]
     assert {"id": "L10", "ref": "surya-line-1300", "inside": []} in record["lines"]
@@ -587,7 +596,7 @@ def test_a_surya_line_outside_every_region_holds():
 
 def test_a_sealed_line_the_feed_did_not_show_is_still_measured():
     case = page()
-    add_line(case, None, [100, 1300, 900, 1350], shown=False)
+    add_line(case, None, bx(100, 1300, 900, 1350), shown=False)
 
     record = account(case)
 
@@ -603,7 +612,7 @@ def test_surya_switched_off_in_the_feed_is_still_measured_from_the_census():
     for line in case["detections"]["surya"]["lines"]:
         line["id"] = None
     case["detections"]["surya"]["blocks"] = []
-    add_line(case, None, [100, 1300, 900, 1350], shown=False)
+    add_line(case, None, bx(100, 1300, 900, 1350), shown=False)
 
     record = account(case)
 
@@ -633,16 +642,16 @@ def test_a_feed_showing_lines_the_census_lacks_is_refused():
     with pytest.raises(ContractError, match="sealed Surya lines do not hold"):
         account(case)
     case = page()
-    case["detections"]["surya"]["lines"][0]["box_px"] = [0, 0, 5, 5]
+    case["detections"]["surya"]["lines"][0]["box_px"] = bx(0, 0, 5, 5)
     with pytest.raises(ContractError, match="same box"):
         account(case)
 
 
 def test_a_surya_line_set_aside_is_quiet_under_d_but_its_ink_is_not_read():
     case = page()
-    add_line(case, "L10", [100, 1300, 900, 1350])
+    add_line(case, "L10", bx(100, 1300, 900, 1350))
     case["reading"]["answer"]["set_aside"].append({"id": "L10", "reason": "folio number"})
-    case["ink"]["runs"] = ink_runs([band(0), band(1), band(2), [100, 1300, 900, 1350]])
+    case["ink"]["runs"] = ink_runs([band(0), band(1), band(2), bx(100, 1300, 900, 1350)])
 
     record = account(case)
 
@@ -652,7 +661,7 @@ def test_a_surya_line_set_aside_is_quiet_under_d_but_its_ink_is_not_read():
 def test_a_line_half_inside_a_region_is_inside():
     case = page()
     # 50 of this line's 100 rows lie in record 3's band (y 900..1200).
-    add_line(case, "L10", [100, 1150, 900, 1250])
+    add_line(case, "L10", bx(100, 1150, 900, 1250))
 
     record = account(case)
 
@@ -672,7 +681,7 @@ def merged_and_half_read() -> dict:
     case = page()
     merged = record_text(1) + " " + record_text(7)
     witness(case, "A")["units"][1]["text"] = merged
-    witness(case, "A")["units"][1]["box_px"] = [100, 500, 900, 1100]
+    witness(case, "A")["units"][1]["box_px"] = bx(100, 500, 900, 1100)
     # The second record lies below the first, where no detector record was cut.
     case["feed"]["witnesses"] = [w for w in case["feed"]["witnesses"] if w["letter"] != "B"]
     case["detections"].update(records=None, record_census=None, record_detector="absent")
@@ -692,7 +701,7 @@ def test_a_merged_unit_read_only_in_half_holds_under_rule_e_and_nothing_else():
     assert finding["compared_with"] == [2]
     assert "unread-run" in finding["reasons"]
     assert finding["unread_characters"] > POLICY.max_unread_characters
-    assert finding["box_px"] == [100, 500, 900, 1100]
+    assert finding["box_px"] == bx(100, 500, 900, 1100)
     assert record["holds"] == ["witness-text-not-read"]
 
 
@@ -763,7 +772,7 @@ def test_a_short_burial_folded_into_a_long_act_holds_twice():
     same act region as the baptism's.
     """
     case = page()
-    burial_box = [100, 1250, 900, 1300]
+    burial_box = bx(100, 1250, 900, 1300)
     witness(case, "A")["units"].append({"id": "A4", "box_px": burial_box, "text": BURIAL})
     witness(case, "B")["units"].append({"id": "B4", "box_px": burial_box, "text": BURIAL})
     case["detections"]["records"].append({"id": "B4", "box_px": burial_box, "ref": "record-3"})
@@ -780,7 +789,7 @@ def test_a_short_burial_folded_into_a_long_act_holds_twice():
 def test_a_short_burial_whose_act_reads_nothing_holds():
     case = page()
     witness(case, "A")["units"].append(
-        {"id": "A4", "box_px": [100, 1250, 900, 1300], "text": BURIAL}
+        {"id": "A4", "box_px": bx(100, 1250, 900, 1300), "text": BURIAL}
     )
     acts(case).append(
         {
@@ -968,7 +977,7 @@ def test_an_entry_of_only_unreadable_marks_passes_rule_e():
             "continues_to_next_page": False,
         }
     )
-    add_line(case, "L10", [100, 1250, 900, 1300])
+    add_line(case, "L10", bx(100, 1250, 900, 1300))
     case["entry_truncation"][4] = "complete"
 
     record = account(case)
@@ -1037,6 +1046,7 @@ def test_a_dense_page_is_measured_within_the_deadline():
     feed = {
         "page_id": "dense",
         "page_ordinal": 1,
+        "switches": {"witness_units": "own"},
         "witnesses": [
             {
                 "letter": "A",
@@ -1044,7 +1054,7 @@ def test_a_dense_page_is_measured_within_the_deadline():
                 "units": [
                     {
                         "id": f"A{k + 1}",
-                        "box_px": [0, 60 * k, 1000, 60 * k + 60],
+                        "box_px": bx(0, 60 * k, 1000, 60 * k + 60),
                         "text": noisy(t, 0.15, k),
                     }
                     for k, t in enumerate(texts)
@@ -1064,7 +1074,7 @@ def test_a_dense_page_is_measured_within_the_deadline():
         feed=feed,
         witnesses=[{**row, "blank": False} for row in feed["witnesses"]],
         detections={
-            "surya": {"lines": [], "blocks": []},
+            "surya": {"lines": [], "blocks": [], "layout_error": False},
             "records": None,
             "record_detector": "absent",
             "record_census": None,
@@ -1091,7 +1101,7 @@ def test_a_dense_page_is_measured_within_the_deadline():
 
 def test_ink_outside_every_region_holds():
     case = page()
-    case["ink"]["runs"] = ink_runs([band(0), band(1), band(2), [100, 1250, 900, 1300]])
+    case["ink"]["runs"] = ink_runs([band(0), band(1), band(2), bx(100, 1250, 900, 1300)])
 
     record = account(case)
 
@@ -1103,12 +1113,12 @@ def test_ink_outside_every_region_holds():
 
 def test_ink_inside_a_set_aside_box_is_not_read():
     case = page()
-    case["feed"]["surya"]["blocks"].append({"id": "S4", "box_px": [100, 1250, 900, 1300]})
+    case["feed"]["surya"]["blocks"].append({"id": "S4", "box_px": bx(100, 1250, 900, 1300)})
     case["detections"]["surya"]["blocks"].append(
-        {"id": "S4", "box_px": [100, 1250, 900, 1300], "ref": "surya-block-S4"}
+        {"id": "S4", "box_px": bx(100, 1250, 900, 1300), "ref": "surya-block-S4"}
     )
     case["reading"]["answer"]["set_aside"].append({"id": "S4", "reason": "stamp"})
-    case["ink"]["runs"] = ink_runs([band(0), band(1), band(2), [100, 1250, 900, 1300]])
+    case["ink"]["runs"] = ink_runs([band(0), band(1), band(2), bx(100, 1250, 900, 1300)])
 
     record = account(case)
 
@@ -1165,7 +1175,7 @@ def test_two_entries_on_one_region_hold_both():
     record = account(case)
 
     assert record["rules"]["h"]["status"] == "hold"
-    assert {"code": "duplicate-region", "ns": [2, 3], "union_box_px": [100, 500, 900, 1200]} in (
+    assert {"code": "duplicate-region", "ns": [2, 3], "union_box_px": bx(100, 500, 900, 1200)} in (
         record["rules"]["h"]["findings"]
     )
 
@@ -1174,7 +1184,7 @@ def test_a_line_inside_two_regions_is_recorded_not_held():
     case = page()
     acts(case)[1]["cites"].append("L3")
     # Record 1's band grows to reach line 4: the line now lies in both regions.
-    set_block_box(case, "S1", [100, 100, 900, 600])
+    set_block_box(case, "S1", bx(100, 100, 900, 600))
     acts(case)[0]["cites"].append("S1")
 
     record = account(case)
@@ -1218,9 +1228,9 @@ def test_two_entries_read_as_one_act_hold_only_under_rule_i():
 
 def test_a_detector_record_set_aside_holds():
     case = page()
-    witness(case, "B")["units"].append({"id": "B4", "box_px": [100, 1250, 900, 1300], "text": ""})
+    witness(case, "B")["units"].append({"id": "B4", "box_px": bx(100, 1250, 900, 1300), "text": ""})
     case["detections"]["records"].append(
-        {"id": "B4", "box_px": [100, 1250, 900, 1300], "ref": "record-3"}
+        {"id": "B4", "box_px": bx(100, 1250, 900, 1300), "ref": "record-3"}
     )
     case["reading"]["answer"]["set_aside"].append({"id": "B4", "reason": "blot"})
 
@@ -1233,9 +1243,10 @@ def test_a_detector_record_set_aside_holds():
                 "code": "set-aside-record",
                 "id": "B4",
                 "ref": "record-3",
-                "box_px": [100, 1250, 900, 1300],
+                "box_px": bx(100, 1250, 900, 1300),
             }
         ],
+        "records_not_measured": 0,
     }
 
 
@@ -1273,13 +1284,18 @@ def test_two_records_read_as_one_other_entry_hold_both_ways():
 def test_a_detector_record_in_no_reading_region_holds():
     """Detected, not shown to the model (DAI flat), and inside no region."""
     case = page()
-    case["detections"]["records"].append({"box_px": [100, 1250, 900, 1300], "ref": "record-3"})
+    case["detections"]["records"].append({"box_px": bx(100, 1250, 900, 1300), "ref": "record-3"})
 
     record = account(case)
 
     only_hold(record, "i")
     assert record["rules"]["i"]["findings"] == [
-        {"code": "record-not-read", "id": None, "ref": "record-3", "box_px": [100, 1250, 900, 1300]}
+        {
+            "code": "record-not-read",
+            "id": None,
+            "ref": "record-3",
+            "box_px": bx(100, 1250, 900, 1300),
+        }
     ]
 
 
@@ -1310,6 +1326,7 @@ def test_a_detector_that_reached_its_cap_is_not_measured_and_held():
     assert record["rules"]["i"] == {
         "status": "not-measured",
         "findings": [{"code": "record-detector-capped"}],
+        "records_not_measured": 0,
     }
     assert record["holds"] == ["record-detector-capped"]
 
@@ -1384,8 +1401,8 @@ def test_candidate_order_does_not_change_the_record(seed):
 
 
 CANDIDATES = {
-    **{f"A{i}": [100 * i, 0, 100 * i + 10, 10] for i in range(1, 4)},
-    **{f"L{i}": [0, 10 * i, 10, 10 * i + 10] for i in range(1, 21)},
+    **{f"A{i}": bx(100 * i, 0, 100 * i + 10, 10) for i in range(1, 4)},
+    **{f"L{i}": bx(0, 10 * i, 10, 10 * i + 10) for i in range(1, 21)},
     "C1": None,
 }
 
@@ -1426,12 +1443,46 @@ def problem_codes(answer) -> list[str]:
     return sorted(problem["code"] for problem in validate_answer(answer, CANDIDATES)["problems"])
 
 
-def test_validation_names_every_problem():
-    assert problem_codes([]) == ["answer-not-an-object"]
-    assert problem_codes({"acts": [], "set_aside": [], "extra": 1}) == ["answer-not-an-object"]
-    assert problem_codes({"acts": [_entry(1, ["A1"]), _entry(3, ["A2"])], "set_aside": []}) == [
-        "non-contiguous-n"
+def grammar_codes(answer) -> list[str]:
+    return sorted(
+        problem["grammar"]
+        for problem in validate_answer(answer, CANDIDATES)["problems"]
+        if problem["code"] == "answer-grammar"
+    )
+
+
+def test_an_answer_outside_the_one_grammar_is_named_by_it():
+    """The grammar is `common.page_answer`'s, label rule included: no second reading."""
+    assert grammar_codes([]) == ["not-object"]
+    assert grammar_codes({"acts": [], "set_aside": [], "extra": 1}) == ["top-fields"]
+    assert grammar_codes({"acts": [_entry(1, ["A1"]), _entry(3, ["A2"])], "set_aside": []}) == [
+        "n-not-contiguous"
     ]
+    assert grammar_codes(
+        {
+            "acts": [
+                _entry(1, ["A1"]),
+                _entry(2, ["L1"], continues_from_previous_page=True),
+                _entry(3, ["L5"], continues_to_next_page=True),
+            ],
+            "set_aside": [],
+        }
+    ) == ["continuation-not-at-edge"]
+    assert grammar_codes({"acts": [_entry(1, ["A1"], extra=1)], "set_aside": []}) == [
+        "act-field-unknown"
+    ]
+    assert grammar_codes({"acts": [_entry(1, ["A1"], label="x" * 81)], "set_aside": []}) == [
+        "label-invalid"
+    ]
+    # A blank label is outside the grammar here exactly as it is for the page answer.
+    assert grammar_codes({"acts": [_entry(1, ["A1"], label="  ")], "set_aside": []}) == [
+        "label-invalid"
+    ]
+    validated = validate_answer({"acts": [_entry(1, ["A1"], extra=1)], "set_aside": []}, CANDIDATES)
+    assert validated["entries"] == [] and validated["set_aside"] == {}
+
+
+def test_validation_names_every_problem():
     assert problem_codes(
         {"acts": [_entry(1, ["A1"])], "set_aside": [{"id": "A1", "reason": "r"}]}
     ) == ["cited-and-set-aside"]
@@ -1444,24 +1495,8 @@ def test_validation_names_every_problem():
     assert problem_codes(
         {"acts": [_entry(1, ["A1"])], "set_aside": [{"id": "L1", "reason": ""}]}
     ) == ["set-aside-without-reason"]
-    assert problem_codes(
-        {
-            "acts": [
-                _entry(1, ["A1"]),
-                _entry(2, ["L1"], continues_from_previous_page=True),
-                _entry(3, ["L5"], continues_to_next_page=True),
-            ],
-            "set_aside": [],
-        }
-    ) == ["continuation-flag-on-non-edge-act"]
     assert problem_codes({"acts": [_entry(1, ["A1"]), _entry(2, ["A1"])], "set_aside": []}) == [
         "duplicate-region"
-    ]
-    assert problem_codes({"acts": [_entry(1, ["A1"], extra=1)], "set_aside": []}) == [
-        "malformed-entry"
-    ]
-    assert problem_codes({"acts": [_entry(1, ["A1"], label="x" * 81)], "set_aside": []}) == [
-        "malformed-entry"
     ]
 
 
@@ -1479,9 +1514,9 @@ def test_edge_continuation_flags_and_an_unplaced_entry_are_valid():
 
     assert validated["problems"] == []
     assert [entry["union_box_px"] for entry in validated["entries"]] == [
-        [100, 0, 110, 10],
+        bx(100, 0, 110, 10),
         None,
-        [0, 50, 10, 60],
+        bx(0, 50, 10, 60),
     ]
 
 
@@ -1489,16 +1524,70 @@ def test_the_union_box_bounds_every_cited_box_unpadded():
     validated = validate_answer({"acts": [_entry(1, ["L2-L4", "C1"])], "set_aside": []}, CANDIDATES)
 
     assert validated["entries"][0]["cited_ids"] == ["L2", "L3", "L4", "C1"]
-    assert validated["entries"][0]["union_box_px"] == [0, 20, 10, 50]
+    assert validated["entries"][0]["union_box_px"] == bx(0, 20, 10, 50)
+
+
+def test_a_detector_record_with_no_box_is_reported_not_measured_never_dropped():
+    case = page()
+    case["detections"]["records"].append({"box_px": None, "ref": "record-collapsed"})
+
+    record = account(case)
+
+    rule = record["rules"]["i"]
+    assert rule["status"] == "not-measured" and rule["records_not_measured"] == 1
+    assert rule["findings"] == [
+        {"code": "detector-record-not-measured", "id": None, "ref": "record-collapsed"}
+    ]
+    assert record["holds"] == ["detector-record-not-measured"]
+    assert len(record["records"]) == 3
+
+
+def test_a_failed_surya_layout_is_blocks_not_measured_never_no_blocks():
+    case = page()
+    case["feed"]["surya"]["blocks"] = []
+    for entry in acts(case):
+        entry["cites"] = [cite for cite in entry["cites"] if cite[0] != "S"]
+    for block in case["detections"]["surya"]["blocks"]:
+        block["id"] = None
+    case["detections"]["surya"]["layout_error"] = True
+
+    record = account(case)
+
+    assert record["rules"]["d"]["status"] == "pass"
+    assert record["rules"]["d"]["findings"] == [{"code": "surya-blocks-not-measured"}]
+    assert record["holds"] == []
+    shown = page()
+    shown["detections"]["surya"]["layout_error"] = True
+    with pytest.raises(ContractError, match="layout Surya reported failed"):
+        account(shown)
+
+
+def test_a_flat_witness_places_nothing_so_the_accounting_reads_the_stage_s_regions():
+    """Under `witness_units = "flat"` the regions measured are the ones the stage cuts."""
+    case = page()
+    case["feed"]["switches"]["witness_units"] = "flat"
+    candidates = feed_candidates(case["feed"])
+    assert candidates["A1"] is None and candidates["B1"] is None
+    assert candidates["L1"] == line_box(0, 0)
+    for entry in acts(case):
+        entry["cites"] = [cite for cite in entry["cites"] if cite[0] in "ABC"]
+
+    record = account(case)
+
+    # No entry cites a placing id, so every one is unplaced and nothing is inside.
+    assert codes(record, "b") == ["reading-unplaced"] * 3
+    assert all(row["inside"] == [] for row in record["lines"])
+    # The detector records still carry the sealed boxes of the units they are.
+    assert record["records"][0]["box_px"] == band(0)
 
 
 def test_a_feed_with_a_repeated_malformed_or_skipped_id_is_refused():
     feed = page()["feed"]
-    feed["surya"]["lines"].append({"id": "L1", "box_px": [0, 0, 1, 1]})
+    feed["surya"]["lines"].append({"id": "L1", "box_px": bx(0, 0, 1, 1)})
     with pytest.raises(ContractError, match="twice"):
         feed_candidates(feed)
     feed = page()["feed"]
-    feed["surya"]["lines"][0]["box_px"] = [5, 5, 5, 9]
+    feed["surya"]["lines"][0]["box_px"] = bx(5, 5, 5, 9)
     with pytest.raises(ContractError, match="box_px"):
         feed_candidates(feed)
     feed = page()["feed"]

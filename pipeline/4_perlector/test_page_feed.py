@@ -218,13 +218,15 @@ def witnesses(blobs: _Blobs, *, regime="named"):
     ]
 
 
-def surya(lines: int = 3, blocks: int = 2):
+def surya(lines: int = 3, blocks: int = 2, *, layout_error: bool = False):
     line_band, block_band = 3000 // lines, 3000 // blocks
     return {
         "census_ref": _ref("census"),
+        "layout_error": layout_error,
         "lines": [
             {
                 "box_px": {"x": 255, "y": 150 + line_band * index, "w": 2000, "h": line_band - 5},
+                "confidence_bp": 9000 + index,
                 "ref": _ref(f"l{index}"),
             }
             for index in range(lines)
@@ -240,6 +242,7 @@ def surya(lines: int = 3, blocks: int = 2):
                 },
                 "label": "Text",
                 "position": blocks - index,
+                "confidence_bp": 9500 - index,
                 "ref": _ref(f"b{index}"),
             }
             for index in range(blocks)
@@ -1373,16 +1376,58 @@ def test_witness_letters_skip_l_and_s_and_more_witnesses_than_letters_are_refuse
         page_feed.assemble_page_feed(roster=roster, witnesses=rows, **arguments)
 
 
-def test_page_image_off_with_no_witness_text_and_no_detection_is_refused():
+def test_page_image_off_with_no_witness_text_and_no_detection_shows_nothing_and_asks_nothing():
     blobs = _Blobs()
     rows = witnesses(blobs)
     for row in rows:
         row["testimonium"] = _record("failed", {})
     arguments = dict(render=None, page_image="off", rows=rows)
-    with pytest.raises(SchemaRefusal, match="nothing to be made from"):
-        feed_for(blobs, surya_lines=False, surya_blocks=False, **arguments)
+    empty = feed_for(blobs, surya_lines=False, surya_blocks=False, **arguments)
+    # Sealed as a record of what the page offered, with no prompt: nothing is asked.
+    assert page_feed.shows_nothing(empty) and empty["prompt"] is None
     # Detections alone are something to read from.
-    assert feed_for(blobs, **arguments)["page_render"] is None
+    shown = feed_for(blobs, **arguments)
+    assert not page_feed.shows_nothing(shown) and shown["prompt"] is not None
+
+
+def test_surya_confidence_is_recorded_on_the_feed_and_never_rendered():
+    blobs = _Blobs()
+    feed = feed_for(blobs)
+    assert [line["confidence_bp"] for line in feed["surya"]["lines"]] == [9000, 9001, 9002]
+    assert {block["confidence_bp"] for block in feed["surya"]["blocks"]} == {9500, 9499}
+    text = page_prompt.build_page_prompt("unproven-real-perlector", feed)
+    assert "9000" not in text and "9500" not in text
+
+
+def test_a_failed_surya_layout_shows_no_block_and_says_the_blocks_were_not_measured():
+    blobs = _Blobs()
+    feed = feed_for(blobs, census=surya(layout_error=True))
+    assert feed["surya"]["layout_error"] is True and feed["surya"]["blocks"] == []
+    assert len(feed["surya"]["lines"]) == 3
+    lines = page_prompt.build_page_prompt("unproven-real-perlector", feed).split("\n")
+    assert "surya blocks: not measured; the detector's layout failed on this page." in lines
+    assert feed_for(blobs)["surya"]["layout_error"] is False
+
+
+def test_a_page_no_witness_testified_to_states_it_and_has_no_row():
+    blobs = _Blobs()
+    arguments = dict(
+        page_id="pg_1",
+        page_ordinal=1,
+        page_size=PAGE,
+        feed_switches=switches(),
+        witness_regime="named",
+        roster=["attestator_1"],
+        surya=surya(),
+        page_render=RENDER,
+        serving_recipe=None,
+        read_bytes=blobs.read_bytes,
+    )
+    feed = page_feed.build_page_feed(witnesses=[], no_testimony=True, **arguments)
+    assert feed["witness_testimony"] == "none" and feed["witnesses"] == []
+    assert feed["prompt"] is None
+    with pytest.raises(SchemaRefusal, match="never silently absent"):
+        page_feed.build_page_feed(witnesses=[], **arguments)
 
 
 def test_a_read_witness_with_no_unit_says_no_text_and_the_unit_header_needs_a_unit():

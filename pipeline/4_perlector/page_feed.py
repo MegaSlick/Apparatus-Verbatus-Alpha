@@ -85,8 +85,9 @@ Churro's section names -- are part of its report and are shown as given.
         roster=[chair, ...],                    # the sealed page-witness roster
         witnesses=[{"chair", "witness_label", "adapter", "testimonium",
                     "testimonium_ref"}, ...],   # one per roster chair
-        surya={"census_ref", "lines": [{"box_px", "ref"}],
-               "blocks": [{"box_px", "label", "position", "ref"}]} | None,
+        surya={"census_ref", "layout_error",
+               "lines": [{"box_px", "confidence_bp", "ref"}],
+               "blocks": [{"box_px", "label", "position", "confidence_bp", "ref"}]} | None,
         page_render=dossier.build_page_render(...) | None,
         serving_recipe=chair.serving_recipe,
         read_bytes=context.tree.read_bytes,
@@ -96,6 +97,7 @@ Churro's section names -- are part of its report and are shown as given.
     overlay = page_overlay.overlay_image(feed, context.tree.read_bytes)  # when drawn
     images = request_image_sizes(feed)   # what the capacity check charges
     boxes = placement_boxes(feed)        # each id's box for an entry's region
+    nothing = shows_nothing(feed)        # a feed a reading could not be made from
 
 Each `testimonium` must already have passed the stage's own page-Testimonium
 checks (`run.validate_page_testimonium_record`); this module re-derives units
@@ -105,6 +107,21 @@ read digest-checked, decode to exactly that record, a `page-testimonium` of
 this page whose payload names the row's chair; no two rows may share a ref. Every ref on the feed (`testimonium_ref`, Surya's `census_ref` and
 each line's and block's `ref`) is an input the caller binds on the page-feed
 record.
+
+A page the Attestatores served no page Testimonium at all (stage 3 serves only
+pages with a proposed Designator act) is built with `no_testimony=True` and no
+witnesses: its feed records `witness_testimony: "none"` and no row, so the
+absence is stated rather than silent. A roster chair missing beside others
+that did testify is still refused.
+
+Surya's census carries its own `layout_error` flag. A failed layout is blocks
+not measured, never a page with no blocks: the feed shows no block, records
+`layout_error: true`, and the prompt says the blocks were not measured. Each
+line's and block's `confidence_bp` is recorded on the feed and never rendered.
+
+`serving_recipe` may be `None` (the Perlector chair is absent): the feed is
+built and sealed with `prompt: None`, as it is for a feed that shows nothing
+(`shows_nothing`), since no request is made from either.
 
 `assemble_page_feed` takes the same arguments with each witness's reading
 already made (`{chair, witness_label, adapter, outcome, testimonium_ref,
@@ -141,6 +158,7 @@ from common.native_witness import (
     validate_native_capture,
     verify_native_capture_bytes,
 )
+from common.page_accounting import placement_boxes as _placement_boxes
 from common.witness_regime import BLINDED, NAMED, REGIMES
 
 SCHEMA: Final = "perlector-page-feed.v1"
@@ -185,13 +203,17 @@ _ANSWER_HEALTH_FIELDS: Final = frozenset({"truncated", "repetition"})
 # The answer health of a witness that did not read, or whose answer shows nothing.
 NO_ANSWER_HEALTH: Final = {"truncated": None, "repetition": []}
 _UNIT_FIELDS: Final = frozenset({"ordinal", "box_px", "label", "text"})
-_SURYA_FIELDS: Final = frozenset({"census_ref", "lines", "blocks"})
+_SURYA_FIELDS: Final = frozenset({"census_ref", "layout_error", "lines", "blocks"})
 # Given as `surya` when the run holds no Surya census at all: the feed then
 # records Surya as absent and shows no line or block, whatever the switches say.
 SURYA_ABSENT: Final = "absent"
 SURYA_ABSENT_REASON: Final = "no Surya page census was sealed in this run"
-_SURYA_LINE_FIELDS: Final = frozenset({"box_px", "ref"})
-_SURYA_BLOCK_FIELDS: Final = frozenset({"box_px", "label", "position", "ref"})
+_SURYA_LINE_FIELDS: Final = frozenset({"box_px", "confidence_bp", "ref"})
+_SURYA_BLOCK_FIELDS: Final = frozenset({"box_px", "label", "position", "confidence_bp", "ref"})
+# Whether the page's witnesses testified: `none` when stage 3 served the page no
+# page Testimonium at all.
+TESTIMONY_PRESENT: Final = "present"
+TESTIMONY_NONE: Final = "none"
 _BOX_FIELDS: Final = frozenset({"x", "y", "w", "h"})
 _NON_BLANK_LINE: Final = re.compile(r"[^\n]+")
 _ASCII_WHITESPACE: Final = " \t\n\r\f\v"
@@ -613,10 +635,14 @@ def _shown_chairs(switch: Any, roster: list[str]) -> set[str]:
 
 
 def _checked_witnesses(
-    witnesses: Any, fields: frozenset[str], regime: str, roster: list[str]
+    witnesses: Any, fields: frozenset[str], regime: str, roster: list[str], *, no_testimony: bool
 ) -> list[dict]:
     if not isinstance(witnesses, list):
         raise SchemaRefusal("the page feed's witnesses are not a list")
+    if no_testimony:
+        if witnesses:
+            raise SchemaRefusal("a page with no witness testimony is given witnesses")
+        return witnesses
     for witness in witnesses:
         if not isinstance(witness, dict) or set(witness) != fields:
             raise SchemaRefusal(f"a page-feed witness is not exactly {sorted(fields)}")
@@ -763,18 +789,35 @@ def answer_measure(
     }
 
 
+def _confidence(value: Any) -> int | None:
+    if value is not None and not (is_plain_int(value) and 0 <= value <= 10_000):
+        raise SchemaRefusal("a Surya confidence is not null or basis points in 0..10000")
+    return value
+
+
 def _surya(surya: Any, switches: dict[str, Any], page_size: tuple[int, int]) -> dict | None:
     if not switches["surya_lines"] and not switches["surya_blocks"]:
         return None
     if surya == SURYA_ABSENT:
-        return {"census_ref": None, "absent": SURYA_ABSENT_REASON, "lines": [], "blocks": []}
-    if not isinstance(surya, dict) or set(surya) != _SURYA_FIELDS:
+        return {
+            "census_ref": None,
+            "absent": SURYA_ABSENT_REASON,
+            "layout_error": None,
+            "lines": [],
+            "blocks": [],
+        }
+    if (
+        not isinstance(surya, dict)
+        or set(surya) != _SURYA_FIELDS
+        or not isinstance(surya["layout_error"], bool)
+    ):
         raise SchemaRefusal(
             "the sealed feed shows Surya's detections, but no Surya census of "
             f"{sorted(_SURYA_FIELDS)} was given for this page"
         )
     lines = surya["lines"] if switches["surya_lines"] else []
-    blocks = surya["blocks"] if switches["surya_blocks"] else []
+    # A failed layout is blocks not measured: none is shown, and the feed says why.
+    blocks = surya["blocks"] if switches["surya_blocks"] and not surya["layout_error"] else []
     if not isinstance(lines, list) or not isinstance(blocks, list):
         raise SchemaRefusal("Surya's lines and blocks are not lists")
     shown_lines = []
@@ -787,6 +830,7 @@ def _surya(surya: Any, switches: dict[str, Any], page_size: tuple[int, int]) -> 
                 "id": f"L{number}",
                 "box_px": box,
                 "box_1000": box_1000(box, page_size),
+                "confidence_bp": _confidence(line["confidence_bp"]),
                 "ref": digest_ref(line["ref"], "a Surya line reference"),
             }
         )
@@ -810,11 +854,13 @@ def _surya(surya: Any, switches: dict[str, Any], page_size: tuple[int, int]) -> 
                 "box_px": box,
                 "box_1000": box_1000(box, page_size),
                 "label": block["label"],
+                "confidence_bp": _confidence(block["confidence_bp"]),
                 "ref": digest_ref(block["ref"], "a Surya block reference"),
             }
         )
     return {
         "census_ref": digest_ref(surya["census_ref"], "the Surya page census reference"),
+        "layout_error": surya["layout_error"],
         "lines": shown_lines,
         "blocks": shown_blocks,
     }
@@ -891,9 +937,10 @@ def build_page_feed(
     witnesses: list[dict[str, Any]],
     surya: dict[str, Any] | None,
     page_render: dict[str, Any] | None,
-    serving_recipe: str,
+    serving_recipe: str | None,
     read_bytes: Callable[[str], bytes],
     fixture_placeholders: bool = False,
+    no_testimony: bool = False,
 ) -> dict[str, Any]:
     """The `perlector-page-feed.v1` payload for one page, deterministic from sealed inputs.
 
@@ -906,7 +953,9 @@ def build_page_feed(
     """
     switches = protocol.validate_feed_table(feed_switches)
     roster = _checked_roster(roster)
-    witnesses = _checked_witnesses(witnesses, _WITNESS_FIELDS, witness_regime, roster)
+    witnesses = _checked_witnesses(
+        witnesses, _WITNESS_FIELDS, witness_regime, roster, no_testimony=no_testimony
+    )
     for witness in witnesses:
         _check_testimonium_ref(witness, page_id, read_bytes)
     shown = _shown_chairs(switches["witnesses"], roster)
@@ -949,6 +998,7 @@ def build_page_feed(
         page_render=page_render,
         serving_recipe=serving_recipe,
         page_render_bytes=render_bytes,
+        no_testimony=no_testimony,
     )
 
 
@@ -963,8 +1013,9 @@ def assemble_page_feed(
     witnesses: list[dict[str, Any]],
     surya: dict[str, Any] | None,
     page_render: dict[str, Any] | None,
-    serving_recipe: str,
+    serving_recipe: str | None,
     page_render_bytes: bytes | None = None,
+    no_testimony: bool = False,
 ) -> dict[str, Any]:
     """The feed from witness readings already made, for `build_page_feed` and for measurement.
 
@@ -975,18 +1026,22 @@ def assemble_page_feed(
     switch hides). The `witnesses` switch picks which become rows; shown ones
     get `WITNESS_LETTERS` in sorted `witness_label` order, and a hidden chair
     appears only in the recorded `switches`. `surya` is the page's Surya census
-    as `{census_ref, lines: [{box_px, ref}] in Surya's order, blocks: [{box_px,
-    label, position, ref}]}`, `position` being Surya's reading order; it may be
+    as `{census_ref, layout_error, lines: [{box_px, confidence_bp, ref}] in
+    Surya's order, blocks: [{box_px, label, position, confidence_bp, ref}]}`,
+    `position` being Surya's reading order; it may be
     `None` only when both Surya switches are off, or `SURYA_ABSENT` when the
     run holds no Surya census at all, which the feed records as
-    `{census_ref: None, absent: <reason>, lines: [], blocks: []}`. `page_render` is what
+    `{census_ref: None, absent: <reason>, layout_error: None, lines: [], blocks:
+    []}`. `no_testimony` states that the page has no page Testimonium at all
+    (`witnesses` is then empty). `page_render` is what
     `dossier.build_page_render` returned for the `page_image` switch, or `None`
     when it is off. `page_render_bytes` are the render's bytes, needed only
     when `page_overlay` is on, to draw the overlay and seal its digest.
 
     Returns `{schema, page_id, page_ordinal, page_size: {w, h}, reading_unit,
-    witness_regime, switches, page_render, overlay, witnesses, surya,
-    answer_measure, prompt, feed_digest}`; `overlay` is `None` when the switch
+    witness_regime, switches, page_render, overlay, witness_testimony,
+    witnesses, surya, answer_measure, prompt, feed_digest}`; `prompt` is `None`
+    when `serving_recipe` is `None` or the feed shows nothing; `overlay` is `None` when the switch
     is off, else `page_overlay.overlay_record`'s `{source_image_sha256,
     dimensions, label_scale, colours, drawn: [{id, source, box}],
     renderer_sha256, image_sha256}`; `feed_digest` is the digest of every other
@@ -999,7 +1054,9 @@ def assemble_page_feed(
     if not (is_plain_int(width) and is_plain_int(height) and width > 0 and height > 0):
         raise SchemaRefusal(f"page size {page_size!r} is not two positive integers")
     roster = _checked_roster(roster)
-    witnesses = _checked_witnesses(witnesses, _ASSEMBLED_WITNESS_FIELDS, witness_regime, roster)
+    witnesses = _checked_witnesses(
+        witnesses, _ASSEMBLED_WITNESS_FIELDS, witness_regime, roster, no_testimony=no_testimony
+    )
     shown = _shown_chairs(switches["witnesses"], roster)
     ordered = sorted(
         (witness for witness in witnesses if witness["chair"] in shown),
@@ -1024,17 +1081,10 @@ def assemble_page_feed(
         "switches": switches,
         "page_render": _checked_page_render(page_render, switches["page_image"], page_size),
         "overlay": None,
+        "witness_testimony": TESTIMONY_NONE if no_testimony else TESTIMONY_PRESENT,
         "witnesses": rows,
         "surya": _surya(surya, switches, page_size),
     }
-    if feed["page_render"] is None and not (
-        any(unit["text"] for row in rows for unit in row["units"])
-        or (feed["surya"] is not None and (feed["surya"]["lines"] or feed["surya"]["blocks"]))
-    ):
-        raise SchemaRefusal(
-            "the sealed feed shows no page image, and this page has no witness text and no "
-            "detection to show either; a reading would have nothing to be made from"
-        )
     feed["answer_measure"] = answer_measure(
         [
             (witness["adapter"], witness["units"])
@@ -1051,30 +1101,35 @@ def assemble_page_feed(
         feed["overlay"] = page_overlay.overlay_record(
             page_render_bytes, page_overlay.overlay_plan(feed)
         )
-    feed["prompt"] = page_prompt.page_prompt_evidence(serving_recipe, feed)
+    feed["prompt"] = (
+        None
+        if serving_recipe is None or shows_nothing(feed)
+        else page_prompt.page_prompt_evidence(serving_recipe, feed)
+    )
     feed["feed_digest"] = digest_of(feed)
     return feed
+
+
+def shows_nothing(feed: dict[str, Any]) -> bool:
+    """Whether the feed shows no page image, no witness text and no detection.
+
+    A reading would have nothing to be made from, so no request is made: the
+    page is held by name.
+    """
+    surya = feed["surya"]
+    return feed["page_render"] is None and not (
+        any(unit["text"] for row in feed["witnesses"] for unit in row["units"])
+        or (surya is not None and (surya["lines"] or surya["blocks"]))
+    )
 
 
 def placement_boxes(feed: dict[str, Any]) -> dict[str, dict[str, int] | None]:
     """Every id the feed defines, with the sealed-page box it places an entry by, or `None`.
 
-    Surya's lines and blocks place by their boxes, and so does each witness
-    unit with a box when witnesses are shown in their own units. Under
-    `witness_units = "flat"` a witness is shown as one unit with no box, so its
-    units place nothing (their `box_px` stays on the feed for the accounting):
-    an entry citing it takes its region from the boxed ids it also cites.
+    The one derivation, `common.page_accounting.placement_boxes`, so the stage
+    cuts act regions from the map the accounting measures against.
     """
-    flat = feed["switches"]["witness_units"] == "flat"
-    boxes: dict[str, dict[str, int] | None] = {}
-    for row in feed["witnesses"]:
-        for unit in row["units"]:
-            boxes[unit["id"]] = None if flat else unit["box_px"]
-    surya = feed["surya"]
-    if surya is not None:
-        for item in surya["lines"] + surya["blocks"]:
-            boxes[item["id"]] = item["box_px"]
-    return boxes
+    return _placement_boxes(feed)
 
 
 def request_image_sizes(feed: dict[str, Any]) -> list[tuple[int, int]]:

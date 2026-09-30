@@ -108,8 +108,9 @@ def gold_records(
     """Admitted RecordGold records as `{record_id, page_sha256, box_px, text}`.
 
     The admission ledger gives each admitted record its page digest and its box
-    in the stored page's frame (`bbox = [x, y, w, h]`); `gold.jsonl` gives its
-    text. A ledger record with no gold row is refused by name.
+    in the stored page's frame (`bbox = [x, y, w, h]`), kept as the page
+    records' own `bounds` `{x, y, w, h}`; `gold.jsonl` gives its text. A ledger
+    record with no gold row is refused by name.
     """
     texts: dict[str, str] = {}
     for row in gold_rows:
@@ -143,7 +144,7 @@ def gold_records(
             {
                 "record_id": record_id,
                 "page_sha256": page_sha256,
-                "box_px": [x, y, x + w, y + h],
+                "box_px": {"x": x, "y": y, "w": w, "h": h},
                 "text": texts[record_id],
             }
         )
@@ -241,8 +242,10 @@ def _bucket(count: int) -> str:
     return "2+" if count > 1 else str(count)
 
 
-def _overlaps(a: Sequence[int], b: Sequence[int]) -> bool:
-    return max(a[0], b[0]) < min(a[2], b[2]) and max(a[1], b[1]) < min(a[3], b[3])
+def _overlaps(a: Mapping[str, int], b: Mapping[str, int]) -> bool:
+    return max(a["x"], b["x"]) < min(a["x"] + a["w"], b["x"] + b["w"]) and max(
+        a["y"], b["y"]
+    ) < min(a["y"] + a["h"], b["y"] + b["h"])
 
 
 def _share(numerator: int, denominator: int) -> int | None:
@@ -275,7 +278,7 @@ def _findings(accounting: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]
 
 
 def _caught_by(
-    page: Mapping[str, Any], box: Sequence[int]
+    page: Mapping[str, Any], box: Mapping[str, int]
 ) -> tuple[list[str], list[str], list[str]]:
     """The rules whose held findings are located on a gold record, hold the whole
     page, or reach it only through an unplaced region.
@@ -315,7 +318,7 @@ def _caught_by(
     return sorted(located), sorted(page_wide - located), sorted(unplaced_only - located)
 
 
-def _witness_classes(page: Mapping[str, Any]) -> list[tuple[str, list[int]]]:
+def _witness_classes(page: Mapping[str, Any]) -> list[tuple[str, Mapping[str, int]]]:
     """Every boxed witness unit and detector record on the page as (class, box)."""
     units = [
         (witness["witness_label"], unit["box_px"])
@@ -325,7 +328,11 @@ def _witness_classes(page: Mapping[str, Any]) -> list[tuple[str, list[int]]]:
     ]
     accounting = page["accounting"]
     if accounting is not None and accounting.get("records"):
-        units += [(DETECTOR_RECORD, record["box_px"]) for record in accounting["records"]]
+        units += [
+            (DETECTOR_RECORD, record["box_px"])
+            for record in accounting["records"]
+            if record["box_px"] is not None
+        ]
     return units
 
 

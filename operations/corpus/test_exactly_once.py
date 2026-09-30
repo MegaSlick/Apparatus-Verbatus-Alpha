@@ -44,16 +44,20 @@ def entry_text(k: int) -> str:
     )
 
 
-def band(k: int) -> list[int]:
-    return [100, 100 + 400 * k, 900, 400 + 400 * k]
+def bx(x0: int, y0: int, x1: int, y1: int) -> dict[str, int]:
+    """A box as the page records carry it, `{x, y, w, h}`, from its corners."""
+    return {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
+
+
+def band(k: int) -> dict[str, int]:
+    return bx(100, 100 + 400 * k, 900, 400 + 400 * k)
 
 
 def gold(k: int) -> dict:
-    x0, y0, x1, y1 = band(k)
     return {
         "record_id": f"rec-{k}",
         "page_sha256": PAGE_SHA,
-        "box_px": [x0, y0, x1, y1],
+        "box_px": band(k),
         "text": entry_text(k),
     }
 
@@ -68,12 +72,12 @@ COVERAGE_POLICY = {
 }
 
 
-def ink(boxes: list[list[int]]) -> dict:
+def ink(boxes: list[dict[str, int]]) -> dict:
     """Ink-run evidence on a 1000 x 1400 page, one 400-pixel run per row of each box."""
     rows: list[list[list[int]]] = [[] for _ in range(1400)]
-    for x0, y0, _x1, y1 in boxes:
-        for y in range(y0, y1):
-            rows[y].append([x0 + 50, 400])
+    for box in boxes:
+        for y in range(box["y"], box["y"] + box["h"]):
+            rows[y].append([box["x"] + 50, 400])
     return {"schema": INK_RUNS_SCHEMA, "width": 1000, "height": 1400, "rows": rows}
 
 
@@ -82,7 +86,7 @@ INK = {"runs": ink([band(k) for k in range(3)]), "coverage_policy": COVERAGE_POL
 
 def page(
     acts: list[dict],
-    detector: list[list[int]] | None = None,
+    detector: list[dict[str, int]] | None = None,
     truncation: dict[int, str] | None = None,
     **reading,
 ) -> dict:
@@ -99,6 +103,7 @@ def page(
         "page_id": "page-1",
         "page_ordinal": 1,
         "reading_unit": "page",
+        "switches": {"witness_units": "own"},
         "witnesses": [
             {
                 "letter": "A",
@@ -111,7 +116,8 @@ def page(
                         "text": " ".join(
                             entry_text(k)
                             for k in range(records)
-                            if box[1] <= band(k)[1] and band(k)[3] <= box[3]
+                            if box["y"] <= band(k)["y"]
+                            and band(k)["y"] + band(k)["h"] <= box["y"] + box["h"]
                         ),
                     }
                     for i, box in enumerate(detector)
@@ -131,6 +137,7 @@ def page(
         "surya": {
             "lines": [],
             "blocks": [{**block, "ref": block["id"]} for block in feed["surya"]["blocks"]],
+            "layout_error": False,
         },
         "records": [
             {"id": f"A{i + 1}", "box_px": box, "ref": f"record-{i}"}
@@ -256,7 +263,7 @@ def test_a_detector_record_merging_two_entries_is_a_merge_case():
     this report measures); rule (e) holds the page, since A1's text carries
     record 1 and act 1, the only act citing it, reads only record 0.
     """
-    wide = [band(0)[0], band(0)[1], band(1)[2], band(1)[3]]
+    wide = bx(100, band(0)["y"], 900, band(1)["y"] + band(1)["h"])
     acts = [
         {"cites": ["A1", "S1"], "text": entry_text(0)},
         {"cites": ["S2"], "text": entry_text(1)},
@@ -313,7 +320,7 @@ def test_a_loss_only_an_unrelated_hold_reaches_is_uncaught():
         {
             "record_id": "rec-x",
             "page_sha256": PAGE_SHA,
-            "box_px": [100, 1250, 900, 1390],
+            "box_px": bx(100, 1250, 900, 1390),
             "text": entry_text(9),
         }
     )
@@ -334,7 +341,7 @@ def test_a_loss_on_a_page_nothing_held_is_uncaught():
         {
             "record_id": "rec-x",
             "page_sha256": PAGE_SHA,
-            "box_px": [100, 1250, 900, 1390],
+            "box_px": bx(100, 1250, 900, 1390),
             "text": entry_text(9),
         }
     )
@@ -502,7 +509,7 @@ def test_gold_records_join_the_ledger_box_and_the_gold_text():
     rows = [{"record_id": "r1", "text": "t"}, {"record_id": "r2", "text": "u"}]
 
     assert gold_records(rows, ledger) == [
-        {"record_id": "r1", "page_sha256": PAGE_SHA, "box_px": [10, 20, 40, 60], "text": "t"}
+        {"record_id": "r1", "page_sha256": PAGE_SHA, "box_px": bx(10, 20, 40, 60), "text": "t"}
     ]
     with pytest.raises(Refusal, match="no gold row"):
         gold_records([], ledger)

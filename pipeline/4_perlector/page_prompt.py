@@ -197,6 +197,10 @@ def _feed_parts(feed: dict[str, Any]) -> list[list[_Part]]:
             _fixed("surya lines: text lines a layout detector found, with their box_1000.")
         )
         lines.extend([(line["id"], False), _box(line["box_1000"])] for line in surya["lines"])
+    if surya is not None and surya["layout_error"] is True and feed["switches"]["surya_blocks"]:
+        lines.append(
+            _fixed("surya blocks: not measured; the detector's layout failed on this page.")
+        )
     if shown["blocks"]:
         lines.append(
             _fixed(

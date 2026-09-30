@@ -10,11 +10,13 @@ page's ink are accounted for. It reads no file, calls no model and chooses nothi
 witnesses. A hold only asks a human to look; a measurement that cannot be
 taken holds; any hold holds the page's acts for review.
 
-`expand_cites` and `validate_answer` are the one reading of an answer's ids that
-both this check and the stage writing the act-region records use.
+`placement_boxes`, `expand_cites` and `validate_answer` are the one reading of
+an answer's ids and regions that both this check and the stage writing the
+act-region records use, and `validate_answer` reads the answer's grammar through
+`common.page_answer`, the one grammar a page answer has.
 
-Boxes are `[x0, y0, x1, y1]` in sealed-page pixels, half-open, as the feed
-records `box_px`.
+Every box in and out is the repository's `bounds` `{x, y, w, h}` in sealed-page
+pixels, as the feed records `box_px`; the geometry below reads corners from it.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from typing import Any, Final, Protocol
 from common.contracts.errors import ContractError
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
 from common.imaging import Bounds
+from common.page_answer import grammar_problems
 from common.perlector_audit import TRUNCATION_COMPLETE
 from common.residual_ink import CoverageAuditPolicy, residual_ink_from_runs
 from common.sealed_config import read_sealed_toml
@@ -47,16 +50,14 @@ DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH: Final = (
 BASIS_POINTS: Final = 10_000
 
 # Answer problems, recorded on the page reading and held by the rule named in
-# `_PROBLEM_RULE` (rule a when not named).
-ANSWER_NOT_AN_OBJECT: Final = "answer-not-an-object"
-MALFORMED_ENTRY: Final = "malformed-entry"
+# `_PROBLEM_RULE` (rule a when not named). `answer-grammar` carries one problem
+# `common.page_answer.grammar_problems` names.
+ANSWER_GRAMMAR: Final = "answer-grammar"
 UNKNOWN_ID: Final = "unknown-id"
 MALFORMED_RANGE: Final = "malformed-range"
 CITED_AND_SET_ASIDE: Final = "cited-and-set-aside"
 SET_ASIDE_TWICE: Final = "set-aside-twice"
 SET_ASIDE_WITHOUT_REASON: Final = "set-aside-without-reason"
-NON_CONTIGUOUS_N: Final = "non-contiguous-n"
-CONTINUATION_ON_NON_EDGE_ACT: Final = "continuation-flag-on-non-edge-act"
 DUPLICATE_REGION: Final = "duplicate-region"
 
 # Finding codes. Every code in `HOLD_CODES` holds the page; the others are recorded only.
@@ -82,6 +83,8 @@ RECORD_NOT_READ: Final = "record-not-read"
 SET_ASIDE_RECORD: Final = "set-aside-record"
 SPLIT_DETECTION: Final = "split-detection"
 RECORDS_NOT_MEASURED: Final = "detector-records-not-measured"
+RECORD_NOT_MEASURED: Final = "detector-record-not-measured"
+SURYA_BLOCKS_NOT_MEASURED: Final = "surya-blocks-not-measured"
 RECORD_DETECTOR_CAPPED: Final = "record-detector-capped"
 NO_RECORD_DETECTOR: Final = "no-record-detector"
 NO_PARSED_ANSWER: Final = "no-parsed-answer"
@@ -107,6 +110,7 @@ HOLD_CODES: Final = frozenset(
         RECORD_NOT_READ,
         SET_ASIDE_RECORD,
         RECORDS_NOT_MEASURED,
+        RECORD_NOT_MEASURED,
         RECORD_DETECTOR_CAPPED,
     }
 )
@@ -118,6 +122,7 @@ NOT_MEASURED_CODES: Final = frozenset(
         WITNESS_TEXT_NOT_MEASURED,
         UNREAD_INK_NOT_MEASURED,
         RECORDS_NOT_MEASURED,
+        RECORD_NOT_MEASURED,
         RECORD_DETECTOR_CAPPED,
         NO_PARSED_ANSWER,
     }
@@ -148,16 +153,14 @@ _ENTITY: Final = re.compile(r"&(?:#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6}|[A-Za-z][A-Z
 # reader flagged unreadable. A private-use character, so no letter or digit of
 # any witness can equal it.
 UNREADABLE: Final = ""
-_ENTRY_REQUIRED: Final = frozenset(
-    {"n", "kind", "cites", "text", "continues_from_previous_page", "continues_to_next_page"}
-)
-_ENTRY_KINDS: Final = frozenset({"act", "other"})
 _WITNESS_KEYS: Final = frozenset({"letter", "outcome", "blank", "units"})
 _DETECTIONS_KEYS: Final = frozenset({"surya", "records", "record_detector", "record_census"})
+_SURYA_KEYS: Final = frozenset({"lines", "blocks", "layout_error"})
 _RECORD_CENSUS_KEYS: Final = frozenset({"detection_count", "max_det", "max_det_reached"})
-MAX_LABEL_CHARACTERS: Final = 80
+_BOX_KEYS: Final = frozenset({"x", "y", "w", "h"})
+WITNESS_UNITS_FLAT: Final = "flat"
 
-Box = list[int]
+Box = Bounds
 
 
 @dataclass(frozen=True)
@@ -272,40 +275,77 @@ def require_page_accounting_policy(
 
 def _box(value: Any, where: str) -> Box:
     if (
-        not isinstance(value, list)
-        or len(value) != 4
-        or any(not isinstance(v, int) or isinstance(v, bool) for v in value)
-        or not (0 <= value[0] < value[2] and 0 <= value[1] < value[3])
+        not isinstance(value, Mapping)
+        or set(value) != _BOX_KEYS
+        or any(not isinstance(value[k], int) or isinstance(value[k], bool) for k in _BOX_KEYS)
+        or value["x"] < 0
+        or value["y"] < 0
+        or value["w"] <= 0
+        or value["h"] <= 0
     ):
-        raise ContractError(f"{where} box_px is not [x0, y0, x1, y1] with x0 < x1 and y0 < y1")
-    return list(value)
+        raise ContractError(f"{where} box_px is not {{x, y, w, h}} with x, y >= 0 and w, h > 0")
+    return {"x": value["x"], "y": value["y"], "w": value["w"], "h": value["h"]}
+
+
+def _corners(box: Box) -> tuple[int, int, int, int]:
+    """A box's half-open corners `(x0, y0, x1, y1)`, the one form the geometry reads."""
+    return box["x"], box["y"], box["x"] + box["w"], box["y"] + box["h"]
+
+
+def _from_corners(x0: int, y0: int, x1: int, y1: int) -> Box:
+    return {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
+
+
+def placement_boxes(feed: Mapping[str, Any]) -> dict[str, Box | None]:
+    """Every id a page feed defines, with the box it places an entry by, or `None`.
+
+    Surya's lines and blocks place by their boxes, and so does each witness
+    unit with a box when witnesses are shown in their own units. Under the
+    feed's `witness_units = "flat"` switch a witness is shown as one unit with
+    no box, so its units place nothing (their `box_px` stays on the feed as the
+    witness's sealed geometry): an entry citing it takes its region from the
+    boxed ids it also cites. The stage cuts act regions from this map and the
+    accounting measures against it, so the two never read different regions.
+    """
+    flat = feed["switches"]["witness_units"] == WITNESS_UNITS_FLAT
+    boxes: dict[str, Box | None] = {}
+    for witness in feed["witnesses"]:
+        for unit in witness["units"]:
+            boxes[unit["id"]] = None if flat or unit["box_px"] is None else unit["box_px"]
+    surya = feed["surya"]
+    if surya is not None:
+        for item in surya["lines"] + surya["blocks"]:
+            boxes[item["id"]] = item["box_px"]
+    return boxes
 
 
 def feed_candidates(feed: Mapping[str, Any]) -> dict[str, Box | None]:
-    """Every citable id of a page feed and its box (`None` for an unboxed unit).
+    """Every citable id of a page feed and the box it places an entry by (`placement_boxes`).
 
-    `feed` is the `page-feed` payload: `witnesses[].units[]` with `id`, `box_px`
-    and `text`, and `surya.lines[]` / `surya.blocks[]` with `id` and `box_px`.
-    Each letter's ids are numbered `1..n` without a gap; a feed that skips one
-    is refused, since a range citation reads every id between its ends.
+    `feed` is the `page-feed` payload: `switches.witness_units`,
+    `witnesses[].units[]` with `id`, `box_px` and `text`, and `surya` (or
+    `None`) with `lines[]` / `blocks[]` of `id` and `box_px`. Each letter's ids
+    are numbered `1..n` without a gap; a feed that skips one is refused, since
+    a range citation reads every id between its ends.
     """
-    candidates: dict[str, Box | None] = {}
-
-    def add(identifier: Any, box: Any, *, boxed: bool) -> None:
+    seen: set[str] = set()
+    identifiers = [unit["id"] for witness in feed["witnesses"] for unit in witness["units"]]
+    surya = feed["surya"]
+    if surya is not None:
+        identifiers += [item["id"] for item in surya["lines"] + surya["blocks"]]
+    for identifier in identifiers:
         if not isinstance(identifier, str) or not _ID.fullmatch(identifier):
             raise ContractError(f"feed id {identifier!r} is not a letter and a number")
-        if identifier in candidates:
+        if identifier in seen:
             raise ContractError(f"feed id {identifier} appears twice")
-        candidates[identifier] = _box(box, identifier) if boxed or box is not None else None
-
-    for witness in feed["witnesses"]:
-        for unit in witness["units"]:
-            add(unit["id"], unit.get("box_px"), boxed=False)
-    surya = feed.get("surya") or {}
-    for line in surya.get("lines", []):
-        add(line["id"], line["box_px"], boxed=True)
-    for block in surya.get("blocks", []):
-        add(block["id"], block["box_px"], boxed=True)
+        seen.add(identifier)
+    candidates = {
+        identifier: None if box is None else _box(box, identifier)
+        for identifier, box in placement_boxes(feed).items()
+    }
+    if surya is not None:
+        for item in surya["lines"] + surya["blocks"]:
+            _box(item["box_px"], item["id"])
     numbers: dict[str, list[int]] = {}
     for identifier in candidates:
         numbers.setdefault(identifier[0], []).append(int(identifier[1:]))
@@ -355,72 +395,42 @@ def expand_cites(
 def _union_box(boxes: list[Box]) -> Box | None:
     if not boxes:
         return None
-    return [
-        min(box[0] for box in boxes),
-        min(box[1] for box in boxes),
-        max(box[2] for box in boxes),
-        max(box[3] for box in boxes),
-    ]
-
-
-def _entry_shape_problem(entry: Any) -> str | None:
-    if not isinstance(entry, dict):
-        return "not an object"
-    keys = set(entry)
-    if not _ENTRY_REQUIRED <= keys or keys - _ENTRY_REQUIRED - {"label"}:
-        return "fields are not the closed entry grammar"
-    if not isinstance(entry["n"], int) or isinstance(entry["n"], bool):
-        return "n is not an integer"
-    if entry["kind"] not in _ENTRY_KINDS:
-        return "kind is not act or other"
-    if not isinstance(entry["cites"], list):
-        return "cites is not a list"
-    if not isinstance(entry["text"], str):
-        return "text is not a string"
-    if not isinstance(entry["continues_from_previous_page"], bool) or not isinstance(
-        entry["continues_to_next_page"], bool
-    ):
-        return "a continuation flag is not a boolean"
-    label = entry.get("label")
-    if label is not None and (not isinstance(label, str) or len(label) > MAX_LABEL_CHARACTERS):
-        return "label is not text of at most 80 characters"
-    return None
+    corners = [_corners(box) for box in boxes]
+    return _from_corners(
+        min(c[0] for c in corners),
+        min(c[1] for c in corners),
+        max(c[2] for c in corners),
+        max(c[3] for c in corners),
+    )
 
 
 def validate_answer(answer: Any, candidates: Mapping[str, Box | None]) -> dict[str, Any]:
     """Read a parsed page answer against its feed's candidates, repairing nothing.
 
-    Returns `entries` (one per well-formed entry, in the order given: `n`, `kind`,
-    `label`, `cites` as given, `cited_ids` expanded, `union_box_px` -- the
-    bounding box of the cited boxed ids, unpadded, or `None` when the entry
-    cites no boxed id), `set_aside` (`{id: reason}` for every id set aside with
-    a reason) and `problems` (every finding; any one holds the page). An entry
-    with no boxed citation is not a problem here: it is published unplaced and
-    held by the accounting's rule (b).
+    `candidates` is `feed_candidates(feed)`. The answer's grammar is
+    `common.page_answer.grammar_problems`'s; an answer outside it has no entries
+    and one `answer-grammar` problem per departure. Returns `entries` (one per
+    entry, in the order given: `n`, `kind`, `label`, `cites` as given,
+    `cited_ids` expanded, `union_box_px` -- the bounding box of the cited
+    placing ids, unpadded, or `None` when the entry cites none -- and `text`),
+    `set_aside` (`{id: reason}` for every id set aside with a reason) and
+    `problems` (every finding; any one holds the page). An entry with no
+    placing citation is not a problem here: it is published unplaced and held
+    by the accounting's rule (b).
     """
-    problems: list[dict[str, Any]] = []
-    if (
-        not isinstance(answer, dict)
-        or set(answer) != {"acts", "set_aside"}
-        or not isinstance(answer["acts"], list)
-        or not isinstance(answer["set_aside"], list)
-    ):
+    grammar = grammar_problems(answer)
+    if grammar:
         return {
             "entries": [],
             "set_aside": {},
-            "problems": [{"code": ANSWER_NOT_AN_OBJECT}],
+            "problems": [
+                {"code": ANSWER_GRAMMAR, "grammar": problem["code"], "detail": problem["detail"]}
+                for problem in grammar
+            ],
         }
+    problems: list[dict[str, Any]] = []
     entries: list[dict[str, Any]] = []
-    last = len(answer["acts"]) - 1
-    for index, raw in enumerate(answer["acts"]):
-        reason = _entry_shape_problem(raw)
-        if reason is not None:
-            problems.append({"code": MALFORMED_ENTRY, "index": index, "reason": reason})
-            continue
-        if (raw["continues_from_previous_page"] and index != 0) or (
-            raw["continues_to_next_page"] and index != last
-        ):
-            problems.append({"code": CONTINUATION_ON_NON_EDGE_ACT, "n": raw["n"]})
+    for raw in answer["acts"]:
         cited_ids, cite_problems = expand_cites(raw["cites"], candidates)
         problems.extend({**problem, "n": raw["n"]} for problem in cite_problems)
         entries.append(
@@ -438,21 +448,15 @@ def validate_answer(answer: Any, candidates: Mapping[str, Box | None]) -> dict[s
                 "continues_to_next_page": raw["continues_to_next_page"],
             }
         )
-    numbers = [raw.get("n") if isinstance(raw, dict) else None for raw in answer["acts"]]
-    if numbers != list(range(1, len(numbers) + 1)):
-        problems.append({"code": NON_CONTIGUOUS_N})
 
     cited = {identifier for entry in entries for identifier in entry["cited_ids"]}
     set_aside: dict[str, str] = {}
     seen: set[str] = set()
     for index, raw in enumerate(answer["set_aside"]):
-        if not isinstance(raw, dict) or set(raw) != {"id", "reason"}:
-            problems.append({"code": MALFORMED_ENTRY, "set_aside_index": index})
-            continue
         ids, id_problems = expand_cites([raw["id"]], candidates)
         problems.extend({**problem, "set_aside_index": index} for problem in id_problems)
         reason = raw["reason"]
-        has_reason = isinstance(reason, str) and bool(reason.strip())
+        has_reason = bool(reason.strip())
         for identifier in ids:
             if identifier in seen:
                 problems.append({"code": SET_ASIDE_TWICE, "id": identifier})
@@ -467,38 +471,63 @@ def validate_answer(answer: Any, candidates: Mapping[str, Box | None]) -> dict[s
     by_box: dict[tuple[int, ...], list[int]] = {}
     for entry in entries:
         if entry["union_box_px"] is not None:
-            by_box.setdefault(tuple(entry["union_box_px"]), []).append(entry["n"])
-    for box, ns in sorted(by_box.items()):
+            by_box.setdefault(_corners(entry["union_box_px"]), []).append(entry["n"])
+    for corners, ns in sorted(by_box.items()):
         if len(ns) > 1:
-            problems.append({"code": DUPLICATE_REGION, "ns": sorted(ns), "union_box_px": list(box)})
+            problems.append(
+                {
+                    "code": DUPLICATE_REGION,
+                    "ns": sorted(ns),
+                    "union_box_px": _from_corners(*corners),
+                }
+            )
     return {"entries": entries, "set_aside": set_aside, "problems": problems}
 
 
 # --- the sealed detections -----------------------------------------------------------
 
 
-def _ref_key(item: Mapping[str, Any]) -> tuple[list[int], str]:
-    return item["box_px"], json.dumps(item.get("ref"), sort_keys=True, default=str)
+def _ref_key(item: Mapping[str, Any]) -> tuple[tuple[int, ...], str]:
+    box = item["box_px"]
+    return (
+        () if box is None else _corners(box),
+        json.dumps(item["ref"], sort_keys=True, default=str),
+    )
 
 
 def _census(
-    items: Any, where: str, shown: Mapping[str, Box | None], shown_ids: Sequence[str]
+    items: Any,
+    where: str,
+    shown: Mapping[str, Box | None],
+    shown_ids: Sequence[str],
+    *,
+    unboxed: bool = False,
 ) -> list[dict[str, Any]]:
     """Sealed detections as `{id | None, box_px, ref}`, checked against what the feed showed.
 
     An item the feed showed carries its feed id and the same box; every id the
     feed showed of this kind is in the census. The feed switches what the model
-    saw, never what the check measures.
+    saw, never what the check measures. With `unboxed` an item may have no box
+    (a detector record whose corners enclose no crop): it is kept, to be
+    reported as not measured.
     """
     if not isinstance(items, list):
         raise ContractError(f"sealed {where} are not a list")
     census: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in items:
-        if not isinstance(item, dict) or not {"box_px", "ref"} <= set(item):
+        if (
+            not isinstance(item, dict)
+            or not {"box_px", "ref"} <= set(item)
+            or (set(item) - {"id", "box_px", "ref"})
+        ):
             raise ContractError(f"a sealed {where[:-1]} is not {{id?, box_px, ref}}")
-        box = _box(item["box_px"], f"sealed {where[:-1]}")
-        identifier = item.get("id")
+        box = (
+            None
+            if unboxed and item["box_px"] is None
+            else _box(item["box_px"], f"sealed {where[:-1]}")
+        )
+        identifier = item["id"] if "id" in item else None
         if identifier is not None:
             if identifier not in shown or shown[identifier] != box or identifier in seen:
                 raise ContractError(
@@ -515,25 +544,33 @@ def _census(
 
 def _read_detections(
     detections: Mapping[str, Any], feed: Mapping[str, Any], candidates: Mapping[str, Box | None]
-) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]] | None, str, bool]:
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]] | None, str, bool, bool]:
     if not isinstance(detections, Mapping) or set(detections) != _DETECTIONS_KEYS:
         raise ContractError("detections are not {surya, records, record_detector, record_census}")
     detector = detections["record_detector"]
     if detector not in (RECORD_DETECTOR_CONFIGURED, RECORD_DETECTOR_ABSENT):
         raise ContractError("detections record_detector is not configured or absent")
-    feed_surya = feed.get("surya") or {}
-    shown_lines = [line["id"] for line in feed_surya.get("lines", [])]
-    shown_blocks = [block["id"] for block in feed_surya.get("blocks", [])]
+    feed_surya = feed["surya"]
+    shown_lines = [] if feed_surya is None else [line["id"] for line in feed_surya["lines"]]
+    shown_blocks = [] if feed_surya is None else [block["id"] for block in feed_surya["blocks"]]
     surya = detections["surya"]
     lines = None
+    layout_error = False
     if surya is None:
         if shown_lines or shown_blocks:
             raise ContractError("the feed shows Surya detections the page has no census for")
     else:
-        if not isinstance(surya, Mapping) or set(surya) != {"lines", "blocks"}:
-            raise ContractError("detections surya is not {lines, blocks}")
+        if (
+            not isinstance(surya, Mapping)
+            or set(surya) != _SURYA_KEYS
+            or not isinstance(surya["layout_error"], bool)
+        ):
+            raise ContractError("detections surya is not {lines, blocks, layout_error}")
         lines = _census(surya["lines"], "Surya lines", candidates, shown_lines)
         _census(surya["blocks"], "Surya blocks", candidates, shown_blocks)
+        layout_error = surya["layout_error"]
+        if layout_error and shown_blocks:
+            raise ContractError("the feed shows Surya blocks from a layout Surya reported failed")
     records = detections["records"]
     census = detections["record_census"]
     if (records is None) != (census is None):
@@ -557,13 +594,13 @@ def _read_detections(
                 "detections record_census is not {detection_count, max_det, max_det_reached}"
             )
         capped = census["max_det_reached"]
+        # A record the feed shows as a witness unit has that unit's sealed box,
+        # whatever the unit places by under the feed's switches.
         witness_units = {
-            unit["id"]: candidates[unit["id"]]
-            for witness in feed["witnesses"]
-            for unit in witness["units"]
+            unit["id"]: unit["box_px"] for witness in feed["witnesses"] for unit in witness["units"]
         }
-        records = _census(records, "detector records", witness_units, [])
-    return lines, records, detector, capped
+        records = _census(records, "detector records", witness_units, [], unboxed=True)
+    return lines, records, detector, capped, layout_error
 
 
 def _read_witnesses(
@@ -628,15 +665,16 @@ def _read_witnesses(
 # --- geometry --------------------------------------------------------------------------
 
 
-def _area(box: Sequence[int]) -> int:
-    return (box[2] - box[0]) * (box[3] - box[1])
+def _area(box: Box) -> int:
+    return box["w"] * box["h"]
 
 
 def _area_inside(box: Box, regions: Sequence[Box]) -> int:
     """The area of `box` covered by the union of `regions`."""
+    b = _corners(box)
     clipped = [
-        (max(box[0], r[0]), max(box[1], r[1]), min(box[2], r[2]), min(box[3], r[3]))
-        for r in regions
+        (max(b[0], r[0]), max(b[1], r[1]), min(b[2], r[2]), min(b[3], r[3]))
+        for r in (_corners(region) for region in regions)
     ]
     clipped = [c for c in clipped if c[0] < c[2] and c[1] < c[3]]
     if not clipped:
@@ -663,10 +701,6 @@ def _area_inside(box: Box, regions: Sequence[Box]) -> int:
 def is_inside(box: Box, regions: Sequence[Box], policy: PageAccountingPolicy) -> bool:
     """Whether the sealed share of `box`'s area lies inside the union of `regions`."""
     return _area_inside(box, regions) * BASIS_POINTS >= policy.inside_min_area_bp * _area(box)
-
-
-def _bounds(box: Box) -> Bounds:
-    return {"x": box[0], "y": box[1], "w": box[2] - box[0], "h": box[3] - box[1]}
 
 
 # --- witness text coverage (rule e) ------------------------------------------------------
@@ -1119,9 +1153,11 @@ def page_accounting(
 ) -> dict[str, Any]:
     """The `page-accounting.v1` payload for one page reading.
 
-    - `feed`: the `page-feed` payload (`page_id`, `page_ordinal`, `witnesses[]`
-      with `letter`, `outcome` and `units[]` of `{id, box_px | None, text}`,
-      `surya` with `lines[]` and `blocks[]` of `{id, box_px}` as shown).
+    - `feed`: the `page-feed` payload (`page_id`, `page_ordinal`,
+      `switches.witness_units`, `witnesses[]` with `letter`, `outcome` and
+      `units[]` of `{id, box_px | None, text}`, `surya` with `lines[]` and
+      `blocks[]` of `{id, box_px}` as shown, or `None`). Entries are placed by
+      `placement_boxes`, the map the stage cuts its act regions from.
     - `witnesses`: every witness the run sealed for the page, whatever the
       feed's `witnesses` switch showed the model: `[{letter, outcome, blank,
       units}]`, `units[]` of `{id, box_px | None, text}` with ids of the
@@ -1132,15 +1168,18 @@ def page_accounting(
       every reading on the page, and rule (c) does not apply to it (its units'
       disposition is `not-shown`).
     - `detections`: the page's sealed detections, whatever the feed showed the
-      model: `{"surya": {"lines": [...], "blocks": [...]} | None, "records":
-      [...] | None, "record_detector": "configured" | "absent",
-      "record_census": {"detection_count", "max_det", "max_det_reached"} |
-      None}`, each line, block and record `{id?, box_px, ref}` with `id` the
-      feed id when the feed showed it. `surya` is `None` when the page has no
-      Surya census; `records` and `record_census` are the record detector's
-      records and page census, both `None` when it did not run or failed for
-      the page; `record_detector` is `"absent"` only when the sealed roster
-      has none.
+      model: `{"surya": {"lines": [...], "blocks": [...], "layout_error": bool}
+      | None, "records": [...] | None, "record_detector": "configured" |
+      "absent", "record_census": {"detection_count", "max_det",
+      "max_det_reached"} | None}`, each line, block and record `{id?, box_px,
+      ref}` with `id` the feed id when the feed showed it. `surya` is `None`
+      when the page has no Surya census; `layout_error` is Surya's own flag that
+      its layout failed on the page, whose blocks are then not measured.
+      `records` and `record_census` are the record detector's records and page
+      census, both `None` when it did not run or failed for the page; a record
+      whose corners enclose no crop has `box_px: None` and is reported not
+      measured by rule (i). `record_detector` is `"absent"` only when the
+      sealed roster has none.
     - `reading`: the `page-reading` payload's `parse_state`, `finish_reason` and
       `answer` (the parsed object as given, or `None`).
     - `entry_truncation`: `{n: "complete" | "truncated" | "unknown"}`, each
@@ -1156,7 +1195,9 @@ def page_accounting(
     order of any input list.
     """
     candidates = feed_candidates(feed)
-    census_lines, records, detector, capped = _read_detections(detections, feed, candidates)
+    census_lines, records, detector, capped, layout_error = _read_detections(
+        detections, feed, candidates
+    )
     parse_state = reading["parse_state"]
     finish_reason = reading["finish_reason"]
     if parse_state not in PARSE_STATES:
@@ -1237,6 +1278,11 @@ def page_accounting(
         for line in census_lines or []
     ]
     record_rows = _record_rows(records, entries, set_aside, policy)
+    unboxed_records = [
+        {"code": RECORD_NOT_MEASURED, "id": record["id"], "ref": record["ref"]}
+        for record in records or []
+        if record["box_px"] is None
+    ]
 
     if not answered:
         no_answer = [{"code": NO_PARSED_ANSWER}]
@@ -1299,6 +1345,9 @@ def page_accounting(
                 if line["id"] not in set_aside
                 and not is_inside(line["box_px"], all_regions, policy)
             ]
+            # Recorded, not held: no rule measures against Surya's blocks, and a
+            # failed layout is blocks not measured, never a page with none.
+            + ([{"code": SURYA_BLOCKS_NOT_MEASURED}] if layout_error else [])
         )
 
     rules["e"] = _witness_text_rule(
@@ -1316,7 +1365,7 @@ def page_accounting(
             if len(row["inside"]) > 1
         ]
     )
-    rules["i"] = _detection_rule(record_rows, detector, capped, entries)
+    rules["i"] = _detection_rule(record_rows, detector, capped, entries, unboxed_records)
     return _record(
         feed, rules, unit_rows, line_rows, record_rows, policy, feed_ref, page_reading_ref
     )
@@ -1478,6 +1527,8 @@ def _record_rows(
         return None
     rows = []
     for record in records:
+        if record["box_px"] is None:
+            continue
         inside = {
             kind: sorted(
                 entry["n"]
@@ -1502,7 +1553,11 @@ def _record_rows(
 
 
 def _detection_rule(
-    rows: list[dict[str, Any]] | None, detector: str, capped: bool, entries: list[dict[str, Any]]
+    rows: list[dict[str, Any]] | None,
+    detector: str,
+    capped: bool,
+    entries: list[dict[str, Any]],
+    unboxed: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """(i) Each detector record lies inside exactly one `act` region.
 
@@ -1521,6 +1576,10 @@ def _detection_rule(
     detector. It cannot see a detector record that itself merged two entries,
     read as one act: that is one record inside one region. The proof run
     measures that case against gold.
+
+    A record whose corners enclose no crop has no box to measure: each is a
+    `detector-record-not-measured` finding, which holds, and the rule states
+    how many (`records_not_measured`).
     """
     if rows is None:
         if detector == RECORD_DETECTOR_ABSENT:
@@ -1529,9 +1588,12 @@ def _detection_rule(
     if capped:
         # The detector stopped at its cap: records past it were never cut, so
         # "every record is inside one act" cannot be measured.
-        return _rule([{"code": RECORD_DETECTOR_CAPPED}])
+        return {
+            **_rule([{"code": RECORD_DETECTOR_CAPPED}, *unboxed]),
+            "records_not_measured": len(unboxed),
+        }
     kinds = {entry["n"]: entry["kind"] for entry in entries}
-    findings: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = list(unboxed)
     inside_region: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
         where = {"id": row["id"], "ref": row["ref"], "box_px": row["box_px"]}
@@ -1555,7 +1617,7 @@ def _detection_rule(
         for n, inside in sorted(inside_region.items())
         if len(inside) > 1
     )
-    return _rule(findings)
+    return {**_rule(findings), "records_not_measured": len(unboxed)}
 
 
 def _ink_rule(ink: Mapping[str, Any] | None, regions: list[Box]) -> dict[str, Any]:
@@ -1567,8 +1629,7 @@ def _ink_rule(ink: Mapping[str, Any] | None, regions: list[Box]) -> dict[str, An
     if ink is None or ink.get("runs") is None:
         return _rule([{"code": UNREAD_INK_NOT_MEASURED}])
     coverage_policy: CoverageAuditPolicy = ink["coverage_policy"]
-    covered = [_bounds(box) for box in regions]
-    measured = residual_ink_from_runs(ink["runs"], covered, coverage_policy=coverage_policy)
+    measured = residual_ink_from_runs(ink["runs"], list(regions), coverage_policy=coverage_policy)
     counts = {
         "total_ink_pixels": measured["total_ink_pixels"],
         "outside_ink_pixels": measured["outside_ink_pixels"],

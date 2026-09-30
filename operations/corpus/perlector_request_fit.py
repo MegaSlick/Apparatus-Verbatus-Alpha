@@ -311,7 +311,13 @@ def page_shape(page: dict[str, Any]) -> dict[str, Any]:
             {"ordinal": len(records), "box_px": box, "label": None, "text": record["text"]}
         )
         blocks.append(
-            {"box_px": box, "label": "Text", "position": len(blocks), "ref": _PLACEHOLDER_REF}
+            {
+                "box_px": box,
+                "label": "Text",
+                "position": len(blocks),
+                "confidence_bp": None,
+                "ref": _PLACEHOLDER_REF,
+            }
         )
         texts = [line for line in record["text"].split("\n") if line.strip()]
         band = max(1, box["h"] // len(texts))
@@ -319,7 +325,13 @@ def page_shape(page: dict[str, Any]) -> dict[str, Any]:
             lines.append({"ordinal": len(lines) + 1, "box_px": None, "label": None, "text": text})
             top = box["y"] + min(index * band, box["h"] - 1)
             height = max(1, min(band, box["y"] + box["h"] - top))
-            surya_lines.append({"box_px": {**box, "y": top, "h": height}, "ref": _PLACEHOLDER_REF})
+            surya_lines.append(
+                {
+                    "box_px": {**box, "y": top, "h": height},
+                    "confidence_bp": None,
+                    "ref": _PLACEHOLDER_REF,
+                }
+            )
     return {
         "size": size,
         "skipped_records": skipped,
@@ -328,7 +340,12 @@ def page_shape(page: dict[str, Any]) -> dict[str, Any]:
             ("attestator_2", "dai.v1", records),
             ("attestator_3", "churro.v1", lines),
         ],
-        "surya": {"census_ref": _PLACEHOLDER_REF, "lines": surya_lines, "blocks": blocks},
+        "surya": {
+            "census_ref": _PLACEHOLDER_REF,
+            "layout_error": False,
+            "lines": surya_lines,
+            "blocks": blocks,
+        },
     }
 
 

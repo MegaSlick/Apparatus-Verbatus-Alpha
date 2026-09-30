@@ -5,8 +5,9 @@ from __future__ import annotations
 import copy
 import json
 
-import page_answer
 import pytest
+
+from common import page_answer
 
 GOOD = {
     "acts": [

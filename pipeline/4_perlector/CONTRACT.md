@@ -1168,26 +1168,50 @@ run (committed `round_cap = 1`) can read pages.
   validated as the act path validates it (`validate_page_testimonium_record`, and the
   native capture's blob and adapter). Every chair the sealed roster scopes `page`
   must have one; a chair it does not scope `page` must not. Act-scoped witnesses
-  have no page Testimonium and are not shown.
-- Surya's detections from the Designator (`surya-page` census, `surya-line`,
-  `surya-block`), read in one place (`page_run.sealed_surya_census`). A run with no
-  `surya-page` record at all shows none and records it on the feed:
-  `surya: {census_ref: null, absent: "no Surya page census was sealed in this run",
-  lines: [], blocks: []}`. A run with censuses but none for a page refuses.
+  have no page Testimonium and are not shown. A page with no page Testimonium at all
+  (the Attestatores serve only pages with a proposed Designator act) is not refused:
+  it is fed with `witness_testimony: "none"` and no witness row, and held by name
+  (`no-witness-testimony`). A roster chair missing beside others that testified is a
+  shortened roster and refuses.
+- Surya's stage-2 records, read in one place (`page_run.sealed_surya_census`): each
+  `surya-page` census (`page_id`, `line_count`, `block_count`, `line_subjects`,
+  `block_subjects`, `layout_error`) and every `surya-line` and `surya-block` it
+  names (`n`, `bounds`, `confidence_bp`; a block also `label` and
+  `reading_order_position`). The census and its detections must agree exactly --
+  counts, subjects, `n`, page -- and every sealed detection must be named by its
+  page's census, or the stage refuses by name. A run with no `surya-page` record at
+  all shows none and records it on the feed: `surya: {census_ref: null, absent: "no
+  Surya page census was sealed in this run", layout_error: null, lines: [], blocks:
+  []}`. A run with censuses but none for a page refuses. A census whose
+  `layout_error` is true is blocks not measured, never a page with no blocks: the feed
+  shows no block, records `layout_error: true`, and the prompt says the blocks were not
+  measured. Each line's and block's `confidence_bp` is recorded on the feed and never
+  rendered into the prompt.
 - The page image at the sealed `[feed] page_image`: `legible` is
   `dossier.build_page_render` at `[page_context] maximum_edge` (reason
   `legible-ink`); `full` is the sealed page at its own size (reason `full-page`,
   resampler `identity`); `off` is none.
 - On a synthetic run only, a Chandra page joined from the fixture's act placeholders
   (no native capture) is read one unit per placeholder, box = its bbox widened to
-  whole pixels (`page_feed._fixture_chandra_units`).
+  whole pixels (`page_feed._fixture_chandra_reading`).
+
+Every box on these records is the repository's `bounds` `{x, y, w, h}` in sealed-page
+pixels: the feed's `box_px`, an act-region's `union_box_px`, and every box the
+accounting takes or reports. `common/page_accounting.py` reads corners from them
+internally and nowhere else.
 
 ### Records, per page, in publication order
 
+Every sealed page's feed is built and published before any page is read, so a live
+pass counts exactly the pages it will send before its chair starts.
+
 `kind="page-feed"` (subject page_id, no attempt, outcome `read`): the
-`perlector-page-feed.v1` payload exactly as `page_feed.build_page_feed` returns it.
-Its inputs are every Testimonium, Surya record, the page render and the sealed page
-it names, each re-derived from the bytes on disk.
+`perlector-page-feed.v1` payload exactly as `page_feed.build_page_feed` returns it,
+with `witness_testimony` (`present` or `none`) and `prompt` null when the Perlector
+chair is absent or the feed shows nothing (`page_feed.shows_nothing`). Its inputs are
+every Testimonium of the sealed page-witness roster -- a witness the `witnesses`
+switch hides included, since the accounting measures it -- every Surya record, the
+page render and the sealed page it names, each re-derived from the bytes on disk.
 
 `kind="reader-sent"` (subject page_id, live only): the existing closed record with
 `act_key = "page-<ordinal>"`, `attempt_ordinal = 1`, `pass = "page-reading"`, and
@@ -1203,19 +1227,24 @@ it names, each re-derived from the bytes on disk.
 ```
 
 - `parse_state`: `parsed` (the grammar read; `answer` is the object as given),
-  `malformed` (`page_answer.parse_page_answer`'s problems), `cut-off` (engine
+  `malformed` (`common.page_answer.parse_page_answer`'s problems), `cut-off` (engine
   `length`; `answer` null, never parsed), `refused-capacity` (nothing sent),
   `call-failed` (a page-local engine or transport failure; `failure` is the act
   path's failure record and its retained response and call record are inputs),
-  `not-run` (the Exemplar refused the page, `page-not-sealed`, or the chair is
-  absent, `chair-absent`; `feed_ref` null when no feed could be built).
+  `not-run` (nothing asked; `problems` names every reason: `page-not-sealed` -- the
+  Exemplar refused the page, and `feed_ref` is null since there is no feed --
+  `chair-absent`, `no-witness-testimony`, `nothing-to-show`).
 - `disposition` is `read` only for `parsed` with no problem; outcome is `read` or
   `held` accordingly. A parsed answer is read by `common/page_accounting.py`'s
-  `validate_answer` against the feed's ids (checked by `feed_candidates`) placed by
-  `page_feed.placement_boxes`; any problem but `duplicate-region` holds it with its
+  `validate_answer` against `feed_candidates`, the feed's ids placed by
+  `placement_boxes` -- the one placement map, which the accounting measures against
+  too. The answer grammar is `common/page_answer.py`'s alone (one label rule: absent,
+  null, or non-blank text of at most 80 characters); the accounting calls it rather
+  than keeping its own. Any problem but `duplicate-region` holds the page with its
   answer and problems (`unknown-id`, `malformed-range`, `cited-and-set-aside`,
-  `set-aside-twice`, `set-aside-without-reason`, ...). Two entries sharing a union
-  box are published, both held.
+  `set-aside-twice`, `set-aside-without-reason`, ...). A parsed answer whose engine
+  gave no finish reason (`stop_reason` null) is kept and held with
+  `no-stop-reason`. Two entries sharing a union box are published, both held.
 - `request_digest` = digest of `{image_sha256s, text_sha256}` of what was (or, in
   fixture mode, would be) sent; null when nothing was.
 - `capacity`: live only, `common.request_capacity.page_request_capacity`'s
@@ -1228,7 +1257,42 @@ it names, each re-derived from the bytes on disk.
   unrecognized word is `call-failed` with code `ENGINE_FINISH_REASON_UNRECOGNIZED`.
 - `provenance` is `provenance_for`, attempted for a sent (or fixture-answered) page.
 
-Per entry `n` of a `read` page's answer, in answer order:
+`kind="page-accounting"` (subject page_id, no attempt), published for every page
+that has a feed, whatever its reading's disposition, after the reading and before any
+act record: `common.page_accounting.page_accounting`'s `page-accounting.v1` payload
+under the sealed `page-accounting` policy (read at stage open through
+`require_page_accounting_policy`). Outcome `held` when its `holds` is non-empty, else
+`read`. Its inputs are the feed, the page reading, every page witness's Testimonium
+(hidden ones included) and every sealed detection and ink-map record it measured.
+Each entry's truncation classification is computed before it, without publishing
+anything (`page_run.entry_plans`). It is given:
+
+- the feed as published (boxes `{x, y, w, h}`), whose `switches.witness_units` it
+  places entries by through the same `placement_boxes` the act-regions are cut from:
+  under `witness_units = "flat"` a witness's units place nothing in either;
+- every page witness: a shown one as its feed row, a hidden one read by
+  `page_feed.witness_reading` and lettered with the next letter the feed did not use,
+  in sorted `witness_label` order; `blank` is its content health's `blank` when it
+  read;
+- Surya's census (`null` when the run has none), with feed ids on what the feed
+  showed and its `layout_error` (a failed layout records `surya-blocks-not-measured`
+  under rule (d), not held); the record detector as `configured` when the sealed
+  `secondary_proposer` is a chair, its page's `detector-record` boxes -- a record whose
+  corners enclose no crop is given with no box, and rule (i) reports it
+  `detector-record-not-measured` (held) and counts them as `records_not_measured` --
+  and census `{detection_count, max_det, max_det_reached}` with `max_det` from the
+  detector's retained run facts, both `null` when the detector published no page
+  record or its run facts state no `max_det`;
+- the reading's `parse_state`, `finish_reason` and `answer`, and each placed entry's
+  truncation classification by `n`;
+- the Ink Map's retained runs and the coverage policy resolved for the page, or
+  `null` when the page's ink was not measurable.
+
+Per entry `n` of a `read` page's answer, in answer order, each naming the page's
+accounting (`page_accounting_ref`, also an input) and carrying its hold codes as
+`page_holds`; either record is held when `page_holds` or its own `holds` is
+non-empty, so every act on a held page -- by rule (e), rule (i) or any other -- is
+held:
 
 `kind="act-region"` (subject act_id, attempt `attempt_id(act_id, "reading-region", 1)`):
 
@@ -1236,75 +1300,71 @@ Per entry `n` of a `read` page's answer, in answer order:
 {schema: "perlector-act-region.v1", page_id, page_ordinal, reading_unit, n, kind,
  label, cites (as given), cited_ids (expanded, first-cited order), act_class,
  page_reading_attempt, union_box_px | null, region_id, image_path, image_sha256,
- transform, transform_digest, page_reading_ref, feed_ref, holds}
+ transform, transform_digest, page_reading_ref, page_accounting_ref, feed_ref, holds,
+ page_holds}
 ```
 
 - `act_id = act_id(page_id, act_class, {page_reading: <attempt>, n, union_box_px})`
   (`common/contracts/identities.py`, classes `reading` and `reading-unplaced`).
 - `union_box_px` is the union of the cited ids' sealed-page boxes as
-  `page_feed.placement_boxes` gives them (a witness shown `flat` places nothing),
-  unpadded. The
+  `placement_boxes` gives them (a witness shown `flat` places nothing), unpadded. The
   crop is cut from the sealed Exemplar by the Designator's own crop path
   (`common.exemplar_boundary.cut_exemplar_crop`): `transform` is the closed crop
   transform, `region_id = region_id(act_id, transform)`, and the crop blob is an
   input.
-- `holds`: `reading-unplaced` (no cited id has a box: no crop, every crop field
-  null, class `reading-unplaced`), `duplicate-region` (another entry has the same
-  union box; both held). Outcome `held` with any hold, else `read`.
+- `holds`: `reading-unplaced` (no cited id places: no crop, every crop field null,
+  class `reading-unplaced`), `duplicate-region` (another entry has the same union
+  box; both held), `no-autopsia` (no page image was shown).
 
 `kind="perlectio"` (subject act_id, attempt `perlector_attempt_id(act_id, "perlegere", 1)`):
 
 ```
 {schema: "perlectio.v2", page_id, page_ordinal, reading_unit, act_region_ref,
- page_reading_ref, feed_ref, n, kind, label, text, uncertain_spans, gaps,
- uncertainty_assessment, dissent, truncation | null, continues_from_previous_page,
- continues_to_next_page, holds, engine_call, provenance}
+ page_reading_ref, page_accounting_ref, feed_ref, n, kind, label, text,
+ uncertain_spans, gaps, uncertainty_assessment, dissent, truncation | null, autopsia,
+ continues_from_previous_page, continues_to_next_page, holds, page_holds, engine_call,
+ provenance}
 ```
 
 - `text` and the doubt layers come from `annotations.read_doubt_marks`; a mark that
   does not parse keeps the raw text and adds hold `doubt-marks-malformed`.
+- `autopsia`: whether the page image was shown. A reading made from the witnesses
+  alone (`page_image = "off"`) cannot be established from the ink, so every act of
+  such a run holds `no-autopsia`.
 - `dissent`: one row per shown witness, `{letter, witness_label, cited_units, ...}`
   with `dissent_against`'s fields against that witness's cited units joined by
-  newlines in its own order; a witness with no cited unit, or whose page outcome is
+  newlines in its own order -- with its own doubt markers removed
+  (`common.alignment.bracket_marker_view`) when its Testimonium's
+  `format_capabilities.can_express_uncertainty` is true, so a witness's own doubt is
+  never counted as departure; a witness with no cited unit, or whose page outcome is
   not `read`, is a row with `compared: false` and its reason.
 - `truncation` is `truncation.classify` over the union box's pixels against the page's;
   null for an unplaced entry. A `truncated` or `unknown` classification adds hold
   `reading-incomplete`.
-- Outcome: `truncated` for a truncated classification, `no-readable-text` for blank
-  text, `held` with any hold, else `read`. `holds` repeats the act-region's plus
-  these.
-
-`kind="page-accounting"` (subject page_id, no attempt), last for every page that has
-a feed, whatever its reading's disposition: `common.page_accounting.page_accounting`'s
-`page-accounting.v1` payload under the sealed `page-accounting` policy (read at stage
-open through `require_page_accounting_policy`). Outcome `held` when its `holds` is
-non-empty, else `read`. Its inputs are the feed, the page reading and every sealed
-detection and ink-map record it measured. It is given:
-
-- the feed with boxes as `[x0, y0, x1, y1]`;
-- every page witness: a shown one as its feed row, a hidden one read by
-  `page_feed.witness_reading` and lettered with the next letter the feed did not use,
-  in sorted `witness_label` order; `blank` is its content health's `blank` when it
-  read;
-- Surya's census (`null` when the run has none), with feed ids on what the feed
-  showed; the record detector as `configured` when the sealed `secondary_proposer`
-  is a chair, its page's `detector-record` boxes (a record with no crop has no box and
-  is not given) and census `{detection_count, max_det, max_det_reached}` with
-  `max_det` from the detector's retained run facts, both `null` when either is
-  missing;
-- the reading's `parse_state`, `finish_reason` and `answer`, and each placed entry's
-  truncation classification by `n`;
-- the Ink Map's retained runs and the coverage policy resolved for the page, or
-  `null` when the page's ink was not measurable.
+- An entry whose text is empty, or only `[[?]]` and whitespace, holds
+  `entry-no-readable-text`; the `no-readable-text` outcome is kept for the whole-act
+  contract exactly (an empty text and one whole-act gap, which a reader's own marks
+  never make).
+- Outcome: `held` with any hold in `holds` or `page_holds`; otherwise
+  `no-readable-text` under that exact contract, else `read`. `holds` repeats the
+  act-region's plus the reading's own.
 
 ### Resume
 
 A page with a `page-reading` is never asked again: it is read back, refused unless it
-was made under this run's configuration from this page's feed, and its act records
-are re-published (byte-identical). Before a live chair starts, a page with
-`reader-sent` records and no `page-reading` is sent again only when no retained reply
-could be its answer (`_unrecorded_replies`, `_answers_a_send`); otherwise the pass
-refuses by name. A fixture pass republishes identical bytes.
+was made under this run's configuration from this page's feed. Its `page-accounting`
+and each entry's `perlectio`, when already sealed, are adopted rather than measured
+again -- rule (e) and dissent are bounded by a clock, so a second measurement could
+differ -- and refused by name only when they name other inputs than the page has now
+(another feed, reading, region, accounting, policy, configuration or input set); a
+missing one is computed and published. Act-regions are deterministic and re-published
+byte-identical. Before a live chair starts, a page it will send with `reader-sent`
+records and no `page-reading` is sent again only when no retained reply could be its
+answer (`_unrecorded_replies`, `_answers_a_send`); otherwise the pass refuses by
+name. A fixture pass republishes identical bytes.
+
+`--act` is refused under `reading_unit = "page"`: the Perlector names its own acts,
+so there is no Designator act to read alone.
 
 ## Not built here
 
