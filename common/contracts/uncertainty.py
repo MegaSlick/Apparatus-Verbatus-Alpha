@@ -171,7 +171,9 @@ def _validate(layer: Any, text: Any, fields: frozenset[str]) -> dict[str, Any]:
                 f"gaps[{index}] is declared trailing but text follows it other than whitespace "
                 "or closing punctuation"
             )
-        if position == "internal" and not 0 < gap["start"] < len(text):
+        if position == "internal" and (
+            not 0 < gap["start"] < len(text) or is_trailing_offset(text, gap["start"])
+        ):
             raise SchemaRefusal(
                 f"gaps[{index}] is declared internal but is not strictly inside the text"
             )
