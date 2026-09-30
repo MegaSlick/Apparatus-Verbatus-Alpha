@@ -1,4 +1,8 @@
-"""The v3 Recensor receipt: a page-read run's units and configured witnesses, beside v2."""
+"""The v3 Recensor receipt: a page-read run's units and configured witnesses, beside v2.
+
+The Recensor writes v4 now (`common/test_recensor_receipt_v4.py`); a v3 receipt
+is still read, so each receipt here is a v4 one written back in v3's shape.
+"""
 
 from __future__ import annotations
 
@@ -73,13 +77,29 @@ def _link(left: int, outcome: str = "accepted") -> dict:
 
 
 def _receipt(items, links=()):
-    return build_recensor_reading_receipt(
+    receipt = build_recensor_reading_receipt(
         run_id="r",
         config_digest=DIGEST,
-        page_reading_refs=[_page(1), _page(2)],
+        pages=[
+            {
+                **_page(ordinal),
+                "reask_ref": None,
+                "accounting_ref": _ref(f"a{ordinal}"),
+                "reask": None,
+            }
+            for ordinal in (1, 2)
+        ],
         items=items,
         continuation_links=list(links),
     )
+    v3 = {name: value for name, value in receipt.items() if name not in ("pages", "self_hash")}
+    v3["schema"] = RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
+    v3["page_reading_refs"] = [
+        {"page_ordinal": page["page_ordinal"], "reading_ref": page["reading_ref"]}
+        for page in receipt["pages"]
+    ]
+    v3["self_hash"] = self_hash(v3)
+    return validate_recensor_partition_receipt(v3)
 
 
 TWO_READ = (("act_a", "p1:1"), ("act_b", "p2:1"))

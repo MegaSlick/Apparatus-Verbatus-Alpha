@@ -1389,7 +1389,7 @@ def test_a_third_page_reading_of_a_re_asked_page_is_refused(reask_tree, tmp_path
         (lambda p: p["reask"].update(budget=0), "records another re-ask"),
         (lambda p: p["reask"]["named"].pop(), "records another re-ask"),
         (lambda p: p["reask"]["prior_entries"][0].update(label="x"), "records another re-ask"),
-        (lambda p: p.update(attempt_ordinal=1), "not a page-path reading of this page"),
+        (lambda p: p.update(attempt_ordinal=1), "does not derive from"),
     ],
     ids=["budget", "named", "prior-entries", "ordinal"],
 )

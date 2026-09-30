@@ -299,8 +299,8 @@ def _validate_page_readings(record: dict[str, Any]) -> None:
             or row["page_ordinal"] < 1
         ):
             raise SchemaRefusal(
-                f"Recensor partition receipt page reading is not {sorted(fields)} with a "
-                "positive page ordinal"
+                f"Recensor partition receipt page reading is not {{{', '.join(sorted(fields))}}} "
+                "with a positive page ordinal"
             )
         _validate_reference(row["reading_ref"], "page-reading reference")
         if v4:

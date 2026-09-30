@@ -567,6 +567,8 @@ def _row(**overrides) -> dict[str, Any]:
         "hold_codes": [],
         "continues_from_previous_page": False,
         "continues_to_next_page": False,
+        "reading_attempt": 1,
+        "reading_n": 1,
     }
     row.update(overrides)
     return row
@@ -945,6 +947,21 @@ def _link_row(
         continues_from_previous_page=previous,
         continues_to_next_page=following,
     )
+
+
+def test_an_act_the_re_ask_recovered_moves_no_page_edge_and_is_no_side():
+    pages = {1: "pg_1", 2: "pg_2"}
+    recovered = {**_link_row(1, 2), "reading_attempt": 2}
+    rows = [_link_row(1, 1, following=True), recovered, _link_row(2, 1, previous=True)]
+    [(subject, link)] = page_review.page_breaks(pages, rows)
+    assert subject == "page-break:1:2"
+    assert (link["from_act_key"], link["to_act_key"], link["agreed"]) == ("p1:1", "p2:1", True)
+    assert page_review.continuation_off_edge(rows) == {}
+    # Recovered before a page's first reading, it moves the page's first edge no more.
+    rows = [_link_row(1, 1, following=True), {**_link_row(2, 1), "reading_attempt": 2}]
+    rows.append(_link_row(2, 2, previous=True))
+    [(_subject, link)] = page_review.page_breaks(pages, rows)
+    assert link["to_act_key"] == "p2:2" and page_review.continuation_off_edge(rows) == {}
 
 
 def test_continuation_links_record_each_flagged_break_agreed_or_one_sided():
