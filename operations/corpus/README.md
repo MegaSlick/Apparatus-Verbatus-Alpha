@@ -117,23 +117,33 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   two.
 - `exactly_once.py` — the proof metric of a run read by page (`reading_unit =
   "page"`). It reads the Perlector's `page-feed`, `page-reading`, `act-region`,
-  `perlectio` (`perlectio.v2`) and `page-accounting` records beside the admitted
-  records of an admission ledger and their `gold.jsonl` text, and gives each gold
-  record one outcome: **exactly once** (one `act` region holds at least half of it and
-  its text is read there), **lost** (no act region holds it, or its text is not in the
-  readings of those that do) or **duplicated** (two or more hold it and its text is
-  read). "Inside" and "text read" are `common/page_accounting.py`'s own rules under the
-  sealed policy the run's accountings name; an accounting sealed under another policy is
-  refused. Beside the outcomes: records split by merge case (a detector record or another
-  witness's boxed unit holding two gold records), how often rule (i) `merged-detection`
-  fired on act regions that truly hold two gold records and on those that hold one,
-  which rules held the pages where records were lost, hold codes, admitted prompt tokens
-  against the engine's `usage.prompt_tokens`, the `length` finish rate, the pages that
-  would fit a 65,536-token context, and seconds per page when `--seconds-per-page` names
-  a `{page_id: seconds}` file (the tree records no durations). The gate is at least 95%
-  of records exactly once and no record lost on a page nothing held; the exit status is 0
-  only when it passes. The JSON report and the printed summary carry counts and
-  identifiers, never text.
+  `perlectio` and `page-accounting` records beside the admitted records of an
+  admission ledger and their `gold.jsonl` text, and gives each gold record one
+  outcome: **exactly once** (one `act` region holds at least half of it, holds no
+  other gold record, and its text is read there), **merged** (a region holding it
+  holds half of another gold record too), **duplicated** (two or more hold it) or
+  **lost** (no act region holds it, or its text is not read in any that does).
+  "Inside" is `common/page_accounting.py`'s rule under the policy the run sealed;
+  a policy other than the sealed one, or an accounting sealed under another, is
+  refused (`policy-mismatch`), and a perlectio that is not `perlectio.v2` is
+  refused (`not-page-read`). "Text read" is this tool's own measure, stricter than
+  the accounting's rule (e): the gold text's character error rate against the best
+  holding act's reading, at most 20%. A lost or merged record is **caught** only
+  by a held finding that touches it (names a region or box overlapping it, or a
+  unit such a region cites) or holds the whole page; a hold elsewhere on the page
+  does not catch it. A page with no accounting is **unchecked**, a failure of its
+  own. Beside the outcomes: records split by merge case (a detector record or
+  another witness's boxed unit holding two gold records), how often rule (i)
+  `merged-detection` fired on regions that truly hold two gold records and on
+  those that hold one, which rules caught each failure, hold codes, admitted
+  prompt tokens against the engine's `usage.prompt_tokens`, the `length` finish
+  rate, the pages that would fit a 65,536-token context, and seconds per page when
+  `--seconds-per-page` names a `{page_id: seconds}` file (the tree records no
+  durations). Rule (i) cannot see a detector record that itself merged two
+  entries the reader read as one act; the merged outcome here measures it. The
+  gate is at least 95% of records exactly once, no failure uncaught and no page
+  unchecked; the exit status is 0 only when it passes. The JSON report and the
+  printed summary carry counts and identifiers, never text.
 
   ```sh
   .venv/bin/python -m operations.corpus.exactly_once --run-root runs --run-id <run> \

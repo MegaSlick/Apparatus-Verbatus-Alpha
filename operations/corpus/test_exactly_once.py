@@ -16,12 +16,15 @@ from common.page_accounting import (
     validate_answer,
 )
 from common.residual_ink import INK_RUNS_SCHEMA
+from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD
 
 from .exactly_once import (
+    MAX_GOLD_CER_BP,
     Refusal,
     exactly_once_report,
     gold_records,
     load_page_records,
+    sealed_policy_sha256,
     summary_lines,
 )
 
@@ -75,11 +78,17 @@ def ink(boxes: list[list[int]]) -> dict:
 INK = {"runs": ink([band(k) for k in range(3)]), "coverage_policy": COVERAGE_POLICY}
 
 
-def page(acts: list[dict], detector: list[list[int]] | None = None, **reading) -> dict:
+def page(
+    acts: list[dict],
+    detector: list[list[int]] | None = None,
+    truncation: dict[int, str] | None = None,
+    **reading,
+) -> dict:
     """Page records as the stage would publish them, accounted by the real rule set.
 
-    `acts` are answer entries without `n`; the feed has one detector unit per
-    box in `detector` (default: one per gold band) and one Surya block per band.
+    `acts` are answer entries without `n`; the feed has one DAI unit per box in
+    `detector` (default: one per gold band), each one of the detector's sealed
+    records, and one Surya block per band.
     """
     records = 3
     detector = detector if detector is not None else [band(k) for k in range(records)]
@@ -92,6 +101,7 @@ def page(acts: list[dict], detector: list[list[int]] | None = None, **reading) -
             {
                 "letter": "A",
                 "witness_label": "dai",
+                "outcome": "read",
                 "units": [
                     {
                         "id": f"A{i + 1}",
@@ -101,7 +111,6 @@ def page(acts: list[dict], detector: list[list[int]] | None = None, **reading) -
                             for k in range(records)
                             if box[1] <= band(k)[1] and band(k)[3] <= box[3]
                         ),
-                        "detector_record": True,
                     }
                     for i, box in enumerate(detector)
                 ],
@@ -110,6 +119,22 @@ def page(acts: list[dict], detector: list[list[int]] | None = None, **reading) -
         "surya": {
             "lines": [],
             "blocks": [{"id": f"S{k + 1}", "box_px": band(k)} for k in range(records)],
+        },
+    }
+    detections = {
+        "surya": {
+            "lines": [],
+            "blocks": [{**block, "ref": block["id"]} for block in feed["surya"]["blocks"]],
+        },
+        "records": [
+            {"id": f"A{i + 1}", "box_px": box, "ref": f"record-{i}"}
+            for i, box in enumerate(detector)
+        ],
+        "record_detector": "configured",
+        "record_census": {
+            "detection_count": len(detector),
+            "max_det": 300,
+            "max_det_reached": False,
         },
     }
     answer = {
@@ -135,8 +160,9 @@ def page(acts: list[dict], detector: list[list[int]] | None = None, **reading) -
     }
     accounting = page_accounting(
         feed=feed,
+        detections=detections,
         reading=reading,
-        entry_truncation={n: "complete" for n in range(1, len(acts) + 1)},
+        entry_truncation=truncation or {n: "complete" for n in range(1, len(acts) + 1)},
         ink=INK,
         policy=POLICY,
         feed_ref=None,
@@ -146,6 +172,7 @@ def page(acts: list[dict], detector: list[list[int]] | None = None, **reading) -
     return {
         "page_sha256": PAGE_SHA,
         "feed": feed,
+        "detections": detections,
         "reading": reading,
         "act_regions": [
             {"n": e["n"], "kind": e["kind"], "union_box_px": e["union_box_px"]} for e in entries
@@ -161,7 +188,12 @@ def one_act_each() -> list[dict]:
 
 
 def report(pages: list[dict], records: list[dict] | None = None) -> dict:
-    return exactly_once_report(pages, records or [gold(k) for k in range(3)], policy=POLICY)
+    return exactly_once_report(
+        pages,
+        records or [gold(k) for k in range(3)],
+        policy=POLICY,
+        sealed_policy_sha256=POLICY.sha256,
+    )
 
 
 def test_every_record_read_once_passes_the_gate():
@@ -170,7 +202,8 @@ def test_every_record_read_once_passes_the_gate():
     assert result["gate"] == {
         "exactly_once_bp": 10_000,
         "required_bp": 9_500,
-        "uncaught_losses": 0,
+        "uncaught_failures": 0,
+        "unchecked_pages": 0,
         "passed": True,
     }
     assert result["records"]["by_act_regions"] == {"1": 3}
@@ -187,7 +220,7 @@ def test_every_record_read_once_passes_the_gate():
     assert result["pages"]["finish_length_bp"] == 0
 
 
-def test_two_entries_read_as_one_act_are_caught_by_merged_detection():
+def test_two_entries_read_as_one_act_are_merged_and_caught_by_merged_detection():
     acts = one_act_each()
     merged = {
         "cites": acts[0]["cites"] + acts[1]["cites"],
@@ -196,19 +229,24 @@ def test_two_entries_read_as_one_act_are_caught_by_merged_detection():
     result = report([page([merged, acts[2]])])
 
     rows = {row["record_id"]: row for row in result["rows"]}
-    # Records 0 and 1 are each held by one act region: read once, but inside a merge.
     assert rows["rec-0"]["act_regions"] == "1"
+    assert rows["rec-0"]["text"] == "read"
+    assert result["records"]["by_outcome"] == {"exactly-once": 1, "merged": 2}
+    assert result["records"]["failures_caught_by_rule"] == {"i": 2}
     assert result["merged_detection"]["fired_on_true_merge"] == 1
     assert result["merged_detection"]["fired_on_single_record"] == 0
     assert result["pages"]["hold_codes"] == {"merged-detection": 1}
+    assert result["gate"]["uncaught_failures"] == 0
+    assert result["gate"]["passed"] is False
 
 
 def test_a_detector_record_merging_two_entries_is_a_merge_case():
     """Detector A1 spans records 0 and 1; citing it widens act 1's region over both.
 
-    Record 1 then lies in two act regions: duplicated, not lost. Rule (i) is
-    silent (A1 is less than half inside act 2); rule (e) holds the page, since
-    A1's text carries record 1 and act 1, the only act citing it, reads only record 0.
+    Act 1's region holds two gold records, so both are merged, whatever act 2
+    read. Rule (i) is silent (A1 is one record inside one region, the blind spot
+    this report measures); rule (e) holds the page, since A1's text carries
+    record 1 and act 1, the only act citing it, reads only record 0.
     """
     wide = [band(0)[0], band(0)[1], band(1)[2], band(1)[3]]
     acts = [
@@ -219,18 +257,19 @@ def test_a_detector_record_merging_two_entries_is_a_merge_case():
     result = report([page(acts, detector=[wide, band(2)])])
 
     assert result["records"]["by_merge_class"] == {
-        "detector-record": {"records": 2, "exactly_once": 1},
+        "dai": {"records": 2, "exactly_once": 0},
+        "detector-record": {"records": 2, "exactly_once": 0},
         "no-merge": {"records": 1, "exactly_once": 1},
     }
-    assert result["records"]["by_outcome"] == {"duplicated": 1, "exactly-once": 2}
-    assert result["records"]["duplicated_on_pages_not_held"] == 0
+    assert result["records"]["by_outcome"] == {"exactly-once": 1, "merged": 2}
     assert result["pages"]["hold_codes"] == {"witness-text-not-read": 1}
-    assert result["gate"]["uncaught_losses"] == 0
+    assert result["records"]["failures_caught_by_rule"] == {"e": 2}
+    assert result["gate"]["uncaught_failures"] == 0
     assert result["merged_detection"]["fired_on_true_merge"] == 0
     assert result["merged_detection"]["silent_on_true_merge"] == 1
 
 
-def test_a_record_read_in_no_act_is_lost_and_caught_by_the_holding_rules():
+def test_a_record_read_in_no_act_is_lost_and_caught_by_the_rule_that_touches_it():
     acts = one_act_each()
     acts[2]["text"] = "Le premier juin, rien."
     result = report([page(acts)])
@@ -239,13 +278,26 @@ def test_a_record_read_in_no_act_is_lost_and_caught_by_the_holding_rules():
     assert lost["outcome"] == "lost"
     assert lost["record_id"] == "rec-2"
     assert lost["text"] == "not-read"
-    assert lost["page_held"] is True
-    assert result["records"]["lost_caught_by_rule"] == {"e": 1}
-    assert result["gate"]["uncaught_losses"] == 0
+    assert lost["caught_by"] == ["e"]
+    assert result["records"]["failures_caught_by_rule"] == {"e": 1}
+    assert result["gate"]["uncaught_failures"] == 0
     assert result["gate"]["passed"] is False  # 2 of 3 is under 95%
 
 
-def test_a_loss_on_a_page_nothing_held_is_uncaught():
+def test_a_hold_elsewhere_on_the_page_does_not_catch_a_loss():
+    """Act 1 is truncated (rule g, on record 0's region); record 2's text is lost."""
+    acts = one_act_each()
+    acts[2]["text"] = "Le premier juin, rien."
+    held = page(acts, truncation={1: "truncated", 2: "complete", 3: "complete"})
+
+    result = report([held])
+
+    [lost] = [row for row in result["rows"] if row["outcome"] == "lost"]
+    assert lost["caught_by"] == ["e"]
+    assert result["records"]["failures_caught_by_rule"] == {"e": 1}
+
+
+def test_a_loss_only_an_unrelated_hold_reaches_is_uncaught():
     acts = one_act_each()
     records = [gold(k) for k in range(3)]
     # A gold record the page's own evidence never saw: no witness, no line, no block.
@@ -257,14 +309,72 @@ def test_a_loss_on_a_page_nothing_held_is_uncaught():
             "text": entry_text(9),
         }
     )
-    result = report([page(acts)], records)
+    held = page(acts, truncation={1: "truncated", 2: "complete", 3: "complete"})
+    assert held["accounting"]["holds"] == ["reading-incomplete"]
 
-    assert result["gate"]["uncaught_losses"] == 1
+    result = report([held], records)
+
+    assert result["gate"]["uncaught_failures"] == 1
     assert result["records"]["uncaught_record_ids"] == ["rec-x"]
     assert result["records"]["by_act_regions"] == {"0": 1, "1": 3}
 
 
-def test_a_held_reading_publishes_no_region_and_its_records_are_caught():
+def test_a_loss_on_a_page_nothing_held_is_uncaught():
+    acts = one_act_each()
+    records = [gold(k) for k in range(3)]
+    records.append(
+        {
+            "record_id": "rec-x",
+            "page_sha256": PAGE_SHA,
+            "box_px": [100, 1250, 900, 1390],
+            "text": entry_text(9),
+        }
+    )
+    result = report([page(acts)], records)
+
+    assert result["gate"]["uncaught_failures"] == 1
+    assert result["records"]["uncaught_record_ids"] == ["rec-x"]
+
+
+def test_a_page_read_without_an_accounting_is_unchecked_never_caught():
+    unchecked = page(one_act_each())
+    unchecked["accounting"] = None
+
+    result = report([unchecked])
+
+    assert result["gate"]["unchecked_pages"] == 1
+    assert result["gate"]["passed"] is False
+    assert result["pages"]["unchecked_page_ids"] == ["page-1"]
+    assert result["records"]["unchecked"] == 3
+    assert result["records"]["failures_caught_by_rule"] == {}
+
+
+def test_the_text_measure_is_stricter_than_the_accounting():
+    """A reading at 30% error passes rule (e) and still is not read for the proof."""
+    rng = random.Random(4)
+
+    def garble(text: str, rate: float) -> str:
+        return "".join(
+            rng.choice("abcdefgh") if rng.random() < rate and c.isalpha() else c for c in text
+        )
+
+    rough, fair = one_act_each(), one_act_each()
+    rough[1]["text"] = garble(rough[1]["text"], 0.3)
+    fair[1]["text"] = garble(fair[1]["text"], 0.08)
+    rough_page, fair_page = page(rough), page(fair)
+    assert rough_page["accounting"]["rules"]["e"]["status"] == "pass"
+
+    rough_rows = {row["record_id"]: row for row in report([rough_page])["rows"]}
+    fair_rows = {row["record_id"]: row for row in report([fair_page])["rows"]}
+
+    assert rough_rows["rec-1"]["text"] == "not-read"
+    assert rough_rows["rec-1"]["outcome"] == "lost"
+    assert rough_rows["rec-1"]["caught_by"] == []
+    assert fair_rows["rec-1"]["outcome"] == "exactly-once"
+    assert MAX_GOLD_CER_BP < 3_000
+
+
+def test_a_held_reading_publishes_no_region_and_its_records_are_caught_page_wide():
     unread = page(one_act_each())
     unread["reading"] = {
         **unread["reading"],
@@ -275,6 +385,7 @@ def test_a_held_reading_publishes_no_region_and_its_records_are_caught():
     }
     unread["accounting"] = page_accounting(
         feed=unread["feed"],
+        detections=unread["detections"],
         reading=unread["reading"],
         entry_truncation={},
         ink=None,
@@ -286,7 +397,8 @@ def test_a_held_reading_publishes_no_region_and_its_records_are_caught():
     result = report([unread])
 
     assert result["records"]["by_act_regions"] == {"0": 3}
-    assert result["gate"]["uncaught_losses"] == 0
+    assert result["records"]["failures_caught_page_wide_by_rule"] == {"a": 3, "g": 3}
+    assert result["gate"]["uncaught_failures"] == 0
     assert result["pages"]["finish_length_bp"] == 10_000
     assert result["pages"]["by_parse_state"] == {"malformed": 1}
 
@@ -295,7 +407,7 @@ def test_a_page_absent_from_the_run_loses_its_records():
     result = report([], [gold(0)])
 
     assert result["rows"][0]["text"] == "page-not-read"
-    assert result["gate"]["uncaught_losses"] == 1
+    assert result["gate"]["uncaught_failures"] == 1
 
 
 def test_the_report_and_summary_carry_no_text():
@@ -313,6 +425,14 @@ def test_an_accounting_under_another_policy_is_refused():
 
     with pytest.raises(Refusal, match="policy-mismatch"):
         report([other])
+
+
+def test_a_run_sealed_under_another_policy_is_refused_even_without_accountings():
+    unaccounted = page(one_act_each())
+    unaccounted["accounting"] = None
+
+    with pytest.raises(Refusal, match="policy-mismatch"):
+        exactly_once_report([unaccounted], [gold(0)], policy=POLICY, sealed_policy_sha256="b" * 64)
 
 
 def test_gold_records_join_the_ledger_box_and_the_gold_text():
@@ -337,8 +457,16 @@ def test_gold_records_join_the_ledger_box_and_the_gold_text():
 class _Tree:
     """The read surface `load_page_records` uses, over in-memory records."""
 
-    def __init__(self, records: dict[tuple[str, str, str], dict], blobs: dict[str, bytes]):
-        self.records, self.blobs = records, blobs
+    def __init__(
+        self,
+        records: dict[tuple[str, str, str], dict],
+        blobs: dict[str, bytes],
+        run: dict | None = None,
+    ):
+        self.records, self.blobs, self.run = records, blobs, run
+
+    def read_run(self):
+        return self.run
 
     def build_manifest(self, stage, *, verify_inputs=True):
         return {
@@ -392,6 +520,22 @@ def test_page_records_are_read_from_a_tree_and_grouped_by_page(monkeypatch):
     assert len(loaded["act_regions"]) == len(loaded["perlectios"]) == 3
     assert report([loaded])["gate"]["passed"]
 
+    records[(PERLECTOR, "perlectio", "act-2")]["payload"] = {
+        **records[(PERLECTOR, "perlectio", "act-2")]["payload"],
+        "schema": "perlectio.v1",
+    }
+    with pytest.raises(Refusal, match="not-page-read: perlectio 'act-2' is 'perlectio.v1'"):
+        load_page_records(_Tree(records, {"call.json": call}))
+
     records[(PERLECTOR, "page-feed", "f")]["payload"] = {**built["feed"], "reading_unit": "act"}
     with pytest.raises(Refusal, match="not-page-read"):
         load_page_records(_Tree(records, {"call.json": call}))
+
+
+def test_the_sealed_policy_is_read_from_the_run():
+    run = {SEAL_METHOD_FIELD: SEAL_METHOD, "sealed_config_digests": {"page-accounting": "c" * 64}}
+    assert sealed_policy_sha256(_Tree({}, {}, run)) == "c" * 64
+
+    run["sealed_config_digests"] = {"decoding": "c" * 64}
+    with pytest.raises(Refusal, match="policy-mismatch: the run sealed no page-accounting"):
+        sealed_policy_sha256(_Tree({}, {}, run))
