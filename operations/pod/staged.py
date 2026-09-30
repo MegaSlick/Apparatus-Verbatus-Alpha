@@ -1,6 +1,6 @@
 """Per-stage fake-provider lifecycles and the honest collection boot schedule.
 
-No launch or collection path calls this module yet; its tests are its only
+No launch or collection path calls this module; its tests are its only
 caller, and wiring it to a real provider is paid-infrastructure work.  It
 deliberately has no CLI and no provider factory.  A caller supplies
 the already-gated :class:`~operations.pod.launch.PodRuntime`; this layer adds
@@ -136,9 +136,9 @@ class ScheduledStage:
     chairs: tuple[ScheduledChair, ...] = ()
 
 
-# This is stage order, not a model preference.  The one model-order ruling is
-# represented only inside the Attestatores block: Chandra reaches its checkpoint
-# before Churro, then DAI.  No model is co-resident in that block.
+# This is stage order, not a model preference.  Inside the Attestatores stage
+# the witnesses are served one at a time on that stage's one pod -- Chandra to
+# its checkpoint, then Churro, then DAI -- so no two models hold the card at once.
 #
 # The chairs named per stage are the real roster's, not the fixture roster's:
 # the fixture roster resolves to local snapshots and boots nothing, so a

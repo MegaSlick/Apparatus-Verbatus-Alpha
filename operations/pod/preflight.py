@@ -120,8 +120,8 @@ class GpuProfile:
     real GPU was measured on the strength of a number somebody typed.
 
     It cannot be set without `provenance`, and `provenance` cannot be minted
-    outside this module, so this flag is now a statement about where the profile
-    came from rather than about what its constructor was told.
+    outside this module, so this flag states where the profile came from, not
+    what its constructor was told.
     """
     provenance: object | None = field(default=None, repr=False, compare=False)
     """The probe's own opaque token, or `None`.  Never serialised.

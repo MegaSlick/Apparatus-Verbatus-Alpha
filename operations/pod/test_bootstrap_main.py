@@ -2119,9 +2119,7 @@ def test_a_page_swap_after_the_last_smoke_leaves_the_digest_naming_the_smoked_by
 
 def test_a_mid_run_page_swap_is_refused_by_name_not_reported_green(tmp_path: Path) -> None:
     """A swap between two chairs' smokes means one preflight measured two
-
-    different pages -- a shape the old single ``golden_page_sha256`` field
-    could not even represent, let alone refuse.
+    different pages, and the preflight refuses it by name.
     """
 
     from .bootstrap import BootstrapStepFailure

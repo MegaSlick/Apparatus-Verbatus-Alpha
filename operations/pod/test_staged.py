@@ -960,9 +960,9 @@ def test_a_fresh_lifecycle_closes_a_pod_under_the_boot_it_is_handed(
     the grant in itself and checks only what ``close`` does with it.
     """
 
-    clock, provider, _, before_crash = lifecycle(tmp_path)
+    clock, provider, _, first = lifecycle(tmp_path)
     grant = StageAuthorization("parish-17", "attestatores", "grant-witnesses")
-    active = before_crash.boot(
+    active = first.boot(
         grant,
         request(clock, name="attestatores"),
         confirmation="separate confirmed stage grant",
@@ -975,15 +975,15 @@ def test_a_fresh_lifecycle_closes_a_pod_under_the_boot_it_is_handed(
     restarted = PerStagePodLifecycle(
         restarted_runtime, cost_store=StageCostStore(tmp_path / "volume")
     )
-    settled = restarted.close(ActiveStageBoot(grant, adopted), reason="recovered after crash")
+    settled = restarted.close(ActiveStageBoot(grant, adopted), reason="stage work finished")
 
     assert settled.pod_id == active.record.pod_id
     assert settled.close.verified
     closes = cost_records(tmp_path, "stage-pod-cost.v1")
     assert len(closes) == 1
-    # The record itself must settle against the ORIGINAL grant — a close that
-    # persisted a different authorisation reference, collection, or stage would
-    # have kept this test green while billing the wrong ledger line.
+    # The record settles against the grant it was handed: a close that
+    # persisted a different authorisation reference, collection, or stage
+    # would bill the wrong ledger line.
     assert closes[0]["collection_id"] == "parish-17"
     assert closes[0]["stage"] == "attestatores"
     assert closes[0]["authorization_ref"] == "grant-witnesses"

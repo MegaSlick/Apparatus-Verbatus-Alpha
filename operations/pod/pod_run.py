@@ -36,7 +36,7 @@ selected range ending before Armarium whose orchestrator completed and whose
 transcript and liveness records came home.  Whatever the outcome, the report at
 ``--report-path`` says the same thing durably, under the launch-bound name,
 before the exit code says it.  The exceptions: the dry run writes no report at
-all (see below); a credential-looking argv, a missing ``--`` and a refused
+all; a credential-looking argv, a missing ``--`` and a refused
 ``--report-path`` itself (missing, outside the volume, without the launch
 token, or colliding with bootstrap evidence) are refused on stderr only, so no other
 record is overwritten; and a refused bootstrap argv is recorded in the
@@ -48,8 +48,8 @@ bootstrap report, not the run report.
 timer report, so after a full ``complete`` or ``held`` run this process holds to the
 shared hard deadline exactly as ``bootstrap_main`` does, re-journaling a
 liveness line beside the run report.  That hold is paid idle time between a
-finished run and the deadline; closing early on a complete run would be a
-``pod_timer`` contract change and is not made here.
+finished run and the deadline, because ``pod_timer`` reads any earlier exit as
+``completed-early``.
 
 A selected range ending before Armarium records ``selection-complete`` when it
 completes, and returns at once when it holds. The pod timer closes the card;
@@ -489,8 +489,10 @@ def _require_selection_predecessor(plan: RunPlan) -> None:
 
     The orchestrator refuses the same thing when that stage opens; asking
     first keeps the refusal ahead of a paid bootstrap. Recovery has no stage
-    program of its own and reads the Recensor seal through Archetypus's
-    predecessor, as the orchestrator does.
+    program of its own, so it is checked as Archetypus, whose predecessor is
+    Recensor. The orchestrator checks that seal for recovery only once the run
+    has a ``run.json``; this check asks for it always, which refuses earlier,
+    never later.
     """
 
     first = plan.selected_stages()[0]
@@ -1173,7 +1175,16 @@ def _run(
                 "after the orchestrator exited: a descendant it left behind still holds its "
                 "output pipe, and the transcript was closed without that text"
             )
-        writer.close()
+        # A close that fails (a full volume at the fsync) is a transcript
+        # failure, not a start failure: the orchestrator has already run, and
+        # its exit code must still reach the report.
+        try:
+            writer.close()
+        except OSError as error:
+            failure.append(
+                f"the transcript close failed ({type(error).__name__}: {error}); its tail "
+                "may not have reached the volume"
+            )
     return RunnerResult(
         child.returncode,
         transcript_failure=failure[0] if failure else None,

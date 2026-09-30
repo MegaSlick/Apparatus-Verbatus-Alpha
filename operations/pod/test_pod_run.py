@@ -131,6 +131,7 @@ class RecordedRunner:
     journal_entries: int = 1
     transcript_failure: str | None = None
     dropped_bytes: int = 0
+    tick_liveness: bool = True
     calls: list[tuple[list[str], Path, dict[str, str]]] = field(default_factory=list)
     supervision: list[dict[str, object]] = field(default_factory=list)
 
@@ -164,9 +165,10 @@ class RecordedRunner:
                 ),
                 encoding="utf-8",
             )
-        for _ in range(self.ticks):
-            liveness(self.pid, True)
-        liveness(self.pid, False)
+        if self.tick_liveness:
+            for _ in range(self.ticks):
+                liveness(self.pid, True)
+            liveness(self.pid, False)
         return pod_run.RunnerResult(
             self.returncode,
             transcript_failure=self.transcript_failure,
@@ -482,14 +484,15 @@ def test_a_held_selection_closes_without_paid_idle_time(tmp_path: Path, monkeypa
 
 
 @pytest.mark.parametrize(
-    "runner",
+    ("runner", "missing"),
     [
-        RecordedRunner(write_transcript=False),
-        RecordedRunner(transcript_failure="the transcript write failed"),
+        (RecordedRunner(write_transcript=False), "transcript"),
+        (RecordedRunner(transcript_failure="the transcript write failed"), "transcript"),
+        (RecordedRunner(tick_liveness=False), "liveness"),
     ],
 )
-def test_a_selection_whose_transcript_did_not_come_home_is_held_not_complete(
-    tmp_path: Path, runner: RecordedRunner
+def test_a_selection_whose_records_did_not_come_home_is_held_not_complete(
+    tmp_path: Path, runner: RecordedRunner, missing: str
 ) -> None:
     """A selection is downgraded exactly as a full run is, and still returns at once."""
 
@@ -507,7 +510,7 @@ def test_a_selection_whose_transcript_did_not_come_home_is_held_not_complete(
     assert clock.seconds == 0
     report = _report(ws)
     assert report["state"] == "held"
-    assert report["records_missing"] == ["transcript"]
+    assert report["records_missing"] == [missing]
     assert report["detail"].startswith("the orchestrator completed, but")
     assert report["held_to_hard_deadline"] is False
     assert report["hold_detail"].startswith("the selection held")
@@ -1569,6 +1572,32 @@ def test_the_real_runner_tees_the_child_output_into_the_transcript(tmp_path: Pat
     # Whatever the scheduling, the last call says the child is gone.
     assert seen[-1][1] is False
     assert seen[-1][0] > 0
+
+
+def test_a_transcript_close_failure_keeps_the_orchestrator_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close that fails after the child ran is a transcript failure, not a failed start."""
+
+    real_close = pod_run.BoundedTranscript.close
+
+    def close_then_fail(self: pod_run.BoundedTranscript) -> None:
+        real_close(self)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(pod_run.BoundedTranscript, "close", close_then_fail)
+    completed = pod_run._run(
+        [sys.executable, "-c", "import sys; sys.exit(3)"],
+        cwd=tmp_path,
+        env={"PATH": os.environ.get("PATH", "")},
+        transcript=tmp_path / "report-transcript.log",
+        liveness=lambda pid, alive: None,
+        interval_seconds=0.01,
+    )
+
+    assert completed.returncode == 3
+    assert completed.transcript_failure is not None
+    assert "transcript close failed" in completed.transcript_failure
 
 
 def test_a_transcript_past_its_head_bound_keeps_the_tail_and_says_what_it_dropped(

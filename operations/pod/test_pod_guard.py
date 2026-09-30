@@ -161,7 +161,8 @@ def test_network_download_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     stop = threading.Event()
 
     def download():
-        received = 0
+        # Past 2^31, where an awk that clamps %d would read every sample alike.
+        received = 3_000_000_000
         while not stop.is_set():
             received += 5_000_000
             staged = tmp_path / "netdev.new"
@@ -262,7 +263,9 @@ def test_cgroup_v1_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     stop = threading.Event()
 
     def burn():
-        used_ns = 0
+        # 3e12 ns is 3e9 usec, past 2^31, where an awk that clamps %d would read
+        # every sample alike.
+        used_ns = 3_000_000_000_000
         while not stop.is_set():
             used_ns += 2_000_000_000
             staged = usage.with_name("cpuacct.usage.new")
