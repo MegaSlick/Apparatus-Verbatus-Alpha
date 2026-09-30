@@ -1016,7 +1016,7 @@ def publish_structure_status(
     does not mean an act was found. Record per-page thresholds so later replay
     cannot silently drift; pre-analysis holds carry null measurement fields.
     Live answers retain each page's answering session across resumes. Fallback
-    acts cite these references. Unused max_residual_components is omitted.
+    acts cite these references.
     """
     published: dict[int, dict[str, str]] = {}
     for ordinal in sorted(pages):
@@ -1058,13 +1058,7 @@ def publish_structure_status(
                 "page_width": analysis["width"] if analysis else None,
                 "page_height": analysis["height"] if analysis else None,
                 "resolved_thresholds": (
-                    {
-                        name: value
-                        for name, value in dataclasses.asdict(analysis["thresholds"]).items()
-                        if name != "max_residual_components"
-                    }
-                    if analysis
-                    else None
+                    dataclasses.asdict(analysis["thresholds"]) if analysis else None
                 ),
                 "provenance": (
                     provenance

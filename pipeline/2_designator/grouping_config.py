@@ -85,7 +85,6 @@ _FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
 # None of these is a page-dimension fraction. Residual presentation uses
 # the separate policy below.
 _GROUPING_COUNT_FIELDS: Final = (
-    "max_residual_components",
     "max_secondary_proposals",
     "fallback_bands",
 )
@@ -417,7 +416,6 @@ class GroupingThresholds:
     review_priority_min_dimension_px: int
     fallback_overlap_px: int
     gap_tolerance_px: int
-    max_residual_components: int
     max_secondary_proposals: int
     fallback_bands: int
     residual_aggregate_max_pixel_count: int
@@ -430,7 +428,7 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
 
     `margin_px` resolves against `width`; every other page_fraction_bp field
     (and continuation's) resolves against `height`. The ink map's
-    `gap_tolerance_px`, the three counts and `page_spanning_area_bp` pass
+    `gap_tolerance_px`, the counts and `page_spanning_area_bp` pass
     through unresolved: the
     counts aren't page-fraction quantities, and the area field's basis is both
     dimensions at once, so it stays in basis points at the one place it's
@@ -449,7 +447,6 @@ def resolve_thresholds(config: dict[str, Any], width: int, height: int) -> Group
         ),
         fallback_overlap_px=_pad_amount(height, bp["fallback_overlap_bp"]),
         gap_tolerance_px=config["connectivity"]["gap_tolerance_px"],
-        max_residual_components=config["max_residual_components"],
         max_secondary_proposals=config["max_secondary_proposals"],
         fallback_bands=config["fallback_bands"],
         residual_aggregate_max_pixel_count=config["residual_aggregate_max_pixel_count"],

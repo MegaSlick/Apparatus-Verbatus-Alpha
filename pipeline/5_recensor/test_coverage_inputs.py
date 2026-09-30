@@ -1485,11 +1485,8 @@ def test_geometry_coverage_accepts_a_matching_residual_partition(monkeypatch):
             "residual_component_count": 1,
             "residual_act_count": 1,
             # The same key set every other shape this function returns carries,
-            # so a consumer reads one schema and finds absence as a value. The
-            # bound was in force on this page and is named; nothing was withheld
-            # and there is nothing to say about it.
+            # so a consumer reads one schema and finds absence as a value.
             "residual_enumeration": RESIDUAL_ENUMERATION_COMPLETE,
-            "max_residual_components": None,
             "page_residual_act_count": 0,
             "reason": None,
         }

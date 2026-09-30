@@ -16,7 +16,7 @@ from test_page_residual_bound import (
     _base_run,
     _conservation_for,
     _designator_context,
-    _grouping_config_with_bound,
+    _grouping_config,
     _records,
     _substitute_page_pixels,
 )
@@ -69,7 +69,7 @@ def frame_only_pass(tmp_path_factory):
     """One full Designator pass where every found component is withheld."""
     with pytest.MonkeyPatch.context() as monkeypatch:
         root = tmp_path_factory.mktemp("frame-only") / "runs"
-        grouping_config = _grouping_config_with_bound(root.parent, 2000)
+        grouping_config = _grouping_config(root.parent)
         _base_run(root, grouping_config)
         designator = load_stage("2_designator")
         context = _designator_context(root, designator, grouping_config)
@@ -111,7 +111,7 @@ def framed_pass(tmp_path_factory):
     with pytest.MonkeyPatch.context() as monkeypatch:
         root = tmp_path_factory.mktemp("framed") / "runs"
         # The shipped residual-component bound (2000); page-spanning remains 5000.
-        grouping_config = _grouping_config_with_bound(root.parent, 2000)
+        grouping_config = _grouping_config(root.parent)
         _base_run(root, grouping_config)
         designator = load_stage("2_designator")
         context = _designator_context(root, designator, grouping_config)
@@ -203,7 +203,6 @@ def test_the_frames_pixels_are_still_counted_and_now_appear_as_residual(framed_p
     assert residual == 7_788
     assert claimed == total - 7_788
     assert payload["residual_component_count"] >= 1
-    assert "max_residual_components" not in payload
     assert held is True, "unclaimed ink withholds a complete exit"
 
 
