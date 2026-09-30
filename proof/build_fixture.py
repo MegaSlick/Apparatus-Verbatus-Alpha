@@ -437,10 +437,12 @@ STOP_REASONS = (
 )
 
 
-def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=False):
+def _page_entry(
+    n, act_key, cites, *, text=None, from_previous=False, to_next=False, kind="act"
+):
     return {
         "n": n,
-        "kind": "act",
+        "kind": kind,
         "label": f"synthetic act {act_key}",
         "cites": cites,
         "text": TESTIMONY[act_key]["attestator_1"] if text is None else text,
@@ -457,6 +459,8 @@ def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=Fa
 # Surya lines over a2's continuation. `page-review` reads page 1 the same way
 # but cites no boxed id on page 2, so that entry is unplaced and the page
 # accounting holds it (rules b, d, f and g), as `review` holds a2 in act mode.
+# `page-no-act` reads page 1 as `happy` and page 2's one entry, placed as in
+# `happy`, as `other`: a page the reading says holds no act.
 # Proves wiring only, never reading ink.
 _PAGE_ONE_ANSWER = {
     "acts": [
@@ -481,6 +485,17 @@ PAGE_ANSWERS = (
         "page_ordinal": 2,
         "answer": {
             "acts": [_page_entry(1, "a2", ["A1", "B1"], from_previous=True)],
+            "set_aside": [],
+        },
+    },
+    {"scenario": "page-no-act", "page_ordinal": 1, "answer": _PAGE_ONE_ANSWER},
+    {
+        "scenario": "page-no-act",
+        "page_ordinal": 2,
+        "answer": {
+            "acts": [
+                _page_entry(1, "a2", ["A1", "B1", "L1-L3"], from_previous=True, kind="other")
+            ],
             "set_aside": [],
         },
     },
@@ -515,9 +530,10 @@ def _churro_native_page_text(page_ordinal: int, chair: str) -> str:
 # Only attestator_3's boundary is churro.v1; declared-response validation refuses a
 # Churro response attributed to another chair.
 _CHURRO_PAGE_CHAIRS = ("attestator_3",)
-# `page-review` carries the same pages as `happy`, so a page-read run of it
-# shows Churro in its own units on every page, as `happy` does.
-_NATIVE_CHURRO_SCENARIOS = ("happy", "page-review")
+# `page-review` and `page-no-act` carry the same pages as `happy`, so a
+# page-read run of either shows Churro in its own units on every page, as
+# `happy` does.
+_NATIVE_CHURRO_SCENARIOS = ("happy", "page-review", "page-no-act")
 CHURRO_PAGE_RESPONSES = tuple(
     {
         "scenario": scenario,
@@ -995,6 +1011,13 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "# that entry. Read act by act it declares neither a recovery nor a hold.",
         "[[scenario]]",
         'name = "page-review"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "# page-no-act is a page-read run whose page 2 answer names one `other`",
+        "# entry and no act. Read act by act it declares neither a recovery nor a hold.",
+        "[[scenario]]",
+        'name = "page-no-act"',
         "recover_acts = []",
         "hold_acts = []",
         "",

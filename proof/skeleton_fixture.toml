@@ -648,6 +648,20 @@ raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
 transport_stop_reason = "eos"
 
 [[churro_page_response]]
+scenario = "page-no-act"
+page_ordinal = 1
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
+scenario = "page-no-act"
+page_ordinal = 2
+chair = "attestator_3"
+raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+transport_stop_reason = "eos"
+
+[[churro_page_response]]
 scenario = "churro-native"
 page_ordinal = 1
 chair = "attestator_3"
@@ -705,6 +719,13 @@ hold_acts = ["a2"]
 # that entry. Read act by act it declares neither a recovery nor a hold.
 [[scenario]]
 name = "page-review"
+recover_acts = []
+hold_acts = []
+
+# page-no-act is a page-read run whose page 2 answer names one `other`
+# entry and no act. Read act by act it declares neither a recovery nor a hold.
+[[scenario]]
+name = "page-no-act"
 recover_acts = []
 hold_acts = []
 
@@ -966,6 +987,16 @@ answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"
 scenario = "page-review"
 page_ordinal = 2
 answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "page-no-act"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "page-no-act"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"other\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
 
 # One declared provider RESPONSE per row: an empty body from that chair on
 # that act. The Attestatores derives `genuinely-empty` from the retained

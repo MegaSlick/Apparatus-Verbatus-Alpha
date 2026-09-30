@@ -436,6 +436,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "witness-capabilities",
         "review",
         "page-review",
+        "page-no-act",
         "continuation-recovery",
         "coverage-recovery",
         "churro-native",
