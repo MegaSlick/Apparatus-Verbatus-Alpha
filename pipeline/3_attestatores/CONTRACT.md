@@ -1433,15 +1433,19 @@ or, when the census counts records none of which enclosed a crop, a reason
 naming that count.
 
 **The page record.** One `page-testimonium` per page, in the closed page shape
-plus two fields. `presentations` lists every image the chair was shown, in
+plus three fields. `presentations` lists every image the chair was shown, in
 unit order, each an `adapter-crop` of the one sealed page, and `presented` is
 its first. `unit_captures` holds one retained model view per presentation
 (`null` for a unit that never reached the chair), each naming a response the
-record retains in `raw_response_refs`. `observed` has one `presented` box per
+record retains in `raw_response_refs`. `unit_call_refs` holds each unit's
+retained call record (`null` for a unit refused before it was sent), held to
+the chair's sealed sampling row and its receipt's seed when the record is
+written and again when a resumed pass reads it back. `observed` has one `presented` box per
 unit: DAI reports no geometry, so each box is exactly the detector crop that
 unit was shown, checked against that unit's own presentation, with a `span`
 into the page text when that unit delivered a reading. Every
-presented image and retained response is digest-bound in `inputs`. Both later
+presented image, retained response and unit call record is digest-bound in
+`inputs`. Both later
 readers take every presentation from `presentations`
 (`common/native_witness.py::record_presentations`).
 

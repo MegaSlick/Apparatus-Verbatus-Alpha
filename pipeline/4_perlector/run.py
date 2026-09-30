@@ -765,6 +765,9 @@ def validate_page_testimonium_record(
         if native_inference is not None:
             for row in validate_chandra_trace(native_inference)["attempts"]:
                 retained.extend((row["intent_ref"], row["attempt_ref"]))
+        retained.extend(
+            reference for reference in payload.get("unit_call_refs", []) if reference is not None
+        )
         # De-duplicated as the producer does: one response can reach the same blob
         # through both `raw_response_refs` and `native_capture`, and
         # `validate_input_refs` refuses a repeated path, so a doubled expectation could

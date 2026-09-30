@@ -1261,6 +1261,7 @@ def page_testimonium_payload(
     native_inference: dict[str, Any] | None = None,
     presentations: list[dict[str, Any]] | None = None,
     unit_captures: list[dict[str, Any] | None] | None = None,
+    unit_call_refs: list[dict[str, str] | None] | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Page-scoped Testimonia admit only the producer's closed field set.
@@ -1310,6 +1311,7 @@ def page_testimonium_payload(
         native_inference=native_inference,
         presentations=presentations,
         unit_captures=unit_captures,
+        unit_call_refs=unit_call_refs,
     )
     validate_page_testimonium_payload(record, testimonium_id=testimonium_id)
     # The tally read-back excludes page Testimonia, so their health closes here.
@@ -4103,7 +4105,10 @@ def _prepared_detector_pages(
                 )
             record = sealed.get((page_ordinal, chair))
             if record is not None:
-                page_captures[(page_ordinal, chair)] = (_detector_page_attempt(record), None)
+                page_captures[(page_ordinal, chair)] = (
+                    _detector_page_attempt(context, record, chair),
+                    None,
+                )
             elif not units_by_page[page_ordinal]:
                 page_captures[(page_ordinal, chair)] = (
                     publish_detector_page_testimonium(
@@ -4750,6 +4755,7 @@ def publish_detector_page_testimonium(
         raw_refs = _named_once(
             [a.raw_response_ref for _r, _p, a in served if a.raw_response_ref is not None]
         )
+        unit_call_refs = [a.serving_call_ref for _r, _p, a in served]
         page_proposal_regions = sealed_page_proposal_regions(context, page_ordinal)
         disagreement = partition_disagreement(
             {
@@ -4767,6 +4773,7 @@ def publish_detector_page_testimonium(
             raw_response_refs=raw_refs,
             presentations=presentations,
             unit_captures=[a.native_capture for _r, _p, a in served],
+            unit_call_refs=unit_call_refs,
             chair=chair,
             act_key=f"page-{page_ordinal}",
             ordinal=ordinal,
@@ -4783,8 +4790,11 @@ def publish_detector_page_testimonium(
             reason=reason,
         )
         inputs = _named_once(
-            [context.input_ref(presented["image_path"]) for presented in presentations] + raw_refs
+            [context.input_ref(presented["image_path"]) for presented in presentations]
+            + raw_refs
+            + [reference for reference in unit_call_refs if reference is not None]
         )
+        verify_unit_call_sampling(context, payload, chair)
     validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
     context.publish(
         kind="page-testimonium",
@@ -4877,9 +4887,34 @@ def _serve_detector_page(
     )
 
 
-def _detector_page_attempt(record: dict[str, Any]) -> Attempt:
-    """The page attempt a sealed DAI page record states, for a resumed pass."""
+def verify_unit_call_sampling(context, payload: dict[str, Any], chair: str) -> None:
+    """Hold every unit call a DAI page record retains to its chair's sealed sampling row
+    and its receipt's seed, as an act reading's one call is held."""
+    for reference in payload.get("unit_call_refs", []):
+        if reference is None:
+            continue
+        validate_retained_response_blob(context.tree, reference, "unit_call_refs")
+        try:
+            call = json.loads(context.tree.read_bytes(reference["relative_path"]))
+        except (UnicodeDecodeError, ValueError, RecursionError) as error:
+            raise SchemaRefusal("a page Testimonium's unit call record is not JSON") from error
+        if not isinstance(call, dict):
+            raise SchemaRefusal("a page Testimonium's unit call record is not an object")
+        try:
+            verify_retained_call_sampling(context, call, chair)
+        except ContractError as error:
+            raise SchemaRefusal(
+                f"a page Testimonium's unit call record is not its sealed request: {error}"
+            ) from error
+
+
+def _detector_page_attempt(context, record: dict[str, Any], chair: str) -> Attempt:
+    """The page attempt a sealed DAI page record states, for a resumed pass.
+
+    Its unit calls are held to the sealed sampling again before anything reads it.
+    """
     payload = record["payload"]
+    verify_unit_call_sampling(context, payload, chair)
     provenance = payload.get("provenance")
     return Attempt(
         outcome=record["outcome"],

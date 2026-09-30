@@ -70,9 +70,11 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
         "native_inference",
         # A chair shown several images of one page (DAI, one per record its own
         # detector found): every image in order, `presented` being the first,
-        # and each unit's retained model view (null where no response arrived).
+        # each unit's retained model view (null where no response arrived), and
+        # each unit's retained call record (null where no request was sent).
         "presentations",
         "unit_captures",
+        "unit_call_refs",
     }
 )
 PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
@@ -742,6 +744,10 @@ def validate_page_testimonium_payload(
         _validate_unit_captures(payload)
     elif "presentations" in payload:
         raise SchemaRefusal("a page Testimonium shown several images names no unit captures")
+    if "unit_call_refs" in payload:
+        _validate_unit_call_refs(payload, read_bytes)
+    elif "presentations" in payload:
+        raise SchemaRefusal("a page Testimonium shown several images names no unit call records")
     validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated
 
@@ -765,6 +771,30 @@ def _validate_unit_captures(payload: dict[str, Any]) -> None:
             raise SchemaRefusal(
                 "a page Testimonium unit capture names a response the record does not retain"
             )
+
+
+def _validate_unit_call_refs(
+    payload: dict[str, Any], read_bytes: Callable[[str], bytes] | None
+) -> None:
+    """One retained call record per presentation, each a closed Attestatores blob."""
+    references = payload["unit_call_refs"]
+    presentations = payload.get("presentations")
+    if (
+        not isinstance(presentations, list)
+        or not isinstance(references, list)
+        or len(references) != len(presentations)
+    ):
+        raise SchemaRefusal("a page Testimonium names unit call records that are not one per image")
+    for reference in references:
+        if reference is None:
+            continue
+        digest_ref(reference, "a page Testimonium unit call record reference")
+        if reference["relative_path"] != _attestatores_blob_path(reference["sha256"]):
+            raise SchemaRefusal(
+                "a page Testimonium unit call record reference is not a closed blob reference"
+            )
+        if read_bytes is not None:
+            read_verified(read_bytes, reference, "page Testimonium unit call record")
 
 
 def _validate_churro_page_health(payload: dict[str, Any], capture: dict[str, Any]) -> None:

@@ -15,6 +15,7 @@ shown and each unit's capture; and each act's slice is the records it owns.
 
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import subprocess
@@ -48,6 +49,7 @@ from test_live_reading_seam_e2e import (  # noqa: E402
 )
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.errors import SchemaRefusal  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
@@ -352,3 +354,41 @@ def test_a_page_whose_records_enclose_no_crop_is_not_run_with_its_census_count(t
     assert page_two["payload"]["reason"] == attestatores.no_detector_unit_reason(1)
     assert "found 1 record(s)" in page_two["payload"]["reason"]
     assert attestatores.no_detector_unit_reason(0) == attestatores.NO_DETECTOR_RECORD_REASON
+
+
+def test_each_unit_call_is_bound_and_held_to_the_sealed_sampling_on_resume(tmp_path, monkeypatch):
+    """Every unit's call record is named on the page record and bound as an input, and
+    a resumed pass holds each to the sealed sampling row and seed before reading it."""
+    tree, world = _witness(tmp_path, DETECTIONS, [DAI_ACT_TWO, DAI_ACT_ONE, DAI_CONTINUATION])
+    pages = [
+        record
+        for record in _records(tree, ATTESTATORES, "page-testimonium")
+        if record["payload"]["chair"] == DAI
+    ]
+    for record in pages:
+        references = record["payload"]["unit_call_refs"]
+        assert len(references) == len(record["payload"]["presentations"])
+        assert None not in references
+        assert all(reference in record["inputs"] for reference in references)
+
+    checked = []
+    real = attestatores.verify_unit_call_sampling
+
+    def recording(context, payload, chair):
+        checked.append((context, payload["page_ordinal"]))
+        return real(context, payload, chair)
+
+    monkeypatch.setattr(attestatores, "verify_unit_call_sampling", recording)
+    resumed = WitnessWorld(world.catalogue, world.decoding_sha256, tmp_path / "resume", {})
+    argv = _argv(tmp_path / "runs", world.catalogue, tmp_path / "config" / "models.toml", TIER)
+    assert _run_main(attestatores, argv, serving_factory=resumed.factory) == EXIT_COMPLETE
+    assert sorted(ordinal for _context, ordinal in checked) == [1, 2]
+
+    context = checked[0][0]
+    payload = copy.deepcopy(pages[0]["payload"])
+    call = json.loads(tree.read_bytes(payload["unit_call_refs"][0]["relative_path"]))
+    call["generation_sent"]["seed"] += 1
+    digest, forged = tree.put_blob(ATTESTATORES, json.dumps(call).encode("utf-8"))
+    payload["unit_call_refs"][0] = {"relative_path": forged.relative_path, "sha256": digest}
+    with pytest.raises(SchemaRefusal, match="unit call record is not its sealed request"):
+        real(context, payload, DAI)
