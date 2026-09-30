@@ -166,7 +166,7 @@ REAL_SCENARIO: Final = "real-submission"
 # Bump whenever the real Door's output can change, so a real run cannot resume
 # under pixels from another Door.  Lives here because `common/` rechecks it and
 # may not import a stage.
-REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v5"
+REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v6"
 
 
 def load_triage_modes(path: str | Path) -> str:

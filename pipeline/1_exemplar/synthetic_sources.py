@@ -235,7 +235,7 @@ def tiff_next_ifd_offset(data: bytes, *, little_endian: bool = True) -> int:
 
 
 def gif() -> bytes:
-    """Enough GIF bytes to exercise a named decoder-gap route in a test."""
+    """GIF signature bytes for sniffing tests; not a decodable image."""
     return b"GIF89a" + b"\x00" * 12
 
 
@@ -415,19 +415,11 @@ def page_tree_bomb_pdf(levels: int, *, fanout: int = 2) -> tuple[bytes, int]:
     return builder.build(catalog), count
 
 
-def image_page_pdf(
-    images: list[dict],
-    *,
-    rotate: int | None = None,
-    extra_page: str = "",
-    xobject_count: int = 1,
-) -> bytes:
-    """One PDF with one page per entry in `images`, each carrying one image XObject.
+def image_page_pdf(images: list[dict]) -> bytes:
+    """One PDF with one page per entry in `images`, each drawing one image XObject.
 
     Each entry names `width`, `height`, `dictionary` (the XObject dictionary text
-    before `/Length`) and `raw` (the stream bytes). `xobject_count` above one
-    repeats the same reference under extra names, which builds a page carrying
-    several XObject names so the whole-page render can be proved against it.
+    before `/Length`) and `raw` (the stream bytes).
     """
     builder = PdfBuilder()
     image_numbers = [
@@ -436,22 +428,16 @@ def image_page_pdf(
     catalog = builder.add()
     pages = builder.add()
     page_numbers = []
-    rotate_clause = f" /Rotate {rotate}" if rotate is not None else ""
     for entry, image_number in zip(images, image_numbers, strict=True):
-        names = " ".join(f"/Im{index} {image_number} 0 R" for index in range(xobject_count))
-        commands = (
-            f"q {entry['width']} 0 0 {entry['height']} 0 0 cm /Im0 Do Q".encode()
-            if xobject_count
-            else b""
-        )
+        commands = f"q {entry['width']} 0 0 {entry['height']} 0 0 cm /Im0 Do Q".encode()
         contents = builder.add(stream_object("<<", commands))
         page_numbers.append(
             builder.add(
                 (
                     f"<< /Type /Page /Parent {pages} 0 R /Resources "
-                    f"<< /XObject << {names} >> >> "
+                    f"<< /XObject << /Im0 {image_number} 0 R >> >> "
                     f"/MediaBox [0 0 {entry['width']} {entry['height']}]"
-                    f" /Contents {contents} 0 R{rotate_clause}{extra_page} >>"
+                    f" /Contents {contents} 0 R >>"
                 ).encode()
             )
         )
@@ -476,35 +462,8 @@ def gray_image(width: int, height: int, value: int) -> dict:
     }
 
 
-def custom_image(
-    width: int,
-    height: int,
-    *,
-    bits: int = 8,
-    colorspace: str | None = "DeviceGray",
-    filter_name: str | None = "FlateDecode",
-    raw: bytes = b"",
-    declared_width: int | None = None,
-    declared_height: int | None = None,
-) -> dict:
-    """An image XObject entry with every field the decoder inspects as a parameter."""
-    filter_clause = f" /Filter /{filter_name}" if filter_name else ""
-    colorspace_clause = f" /ColorSpace /{colorspace}" if colorspace else ""
-    return {
-        "width": width,
-        "height": height,
-        "dictionary": (
-            f"<< /Type /XObject /Subtype /Image "
-            f"/Width {declared_width if declared_width is not None else width} "
-            f"/Height {declared_height if declared_height is not None else height} "
-            f"/BitsPerComponent {bits}{colorspace_clause}{filter_clause}"
-        ),
-        "raw": raw,
-    }
-
-
-def single_gray_page_pdf(width: int = 4, height: int = 3, value: int = 7, **kwargs) -> bytes:
-    return image_page_pdf([gray_image(width, height, value)], **kwargs)
+def single_gray_page_pdf(width: int = 4, height: int = 3, value: int = 7) -> bytes:
+    return image_page_pdf([gray_image(width, height, value)])
 
 
 def two_page_pdf(width: int = 4, height: int = 3) -> bytes:

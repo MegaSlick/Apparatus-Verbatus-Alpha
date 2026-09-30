@@ -1,29 +1,19 @@
 """The door-private modules: nothing outside this stage may import them.
 
-Spec 03, test 4: "re-render attempts by any later stage have no API to call (the
-render module is door-private)." Every docstring in this tree that makes that claim
-says so in prose; this is what makes it executable rather than merely asserted — the
-same shape `common/chairs/test_chairs_import_boundary.py` uses for its own boundary,
-adapted for a non-package directory where every import of a sibling module is a bare
-name (`import pdf_render`) rather than a dotted path, since `1_exemplar` cannot
-itself be a Python package name.
+No later stage has an API to re-render a page, because the render module is
+door-private; this test makes that claim executable. It follows the shape of
+`common/chairs/test_chairs_import_boundary.py`, adapted for a non-package directory
+where every import of a sibling module is a bare name (`import pdf_render`) rather
+than a dotted path, since `1_exemplar` cannot itself be a Python package name.
 
-**The population is `git ls-files`, not a filesystem walk, and that is the whole
-repair.** An earlier version of this test walked `ROOT.rglob("*.py")` with a
-hand-maintained exclusion list. It named `cleanroom/` and not `workbench/` — and
-`workbench/` is gitignored, so it is *absent* inside a container and *present and
-full of unparseable drafts* on the machine this project actually runs on. The test
-passed in the chamber and died on the host, over a file that has nothing to do with
-this boundary. Git's own idea of what belongs to this repository is the only
-population that means the same thing in both places.
+The population is `git ls-files --cached --others --exclude-standard`: everything
+git tracks, plus everything untracked that is not gitignored. That is the same set
+on every checkout, where a filesystem walk would also parse gitignored scratch that
+exists on one machine and not another, and it still catches a violation written a
+minute ago and not yet staged.
 
-Specifically `--cached --others --exclude-standard`: everything git tracks, plus
-everything untracked that is *not* gitignored. Tracked alone would miss a violation
-written a minute ago and not yet staged, which is exactly when someone would want to
-hear about it; adding gitignored scratch back would reintroduce the defect above.
-
-Meta-invariant #88: no loop here reports success over an empty population, and a
-`git ls-files` that cannot run is a failed check rather than an empty one.
+An empty population fails the check rather than passing it, and a `git ls-files`
+that cannot run is a failed check rather than an empty one.
 """
 
 import ast
@@ -36,14 +26,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # The only files permitted to import each door-private module at all: the door and
 # the admission module themselves, plus the direct test suites that exercise them by
-# design. Everything else in the repository is "later" or "elsewhere".
-#
-# **`image_formats` is here because its docstring made the same claim and nothing
-# checked it.** An asserted invariant sitting beside an executable one is the shape
-# CLAUDE.md's "a summary is never verification" is about: the claim happened to be
-# true, and nothing would have failed if a later stage had imported it tomorrow. The
-# two allow-lists are genuinely different — `admission.py` imports the validators and
-# must never import the renderer — so this is a table, not a copied test.
+# design. Everything else in the repository is "later" or "elsewhere". The two
+# allow-lists differ — `admission.py` imports the validators and must never import
+# the renderer — so this is a table, not a copied test.
 DOOR_PRIVATE_MODULES = {
     "pdf_render": frozenset(
         {
@@ -118,6 +103,29 @@ def imports_module(path: Path, module: str) -> bool:
     return False
 
 
+def importers_of(module: str, files: list[str], root: Path = ROOT) -> set[str]:
+    """Every file in `files` that imports `module`, except the module's own file.
+
+    Only the exact own path is left out: a file elsewhere whose name merely ends
+    in the module's name is an importer like any other.
+    """
+    own_file = f"pipeline/1_exemplar/{module}.py"
+    return {path for path in files if path != own_file and imports_module(root / path, module)}
+
+
+def test_a_file_named_like_a_door_private_module_is_still_an_importer(tmp_path):
+    lookalike = "pipeline/4_x/rerender_pdf_render.py"
+    (tmp_path / lookalike).parent.mkdir(parents=True)
+    (tmp_path / lookalike).write_text("import pdf_render\n", encoding="utf-8")
+    own = tmp_path / "pipeline/1_exemplar/pdf_render.py"
+    own.parent.mkdir(parents=True)
+    own.write_text("import pdf_render\n", encoding="utf-8")
+
+    found = importers_of("pdf_render", [lookalike, "pipeline/1_exemplar/pdf_render.py"], tmp_path)
+
+    assert found == {lookalike}
+
+
 def _literal_dynamic_import(node: ast.Call) -> str | None:
     """The literal module name for the two direct dynamic-import spellings."""
     if not node.args or not isinstance(node.args[0], ast.Constant):
@@ -151,14 +159,10 @@ def test_the_population_is_the_repositorys_own_python():
 @pytest.mark.parametrize("module", sorted(DOOR_PRIVATE_MODULES))
 def test_a_door_private_module_is_imported_only_by_the_door_and_its_own_tests(module):
     files = repository_python_files()
-    importers = {
-        path
-        for path in files
-        if not path.endswith(f"{module}.py") and imports_module(ROOT / path, module)
-    }
+    assert f"pipeline/1_exemplar/{module}.py" in files
+    importers = importers_of(module, files)
     assert importers, (
-        f"no file imports {module} at all — this test would pass vacuously over an "
-        "empty population, which is exactly the false green meta-invariant #88 refuses"
+        f"no file imports {module} at all — this test would pass vacuously over an empty population"
     )
     allowed = DOOR_PRIVATE_MODULES[module]
     violations = importers - allowed
