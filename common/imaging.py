@@ -1023,6 +1023,42 @@ def _to_display_mode(crop: Image.Image) -> Image.Image:
 ENCODER_LOSSLESS_MODES: Final = frozenset(_PNG_LAYOUT) | {"P"}
 
 
+# The Door's whole-page raster mode policy, shared by its renderer
+# (`pipeline/1_exemplar/image_formats.py`) and the Exemplar's render-contract
+# check, so the two cannot drift. PNG cannot hold I (signed 32-bit), F (float) or
+# big-endian 16-bit samples, so those keep their native samples in TIFF; Pillow
+# re-opens a little-endian 16-bit TIFF as "I;16".
+RASTER_TIFF_SAMPLE_MODES: Final = {"I": "I", "F": "F", "I;16B": "I;16B", "I;16L": "I;16"}
+RASTER_PNG_IDENTITY_MODES: Final = frozenset({"1", "L", "LA", "RGB", "RGBA", "I;16"})
+
+
+class RasterModeTransform(NamedTuple):
+    """How a whole raster page of one source mode is sealed."""
+
+    mode_transform: str
+    color_mode: str
+    codec: str
+
+
+def raster_mode_transform(source_mode: str, source_bands: list[str]) -> RasterModeTransform:
+    """The transform, sealed colour mode and codec for one source pixel mode.
+
+    Premultiplied alpha is its own case: Pillow spells that band in lower case and
+    converts `La` only to `LA` and `RGBa` only to `RGBA`, so a plain `"A"` band
+    check would ask for an RGB conversion Pillow refuses.
+    """
+    if source_mode in RASTER_TIFF_SAMPLE_MODES:
+        return RasterModeTransform(
+            "lossless-tiff-samples", RASTER_TIFF_SAMPLE_MODES[source_mode], "tiff"
+        )
+    if source_mode in RASTER_PNG_IDENTITY_MODES:
+        return RasterModeTransform("identity", source_mode, "png")
+    target = {"La": "LA", "RGBa": "RGBA"}.get(source_mode)
+    if target is None:
+        target = "RGBA" if any(band.upper() == "A" for band in source_bands) else "RGB"
+    return RasterModeTransform(f"convert-to-{target.lower()}", target, "png")
+
+
 def encode_image_deterministic(image: Image.Image) -> bytes:
     """Encode one rendered derivative with the project-owned PNG encoder.
 

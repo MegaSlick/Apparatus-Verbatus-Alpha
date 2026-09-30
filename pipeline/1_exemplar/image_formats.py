@@ -35,7 +35,11 @@ from common.image_sniff import (
     PNG_SIGNATURE,
     sniff,
 )
-from common.imaging import imaging_library_versions, render_triage_derivative
+from common.imaging import (
+    imaging_library_versions,
+    raster_mode_transform,
+    render_triage_derivative,
+)
 
 pillow_heif.register_heif_opener()
 
@@ -1232,18 +1236,6 @@ def raster_renderer_recipe() -> dict[str, Any]:
     }
 
 
-# Pillow's PNG encoder cannot represent I (unbounded signed) or F (float); the
-# 16-bit modes just exceed PNG's 8-bit RGB. TIFF holds all four without clipping.
-# Pillow normalises a little-endian 16-bit TIFF to "I;16" when re-opened.
-_HIGH_PRECISION_TIFF_MODES: Final = {
-    "I": "I",
-    "F": "F",
-    "I;16B": "I;16B",
-    "I;16L": "I;16",
-}
-_PNG_IDENTITY_MODES: Final = frozenset({"1", "L", "LA", "RGB", "RGBA", "I;16"})
-
-
 def render_raster_page(
     data: bytes, page_index: int, split_part: dict[str, Any] | None = None
 ) -> tuple[bytes, ImageGeometry, dict[str, Any]]:
@@ -1303,29 +1295,14 @@ def render_raster_page(
                     image.load()
                     source_mode = image.mode
                     source_bands = list(image.getbands())
-                    if source_mode in _HIGH_PRECISION_TIFF_MODES:
-                        rendered = image.copy()
-                        mode_transform = "lossless-tiff-samples"
-                        output_codec = "tiff"
-                    elif source_mode in _PNG_IDENTITY_MODES:
-                        rendered = image.copy()
-                        mode_transform = "identity"
-                        output_codec = "png"
-                    else:
-                        # Premultiplied alpha is its own case: Pillow spells that
-                        # band lowercase, so a plain "A" in source_bands check misses
-                        # it and asks for RGB, a conversion Pillow refuses outright.
-                        # "La" converts only to "LA" and "RGBa" only to "RGBA".
-                        premultiplied = {"La": "LA", "RGBa": "RGBA"}.get(source_mode)
-                        if premultiplied is not None:
-                            target_mode = premultiplied
-                        elif any(band.upper() == "A" for band in source_bands):
-                            target_mode = "RGBA"
-                        else:
-                            target_mode = "RGB"
-                        rendered = image.convert(target_mode)
-                        mode_transform = f"convert-to-{target_mode.lower()}"
-                        output_codec = "png"
+                    mode_transform, target_mode, output_codec = raster_mode_transform(
+                        source_mode, source_bands
+                    )
+                    rendered = (
+                        image.convert(target_mode)
+                        if mode_transform.startswith("convert-to-")
+                        else image.copy()
+                    )
                     output = BytesIO()
                     if output_codec == "tiff":
                         rendered.save(output, format="TIFF", compression="raw")

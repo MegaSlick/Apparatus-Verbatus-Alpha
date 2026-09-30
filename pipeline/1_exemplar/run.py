@@ -53,6 +53,7 @@ from common.exemplar_boundary import (  # noqa: E402
     is_triage_derivative_contract,
     verify_triage_derivative,
 )
+from common.imaging import raster_mode_transform  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -769,13 +770,6 @@ def _verify_render_contract(
         source_mode = contract["source_mode"]
         source_bands = contract["source_bands"]
         transform = contract["mode_transform"]
-        high_precision_tiff_modes = {
-            "I": "I",
-            "F": "F",
-            "I;16B": "I;16B",
-            "I;16L": "I;16",
-        }
-        preserved_png = {"1", "L", "LA", "RGB", "RGBA", "I;16"}
         if (
             not isinstance(source_mode, str)
             or not source_mode
@@ -784,31 +778,9 @@ def _verify_render_contract(
             or any(not isinstance(band, str) or not band for band in source_bands)
         ):
             raise ContractError("a raster page's render contract names no source pixel mode")
-        if source_mode in high_precision_tiff_modes:
-            expected_transform = "lossless-tiff-samples"
-            expected_mode = high_precision_tiff_modes[source_mode]
-            expected_codec = "tiff"
-        elif source_mode in preserved_png:
-            expected_transform = "identity"
-            expected_mode = source_mode
-            expected_codec = "png"
-        else:
-            # Premultiplied alpha is its own case, mirroring the renderer
-            # (`image_formats.py`): Pillow spells that band in lower case, so
-            # `"A" in source_bands` reads `La`/`RGBa` as carrying no alpha and
-            # expects an RGB conversion the renderer never performed (it
-            # converts `La` only to `LA` and `RGBa` only to `RGBA`), which
-            # would wrongly refuse a page this contract actually rendered
-            # correctly.
-            premultiplied = {"La": "LA", "RGBa": "RGBA"}.get(source_mode)
-            if premultiplied is not None:
-                expected_mode = premultiplied
-            elif any(band.upper() == "A" for band in source_bands):
-                expected_mode = "RGBA"
-            else:
-                expected_mode = "RGB"
-            expected_transform = f"convert-to-{expected_mode.lower()}"
-            expected_codec = "png"
+        expected_transform, expected_mode, expected_codec = raster_mode_transform(
+            source_mode, source_bands
+        )
         if (
             transform != expected_transform
             or output["codec"] != expected_codec
