@@ -1145,6 +1145,139 @@ and not for anything this stage did. The same driver in fixture mode reproduces
 the orchestrator's own tree byte for byte, `--placement-tier` supplied, which is
 the fixture-path claim `with_engine_call` and the mode selector rest on.
 
+## Page reading
+
+A run sealed with `reading_unit = "page"` in `config/perlector_protocol.toml` reads
+whole pages instead of Designator acts (`page_run.py`, called from `run.py`'s
+`_read_the_acts` before the act loop, which it replaces). Stages 2 and 3 run as
+usual; this stage reads every Exemplar page (`common.stage.exemplar_page_ids`),
+not only pages with a Designator act, once, and the Perlector establishes the acts
+on it. The Recensor refuses a tree sealed this way at open, by name ("page-read
+trees are not yet counted downstream").
+
+**Refused at stage open, by name:** a sealed `blind_read` other than `off`, and a
+non-zero `nuda_per_mille` or `perlector_instrument_per_mille`. **Recorded, not
+refused:** the sealed Pass-C audit policy. Pass C flags and re-proves acts read one
+at a time, so it does not run here; every `page-reading` carries
+`audit: {state: "not-run", round_cap, policy_sha256, reason}`, so an ordinary sealed
+run (committed `round_cap = 1`) can read pages.
+
+### Inputs
+
+- Each page's current `page-testimonium` per chair (`latest_per_chair`), every one
+  validated as the act path validates it (`validate_page_testimonium_record`, and the
+  native capture's blob and adapter). Every chair the sealed roster scopes `page`
+  must have one; a chair it does not scope `page` must not. Act-scoped witnesses
+  have no page Testimonium and are not shown.
+- Surya's detections from the Designator (`surya-page` census, `surya-line`,
+  `surya-block`), read in one place (`page_run.sealed_surya_census`). A run with no
+  `surya-page` record at all shows none and records it on the feed:
+  `surya: {census_ref: null, absent: "no Surya page census was sealed in this run",
+  lines: [], blocks: []}`. A run with censuses but none for a page refuses.
+- The page image at the sealed `[feed] page_image`: `legible` is
+  `dossier.build_page_render` at `[page_context] maximum_edge` (reason
+  `legible-ink`); `full` is the sealed page at its own size (reason `full-page`,
+  resampler `identity`); `off` is none.
+- On a synthetic run only, a Chandra page joined from the fixture's act placeholders
+  (no native capture) is read one unit per placeholder, box = its bbox widened to
+  whole pixels (`page_feed._fixture_chandra_units`).
+
+### Records, per page, in publication order
+
+`kind="page-feed"` (subject page_id, no attempt, outcome `read`): the
+`perlector-page-feed.v1` payload exactly as `page_feed.build_page_feed` returns it.
+Its inputs are every Testimonium, Surya record, the page render and the sealed page
+it names, each re-derived from the bytes on disk.
+
+`kind="reader-sent"` (subject page_id, live only): the existing closed record with
+`act_key = "page-<ordinal>"`, `attempt_ordinal = 1`, `pass = "page-reading"`, and
+`image_sha256s` the page render then the overlay, in the order sent.
+
+`kind="page-reading"` (subject page_id, attempt `attempt_id(page_id, "page-read", 1)`):
+
+```
+{schema: "perlector-page-reading.v1", page_id, page_ordinal, reading_unit: "page",
+ feed_ref, request_digest, engine_call | null, capacity | null, finish_reason,
+ stop_reason, parse_state, answer | null, problems: [{code, detail}], failure | null,
+ disposition: "read" | "held", audit, provenance}
+```
+
+- `parse_state`: `parsed` (the grammar read; `answer` is the object as given),
+  `malformed` (`page_answer.parse_page_answer`'s problems), `cut-off` (engine
+  `length`; `answer` null, never parsed), `refused-capacity` (nothing sent),
+  `call-failed` (a page-local engine or transport failure; `failure` is the act
+  path's failure record and its retained response and call record are inputs),
+  `not-run` (the Exemplar refused the page, `page-not-sealed`, or the chair is
+  absent, `chair-absent`; `feed_ref` null when no feed could be built).
+- `disposition` is `read` only for `parsed` with no problem; outcome is `read` or
+  `held` accordingly. A parsed answer that disagrees with its feed is held with its
+  answer and problems: `unknown-id`, `malformed-range`, `cited-and-set-aside`,
+  `set-aside-twice`, `set-aside-without-reason` (`page_run.validate_answer`).
+- `request_digest` = digest of `{image_sha256s, text_sha256}` of what was (or, in
+  fixture mode, would be) sent; null when nothing was.
+- `capacity`: live only, `common.request_capacity.page_request_capacity`'s
+  `{capacity, answer_reserve, max_tokens}`, checked against the sealed serving row
+  before the chair starts; on a refusal `{capacity: <record>, answer_reserve: null,
+  max_tokens: null}`. The request sends that `max_tokens` with
+  `chat_template_kwargs: {enable_thinking: false}`.
+- `finish_reason` is the engine's word (fixture: the declared `stop_reason`,
+  default `stop`); `stop_reason` its mapping (`stop`, `length`, null). An
+  unrecognized word is `call-failed` with code `ENGINE_FINISH_REASON_UNRECOGNIZED`.
+- `provenance` is `provenance_for`, attempted for a sent (or fixture-answered) page.
+
+Per entry `n` of a `read` page's answer, in answer order:
+
+`kind="act-region"` (subject act_id, attempt `attempt_id(act_id, "reading-region", 1)`):
+
+```
+{schema: "perlector-act-region.v1", page_id, page_ordinal, reading_unit, n, kind,
+ label, cites (as given), cited_ids (expanded, first-cited order), act_class,
+ page_reading_attempt, union_box_px | null, region_id, image_path, image_sha256,
+ transform, transform_digest, page_reading_ref, feed_ref, holds}
+```
+
+- `act_id = act_id(page_id, act_class, {page_reading: <attempt>, n, union_box_px})`
+  (`common/contracts/identities.py`, classes `reading` and `reading-unplaced`).
+- `union_box_px` is the union of the cited ids' sealed-page boxes, unpadded. The
+  crop is cut from the sealed Exemplar by the Designator's own crop path
+  (`common.exemplar_boundary.cut_exemplar_crop`): `transform` is the closed crop
+  transform, `region_id = region_id(act_id, transform)`, and the crop blob is an
+  input.
+- `holds`: `reading-unplaced` (no cited id has a box: no crop, every crop field
+  null, class `reading-unplaced`), `duplicate-region` (another entry has the same
+  union box; both held). Outcome `held` with any hold, else `read`.
+
+`kind="perlectio"` (subject act_id, attempt `perlector_attempt_id(act_id, "perlegere", 1)`):
+
+```
+{schema: "perlectio.v2", page_id, page_ordinal, reading_unit, act_region_ref,
+ page_reading_ref, feed_ref, n, kind, label, text, uncertain_spans, gaps,
+ uncertainty_assessment, dissent, truncation | null, continues_from_previous_page,
+ continues_to_next_page, holds, engine_call, provenance}
+```
+
+- `text` and the doubt layers come from `annotations.read_doubt_marks`; a mark that
+  does not parse keeps the raw text and adds hold `doubt-marks-malformed`.
+- `dissent`: one row per shown witness, `{letter, witness_label, cited_units, ...}`
+  with `dissent_against`'s fields against that witness's cited units joined by
+  newlines in its own order; a witness with no cited unit, or whose page outcome is
+  not `read`, is a row with `compared: false` and its reason.
+- `truncation` is `truncation.classify` over the union box's pixels against the page's;
+  null for an unplaced entry. A `truncated` or `unknown` classification adds hold
+  `reading-incomplete`.
+- Outcome: `truncated` for a truncated classification, `no-readable-text` for blank
+  text, `held` with any hold, else `read`. `holds` repeats the act-region's plus
+  these.
+
+### Resume
+
+A page with a `page-reading` is never asked again: it is read back, refused unless it
+was made under this run's configuration from this page's feed, and its act records
+are re-published (byte-identical). Before a live chair starts, a page with
+`reader-sent` records and no `page-reading` is sent again only when no retained reply
+could be its answer (`_unrecorded_replies`, `_answers_a_send`); otherwise the pass
+refuses by name. A fixture pass republishes identical bytes.
+
 ## Not built here
 
 - Real serving on real silicon. What is proven offline: reader selection by sealed row

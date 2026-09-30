@@ -131,6 +131,9 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
 LEGIBLE_INK: Final = "legible-ink"
 COVERED_BY_CROP: Final = "covered-by-crop"
 MULTI_PAGE_ACT: Final = "multi-page-act"
+# The whole sealed page at its own size, for a page reading sealed to show it
+# unscaled (`[feed] page_image = "full"`).
+FULL_PAGE: Final = "full-page"
 
 
 def union_area(rectangles: list[tuple[int, int, int, int]]) -> int:
@@ -158,6 +161,7 @@ def build_page_render(
     page_context: dict[str, int],
     crop_bounds: list[dict[str, int]],
     multi_page: bool = False,
+    full_page: bool = False,
 ) -> dict[str, Any]:
     """The page render for one act's page, with its transform and its reason
     recorded (ARCHITECTURE invariant 3: the exact image shown is reproducible
@@ -172,9 +176,20 @@ def build_page_render(
     page of an act spanning more than one page (`multi_page`) is rendered at
     `covered_page_edge` too: a legible render of each page would refuse acts
     over a page turn that the served row holds with layout renders.
+    `full_page` renders the sealed page at its own size, whatever the crops.
     """
     page, page_bytes = read_sealed_page(context.tree, source_page_id)
     width, height = dimensions(page_bytes)
+    if full_page:
+        return _published_render(
+            context,
+            page,
+            page_bytes,
+            source_page_id=source_page_id,
+            source_page_ordinal=source_page_ordinal,
+            edge=max(width, height),
+            reason=FULL_PAGE,
+        )
     covered = (
         union_area(
             [
@@ -191,6 +206,27 @@ def build_page_render(
     )
     reason = MULTI_PAGE_ACT if multi_page else COVERED_BY_CROP if covered else LEGIBLE_INK
     edge = page_context["maximum_edge" if reason == LEGIBLE_INK else "covered_page_edge"]
+    return _published_render(
+        context,
+        page,
+        page_bytes,
+        source_page_id=source_page_id,
+        source_page_ordinal=source_page_ordinal,
+        edge=edge,
+        reason=reason,
+    )
+
+
+def _published_render(
+    context,
+    page: dict[str, Any],
+    page_bytes: bytes,
+    *,
+    source_page_id: str,
+    source_page_ordinal: int,
+    edge: int,
+    reason: str,
+) -> dict[str, Any]:
     try:
         downscaled, transform = _downscale_page(page_bytes, maximum_edge=edge)
     except (OSError, ValueError, Image.DecompressionBombError) as error:

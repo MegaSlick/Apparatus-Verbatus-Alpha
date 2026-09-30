@@ -33,6 +33,9 @@ merely states:
 * Churro (`churro.v1`): the non-blank lines of its parsed document text in
   document order (`churro_document`), labelled with the `Header`/`Body`/`Footer`
   section they sit in, no box: Churro reports no coordinates.
+* The synthetic fixture's Chandra page, joined from its declared act
+  placeholders with no native capture: one unit per placeholder, read only
+  when the caller says the run is synthetic (`fixture_placeholders`).
 * DAI (`dai.v1`): one unit per record its own detector found
   (`unit_captures`), box = that record's bounds, text = DAI's response for it
   decoded exactly, and checked against the span the record states.
@@ -71,6 +74,8 @@ units}`) and no `read_bytes`; `build_page_feed` is `witness_units` then
 
 from __future__ import annotations
 
+import json
+import math
 import re
 import string
 from fractions import Fraction
@@ -116,6 +121,10 @@ _ASSEMBLED_WITNESS_FIELDS: Final = frozenset(
     {"chair", "witness_label", "adapter", "outcome", "testimonium_ref", "units"}
 )
 _SURYA_FIELDS: Final = frozenset({"census_ref", "lines", "blocks"})
+# Given as `surya` when the run holds no Surya census at all: the feed then
+# records Surya as absent and shows no line or block, whatever the switches say.
+SURYA_ABSENT: Final = "absent"
+SURYA_ABSENT_REASON: Final = "no Surya page census was sealed in this run"
 _SURYA_LINE_FIELDS: Final = frozenset({"box_px", "ref"})
 _SURYA_BLOCK_FIELDS: Final = frozenset({"box_px", "label", "position", "ref"})
 _BOX_FIELDS: Final = frozenset({"x", "y", "w", "h"})
@@ -222,6 +231,76 @@ def _chandra_units(
     ]
 
 
+FIXTURE_CHANDRA_SCHEMA: Final = "fixture-chandra-response.v1"
+
+
+def _fixture_chandra_units(
+    payload: dict[str, Any], page_size: tuple[int, int], read_bytes: Callable[[str], bytes]
+) -> list[dict[str, Any]]:
+    """A synthetic fixture's Chandra page, joined from its declared act responses.
+
+    The committed fixture declares Chandra as JSON placeholders, one per act,
+    each `{schema, markdown, blocks: [{bbox}]}` with the bbox in sealed-page
+    pixels; they are joined into a page Testimonium with no native capture.
+    Each placeholder is one unit, in the order the record names them: its box
+    is the union of its blocks, widened to whole pixels as Chandra's own
+    quantization widens them (floor the minimum, ceil the maximum), and its
+    text is its `markdown`. A page with no placeholder of its own is one unit
+    with no box carrying the record's joined page text. Only the fixture path
+    calls this (`build_page_feed(fixture_placeholders=True)`); a served chair is
+    never retained as a placeholder.
+    """
+    # Absent where the page carries no response of its own.
+    references = payload.get("raw_response_refs", [])
+    if not isinstance(references, list):
+        raise SchemaRefusal("a joined fixture Chandra page names no retained responses")
+    units = []
+    for reference in references:
+        raw = read_verified(read_bytes, reference, "a fixture Chandra response")
+        try:
+            declared = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise SchemaRefusal(f"a fixture Chandra response is not JSON: {error}") from error
+        if (
+            not isinstance(declared, dict)
+            or declared.get("schema") != FIXTURE_CHANDRA_SCHEMA
+            or not isinstance(declared.get("markdown"), str)
+            or not isinstance(declared.get("blocks"), list)
+        ):
+            raise SchemaRefusal(
+                "a Chandra page Testimonium with no native capture retains a response that is "
+                "not the fixture's own placeholder"
+            )
+        corners = []
+        for block in declared["blocks"]:
+            bbox = block.get("bbox") if isinstance(block, dict) else None
+            if (
+                not isinstance(bbox, list)
+                or len(bbox) != 4
+                or not all(isinstance(value, (int, float)) for value in bbox)
+            ):
+                raise SchemaRefusal("a fixture Chandra block has no four-number bbox")
+            corners.append(bbox)
+        box = None
+        if corners:
+            x0 = math.floor(min(corner[0] for corner in corners))
+            y0 = math.floor(min(corner[1] for corner in corners))
+            x1 = math.ceil(max(corner[2] for corner in corners))
+            y1 = math.ceil(max(corner[3] for corner in corners))
+            box = _checked_box(
+                {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
+                page_size,
+                "a fixture Chandra block box",
+            )
+        units.append(_unit(len(units), box, None, declared["markdown"]))
+    if not units:
+        text = payload.get("payload")
+        if not isinstance(text, str):
+            raise SchemaRefusal("a joined fixture Chandra page carries no page text")
+        units.append(_unit(0, None, None, text))
+    return units
+
+
 def _churro_units(
     payload: dict[str, Any], read_bytes: Callable[[str], bytes]
 ) -> list[dict[str, Any]]:
@@ -309,6 +388,7 @@ def witness_units(
     adapter: str,
     page_size: tuple[int, int],
     read_bytes: Callable[[str], bytes],
+    fixture_placeholders: bool = False,
 ) -> list[dict[str, Any]]:
     """One witness's page broken into its own units, or `[]` unless its outcome is `read`.
 
@@ -316,6 +396,8 @@ def witness_units(
     configured witness adapter, `page_size` the sealed page's `(width, height)`
     and `read_bytes` the run tree's reader. Each unit is `{ordinal, box_px,
     label, text}`, `box_px` being a sealed-page `{x, y, w, h}` or `None`.
+    `fixture_placeholders` lets a synthetic run's joined Chandra page be read
+    (`_fixture_chandra_units`); a real run leaves it off.
     """
     if testimonium.get("outcome") != READ_OUTCOME:
         return []
@@ -323,6 +405,8 @@ def witness_units(
     if not isinstance(payload, dict):
         raise SchemaRefusal("a page Testimonium has no payload to read units from")
     if adapter == CHANDRA:
+        if fixture_placeholders and payload.get("native_capture") is None:
+            return _fixture_chandra_units(payload, page_size, read_bytes)
         return _chandra_units(payload, page_size, read_bytes)
     if adapter == CHURRO:
         return _churro_units(payload, read_bytes)
@@ -448,6 +532,8 @@ def answer_measure(rows: list[tuple[str, list[dict[str, Any]]]]) -> dict[str, in
 def _surya(surya: Any, switches: dict[str, Any], page_size: tuple[int, int]) -> dict | None:
     if not switches["surya_lines"] and not switches["surya_blocks"]:
         return None
+    if surya == SURYA_ABSENT:
+        return {"census_ref": None, "absent": SURYA_ABSENT_REASON, "lines": [], "blocks": []}
     if not isinstance(surya, dict) or set(surya) != _SURYA_FIELDS:
         raise SchemaRefusal(
             "the sealed feed shows Surya's detections, but no Surya census of "
@@ -537,6 +623,7 @@ def build_page_feed(
     page_render: dict[str, Any] | None,
     serving_recipe: str,
     read_bytes: Callable[[str], bytes],
+    fixture_placeholders: bool = False,
 ) -> dict[str, Any]:
     """The `perlector-page-feed.v1` payload for one page, deterministic from sealed inputs.
 
@@ -573,6 +660,7 @@ def build_page_feed(
                     adapter=witness["adapter"],
                     page_size=page_size,
                     read_bytes=read_bytes,
+                    fixture_placeholders=fixture_placeholders,
                 )
                 if witness["chair"] in shown
                 else None,
@@ -608,7 +696,9 @@ def assemble_page_feed(
     letters in sorted `witness_label` order. `surya` is the page's Surya census
     as `{census_ref, lines: [{box_px, ref}] in Surya's order, blocks: [{box_px,
     label, position, ref}]}`, `position` being Surya's reading order; it may be
-    `None` only when both Surya switches are off. `page_render` is what
+    `None` only when both Surya switches are off, or `SURYA_ABSENT` when the
+    run holds no Surya census at all, which the feed records as
+    `{census_ref: None, absent: <reason>, lines: [], blocks: []}`. `page_render` is what
     `dossier.build_page_render` returned for the `page_image` switch, or `None`
     when it is off. `page_render_bytes` are the render's bytes, needed only
     when `page_overlay` is on, to draw the overlay and seal its digest.

@@ -68,6 +68,7 @@ import prompts
 from reader import PASS_KINDS, DeliveredPixels, LectioResult, validate_audit_delivery
 
 from common.chairs.models import ChairIdentity
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.serving import ENGINE_STOP_COMPLETE, ENGINE_STOP_CUT_OFF
 from common.cross_capture_autopsia import presented_image_sha256s
@@ -461,3 +462,67 @@ class VLLMReader:
             result["rendered_prompt"] = text
             result["request_sha256"] = response.request_sha256
         return result
+
+
+def send_page_request(
+    client: ChairClient,
+    *,
+    images: list[bytes],
+    text: str,
+    capacity: Mapping[str, Any],
+    max_tokens: int,
+    what: str,
+) -> dict[str, Any]:
+    """Send one whole-page reading request and return what the engine answered.
+
+    `images` are the page render and then, when drawn, its overlay, in that
+    order; `text` is `page_prompt.build_page_prompt`'s rendered text, sent after
+    them; `capacity` is the request-capacity record the request was admitted on
+    (`common.request_capacity.page_request_capacity`), copied onto the retained
+    call record; `max_tokens` is the admitted output cap. The generation is the
+    one a reading sends: thinking off and the cap, nothing else.
+
+    Returns `{content, stop_reason, finish_reason, request_sha256, engine_call}`:
+    `stop_reason` is the engine's word mapped as a reading's (`"stop"`,
+    `"length"` or `None`), and an unrecognized word or an unparsed body is
+    refused as `EngineSignalRefusal` with the retained bytes named, as a
+    reading's is.
+    """
+    content: list[dict[str, Any]] = _image_content_blocks(images)
+    content.append({"type": "text", "text": text})
+    request = ChairRequest(
+        kind="chat-completions",
+        messages=({"role": "user", "content": content},),
+        image_sha256s=tuple(digest_bytes(image) for image in images),
+        generation_declared={},
+        generation_sent={
+            "chat_template_kwargs": {"enable_thinking": False},
+            "max_tokens": max_tokens,
+        },
+        capacity=capacity,
+    )
+    response = client.read(request)
+    if response.parse_problem is not None:
+        raise EngineSignalRefusal(
+            response.parse_problem,
+            f"the response to {what} is not a reading ({response.parse_problem}); the raw "
+            f"response bytes are retained at {dict(response.raw_response_ref)!r}",
+            raw_response_ref=response.raw_response_ref,
+            call_record_ref=response.call_record_ref,
+            request_sha256=response.request_sha256,
+            receipt_ref=response.receipt_ref,
+            served_model_id=response.served_model_id,
+        )
+    return {
+        "content": response.content,
+        "stop_reason": _mapped_stop_reason(response.finish_reason, act_key=what, response=response),
+        "finish_reason": response.finish_reason,
+        "request_sha256": response.request_sha256,
+        "engine_call": {
+            "call_record_ref": dict(response.call_record_ref),
+            "raw_response_ref": dict(response.raw_response_ref),
+            "response_sha256": response.response_sha256,
+            "finish_reason": response.finish_reason,
+            "served_model_id": response.served_model_id,
+        },
+    }

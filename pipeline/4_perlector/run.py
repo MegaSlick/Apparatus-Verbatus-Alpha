@@ -40,6 +40,7 @@ import combined  # noqa: E402
 import dossier as dossier_module  # noqa: E402
 import logical_reading  # noqa: E402
 import nuda  # noqa: E402
+import page_run  # noqa: E402
 import prompts  # noqa: E402
 import protocol  # noqa: E402
 import regime  # noqa: E402
@@ -102,7 +103,11 @@ from common.cross_capture_autopsia import (  # noqa: E402
     presented_image_sha256s,
     validate_autopsia,
 )
-from common.decoding import load_decoding_policy, perlector_max_tokens  # noqa: E402
+from common.decoding import (  # noqa: E402
+    load_decoding_policy,
+    perlector_max_tokens,
+    perlector_page_max_tokens,
+)
 from common.exemplar_boundary import read_sealed_page, verify_exemplar_crop_lineage  # noqa: E402
 from common.image_sniff import PNG_SIGNATURE  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
@@ -1716,8 +1721,8 @@ def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict
     return references
 
 
-def _start_live_reader(run: "_Pass") -> None:
-    """Start this run's one chair and keep its reader and receipt reference on the pass.
+def _start_chair(run: "_Pass") -> None:
+    """Start this run's one chair and keep its receipt reference on the pass.
 
     Every record the pass publishes names the receipt of the service that answered,
     which `ChairClient.__enter__` has checked names this chair and revision.
@@ -1726,14 +1731,19 @@ def _start_live_reader(run: "_Pass") -> None:
     # unstarted client is a no-op.
     run.service.client = run.client_factory(run.context, run.chair, run.args.placement_tier)
     run.service.client.__enter__()
-    reader = VLLMReader(
+    run.receipt_ref = dict(run.service.client.handle.receipt_reference)
+
+
+def _start_live_reader(run: "_Pass") -> None:
+    """Start the chair and keep the act reader that reads through it on the pass."""
+    _start_chair(run)
+    run.reader = VLLMReader(
         client=run.service.client,
         chair=run.chair,
         protocol_config=run.protocol_config,
         max_tokens=run.reading_max_tokens,
         reproof_max_tokens=run.reproof_max_tokens,
     )
-    run.reader, run.receipt_ref = reader, dict(run.service.client.handle.receipt_reference)
 
 
 def _distinct_inputs(references: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -1895,13 +1905,20 @@ def _sent_refs(context, act_id: str, act_key: str, ordinal: int, pass_name: str)
 
 
 def _publish_sent(
-    run: "_Pass", act_id: str, act_key: str, ordinal: int, pass_name: str, autopsia: dict
+    run: "_Pass",
+    act_id: str,
+    act_key: str,
+    ordinal: int,
+    pass_name: str,
+    image_sha256s: list[str],
 ) -> None:
     """Record, before it leaves, that this pass of the act is being sent, and under what.
 
     A second send names the first, so a call re-sent after an interruption is visible.
     `concurrency` is the width of the window the call was sent in: how many reader calls
     this pass kept in flight at most, which bounds the batch the engine decoded it in.
+    `image_sha256s` are the images the call carries, in the order it sends them. The
+    page path records a page's send the same way, the page id standing for the act.
     """
     earlier = _sent_refs(run.context, act_id, act_key, ordinal, pass_name)
     send = len(earlier) + 1
@@ -1919,7 +1936,7 @@ def _publish_sent(
             "send": send,
             "receipt_ref": dict(run.receipt_ref),
             "concurrency": run.concurrency,
-            "image_sha256s": presented_image_sha256s(autopsia),
+            "image_sha256s": list(image_sha256s),
         },
     )
 
@@ -3932,6 +3949,8 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
 def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) -> int:
     """One Perlector pass: every requested act read once and published once."""
     run = _open_pass(registry_factory, serving_factory, service)
+    if run.protocol_config[protocol.READING_UNIT_FIELD] == page_run.READING_UNIT:
+        return _read_the_pages(run)
     _refuse_a_live_start_past_the_deadline(run)
     # The effective width, for the transcript: the journal holds only what was asked.
     print(f"perlector: up to {run.concurrency} reader calls in flight", file=sys.stderr)
@@ -3944,6 +3963,36 @@ def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) ->
     # Before the seal, so a failed shutdown is never reported over a sealed stage;
     # `close` is idempotent with `main`'s `finally`.
     service.close()
+    run.context.seal_boundary()
+    run.context.finish()
+    return EXIT_COMPLETE
+
+
+def _read_the_pages(run: "_Pass") -> int:
+    """The page path (`page_run.py`): every sealed page read whole, then the seal."""
+    page_run.read_the_pages(
+        run,
+        page_run.StageHooks(
+            declared_page_witness_chairs=declared_page_witness_chairs,
+            validate_page_testimonium_record=validate_page_testimonium_record,
+            verify_page_native_capture=_verify_page_native_capture,
+            provenance_for=provenance_for,
+            engine_call_inputs=engine_call_inputs,
+            start_chair=_start_chair,
+            publish_sent=_publish_sent,
+            sent_records=_sent_records,
+            unrecorded_replies=_unrecorded_replies,
+            answers_a_send=_answers_a_send,
+            in_order_window=_in_order_window,
+            refuse_past_deadline=_refuse_past_deadline,
+            failure_record=_failure_record,
+            real_ingress=real_ingress,
+            sent_kind=SENT_KIND,
+        ),
+    )
+    # Before the seal, as the act path does, so a failed shutdown is never reported
+    # over a sealed stage.
+    run.service.close()
     run.context.seal_boundary()
     run.context.finish()
     return EXIT_COMPLETE
@@ -3968,6 +4017,8 @@ class _Pass:
     # The sealed output bounds of a reading and of an audit re-proof.
     reading_max_tokens: int
     reproof_max_tokens: int
+    # The sealed output cap of one whole-page reading (`page_run.py`).
+    page_max_tokens: int
     nuda_approval: ApprovalRecordBinding | None
     instrument_approval: ApprovalRecordBinding | None
     audit_policy: dict[str, Any]
@@ -3976,7 +4027,7 @@ class _Pass:
     declared_order: dict[str, int]
     wanted: list[dict[str, Any]]
     partition: Any
-    partition_ref: dict[str, str]
+    partition_ref: dict[str, str] | None
     holds: dict[str, Any]
     max_images: int | None
     # The run-wide routing denominator; `reported_unrouted` keeps one finding from being
@@ -4057,7 +4108,11 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         raise ContractError(f"asked to read {args.act}, which the proposal seal does not name")
     preflight_testimonia_denominator(context, wanted)
     # Recovery may narrow `wanted`; the partition denominator stays the whole proposal seal.
-    partition, partition_ref, holds = logical_reading.build_run_partition(context, expected)
+    if protocol_config[protocol.READING_UNIT_FIELD] == page_run.READING_UNIT:
+        # The page path reads no act, so nothing would bind a partition retained here.
+        partition, partition_ref, holds = None, None, {}
+    else:
+        partition, partition_ref, holds = logical_reading.build_run_partition(context, expected)
     max_images = protocol_config.get("max_images")
     if not isinstance(max_images, int) or isinstance(max_images, bool):
         max_images = None
@@ -4081,6 +4136,7 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         protocol_sha256=protocol_sha256,
         reading_max_tokens=reading_max_tokens,
         reproof_max_tokens=reproof_max_tokens,
+        page_max_tokens=perlector_page_max_tokens(decoding_policy),
         nuda_approval=nuda_approval,
         instrument_approval=instrument_approval,
         audit_policy=audit_policy,
@@ -4182,7 +4238,12 @@ def _reading_job(run: _Pass, act: dict[str, Any]):
     attempt = prepared.attempt
     if run.serving_mode == "live":
         _publish_sent(
-            run, attempt.act_id, attempt.act_key, attempt.ordinal, READING_PASS, prepared.autopsia
+            run,
+            attempt.act_id,
+            attempt.act_key,
+            attempt.ordinal,
+            READING_PASS,
+            presented_image_sha256s(prepared.autopsia),
         )
     return partial(_call_act, run, prepared), partial(_publish_act, run, prepared)
 
@@ -4725,7 +4786,7 @@ def _audit_job(
             payload["act_key"],
             payload["attempt_ordinal"],
             REPROOF_PASS,
-            row["autopsia"],
+            presented_image_sha256s(row["autopsia"]),
         )
     return partial(_send_reproof, run, row, request), partial(finish, request)
 

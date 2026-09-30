@@ -437,6 +437,49 @@ STOP_REASONS = (
 )
 
 
+def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=False):
+    return {
+        "n": n,
+        "kind": "act",
+        "label": f"synthetic act {act_key}",
+        "cites": cites,
+        "text": TESTIMONY[act_key]["attestator_1"] if text is None else text,
+        "continues_from_previous_page": from_previous,
+        "continues_to_next_page": to_next,
+    }
+
+
+# What the fake Perlector answers when it reads a page whole (`reading_unit =
+# "page"`). The ids are the page feed's: A is attestator_1 (Chandra, one boxed
+# unit per declared act on page 1, one unboxed unit of page text on page 2), B
+# is attestator_3 (Churro, one unit per line, no boxes). Page 1's entries are
+# placed by Chandra's boxes; page 2's cites no boxed id, so it is held unplaced.
+# Proves wiring only, never reading ink.
+PAGE_ANSWERS = (
+    {
+        "scenario": "happy",
+        "page_ordinal": 1,
+        "answer": {
+            "acts": [
+                _page_entry(
+                    1, "a1", ["A1", "B1"], text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]"
+                ),
+                _page_entry(2, "a2", ["A2", "B2"], to_next=True),
+            ],
+            "set_aside": [],
+        },
+    },
+    {
+        "scenario": "happy",
+        "page_ordinal": 2,
+        "answer": {
+            "acts": [_page_entry(1, "a2", ["A1", "B1"], from_previous=True)],
+            "set_aside": [],
+        },
+    },
+)
+
+
 # Page responses derive from the act declarations so they cannot drift.
 # config/models.toml owns page scope; tests reconcile the two.
 _PAGE_ACTS = {1: ("a1", "a2"), 2: ("a2",)}
@@ -1112,6 +1155,19 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         if "pass_kind" in row:
             lines.append(f"pass_kind = {toml_string(row['pass_kind'])}")
         lines.append("")
+    lines += [
+        "# The fake Perlector's answer to a whole-page reading, one per scenario and page,",
+        '# read only under reading_unit = "page". `answer` is the reply text exactly.',
+        "",
+    ]
+    for row in PAGE_ANSWERS:
+        lines += [
+            "[[page_answer]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"page_ordinal = {row['page_ordinal']}",
+            "answer = " + toml_string(json.dumps(row["answer"], separators=(",", ":"))),
+            "",
+        ]
     lines += [
         "# One declared provider RESPONSE per row: an empty body from that chair on",
         "# that act. The Attestatores derives `genuinely-empty` from the retained",
