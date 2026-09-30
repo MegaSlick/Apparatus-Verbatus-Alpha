@@ -16,15 +16,17 @@ from pathlib import Path
 
 import pytest
 from grouping_config import (
-    _PROVENANCE_FIELDS,
-    _STRING_PROVENANCE_FIELDS,
-    _TYPED_PROVENANCE_FIELDS,
     DEFAULT_GROUPING_CONFIG_PATH,
     load_grouping_config,
     resolve_background_policy,
     resolve_thresholds,
 )
 
+from common.calibration import (
+    PROVENANCE_FIELDS,
+    STRING_PROVENANCE_FIELDS,
+    TYPED_PROVENANCE_FIELDS,
+)
 from common.contracts.errors import ContractError
 from common.imaging import dimensions
 from common.sealed_config import read_sealed_toml
@@ -501,19 +503,16 @@ def test_background_provenance_refuses_calibrated_claim_with_zero_samples(tmp_pa
 
 
 def test_string_provenance_fields_are_derived_from_the_whole_schema():
-    """The two field sets partition `_PROVENANCE_FIELDS` exactly. The
-    module-import assertion, exercised again here so a failure shows as a
-    named test rather than a collection error.
-    """
-    assert set(_STRING_PROVENANCE_FIELDS) | _TYPED_PROVENANCE_FIELDS == set(_PROVENANCE_FIELDS)
-    assert set(_STRING_PROVENANCE_FIELDS).isdisjoint(_TYPED_PROVENANCE_FIELDS)
+    """The two field sets partition `PROVENANCE_FIELDS` exactly."""
+    assert set(STRING_PROVENANCE_FIELDS) | TYPED_PROVENANCE_FIELDS == PROVENANCE_FIELDS
+    assert set(STRING_PROVENANCE_FIELDS).isdisjoint(TYPED_PROVENANCE_FIELDS)
 
 
 @pytest.mark.parametrize("field", ["source", "corpus", "sample_unit", "statistic", "caveat"])
 def test_every_string_provenance_field_is_actually_type_checked(tmp_path, field):
     """Each field the schema calls a string is refused when it is not one:
     a regression check for a loader that validated a hand-copied subset of
-    `_PROVENANCE_FIELDS` instead of the whole schema.
+    `PROVENANCE_FIELDS` instead of the whole schema.
     """
     body = _valid_toml().replace(f'{field} = "', f"{field} = 7 #", 1)
     path = _write(tmp_path, body)

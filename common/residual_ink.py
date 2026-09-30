@@ -25,8 +25,8 @@ missed ink on 41 of 44 real pages; a single contrast is welcome if
 still passes.
 
 A page whose background the shared inference refuses raises
-`BackgroundInferenceRefusal` here too; the caller records it rather than
-publishing a zero nobody measured.
+`common.background.BackgroundInferenceRefusal`; the caller records it rather
+than publishing a zero nobody measured.
 """
 
 from collections.abc import Callable
@@ -35,13 +35,13 @@ from typing import Any, Final, TypedDict
 
 from common.background import (
     BASIS_POINTS,
-    BackgroundInferenceRefusal,  # noqa: F401  (re-exported: the refusal callers catch)
+    DEFAULT_BACKGROUND_CONFIG_PATH,
     BackgroundPolicy,
     _ink_threshold,
     infer_background_evidence,
     round_half_up_bp,
 )
-from common.calibration import calibrated_claim_has_sample_evidence
+from common.calibration import validate_provenance_block
 from common.components import label_component_runs, runs_in_row
 from common.contracts.canonical import is_plain_int
 from common.contracts.errors import ContractError
@@ -105,9 +105,7 @@ class CoverageAuditPolicy(TypedDict):
 #: Beside `[grouping.background]` under the one `designator-grouping` seal: the
 #: component this audit removes must be the one the Designator withheld, which
 #: holds only while both read one `page_spanning_area_bp`.
-DEFAULT_COVERAGE_AUDIT_CONFIG_PATH: Final = (
-    Path(__file__).resolve().parents[1] / "config" / "designator_grouping.toml"
-)
+DEFAULT_COVERAGE_AUDIT_CONFIG_PATH: Final = DEFAULT_BACKGROUND_CONFIG_PATH
 
 COVERAGE_AUDIT_BP_FIELDS: Final = (SUBSTANTIAL_INK_AREA_BP_FIELD, EDGE_BAND_BP_FIELD)
 
@@ -117,68 +115,8 @@ COVERAGE_NOISE_FLOOR_TABLE: Final = "noise_floor"
 COVERAGE_NOISE_FLOOR_FIELDS: Final = (MINIMUM_INK_PIXELS_FIELD, MINIMUM_FRACTION_OUTSIDE_BP_FIELD)
 
 
-#: Restated from `pipeline/2_designator/geometry.py`, which `common/` may not
-#: import; the shared config file must satisfy both.
-_PROVENANCE_FIELDS: Final = frozenset(
-    {
-        "source",
-        "corpus",
-        "sample_unit",
-        "sample_count",
-        "statistic",
-        "calibrated_for_this_corpus",
-        "caveat",
-    }
-)
-_TYPED_PROVENANCE_FIELDS: Final = frozenset({"sample_count", "calibrated_for_this_corpus"})
-
-
-def validate_provenance_block(provenance: Any, *, where: str) -> dict[str, Any]:
-    """One declared provenance block, held to the closed schema.
-
-    Needed here because the Ink Map publishes under this policy before the
-    Designator, which owns the file, ever validates it.
-    """
-
-    if not isinstance(provenance, dict):
-        raise ContractError(
-            f"the grouping configuration has no {where} table; a policy value with no "
-            "declared source may not be shipped as a default"
-        )
-    unexpected = sorted(set(provenance) - _PROVENANCE_FIELDS)
-    if unexpected:
-        raise ContractError(
-            f"the grouping configuration's {where} carries unknown field(s) {unexpected}; "
-            "provenance is a closed schema so an unread field cannot be trusted"
-        )
-    missing = sorted(_PROVENANCE_FIELDS - set(provenance))
-    if missing:
-        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
-    for field in sorted(_PROVENANCE_FIELDS - _TYPED_PROVENANCE_FIELDS):
-        if not isinstance(provenance[field], str) or not provenance[field].strip():
-            raise ContractError(
-                f"the grouping configuration's {where} field {field!r} is not a non-empty string"
-            )
-    if not is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
-        raise ContractError(
-            f"the grouping configuration's {where} sample_count is not a non-negative integer"
-        )
-    if not isinstance(provenance["calibrated_for_this_corpus"], bool):
-        raise ContractError(
-            f"the grouping configuration's {where} calibrated_for_this_corpus is not a boolean"
-        )
-    if not calibrated_claim_has_sample_evidence(
-        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
-    ):
-        raise ContractError(
-            f"the grouping configuration's {where} says calibrated_for_this_corpus but "
-            "sample_count is zero"
-        )
-    return dict(provenance)
-
-
 def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]") -> dict[str, int]:
-    """The two sealed values, checked against their bounds and returned.
+    """The sealed coverage-audit values (two gates and the noise floor), checked and returned.
 
     Here rather than in the Designator's loader: three stages run under this
     block, and a value one would refuse all three must.

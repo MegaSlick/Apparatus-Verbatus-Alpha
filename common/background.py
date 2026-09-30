@@ -21,6 +21,7 @@ it reads the sealed policy's own bytes and takes everything else as arguments.
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
+from common.calibration import validate_provenance_block
 from common.contracts.canonical import is_plain_int, is_sha256
 from common.contracts.errors import ContractError
 from common.sealed_config import read_sealed_toml
@@ -619,11 +620,8 @@ def validate_background_table(
     Bounds live here, not only in the Designator's own loader, because the Ink
     Map runs *before* the Designator and would otherwise publish a whole
     stage's records under an unread or forbidden field before anything caught
-    it. Provenance is not checked here: `_load_provenance` validates it
-    against the same schema, and the Designator refuses a run whose block has
-    lost it while the Ink Map and Recensor do not -- the one asymmetry between
-    the three readers, on the field recording where a number came from rather
-    than one deciding what a page measures.
+    it. Provenance is checked by the loaders, since a table built in code
+    carries none.
     """
     if not isinstance(table, dict):
         raise ContractError(f"the grouping configuration has no {where} table")
@@ -709,10 +707,11 @@ def load_background_config(
     grouping = config.get("grouping")
     if not isinstance(grouping, dict):
         raise ContractError("the background configuration has no [grouping] table")
-    return {
-        "config_sha256": digest,
-        "background": validate_background_table(grouping.get("background")),
-    }
+    background = validate_background_table(grouping.get("background"))
+    validate_provenance_block(
+        grouping["background"].get("provenance"), where="[grouping.background.provenance]"
+    )
+    return {"config_sha256": digest, "background": background}
 
 
 def resolve_background_policy(config: dict[str, Any], width: int, height: int) -> BackgroundPolicy:

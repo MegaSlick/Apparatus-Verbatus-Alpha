@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import Any, Final
 
 from geometry import (
-    _PROVENANCE_FIELDS,
     _pad_amount,
     _validate_dimensions,
 )
@@ -45,10 +44,11 @@ from common.background import (
     BASIS_POINTS as _BASIS_POINTS,
 )
 from common.background import (  # noqa: F401
+    FORBIDDEN_NAMES,
     resolve_background_policy,
     validate_background_table,
 )
-from common.calibration import calibrated_claim_has_sample_evidence
+from common.calibration import validate_provenance_block
 from common.contracts.canonical import is_plain_int
 from common.contracts.errors import ContractError
 from common.residual_ink import validate_coverage_audit_table
@@ -78,9 +78,6 @@ _ABSOLUTE_FIELDS: Final = ("gap_tolerance_px",)
 # unresolved, like the bare counts below.
 _PAGE_AREA_BP_FIELDS: Final = ("page_spanning_area_bp",)
 
-# See module docstring. Checked explicitly, with a message naming why, rather
-# than left to the generic "unknown field" refusal.
-_FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
 
 # None of these is a page-dimension fraction. Residual presentation uses
 # the separate policy below.
@@ -113,7 +110,7 @@ _TOP_LEVEL_TABLES: Final = ("grouping", "coverage_audit")
 
 
 def _refuse_forbidden_names(fields: dict, where: str) -> None:
-    found = sorted(name for name in _FORBIDDEN_NAMES if name in fields)
+    found = sorted(name for name in FORBIDDEN_NAMES if name in fields)
     if found:
         raise ContractError(
             f"the grouping configuration's {where} carries forbidden field(s) {found}; "
@@ -173,25 +170,28 @@ def load_grouping_config(
     continuation = _load_continuation(grouping.get("continuation"))
     page_area_bp = _load_page_area_bp(grouping.get("page_area_bp"))
     residual_presentation = _load_residual_presentation(grouping.get("residual_presentation"))
-    # Validated but not applied (see _TOP_LEVEL_TABLES): only the Designator
-    # itself refuses a run whose calibration block lost its provenance.
+    # Validated but not applied (see _TOP_LEVEL_TABLES), provenance blocks
+    # included, as `common.residual_ink.load_coverage_audit_config` validates
+    # them for the stages that apply it.
     coverage_audit = {
         **validate_coverage_audit_table(config.get("coverage_audit")),
-        "provenance": _load_provenance(
+        "provenance": validate_provenance_block(
             (config.get("coverage_audit") or {}).get("provenance")
             if isinstance(config.get("coverage_audit"), dict)
             else None,
-            "[coverage_audit.provenance]",
+            where="[coverage_audit.provenance]",
         ),
         # A separate provenance block: it must not be read as covering the
         # unmeasured noise-floor pair too.
-        "noise_floor_provenance": _load_provenance(
+        "noise_floor_provenance": validate_provenance_block(
             config["coverage_audit"]["noise_floor"].get("provenance"),
-            "[coverage_audit.noise_floor.provenance]",
+            where="[coverage_audit.noise_floor.provenance]",
         ),
     }
     background = _load_background(grouping.get("background"))
-    provenance = _load_provenance(grouping.get("provenance"), "[grouping.provenance]")
+    provenance = validate_provenance_block(
+        grouping.get("provenance"), where="[grouping.provenance]"
+    )
 
     return {
         "config_sha256": digest,
@@ -234,8 +234,8 @@ def _load_residual_presentation(table: Any) -> dict[str, Any]:
             "the grouping configuration's [grouping.residual_presentation] has invalid "
             f"non-negative integer field(s) {invalid}"
         )
-    values["provenance"] = _load_provenance(
-        table.get("provenance"), "[grouping.residual_presentation.provenance]"
+    values["provenance"] = validate_provenance_block(
+        table.get("provenance"), where="[grouping.residual_presentation.provenance]"
     )
     return values
 
@@ -261,58 +261,6 @@ def _load_closed_int_table(table: Any, fields: tuple[str, ...], what: str) -> di
             f"field(s) {invalid}"
         )
     return values
-
-
-# _STRING_PROVENANCE_FIELDS is derived, not hand-copied, so a field added to
-# _PROVENANCE_FIELDS is validated by construction rather than silently skipped.
-_TYPED_PROVENANCE_FIELDS: Final = frozenset({"sample_count", "calibrated_for_this_corpus"})
-_STRING_PROVENANCE_FIELDS: Final = tuple(sorted(set(_PROVENANCE_FIELDS) - _TYPED_PROVENANCE_FIELDS))
-assert _TYPED_PROVENANCE_FIELDS | set(_STRING_PROVENANCE_FIELDS) == set(_PROVENANCE_FIELDS)
-
-
-def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
-    """Validate one declared provenance block against the closed schema.
-
-    This policy carries a separate provenance block per table (each with its
-    own sample count and calibration claim) rather than one for the whole
-    file, so a single number can't be over-read onto values it doesn't cover.
-    `where` names the table, so a refusal points at the block that is wrong.
-    """
-    if not isinstance(provenance, dict):
-        raise ContractError(
-            f"the grouping configuration has no {where} table; a policy value with no "
-            "declared source may not be shipped as a default"
-        )
-    unexpected = sorted(set(provenance) - set(_PROVENANCE_FIELDS))
-    if unexpected:
-        raise ContractError(
-            f"the grouping configuration's {where} carries unknown field(s) {unexpected}; "
-            "provenance is a closed schema so an unread field cannot be trusted"
-        )
-    missing = sorted(set(_PROVENANCE_FIELDS) - set(provenance))
-    if missing:
-        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
-    for field in _STRING_PROVENANCE_FIELDS:
-        if not isinstance(provenance[field], str) or not provenance[field].strip():
-            raise ContractError(
-                f"the grouping configuration's {where} field {field!r} is not a non-empty string"
-            )
-    if not is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
-        raise ContractError(
-            f"the grouping configuration's {where} sample_count is not a non-negative integer"
-        )
-    if not isinstance(provenance["calibrated_for_this_corpus"], bool):
-        raise ContractError(
-            f"the grouping configuration's {where} calibrated_for_this_corpus is not a boolean"
-        )
-    if not calibrated_claim_has_sample_evidence(
-        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
-    ):
-        raise ContractError(
-            f"the grouping configuration's {where} says calibrated_for_this_corpus but "
-            "sample_count is zero"
-        )
-    return dict(provenance)
 
 
 def _load_continuation(table: Any) -> dict[str, Any]:
@@ -353,8 +301,8 @@ def _load_continuation(table: Any) -> dict[str, Any]:
             f"1..{_BASIS_POINTS}; the permitted upper endpoint is a broad whole-page policy "
             "value"
         )
-    values["provenance"] = _load_provenance(
-        table.get("provenance"), "[grouping.continuation.provenance]"
+    values["provenance"] = validate_provenance_block(
+        table.get("provenance"), where="[grouping.continuation.provenance]"
     )
     return values
 
@@ -393,8 +341,8 @@ def _load_page_area_bp(table: Any) -> dict[str, Any]:
                 "whole page, and past a whole page nothing can ever reach it"
             )
         values[name] = value
-    values["provenance"] = _load_provenance(
-        table.get("provenance"), "[grouping.page_area_bp.provenance]"
+    values["provenance"] = validate_provenance_block(
+        table.get("provenance"), where="[grouping.page_area_bp.provenance]"
     )
     return values
 
@@ -427,8 +375,8 @@ def _load_background(table: Any) -> dict[str, Any]:
             f"the grouping configuration's [grouping.background] is missing field(s) {missing}"
         )
     values = validate_background_table(table)
-    values["provenance"] = _load_provenance(
-        table.get("provenance"), "[grouping.background.provenance]"
+    values["provenance"] = validate_provenance_block(
+        table.get("provenance"), where="[grouping.background.provenance]"
     )
     return values
 
