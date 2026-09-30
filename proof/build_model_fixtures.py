@@ -64,15 +64,9 @@ def build(model_root: Path, manifest_root: Path) -> dict[str, str]:
     else:
         # A FileNotFoundError inside rmtree is a cleanup race, not an absent root.
         shutil.rmtree(model_root)
-    # `manifest_root` (`config/manifests/`) is NOT exclusive to this generator:
-    # the real serving roster's own digest manifests are checked in beside the
-    # fixture ones, named after their models rather than a fixture chair
-    # (`config/models-real.toml`'s `manifest` entries). Blanket-removing the
-    # whole directory here, as the loop above still does for `model_root`,
-    # would destroy those on every fixture rebuild -- a real run's pinned
-    # manifests replaced by nothing, deleted by a command whose docstring
-    # advertises it as an ordinary offline fixture regeneration. Remove only
-    # the exact files this generator is about to rewrite.
+    # Unlike `model_root`, `manifest_root` (`config/manifests/`) also holds the real serving roster's
+    # digest manifests (`config/models-real.toml`'s `manifest` entries), so only
+    # the exact files this generator rewrites are removed there.
     for chair in FIXTURE_CHAIRS:
         (manifest_root / f"{chair}.json").unlink(missing_ok=True)
     pins: dict[str, str] = {}
@@ -87,7 +81,8 @@ def build(model_root: Path, manifest_root: Path) -> dict[str, str]:
         # The pin is the digest of the artifact's exact canonical bytes, which is
         # what `read_manifest` checks; asserting it here keeps the two spellings
         # of "the pin" from drifting inside the generator itself.
-        assert pin == manifest_digest(manifest) == digest_bytes(path.read_bytes())
+        if not pin == manifest_digest(manifest) == digest_bytes(path.read_bytes()):
+            raise RuntimeError(f"{chair}: written manifest pin disagrees with its bytes")
         pins[chair] = pin
     return pins
 

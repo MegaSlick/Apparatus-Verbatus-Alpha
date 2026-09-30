@@ -9,7 +9,13 @@ from __future__ import annotations
 import pytest
 
 from common.imaging import crop_png
-from proof.synthetic_pages import PAGES, page_bytes, render_page
+from proof.synthetic_pages import (
+    PAGE_BREAK_PAGES,
+    PAGES,
+    SCENARIO_PAGES,
+    page_bytes,
+    render_page,
+)
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -141,4 +147,44 @@ def test_page_bytes_matches_render_page_for_each_ordinal():
 
 
 def test_no_float_appears_anywhere_in_pages():
-    assert not _walk_for_floats(PAGES)
+    for pages in (PAGES, SCENARIO_PAGES, PAGE_BREAK_PAGES):
+        assert pages
+        assert not _walk_for_floats(pages)
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    [
+        {"x": -1, "y": 0, "w": 4, "h": 4},
+        {"x": 0, "y": -1, "w": 4, "h": 4},
+        {"x": 8, "y": 0, "w": 4, "h": 4},
+        {"x": 0, "y": 8, "w": 4, "h": 4},
+    ],
+)
+def test_an_act_outside_its_page_is_refused(bounds):
+    page = {
+        "ordinal": 1,
+        "width": 10,
+        "height": 10,
+        "acts": ({"ordinal": 0, "bounds": bounds, "ink": 40},),
+    }
+    with pytest.raises(ValueError, match="fall outside page 10x10"):
+        render_page(page)
+
+
+@pytest.mark.parametrize("size", [{"w": 0, "h": 4}, {"w": 4, "h": 0}, {"w": -2, "h": 4}])
+def test_an_act_with_no_area_is_refused(size):
+    bounds = {"x": 2, "y": 2, **size}
+    page = {
+        "ordinal": 1,
+        "width": 10,
+        "height": 10,
+        "acts": ({"ordinal": 0, "bounds": bounds, "ink": 40},),
+    }
+    with pytest.raises(ValueError, match="have no area"):
+        render_page(page)
+
+
+def test_an_unknown_ordinal_is_refused():
+    with pytest.raises(ValueError, match="no page with ordinal 999"):
+        page_bytes(999)
