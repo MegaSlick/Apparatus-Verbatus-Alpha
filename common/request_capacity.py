@@ -15,10 +15,14 @@ defaulted.
 
 No tokenizer runs here (no ``torch`` wheel for this host), so fixed prompts
 carry a measured constant sealed to a digest of the prompt text, and editing
-the prompt invalidates it.  The Perlector's prompt is built at run time, so it
-is admitted on a measured upper bound (:func:`perlector_prompt_bound`); its
+the prompt invalidates it.  The Perlector's act prompt is built at run time, so
+it is admitted on a measured upper bound (:func:`perlector_prompt_bound`); its
 measured floor is recorded beside it but never admits, because admitting on a
-lower bound admits exactly the requests that overflow.
+lower bound admits exactly the requests that overflow.  A Perlector page request
+is not fully measured: it is admitted on an upper bound for the text witnesses
+and detectors reported (one token per UTF-8 byte) plus the builder's own fixed
+wording at the act prompt's measured rate, carried to it
+(:data:`PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED`).
 
 Whether vLLM's own prompt assembly agrees with these counts token for token has
 never been observed; only a pod can settle it.
@@ -256,7 +260,7 @@ CAPACITY_RECORD_FIELDS: Final = frozenset(
 PROMPT_TOKENS_MEASURED_CONSTANT: Final = "measured-constant-for-this-prompt-version"
 PROMPT_TOKENS_MEASURED_FLOOR: Final = "measured-floor-for-this-prompt-shape"
 PROMPT_TOKENS_MEASURED_RATE: Final = "measured-tokens-per-word-extrapolation"
-# The only basis a dossier-built prompt may be admitted on.
+# The only basis a dossier-built act prompt may be admitted on.
 PROMPT_TOKENS_MEASURED_BOUND: Final = "measured-upper-bound-for-this-prompt-shape"
 # The page prompt's charge (`perlector_page_prompt_bound`): every string a witness
 # or detector wrote at one token per UTF-8 byte, an upper bound for a byte-level
