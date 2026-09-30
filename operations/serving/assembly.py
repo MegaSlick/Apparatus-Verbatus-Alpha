@@ -220,13 +220,14 @@ def stage_chair_client(
     identity: ChairIdentity,
     tier: str,
     *,
+    decoding_policy: Mapping[str, Any],
     decoding_config_sha256: str,
-    record_temperature: int | float,
-    chandra_native_policy: Mapping[str, object] | None = None,
 ) -> ChairClient:
     """The client a stage reads one configured chair through; nothing starts until
     it is entered. Logs travel with the run tree; the residency lease belongs to the
-    pod's one card, so every stage and run id contends for it on container-local disk."""
+    pod's one card, so every stage and run id contends for it on container-local disk.
+    ``decoding_policy`` is the policy the stage already loaded and sealed; the client
+    sends its chair's row of it."""
 
     recipes, config_inputs = _bound_serving(context, context.args.serving_recipes_config)
     manager = ServingManager(
@@ -251,9 +252,8 @@ def stage_chair_client(
         tier=tier,
         retain=lambda data: retain_chair_bytes(context, data),
         decoding_config_sha256=decoding_config_sha256,
-        record_temperature=record_temperature,
+        decoding_policy=decoding_policy,
         read_receipt=context.tree.read_run_receipt,
-        chandra_native_policy=chandra_native_policy,
     )
 
 

@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from common.chairs.models import is_witness_role
 from common.chairs.registry import ChairRegistry
 from common.sealed_config import read_sealed_toml
 from common.stage import load_fixture, run_config_bindings, stage_parser
@@ -57,13 +56,11 @@ def test_serving_recipes_flag_defaults_to_fixture_catalogue_and_selects_real_byt
     assert baseline["config_digest"] != alternate["config_digest"]
 
 
-def test_the_real_catalogues_generation_config_values_are_admitted_and_witness_scoped():
+def test_every_row_of_the_real_catalogues_serves_with_generation_config_vllm():
     """Regression guard tying config.py's schema rule to the shipped rows.
 
-    `generation_config = "auto"` is admitted only for a witness (Attestator)
-    row (`config.py`); U15 is the unit that actually flips a real row to it.
-    Until then every row here is `"vllm"`, and this test still holds once one
-    changes -- it does not merely record today's committed value.
+    Under `"auto"` vLLM fills a sampling field a request leaves out from the
+    model's generation_config.json; every row is `"vllm"`, so none is filled.
     """
 
     root = Path(__file__).resolve().parents[1]
@@ -78,12 +75,7 @@ def test_the_real_catalogues_generation_config_values_are_admitted_and_witness_s
             if generation_config is None:
                 continue  # fixture/unsupported rows carry no vLLM flags at all
             inspected += 1
-            assert generation_config in {"vllm", "auto"}
-            if generation_config == "auto":
-                assert is_witness_role(profile.chair), (
-                    f"{catalogue_path.name} chair={profile.chair!r} uses generation_config="
-                    "'auto' but is not a witness role"
-                )
+            assert generation_config == "vllm", (catalogue_path.name, profile.chair)
     # A catalogue with no `generation_config` field anywhere would pass this
     # test vacuously -- every row taking the `continue` above -- and prove
     # nothing about the rule it names. At least one row must actually carry
@@ -127,22 +119,10 @@ def _minimal_vllm_profile(*, chair: str, generation_config: str) -> dict[str, ob
     }
 
 
-def test_generation_config_auto_is_admitted_for_a_witness_chair():
-    """The positive half of the rule below: an Attestator row may pin its
-    occupant's own generation_config.json through `"auto"`."""
-    assert is_witness_role("attestator_2")
-    row = _minimal_vllm_profile(chair="attestator_2", generation_config="auto")
-    recipes = parse_serving_recipes({"schema": SCHEMA, "profiles": [row]})
-    assert recipes.profiles[0].generation_config == "auto"
-
-
-def test_generation_config_auto_is_refused_for_a_non_witness_chair():
-    """The rule `test_the_real_catalogues_...` only checks the shipped rows never
-    violate: a non-witness chair naming `generation_config = "auto"` must be
-    refused by the schema itself, not merely absent from every catalogue.
-    """
-    for chair in ("perlector", "designator_structure"):
-        assert not is_witness_role(chair), chair
+def test_generation_config_auto_is_refused_for_every_chair():
+    """The rule the shipped rows are checked against above, held by the schema
+    itself: a row naming `generation_config = "auto"` is refused, witness or not."""
+    for chair in ("attestator_2", "perlector", "designator_structure"):
         row = _minimal_vllm_profile(chair=chair, generation_config="auto")
-        with pytest.raises(ServingConfigurationError, match="generation_config='auto'"):
+        with pytest.raises(ServingConfigurationError, match=r"must be one of \['vllm'\]"):
             parse_serving_recipes({"schema": SCHEMA, "profiles": [row]})

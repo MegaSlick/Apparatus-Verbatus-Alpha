@@ -123,6 +123,7 @@ from common.stage import (  # noqa: E402
     require_current_witness_basis,
     run_stage,
     scenario_for,
+    sealed_decoding_policy,
     sealed_residual_presentation_policy,
     stage_manifest,
     stage_parser,
@@ -212,7 +213,9 @@ def audit_state(
     if reading["outcome"] == "failed" and "failure" in reading["payload"]:
         validate_failed_perlectio(context, reading, act_id, expected_act_key=expected_act_key)
         return None
-    chain = validate_chain(context.tree, reading, act_id)
+    chain = validate_chain(
+        context.tree, reading, act_id, decoding_policy=sealed_decoding_policy(context)[0]
+    )
     return {
         "unresolved": chain["record"]["unresolved"],
         "examination": chain["record"]["examination"],

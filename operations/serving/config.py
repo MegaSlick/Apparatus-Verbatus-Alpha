@@ -49,7 +49,6 @@ from common.chairs.models import (
     ModelsConfig,
     is_hf_revision,
     is_sha256,
-    is_witness_role,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
@@ -62,13 +61,11 @@ from .errors import ServingConfigurationError
 SCHEMA = "serving-recipes.v1"
 _TOP_LEVEL = {"schema", "profiles"}
 _KINDS = {"vllm", "in-process", "subprocess", "fixture", "unsupported"}
-# 'vllm' pins vLLM's own defaults, applied uniformly regardless of chair.
-# 'auto' is admitted only for a witness (Attestator) row: it defers to the
-# exact generation_config.json the chair's own pinned revision ships, which
-# `manager._launch_audit` then digests from the verified snapshot so 'auto'
-# is a value pinned by that revision rather than an unaudited default that
-# could silently change underneath the row.
-_GENERATION_CONFIG_VALUES = {"vllm", "auto"}
+# 'vllm' only: vLLM's 'auto' would fill a sampling field a request leaves out
+# from the model's generation_config.json, unseen on the wire. Every chair's
+# request carries its full sealed sampling row (`common.decoding`), so nothing
+# a reading samples under is left to a file.
+_GENERATION_CONFIG_VALUES = {"vllm"}
 _PROFILE_COMMON = {"kind", "recipe", "chair", "tier"}
 _FIXTURE_FIELDS = _PROFILE_COMMON | {"description"}
 _UNSUPPORTED_FIELDS = _PROFILE_COMMON | {"reason"}
@@ -626,14 +623,6 @@ def _parse_profile(
         raise ServingConfigurationError(
             f"generation_config must be one of {sorted(_GENERATION_CONFIG_VALUES)}, not "
             f"{generation_config!r}"
-        )
-    if generation_config == "auto" and not is_witness_role(chair):
-        raise ServingConfigurationError(
-            f"generation_config='auto' is admitted only for witness (Attestator) rows; "
-            f"chair {chair!r} is not a witness role. A witness's vendor-shipped "
-            "generation_config.json is itself the pinned profile (by the chair's "
-            "revision); the Perlector and Designator rows carry no vendor generation "
-            "defaults to defer to and must stay 'vllm'"
         )
     preflight_state = _text(raw["preflight_state"], "preflight_state")
     if preflight_state not in {"unproven", "proven"}:

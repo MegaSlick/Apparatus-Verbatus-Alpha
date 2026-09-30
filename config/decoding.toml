@@ -1,8 +1,5 @@
 # Its values are sealed into every run's decoding provenance.
-schema = "decoding.v4"
-
-[reading_of_record]
-temperature = 0
+schema = "decoding.v5"
 
 [perlector_generation]
 # Output bounds for the Perlector's replies, far above any honest reading, so a
@@ -23,23 +20,20 @@ reproof_max_tokens = 8192
 page_max_tokens = 12288
 
 [variance_experiment]
-# A labelled experiment: every pass has its own identity; it is never a retry.
-label = "variance.v1"
+# Lectio nuda and the lectio-prior draft send the same request to measure the
+# Perlector's sampling variance, so each arm needs its own seed to be its own
+# draw. The arm at index i of `common.decoding.VARIANCE_ARMS` sends this seed
+# plus i, recorded on its call record; it is never a retry.
 seed = 20260820
-passes = 2
 
 [structure]
-# The Designator's structure pass runs under this section, never under
-# reading_of_record: the Attestatores read at the fixed posture above; the
-# structure pass may vary, sealed and recorded per run, so its re-run
-# variance is a clue beside the witnesses. The value is recorded on
-# every page's structure-answer record. The serving seam sends this exact value
-# and retains it with the manager-owned seed on each chair-call record.
-temperature = 1
-# Coverage recovery changes only the manager-owned seed.  Attempt one keeps
-# the serving row's sealed base seed; later attempts add ordinal minus one.
-# This is a Designator structure policy, not Chandra's vendor retry ladder.
-recovery_seed_schedule = "base-plus-attempt-ordinal-minus-one"
+# The Designator structure chair's coverage recovery follows Chandra's own
+# retry schedule, the maker's recovery from a degenerate page: attempt one sends
+# the chair's row in `chair_decoding` below, and attempt n sends that row with
+# the pinned recipe's request n temperature and top_p (`chandra_native_inference`),
+# with the serving row's seed on every attempt. Each attempt's values are recorded
+# on its call record and its structure-answer record.
+recovery_schedule = "chandra-native-retry"
 recovery_max_attempts = 3
 
 [chandra_native_inference]
@@ -57,3 +51,80 @@ temperature_schedule = ["0.0", "0.2", "0.4", "0.6000000000000001", "0.8", "0.8",
 initial_top_p = "0.1"
 retry_top_p = "0.95"
 error_backoff_seconds = [2, 4, 6, 8, 10, 12]
+
+# Each reading chair's sampling values, as the model's makers recommend them.
+# Every row names every sampling field the pinned vLLM would otherwise fill from
+# a model's generation_config.json (`common.decoding.ENGINE_FILLED_SAMPLING_FIELDS`):
+# the maker's value where the maker gives one, otherwise the value the maker's
+# own pipeline runs under. The serving client sends a chair's row on each of its
+# requests, with the seed that request's reader expects (the serving row's, or a
+# variance arm's; a Chandra native request sends none), and records both on the
+# call record beside the values the pinned engine samples under. No caller may
+# add or change a sampling field. `source` and `revision` name where the maker's
+# values were read; `verification` says who read them. Detection has no decoding
+# and so has no row.
+
+[chair_decoding.designator_structure]
+# datalab-to/chandra-ocr-2, read the way Chandra's own page pipeline reads a
+# page: `generate_vllm` sends a vLLM server only temperature and top_p.
+temperature = 0.0         # maker: `generate_vllm`'s default
+top_p = 0.1               # maker: `generate_vllm`'s default
+top_k = 0                 # vLLM 0.27.1 default for an unsent field (off)
+min_p = 0.0               # vLLM 0.27.1 default for an unsent field (off)
+repetition_penalty = 1.0  # vLLM 0.27.1 default for an unsent field (off)
+source = "https://github.com/datalab-to/chandra/blob/d4f7467435aa4137d9539f000ddf0b7ced3eb43f/chandra/model/vllm.py"
+revision = "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
+verification = "read from the pinned source by the vendor-decoding session (Claude), and checked on every load to equal the first request of common/chandra_native_retry.py's port over vLLM's defaults"
+
+[chair_decoding.attestator_1]
+# The same model and pipeline. A page read under `chandra_native_inference`
+# sends this as its first request and follows the recipe's retry schedule.
+temperature = 0.0         # maker: `generate_vllm`'s default
+top_p = 0.1               # maker: `generate_vllm`'s default
+top_k = 0                 # vLLM 0.27.1 default for an unsent field (off)
+min_p = 0.0               # vLLM 0.27.1 default for an unsent field (off)
+repetition_penalty = 1.0  # vLLM 0.27.1 default for an unsent field (off)
+source = "https://github.com/datalab-to/chandra/blob/d4f7467435aa4137d9539f000ddf0b7ced3eb43f/chandra/model/vllm.py"
+revision = "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
+verification = "read from the pinned source by the vendor-decoding session (Claude), and checked on every load to equal the first request of common/chandra_native_retry.py's port over vLLM's defaults"
+
+[chair_decoding.attestator_2]
+# Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR. The model card gives no
+# sampling advice beyond transformers' `model.generate`, which applies
+# generation_config.json; `do_sample = true` there is the nonzero temperature here.
+temperature = 0.1           # maker: generation_config.json
+top_k = 1                   # maker: generation_config.json
+top_p = 0.001               # maker: generation_config.json
+repetition_penalty = 1.05   # maker: generation_config.json
+min_p = 0.0                 # transformers GenerationConfig default: unset, no min-p filter
+source = "https://huggingface.co/Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR/raw/e371095d4ffe585f31f4974462931ddbac61ff64/generation_config.json"
+revision = "e371095d4ffe585f31f4974462931ddbac61ff64"
+verification = "read by the project lead; the file's digest is pinned in pipeline/3_attestatores/feeding.py"
+
+[chair_decoding.attestator_3]
+# stanford-oval/churro-3B. The model card gives no settings, and the maker's
+# churro-ocr v0.3.0 profile for this model sends none, so its quick start's
+# transformers backend reads under generation_config.json and transformers'
+# defaults. vLLM raises a temperature above zero but below 0.01 to 0.01, so the
+# engine samples this 1e-06 at 0.01, and each call record's `sampling_effective`
+# says so.
+temperature = 1e-06         # maker: generation_config.json
+repetition_penalty = 1.05   # maker: generation_config.json
+top_k = 50                  # transformers GenerationConfig default (v5.2.0)
+top_p = 1.0                 # transformers GenerationConfig default (v5.2.0)
+min_p = 0.0                 # transformers GenerationConfig default: unset, no min-p filter
+source = "https://huggingface.co/stanford-oval/churro-3B/raw/ca2150ea465d5a3d67818c50e234b9422619c75d/generation_config.json"
+revision = "ca2150ea465d5a3d67818c50e234b9422619c75d"
+verification = "read by the project lead; the transformers defaults read from transformers v5.2.0 `GenerationConfig._get_default_generation_params` by the vendor-decoding session (Claude)"
+
+[chair_decoding.perlector]
+# Qwen/Qwen3.8-27B in non-thinking mode, as its model card recommends.
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+min_p = 0.0
+presence_penalty = 1.5
+repetition_penalty = 1.0
+source = "https://huggingface.co/Qwen/Qwen3.8-27B/raw/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/README.md"
+revision = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+verification = "read by the project lead"

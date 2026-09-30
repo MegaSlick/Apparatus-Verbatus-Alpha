@@ -8,6 +8,8 @@ never used for channel health, which comes from the response and transport.
 import json
 import sys
 import time
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any, Final, Mapping, NamedTuple
 
@@ -72,7 +74,12 @@ from common.contracts.serving import (  # noqa: E402
     STOP_REASON_UNREPORTED,
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
-from common.decoding import load_decoding_policy  # noqa: E402
+from common.decoding import (  # noqa: E402
+    SAMPLING_FIELDS,
+    load_decoding_policy,
+    refuse_retired_call_record,
+    verify_call_sampling,
+)
 from common.exemplar_boundary import (  # noqa: E402
     read_sealed_page,
     sealed_page_bytes,
@@ -110,9 +117,11 @@ from common.stage import (  # noqa: E402
     latest_attempt,
     open_stage_context,
     run_stage,
+    sealed_decoding_policy,
     stage_manifest,
     stage_parser,
     validate_serving_provenance,
+    verify_retained_call_sampling,
 )
 from operations.serving.assembly import (  # noqa: E402
     bound_serving_recipes,
@@ -1627,6 +1636,8 @@ def validate_tallied_testimonium(
     chair = payload["chair"]
     if not isinstance(chair, str) or chair not in context.witness_chairs:
         raise SchemaRefusal("a Testimonium tally record names no configured chair")
+    if "serving_call_ref" in payload:
+        _verify_testimonium_call_sampling(context, payload, chair)
     if payload["act_key"] != act["act_key"]:
         raise SchemaRefusal("a Testimonium tally record disagrees with its act key")
     ordinal = payload["attempt_ordinal"]
@@ -1692,6 +1703,37 @@ def validate_tallied_testimonium(
         raise SchemaRefusal("a dead Testimonium tally record does not retain an absent chair")
     if record["outcome"] == "not-run" and payload["provenance"].get("chair_state") != "configured":
         raise SchemaRefusal("a not-run Testimonium tally record does not retain a configured chair")
+
+
+def _verify_testimonium_call_sampling(context, payload: dict[str, Any], chair: str) -> None:
+    """Hold a Testimonium's serving call to its chair's sealed sampling row and seed.
+
+    A Chandra native page reading names its vendor-returned attempt, which sends
+    that attempt's row and no seed; any other reading is attempt one under the
+    serving receipt's seed.
+    """
+    try:
+        call = json.loads(context.tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise SchemaRefusal("a Testimonium's serving call record is not JSON") from error
+    if not isinstance(call, dict):
+        raise SchemaRefusal("a Testimonium's serving call record is not an object")
+    trace = payload.get("native_inference")
+    try:
+        if trace is None:
+            verify_retained_call_sampling(context, call, chair)
+        else:
+            verify_retained_call_sampling(
+                context,
+                call,
+                chair,
+                attempt_ordinal=validate_chandra_trace(trace)["returned_attempt_ordinal"],
+                sends_seed=False,
+            )
+    except ContractError as error:
+        raise SchemaRefusal(
+            f"a Testimonium's serving call record is not its sealed request: {error}"
+        ) from error
 
 
 def require_accounted_unrecordable_channel(record: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -3819,18 +3861,17 @@ def require_every_witness_served(modes: dict[str, str]) -> None:
         )
 
 
-def default_serving_factory(context, identity: ChairIdentity, tier: str) -> ChairClient:
-    """Build the client a live pass reads one chair through. Tests inject their own
-    factory in-process; it is deliberately not a CLI flag, so no fake can answer under
-    a configured chair's name."""
-    policy, decoding_sha256 = load_decoding_policy(context.args.decoding_config)
-    return stage_chair_client(
-        context,
-        identity,
-        tier,
+def production_serving_factory(
+    decoding_policy: Mapping[str, Any], decoding_sha256: str
+) -> Callable[[Any, ChairIdentity, str], ChairClient]:
+    """The factory a live pass reads each chair through, under the decoding policy
+    `main` loaded and sealed. Tests inject their own factory in-process; it is
+    deliberately not a CLI flag, so no fake can answer under a configured chair's
+    name."""
+    return partial(
+        stage_chair_client,
+        decoding_policy=decoding_policy,
         decoding_config_sha256=decoding_sha256,
-        record_temperature=policy["reading_of_record"]["temperature"],
-        chandra_native_policy=policy["chandra_native_inference"],
     )
 
 
@@ -5087,7 +5128,7 @@ def _chandra_backoff(completed_attempt_ordinal: int) -> None:
     time.sleep(delay)
 
 
-def _validated_chandra_serving_call(context, payload, parameters, intent):
+def _validated_chandra_serving_call(context, payload, native_attempt_ordinal, intent):
     resolved = _attempt_from_evidence_record(context, payload["resolved_attempt"])
     call_ref = validate_stage_blob_ref(resolved.serving_call_ref, "serving_call_ref")
     validate_retained_response_blob(context.tree, call_ref, "serving_call_ref")
@@ -5095,6 +5136,12 @@ def _validated_chandra_serving_call(context, payload, parameters, intent):
         call_record = json.loads(context.tree.read_bytes(call_ref["relative_path"]))
     except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise SchemaRefusal("a Chandra native serving call record is not JSON") from error
+    if isinstance(call_record, dict):
+        refuse_retired_call_record(
+            call_record.get("schema"),
+            subject="a Chandra native serving call record",
+            error_type=SchemaRefusal,
+        )
     schemas = {
         CHANDRA_NATIVE_CALL_RECORD_SCHEMA: CHANDRA_NATIVE_CALL_RECORD_FIELDS,
         CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA: (
@@ -5162,8 +5209,6 @@ def _validated_chandra_serving_call(context, payload, parameters, intent):
                 "a Chandra native terminal's transport error detail disagrees with its call"
             )
     sent = call_record.get("generation_sent")
-    expected_temperature = json.dumps(float(parameters["temperature"]))
-    expected_top_p = json.dumps(float(parameters["top_p"]))
     if (
         call_record.get("native_attempt_intent_ref") != payload["intent_ref"]
         or call_record.get("request_sha256") != payload["request_sha256"]
@@ -5173,14 +5218,25 @@ def _validated_chandra_serving_call(context, payload, parameters, intent):
         or resolved.receipt_ref != intent["receipt_ref"]
         or call_record.get("generation_declared") != {"max_new_tokens": CHANDRA_MAX_OUTPUT_TOKENS}
         or not isinstance(sent, dict)
-        or set(sent) - {"chat_template_kwargs", "max_tokens", "temperature", "top_p"}
+        or set(sent) - {"chat_template_kwargs", "max_tokens"} - SAMPLING_FIELDS
         or sent.get("chat_template_kwargs") != {"enable_thinking": False}
         or sent.get("max_tokens", CHANDRA_MAX_OUTPUT_TOKENS) != CHANDRA_MAX_OUTPUT_TOKENS
-        or "seed" in sent
-        or sent.get("temperature") != {"schema": "wire-decimal.v1", "decimal": expected_temperature}
-        or sent.get("top_p") != {"schema": "wire-decimal.v1", "decimal": expected_top_p}
     ):
         raise SchemaRefusal("a Chandra native serving call record moved its pinned request")
+    decoding_policy, _decoding_sha256 = sealed_decoding_policy(context)
+    try:
+        # The pinned upstream client sends no per-request seed.
+        verify_call_sampling(
+            call_record,
+            decoding_policy,
+            "attestator_1",
+            attempt_ordinal=native_attempt_ordinal,
+            expected_seed=None,
+        )
+    except ContractError as error:
+        raise SchemaRefusal(
+            f"a Chandra native serving call record moved its pinned request: {error}"
+        ) from error
     return resolved, call_ref, call_record, inference_error
 
 
@@ -5326,7 +5382,7 @@ def _validate_chandra_terminal(
         raise SchemaRefusal("a Chandra native terminal artifact names a different intended request")
 
     resolved, call_ref, call_record, inference_error = _validated_chandra_serving_call(
-        context, payload, parameters, intent
+        context, payload, native_attempt_ordinal, intent
     )
     _validate_chandra_terminal_response(
         context,
@@ -5809,8 +5865,7 @@ def _serve_page_unit(
         capture = None
     else:
         if (
-            client.carries_chandra_native_recipe
-            and resolved.role == "attestator_1"
+            resolved.role == "attestator_1"
             and resolved.witness_adapter == "chandra.v1"
             and resolved.witness_scope == "page"
         ):
@@ -6118,7 +6173,7 @@ def _run_full_pass(
             regions_by_act,
             attempts_by_pair,
             sealed_pairs,
-            serving_factory=default_serving_factory if serving_factory is None else serving_factory,
+            serving_factory=serving_factory,
             tier=args.placement_tier,
         )
     else:
@@ -6178,8 +6233,10 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     context = open_stage_context(args, ATTESTATORES, registry_factory=registry_factory)
     real = real_ingress(context)
     # A witness reading is a model decode, so its decoding policy must be sealed.
-    _decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
+    decoding_policy, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
+    if serving_factory is None:
+        serving_factory = production_serving_factory(decoding_policy, decoding_sha256)
     witness_adapters.validate_runnable_adapter_bindings(context.registry.config)
     # Resolved first: the serving posture decides which pass runs.
     modes = witness_serving_modes(

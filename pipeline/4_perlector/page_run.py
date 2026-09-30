@@ -876,7 +876,7 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
         else:
             engine_call = result["engine_call"]
             finish_reason, stop_reason = result["finish_reason"], result["stop_reason"]
-            inputs += hooks.engine_call_inputs(context, engine_call)
+            inputs += hooks.engine_call_inputs(context, engine_call, variance_arm=None)
             parse_state, answer, problems = _read_reply(result["content"], stop_reason, page.feed)
     disposition = READ if parse_state == PARSED and not problems else HELD
     payload = {
@@ -1131,7 +1131,9 @@ def publish_act_records(
         "relative_path": page.page_record["payload"]["image_path"],
         "sha256": page.page_record["payload"]["source_sha256"],
     }
-    engine_inputs = state.hooks.engine_call_inputs(context, payload["engine_call"])
+    engine_inputs = state.hooks.engine_call_inputs(
+        context, payload["engine_call"], variance_arm=None
+    )
     attempt = page_reading_attempt(page.page_id)
     for plan in plans:
         act, union, act_id = plan["act"], plan["union_box_px"], plan["act_id"]

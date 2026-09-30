@@ -988,7 +988,7 @@ a card to be refused. The page is never downscaled to make it fit: 300 dpi is
 what `config/pdf_render.toml` argues is needed to read the ink, and trading a
 measurable refusal for an unmeasurable misreading is not this pass's decision.
 Every live page record carries its `capacity` block, held or not, and the same
-record travels on the request onto the retained `chair-call-record.v1`.
+record travels on the request onto the retained `chair-call-record.v3`.
 
 A cut-off answer is held even though it parsed: a truncated act list is a
 missed act. Under the layout grammar that row states itself: an
@@ -1109,7 +1109,7 @@ told from "drew one nobody could read") with `data_bbox_truncated` saying
 whether that digest covers the whole value:
 
 ```text
-schema = "designator-structure-answer.v3"
+schema = "designator-structure-answer.v4"
 attempt_ordinal, attempt_seed, attempt_policy, attempts, presentation_ref
 page_id, page_ordinal, page_w, page_h
 prompt_version, prompt_sha256, answer_schema = "chandra-layout-html.v1"
@@ -1131,12 +1131,15 @@ blocks_without_proposal = [{ordinal, reason, blank_page, label_vocabulary | null
                             nested_bbox_count}]
 findings = [{kind, ...}]
 quantization, page_text_rule
-decoding = {policy = "structure", temperature, decoding_config_sha256}
+decoding = {policy = "structure",
+            sampling = {temperature, top_p, top_k, min_p, repetition_penalty},
+            decoding_config_sha256}
 provenance (the served chair, its real receipt, and `engine_call`)
 ```
 
-Structure answers sealed as `designator-structure-answer.v1` or `.v2` are
-refused by name; a new run produces the current request-image evidence.
+Structure answers sealed as `designator-structure-answer.v1`, `.v2` or `.v3`
+are refused by name; a new run produces the current request-image evidence and
+the complete sealed sampling of every attempt.
 
 The raw response is retained twice under one digest: by the client before it
 is parsed, and under `common/chandra_custody.py`'s one-receipt binding
@@ -1148,8 +1151,11 @@ itself lives only in that blob. `common/stage.py::_verify_proposal_act_row`
 holds every structural row of a served seal to this record: the page's status
 must say `scanned` and name it, it must have parsed under the same
 `engine_call` the seal records, its `call_record_ref` must resolve to a genuine
-`chair-call-record.v1` for this chair under the run's sealed decoding digest,
-and it must list the row's exact rectangle — no nearest match.
+`chair-call-record.v3` for this chair under the run's sealed decoding digest,
+whose sampling is its attempt's sealed values and whose seed is its serving
+receipt's (`common.stage.verify_retained_call_sampling`), and it must list the
+row's exact rectangle — no nearest match. A call record written under a retired
+schema is refused by name.
 
 **Provenance on the live path** is `structure_pass.live_chair_record`: the
 chair's real serving receipt (never `_configured_chair_record`'s `fixture://`
@@ -1163,20 +1169,27 @@ row, pinned package versions and weights digest are checked before the
 structure chair starts and which loads only once that chair has closed. A
 `fixture` or `vllm` row is refused by name before any chair starts.
 
-**Decoding.** The pass runs under `config/decoding.toml`'s `[structure]`
-section and never under `reading_of_record`: the Attestatores keep the fixed
-posture, while the structure pass may vary, sealed and recorded per run, so its
-re-run variance is a clue beside the witnesses. The
-value is read from the sealed bytes, rechecked by digest at the point of use,
-and recorded on every page's answer record. **The limit, stated plainly:** the
-live reading seam records the reading-of-record temperature and puts 0 on the
-wire for every call (`ChairClient`, `request_body(deterministic=True)`), so
-today a sealed `[structure]` temperature other than 0 is refused by name before
-any chair starts (`structure_pass.executable_temperature`) — running at 0 under
-a record that says otherwise would be a posture reported rather than executed.
-Widening the seam to carry a per-call temperature is what unlocks a non-zero
-value; the section, the loader, the recheck and the record are already in
-place for it.
+**Decoding.** The structure chair reads at its row of `config/decoding.toml`'s
+`chair_decoding` table: Chandra's own page pipeline's first request
+(`temperature` 0.0, `top_p` 0.1, `chandra/model/vllm.py` at the pinned
+revision) over vLLM's defaults for the fields Chandra does not send (`top_k` 0,
+`min_p` 0, `repetition_penalty` 1), which the loader holds equal to the pinned
+native recipe's first request. `[structure]` holds only coverage recovery, and
+recovery follows Chandra's own retry schedule (`recovery_schedule =
+"chandra-native-retry"`): attempt n sends the row with the pinned recipe's
+request n temperature and top_p (0.2/0.95, then 0.4/0.95, up to the sealed
+ceiling of three), which is the maker's own
+recovery from a degenerate page. The trigger stays this stage's (a structural
+loop or an invalid layout); only the sampling is Chandra's. Every attempt runs
+under the serving row's one seed, recorded as `attempt_seed`: at temperature 0
+a reseeded greedy request would be the first request again. `ChairClient`
+selects the attempt's values from the sealed policy by its own chair and the
+request's `structure_attempt_ordinal`, sends them with the seed, and records
+both on the call record beside `sampling_effective`, the values the pinned
+vLLM samples under (its greedy first request runs at `top_p` 1). Each
+attempt's answer record carries every sampling value it sent under
+`decoding.sampling`, in the call record's own form; `common/stage.py` holds
+each attempt's record and call to the sealed values for its ordinal.
 
 **Every witness runs its own pass.** SPEC_D §3's "captured" kind — filing the
 structure chair's transcription as Attestator 1's Testimonium instead of
@@ -1193,8 +1206,8 @@ three live witness chairs, a live Perlector, and the Recensor, Archetypus and
 Armarium as real programs over acts no fixture declared. It asserts that each
 minted region's `raw_bounds` are the chair's own rectangle and its `act_id`
 recomputes from them, that the seal verifies at the Attestatores' own
-boundary, that the sealed `[structure]` temperature is both on the wire and on
-every answer record, that no Designator artifact carries a byte of the chair's
+boundary, that the structure chair's sealed sampling values are on the wire,
+on every call record and on every answer record, that no Designator artifact carries a byte of the chair's
 transcription, and that a second attempt whose rectangles moved is an ordinary
 run — different acts on the page that changed, the same act on the page that
 did not, because identity is content-addressed rather than positional. The

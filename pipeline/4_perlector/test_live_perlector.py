@@ -39,7 +39,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import validate_input_refs
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
-from common.decoding import load_decoding_policy
+from common.decoding import SAMPLING_FIELDS, load_decoding_policy
 from common.runtree.store import SERVING_LOGS_DIR, RunTree
 from common.sealed_config import read_sealed_toml
 from common.stage import StageContext
@@ -61,6 +61,8 @@ from operations.serving.fakes import (
     FakeRegistry,
     ScriptedAnswer,
     scripted_prompt_too_long,
+    shipped_chair_decoding,
+    shipped_decoding_policy,
 )
 from operations.serving.http import EndpointUnavailable, HttpResponse
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
@@ -331,7 +333,7 @@ def _serving_factory(
             tier=tier,
             retain=lambda data: retain_chair_bytes(context, data),
             decoding_config_sha256=decoding_sha256,
-            record_temperature=decoding_policy["reading_of_record"]["temperature"],
+            decoding_policy=decoding_policy,
             read_receipt=context.tree.read_run_receipt,
         )
 
@@ -595,7 +597,54 @@ def test_live_reproof_call_missing_generation_is_a_schema_refusal(live_run, tmp_
         policy_schema=draft["policy"]["schema"],
     )
     with pytest.raises(SchemaRefusal, match="no recorded generation object"):
-        perlector_audit._validate_live_reproof_request(tree, reading, malformed_evidence, request)
+        perlector_audit._validate_live_reproof_request(
+            tree, reading, malformed_evidence, request, shipped_decoding_policy()[0]
+        )
+
+
+def _first_live_reproof(root: Path):
+    """The first published reading whose audit carried a live re-proof call, with
+    its call evidence and the audit request that call answered."""
+    tree = RunTree(root, "r")
+    for reading in _published_readings(root):
+        finding_ref = reading["payload"]["audit"]["finding_ref"]
+        finding = json.loads(tree.read_bytes(finding_ref["relative_path"]))
+        call_evidence = finding["payload"]["reproof_call"]
+        if call_evidence is not None:
+            break
+    else:
+        raise AssertionError("the live builder produced no re-proof call")
+    draft_ref = reading["payload"]["audit"]["draft_ref"]
+    draft = json.loads(tree.read_bytes(draft_ref["relative_path"]))["payload"]
+    request = perlector_audit.audit_request(
+        act_key=draft["act_key"],
+        attempt_ordinal=draft["attempt_ordinal"],
+        draft_ref=draft_ref,
+        semi_final_text=draft["semi_final_text"],
+        flags=draft["flags"],
+        policy_schema=draft["policy"]["schema"],
+    )
+    return tree, reading, call_evidence, request
+
+
+def test_the_audit_rebuild_holds_a_reproof_call_to_the_sealed_perlector_row(
+    live_run, tmp_path, monkeypatch
+):
+    root, _catalogue = live_run
+    _run_perlector(
+        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+    )
+    tree, reading, call_evidence, request = _first_live_reproof(root)
+    policy = shipped_decoding_policy()[0]
+    # Positive control: the retained call verifies against the sealed row.
+    perlector_audit._validate_live_reproof_request(tree, reading, call_evidence, request, policy)
+    with pytest.raises(SchemaRefusal, match="without the run's sealed decoding policy"):
+        perlector_audit._validate_live_reproof_request(tree, reading, call_evidence, request, None)
+    # A policy whose Perlector row differs is not the one this call was sent under.
+    moved = copy.deepcopy(policy)
+    moved["chair_decoding"]["perlector"]["presence_penalty"] = 1.0
+    with pytest.raises(SchemaRefusal, match="sampling is off"):
+        perlector_audit._validate_live_reproof_request(tree, reading, call_evidence, request, moved)
 
 
 def test_the_pass_asks_the_engine_exactly_once_per_reading_and_never_retries(
@@ -615,9 +664,10 @@ def test_the_pass_asks_the_engine_exactly_once_per_reading_and_never_retries(
     # Pass A and Pass B for every act that was read, plus at most one re-proof
     # each; nothing in this stage may ask twice for one arm.
     assert 2 * len(readings) <= len(endpoint.requests) <= 3 * len(readings)
-    # Every request carries the sealed record posture and nothing sampled.
+    # Every request carries the Perlector's sealed sampling row, exactly.
+    sampling = shipped_chair_decoding("perlector")
     for request in endpoint.requests:
-        assert request["temperature"] == 0
+        assert {key: request[key] for key in SAMPLING_FIELDS if key in request} == sampling
         assert request["stream"] is False
         assert request["model"] == SERVED_MODEL_ID
 
@@ -1291,31 +1341,95 @@ def test_two_digests_for_one_input_path_are_refused():
         perlector._distinct_inputs([first, second])
 
 
-def test_an_engine_call_naming_bytes_that_moved_is_refused(live_run):
-    """A record whose response reference resolves to nothing reads as evidence."""
-    root, _catalogue = live_run
-    tree = RunTree(root, "r")
-    _digest, result = tree.put_blob(PERLECTOR, b"a retained response")
+def _engine_call_world(tree, *, seed: int, schema: str = "chair-call-record.v3"):
+    """A retained Perlector call record at its sealed row, and a context that reads it.
+
+    The serving receipt's seed is 7; the variance arms' are the sealed policy's.
+    """
+    from common.decoding import (
+        DEFAULT_DECODING_CONFIG_PATH,
+        chair_decoding,
+        engine_effective_sampling,
+        load_decoding_policy,
+        recorded_sampling,
+    )
+
+    policy, _digest = load_decoding_policy()
+    sampling = chair_decoding(policy, "perlector")
+    receipt_ref = {"relative_path": "receipts/sha256/r.json", "sha256": "a" * 64}
+    call = {
+        "schema": schema,
+        "receipt_ref": receipt_ref,
+        "generation_sent": {**recorded_sampling(sampling), "max_tokens": 10, "seed": seed},
+        "sampling_effective": recorded_sampling(engine_effective_sampling(sampling)),
+    }
+    _digest, raw = tree.put_blob(PERLECTOR, b"a retained response")
+    _digest, retained_call = tree.put_blob(PERLECTOR, json.dumps(call).encode())
     context = SimpleNamespace(
         input_ref=lambda relative_path: {
             "relative_path": relative_path,
             "sha256": digest_bytes(tree.read_bytes(relative_path)),
-        }
+        },
+        tree=SimpleNamespace(
+            read_bytes=tree.read_bytes,
+            read_run_receipt=lambda reference: {"seed": 7} if reference == receipt_ref else {},
+        ),
+        args=SimpleNamespace(decoding_config=DEFAULT_DECODING_CONFIG_PATH),
+        require_sealed_config=lambda _name, _digest: None,
     )
-    honest = {"relative_path": result.relative_path, "sha256": digest_bytes(b"a retained response")}
-    full_call = {
-        "raw_response_ref": honest,
-        "call_record_ref": honest,
-        "response_sha256": honest["sha256"],
+    raw_ref = {"relative_path": raw.relative_path, "sha256": digest_bytes(b"a retained response")}
+    call_ref = context.input_ref(retained_call.relative_path)
+    engine_call = {
+        "raw_response_ref": raw_ref,
+        "call_record_ref": call_ref,
+        "response_sha256": raw_ref["sha256"],
         "finish_reason": "stop",
         "served_model_id": SERVED_MODEL_ID,
     }
-    assert perlector.engine_call_inputs(context, full_call) == [honest, honest]
-    lying = {"relative_path": result.relative_path, "sha256": "c" * 64}
+    return context, engine_call
+
+
+def test_an_engine_call_naming_bytes_that_moved_is_refused(live_run):
+    """A record whose response reference resolves to nothing reads as evidence."""
+    root, _catalogue = live_run
+    context, full_call = _engine_call_world(RunTree(root, "r"), seed=7)
+    honest = [full_call["raw_response_ref"], full_call["call_record_ref"]]
+    assert perlector.engine_call_inputs(context, full_call, variance_arm=None) == honest
+    lying = {"relative_path": full_call["raw_response_ref"]["relative_path"], "sha256": "c" * 64}
     with pytest.raises(SchemaRefusal, match="retained bytes at that path"):
         perlector.engine_call_inputs(
-            context, {**full_call, "raw_response_ref": lying, "response_sha256": lying["sha256"]}
+            context,
+            {**full_call, "raw_response_ref": lying, "response_sha256": lying["sha256"]},
+            variance_arm=None,
         )
+
+
+def test_an_engine_call_is_held_to_its_pass_s_sealed_seed(live_run):
+    """Perlectio sends the receipt's seed and each variance arm its own; a call
+    under another pass's seed is refused where the reading binds it."""
+    from common.decoding import VARIANCE_ARMS, load_decoding_policy, variance_arm_seed
+
+    root, _catalogue = live_run
+    policy, _digest = load_decoding_policy()
+    prior_seed, nuda_seed = (variance_arm_seed(policy, arm) for arm in VARIANCE_ARMS)
+    tree = RunTree(root, "r")
+    context, at_receipt_seed = _engine_call_world(tree, seed=7)
+    _context, at_nuda_seed = _engine_call_world(tree, seed=nuda_seed)
+    perlector.engine_call_inputs(context, at_nuda_seed, variance_arm="lectio-nuda")
+    with pytest.raises(SchemaRefusal, match=f"sent seed {nuda_seed}, not {prior_seed}"):
+        perlector.engine_call_inputs(context, at_nuda_seed, variance_arm="lectio-prior")
+    with pytest.raises(SchemaRefusal, match=f"sent seed 7, not {nuda_seed}"):
+        perlector.engine_call_inputs(context, at_receipt_seed, variance_arm="lectio-nuda")
+    with pytest.raises(SchemaRefusal, match=f"sent seed {nuda_seed}, not 7"):
+        perlector.engine_call_inputs(context, at_nuda_seed, variance_arm=None)
+
+
+def test_an_engine_call_off_its_sealed_row_or_retired_is_refused(live_run):
+    root, _catalogue = live_run
+    tree = RunTree(root, "r")
+    context, retired = _engine_call_world(tree, seed=7, schema="chair-call-record.v2")
+    with pytest.raises(SchemaRefusal, match="written as chair-call-record.v2"):
+        perlector.engine_call_inputs(context, retired, variance_arm=None)
 
 
 def test_an_engine_call_with_the_wrong_shape_is_refused_by_name():
@@ -1323,7 +1437,7 @@ def test_an_engine_call_with_the_wrong_shape_is_refused_by_name():
     until this refusal: every other field's shape is checked, and a live
     reading's `engine_call` should not be the one exception."""
     with pytest.raises(SchemaRefusal, match="wrong shape"):
-        perlector.engine_call_inputs(SimpleNamespace(), {"raw_response_ref": {}})
+        perlector.engine_call_inputs(SimpleNamespace(), {"raw_response_ref": {}}, variance_arm=None)
 
 
 def test_an_engine_call_with_two_digests_for_one_response_is_refused():
@@ -1339,7 +1453,7 @@ def test_an_engine_call_with_two_digests_for_one_response_is_refused():
         "served_model_id": SERVED_MODEL_ID,
     }
     with pytest.raises(SchemaRefusal, match="two different digests"):
-        perlector.engine_call_inputs(SimpleNamespace(), engine_call)
+        perlector.engine_call_inputs(SimpleNamespace(), engine_call, variance_arm=None)
 
 
 def test_a_fixture_reading_carries_no_engine_call_field():
@@ -1478,8 +1592,8 @@ def test_stage_chair_client_logs_under_the_run_tree_and_leases_off_it(live_run, 
         context,
         _perlector_identity(),
         TIER,
+        decoding_policy=decoding_policy,
         decoding_config_sha256=decoding_sha256,
-        record_temperature=decoding_policy["reading_of_record"]["temperature"],
     )
     tree_root = context.tree.root
     assert client._manager.log_root.is_relative_to(tree_root)
@@ -2633,7 +2747,11 @@ def _stop_after_the_first_semi_final(monkeypatch, *, wait: float = 0.0) -> None:
     _stop_after_the_first(monkeypatch, perlector.SEMI_FINAL_KIND, wait=wait)
 
 
-def _stop_after_the_first(monkeypatch, kind: str, *, wait: float = 0.0) -> None:
+def _stop_after_the_first(
+    monkeypatch, kind: str, *, wait: float = 0.0, in_flight: threading.Event | None = None
+) -> None:
+    """Interrupt once the first `kind` record is written; with `in_flight`, not before
+    that event says the call the test holds has reached its endpoint."""
     real_publish = StageContext.publish
     struck = False
 
@@ -2642,6 +2760,8 @@ def _stop_after_the_first(monkeypatch, kind: str, *, wait: float = 0.0) -> None:
         result = real_publish(self, **kwargs)
         if kwargs["kind"] == kind and not struck:
             struck = True
+            if in_flight is not None and not in_flight.wait(10):
+                raise AssertionError("the held call never reached its endpoint")
             time.sleep(wait)
             raise KeyboardInterrupt
         return result
@@ -2724,6 +2844,9 @@ class _HeldEndpoint(_ContentEndpoint):
 
     def __init__(self, *, answer: bool, holds=_act_two_reading, **kwargs) -> None:
         super().__init__(**kwargs)
+        # Set when the held request arrives, so the test interrupts only once the
+        # call is really in flight rather than racing the reader thread to it.
+        self.arrived = threading.Event()
         self.release = threading.Event()
         self._answer = answer
         self._holds = holds
@@ -2732,6 +2855,7 @@ class _HeldEndpoint(_ContentEndpoint):
     def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
         if body is not None and self._holds(body) and not self._held:
             self._held = True
+            self.arrived.set()
             self.release.wait(10)
             if not self._answer:
                 raise EndpointUnavailable("the connection dropped with the call in flight")
@@ -2762,7 +2886,7 @@ def _interrupt_with_act_two_in_flight(
     """
     endpoint = _HeldEndpoint(answer=answer, holds=holds, served_model_id=SERVED_MODEL_ID)
     with monkeypatch.context() as patch:
-        _stop_after_the_first(patch, stop_after)
+        _stop_after_the_first(patch, stop_after, in_flight=endpoint.arrived)
         with pytest.raises(KeyboardInterrupt):
             _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, endpoint=endpoint)
         if before_release is not None:
@@ -3031,7 +3155,7 @@ def test_a_reply_another_record_binds_answers_no_send():
     receipt = {"relative_path": "receipts/r.json", "sha256": "0" * 64}
     images = ["1" * 64]
     call = {
-        "schema": sorted(perlector.CHAIR_CALL_RECORD_SCHEMAS)[0],
+        "schema": perlector.CHAIR_CALL_RECORD_SCHEMA,
         "receipt_ref": receipt,
         "image_sha256s": images,
         "raw_response_ref": {"relative_path": "4_perlector/blobs/raw", "sha256": "2" * 64},
@@ -3061,3 +3185,8 @@ def test_a_reply_another_record_binds_answers_no_send():
     # Raw bytes with no call record naming them cannot be attributed to any act.
     del blobs["call"]
     assert perlector._unrecorded_replies(context([])) == ([], True)
+    # A call record from before the decoding bump is refused by its name, not
+    # counted as a reply no record binds.
+    blobs["call"] = json.dumps({**call, "schema": "chair-call-record.v2"}).encode()
+    with pytest.raises(ContractError, match="written as chair-call-record.v2"):
+        perlector._unrecorded_replies(context([]))

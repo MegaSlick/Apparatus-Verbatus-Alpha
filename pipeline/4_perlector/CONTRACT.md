@@ -657,7 +657,13 @@ reading's `protocol` record, and Pass A counts in `calls_per_act` under `fed` an
 built from identical dossier arguments — page context, no Testimonia, no prior
 draft — so for one act they carry the same `dossier_digest` and the same
 `rendered_sha256`. That is correct (they *are* the same condition) and it is
-pinned by a test, because it is not visible from the kind names.
+pinned by a test, because it is not visible from the kind names. Because they are
+the same request, each arm is drawn under its own seed from `config/decoding.toml`'s
+`[variance_experiment]` (`common.decoding.variance_arm_seed`: lectio-prior sends
+`seed`, Lectio nuda `seed + 1`), recorded on its call record's `generation_sent`;
+under one seed the two would be one draw and measure no variance. The seed is the
+only thing the arm changes, and the only thing `VLLMReader` reads `pass_kind` for
+beyond its membership check and the audit hand-off.
 
 What each contrast measures depends on the mode. In a **fed** run (`--blind-read fed`),
 nuda against lectio-prior measures sampling variance; lectio-prior (or nuda) against
@@ -1094,7 +1100,7 @@ therefore at most those calls, which overlap: about the slowest one (40 s on the
 estimate, `PLANNED_SECONDS_PER_CALL`), and never longer than one request's hard limit,
 `request_timeout_seconds` in the serving recipe (600 s on the real rows). That time is
 billed. A batched reply
-at temperature 0 can differ from an unbatched one in low-order bits; each record holds
+can differ from an unbatched one in low-order bits, so its sampled tokens can too; each record holds
 the reply its call received, and each `reader-sent` record carries the width its call
 was sent under as `concurrency`, so two runs' readings can be told apart from the tree
 alone. It is the window's width, the most calls this pass kept in flight; the batch the
@@ -1120,6 +1126,25 @@ every `CHAIR_RESPONSE_*` code is one way an answer failed to be a reading. Its s
 that may not go on the wire, which is a defect in this code rather than an account of the
 run, and a traceback naming the construction site is worth more there than a named exit.
 Pinned by `::test_a_non_200_from_the_engine_stops_the_pass_in_this_stage_s_exit_vocabulary`.
+
+**Decoding.** Every Perlector request samples at the Perlector's row of
+`config/decoding.toml`'s `chair_decoding`: Qwen3.8-27B's model card values for
+non-thinking mode (`temperature` 0.7, `top_p` 0.8, `top_k` 20, `min_p` 0,
+`presence_penalty` 1.5, `repetition_penalty` 1.0), with the thinking switch off
+(`chat_template_kwargs = {enable_thinking: false}`). `ChairClient` selects the row
+by its own chair from the sealed policy `main` loaded, and sends it with a seed: the
+serving row's seed for Perlectio, `primed-without-prior` and the audit re-proof,
+and the arm's own seed for lectio-prior and Lectio nuda (above). Seed, row and
+`sampling_effective` (what the pinned vLLM samples under; these values pass through
+unchanged) are on every call record. Every reading's call record is held to the
+sealed row and its pass's seed as the reading is bound (`run.engine_call_inputs`,
+through `common.stage.verify_retained_call_sampling`), the audit rebuild holds the
+re-proof's to the row and the receipt's seed, and the failed-Perlectio contract
+holds a failed call to the row and to the receipt's or an arm's seed, since a
+failure does not name its pass (`common.decoding.verify_call_sampling`). A call
+record from before this decoding is refused by its schema's name, including on a
+resume, where it is never counted as an unattributed reply. A seeded request is reproducible in
+intent, not bit for bit: a batched step can differ in low-order bits.
 
 **`max_tokens` is sent, from the sealed decoding policy.** `perlector_generation` holds
 one cap for every reading pass, so the passes stay one condition, and one for the

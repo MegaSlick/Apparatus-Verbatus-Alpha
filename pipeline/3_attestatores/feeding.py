@@ -6,7 +6,6 @@ capture, so it can never affect generation or alter the captured bytes.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable
 from contextlib import contextmanager
 from itertools import groupby
@@ -17,6 +16,7 @@ from typing import Any, Callable, Final, Iterator, Mapping
 from common import chandra_layout
 from common.contracts.canonical import digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
+from common.decoding import SAMPLING_FIELDS
 from common.native_witness import (
     CHURRO_OUTPUT_TOKENS,
     churro_capture_system_prompt,
@@ -88,12 +88,8 @@ def churro_generation() -> dict[str, int]:
     25,000 tokens (the vendor's own `DEFAULT_OCR_MAX_TOKENS`), read from ``request_capacity.DECLARED_ANSWER_BOUND_TOKENS``
     so this chair's bound cannot drift from the number the bound seam applies.
     What actually goes out is ``min(this, max_model_len - image - prompt)``
-    through ``live_witness.generation_bound_sent``.
-
-    The vendor's ``repetition_penalty`` of 1.05 is deliberately not folded in
-    here: this declared view is written through the canonical writer, which
-    refuses floats outright. It goes on the wire through
-    :func:`churro_wire_decoding` instead.
+    through ``live_witness.generation_bound_sent``. The sampling values are the
+    sealed decoding table's row for this chair.
     """
     return {"max_new_tokens": CHURRO_OUTPUT_TOKENS}
 
@@ -110,29 +106,13 @@ def chandra_generation() -> dict[str, int]:
     return {"max_new_tokens": DECLARED_ANSWER_BOUND_TOKENS["attestator_1"]}
 
 
-def churro_wire_decoding() -> dict[str, float]:
-    """Churro's own shipped ``repetition_penalty``, sent explicitly as well.
-
-    Churro's rows are ``generation_config = "auto"``, so vLLM already reads the
-    model's own 1.05; it is sent on the wire too so the request stands on its
-    own evidence rather than on an engine default nobody observed. The CHURRO
-    paper documents this model entering degeneration loops without it. At ``temperature = 0`` the
-    penalty is applied before the greedy argmax, so determinism is untouched.
-
-    Not folded into :func:`churro_generation`, whose canonical writer refuses
-    floats outright; the retained chair-call record carries the exact wire
-    value instead (``wire-decimal.v1``, shared with DAI's identical 1.05).
-    """
-    return {"repetition_penalty": 1.05}
-
-
 # The tokenizer's own eos_token, `<|im_end|>`, at the pinned revision -- what
 # vLLM already holds for DAI without being told.
 DAI_TOKENIZER_EOS_TOKEN_ID: Final = 151645
 
 
 def dai_wire_stop_token_ids() -> dict[str, list[int]]:
-    """DAI's second EOS id, sent explicitly as well as resolved under ``auto``.
+    """DAI's second EOS id, sent explicitly as well as read by the engine from the file.
 
     Derived from the carried ``eos_token_id`` (:func:`dai_generation`),
     ``[151645, 151643]``, never re-typed. Sent as redundant request evidence,
@@ -196,52 +176,43 @@ def dai_generation() -> dict[str, Any]:
     }
 
 
-def dai_generation_accounting(generation_config: str) -> dict[str, Any]:
-    """Account for every carried DAI key under the resolved serving posture.
+def dai_generation_accounting() -> dict[str, Any]:
+    """Account for every carried DAI key under the serving posture.
 
     This is an account of request construction, not a claim that a live engine
-    applied every vendor default. ``auto`` directs the engine to the pinned
-    vendor file at launch; the chair-call record separately proves the
-    request's explicit fields, including manager-owned temperature zero and
-    seed.
+    applied every vendor value. Every serving row runs vLLM under
+    ``generation_config = "vllm"``, which fills no sampling field from the file
+    but still reads its ``eos_token_id``; the sampling values are sent from the
+    sealed decoding table's DAI row, which carries this file's values, and the
+    chair-call record proves every explicit field, including the seed.
     """
-    if generation_config != "auto":
-        raise SchemaRefusal("DAI native generation accounting requires generation_config='auto'")
     vendor_generation = dai_generation()
+    # Read off the carried file, not typed again: the sealed table's DAI row sends
+    # these values (`common/test_vendor_parity.py` proves the two equal).
+    sampling_keys = tuple(sorted(set(vendor_generation) & SAMPLING_FIELDS))
     deliberately_not_sent = {
-        "bos_token_id": "delegated to the engine's pinned model snapshot under auto",
-        "pad_token_id": "delegated to the engine's pinned model snapshot under auto",
+        "bos_token_id": "not a request field; the served tokenizer's own id applies",
+        "pad_token_id": "not a request field; a single unbatched sequence is never padded",
         "eos_token_id": (
-            "delegated to the pinned generation config under auto; the secondary id is "
-            "also sent explicitly as stop_token_ids"
+            "read by the engine from the pinned file under either generation-config "
+            "setting; the secondary id is also sent explicitly as stop_token_ids"
         ),
-        "do_sample": "intentionally superseded by the governed temperature-zero request",
-        "temperature": (
-            f"vendor {json.dumps(vendor_generation['temperature'])} is intentionally "
-            "superseded by governed temperature zero"
-        ),
+        "do_sample": "an OpenAI request has no such field; the sent temperature samples",
         "transformers_version": "vendor metadata, not an OpenAI request field",
     }
     assert_generation_config_key_coverage(
         chair="attestator_2",
         vendor_generation_config=vendor_generation,
-        sent_keys=("repetition_penalty", "top_k", "top_p"),
+        sent_keys=sampling_keys,
         deliberately_not_sent=deliberately_not_sent,
     )
     return {
-        "schema": "dai-generation-accounting.v1",
-        "engine_generation_config": "auto",
-        "vendor_keys_sent_verbatim": ["repetition_penalty", "top_k", "top_p"],
-        "vendor_keys_delegated_to_engine_auto": [
-            "bos_token_id",
-            "eos_token_id",
-            "pad_token_id",
-        ],
-        "vendor_keys_intentionally_overridden": ["do_sample", "temperature"],
+        "schema": "dai-generation-accounting.v3",
+        "engine_generation_config": "vllm",
+        "vendor_keys_sent_by_sealed_decoding": list(sampling_keys),
+        "vendor_keys_read_by_engine": ["eos_token_id"],
+        "vendor_keys_without_request_field": ["bos_token_id", "do_sample", "pad_token_id"],
         "vendor_metadata_keys": ["transformers_version"],
-        "governed_temperature": 0,
-        # Canonical writer refuses floats; retain the shortest JSON decimal.
-        "vendor_temperature_decimal": json.dumps(vendor_generation["temperature"]),
         "vendor_do_sample": vendor_generation["do_sample"],
         "explicit_secondary_eos_token_ids": dai_wire_stop_token_ids()["stop_token_ids"],
         "seed_source": "sealed-serving-profile",
@@ -250,11 +221,9 @@ def dai_generation_accounting(generation_config: str) -> dict[str, Any]:
 
 def validate_dai_generation_accounting(value: Any) -> dict[str, Any]:
     """Close the retained DAI generation ledger against the carried vendor view."""
-    expected = dai_generation_accounting("auto")
+    expected = dai_generation_accounting()
     if not isinstance(value, dict) or value != expected:
-        raise SchemaRefusal(
-            "DAI model view generation accounting differs from the closed auto-policy ledger"
-        )
+        raise SchemaRefusal("DAI model view generation accounting differs from the closed ledger")
     return value
 
 

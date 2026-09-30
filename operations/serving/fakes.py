@@ -26,6 +26,8 @@ from common import chandra_layout, structure_answer
 from common.chairs.errors import ServingRecipeRefusal
 from common.chairs.models import ChairIdentity, ServingDetails, VerifiedSnapshot
 from common.chairs.receipts import build_receipt
+from common.decoding import chair_decoding as sealed_chair_decoding
+from common.decoding import load_decoding_policy
 
 from .client import ChairClient, RetainBytes
 from .config import SubprocessProfile
@@ -658,13 +660,22 @@ class FakePublisher:
         )
 
 
+def shipped_decoding_policy() -> tuple[dict[str, Any], str]:
+    """The shipped decoding policy and its seal, as a stage's ``main`` loads them."""
+    return load_decoding_policy()
+
+
+def shipped_chair_decoding(chair: str) -> dict[str, int | float]:
+    """One chair's sampling values from the shipped decoding policy."""
+    policy, _digest = load_decoding_policy()
+    return sealed_chair_decoding(policy, chair)
+
+
 def fake_serving_factory(
     *,
     manager: ServingManager,
     retain: RetainBytes,
-    decoding_config_sha256: str,
     read_receipt: Callable[[Mapping[str, str]], Mapping[str, object]],
-    record_temperature: int = 0,
     adapter_calibration: AdapterCalibration | None = None,
 ) -> Callable[[Any, ChairIdentity, str], ChairClient]:
     """Build the ``serving_factory(context, chair, tier) -> ChairClient`` a
@@ -672,8 +683,10 @@ def fake_serving_factory(
 
     ``context`` is accepted and ignored: production factories close over a
     real ``StageContext`` to build ``retain``/``read_receipt``, but this fake
-    factory already has both, supplied directly by the test.
+    factory already has both, supplied directly by the test. Each chair sends
+    its row of the shipped decoding policy.
     """
+    policy, digest = load_decoding_policy()
 
     def factory(context: object, identity: ChairIdentity, tier: str) -> ChairClient:
         del context
@@ -682,8 +695,8 @@ def fake_serving_factory(
             identity=identity,
             tier=tier,
             retain=retain,
-            decoding_config_sha256=decoding_config_sha256,
-            record_temperature=record_temperature,
+            decoding_config_sha256=digest,
+            decoding_policy=policy,
             read_receipt=read_receipt,
             adapter_calibration=adapter_calibration,
         )

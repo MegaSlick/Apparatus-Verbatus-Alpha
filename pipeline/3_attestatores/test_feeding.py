@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from types import SimpleNamespace
@@ -905,23 +904,35 @@ def test_dai_v2_model_view_retains_the_auto_generation_ledger_and_v1_stays_reada
     assert legacy["adapter"] == "dai-atr.v1"
     assert validate_dai_model_view(legacy) is legacy
 
-    ledger = dai_generation_accounting("auto")
+    ledger = dai_generation_accounting()
     current = dai_model_view(**kwargs, generation_accounting=ledger)
     assert current["adapter"] == "dai-atr.v2"
     assert current["generation_accounting"] == ledger
-    assert ledger["vendor_keys_intentionally_overridden"] == ["do_sample", "temperature"]
+    assert ledger["schema"] == "dai-generation-accounting.v3"
+    assert ledger["engine_generation_config"] == "vllm"
+    assert ledger["vendor_keys_sent_by_sealed_decoding"] == [
+        "repetition_penalty",
+        "temperature",
+        "top_k",
+        "top_p",
+    ]
+    assert ledger["vendor_keys_read_by_engine"] == ["eos_token_id"]
+    assert ledger["vendor_keys_without_request_field"] == [
+        "bos_token_id",
+        "do_sample",
+        "pad_token_id",
+    ]
     carried_generation = dai_generation()
-    assert ledger["vendor_temperature_decimal"] == json.dumps(carried_generation["temperature"])
     assert ledger["vendor_do_sample"] is carried_generation["do_sample"]
-    assert ledger["governed_temperature"] == 0
     assert validate_dai_generation_accounting(ledger) is ledger
     assert validate_dai_model_view(current) is current
 
-    forged = {**ledger, "governed_temperature": 1}
+    forged = {**ledger, "vendor_keys_without_request_field": []}
     with pytest.raises(SchemaRefusal, match="generation accounting differs"):
         validate_dai_generation_accounting(forged)
-    with pytest.raises(SchemaRefusal, match="generation_config='auto'"):
-        dai_generation_accounting("vllm")
+    retired = {**ledger, "schema": "dai-generation-accounting.v2"}
+    with pytest.raises(SchemaRefusal, match="generation accounting differs"):
+        validate_dai_generation_accounting(retired)
 
 
 def test_dai_carried_request_bytes_and_uncertainty_tokens_are_not_normalized():
