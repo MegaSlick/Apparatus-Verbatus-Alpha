@@ -118,7 +118,12 @@ def _canary_in_bundle(data: bytes, act_ids: set[str], ordinals: set[int]) -> boo
         for name in ("EXPORT_MANIFEST.json", "sources.json"):
             if _contains_canary_identity(json.loads(archive.read(name)), act_ids, ordinals):
                 return True
-        for name in {"acts.jsonl", "review-items.jsonl", "reconstructions.jsonl"} & names:
+        for name in {
+            "acts.jsonl",
+            "review-items.jsonl",
+            "reconstructions.jsonl",
+            "coniector.jsonl",
+        } & names:
             with archive.open(name) as member:
                 if any(
                     _contains_canary_identity(json.loads(line), act_ids, ordinals)
