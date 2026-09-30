@@ -5,13 +5,19 @@ The Attestatores, the Perlector and the Recensor each read the page witnesses
 from their own run authority through these helpers, so the three never derive a
 different roster or accept a page Testimonium another would refuse. Nothing here
 trusts an upstream stage's check: every record is validated where it is read.
+
+This module is the name stages import these from, the roster reader
+(`declared_page_witness_chairs`) and its check (`require_page_roster`)
+included, which live beside the page feed in `common.page_path`.
+`common.stage` alone reads them from `common.page_path`, since this module
+reads `common.stage`.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from common.chairs.models import ChairIdentity
+from common.chairs.models import AbsentChair, ChairIdentity
 from common.chandra_native_retry import validate_trace as validate_chandra_trace
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
@@ -33,9 +39,6 @@ from common.page_path import (
     empty_detector_page,
     refs_by_path,
 )
-
-# The roster and its check live beside the page feed that applies them; every
-# consumer reads them through this module too.
 from common.page_path import declared_page_witness_chairs as declared_page_witness_chairs
 from common.page_path import require_page_roster as require_page_roster
 from common.page_witness_units import UNIT_KINDS
@@ -301,7 +304,7 @@ def verify_page_native_capture(
             "retained raw response as a verified input"
         )
     resolved = context.registry.resolve(chair)
-    if not isinstance(resolved, ChairIdentity):
+    if isinstance(resolved, AbsentChair):
         raise SchemaRefusal(
             f"{subject} page Testimonium for chair {chair!r} carries a native capture while "
             "the roster records that chair as absent; an absent chair has no adapter "

@@ -71,8 +71,9 @@ Churro's section names -- are part of its report and are shown as given.
     boxes = page_accounting.placement_boxes(feed)  # each id's box for an entry's region
     nothing = shows_nothing(feed)        # a feed a reading could not be made from
 
-Each `testimonium` must already have passed the stage's own page-Testimonium
-checks (`run.validate_page_testimonium_record`); this module re-derives units
+Each `testimonium` must already have passed the page-Testimonium checks
+(`common.page_testimonia.validate_page_testimonium_record` and
+`verify_page_native_capture`); this module re-derives units
 from its retained bytes but does not re-run those checks. It does check that
 each `testimonium` is the record its `testimonium_ref` names: the ref's bytes,
 read digest-checked, decode to exactly that record, a `page-testimonium` of
@@ -115,6 +116,7 @@ from common.contracts.canonical import digest_of, is_plain_int
 from common.contracts.envelope import digest_ref, read_verified
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.native_witness import REPETITION_FINDING_KINDS
+from common.page_path import PAGE_TESTIMONIUM_KIND, READING_UNIT
 from common.page_witness_units import (
     NO_ANSWER_HEALTH,
     READ_OUTCOME,
@@ -127,7 +129,6 @@ from common.witness_regime import BLINDED, NAMED, REGIMES
 from operations.serving.surya_detector import contract as surya_contract
 
 SCHEMA: Final = "perlector-page-feed.v1"
-READING_UNIT: Final = "page"
 BOX_SCALE: Final = 1000
 
 # The Perlector protocol's table holding the feed switches.
@@ -157,7 +158,6 @@ _FEED_FIELDS: Final = frozenset(
 )
 _FEED_BOOLEAN_FIELDS: Final = ("witness_coordinates", "surya_lines", "surya_blocks")
 
-PAGE_TESTIMONIUM_KIND: Final = "page-testimonium"
 # The unit kinds about one act in size (`UNIT_KINDS`); the answer reserve counts
 # act entries from these only (`answer_measure`).
 _ACT_SIZED_UNIT_KINDS: Final = frozenset({"layout-block", "detector-record"})
@@ -198,7 +198,7 @@ TESTIMONY_PRESENT: Final = "present"
 TESTIMONY_NONE: Final = "none"
 
 
-# --- geometry -------------------------------------------------------------------
+# --- the sealed feed switches ----------------------------------------------------
 
 
 def validate_feed_table(table: Any) -> dict[str, Any]:
@@ -251,6 +251,9 @@ def validate_feed_table(table: Any) -> dict[str, Any]:
             f"{where} witnesses is neither {ALL_WITNESSES!r} nor a list of distinct chair names"
         )
     return {**table, "witnesses": witnesses if witnesses == ALL_WITNESSES else list(witnesses)}
+
+
+# --- geometry -------------------------------------------------------------------
 
 
 def box_1000(box_px: dict[str, int], page_size: tuple[int, int]) -> list[int]:

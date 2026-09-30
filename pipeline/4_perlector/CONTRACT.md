@@ -1233,7 +1233,7 @@ run (committed `round_cap = 1`) can read pages.
   resampler `identity`); `off` is none.
 - On a synthetic run only, a Chandra page joined from the fixture's act placeholders
   (no native capture) is read one unit per placeholder, box = its bbox widened to
-  whole pixels (`page_feed._fixture_chandra_reading`).
+  whole pixels (`page_witness_units._fixture_chandra_reading`).
 
 Every box on these records is the repository's `bounds` `{x, y, w, h}` in sealed-page
 pixels: the feed's `box_px`, an act-region's `union_box_px`, and every box the
@@ -1328,7 +1328,7 @@ anything (`common/page_path.py`, `entry_plans`). It is given:
   places entries by through the same `placement_boxes` the act-regions are cut from:
   under `witness_units = "flat"` a witness's units place nothing in either;
 - every page witness: a shown one as its feed row, a hidden one read by
-  `page_feed.witness_reading` and lettered with the next letter the feed did not use,
+  `page_witness_units.witness_reading` and lettered with the next letter the feed did not use,
   in sorted `witness_label` order; `blank` is its content health's `blank` when it
   read (`read` or `genuinely-empty`). A witness that read and gave no unit is
   recorded `witness-read-blank` when its health says its text is blank, and held
