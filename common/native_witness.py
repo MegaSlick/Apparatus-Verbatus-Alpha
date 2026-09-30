@@ -1092,13 +1092,14 @@ _ADMITTED_CAPTURE_PARSERS: Final = NATIVE_CAPTURE_PARSERS | _TRANSITIONAL_CAPTUR
 _NATIVE_CAPTURE_PARSE_STATES: Final = frozenset(
     {"not-requested", "pending", "parsed", "failed", "unrecognized-shape"}
 )
-#: Kept apart from the grammar's findings: a capture carries at most one of these.
-_CHURRO_REPETITION_FINDING_KINDS: Final = frozenset(
+#: The repetition scan's findings, which any native capture may carry. Kept
+#: apart from the grammar's findings: a capture carries at most one of these.
+REPETITION_FINDING_KINDS: Final = frozenset(
     {"post-hoc-repetition", "post-hoc-repetition-uninspected"}
 )
 #: The grammar's half is imported, not restated, so the two cannot drift.
 _CHURRO_CAPTURE_FINDING_KINDS: Final = (
-    _CHURRO_REPETITION_FINDING_KINDS | churro_document.DOCUMENT_FINDING_KINDS
+    REPETITION_FINDING_KINDS | churro_document.DOCUMENT_FINDING_KINDS
 )
 _CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
 # `eos`/`stop`/`max_new_tokens` are the fixture transport's words, `length` is
@@ -1360,16 +1361,14 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
         )
     if state not in {"parsed", "failed", "unrecognized-shape"} or parser not in CHURRO_PARSERS:
         raise SchemaRefusal("a retained Churro page capture has no terminal parse record")
-    repetitions = [
-        finding for finding in findings if finding["kind"] in _CHURRO_REPETITION_FINDING_KINDS
-    ]
+    repetitions = [finding for finding in findings if finding["kind"] in REPETITION_FINDING_KINDS]
     if len(repetitions) > 1:
         raise SchemaRefusal("a Churro page capture carries more than one repetition finding")
     for finding in findings:
         kind = finding["kind"]
         if kind not in _CHURRO_CAPTURE_FINDING_KINDS:
             raise SchemaRefusal(f"a Churro page capture has unknown finding kind {kind!r}")
-        if kind not in _CHURRO_REPETITION_FINDING_KINDS:
+        if kind not in REPETITION_FINDING_KINDS:
             # Grammar findings are held exactly by `verify_native_capture_bytes`.
             continue
         if kind == "post-hoc-repetition":

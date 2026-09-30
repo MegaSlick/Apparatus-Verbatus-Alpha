@@ -82,12 +82,29 @@ def _record(outcome: str, payload: dict) -> dict:
     }
 
 
+def _stamped(row: dict) -> dict:
+    """The row's testimonium as the Attestatores seal it: its chair, and a read one's health."""
+    testimonium = copy.deepcopy(row["testimonium"])
+    payload = testimonium.setdefault("payload", {})
+    payload.setdefault("chair", row["chair"])
+    if testimonium.get("outcome") == "read":
+        payload.setdefault("content_health", {"truncated": False})
+    return testimonium
+
+
 def _sealed(blobs: _Blobs, rows: list[dict]) -> list[dict]:
     """Each row's testimonium written to the byte store, its ref naming those bytes."""
-    return [
-        {**row, "testimonium_ref": blobs.retain(json.dumps(row["testimonium"]).encode())}
-        for row in rows
-    ]
+    sealed = []
+    for row in rows:
+        testimonium = _stamped(row)
+        sealed.append(
+            {
+                **row,
+                "testimonium": testimonium,
+                "testimonium_ref": blobs.retain(json.dumps(testimonium).encode()),
+            }
+        )
+    return sealed
 
 
 def _capture(adapter: str, ref: dict, parser: str, text: str) -> dict:
@@ -610,12 +627,12 @@ def test_the_page_instruction_keeps_the_act_instructions_doubt_marks_word_for_wo
         "Where ink cannot be read, write [[?]] in its place. Where a reading is uncertain, "
         "write it as [[reading]], or as [[reading|other|other]] to add other possible readings.",
     )
+    instruction = page_prompt.page_reading_instruction(feed_for(_Blobs()))
+    for sentence in marks:
+        assert sentence in prompts.TRANSCRIPTION_INSTRUCTION
+        assert sentence in instruction
     for feed in (feed_for(_Blobs()), feed_for(_Blobs(), render=None, page_image="off")):
-        instruction = page_prompt.page_reading_instruction(feed)
-        for sentence in marks:
-            assert sentence in prompts.TRANSCRIPTION_INSTRUCTION
-            assert sentence in instruction
-        example = instruction.split("in this form: ", 1)[1]
+        example = page_prompt.page_reading_instruction(feed).split("in this form: ", 1)[1]
         assert set(json.loads(example)) == {"acts", "set_aside"}
 
 
@@ -704,21 +721,21 @@ def _dense_page(blobs: _Blobs, *, characters: int = 12_000, acts: int = 20, line
 
 
 @pytest.mark.parametrize(
-    ("change", "fits_32k"),
+    ("change", "need"),
     [
-        # 4,960 image + 22,759 prompt (4,418 bytes of id, box and coordinate rows at one
-        # token each) + 6,903 answer = 34,622: over 32k, inside 65k.
-        ({}, False),
-        # Without Surya's 140 rows: 31,526.
-        ({"surya_lines": False, "surya_blocks": False}, True),
-        # One line per witness, Surya still shown: 32,053.
-        ({"witness_units": "flat"}, True),
-        # The overlay's second image costs another 4,960 tokens: 39,648.
-        ({"page_overlay": "boxes"}, False),
+        # 4,960 image + 46,278 prompt (every witness string and every id, box and
+        # coordinate row at one token per byte) + 6,903 answer.
+        ({}, 58_141),
+        # Without Surya's 140 rows.
+        ({"surya_lines": False, "surya_blocks": False}, 54_950),
+        # One line per witness, Surya still shown.
+        ({"witness_units": "flat"}, 54_834),
+        # The overlay's second image costs another 4,960 tokens.
+        ({"page_overlay": "boxes"}, 63_167),
     ],
     ids=["default", "no-surya", "flat", "overlay"],
 )
-def test_a_dense_page_fits_the_served_row_or_refuses_with_its_record(change, fits_32k):
+def test_a_dense_page_is_refused_at_32k_and_fits_65k(change, need):
     blobs = _Blobs()
     rows, census = _dense_page(blobs)
     render = _retained_render(blobs)
@@ -727,22 +744,20 @@ def test_a_dense_page_fits_the_served_row_or_refuses_with_its_record(change, fit
     arguments = dict(
         image_sizes=page_feed.request_image_sizes(feed),
         prompt_text=text,
+        prompt_parts=page_prompt.prompt_parts("unproven-real-perlector", feed),
         template_digest=page_prompt.BUILDER_SHA256,
         answer_measure=feed["answer_measure"],
         page_max_tokens=12288,
     )
-    if fits_32k:
-        admitted = page_request_capacity(_perlector_row(), **arguments)
-        record = admitted["capacity"]
-        assert record["fits"] and record["image_prompt_tokens"] == 4960
-        assert admitted["max_tokens"] == min(
-            12288, 32768 - record["image_prompt_tokens"] - record["prompt_tokens"]
-        )
-    else:
-        with pytest.raises(RequestCapacityRefusal) as refusal:
-            page_request_capacity(_perlector_row(), **arguments)
-        assert refusal.value.capacity["fits"] is False
-    assert page_request_capacity(_perlector_row(65536), **arguments)["capacity"]["fits"]
+    with pytest.raises(RequestCapacityRefusal) as refusal:
+        page_request_capacity(_perlector_row(), **arguments)
+    assert refusal.value.capacity["fits"] is False
+    admitted = page_request_capacity(_perlector_row(65536), **arguments)
+    record = admitted["capacity"]
+    assert record["fits"] and record["need"] == need
+    assert admitted["max_tokens"] == min(
+        12288, 65536 - record["image_prompt_tokens"] - record["prompt_tokens"]
+    )
 
 
 # --- the page overlay -----------------------------------------------------------------
@@ -1000,6 +1015,7 @@ def test_a_200_line_churro_only_page_is_reserved_on_its_likely_acts_under_the_ca
         _perlector_row(65536),
         image_sizes=page_feed.request_image_sizes(feed),
         prompt_text=page_prompt.build_page_prompt("unproven-real-perlector", feed),
+        prompt_parts=page_prompt.prompt_parts("unproven-real-perlector", feed),
         template_digest=page_prompt.BUILDER_SHA256,
         answer_measure=feed["answer_measure"],
         page_max_tokens=12288,
@@ -1030,13 +1046,16 @@ def test_the_instruction_names_only_the_inputs_the_feed_shows():
         feed_for(_Blobs(), render=None, page_image="off")
     )
     assert "No page image is shown" in no_image
+    assert "The reading is made from what was reported of this page: the witness" in no_image
+    assert "or none of them reports it, write [[?]] in its place" in no_image
     assert "page image shows" not in no_image and "in the page image" not in no_image
+    assert "from the ink" not in no_image and "from its ink" not in no_image
     no_surya = page_prompt.page_reading_instruction(
         feed_for(_Blobs(), surya_lines=False, surya_blocks=False)
     )
     assert "detected" not in no_surya and "every unit its ink covers" in no_surya
     flat = page_prompt.page_reading_instruction(feed_for(_Blobs(), witness_units="flat"))
-    assert "cited by the range of ids before its text" in flat
+    assert "one unit with no box: cite it by the range of ids before its text" in flat
     assert "range of ids" not in default
 
 
@@ -1044,12 +1063,33 @@ def test_non_act_text_is_read_as_other_and_set_aside_is_for_ink_not_read():
     instruction = page_prompt.page_reading_instruction(feed_for(_Blobs()))
     assert "a page number or a marginal note that is not an entry, is read too" in instruction
     assert 'kind "other"' in instruction
-    assert "Set aside only an id whose ink you do not read at all" in instruction
     assert "printed page number" not in instruction
-    example = json.loads(instruction.split("in this form: ", 1)[1])
-    assert [act["kind"] for act in example["acts"]] == ["act", "other"]
-    assert example["acts"][1]["label"] == "page number"
-    assert example["set_aside"] == [{"id": "L19", "reason": "not text"}]
+    # A witness unit that is read is cited, never set aside for another witness's.
+    assert (
+        "Cite every witness unit whose text you read, also where another witness's unit reads "
+        "the same text." in instruction
+    )
+    assert (
+        "Set aside only an id with nothing to read -- one that is empty or is not text -- or a "
+        "detected line or block that repeats another detection" in instruction
+    )
+    assert "same ink as" not in instruction and "repeats the ink of another id" not in instruction
+    no_surya = page_prompt.page_reading_instruction(
+        feed_for(_Blobs(), surya_lines=False, surya_blocks=False)
+    )
+    assert "detected line or block" not in no_surya
+    assert "Set aside only an id with nothing to read -- one that is empty or is not text, " in (
+        no_surya
+    )
+
+
+def test_the_answer_form_holds_placeholders_and_no_reading():
+    example = json.loads(page_prompt.ANSWER_FORM)
+    (act,) = example["acts"]
+    for value in (act["kind"], act["label"], act["text"], *act["cites"]):
+        assert value.startswith("<") and value.endswith(">")
+    assert example["set_aside"] == [{"id": "<id>", "reason": "<short reason>"}]
+    assert not re.search(r"[A-Z][0-9]", page_prompt.ANSWER_FORM)
 
 
 def test_labels_are_json_strings_so_a_newline_or_parenthesis_cannot_forge_a_row():
@@ -1161,3 +1201,278 @@ def test_the_overlay_is_byte_identical_when_redrawn_in_a_fresh_process(tmp_path)
         [sys.executable, "-c", script], capture_output=True, text=True, check=True, cwd=tmp_path
     )
     assert result.stdout.strip() == feed["overlay"]["image_sha256"] == digest_bytes(png)
+
+
+# --- second review: provenance, health, DAI, flat placement, letters, image off ---------
+
+
+def test_a_testimonium_naming_another_chair_is_refused():
+    blobs = _Blobs()
+    rows = witnesses(blobs)
+    rows[0]["testimonium"]["payload"]["chair"] = "attestator_2"
+    with pytest.raises(SchemaRefusal, match="names chair 'attestator_2', not the row's"):
+        feed_for(blobs, rows=rows)
+
+
+def test_two_rows_sharing_one_testimonium_ref_are_refused():
+    blobs = _Blobs()
+    rows = _sealed(blobs, witnesses(blobs))
+    rows[1]["testimonium_ref"] = rows[0]["testimonium_ref"]
+    with pytest.raises(SchemaRefusal, match="share a testimonium_ref"):
+        page_feed.build_page_feed(
+            page_id="page-1",
+            page_ordinal=1,
+            page_size=PAGE,
+            feed_switches=switches(),
+            witness_regime="named",
+            roster=ROSTER,
+            witnesses=rows,
+            surya=surya(),
+            page_render=RENDER,
+            serving_recipe="unproven-real-perlector",
+            read_bytes=blobs.read_bytes,
+        )
+
+
+def test_a_cut_off_or_repeating_witness_says_so_on_its_line():
+    blobs = _Blobs()
+    rows = witnesses(blobs)
+    rows[0]["testimonium"]["payload"]["content_health"] = {"truncated": True}
+    looping = "a été baptisé " * 40
+    rows[2]["testimonium"] = churro_testimonium(
+        blobs,
+        "<HistoricalDocument><Page><Body><Line>Le vingt mai</Line>"
+        f"<Line>{looping}</Line></Body></Page></HistoricalDocument>",
+    )
+    feed = feed_for(blobs, rows=rows)
+    chandra, dai, churro = feed["witnesses"]
+    assert chandra["answer_health"] == {"truncated": True, "repetition": []}
+    assert dai["answer_health"] == {"truncated": False, "repetition": []}
+    (finding,) = churro["answer_health"]["repetition"]
+    assert finding["kind"] == "post-hoc-repetition"
+    lines = page_prompt.build_page_prompt("unproven-real-perlector", feed).split("\n")
+    assert (
+        "witness A (attestator_1) -- this witness's answer was cut off before it finished" in lines
+    )
+    assert "witness B (attestator_2)" in lines
+    assert (
+        "witness C (attestator_3) -- this witness's answer repeats one passage over and over"
+        in lines
+    )
+
+
+def test_a_read_testimonium_with_no_truncation_record_is_refused():
+    blobs = _Blobs()
+    rows = witnesses(blobs)
+    rows[1]["testimonium"]["payload"]["content_health"] = {"truncated": "maybe"}
+    with pytest.raises(SchemaRefusal, match="content_health.truncated"):
+        feed_for(blobs, rows=rows)
+
+
+def test_dai_page_text_outside_every_record_is_a_unit_of_its_own():
+    blobs = _Blobs()
+    rows = witnesses(blobs)
+    payload = rows[1]["testimonium"]["payload"]
+    # The records' responses, joined as the Attestatores join them, with text
+    # between and after them that no record's span covers.
+    payload["payload"] = "baptisé Pierre\n en  marge \nLe vingt may\nsigné"
+    payload["observed"][0]["span"] = {"start": 27, "end": 39}
+    payload["observed"][1]["span"] = {"start": 0, "end": 14}
+    feed = feed_for(blobs, rows=rows)
+    dai = feed["witnesses"][1]
+    assert [unit["text"] for unit in dai["units"]] == [
+        "Le vingt may",
+        "baptisé Pierre",
+        "en marge\nsigné",
+    ]
+    assert dai["units"][-1]["label"] == page_feed.OUTSIDE_UNITS_LABEL
+    assert dai["units"][-1]["ordinal"] is None and dai["units"][-1]["box_px"] is None
+    # The newline the join puts between records is no text of DAI's.
+    assert all(unit["label"] is None for unit in feed_for(_Blobs())["witnesses"][1]["units"])
+
+
+def test_dai_records_whose_spans_overlap_are_refused_by_name():
+    blobs = _Blobs()
+    rows = witnesses(blobs)
+    payload = rows[1]["testimonium"]["payload"]
+    payload["payload"] = "Le vingt may"
+    payload["unit_captures"][1] = _capture(
+        "dai.v1", blobs.retain("vingt".encode()), "text", "vingt"
+    )
+    payload["observed"][0]["span"] = {"start": 0, "end": 12}
+    payload["observed"][1]["span"] = {"start": 3, "end": 8}
+    with pytest.raises(SchemaRefusal, match="DAI records 0 and 1 state overlapping spans"):
+        feed_for(blobs, rows=rows)
+
+
+def _entry_union(boxes, cited):
+    placed = [boxes[identifier] for identifier in cited if boxes[identifier] is not None]
+    if not placed:
+        return None
+    return (
+        min(box["x"] for box in placed),
+        min(box["y"] for box in placed),
+        max(box["x"] + box["w"] for box in placed),
+        max(box["y"] + box["h"] for box in placed),
+    )
+
+
+def test_a_flat_witness_places_nothing_so_two_entries_citing_it_keep_their_own_regions():
+    own = page_feed.placement_boxes(feed_for(_Blobs()))
+    assert own["A1"] == {"x": 255, "y": 165, "w": 2040, "h": 231}
+    assert own["C1"] is None and own["L1"] is not None
+    feed = feed_for(_Blobs(), witness_units="flat")
+    boxes = page_feed.placement_boxes(feed)
+    ids = [unit["id"] for row in feed["witnesses"] for unit in row["units"]]
+    assert all(boxes[identifier] is None for identifier in ids)
+    # The sealed geometry stays on the feed for the accounting.
+    assert feed["witnesses"][0]["units"][0]["box_px"] == own["A1"]
+    first = _entry_union(boxes, ["A1", "A2", "A3", "B1", "B2", "L1"])
+    second = _entry_union(boxes, ["A1", "A2", "A3", "B1", "B2", "L2"])
+    assert first is not None and second is not None and first != second
+    # Citing only flat witnesses places the entry nowhere, never on their union.
+    assert _entry_union(boxes, ["A1", "A2", "A3"]) is None
+
+
+def test_flat_witnesses_are_not_drawn_on_the_overlay():
+    feed, _png = _overlaid(_Blobs(), witness_units="flat")
+    assert {item["source"] for item in feed["overlay"]["drawn"]} == {"surya-line", "surya-block"}
+
+
+def test_witness_letters_skip_l_and_s_and_more_witnesses_than_letters_are_refused():
+    assert "L" not in page_feed.WITNESS_LETTERS and "S" not in page_feed.WITNESS_LETTERS
+    assert len(page_feed.WITNESS_LETTERS) == 24
+    roster = [f"chair_{index:02d}" for index in range(25)]
+    rows = [
+        {
+            "chair": chair,
+            "witness_label": chair,
+            "adapter": "churro.v1",
+            "outcome": "failed",
+            "testimonium_ref": _ref(chair),
+            "units": [],
+            "findings": [],
+            "answer_health": page_feed.NO_ANSWER_HEALTH,
+        }
+        for chair in roster
+    ]
+    arguments = dict(
+        page_id="page-1",
+        page_ordinal=1,
+        page_size=PAGE,
+        feed_switches=switches(),
+        witness_regime="named",
+        surya=surya(),
+        page_render=RENDER,
+        serving_recipe="unproven-real-perlector",
+    )
+    feed = page_feed.assemble_page_feed(roster=roster[:24], witnesses=rows[:24], **arguments)
+    letters = [row["letter"] for row in feed["witnesses"]]
+    assert letters[10:12] == ["K", "M"] and letters[16:18] == ["R", "T"] and letters[-1] == "Z"
+    with pytest.raises(SchemaRefusal, match="more than the 24 letters"):
+        page_feed.assemble_page_feed(roster=roster, witnesses=rows, **arguments)
+
+
+def test_page_image_off_with_no_witness_text_and_no_detection_is_refused():
+    blobs = _Blobs()
+    rows = witnesses(blobs)
+    for row in rows:
+        row["testimonium"] = _record("failed", {})
+    arguments = dict(render=None, page_image="off", rows=rows)
+    with pytest.raises(SchemaRefusal, match="nothing to be made from"):
+        feed_for(blobs, surya_lines=False, surya_blocks=False, **arguments)
+    # Detections alone are something to read from.
+    assert feed_for(blobs, **arguments)["page_render"] is None
+
+
+def test_a_read_witness_with_no_unit_says_no_text_and_the_unit_header_needs_a_unit():
+    blobs = _Blobs()
+    rows = witnesses(blobs)
+    rows[2]["testimonium"] = churro_testimonium(
+        blobs, "<HistoricalDocument><Page><Body></Body></Page></HistoricalDocument>"
+    )
+    for row in rows[:2]:
+        row["testimonium"] = _record("failed", {})
+    feed = feed_for(blobs, rows=rows)
+    lines = page_prompt.build_page_prompt("unproven-real-perlector", feed).split("\n")
+    assert "witness C (attestator_3): read, no text" in lines
+    assert not [line for line in lines if line.startswith("witnesses:")]
+    assert "the witness units" not in page_prompt.page_reading_instruction(feed)
+
+
+def test_a_render_with_no_image_path_is_refused_by_name_not_a_key_error():
+    blobs = _Blobs()
+    render = {key: value for key, value in RENDER.items() if key != "image_path"}
+    with pytest.raises(SchemaRefusal, match="names no retained image"):
+        feed_for(blobs, render=render, page_overlay="boxes")
+    feed, _png = _overlaid(blobs)
+    del feed["page_render"]["image_path"]
+    with pytest.raises(SchemaRefusal, match="names no retained image"):
+        page_overlay.overlay_image(feed, blobs.read_bytes)
+
+
+def test_a_blank_page_block_with_text_is_a_unit_with_its_label():
+    blobs = _Blobs()
+    rows = witnesses(blobs)
+    rows[0]["testimonium"] = chandra_testimonium(
+        blobs, [("0 0 1000 1000", "Blank-Page", "au verso rien")]
+    )
+    feed = feed_for(blobs, rows=rows)
+    (unit,) = feed["witnesses"][0]["units"]
+    assert (unit["label"], unit["text"], unit["box_px"]) == ("Blank-Page", "au verso rien", None)
+    assert 'A1 ("Blank-Page") "au verso rien"' in page_prompt.build_page_prompt(
+        "unproven-real-perlector", feed
+    ).split("\n")
+
+
+def test_every_reported_string_is_a_part_charged_per_byte_and_the_parts_join_to_the_prompt():
+    feed = feed_for(_Blobs())
+    parts = page_prompt.prompt_parts("unproven-real-perlector", feed)
+    assert "".join(text for text, _reported in parts) == page_prompt.build_page_prompt(
+        "unproven-real-perlector", feed
+    )
+    reported = [text for text, is_reported in parts if is_reported]
+    assert reported[:4] == [
+        "attestator_1",
+        '"Page-Header"',
+        '"Registre 1780"',
+        '"Text"',
+    ]
+    assert '"Le vingt may"' in reported and '"Text"' == reported[-1]
+    assert not [text for text in reported if "witness" in text or "box_1000" in text]
+
+
+def test_the_renderer_digest_names_the_overlay_code_and_its_encoder():
+    from common import imaging
+    from common.contracts.canonical import digest_of
+
+    assert page_overlay.RENDERER_SHA256 == digest_of(
+        {
+            "page_overlay": code_digest(Path(page_overlay.__file__).read_text(encoding="utf-8")),
+            "imaging": code_digest(Path(imaging.__file__).read_text(encoding="utf-8")),
+        }
+    )
+    # A bytes literal has a code digest of its own, and a comment still moves nothing.
+    assert code_digest('x = b"a"') != code_digest('x = b"b"')
+    assert code_digest('x = b"a"') == code_digest('x = b"a"  # note')
+    assert code_digest('x = b"a"') != code_digest('x = "a"')
+
+
+def test_a_label_stays_by_its_box_even_when_every_spot_there_is_taken():
+    box = [400, 400, 430, 420]
+    scale = 3
+    _width, height = page_overlay.label_size("A1", scale)
+    plan = {
+        "dimensions": {"w": 1978, "h": 2560},
+        "label_scale": scale,
+        "drawn": [{"id": f"A{index}", "source": "witness-A", "box": box} for index in range(1, 9)],
+    }
+    placed = page_overlay.label_boxes(plan)
+    reach = box[3] + page_overlay.LABEL_REACH * height
+    for x0, y0, _x1, y1 in placed:
+        assert box[0] <= x0 and y0 >= box[1] and y1 <= reach
+    # The first labels take the free spots by the box; once none is free, a
+    # label is drawn at the box's corner over another, never far down the page.
+    free = [spot for spot in placed if spot[:2] != (box[0], box[1])]
+    assert len(free) + 1 < len(placed)
+    assert placed[-1][:2] == (box[0], box[1])

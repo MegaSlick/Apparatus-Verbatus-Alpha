@@ -360,9 +360,13 @@ def page_feed_for(sealed: dict[str, Any], shape: dict[str, Any], change: dict) -
                 "witness_label": chair,
                 "adapter": adapter,
                 "outcome": "read",
-                "testimonium_ref": _PLACEHOLDER_REF,
+                "testimonium_ref": {
+                    "relative_path": f"measured/{chair}",
+                    "sha256": digest_bytes(chair.encode()),
+                },
                 "units": units,
                 "findings": [],
+                "answer_health": {"truncated": False, "repetition": []},
             }
             for chair, adapter, units in shape["witnesses"]
         ],
@@ -383,6 +387,7 @@ def page_request(row: ServingProfile, feed: dict[str, Any]) -> dict[str, Any]:
         row,
         image_sizes=page_feed.request_image_sizes(feed),
         prompt_text=page_prompt.build_page_prompt("unproven-real-perlector", feed),
+        prompt_parts=page_prompt.prompt_parts("unproven-real-perlector", feed),
         template_digest=page_prompt.BUILDER_SHA256,
         answer_measure=feed["answer_measure"],
         page_max_tokens=page_max_tokens(),
@@ -395,24 +400,27 @@ def page_max_tokens() -> int:
 
 
 def page_fit_table(pages: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
-    """Per feed setting and context: pages admitted, refused by context, refused by the cap."""
+    """Per feed setting and context: pages admitted, pages refused, and admitted pages whose
+    answer reserve was clamped to the page cap."""
     row, sealed = perlector_row(), sealed_protocol()
     shapes = [page_shape(page) for page in pages]
     table = {}
     for name, change in PAGE_SETTINGS.items():
         cells = {
-            context: {"fit": 0, "refused_context": 0, "refused_answer_cap": 0, "worst_need": 0}
+            context: {"fit": 0, "refused_context": 0, "reserve_clamped": 0, "worst_need": 0}
             for context in PAGE_CONTEXTS
         }
         for shape in shapes:
             feed = page_feed_for(sealed, shape, change)
             for context, cell in cells.items():
                 try:
-                    record = page_request(replace(row, max_model_len=context), feed)["capacity"]
+                    admitted = page_request(replace(row, max_model_len=context), feed)
+                    record = admitted["capacity"]
                     cell["fit"] += 1
+                    cell["reserve_clamped"] += admitted["answer_reserve"]["reserve_clamped"]
                 except RequestCapacityRefusal as refusal:
                     record = refusal.capacity
-                    cell["refused_context" if not record["fits"] else "refused_answer_cap"] += 1
+                    cell["refused_context"] += 1
                 cell["worst_need"] = max(cell["worst_need"], record["need"])
         for context, cell in cells.items():
             table[f"page request, {name}, {context}"] = cell
