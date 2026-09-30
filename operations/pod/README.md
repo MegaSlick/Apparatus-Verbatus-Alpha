@@ -691,11 +691,24 @@ two together.
 
 | Package | Pin | Licence | Why this one |
 |---|---|---|---|
-| `vllm` | `0.30.0` | Apache-2.0 | The lowest release that fixes every advisory pip-audit reports against 0.27.1 (among them PYSEC-2026-4004, -4005, -4006, fixed in 0.30.0, and CVE-2026-69147, fixed in 0.28.0), and it registers every architecture the roster declares |
+| `vllm` | `0.30.0` | Apache-2.0 | The lowest release that fixes all twelve advisories pip-audit reports against 0.27.1 (listed below), and it registers every architecture the roster declares |
 | `transformers` | `5.14.1` | Apache-2.0 | Above vLLM 0.30.0's `>= 5.10.4` floor and the Perlector's `>= 5.8.0`; its metadata accepts `huggingface-hub` `>=1.5.0,<2.0` |
 | `qwen-vl-utils` | `0.0.14` | Apache-2.0 | Latest; it and its dependencies (`av`, `pillow`, `requests`) all publish linux x86_64 wheels, so nothing compiles on the card |
 
-Licence sources: the `LICENSE` files at `github.com/vllm-project/vllm` (tag `v0.30.0`) and
+The vLLM advisories are what `pip-audit --strict --no-deps --disable-pip -r` reports for
+the `uv export --frozen --all-groups --no-hashes` requirements of a lock pinning 0.27.1,
+with each advisory's first fixed version as pip-audit gives it:
+
+- fixed in 0.28.0: PYSEC-2026-3985 (CVE-2026-90553), PYSEC-2026-3997 (CVE-2026-93592),
+  CVE-2026-69147 (GHSA-8pw2-6jv3-mj5j);
+- fixed in 0.29.0: PYSEC-2026-3998 (CVE-2026-93840);
+- fixed in 0.30.0: PYSEC-2026-3996 (CVE-2026-93436), PYSEC-2026-3999 (CVE-2026-93841),
+  PYSEC-2026-4000 (CVE-2026-93989), PYSEC-2026-4004 to -4008 (CVE-2026-94622 to -94626).
+
+The same audit over this lock reports none against `vllm`.
+
+Licence sources: the `LICENSE` files at `github.com/vllm-project/vllm` (tag `v0.30.0`; the
+0.30.0 wheel carries an Apache-2.0 `LICENSE` and `License-Expression: Apache-2.0`) and
 `github.com/huggingface/transformers`; `qwen-vl-utils`'s PyPI metadata (maintained under
 `github.com/QwenLM/Qwen2.5-VL`, Apache-2.0).
 
