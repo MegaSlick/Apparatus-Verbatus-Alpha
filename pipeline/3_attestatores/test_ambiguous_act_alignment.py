@@ -160,7 +160,8 @@ def test_an_unattached_or_act_scoped_row_is_never_swept_into_the_pair():
 
     Both other shapes are written as the pass really writes them: an unattached
     page witness keeps its own text-span derivation but carries no act span, and
-    an act-scoped chair read its own crop and has no page alignment at all.
+    a row no page reading describes (a held act, an absent chair) has no page
+    alignment at all.
     """
     attached = _entry(span={"start": 0, "end": 40})
     unattached = _entry(span={"start": 10, "end": 20}, attached=False)

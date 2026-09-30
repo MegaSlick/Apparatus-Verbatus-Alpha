@@ -1378,7 +1378,6 @@ AttemptHistory = dict[tuple[str, str], list[dict[str, Any]]]
 class AttemptIndex(NamedTuple):
     """This stage's own prior output, indexed once per invocation."""
 
-    stage_has_artifacts: bool
     by_pair: AttemptHistory
 
 
@@ -1396,7 +1395,7 @@ def _attempt_history(context) -> AttemptIndex:
         chair = payload.get("chair") if isinstance(payload, dict) else None
         if isinstance(chair, str):
             by_pair.setdefault((entry["subject_id"], chair), []).append(record)
-    return AttemptIndex(bool(manifest["artifacts"]), by_pair)
+    return AttemptIndex(by_pair)
 
 
 def _current_testimonium(records: list[dict[str, Any]], act_id: str, chair: str) -> dict[str, Any]:
@@ -6035,11 +6034,7 @@ def _serve_page_unit(
         )
         capture = None
     else:
-        if (
-            resolved.role == "attestator_1"
-            and resolved.witness_adapter == "chandra.v1"
-            and resolved.witness_scope == "page"
-        ):
+        if resolved.role == "attestator_1" and resolved.witness_adapter == "chandra.v1":
             attempt = _serve_chandra_native_page(
                 context,
                 client=client,
@@ -6107,7 +6102,8 @@ def require_open_witness_layer(closed: frozenset[str], act: dict[str, Any], what
         raise ContractError(
             f"act {act['act_id']} ({act['act_key']}) already carries a Perlectio, so its "
             f"witness layer is closed: {what} would append testimony no reading can be "
-            "established from. Re-asking a witness because it spoke again is a re-roll"
+            "established from. Re-asking a witness because it spoke again is a re-roll. "
+            "The reading stands; to witness this act again, start a new run"
         )
 
 
@@ -6150,7 +6146,7 @@ def refuse_unread_fixture_declarations(context, live_chairs: list[str]) -> None:
 def _run_full_pass(
     context, acts, args, index, real, live_chairs, has_prior_boundary, serving_factory
 ):
-    ordinal = 1 if args.attempt_ordinal is None else args.attempt_ordinal
+    ordinal = args.attempt_ordinal
     try:
         # A live fixture run still refuses contradictory fixture declarations.
         declarations = real_declarations(ordinal) if real else declarations_for(context, ordinal)
@@ -6227,7 +6223,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     parser.add_argument(
         "--attempt-ordinal",
         type=_positive_ordinal,
-        default=None,
+        default=1,
         help="append this ordinal for every act/chair, or repeat the current one byte-identically",
     )
     args = parser.parse_args()

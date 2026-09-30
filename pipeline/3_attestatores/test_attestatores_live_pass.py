@@ -310,7 +310,7 @@ def committed_models_config() -> Path:
 
     The live pass is exercised against exactly the roster the repository
     ships; the assertions below are what would notice if that roster stopped
-    describing the three scopes these tests exercise.
+    describing the three page witnesses these tests exercise.
     """
     path = ROOT / "config" / "models.toml"
     chairs = tomllib.loads(path.read_text(encoding="utf-8"))["chairs"]
@@ -2162,7 +2162,7 @@ def test_a_live_dai_request_records_its_carried_float_generation_values(tmp_path
         serving_recipe="recipe-live",
         license_note="test identity only",
         witness_adapter="dai.v1",
-        witness_scope="act",
+        witness_scope="page",
     )
     row = _vllm_row(recipe=identity.serving_recipe, chair=identity.role, port=8100)
     row["preflight_identity_digest"] = chair_preflight_identity_digest(identity)

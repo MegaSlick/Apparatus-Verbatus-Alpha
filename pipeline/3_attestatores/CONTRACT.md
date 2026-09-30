@@ -654,13 +654,10 @@ record. Nothing is ever downscaled to make a request fit.
 
 **A refused request costs its own attempt, not the pass.** The refusal above is
 a fact about one request -- these pixels, at this row's `max_pixels`, against
-this row's `max_model_len` -- and it left `_serve_act_unit` and
-`_serve_page_unit` as an exception nothing between there and `main` caught, so
-one oversized page ended the stage and every other page's testimony went with
-it. The Designator, asked the same question, held the single page and published
-the rest. That asymmetry is closed: `run.py::capacity_refusal_attempt` records
-the refusal as this attempt's own `outcome="failed"`, in the same shape an
-empty or malformed response takes, and the pass moves to the next unit. A
+this row's `max_model_len` -- so `run.py::capacity_refusal_attempt` records it
+as this attempt's own `outcome="failed"`, in the same shape an empty or
+malformed response takes, and `_serve_page_unit` or `_serve_detector_page` moves
+to the next unit, as the Designator holds a single page and publishes the rest. A
 missed act is worse than a poorly read one, and one page's arithmetic
 is no reason to lose another page's reading.
 
@@ -1449,7 +1446,7 @@ witness. That alignment is recorded and attaches nothing: a `presented` box is
 not reported geometry, so it never counts as `geometric-overlap`, and a
 `detector-record` alignment is not a located anchor line. Every DAI entry is
 therefore `attached: false`, `attachment_basis: "unattached"`, `span: null`,
-and DAI reaches no act comparison until witnesses are read page-only. The act's own `testimonium` view keeps the act's Designator crop as
+and DAI reaches no act comparison. The act's own `testimonium` view keeps the act's Designator crop as
 its presentation, since the chair was never shown that crop.
 
 ## Act-attachment schema (R4)
@@ -1579,12 +1576,12 @@ separately checked by the page-scoped content denominator beside it.
 
 The stage's derived manifest is rebuilt from immutable Testimonia, compared to its
 stored inventory, and checked against the Testimonium schema, provenance, receipts,
-and exact region inputs before a re-read may append. The full act/chair denominator
+and exact region inputs before a later pass may append. The full act/chair denominator
 is reconciled at the close of a pass rather than before one — see the last section,
 which says why. `attempt_tally()` returns `KNOWN` only when that inventory is
 whole. An absent, garbled, truncated or divergent inventory returns `UNKNOWN`,
 `count=null`, `hold=true`, and the check runs before anything is written, so a
-re-read over a damaged inventory appends nothing. The stored inventory counts as
+later pass over a damaged inventory appends nothing. The stored inventory counts as
 evidence that attempts existed even when the walk finds none left: a folder whose
 whole Testimonium layer is gone but whose manifest still describes it holds, rather
 than taking the first-run path and writing attempt 1 over a history that recorded
@@ -1602,7 +1599,7 @@ neither can be resolved in the run's favour: a record claiming `read` or
 `genuinely-empty` while saying nothing could retain what it read, and a `failed`
 record carrying no reason.
 
-This check runs immediately after Stage 3 and before a later re-read; the
+This check runs immediately after Stage 3 and before a later pass; the
 orchestrator stops at an Attestatores `UNKNOWN` hold, so an older complete export
 cannot mask it. Direct invocation of a later owner stage still needs that owner's
 own evidence-boundary check and is not simulated here.
@@ -1610,9 +1607,9 @@ own evidence-boundary check and is not simulated here.
 **Whether every configured act/chair pair is accounted for is a closing check, not
 a precondition.** A pass killed part way through leaves attempts on disk and no
 stored manifest, and the pass that would supply the missing pairs may not be
-refused for their being missing. The stored manifest is still required before a
-re-read, per spec 07 test 5, so an interrupted pass holds until someone
-re-derives it — `RunTree.write_manifest("attestatores")`, one step, losing
+refused for their being missing. Once a pass has sealed the stage, its stored
+manifest is required before a later pass, per spec 07 test 5, so a folder that
+lost it holds until someone re-derives it — `RunTree.write_manifest("attestatores")`, one step, losing
 nothing because the manifest is derived from the immutable attempts. After that
 the pass resumes: the attempts already written are byte-identical repeats and the
 missing ones are created. If the denominator still does not reconcile once the

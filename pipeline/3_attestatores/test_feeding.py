@@ -774,7 +774,7 @@ def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
             ],
         },
     )
-    index = attestatores.AttemptIndex(False, {})
+    index = attestatores.AttemptIndex({})
 
     with pytest.raises(attestatores.SchemaRefusal, match="different model boundary"):
         attestatores.preflight_appendable_ordinals(
@@ -1005,7 +1005,7 @@ def test_dai_declares_its_own_format_capabilities():
     """DAI's grammar carries a doubt and no geometry, and says exactly that.
 
     The uncertainty flag is true only because the Perlector can now derive a
-    bracket-marker comparison view for an act-scoped chair that declares it
+    bracket-marker comparison view for a chair that declares it
     (`pipeline/4_perlector/run.py::dissent_testimonia`, U12). Declared before
     that wiring it would have put this chair at `compared: "unknown"` for good.
     """

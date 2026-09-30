@@ -230,8 +230,8 @@ def request_capacity_or_refuse(
     resize. The prompt cost is the measured constant for this chair, bound to
     a digest of the exact text (no tokenizer is available offline here). The
     answer budget is that chair's own measured response at the scope it was
-    asked at: a page chair reserves a dense page's answer, an act chair one
-    act's answer, since reserving a page's would refuse ordinary act crops.
+    asked at: Chandra reserves a dense page's answer, DAI one record's answer,
+    since reserving a page's would refuse ordinary record crops.
     Churro is the exception: its whole vendor answer bound is reserved, so a
     row that cannot hold it refuses the page rather than letting the engine
     stop the answer short of what the vendor's own pipeline allows.
@@ -697,7 +697,7 @@ def live_attempt_from_response(
     if adapter_name != "dai.v1":
         raise SchemaRefusal(
             f"live_attempt_from_response has no capture recipe for adapter {adapter_name!r}; "
-            "only dai.v1 is act-scoped today"
+            "only dai.v1 is read one crop at a time"
         )
     if response.parse_problem is not None:
         return _malformed_response_attempt(response, adapter=adapter)

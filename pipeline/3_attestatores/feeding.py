@@ -259,7 +259,7 @@ def dai_model_view(
 
     The identity transform is a claim about bytes, not paths: when no resize
     is needed the two image references must name the same SHA-256, not the
-    same reference dict. The source is the Designator's proposal crop under
+    same reference dict. The source is the Designator's record crop under
     `2_designator/`; every image a witness is shown is published into
     `3_attestatores/`, so a byte-identical image legitimately appears at two
     stage-owned paths. Equal digests are equal pixels because

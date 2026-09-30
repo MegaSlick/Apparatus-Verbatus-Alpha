@@ -81,10 +81,13 @@ def test_unknown_field_is_refused_at_both_act_and_page_writer_validators():
 
 
 def test_a_closed_witness_layer_refuses_new_testimony():
-    with pytest.raises(ContractError, match="witness layer is closed: a whole pass at ordinal 2"):
+    with pytest.raises(
+        ContractError, match="witness layer is closed: a whole pass at ordinal 2"
+    ) as refusal:
         attestatores.require_open_witness_layer(
             frozenset({"act-1"}), {"act_id": "act-1", "act_key": "a1"}, "a whole pass at ordinal 2"
         )
+    assert "to witness this act again, start a new run" in str(refusal.value)
 
 
 def _attempt(outcome):
@@ -360,7 +363,7 @@ def test_page_native_geometry_stays_with_page_witnesses_and_inside_witness_views
     A page witness's act view may restate its page-space geometry (boxes may
     exceed that record's one-crop presentation); every other record's observed
     boxes must stay inside the exact presentation the witness was shown, and
-    no act-scoped chair may carry native geometry.
+    no other record may carry native geometry.
     """
     tree = _happy_run(tmp_path, "native-page-scope")
     native = []

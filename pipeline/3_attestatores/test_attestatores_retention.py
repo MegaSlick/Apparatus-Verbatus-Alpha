@@ -199,8 +199,8 @@ def test_an_unsealed_whole_pass_resumes_over_what_it_already_sealed(tmp_path, mo
     one: the sealed record is reused byte-for-byte, every pair ends at ordinal
     one with no gap, and `latest_attempt` resolves for all of them.
 
-    This test forbids a per-pair resume ordinal: a page-scoped chair has no
-    act-scoped attempt to repeat, so taking the crashed pair to ordinal 2
+    This test forbids a per-pair resume ordinal: a page witness has no
+    attempt of its own per act to repeat, so taking the crashed pair to ordinal 2
     while the page Testimonium and the act attachment stayed at ordinal 1
     would publish a `not-run` over that chair's good `read`, dropping it out
     of the act's witness coverage and holding the whole run at the Recensor.
@@ -520,8 +520,8 @@ def test_a_whole_pass_may_not_skip_an_ordinal_over_any_seat(tmp_path):
 def test_an_operation_this_stage_does_not_implement_is_refused(tmp_path):
     """`--operation` carries no argparse `choices` — the same parser serves every
     stage — so an unrecognized one would fall through to the whole pass and exit 0
-    over an instruction it never carried out. Witnesses read whole pages, so there
-    is no act-scoped reread either."""
+    over an instruction it never carried out. Witnesses read whole pages, so a
+    reread of one act is refused by name."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
         invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
@@ -669,10 +669,101 @@ def test_a_wiped_attempt_layer_holds_rather_than_silently_restarting_history(tmp
     )
 
 
+def test_an_interrupted_second_pass_resumes_once_its_manifest_is_re_derived(tmp_path, monkeypatch):
+    """A crash inside an appending pass leaves one act's chairs at different ordinals.
+
+    The stored manifest from the first pass no longer matches the folder, so the
+    stage holds until the manifest is re-derived; after that one step the same
+    command finishes the pass at its own ordinal, and every pair holds 1 and 2.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    real_publish = attestatores.publish_attempt
+
+    def crash_after_first_write(*args, **kwargs):
+        real_publish(*args, **kwargs)
+        raise RuntimeError("simulated process crash inside the second pass")
+
+    monkeypatch.setattr(attestatores, "publish_attempt", crash_after_first_write)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            "--run-root",
+            str(run_root),
+            "--run-id",
+            "retention",
+            "--scenario",
+            "happy",
+            "--fixture-root",
+            str(ROOT / "proof"),
+            "--attempt-ordinal",
+            "2",
+        ],
+    )
+    with pytest.raises(RuntimeError, match="simulated process crash"):
+        attestatores.main()
+    monkeypatch.undo()
+    assert sum(record["payload"]["attempt_ordinal"] == 2 for record in _testimonia(tree)) == 1
+
+    held = invoke_stage(
+        run_root, "retention", "happy", "pipeline/3_attestatores/run.py", attempt_ordinal=2
+    )
+    assert held.returncode == 3, held.stderr
+    assert "UNKNOWN" in held.stderr
+
+    tree.write_manifest(ATTESTATORES)
+    resumed = invoke_stage(
+        run_root, "retention", "happy", "pipeline/3_attestatores/run.py", attempt_ordinal=2
+    )
+
+    assert resumed.returncode == 0, resumed.stderr
+    by_pair: dict[tuple[str, str], set[int]] = {}
+    for record in _testimonia(tree):
+        key = (record["subject_id"], record["payload"]["chair"])
+        by_pair.setdefault(key, set()).add(record["payload"]["attempt_ordinal"])
+    assert len(by_pair) == 6
+    assert all(ordinals == {1, 2} for ordinals in by_pair.values()), by_pair
+    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+
+
+def test_the_closing_tally_holds_when_the_folder_no_longer_accounts_for_every_pair(tmp_path):
+    """The closing act/chair denominator: a missing pair is never a complete layer.
+
+    The inventory is re-derived deliberately, so the divergent-inventory refusal is
+    not what fires and the denominator check is the only thing left that can.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    assert (
+        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
+        == 0
+    )
+    records = _testimonia(tree)
+    acts = [{"act_id": act_id} for act_id in sorted({record["subject_id"] for record in records})]
+    chairs = ["attestator_1", "attestator_2", "attestator_3"]
+    assert attestatores.attempt_tally(tree, acts=acts, chairs=chairs)["state"] == "KNOWN"
+
+    missing = next(
+        record
+        for record in records
+        if record["payload"]["act_key"] == "a2" and record["payload"]["chair"] == "attestator_2"
+    )
+    tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", missing["artifact_id"])).unlink()
+    tree.write_manifest(ATTESTATORES)
+
+    tally = attestatores.attempt_tally(tree, acts=acts, chairs=chairs)
+    assert tally["hold"] is True
+    assert "does not account for every expected act/chair pair" in tally["reason"]
+
+
 # --- `witness_reported`: kept, and demoted ---------------------------------------
 
 
-def test_a_self_report_is_retained_verbatim_whatever_its_format_can_express(tmp_path):
+def test_a_confident_self_report_is_retained_verbatim_and_grades_nothing(tmp_path):
     """Spec 07's reason for `format_capabilities`.
 
     Chair 1's output format cannot express uncertainty at all and claims high
@@ -1853,7 +1944,7 @@ def test_a_page_scoped_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch
     # Six act views: two acts times three chairs. One chair needs the sealed
     # size -- `attestator_1` (Chandra), whose grammar reports boxes normalized
     # against the whole page, so its declared fixture observations get the
-    # page-edge check. Neither of the other two does: DAI is act-scoped, and
+    # page-edge check. Neither of the other two does: DAI reports no geometry, and
     # Churro's `HistoricalDocument` carries no coordinate anywhere, so its
     # `observe` takes no page size and its registry entry says so
     # (`takes_page_size`). What this test protects is unchanged and is the
