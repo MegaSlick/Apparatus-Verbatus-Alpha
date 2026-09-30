@@ -986,6 +986,46 @@ def test_a_forged_page_feed_is_refused_against_the_feed_its_inputs_build(
         reading_acts(_context(tree))
 
 
+def _forge_page_testimonium(root: Path, change: Callable) -> None:
+    """Rewrite one retained-capture page Testimonium and rewitness every stage that names it."""
+    directory = root / RUN_ID / "3_attestatores" / "artifacts" / "page-testimonium"
+    path, record = next(
+        (path, record)
+        for path in sorted(directory.glob("*.json"))
+        if (record := json.loads(path.read_text(encoding="utf-8")))["payload"].get(
+            "native_capture"
+        )
+        is not None
+    )
+    change(record)
+    _write(path, record)
+    tree = RunTree(root, RUN_ID)
+    rewitness_stage_boundary(tree, ATTESTATORES)
+    rewitness_stage_boundary(tree, PERLECTOR)
+
+
+def _unbind_raw_response(record: dict[str, Any]) -> None:
+    raw = record["payload"]["native_capture"]["raw_response_ref"]
+    record["inputs"] = [reference for reference in record["inputs"] if reference != raw]
+
+
+def _retire_text_view(record: dict[str, Any]) -> None:
+    record["payload"]["native_capture"]["text_view"] = "retired-view"
+
+
+@pytest.mark.parametrize(
+    "change", [_unbind_raw_response, _retire_text_view], ids=["unbound-response", "text-view"]
+)
+def test_a_page_testimonium_that_does_not_verify_is_refused_before_any_count(
+    happy_tree, tmp_path, change
+):
+    """The denominator validates each page Testimonium it rebuilds a feed from, as stage 4 did."""
+    tree = _copy(happy_tree, tmp_path)
+    _forge_page_testimonium(tree[0], change)
+    with pytest.raises(FatalAccounting, match="page Testimonium the page-read run was shown"):
+        reading_acts(_context(tree))
+
+
 def test_a_reading_whose_answer_drops_an_entry_its_reply_gave_is_refused(happy_tree, tmp_path):
     """Stage 4's records agree with each other; only the reply read again shows the gap."""
     tree = _copy(happy_tree, tmp_path)

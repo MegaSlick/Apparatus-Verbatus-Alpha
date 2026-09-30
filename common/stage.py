@@ -2552,9 +2552,19 @@ class _PageReadRecords:
             context.registry.resolve(SECONDARY_PROPOSER_CHAIR), ChairIdentity
         )
         self.fixture_placeholders = not is_real_ingress(context.run)
-        self.testimonia: dict[str, list[dict[str, Any]]] = {}
-        for record in _stage_records(tree, ATTESTATORES, "page-testimonium"):
-            self.testimonia.setdefault(record.get("subject_id"), []).append(record)
+        # Each page's current page Testimonium per chair, every record validated
+        # here as stage 4 validated it. Imported here: `page_testimonia` reads
+        # this module.
+        from common import page_testimonia
+
+        try:
+            self.testimonia = page_testimonia.current_page_testimonia(
+                context, page_testimonia.sealed_proposal_regions(context)
+            )
+        except ContractError as error:
+            raise FatalAccounting(
+                f"a page Testimonium the page-read run was shown does not verify: {error}"
+            ) from error
 
     def by_subject(self, kind: str, subject: str) -> list[dict[str, Any]]:
         return [record for record in self.by_kind[kind] if record.get("subject_id") == subject]
@@ -3020,9 +3030,7 @@ def _verify_feed(
             page_size=dimensions(page_bytes),
             protocol_config=index.protocol,
             page_chairs=page_path.declared_page_witness_chairs(context),
-            current=latest_per_chair(
-                index.testimonia.get(page_id, []), f"page Testimonium for page {page_id}"
-            ),
+            current=index.testimonia.get(page_id, []),
             surya_census=index.surya_census,
             serving_recipe=chair.serving_recipe if isinstance(chair, ChairIdentity) else None,
             fixture_placeholders=index.fixture_placeholders,
