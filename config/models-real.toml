@@ -114,7 +114,7 @@ path = "designator_surya"
 digest_manifest = "ad19b0280bec623e7edd1b7ca5197ded1add35af9ff0ec76e80db8d035b16cb9"
 manifest = "manifests/surya2-detection.json"
 serving_recipe = "unproven-real-surya"
-license_note = "Weights: openrail (Datalab's licence text, surya_layout2/LICENSE in the bundle); the text-detection checkpoint on Datalab's model host ships no licence file; code: Apache-2.0. Research track"
+license_note = "Layout and reading-order weights (datalab-to/surya_layout2): openrail, licence text at surya_layout2/LICENSE in the bundle; text-detection weights on Datalab's model host: no licence file and no licence in their model card; code (surya-ocr): Apache-2.0"
 
 [chairs.perlector]
 state = "configured"

@@ -221,18 +221,6 @@ license_note = "fixture identity only; no model weights or model license apply"
 # serving_recipe = "<serving-recipe>"
 # license_note = "AGPL-3.0. Accepted under the research track (2026-08-20)"
 #
-# Surya's detector bundle is a local repository pinned by its measured manifest,
-# not a Hub revision (operations/serving/surya/README.md).
-#
-# [chairs.designator_surya]
-# state = "configured"
-# source = "local-repository"
-# path = "designator_surya"
-# digest_manifest = "<sha256-of-canonical-manifest>"
-# manifest = "manifests/surya2-detection.json"
-# serving_recipe = "<serving-recipe>"
-# license_note = "Weights: openrail (Datalab's licence text, surya_layout2/LICENSE in the bundle); the text-detection checkpoint on Datalab's model host ships no licence file; code: Apache-2.0. Research track"
-#
 # [chairs.perlector]
 # state = "configured"
 # source = "huggingface"

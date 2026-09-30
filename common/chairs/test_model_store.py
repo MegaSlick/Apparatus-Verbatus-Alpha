@@ -4,7 +4,6 @@ import copy
 import hashlib
 import json
 import os
-import re
 import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -16,12 +15,14 @@ import pytest
 from common.chairs import model_store
 from common.chairs.config import load_models_toml, parse_models_config
 from common.chairs.errors import DigestMismatchRefusal, DiskSpaceRefusal
-from common.chairs.manifests import build_manifest, write_manifest
+from common.chairs.manifests import build_manifest, read_manifest, write_manifest
 from common.chairs.model_store import (
     DAI_PROMPT_CITATION,
+    LICENCE_FILE_NAMES,
     REQUIRED_ARTIFACTS,
     STORE_SCHEMA,
     SURYA_OCR_2_REFUSAL,
+    SYNTHETIC_LICENCE_SNAPSHOTS,
     UNDECLARED_LICENCE_SNAPSHOT,
     UNTEXTED_LICENCE_SNAPSHOT,
     StoreRoleFetcher,
@@ -1143,9 +1144,7 @@ def test_a_present_bundle_at_another_pin_is_refused_by_name(tmp_path, monkeypatc
         model_store,
         "REQUIRED_ARTIFACTS",
         tuple(
-            replace(item, digest_manifest="1" * 64)
-            if item.source == "local-repository"
-            else item
+            replace(item, digest_manifest="1" * 64) if item.source == "local-repository" else item
             for item in model_store.REQUIRED_ARTIFACTS
         ),
     )
@@ -1749,38 +1748,49 @@ def test_a_complete_sharded_fetch_keeps_reconciling_after_the_boot_that_made_it(
         verify_store(tmp_path)
 
 
-def test_the_real_roster_carries_the_licence_notes_it_was_drafted_with():
-    """A licence note is the project lead's acceptance, and a copy of it is not
-    a paraphrase.
+def test_each_real_licence_note_agrees_with_the_licence_evidence_its_manifest_seals():
+    """A chair's licence note and the licence evidence its measured manifest seals
+    are one fact.
 
-    `config/models.toml` holds the drafted real roster commented out, one
-    `license_note` per row recording what that repository licenses and that it
-    was accepted under the research track.
-    `config/models-real.toml` is that roster made selectable, so its notes must
-    be those notes and not a session's rewording of them.
+    The manifest in `config/manifests` is the measurement of the fetched bytes:
+    it seals exactly one piece of licence evidence per chair, the licence text a
+    repository carries, the text a bundle names, or the observation a fetch
+    writes when a repository declares a licence without text or declares none.
+    A note says no licence is declared exactly where the manifest seals that
+    observation.
     """
 
-    drafted = _commented_licence_notes(ROOT / "config" / "models.toml")
     real = load_models_toml(ROOT / "config" / "models-real.toml")
-    carried = {
-        role: identity.license_note
+    requirements = {item.chair: item for item in REQUIRED_ARTIFACTS}
+    configured = {
+        role: identity
         for role, identity in real.chairs.items()
         if isinstance(identity, ChairIdentity)
     }
-
-    # `_commented_licence_notes` reads a fixed comment shape. Reflowing or
-    # reindenting that block used to make this fail with `KeyError: 'perlector'`
-    # below -- a missing dictionary key in a licence test, with nothing pointing
-    # at comment formatting in a config file, and the comparison the docstring is
-    # about never running at all.
-    unparsed = sorted(set(carried) - set(drafted))
-    assert not unparsed, (
-        f"no commented `license_note` was parsed for {unparsed}; the drafted roster in "
-        "config/models.toml no longer matches the comment shape this test reads, so the "
-        "notes were not compared"
-    )
-    assert carried == {role: drafted[role] for role in carried}
-    assert len(carried) == 7
+    assert set(configured) == set(requirements)
+    for role, identity in configured.items():
+        requirement = requirements[role]
+        rows = {
+            row.path: row
+            for row in read_manifest(
+                ROOT / "config" / identity.manifest,
+                expected_digest=identity.digest_manifest,
+                chair=role,
+            ).rows
+        }
+        if requirement.license_file is not None:
+            evidence = {requirement.license_file} & set(rows)
+        else:
+            evidence = {
+                path
+                for path in rows
+                if path.lower() in LICENCE_FILE_NAMES or path in SYNTHETIC_LICENCE_SNAPSHOTS
+            }
+        assert len(evidence) == 1, (role, evidence)
+        (licence,) = evidence
+        assert rows[licence].size > 0, role
+        declares_nothing = "no licence declared" in identity.license_note.lower()
+        assert declares_nothing == (licence == UNDECLARED_LICENCE_SNAPSHOT), role
 
 
 def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothing():
@@ -1799,22 +1809,6 @@ def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothin
         note = real.chairs[requirement.chair].license_note.lower()
         declares_nothing = "no licence declared" in note
         assert declares_nothing == (requirement.license_declaration is None), requirement.chair
-
-
-def _commented_licence_notes(path: Path) -> dict[str, str]:
-    """The `license_note` of each chair in a roster that is commented out."""
-
-    notes: dict[str, str] = {}
-    role = None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        chair = re.fullmatch(r"# \[chairs\.(\w+)\]", line)
-        if chair:
-            role = chair.group(1)
-            continue
-        note = re.fullmatch(r'# license_note = "(.*)"', line)
-        if note and role is not None:
-            notes[role] = note.group(1)
-    return notes
 
 
 def test_pod_materialization_plan_splits_verified_store_halves(tmp_path):
