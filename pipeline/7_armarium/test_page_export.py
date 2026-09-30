@@ -43,6 +43,7 @@ from conftest import (
     forge_continuation_links,
     forge_page_review,
     load_stage,
+    reask_recovery_config,
     run_stage,
 )
 
@@ -725,3 +726,18 @@ def test_the_exported_threshold_list_refuses_a_threshold_that_is_not_an_integer(
     context = SimpleNamespace(page_accounting_config_path=None)
     with pytest.raises(FatalAccounting, match="band_slack is True, not an integer"):
         armarium.page_not_measured_basis(context, {}, [], {})
+
+
+def test_a_re_asked_page_exports_its_recovered_act_with_the_rest(tmp_path):
+    """reask-recovers with the re-ask on: page 1's recovered act is a counted unit that
+    the Archetypus and the Armarium accept and export, held or delivered on its own."""
+    root, options = build_page_tree(
+        tmp_path, "reask-recovers", recovery_config=reask_recovery_config(tmp_path / "reask", 1)
+    )
+    result = _export(root, options, "reask-recovers")
+    assert result.returncode in (0, 3), result.stderr
+    bundle = _bundle(root, tmp_path / "clean")
+    partition = bundle["manifest"]["claims"]["act_partition"]
+    assert partition["expected_count"] == 3
+    exported = {**_jsonl(bundle["members"], "acts.jsonl")}
+    assert sorted(exported) == ["p1:1", "p1:2", "p2:1"]

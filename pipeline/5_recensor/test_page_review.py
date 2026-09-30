@@ -23,12 +23,13 @@ from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
 from common.contracts.stages import EXEMPLAR, PERLECTOR, RECENSOR
-from common.page_review import CONTINUATION_LINK_FIELDS, reviewed_rows
+from common.page_review import CONTINUATION_LINK_FIELDS, continuation_links, reviewed_rows
 from common.runtree.store import RunTree
 from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_HOLD,
     open_context,
+    page_readings,
     reading_acts,
     stage_parser,
 )
@@ -36,6 +37,7 @@ from conftest import (
     build_page_tree,
     file_bytes_snapshot,
     load_stage,
+    reask_recovery_config,
     rewitness_stage_boundary,
     run_stage,
 )
@@ -81,8 +83,14 @@ class Tree:
         return json.loads(path.read_text("utf-8"))
 
 
-def _tree(base: Path, scenario: str, floor: int = 3) -> Tree:
-    root, options = build_page_tree(base, scenario, RUN_ID, floor=floor)
+def _tree(base: Path, scenario: str, floor: int = 3, reask: int = 0) -> Tree:
+    root, options = build_page_tree(
+        base,
+        scenario,
+        RUN_ID,
+        floor=floor,
+        recovery_config=reask_recovery_config(base / "reask", reask),
+    )
     return Tree(root, scenario, options)
 
 
@@ -181,9 +189,14 @@ def test_a_happy_page_tree_accepts_every_unit_with_its_evidence(happy, tmp_path)
     assert not (tree.root / RUN_ID / "5_recensor" / "artifacts" / "recovery-request").exists()
 
     receipt = tree.receipt()
-    assert receipt["schema"] == "recensor-partition-receipt.v3"
+    assert receipt["schema"] == "recensor-partition-receipt.v4"
     assert receipt["recensor_status"] == "complete" and receipt["reasons"] == []
-    assert len(receipt["page_reading_refs"]) == 2
+    assert [
+        (page["page_ordinal"], page["reask_ref"], page["reask"]) for page in receipt["pages"]
+    ] == [
+        (1, None, None),
+        (2, None, None),
+    ]
     assert receipt["expected_unit_count"] == 3 and "expected_act_count" not in receipt
     assert {item["page_disposition"] for item in receipt["items"]} == {"read"}
     [link] = receipt["continuation_links"]
@@ -1015,3 +1028,78 @@ def test_a_links_inputs_bind_a_null_sides_page_reading():
     by_id = {row["act_id"]: row for row in rows}
     assert page_review.link_inputs(link, by_id, pages) == [rows[0]["perlectio_ref"], "reading-2"]
     assert page_review.link_inputs(link, by_id, {1: pages[1]}) == [rows[0]["perlectio_ref"]]
+
+
+# --- a re-asked page -------------------------------------------------------------------
+
+
+def test_a_re_asked_page_keeps_its_first_readings_edges_and_counts_its_recovered_act(tmp_path):
+    """reask-continuation with the re-ask on: page 1's one first-reading act runs on to
+    page 2, and its re-ask recovers another act, numbered after it. The recovered act
+    is reviewed, is never a side of the page break and moves no page edge."""
+    tree = _tree(tmp_path, "reask-continuation", reask=1)
+    result = tree.recensor()
+    assert result.returncode in (0, 3), result.stderr
+    context = tree.context()
+    rows = {row["act_key"]: row for row in reading_acts(context)}
+    assert [(key, rows[key]["reading_attempt"]) for key in sorted(rows)] == [
+        ("p1:1", 1),
+        ("p1:2", 2),
+        ("p2:1", 1),
+    ]
+    assert rows["p1:1"]["continues_to_next_page"] is True
+    reviews = tree.reviews()
+    assert sorted(reviews) == sorted(rows)
+    assert not any(
+        "continuation-off-page-edge" in review["payload"]["hold_codes"]
+        for review in reviews.values()
+    )
+    assert {key: review["payload"]["recoveries_used"] for key, review in reviews.items()} == {
+        "p1:1": 1,
+        "p1:2": 1,
+        "p2:1": 0,
+    }
+    [link] = tree.records("5_recensor", "continuation-link")
+    payload = link["payload"]
+    assert (payload["from_act_key"], payload["to_act_key"], payload["agreed"]) == (
+        "p1:1",
+        "p2:1",
+        True,
+    )
+    assert link["outcome"] == "accepted"
+
+    receipt = tree.receipt()
+    assert receipt["schema"] == "recensor-partition-receipt.v4"
+    first, second = receipt["pages"]
+    assert first["reask_ref"] == page_readings(context)[1]["reask_ref"] is not None
+    assert first["accounting_ref"] == rows["p1:2"]["accounting_ref"]
+    assert first["reask"]["named"] and first["reask"]["duplicate"] == []
+    assert sorted(
+        first["reask"]["cleared"] + first["reask"]["set_aside"] + first["reask"]["unread"]
+    ) == sorted(first["reask"]["named"])
+    assert (second["reask_ref"], second["reask"]) == (None, None)
+    [link_row] = receipt["continuation_links"]
+    assert link_row["outcome"] == "accepted"
+
+    # A second pass reuses every record byte for byte.
+    before = file_bytes_snapshot(tree.root)
+    assert tree.recensor().returncode == result.returncode
+    assert file_bytes_snapshot(tree.root) == before
+
+
+def test_a_continuation_link_naming_a_recovered_act_is_refused(tmp_path):
+    tree = _tree(tmp_path, "reask-continuation", reask=1)
+    result = tree.recensor()
+    assert result.returncode in (0, 3), result.stderr
+    context = tree.context()
+    rows = {row["act_key"]: row for row in reading_acts(context)}
+    recovered = rows["p1:2"]
+    [path] = (tree.root / RUN_ID / "5_recensor" / "artifacts" / "continuation-link").glob("*.json")
+    link = json.loads(path.read_text("utf-8"))
+    link["payload"].update(from_act_id=recovered["act_id"], from_act_key="p1:2")
+    link["inputs"].append(recovered["perlectio_ref"])
+    link["self_hash"] = self_hash({k: v for k, v in link.items() if k != "self_hash"})
+    path.write_bytes(canonical_bytes(link))
+    rewitness_stage_boundary(RunTree(tree.root, RUN_ID), RECENSOR)
+    with pytest.raises(FatalAccounting, match="an entry the re-ask recovered"):
+        continuation_links(tree.context(), reading_acts(tree.context()))
