@@ -586,7 +586,7 @@ def _ink_outside(
     total_ink = 0
     outside_ink = 0
     for y, row in enumerate(rows):
-        runs = _validated_runs(row, width)
+        runs = validated_ink_runs(row, width)
         total_ink += sum(end - start for start, end in runs)
         merged_coverage = _row_coverage(covered, y, width)
         for run_start, run_end in runs:
@@ -615,7 +615,12 @@ def _validated_evidence(evidence: Any) -> tuple[int, int, list[Any]]:
     return width, height, rows
 
 
-def _validated_runs(row: Any, width: int) -> list[tuple[int, int]]:
+def validated_ink_runs(row: Any, width: int) -> list[tuple[int, int]]:
+    """One `ink-runs.v2` row as ordered, disjoint half-open `(start, end)` spans.
+
+    Every reader of the Ink Map's retained runs checks a row here, so a row one
+    reader would refuse is refused by all. Raises `ValueError` naming the defect.
+    """
     if not isinstance(row, list):
         raise ValueError("ink-run evidence has a malformed row")
     runs: list[tuple[int, int]] = []

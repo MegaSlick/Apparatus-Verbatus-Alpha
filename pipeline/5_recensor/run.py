@@ -102,6 +102,7 @@ from common.residual_ink import (  # noqa: E402
     reconcile_edge_finding_with_runs,
     residual_ink,
     resolve_coverage_audit_policy,
+    validated_ink_runs,
 )
 from common.sealed_config import read_sealed_toml  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -1689,32 +1690,15 @@ def _ink_outside_cuts_in_box(evidence: dict, box: dict, covered: list[dict]) -> 
     y1 = max(y0, min(height, box["y"] + box["h"]))
     total = 0
     for offset, row in enumerate(rows[y0:y1]):
-        if not isinstance(row, list):
+        try:
+            runs = validated_ink_runs(row, width)
+        except ValueError as error:
             raise FatalAccounting(
-                "ink-map edge findings contain a malformed row. Its ink count cannot be "
-                "measured reliably, so it cannot authorize recovery. Restore the sealed Ink "
-                "Map artifact or restart the run before rerunning the Recensor."
-            )
-        previous_end = 0
-        ink_spans: list[tuple[int, int]] = []
-        for run in row:
-            if not isinstance(run, list) or len(run) != 2 or not all(is_plain_int(v) for v in run):
-                raise FatalAccounting(
-                    "ink-map edge findings contain a malformed run. Its ink count cannot be "
-                    "measured reliably, so it cannot authorize recovery. Restore the sealed "
-                    "Ink Map artifact or restart the run before rerunning the Recensor."
-                )
-            start, length = run
-            # Ordered and disjoint, as the Ink Map writes them; overlapping runs would
-            # count ink twice.
-            if start < previous_end or length <= 0 or start + length > width:
-                raise FatalAccounting(
-                    "ink-map edge findings have unordered or out-of-bounds runs. Counting them "
-                    "could invent ink and authorize unsupported recovery. Restore the sealed "
-                    "Ink Map artifact or restart the run before rerunning the Recensor."
-                )
-            previous_end = start + length
-            ink_spans.append((max(x0, start), min(x1, start + length)))
+                f"ink-map edge findings: {error}. Counting them could invent or miss ink and "
+                "authorize unsupported recovery. Restore the sealed Ink Map artifact or "
+                "restart the run before rerunning the Recensor."
+            ) from error
+        ink_spans = [(max(x0, start), min(x1, end)) for start, end in runs]
         # A union, so overlapping act crops never subtract their shared pixels twice.
         cuts = _union(
             (max(x0, bounds["x"]), min(x1, bounds["x"] + bounds["w"]))
