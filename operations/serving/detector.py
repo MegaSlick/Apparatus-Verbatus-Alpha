@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from common.chairs.models import ChairIdentity, ServingDetails
 
@@ -146,11 +146,14 @@ def _verified_weights(snapshot_root: Path) -> Path:
     return path
 
 
-def check_record_detector_runnable(profile: InProcessProfile, snapshot_root: Path) -> None:
+def check_record_detector_runnable(
+    profile: InProcessProfile, snapshot_root: Callable[[], Path]
+) -> None:
     """Refuse a detector that could not load, without loading it: its pinned package
-    versions must be installed and its weights must hash to the pinned digest."""
+    versions must be installed, then its verified snapshot resolved and its weights
+    hashed to the pinned digest."""
     _installed_versions(profile)
-    _verified_weights(snapshot_root)
+    _verified_weights(snapshot_root())
 
 
 def load_ultralytics_record_detector(

@@ -2470,7 +2470,7 @@ def _check_record_detector_runnable(context) -> None:
         identity, context.args.placement_tier
     )
     try:
-        check_record_detector_runnable(profile, context.registry.ensure(identity).root)
+        check_record_detector_runnable(profile, lambda: context.registry.ensure(identity).root)
     except ServingError as error:
         raise ContractError(f"the record detector is not ready: {error}") from error
 
