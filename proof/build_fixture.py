@@ -530,6 +530,95 @@ PAGE_ANSWERS = (
     },
 )
 
+# What the fake Coniector replies to each page's reconstruction call, over the
+# `happy` page answers: page 1 is SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]
+# (p1:1) and SYNTHETIC ACT TWO delta epsilon zeta eta (p1:2, running on), page 2
+# the same act's text again (p2:1). Unconsecutive pages are reconstructed each
+# from its own text; consecutive ones join p1:2 and p2:1, asked on page 2.
+# `page-review` shows a departure whose span is not in its act (not made) and a
+# reply that is not JSON (every reconstruction of the page not made).
+# Proves wiring only, never reconstruction.
+_GAMMA = {"diplomatic": "[[gamma|gamna]]", "reconstruction": "gamma", "reason": "the formula"}
+_CUT = {"code": "cut-at-page-break", "reason": "the act runs on past the page"}
+RECONSTRUCTION_ANSWERS = (
+    {
+        "scenario": "happy",
+        "page_ordinal": 1,
+        "pages_are_consecutive": False,
+        "answer": {
+            "acts": [
+                {"act": "p1:1", "findings": [], "departures": [_GAMMA]},
+                {"act": "p1:2", "findings": [_CUT], "departures": []},
+            ],
+            "joins": [],
+        },
+    },
+    {
+        "scenario": "happy",
+        "page_ordinal": 2,
+        "pages_are_consecutive": False,
+        "answer": {
+            "acts": [
+                {
+                    "act": "p2:1",
+                    "findings": [{"code": "cut-at-page-break"}],
+                    "departures": [{"diplomatic": "zeta eta", "reconstruction": "zeta theta"}],
+                }
+            ],
+            "joins": [],
+        },
+    },
+    {
+        "scenario": "happy",
+        "page_ordinal": 1,
+        "pages_are_consecutive": True,
+        "answer": {"acts": [{"act": "p1:1", "findings": [], "departures": [_GAMMA]}], "joins": []},
+    },
+    {
+        "scenario": "happy",
+        "page_ordinal": 2,
+        "pages_are_consecutive": True,
+        "answer": {
+            "acts": [],
+            "joins": [
+                {
+                    "acts": ["p1:2", "p2:1"],
+                    "continues": True,
+                    "departures": [
+                        {
+                            "diplomatic": "eta\nSYNTHETIC",
+                            "reconstruction": "eta SYNTHETIC",
+                            "reason": "one act runs on across the break",
+                        }
+                    ],
+                }
+            ],
+        },
+    },
+    {
+        "scenario": "page-review",
+        "page_ordinal": 1,
+        "pages_are_consecutive": False,
+        "answer": {
+            "acts": [
+                {
+                    "act": "p1:1",
+                    "findings": [{"code": "inconsistent", "reason": "no such word"}],
+                    "departures": [{"diplomatic": "omega", "reconstruction": "alpha"}],
+                },
+                {"act": "p1:2", "findings": [], "departures": []},
+            ],
+            "joins": [],
+        },
+    },
+    {
+        "scenario": "page-review",
+        "page_ordinal": 2,
+        "pages_are_consecutive": False,
+        "answer": "the reply is not JSON",
+    },
+)
+
 
 def _with_entry(answer: dict, n: int, **fields) -> dict:
     """`answer` with entry `n`'s fields changed."""
@@ -1498,6 +1587,26 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             "[[page_answer]]",
             f"scenario = {toml_string(row['scenario'])}",
             f"page_ordinal = {row['page_ordinal']}",
+            "answer = "
+            + toml_string(
+                row["answer"]
+                if isinstance(row["answer"], str)
+                else json.dumps(row["answer"], separators=(",", ":"))
+            ),
+            "",
+        ]
+    lines += [
+        "# The fake Coniector's reply to one page's reconstruction call, one per scenario,",
+        "# page and pages_are_consecutive switch, read only when the sealed reconstruction",
+        "# mode is on. `answer` is the reply text exactly.",
+        "",
+    ]
+    for row in RECONSTRUCTION_ANSWERS:
+        lines += [
+            "[[reconstruction_answer]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"page_ordinal = {row['page_ordinal']}",
+            f"pages_are_consecutive = {'true' if row['pages_are_consecutive'] else 'false'}",
             "answer = "
             + toml_string(
                 row["answer"]

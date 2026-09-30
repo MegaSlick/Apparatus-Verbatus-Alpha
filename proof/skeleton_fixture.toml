@@ -1369,6 +1369,46 @@ scenario = "page-runs-past-end"
 page_ordinal = 2
 answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
 
+# The fake Coniector's reply to one page's reconstruction call, one per scenario,
+# page and pages_are_consecutive switch, read only when the sealed reconstruction
+# mode is on. `answer` is the reply text exactly.
+
+[[reconstruction_answer]]
+scenario = "happy"
+page_ordinal = 1
+pages_are_consecutive = false
+answer = "{\"acts\":[{\"act\":\"p1:1\",\"findings\":[],\"departures\":[{\"diplomatic\":\"[[gamma|gamna]]\",\"reconstruction\":\"gamma\",\"reason\":\"the formula\"}]},{\"act\":\"p1:2\",\"findings\":[{\"code\":\"cut-at-page-break\",\"reason\":\"the act runs on past the page\"}],\"departures\":[]}],\"joins\":[]}"
+
+[[reconstruction_answer]]
+scenario = "happy"
+page_ordinal = 2
+pages_are_consecutive = false
+answer = "{\"acts\":[{\"act\":\"p2:1\",\"findings\":[{\"code\":\"cut-at-page-break\"}],\"departures\":[{\"diplomatic\":\"zeta eta\",\"reconstruction\":\"zeta theta\"}]}],\"joins\":[]}"
+
+[[reconstruction_answer]]
+scenario = "happy"
+page_ordinal = 1
+pages_are_consecutive = true
+answer = "{\"acts\":[{\"act\":\"p1:1\",\"findings\":[],\"departures\":[{\"diplomatic\":\"[[gamma|gamna]]\",\"reconstruction\":\"gamma\",\"reason\":\"the formula\"}]}],\"joins\":[]}"
+
+[[reconstruction_answer]]
+scenario = "happy"
+page_ordinal = 2
+pages_are_consecutive = true
+answer = "{\"acts\":[],\"joins\":[{\"acts\":[\"p1:2\",\"p2:1\"],\"continues\":true,\"departures\":[{\"diplomatic\":\"eta\\nSYNTHETIC\",\"reconstruction\":\"eta SYNTHETIC\",\"reason\":\"one act runs on across the break\"}]}]}"
+
+[[reconstruction_answer]]
+scenario = "page-review"
+page_ordinal = 1
+pages_are_consecutive = false
+answer = "{\"acts\":[{\"act\":\"p1:1\",\"findings\":[{\"code\":\"inconsistent\",\"reason\":\"no such word\"}],\"departures\":[{\"diplomatic\":\"omega\",\"reconstruction\":\"alpha\"}]},{\"act\":\"p1:2\",\"findings\":[],\"departures\":[]}],\"joins\":[]}"
+
+[[reconstruction_answer]]
+scenario = "page-review"
+page_ordinal = 2
+pages_are_consecutive = false
+answer = "the reply is not JSON"
+
 # One declared provider RESPONSE per row: an empty body from that chair on
 # that act. The Attestatores derives `genuinely-empty` from the retained
 # payload, so a completed empty Testimonium always means the chair was asked
