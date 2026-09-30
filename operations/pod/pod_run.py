@@ -25,12 +25,15 @@ preflight had looked at.
 ``EXIT_COMPLETE`` (0) is returned only when the orchestrator itself returned
 ``EXIT_COMPLETE``; ``EXIT_HELD`` (3) and ``EXIT_HALTED`` (4) mirror the
 orchestrator's own held and halted exits; ``EXIT_REFUSED`` (2) is a named
-refusal before anything ran; ``EXIT_BOOTSTRAP_RED`` (5) is a red bootstrap
-step, the orchestrator never started; ``EXIT_FAILED`` (6) is an orchestrator
-that could not start or exited outside its own vocabulary; ``EXIT_DRY_RUN``
+refusal before the orchestrator ran; ``EXIT_BOOTSTRAP_RED`` (5) is a red
+bootstrap step, the orchestrator never started; ``EXIT_FAILED`` (6) is an
+orchestrator that could not start, that refused structurally (its own
+``EXIT_FATAL``), or that exited outside its own vocabulary; ``EXIT_DRY_RUN``
 (7) is a drill -- both plans printed, nothing run, no report written -- and is
 never 0, so a dry run launched as ``pod_timer``'s bootstrap child by mistake
-cannot be mistaken for a completed run.  Whatever the outcome, the report at
+cannot be mistaken for a completed run; ``EXIT_SELECTION_COMPLETE`` (8) is a
+selected range ending before Armarium whose orchestrator completed and whose
+transcript and liveness records came home.  Whatever the outcome, the report at
 ``--report-path`` says the same thing durably, under the launch-bound name,
 before the exit code says it.  The exceptions: the dry run writes no report at
 all (see below); a credential-looking argv, a missing ``--`` and a refused
@@ -78,13 +81,15 @@ only here.
 
 **The data gate is checked before the bootstrap spends anything.**  The
 orchestrator's Door refuses a submission folder outside the policy's approved
-storage roots.  ``config/data_handling_policy.json`` now names the pod volume
-mount path (``operations/pod/boot_a_request.py``'s sealed
-``volume_mount_path``) beside the local ``private/`` root -- that listing was
-a disclosure decision the project lead made once rather than
-per-launch.  This process asks the gate the same question first, so a launch
-whose submission folder is outside every listed root is refused here, by
-name, before a model is fetched on a billing card rather than after.
+storage roots (``config/data_handling_policy.json``; README.md says which
+roots it lists and why).  This process asks the gate the same question first,
+so a launch whose submission folder is outside every listed root is refused
+here, by name, before a model is fetched on a billing card rather than after.
+
+**A selection's predecessor is checked before the bootstrap spends anything.**
+A range that starts after the Door needs the run tree's sealed predecessor
+stage; a missing or changed seal is refused here, as the orchestrator would
+refuse it after a paid bootstrap.
 """
 
 from __future__ import annotations
@@ -106,6 +111,7 @@ from common.chairs.models import ChairIdentity, is_witness_role
 from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
 from common.contracts.prior_draft import BLIND_READ_MODES
+from common.contracts.stages import SEAL_PREDECESSORS
 from common.runtree.store import RunTree
 from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
 from common.stage import EXIT_FATAL as ORCHESTRATOR_FATAL
@@ -152,8 +158,7 @@ DEFAULT_RUNS_DIRECTORY = "runs"
 # tail is the last window kept in memory and appended at close, because the
 # traceback or refusal that explains a stopped run is at the *end* of a stream
 # whose middle nobody needs. Between them a transcript cannot grow without
-# limit on a volume whose space the run tree also needs -- which is the one
-# objection the inherited-streams comment this replaces actually had.
+# limit on a volume whose space the run tree also needs.
 TRANSCRIPT_HEAD_BYTES = 8 * 1024 * 1024
 TRANSCRIPT_TAIL_BYTES = 1 * 1024 * 1024
 # How long the reader thread is waited for after the orchestrator itself has
@@ -180,27 +185,41 @@ _ORCHESTRATOR_EXITS = {
     ORCHESTRATOR_HALTED: EXIT_HALTED,
 }
 
-# Which outcomes are worth paying the rest of the lease for. `pod_timer.
-# run_with_bootstrap` reads any child exit before the hard deadline as
-# `completed-early` and closes the pod with a non-green timer report, so a run
-# that finished its work has to hold: closing early on a complete run would
-# turn a good run into a non-green timer record, and that is a `pod_timer`
-# contract change this unit does not make. A run that did *not* finish has no
-# such claim on the meter. `halted`, `failed`, and "the orchestrator could not
-# start" hold a rented card, at the sealed hourly rate, until the deadline for
-# nothing -- the same waste the bootstrap-red branch above already refuses to
-# pay; no permission opens a hold for such a run. The
-# evidence argument does not save the hold either: the run tree, the reports
-# and the preflight evidence are all on the *volume*, which outlives the pod
-# and is read by `verbatus fetch-run` over S3 with no pod running at all.
+# Which outcomes of a full run (one ending at Armarium) hold to the hard
+# deadline. `pod_timer.run_with_bootstrap` reads any child exit before the
+# deadline as `completed-early` and closes the pod with a non-green timer
+# report, so a full run that ended complete or held stays until the deadline
+# to keep its timer record green. A selection ending before Armarium never
+# holds: it is one step of a longer run, `selection-complete` is the exit the
+# timer accepts as a normal early finish, and the next selection needs the
+# card closed rather than idle. `halted`, `failed`, and "the orchestrator
+# could not start" never hold either: they would bill a rented card, at the
+# sealed hourly rate, until the deadline for nothing, as a red bootstrap would.
+# Nothing is lost by returning: the run tree, the reports and the preflight
+# evidence are on the *volume*, which outlives the pod and is read by
+# `verbatus fetch-run` over S3 with no pod running at all.
 _HOLD_AFTER_EXITS = frozenset({EXIT_COMPLETE, EXIT_HELD})
+
+
+@dataclass(frozen=True, slots=True)
+class RunnerResult:
+    """The orchestrator's exit and what the runner's tee left in the transcript.
+
+    ``transcript_failure`` names why the transcript is incomplete (``None``
+    when every byte the child printed reached it or was counted in
+    ``transcript_dropped_bytes``); ``transcript_dropped_bytes`` is how much of
+    the middle the bounded transcript dropped by design.
+    """
+
+    returncode: int
+    transcript_failure: str | None = None
+    transcript_dropped_bytes: int = 0
+
 
 # `argv, *, cwd, env, transcript, liveness, interval_seconds`. The last three are
 # what makes the child's output durable and its aliveness visible; a runner that
-# ignored them would put both back inside the container. The returned
-# `CompletedProcess.stderr` is the runner's report about its own tee: `None`
-# when the transcript is whole, a string naming why it is not.
-Runner = Callable[..., subprocess.CompletedProcess[bytes]]
+# ignored them would put both back inside the container.
+Runner = Callable[..., RunnerResult]
 
 
 class RunRefusal(PlanRefusal):
@@ -463,6 +482,29 @@ class RunPlan:
         if configured_only:
             roles = {role for role in roles if isinstance(configured.get(role), ChairIdentity)}
         return roles
+
+
+def _require_selection_predecessor(plan: RunPlan) -> None:
+    """Refuse a selection whose first stage's predecessor is not sealed in this run's tree.
+
+    The orchestrator refuses the same thing when that stage opens; asking
+    first keeps the refusal ahead of a paid bootstrap. Recovery has no stage
+    program of its own and reads the Recensor seal through Archetypus's
+    predecessor, as the orchestrator does.
+    """
+
+    first = plan.selected_stages()[0]
+    consumer = "archetypus" if first == "recovery" else first
+    predecessor = SEAL_PREDECESSORS.get(consumer)
+    if predecessor is None:
+        return
+    try:
+        verify_predecessor_seal(RunTree(plan.run_root, plan.run_id), consumer)
+    except ContractError as error:
+        raise RunRefusal(
+            f"starting at {first} requires this run's sealed {predecessor} stage: {error}",
+            report_path=plan.report_path,
+        ) from error
 
 
 def _receipt_chairs(receipt: object, field: str, *, state: str | None = None) -> set[str]:
@@ -858,7 +900,7 @@ def _liveness_journal(
 
 
 def _records_at_close(
-    plan: RunPlan, *, transcript_failure: str | None = None
+    plan: RunPlan, *, transcript_failure: str | None = None, transcript_dropped_bytes: int = 0
 ) -> tuple[dict[str, dict[str, object]], list[str]]:
     """What each record the report names actually left on the volume at close.
 
@@ -869,7 +911,9 @@ def _records_at_close(
     ``transcript_failure`` is what the runner reports about its own tee: a
     transcript whose pump failed part-way, or whose reader was still attached
     when the wait for it ran out, is a file that exists and is incomplete,
-    which ``is_file`` alone would call present.
+    which ``is_file`` alone would call present. ``transcript_dropped_bytes``
+    is the middle the bounded transcript dropped by design: recorded, so a
+    truncated transcript never reads as whole, but not a missing record.
     """
 
     audit: dict[str, dict[str, object]] = {}
@@ -880,6 +924,8 @@ def _records_at_close(
         ("timing_journal", plan.timing_journal_path),
     ):
         entry: dict[str, object] = {"path": str(path), "present": path.is_file()}
+        if name == "transcript":
+            entry["dropped_bytes"] = transcript_dropped_bytes
         if not entry["present"]:
             missing.append(name)
         elif name == "transcript" and transcript_failure is not None:
@@ -942,21 +988,24 @@ def _refuse(refusal: PlanRefusal, *, now: Callable[[], datetime]) -> int:
 class BoundedTranscript:
     """The child's merged output, head written live and tail kept for the close.
 
-    Two bounds rather than one file that grows forever (the objection the
-    inherited-streams comment this replaces actually had) and rather than one
-    ring buffer (which would leave nothing durable until the process ended).
+    Two bounds rather than one file that grows forever (the run tree needs the
+    volume's space) and rather than one ring buffer (which would leave nothing
+    durable until the process ended).
     The head reaches the volume as it arrives, so a pod_run that is SIGKILLed
     still leaves the start of the run readable; the tail is the last
     ``tail_bytes`` seen, appended after a truncation marker when the file is
     closed, because the traceback or refusal that says why a run stopped is at
     the end of the stream.
 
+    ``dropped_bytes`` is the middle that was dropped; the run report records
+    it under ``records_at_close.transcript``, so a truncated transcript never
+    reads as whole.
+
     What is *not* durable is the tail of a transcript that has already passed
-    the head bound, in the window before ``close``. That is stated here and in
-    the run report rather than hidden: it costs a rewrite of the whole file on
-    every tick to fix, and the case it would cover -- a multi-megabyte
-    transcript *and* a killed supervisor -- still leaves eight megabytes of
-    durable head to read.
+    the head bound, in the window before ``close``: making it durable costs a
+    rewrite of the whole file on every tick, and the case it would cover -- a
+    multi-megabyte transcript *and* a killed supervisor -- still leaves eight
+    megabytes of durable head to read.
     """
 
     __slots__ = ("_handle", "_head_room", "_tail", "_tail_bytes", "_overflow")
@@ -985,10 +1034,14 @@ class BoundedTranscript:
         if len(self._tail) > self._tail_bytes:
             del self._tail[: len(self._tail) - self._tail_bytes]
 
+    @property
+    def dropped_bytes(self) -> int:
+        return self._overflow - len(self._tail)
+
     def close(self) -> None:
         try:
             if self._overflow:
-                dropped = self._overflow - len(self._tail)
+                dropped = self.dropped_bytes
                 self._handle.write(
                     f"\n[pod_run: {dropped} byte(s) of this transcript were dropped between "
                     f"the head above and the final {len(self._tail)} byte(s) below]\n".encode()
@@ -1004,8 +1057,8 @@ def _pump(stream, transcript: BoundedTranscript, mirror, failure: list[str]) -> 
     """Copy the child's merged output to the transcript and to our own stderr.
 
     Mirrored, not diverted: the container log an operator watches live while a
-    pod runs is the same text as before this teeing existed. The transcript is
-    the copy that survives the pod.
+    pod runs carries the child's whole output. The transcript is the copy that
+    survives the pod.
 
     A transcript write that fails (the volume is the usual suspect) is
     recorded in ``failure`` and the pipe is still drained to the mirror: a
@@ -1054,7 +1107,7 @@ def _run(
     transcript: Path,
     liveness: Callable[[int, bool], None],
     interval_seconds: float,
-) -> subprocess.CompletedProcess[bytes]:
+) -> RunnerResult:
     """Run the orchestrator with its output teed to the volume, ticking while it lives.
 
     Without this, an inherited stream leaves a stage's refusal text reachable
@@ -1121,11 +1174,10 @@ def _run(
                 "output pipe, and the transcript was closed without that text"
             )
         writer.close()
-    # The runner's own report about its tee rides on `stderr`, which the tee
-    # leaves unused (the child's streams are merged into the transcript): a
-    # string names the failure, `None` says the transcript is whole.
-    return subprocess.CompletedProcess(
-        argv, child.returncode, stderr=failure[0] if failure else None
+    return RunnerResult(
+        child.returncode,
+        transcript_failure=failure[0] if failure else None,
+        transcript_dropped_bytes=writer.dropped_bytes,
     )
 
 
@@ -1160,20 +1212,13 @@ def main(
         )
         args = build_parser().parse_flags(run_argv, run_report)
         plan = resolve_run_plan(args, bootstrap_plan, launch_token)
-        if plan.models is not None or plan.stage is not None or plan.from_stage is not None:
+        if plan.stage is not None or plan.from_stage is not None:
             bootstrap_plan = replace(
                 bootstrap_plan, preflight_roles=tuple(sorted(plan.required_chairs()))
             )
         plan = replace(plan, bootstrap=bootstrap_plan)
         approved_roots, skipped_roots = require_approved_submission_folder(plan)
-        if plan.selected_stages()[0] == "perlector":
-            try:
-                verify_predecessor_seal(RunTree(plan.run_root, plan.run_id), "perlector")
-            except ContractError as error:
-                raise RunRefusal(
-                    f"starting at perlector requires this run's sealed attestatores stage: {error}",
-                    report_path=plan.report_path,
-                ) from error
+        _require_selection_predecessor(plan)
     except PlanRefusal as refusal:
         return _refuse(refusal, now=now)
 
@@ -1200,14 +1245,15 @@ def main(
     report = bootstrap_main.run_bootstrap(
         bootstrap_plan, now=now, actions_factory=actions_factory, environment=environment
     )
-    if isinstance(report, int):
+    if isinstance(report, bootstrap_main.BootstrapRefused):
         _write_run_report(
             plan,
             {
                 **base,
                 "state": "refused",
                 "exit_code": EXIT_REFUSED,
-                "reason": "bootstrap actions could not be built; see the bootstrap report",
+                "reason": report.reason,
+                "bootstrap": report.report.to_record() if report.report is not None else None,
                 "finished_at": _stamp(now()),
             },
         )
@@ -1296,11 +1342,13 @@ def main(
         )
         orchestrator_exit: int | None = completed.returncode
         failure_detail: str | None = None
-        transcript_failure = completed.stderr if isinstance(completed.stderr, str) else None
+        transcript_failure = completed.transcript_failure
+        transcript_dropped_bytes = completed.transcript_dropped_bytes
     except OSError as error:
         orchestrator_exit = None
         failure_detail = f"the orchestrator could not start: {error}"
         transcript_failure = None
+        transcript_dropped_bytes = 0
     exit_code = _ORCHESTRATOR_EXITS.get(orchestrator_exit, EXIT_FAILED)
     if exit_code == EXIT_COMPLETE and plan.ends_before_armarium:
         exit_code = EXIT_SELECTION_COMPLETE
@@ -1329,12 +1377,10 @@ def main(
             f"stage's own reason is the last text in {plan.transcript_path}, and the run tree "
             "holds the evidence it was decided on"
         )
-    state = _STATE_FOR_EXIT[exit_code]
-    holding = exit_code in _HOLD_AFTER_EXITS and not (
-        exit_code == EXIT_HELD and plan.ends_before_armarium
-    )
     records_at_close, records_missing = _records_at_close(
-        plan, transcript_failure=transcript_failure
+        plan,
+        transcript_failure=transcript_failure,
+        transcript_dropped_bytes=transcript_dropped_bytes,
     )
     if records_missing:
         absence = (
@@ -1342,13 +1388,40 @@ def main(
             f"run's: {', '.join(records_missing)}; the writer's own reason is in "
             f"{plan.transcript_path} if that survived"
         )
-        if exit_code == EXIT_COMPLETE and any(name != "timing_journal" for name in records_missing):
+        # A success whose transcript or liveness record is partial is not
+        # complete: its evidence is missing, so it is held. The timing journal
+        # is a stopwatch and never changes a run's state.
+        if exit_code in (EXIT_COMPLETE, EXIT_SELECTION_COMPLETE) and any(
+            name != "timing_journal" for name in records_missing
+        ):
             exit_code = EXIT_HELD
-            state = _STATE_FOR_EXIT[exit_code]
-            holding = True
             failure_detail = f"the orchestrator completed, but {absence}"
         else:
             failure_detail = absence if failure_detail is None else f"{failure_detail}. {absence}"
+    state = _STATE_FOR_EXIT[exit_code]
+    holding = exit_code in _HOLD_AFTER_EXITS and not plan.ends_before_armarium
+    if holding:
+        hold_detail = (
+            f"the run ended {state}; holding to the hard deadline so the pod timer does not "
+            "read this as completed-early"
+        )
+    elif exit_code == EXIT_SELECTION_COMPLETE:
+        hold_detail = (
+            "the selected stages completed; returning at once so the pod timer closes the "
+            "pod. The run tree is on the volume, which outlives the pod, for the next selection"
+        )
+    elif exit_code == EXIT_HELD:
+        hold_detail = (
+            "the selection held; returning at once so the pod timer closes the pod rather "
+            "than billing idle time. The run tree and every record are on the volume, which "
+            "outlives the pod"
+        )
+    else:
+        hold_detail = (
+            "the run did not finish; returning at once so the pod timer closes the pod "
+            "rather than billing the rest of the lease for nothing. Every record is on the "
+            "volume, which outlives the pod"
+        )
     final: dict[str, object] = {
         **running,
         "state": state,
@@ -1358,14 +1431,7 @@ def main(
         "records_at_close": records_at_close,
         "records_missing": records_missing,
         "held_to_hard_deadline": holding,
-        "hold_detail": (
-            "the run finished; holding to the hard deadline so the pod timer does not read "
-            "this as completed-early"
-            if holding
-            else "the run did not finish; returning at once so the pod timer closes the pod "
-            "rather than billing the rest of the lease for nothing. Every record is on the "
-            "volume, which outlives the pod"
-        ),
+        "hold_detail": hold_detail,
         "finished_at": _stamp(now()),
     }
     _write_run_report(plan, final)
