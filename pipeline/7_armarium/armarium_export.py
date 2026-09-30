@@ -35,6 +35,7 @@ from zipfile import ZIP_STORED, BadZipFile, LargeZipFile, ZipFile, ZipInfo
 
 from coniector_layer import (
     CONIECTOR_MEMBER,
+    anchor_act,
     join_section,
     reconstruction_lines,
     text_bundle_placements,
@@ -1677,7 +1678,7 @@ def _verify_coniector_layer(
             rows += [row for row in placed[folder] if row not in rows]
         for row in rows:
             for folder, acts in sectioned.items():
-                if row["act_ids"][0] in acts and placed[folder].count(row) != 1:
+                if anchor_act(row) in acts and placed[folder].count(row) != 1:
                     raise SchemaRefusal(
                         f"the text bundle does not show {row['act_keys']}'s reconstruction "
                         "exactly once in every folder that shows the act"
@@ -2979,7 +2980,7 @@ def _text_bundle_members(
             other_groups[folder].append(other)
     act_keys = {act["act_id"]: act["act_key"] for act in acts}
     notes = _join_notes(joins, act_keys)
-    beneath = {row["act_ids"][0]: row for row in coniector_rows if row["unit"] == "act"}
+    beneath = {anchor_act(row): row for row in coniector_rows if row["unit"] == "act"}
     members: dict[str, bytes] = {}
     for folder in sorted(folders):
         records = grouped[folder]
@@ -3022,7 +3023,7 @@ def _text_bundle_members(
             )
         in_folder = {act["act_id"] for act in records}
         for row in coniector_rows:
-            if row["unit"] == "join" and row["act_ids"][0] in in_folder:
+            if row["unit"] == "join" and anchor_act(row) in in_folder:
                 lines.extend(join_section(row))
         for other in sorted(
             other_groups[folder], key=lambda item: act_key_sort_key(item["act_key"])

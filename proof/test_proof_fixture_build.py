@@ -279,6 +279,7 @@ def test_models_config_owns_the_live_chairs_floor_and_recipes(skeleton, models_c
         "perlector",
         "recensor",
         "archetypus",
+        "coniector",
         "armarium",
     }
 

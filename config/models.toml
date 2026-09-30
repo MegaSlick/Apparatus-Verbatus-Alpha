@@ -109,14 +109,16 @@ manifest = "manifests/perlector.json"
 serving_recipe = "fake-perlector-v0"
 license_note = "fixture identity only; no model weights or model license apply"
 
-# The Coniector's chair: the Perlector's model, asked text only. It is one sealed
-# switch (`mode` in config/reconstruction.toml) whether the stage asks it.
+# The Coniector's chair: the Perlector's model asked text only (models-real.toml
+# pins it to the Perlector's revision; here it has its own fixture bytes, as every
+# fixture chair does). It is one sealed switch (`mode` in
+# config/reconstruction.toml) whether the stage asks it.
 [chairs.reconstructor]
 state = "configured"
 source = "local-repository"
-path = "perlector"
-digest_manifest = "f20a475be15e08fec228c3ecf209b826bd774f8e4ca3589359d3ddfe90d3729d"
-manifest = "manifests/perlector.json"
+path = "reconstructor"
+digest_manifest = "168606d61b164b07c067a50a134737bcd0b10a50e0df2500b5eb914c3f993810"
+manifest = "manifests/reconstructor.json"
 serving_recipe = "fake-reconstructor-v0"
 license_note = "fixture identity only; no model weights or model license apply"
 

@@ -51,6 +51,11 @@ ROW_LINE: Final = "reconstruction_row:"
 JOIN_SECTION_SUFFIX: Final = " (not an act)"
 
 
+def anchor_act(row: Mapping[str, Any]) -> str:
+    """The act a row is shown beneath: its act, or a join's first piece."""
+    return row["act_ids"][0]
+
+
 def _sha256(text: str) -> str:
     return digest_bytes(text.encode("utf-8"))
 

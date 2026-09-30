@@ -20,7 +20,9 @@ from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ApprovalRefusal, ContractError, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
-from common.contracts.stages import ARMARIUM, DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
+from common.contracts.stages import ARMARIUM, CONIECTOR, DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
+from common.reconstruction import load_reconstruction_policy
+from common.reconstruction_records import PLAN_KIND, plan_payload
 from common.residual_ink import (
     edge_ink,
     ink_runs_from_rows,
@@ -111,6 +113,7 @@ class _RecordingContext:
             designator_grouping_config=config / "designator_grouping.toml",
             ink_map_config=config / "ink_map.toml",
             perlector_protocol_config=config / "perlector_protocol.toml",
+            reconstruction_config=config / "reconstruction.toml",
         )
         self.perlector_audit_config_path = config / "perlector_audit.toml"
         # Read for the sealed reading unit, which decides the act or page export.
@@ -134,6 +137,14 @@ class _RecordingContext:
             "perlector-protocol": read_sealed_toml(self.args.perlector_protocol_config, "config")[
                 1
             ],
+            "reconstruction": load_reconstruction_policy(self.args.reconstruction_config).sha256,
+        }
+        # An act-read run's Coniector plans nothing; the export proves its one plan.
+        self.coniector_plan = {
+            "artifact_id": "coniector-plan",
+            "payload": plan_payload(
+                load_reconstruction_policy(self.args.reconstruction_config), "act", None
+            ),
         }
 
         # Build the mapped page with the same policies, measures, and canonical
@@ -213,7 +224,9 @@ class _RecordingContext:
             }
         }
 
-        def build_manifest(stage: str) -> dict:
+        def build_manifest(stage: str, **_options) -> dict:
+            if stage == CONIECTOR:
+                return {"artifacts": [{"kind": PLAN_KIND, "artifact_id": "coniector-plan"}]}
             if stage == DESIGNATOR:
                 return {
                     "artifacts": [
@@ -238,6 +251,8 @@ class _RecordingContext:
             }
 
         def read_artifact(stage: str, kind: str, artifact_id: str) -> dict:
+            if stage == CONIECTOR and kind == PLAN_KIND:
+                return self.coniector_plan
             if stage == DESIGNATOR and kind == "conservation":
                 return self.conservation_records[artifact_id]
             if stage != INK_MAP or kind != "ink-map":

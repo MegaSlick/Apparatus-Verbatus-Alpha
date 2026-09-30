@@ -499,7 +499,8 @@ def test_the_export_refuses_to_complete_over_a_superseded_witness_basis(tmp_path
 
     _supersede_a_witness_basis(tree, act, "attestator_2")
 
-    for program in (RECENSOR_PROGRAM, ARCHETYPUS_PROGRAM, CONIECTOR_PROGRAM, ARMARIUM_PROGRAM):
+    # The Coniector reads no witness basis; the run's sealed one stands for the Armarium.
+    for program in (RECENSOR_PROGRAM, ARCHETYPUS_PROGRAM, ARMARIUM_PROGRAM):
         result = invoke(root, "r", "happy", program)
         assert result.returncode != 0, f"{program} accepted a superseded witness basis"
         assert "since superseded" in result.stderr, f"{program}: {result.stderr}"

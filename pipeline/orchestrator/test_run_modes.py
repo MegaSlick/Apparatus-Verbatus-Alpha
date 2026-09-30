@@ -32,6 +32,7 @@ SEQUENCE = (
     "recensor",
     "recovery",
     "archetypus",
+    "coniector",
     "armarium",
 )
 
@@ -79,6 +80,7 @@ def test_store_root_reaches_a_stage_registry(tmp_path, monkeypatch) -> None:
         "designator_grouping_config",
         "alignment_config",
         "page_accounting_config",
+        "reconstruction_config",
         "ink_map_config",
         "formats_config",
         "recovery_config",
