@@ -1554,10 +1554,9 @@ def test_a_retained_accounting_measured_from_other_inputs_is_not_adopted(
 
 
 def test_a_retained_page_reading_or_perlectio_from_other_inputs_is_not_adopted():
-    state = SimpleNamespace(context=SimpleNamespace(config_digest="now"))
+    state = SimpleNamespace(context=SimpleNamespace())
     page = SimpleNamespace(page_id="pg_0000000000000001", feed_ref={"relative_path": "f"})
     reading = {
-        "config_digest": "now",
         "payload": {
             "schema": page_run.PAGE_READING_SCHEMA,
             "feed_ref": {"relative_path": "f"},
@@ -1566,7 +1565,10 @@ def test_a_retained_page_reading_or_perlectio_from_other_inputs_is_not_adopted()
         },
     }
     page_run._check_adopted(state, page, reading)
-    for changed in ({"config_digest": "then"}, {"payload": {**reading["payload"], "feed_ref": {}}}):
+    for changed in (
+        {"payload": {**reading["payload"], "feed_ref": {}}},
+        {"payload": {**reading["payload"], "schema": "perlector-page-reading.v0"}},
+    ):
         with pytest.raises(ContractError, match="retained page reading .* not adopted"):
             page_run._check_adopted(state, page, {**reading, **changed})
     expected = {"page_accounting_ref": {"relative_path": "a"}}

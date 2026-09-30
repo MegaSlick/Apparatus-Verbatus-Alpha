@@ -725,8 +725,7 @@ def _check_adopted(state: _PagePass, page: _Page, record: dict[str, Any]) -> Non
     """Refuse a retained page reading this run could not have made from this page's feed."""
     payload = record["payload"]
     if (
-        record["config_digest"] != state.context.config_digest
-        or not isinstance(payload, dict)
+        not isinstance(payload, dict)
         or payload.get("schema") != PAGE_READING_SCHEMA
         or payload.get("feed_ref") != page.feed_ref
         or payload.get("disposition") not in (READ, HELD)
@@ -989,8 +988,7 @@ def publish_page_accounting(
     if sealed is not None:
         payload = sealed["payload"]
         if (
-            sealed["config_digest"] != context.config_digest
-            or page_path.refs_by_path(sealed["inputs"]) != page_path.refs_by_path(inputs)
+            page_path.refs_by_path(sealed["inputs"]) != page_path.refs_by_path(inputs)
             or not isinstance(payload, dict)
             or payload.get("feed_ref") != page.feed_ref
             or payload.get("page_reading_ref") != reading_ref
