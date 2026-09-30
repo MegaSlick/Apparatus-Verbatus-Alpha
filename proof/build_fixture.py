@@ -437,9 +437,7 @@ STOP_REASONS = (
 )
 
 
-def _page_entry(
-    n, act_key, cites, *, text=None, from_previous=False, to_next=False, kind="act"
-):
+def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=False, kind="act"):
     return {
         "n": n,
         "kind": kind,
@@ -493,9 +491,7 @@ PAGE_ANSWERS = (
         "scenario": "page-no-act",
         "page_ordinal": 2,
         "answer": {
-            "acts": [
-                _page_entry(1, "a2", ["A1", "B1", "L1-L3"], from_previous=True, kind="other")
-            ],
+            "acts": [_page_entry(1, "a2", ["A1", "B1", "L1-L3"], from_previous=True, kind="other")],
             "set_aside": [],
         },
     },
