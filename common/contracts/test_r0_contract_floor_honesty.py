@@ -298,7 +298,7 @@ def test_an_under_witnessed_act_cannot_claim_otherwise_by_omitting_two_of_three_
     actually met the floor, so the act IS under-witnessed, and the record is lying.
     """
     coverage = _base_coverage(page_granularity_only=1, under_witnessed=False)
-    # A granular receipt omitting any granularity fact is refused outright now.
+    # A granular receipt omitting any granularity fact is refused outright.
     with pytest.raises(SchemaRefusal, match="omits one or more required granularity facts"):
         _validate_coverage(coverage)
     # And with every fact present, the lie itself is refused by name.
