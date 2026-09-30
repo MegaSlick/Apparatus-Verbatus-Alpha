@@ -292,6 +292,7 @@ def test_a_page_whose_answer_was_not_read_is_one_held_item_with_its_reasons(tmp_
     ledger = bundle["manifest"]["claims"]["terminal_ledger"]
     [page_two] = [unit for unit in ledger["units"] if unit["unit_id"] == "page:2"]
     assert page_two["category"] == "held-for-review"
+    _assert_no_entry_reads_nothing(bundle, "p2:unread")
 
 
 @pytest.mark.parametrize(
@@ -325,6 +326,15 @@ def test_a_page_read_as_blank_is_confirmed_blank_only_when_the_recensor_confirms
     ledger = bundle["manifest"]["claims"]["terminal_ledger"]
     [page_two] = [unit for unit in ledger["units"] if unit["unit_id"] == "page:2"]
     assert page_two["category"] == category
+    _assert_no_entry_reads_nothing(bundle, "p2:blank")
+
+
+def _assert_no_entry_reads_nothing(bundle: dict, key: str) -> None:
+    """A row standing for no entry names no reading and counts in neither re-ask total."""
+    assert _jsonl(bundle["members"], "acts.jsonl")[key]["reading"] is None
+    reask = bundle["manifest"]["claims"]["reask"]
+    assert reask["pages"][1] == {"ordinal": 2, "first_reading_acts": 0, "read_on_reask_acts": 0}
+    assert reask["read_on_reask_acts"] == 0
 
 
 def test_an_agreed_continuation_is_a_labelled_reconstruction_and_keeps_the_run_partial(
@@ -415,6 +425,23 @@ def _relabel_jsonl_act(members: dict) -> None:
     members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
 
 
+def _move_act_reading_to_page_one(members: dict) -> None:
+    """Page 2's act counted on page 1, in the source rows and the claim alike."""
+
+    def move(sources):
+        [row] = [row for row in sources["act_readings"] if row["act_key"] == "p2:1"]
+        row["page_ordinal"] = 1
+
+    _sources(members, move)
+
+    def recount(claims):
+        pages = claims["reask"]["pages"]
+        pages[0]["first_reading_acts"] += 1
+        pages[1]["first_reading_acts"] -= 1
+
+    _claims(members, recount)
+
+
 def _unlabel_text_bundle_act(members: dict) -> None:
     [name] = [name for name in members if name.startswith("text/")]
     members[name] = members[name].replace(b"reading: first reading\n", b"", 1)
@@ -483,6 +510,11 @@ def _page_roster_narrowed(members: dict) -> None:
             lambda m: _sources(m, lambda s: s["act_readings"][0].update(reading="read on re-ask")),
             "does not name the reading",
         ),
+        (
+            lambda m: _sources(m, lambda s: s["act_readings"][0].update(reading=None)),
+            "null for a row with no entry",
+        ),
+        (_move_act_reading_to_page_one, "sealed page its key names"),
         (_relabel_jsonl_act, "acts JSONL does not name the reading"),
         (_unlabel_text_bundle_act, "text-bundle act does not name the reading"),
     ],
@@ -501,6 +533,8 @@ def _page_roster_narrowed(members: dict) -> None:
         "unknown-reading",
         "reading-dropped",
         "relabelled-source",
+        "entry-without-reading",
+        "moved-page",
         "relabelled-jsonl",
         "unlabelled-text",
     ],

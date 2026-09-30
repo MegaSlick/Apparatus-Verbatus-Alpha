@@ -516,8 +516,9 @@ The other layer is carried by:
 which formats do.
 
 **Verification.** `verify_export_bundle` recomputes the three claims from
-`sources.json`, requires `act_readings` to name exactly the act partition's acts
-and every act row, database row and text-bundle act section to carry its
+`sources.json`, requires `act_readings` to name exactly the act partition's acts,
+each on the page its key names and with a reading exactly when its key names an
+entry, and every act row, database row and text-bundle act section to carry its
 source reading (and no act-path row or section to carry one), requires every other reading apart from the act partition, reads
 `other.jsonl` and every OTHER section against the source rows and requires the
 formats carrying the layer to agree on each reading's text, uncertainty and

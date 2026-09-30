@@ -79,10 +79,10 @@ EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v7"
 # carries its own id and a reader cannot mistake one count for the other.
 EXPORT_MANIFEST_CLUSTERED_SCHEMA: Final = "armarium-export-manifest.v8"
 # A page-read run counts the readings the Perlector established on each page it
-# read whole (`common.stage.reading_acts`), not proposal-seal rows, and carries two
+# read whole (`common.stage.reading_acts`), not proposal-seal rows, and carries three
 # claims the other shapes lack: its `other` readings, a labelled layer beside the
-# acts, and each page's accounting. Its own id keeps a reader from mistaking one
-# denominator for another. v10 adds the `reask` claim.
+# acts, each page's accounting, and its acts counted by the reading they came from.
+# Its own id keeps a reader from mistaking one denominator for another.
 EXPORT_MANIFEST_PAGE_SCHEMA: Final = "armarium-export-manifest.v10"
 READING_UNIT_ACT: Final = "act"
 READING_UNIT_PAGE: Final = "page"
@@ -132,6 +132,8 @@ FIRST_READING_LABEL: Final = "first reading"
 READ_ON_REASK_LABEL: Final = "read on re-ask"
 _ACT_READINGS: Final = (FIRST_READING_LABEL, READ_ON_REASK_LABEL)
 _ACT_READING_FIELDS: Final = frozenset({"act_id", "act_key", "page_ordinal", "reading"})
+# A counted page-read act's key, `p<page>:<entry n>`, or a page row with no entry.
+_PAGE_ACT_KEY: Final = re.compile(r"p([1-9][0-9]*):(?:([1-9][0-9]*)|unread|blank)")
 # (act row id, SQLite schema id, SQLite user_version) for each reading unit.
 _ACT_PRODUCT_IDS: Final = {
     READING_UNIT_ACT: (ACT_RECORD_SCHEMA, _SQLITE_SCHEMA, _SQLITE_USER_VERSION),
@@ -658,6 +660,7 @@ def build_armarium_bundle(
                 projection.continuation_joins,
                 reconstructions,
                 projection.other_readings,
+                projection.reading_unit,
             )
         )
     if "acts-database" in formats.formats:
@@ -2431,31 +2434,40 @@ def _act_readings(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
         {
             "act_id": act["act_id"],
             "act_key": act["act_key"],
-            "page_ordinal": act.get("page_ordinal"),
-            "reading": act.get("reading"),
+            "page_ordinal": act["page_ordinal"],
+            "reading": act["reading"],
         }
         for act in sorted(acts, key=lambda item: item["act_id"])
     ]
 
 
 def _validate_act_readings(rows: Any, sealed: set[int], subject: str) -> dict[str, str | None]:
-    """Each act's reading, by act id: a label of `_ACT_READINGS`, or null for no entry."""
+    """Each act's reading, by act id.
+
+    An entry's row (`p<page>:<n>`) names a label of `_ACT_READINGS`, a row with no
+    entry (`p<page>:unread` or `p<page>:blank`) names null, and each row's page is
+    the sealed page its key names.
+    """
     if not isinstance(rows, list):
         raise SchemaRefusal(f"{subject} act readings are not a list")
     readings: dict[str, str | None] = {}
     for row in rows:
         _require_exact_fields(row, _ACT_READING_FIELDS, subject=f"{subject} act reading")
+        key = row["act_key"]
+        match = _PAGE_ACT_KEY.fullmatch(key) if isinstance(key, str) else None
         if (
             not _is_nonempty_str(row["act_id"])
             or row["act_id"] in readings
-            or not _is_nonempty_str(row["act_key"])
+            or match is None
             or not is_plain_int(row["page_ordinal"])
+            or row["page_ordinal"] != int(match[1])
             or row["page_ordinal"] not in sealed
-            or (row["reading"] is not None and row["reading"] not in _ACT_READINGS)
+            or (row["reading"] in _ACT_READINGS) != (match[2] is not None)
         ):
             raise SchemaRefusal(
-                f"{subject} act reading names no act on a sealed page, or a reading other than "
-                f"{list(_ACT_READINGS)} or null"
+                f"{subject} act reading names no act on the sealed page its key names, or a "
+                f"reading other than one of {list(_ACT_READINGS)} for an entry and null for a "
+                "row with no entry"
             )
         readings[row["act_id"]] = row["reading"]
     if list(readings) != sorted(readings):
@@ -3053,6 +3065,7 @@ def _text_bundle_members(
     joins: tuple[dict[str, Any], ...] = (),
     reconstructions: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
     others: tuple[dict[str, Any], ...] = (),
+    reading_unit: str = READING_UNIT_ACT,
 ) -> dict[str, bytes]:
     """Write one readable file for every cited source folder.
 
@@ -3103,7 +3116,7 @@ def _text_bundle_members(
         for act in sorted(records, key=lambda item: act_key_sort_key(item["act_key"])):
             regions = act["source_regions"]
             lines.extend([f"## {act['act_key']} ({act['act_id']})", f"act-id: {act['act_id']}"])
-            if "reading" in act:
+            if reading_unit == READING_UNIT_PAGE:
                 lines.append(f"{_READING_PREFIX}{act['reading']}")
             for region in regions:
                 lines.extend(
@@ -3500,7 +3513,7 @@ def _acts_database_bytes(
             connection.execute("PRAGMA page_size=4096")
             connection.execute("PRAGMA journal_mode=OFF")
             connection.execute("PRAGMA synchronous=OFF")
-            # Moves with `_SQLITE_SCHEMA`.
+            # Moves with the reading unit's SQLite schema id.
             connection.execute(f"PRAGMA user_version={user_version}")
             connection.executescript(_ACTS_DATABASE_DDL[reading_unit])
             metadata = {
@@ -3517,15 +3530,18 @@ def _acts_database_bytes(
             for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
                 literal = act[CANONICAL_TEXT_FIELD]
                 text_hash = canonical_text_sha256(literal) if literal is not None else None
+                page_path = reading_unit == READING_UNIT_PAGE
                 connection.execute(
-                    """
+                    f"""
                     INSERT INTO acts(
                         act_id, act_key, category, canonical_clean_text,
                         canonical_text_sha256, provenance_json, source_regions_json,
                         uncertainty_json, uncertainty_status, text_status,
                         transcription_annotations_json, semantic_annotations_json,
                         semantic_annotation_status, evidence_json, approval_ref, reason
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        {", reading" if page_path else ""}
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        {", ?" if page_path else ""})
                     """,
                     (
                         act["act_id"],
@@ -3548,13 +3564,9 @@ def _acts_database_bytes(
                         canonical_text(_act_evidence(act)),
                         act.get("approval_ref"),
                         _export_reason(act),
+                        *((act["reading"],) if page_path else ()),
                     ),
                 )
-                if reading_unit == READING_UNIT_PAGE:
-                    connection.execute(
-                        "UPDATE acts SET reading = ? WHERE act_id = ?",
-                        (act["reading"], act["act_id"]),
-                    )
                 if literal is not None:
                     derived = search_fold(literal)
                     cursor = connection.execute(
@@ -5166,11 +5178,7 @@ def _act_citation_sources(
 def _other_outcome_sources(sources: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """The other layer's terminal records, validated like act outcomes."""
     records: dict[str, dict[str, Any]] = {}
-    sealed = {
-        page["ordinal"]
-        for page in sources["pages"]
-        if isinstance(page, dict) and page.get("outcome") == "sealed"
-    }
+    sealed = _sealed_source_ordinals(sources)
     for record in sources["other_outcomes"]:
         _require_exact_fields(
             record, _OTHER_OUTCOME_FIELDS, subject="a source other-outcome record"
@@ -5332,11 +5340,7 @@ def _verify_page_layers(
     if len({canonical_text(value) for value in literals.values()}) > 1:
         raise SchemaRefusal("the formats carrying the other layer disagree about its readings")
 
-    sealed = {
-        page["ordinal"]
-        for page in sources["pages"]
-        if isinstance(page, dict) and page.get("outcome") == "sealed"
-    }
+    sealed = _sealed_source_ordinals(sources)
     page_rows = _validate_page_accounting_rows(sources["page_accounting"], sealed, "the package")
     _verify_retained_references_bounded(page_rows)
     if canonical_text(claims["page_accounting"]) != canonical_text(
@@ -5719,15 +5723,20 @@ def _verify_exact_product_outcomes(
             raise SchemaRefusal(f"the {subject} does not retain its exact terminal reason")
 
 
-def _act_reading_sources(sources: dict[str, Any], act_keys: dict[str, str]) -> dict[str, Any]:
-    """Each act's reading from the source graph, by act id; `{}` on the act path."""
-    if sources["reading_unit"] != READING_UNIT_PAGE:
-        return {}
-    sealed = {
+def _sealed_source_ordinals(sources: dict[str, Any]) -> set[int]:
+    """The ordinals of the package's sealed source pages."""
+    return {
         page["ordinal"]
         for page in sources["pages"]
         if isinstance(page, dict) and page.get("outcome") == "sealed"
     }
+
+
+def _act_reading_sources(sources: dict[str, Any], act_keys: dict[str, str]) -> dict[str, Any]:
+    """Each act's reading from the source graph, by act id; `{}` on the act path."""
+    if sources["reading_unit"] != READING_UNIT_PAGE:
+        return {}
+    sealed = _sealed_source_ordinals(sources)
     readings = _validate_act_readings(sources["act_readings"], sealed, "the package")
     if readings.keys() != act_keys.keys() or any(
         row["act_key"] != act_keys[row["act_id"]] for row in sources["act_readings"]
