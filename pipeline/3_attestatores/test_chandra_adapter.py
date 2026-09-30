@@ -29,6 +29,7 @@ from common.imaging import (
 from common.imaging_ports import scale_to_fit_chandra
 from common.native_witness import (
     partition_disagreement,
+    validate_capture_text_view,
     validate_native_capture,
     validate_observed,
     validate_presented_page_binding,
@@ -1654,6 +1655,39 @@ def test_a_repeated_tail_under_an_unplaceable_shape_keeps_the_parse_outcome():
     assert [finding["kind"] for finding in record["findings"]] == ["post-hoc-repetition"]
     assert record["findings"][0]["inspected"] == "raw-response"
     assert record["stop_reason"] == "partial-parse-unrecognized-shape"
+
+
+def test_an_unrecognized_chandra_html_capture_keeps_its_grammars_text_view():
+    """No layout block was read, so the parser reports no view; the capture keeps
+    its grammar's view, so a later build can still refuse it by name."""
+    chandra = load_stage("3_attestatores", "chandra")
+    feeding = load_stage("3_attestatores", "feeding")
+    body = b"a plain answer with no layout block in it"
+    tree = _PageTree(_page_png(200, 260))
+
+    record = feeding.retain_model_view(
+        _Context(tree=tree),
+        adapter="chandra.v1",
+        view={"prompt": chandra.prompt(), "generation": feeding.chandra_generation()},
+        raw_response=body,
+        transport_stop_reason="stop",
+        parser="html",
+        served=True,
+    )
+
+    outcome = chandra_layout.parse_layout_html(body)
+    assert chandra_layout.is_refusal(outcome)
+    assert record["parse"] == {
+        "state": "unrecognized-shape",
+        "parser": "html",
+        "outcome": outcome["parse_outcome"],
+    }
+    assert record["stop_reason"] == "partial-parse-unrecognized-shape"
+    assert record["findings"] == []
+    assert record["text_view"] == chandra_layout.LAYOUT_TEXT_VIEW
+    assert record["vendor_identity"] == chandra.vendor_identity()
+    assert tree.read_bytes(record["raw_response_ref"]["relative_path"]) == body
+    assert validate_capture_text_view(validate_native_capture(record)) is record
 
 
 def test_a_body_past_the_grammars_ceiling_says_the_scan_did_not_run():
