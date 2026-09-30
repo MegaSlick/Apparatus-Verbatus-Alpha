@@ -925,7 +925,8 @@ blocks_without_proposal = [{ordinal, reason, blank_page, label_vocabulary | null
                             nested_bbox_count}]
 findings = [{kind, ...}]
 quantization, page_text_rule
-decoding = {policy = "structure", temperature, decoding_config_sha256}
+decoding = {policy = "structure", sampling = {temperature, top_p},
+            decoding_config_sha256}
 provenance (the served chair, its real receipt, and `engine_call`)
 ```
 
@@ -942,8 +943,10 @@ itself lives only in that blob. `common/stage.py::_verify_proposal_act_row`
 holds every structural row of a served seal to this record: the page's status
 must say `scanned` and name it, it must have parsed under the same
 `engine_call` the seal records, its `call_record_ref` must resolve to a genuine
-`chair-call-record.v1` for this chair under the run's sealed decoding digest,
-and it must list the row's exact rectangle — no nearest match.
+`chair-call-record.v3` for this chair under the run's sealed decoding digest,
+whose sampling is its attempt's sealed values
+(`common.decoding.verify_call_sampling`), and it must list the row's exact
+rectangle — no nearest match.
 
 **Provenance on the live path** is `structure_pass.live_chair_record`: the
 chair's real serving receipt (never `_configured_chair_record`'s `fixture://`
@@ -960,12 +963,21 @@ written for it.
 `chair_decoding` table: Chandra's own page pipeline's first request
 (`temperature` 0.0, `top_p` 0.1, `chandra/model/vllm.py` at the pinned
 revision), which the loader holds equal to the pinned native recipe's first
-request. `ChairClient` sends exactly that row with the seed and records both on
-every call record; the temperature is also recorded on every page's answer
-record, in the call record's own form. `[structure]` holds only coverage
-recovery, which keeps the row and advances the seed. At temperature 0 the
-engine decodes greedily, so a recovery attempt differs from the first only by
-what the engine does not repeat bit for bit.
+request. `[structure]` holds only coverage recovery, and recovery follows
+Chandra's own retry schedule (`recovery_schedule = "chandra-native-retry"`):
+attempt n sends the pinned recipe's request n (`wire_parameters(n)`: 0.2/0.95,
+then 0.4/0.95, up to the sealed ceiling of three), which is the maker's own
+recovery from a degenerate page. The trigger stays this stage's (a structural
+loop or an invalid layout); only the sampling is Chandra's. Every attempt runs
+under the serving row's one seed, recorded as `attempt_seed`: at temperature 0
+a reseeded greedy request would be the first request again. `ChairClient`
+selects the attempt's values from the sealed policy by its own chair and the
+request's `structure_attempt_ordinal`, sends them with the seed, and records
+both on the call record beside `sampling_effective`, the values the pinned
+vLLM samples under (its greedy first request runs at `top_p` 1). Each
+attempt's answer record carries every sampling value it sent under
+`decoding.sampling`, in the call record's own form; `common/stage.py` holds
+each attempt's record and call to the sealed values for its ordinal.
 
 **Every witness runs its own pass.** SPEC_D §3's "captured" kind — filing the
 structure chair's transcription as Attestator 1's Testimonium instead of
@@ -982,8 +994,8 @@ three live witness chairs, a live Perlector, and the Recensor, Archetypus and
 Armarium as real programs over acts no fixture declared. It asserts that each
 minted region's `raw_bounds` are the chair's own rectangle and its `act_id`
 recomputes from them, that the seal verifies at the Attestatores' own
-boundary, that the structure chair's sealed sampling values are on the wire and
-on every call record and its temperature on every answer record, that no Designator artifact carries a byte of the chair's
+boundary, that the structure chair's sealed sampling values are on the wire,
+on every call record and on every answer record, that no Designator artifact carries a byte of the chair's
 transcription, and that a second attempt whose rectangles moved is an ordinary
 run — different acts on the page that changed, the same act on the page that
 did not, because identity is content-addressed rather than positional. The
