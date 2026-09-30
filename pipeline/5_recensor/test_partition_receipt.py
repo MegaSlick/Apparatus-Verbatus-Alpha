@@ -341,6 +341,8 @@ def test_recensor_refuses_a_native_capture_attributed_to_another_adapter(tmp_pat
         if kind == "page-testimonium" and record["payload"]["chair"] == "attestator_3":
             record = copy.deepcopy(record)
             record["payload"]["native_capture"]["adapter"] = "another-adapter.v1"
+            # Another adapter's capture carries no Churro text view.
+            record["payload"]["native_capture"].pop("text_view", None)
         return record
 
     monkeypatch.setattr(context.tree, "read_artifact_reference", wrong_adapter)

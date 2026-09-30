@@ -806,7 +806,11 @@ def _replace_capture_projection(payload):
             "serving receipt",
         ),
         (
-            lambda payload: payload["native_capture"].update(adapter="another-adapter.v1"),
+            # Another adapter's capture carries no Churro text view.
+            lambda payload: (
+                payload["native_capture"].update(adapter="another-adapter.v1"),
+                payload["native_capture"].pop("text_view", None),
+            ),
             "configured boundary",
         ),
         (_replace_capture_projection, "parse.*retained raw response"),

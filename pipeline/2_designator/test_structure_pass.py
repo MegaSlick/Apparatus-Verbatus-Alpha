@@ -1221,6 +1221,7 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
     second_ref = {"relative_path": "2_designator/a2.json", "sha256": "2" * 64}
     first = {
         "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
+        "text_view": chandra_layout.LAYOUT_TEXT_VIEW,
         "page_id": page_id,
         "page_ordinal": 1,
         "attempt_ordinal": 1,
@@ -1288,7 +1289,13 @@ def test_structure_attempt_consumer_refuses_missing_or_out_of_order_history(dama
 def test_real_denominator_indexes_structure_attempts_and_decoding_once(monkeypatch):
     pages = ["page_" + "1" * 16, "page_" + "2" * 16]
     answers = [
-        {"subject_id": page_id, "payload": {"schema": STRUCTURE_ANSWER_RECORD_SCHEMA}}
+        {
+            "subject_id": page_id,
+            "payload": {
+                "schema": STRUCTURE_ANSWER_RECORD_SCHEMA,
+                "text_view": chandra_layout.LAYOUT_TEXT_VIEW,
+            },
+        }
         for page_id in pages
     ]
     attempt_rows = [{"subject_id": page_id, "payload": {}} for page_id in pages]
@@ -2169,6 +2176,7 @@ def _minimal_answer_record() -> dict[str, Any]:
     """
     record: dict[str, Any] = dict.fromkeys(designator._STRUCTURE_ANSWER_V3_FIELDS)
     record["schema"] = STRUCTURE_ANSWER_RECORD_SCHEMA
+    record["text_view"] = chandra_layout.LAYOUT_TEXT_VIEW
     record["presentation_ref"] = {"relative_path": "p", "sha256": "0" * 64}
     record["attempt_policy"] = {"max_attempts": 3, "sampling_schedule": "chandra-native-retry"}
     record["attempt_ordinal"] = 1

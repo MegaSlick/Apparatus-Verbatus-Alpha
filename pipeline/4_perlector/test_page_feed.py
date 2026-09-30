@@ -484,7 +484,9 @@ def test_the_perlector_refuses_a_page_capture_read_under_a_retired_text_view():
     capture = record["payload"]["native_capture"]
     testimonium = {"inputs": [capture["raw_response_ref"]]}
     context = SimpleNamespace(
-        registry=SimpleNamespace(resolve=lambda chair: SimpleNamespace(witness_adapter="churro.v1")),
+        registry=SimpleNamespace(
+            resolve=lambda chair: SimpleNamespace(witness_adapter="churro.v1")
+        ),
         tree=blobs,
     )
     perlector._verify_page_native_capture(context, "act-1", "attestator_3", testimonium, capture)

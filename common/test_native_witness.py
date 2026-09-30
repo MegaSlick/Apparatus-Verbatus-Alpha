@@ -28,6 +28,7 @@ from common.native_witness import (
     parse_churro_response,
     partition_disagreement,
     unpresented_region_ids,
+    validate_capture_text_view,
     validate_native_capture,
     validate_native_witness_geometry,
     validate_page_testimonium_payload,
@@ -37,7 +38,6 @@ from common.native_witness import (
     validate_reportable_observations,
     validate_retained_response_refs,
     validate_vendor_identity,
-    validate_capture_text_view,
     verify_native_capture_bytes,
 )
 from common.request_capacity import DECLARED_ANSWER_BOUND_TOKENS
@@ -2455,10 +2455,14 @@ def test_a_capture_read_under_an_older_parser_is_refused_by_name(adapter, parser
         )
     value["text_view"] = retired
     assert validate_native_capture(value) is value
-    with pytest.raises(SchemaRefusal, match=f"the retired text view {retired}.*re-run the submission from the Door"):
+    with pytest.raises(
+        SchemaRefusal, match=f"the retired text view {retired}.*re-run the submission from the Door"
+    ):
         verify_native_capture_bytes(value, b"")
     del value["text_view"]
-    with pytest.raises(SchemaRefusal, match="no recorded text view.*re-run the submission from the Door"):
+    with pytest.raises(
+        SchemaRefusal, match="no recorded text view.*re-run the submission from the Door"
+    ):
         verify_native_capture_bytes(value, b"")
 
 

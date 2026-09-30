@@ -140,7 +140,12 @@ def test_churro_records_its_declared_bound_and_detects_repetition_after_complete
     ("raw", "parser", "state", "text_view"),
     [
         (_DOCUMENT, "xml", "parsed", "churro-historical-document-text.v2"),
-        (b"a" * (CHURRO_MAX_RESPONSE_BYTES + 1), "xml", "failed", "churro-historical-document-text.v2"),
+        (
+            b"a" * (CHURRO_MAX_RESPONSE_BYTES + 1),
+            "xml",
+            "failed",
+            "churro-historical-document-text.v2",
+        ),
         (_DOCUMENT, None, "not-requested", None),
     ],
 )
