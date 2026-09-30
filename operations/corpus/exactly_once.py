@@ -14,15 +14,20 @@ pages, and gives each gold record one outcome:
 
 "Text read" is this tool's own, stricter measure, independent of the
 accounting's rule (e): the character error rate of the gold text against the
-best-matching substring of the best holding act's reading, at most
-`MAX_GOLD_CER_BP`. Rule (e) passes readings at 30% error; the proof asks more.
+best-matching substring of a holding act's reading is at most
+`MAX_GOLD_CER_BP`, and no other gold record on the page is closer to that
+reading -- a reading of the neighbouring record is not a reading of this one.
+Rule (e) passes readings at 30% error; the proof asks more.
 
 A failure (lost or merged) is caught when a held finding of the page's
-accounting touches it: names a region that overlaps it, a box that overlaps
-it, or a unit cited by such a region -- or holds the whole page (an incomplete
-answer, unread ink, a measurement not taken). A failure no finding touches is
-uncaught even on a held page, and a page with no accounting is `unchecked`,
-its own failure, never held and caught.
+accounting is located on it: names a placed region that overlaps it, carries a
+box that overlaps it, or names a unit cited by such a region. Two weaker
+catches are reported beside it and not credited: page-wide (a held finding
+that names no region, box or unit: an incomplete answer, unread ink, a
+measurement not taken) and unplaced-only (one that reaches the record only
+through an unplaced region, which may be anywhere). A failure with no located
+catch is uncaught, and a page with no accounting is `unchecked`, its own
+failure, never held and caught.
 
 Beside that: records under one witness unit or detector record that also
 covers another record, how often `merged-detection` fired on regions that
@@ -35,8 +40,8 @@ reader read them as one act; the merged outcome here is what measures it.
 The report holds counts and identifiers only, never text. It chooses nothing:
 it runs after the tree is sealed and returns nothing to the pipeline.
 
-The gate: at least 95% of gold records read exactly once, no failure
-uncaught and no page unchecked.
+The gate: at least 95% of gold records read exactly once, no failure without
+a located catch and no page unchecked.
 """
 
 from __future__ import annotations
@@ -131,6 +136,8 @@ def gold_records(
             raise Refusal(
                 f"malformed-record: admitted record {record_id!r} bbox is not [x, y, w, h]"
             )
+        if not normalized_text(texts[record_id]):
+            raise Refusal(f"malformed-record: admitted record {record_id!r} has no text to measure")
         x, y, w, h = bbox
         records.append(
             {
@@ -245,7 +252,17 @@ def _share(numerator: int, denominator: int) -> int | None:
 def _gold_cer_bp(gold_text: str, reading: str) -> int:
     """Edits from the gold text to the best-matching substring of a reading, per gold letter."""
     gold = normalized_text(gold_text)
-    return _share(best_substring_distance(gold, normalized_text(reading)), len(gold)) or 0
+    if not gold:
+        raise Refusal("malformed-record: a gold record has no text to measure")
+    return best_substring_distance(gold, normalized_text(reading)) * BASIS_POINTS // len(gold)
+
+
+def _read_in(record: Mapping[str, Any], others: Sequence[Mapping[str, Any]], reading: str) -> bool:
+    """Whether a reading reads this gold record: close enough, and no other gold record closer."""
+    own = _gold_cer_bp(record["text"], reading)
+    return own <= MAX_GOLD_CER_BP and all(
+        own <= _gold_cer_bp(other["text"], reading) for other in others
+    )
 
 
 def _findings(accounting: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -257,36 +274,45 @@ def _findings(accounting: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]
     ]
 
 
-def _caught_by(page: Mapping[str, Any], box: Sequence[int]) -> tuple[list[str], list[str]]:
-    """The rules whose held findings touch a gold record's box, and those holding the page.
+def _caught_by(
+    page: Mapping[str, Any], box: Sequence[int]
+) -> tuple[list[str], list[str], list[str]]:
+    """The rules whose held findings are located on a gold record, hold the whole
+    page, or reach it only through an unplaced region.
 
-    A finding touches the record when it names a region overlapping it (an
-    unplaced region, having no box, may be anywhere), carries a box overlapping
-    it, or names a unit cited by such a region. A held finding that names no
-    region, box or unit holds the whole page.
+    A finding is located on the record when it names a placed region
+    overlapping it, carries a box overlapping it, or names a unit cited by such
+    a region. One that names an unplaced region (no box, so it may be
+    anywhere) and no overlapping placed one is unplaced-only; one that names
+    no region, box or cited unit holds the whole page.
     """
     regions = {region["n"]: region["union_box_px"] for region in page["act_regions"]}
-    touching_ns = {n for n, region in regions.items() if region is None or _overlaps(region, box)}
+    overlapping = {
+        n for n, region in regions.items() if region is not None and _overlaps(region, box)
+    }
+    unplaced = {n for n, region in regions.items() if region is None}
     cited_by = {row["id"]: row["by"] for row in page["accounting"]["units"]}
     located: set[str] = set()
     page_wide: set[str] = set()
+    unplaced_only: set[str] = set()
     for name, finding in _findings(page["accounting"]):
         ns = [finding["n"]] if "n" in finding else []
         for key in ("ns", "inside", "compared_with"):
             ns += finding.get(key, [])
         identifier = finding.get("id")
+        if not ns and identifier is not None:
+            ns = cited_by.get(identifier, [])
         if "box_px" in finding:
             if _overlaps(finding["box_px"], box):
                 located.add(name)
         elif ns:
-            if touching_ns & set(ns):
+            if overlapping & set(ns):
                 located.add(name)
-        elif identifier is not None and cited_by.get(identifier):
-            if touching_ns & set(cited_by[identifier]):
-                located.add(name)
+            elif unplaced & set(ns):
+                unplaced_only.add(name)
         else:
             page_wide.add(name)
-    return sorted(located), sorted(page_wide - located)
+    return sorted(located), sorted(page_wide - located), sorted(unplaced_only - located)
 
 
 def _witness_classes(page: Mapping[str, Any]) -> list[tuple[str, list[int]]]:
@@ -350,6 +376,7 @@ def exactly_once_report(
                     "unchecked": False,
                     "caught_by": [],
                     "caught_page_wide_by": [],
+                    "caught_unplaced_only_by": [],
                     "merge_classes": [],
                 }
             )
@@ -364,11 +391,13 @@ def exactly_once_report(
             and region["union_box_px"] is not None
             and is_inside(box, [region["union_box_px"]], policy)
         ]
-        best = min(
-            (_gold_cer_bp(record["text"], readings.get(region["n"], "")) for region in holding),
-            default=None,
+        text = (
+            "no-region"
+            if not holding
+            else "read"
+            if any(_read_in(record, others, readings.get(region["n"], "")) for region in holding)
+            else "not-read"
         )
-        text = "no-region" if best is None else "read" if best <= MAX_GOLD_CER_BP else "not-read"
         merged = any(
             is_inside(other["box_px"], [region["union_box_px"]], policy)
             for region in holding
@@ -392,8 +421,8 @@ def exactly_once_report(
             }
         )
         unchecked = page["accounting"] is None
-        located, page_wide = (
-            _caught_by(page, box) if outcome in FAILURES and not unchecked else ([], [])
+        located, page_wide, unplaced_only = (
+            _caught_by(page, box) if outcome in FAILURES and not unchecked else ([], [], [])
         )
         rows.append(
             {
@@ -405,6 +434,7 @@ def exactly_once_report(
                 "unchecked": unchecked,
                 "caught_by": located,
                 "caught_page_wide_by": page_wide,
+                "caught_unplaced_only_by": unplaced_only,
                 "merge_classes": merge_classes,
             }
         )
@@ -412,7 +442,7 @@ def exactly_once_report(
     outcomes = Counter(row["outcome"] for row in rows)
     exactly = outcomes[EXACTLY_ONCE]
     failures = [row for row in rows if row["outcome"] in FAILURES and not row["unchecked"]]
-    uncaught = [row for row in failures if not row["caught_by"] and not row["caught_page_wide_by"]]
+    uncaught = [row for row in failures if not row["caught_by"]]
     unchecked_pages = sorted(
         page["feed"]["page_id"] for page in pages if page["accounting"] is None
     )
@@ -508,6 +538,13 @@ def exactly_once_report(
                     Counter(rule for row in failures for rule in row["caught_page_wide_by"]).items()
                 )
             ),
+            "failures_caught_unplaced_only_by_rule": dict(
+                sorted(
+                    Counter(
+                        rule for row in failures for rule in row["caught_unplaced_only_by"]
+                    ).items()
+                )
+            ),
             "uncaught_record_ids": [row["record_id"] for row in uncaught],
             "by_merge_class": dict(sorted(merge_split.items())),
         },
@@ -556,8 +593,9 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         f"unchecked pages {gate['unchecked_pages']}",
         f"outcomes: {records['by_outcome']}; act regions per record: "
         f"{records['by_act_regions']}; text: {records['by_text']}",
-        f"failures caught by rule: {records['failures_caught_by_rule']}; page-wide: "
-        f"{records['failures_caught_page_wide_by_rule']}",
+        f"failures caught (located) by rule: {records['failures_caught_by_rule']}; "
+        f"not credited: page-wide {records['failures_caught_page_wide_by_rule']}, "
+        f"unplaced-only {records['failures_caught_unplaced_only_by_rule']}",
         f"by merge class: {records['by_merge_class']}",
         f"merged-detection: fired on true merge {rule_i['fired_on_true_merge']}, on single "
         f"record {rule_i['fired_on_single_record']}; silent on true merge "

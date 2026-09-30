@@ -21,6 +21,8 @@ from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD
 from .exactly_once import (
     MAX_GOLD_CER_BP,
     Refusal,
+    _caught_by,
+    _gold_cer_bp,
     exactly_once_report,
     gold_records,
     load_page_records,
@@ -380,6 +382,49 @@ def test_the_text_measure_is_stricter_than_the_accounting():
     assert MAX_GOLD_CER_BP < 3_000
 
 
+def test_a_reading_of_a_closer_gold_record_does_not_read_this_one():
+    """Twins: record 1's gold differs from record 2's only in its entry number.
+
+    Act 2, on record 1's region, transcribes record 2. Record 1's text is within
+    the error bound of that reading, but record 2's is closer, so record 1 is not
+    read there.
+    """
+    twin = entry_text(2)
+    records = [gold(0), {**gold(1), "text": twin.replace("entrée 2", "entrée 1")}, gold(2)]
+    acts = one_act_each()
+    acts[1]["text"] = twin
+    result = report([page(acts)], records)
+
+    rows = {row["record_id"]: row for row in result["rows"]}
+    assert _gold_cer_bp(records[1]["text"], twin) <= MAX_GOLD_CER_BP
+    assert rows["rec-1"]["text"] == "not-read"
+    assert rows["rec-1"]["outcome"] == "lost"
+    assert rows["rec-2"]["outcome"] == "exactly-once"
+
+
+def test_a_catch_through_an_unplaced_region_only_is_reported_not_credited():
+    box = band(1)
+    held = {
+        "act_regions": [
+            {"n": 1, "kind": "act", "union_box_px": band(0)},
+            {"n": 2, "kind": "act", "union_box_px": None},
+            {"n": 3, "kind": "act", "union_box_px": band(1)},
+        ],
+        "accounting": {
+            "units": [{"id": "C1", "disposition": "cited", "by": [2]}],
+            "rules": {
+                "b": {"findings": [{"code": "reading-unplaced", "n": 2}]},
+                "e": {"findings": [{"code": "witness-text-not-read", "id": "C1"}]},
+                "f": {"findings": [{"code": "unread-ink"}]},
+                "g": {"findings": [{"code": "reading-incomplete", "n": 3}]},
+                "i": {"findings": [{"code": "record-not-read", "id": "A9", "box_px": band(0)}]},
+            },
+        },
+    }
+
+    assert _caught_by(held, box) == (["g"], ["f"], ["b", "e"])
+
+
 def test_a_held_reading_publishes_no_region_and_its_records_are_caught_page_wide():
     unread = page(one_act_each())
     unread["reading"] = {
@@ -405,7 +450,9 @@ def test_a_held_reading_publishes_no_region_and_its_records_are_caught_page_wide
 
     assert result["records"]["by_act_regions"] == {"0": 3}
     assert result["records"]["failures_caught_page_wide_by_rule"] == {"a": 3, "g": 3}
-    assert result["gate"]["uncaught_failures"] == 0
+    # Reported, not credited: a page-wide hold does not say which record it saw.
+    assert result["records"]["failures_caught_by_rule"] == {}
+    assert result["gate"]["uncaught_failures"] == 3
     assert result["pages"]["finish_length_bp"] == 10_000
     assert result["pages"]["by_parse_state"] == {"malformed": 1}
 
@@ -459,6 +506,8 @@ def test_gold_records_join_the_ledger_box_and_the_gold_text():
     ]
     with pytest.raises(Refusal, match="no gold row"):
         gold_records([], ledger)
+    with pytest.raises(Refusal, match="admitted record 'r1' has no text to measure"):
+        gold_records([{"record_id": "r1", "text": " -- [[?]] "}], ledger)
 
 
 class _Tree:
