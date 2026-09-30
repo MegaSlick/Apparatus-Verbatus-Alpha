@@ -1,11 +1,11 @@
 """DAI reading the records its own detector found, from the Door to its page Testimonium.
 
-The roster here is the committed fixture roster with two changes: DAI
+The roster is the page-read roster (`conftest.page_models_config`): DAI
 (`attestator_2`) is page-scoped and `secondary_proposer`, DAI's own project's
 record detector, is configured on a fixture row. The Door, Exemplar and Ink Map
 run as real programs; the Designator runs its own `main` in process, with the
-detector's boxes declared on its stage context (the shipped fixture declares
-none); the Attestatores run live through `operations/serving/fakes.py`, as in
+detector's boxes declared on its stage context in place of the shipped
+fixture's; the Attestatores run live through `operations/serving/fakes.py`, as in
 `pipeline/test_live_reading_seam_e2e.py`, whose driver this module reuses.
 
 What it shows: DAI is asked once per detector record, in the detector's order,
@@ -16,15 +16,13 @@ shown and each unit's capture; and each act's slice is the records it owns.
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
 
-from conftest import load_stage, programs_through
+from conftest import load_stage, page_models_config, programs_through
 
 ROOT = Path(__file__).resolve().parents[1]
 DESIGNATOR_DIR = ROOT / "pipeline" / "2_designator"
@@ -63,22 +61,6 @@ designator = load_stage("2_designator")
 
 RUN_ID = "r"
 DAI = "attestator_2"
-_DAI_ACT_SCOPE = 'witness_adapter = "dai.v1"\nwitness_scope = "act"\n'
-_DAI_PAGE_SCOPE = 'witness_adapter = "dai.v1"\nwitness_scope = "page"\n'
-_ABSENT_DETECTOR = """[chairs.secondary_proposer]
-state = \"absent\"
-reason = \"no secondary proposer is configured for the offline walking skeleton\"
-"""
-_FIXTURE_DETECTOR = """[chairs.secondary_proposer]
-state = \"configured\"
-source = \"local-repository\"
-path = \"designator_structure\"
-digest_manifest = \"{digest_manifest}\"
-manifest = \"manifests/designator_structure.json\"
-serving_recipe = \"fake-secondary-proposer-v0\"
-license_note = \"fixture identity only; no model weights or model license apply\"
-"""
-
 # Page 1 holds a1 at (20, 20, 160, 80) and a2 at (20, 120, 160, 100); page 2
 # holds a2's continuation at (20, 20, 160, 60). The detector finds a2's record
 # first, so its order differs from act order.
@@ -95,21 +77,8 @@ DAI_CONTINUATION = "zeta eta"
 
 
 def _config(work: Path) -> Path:
-    """The fixture roster with DAI page-scoped and its detector on a fixture row."""
-    config_root = work / "config"
-    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
-    shipped = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
-    assert shipped.count(_DAI_ACT_SCOPE) == 1 and _ABSENT_DETECTOR in shipped
-    digest = tomllib.loads(shipped)["chairs"]["designator_structure"]["digest_manifest"]
-    models = config_root / "models.toml"
-    models.write_text(
-        shipped.replace(_DAI_ACT_SCOPE, _DAI_PAGE_SCOPE).replace(
-            _ABSENT_DETECTOR, _FIXTURE_DETECTOR.format(digest_manifest=digest)
-        ),
-        encoding="utf-8",
-    )
-    return models
+    """The page-read roster: DAI page-scoped, its detector on a fixture row."""
+    return page_models_config(work / "config")
 
 
 def _catalogue(path: Path, models: Path) -> Path:

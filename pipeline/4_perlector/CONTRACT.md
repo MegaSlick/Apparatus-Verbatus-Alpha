@@ -1291,6 +1291,10 @@ page render and the sealed page it names, each re-derived from the bytes on disk
   before the chair starts; on a refusal `{capacity: <record>, answer_reserve: null,
   max_tokens: null}`. The request sends that `max_tokens` with
   `chat_template_kwargs: {enable_thinking: false}`.
+- On the fixture pass the answer is the fixture's `[[page_answer]]` row for the
+  scenario and page; a row naming `witnesses` answers only a run whose page
+  witnesses are exactly those chairs, and replaces a row that names none, since
+  the ids an answer cites are lettered from the page witnesses.
 - `finish_reason` is the engine's word (fixture: the declared `stop_reason`,
   default `stop`); `stop_reason` its mapping (`stop`, `length`, null). An
   unrecognized word is `call-failed` with code `ENGINE_FINISH_REASON_UNRECOGNIZED`.

@@ -1573,7 +1573,9 @@ def preflight_appendable_ordinals(
             resolved = context.registry.resolve(chair)
             pair = (act["act_id"], chair)
             existing = _records_at_ordinal(index.by_pair, pair, ordinal)
-            if existing and resume_incomplete_pass:
+            # A detector reader's act view derives from its sealed page record,
+            # which is never read again, so its sealed act view is reused too.
+            if existing and (resume_incomplete_pass or reads_detector_records(resolved)):
                 if len(existing) != 1:
                     raise FatalAccounting(
                         f"Testimonium for {pair!r} has {len(existing)} records at ordinal "
@@ -1594,7 +1596,7 @@ def preflight_appendable_ordinals(
                     else resolve(context, act, chair, resolved, declarations)
                 )
             attempts_by_pair[pair] = attempt
-            if attempt is PENDING_LIVE_ATTEMPT:
+            if attempt is PENDING_ATTEMPT:
                 # A pending pair must have no sealed record: sealed pairs are
                 # reused above, never asked again.
                 if existing:
@@ -1886,8 +1888,8 @@ class Attempt(NamedTuple):
     native_inference: dict[str, Any] | None = None
 
 
-class _PendingLiveAttempt:
-    """The live pass has not asked this chair for this pair yet.
+class _PendingAttempt:
+    """No pass has asked this chair for this pair yet.
 
     Not an `Attempt`, so an unreplaced sentinel fails loudly instead of being
     published.
@@ -1896,10 +1898,10 @@ class _PendingLiveAttempt:
     __slots__ = ()
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostic only
-        return "PENDING_LIVE_ATTEMPT"
+        return "PENDING_ATTEMPT"
 
 
-PENDING_LIVE_ATTEMPT: Any = _PendingLiveAttempt()
+PENDING_ATTEMPT: Any = _PendingAttempt()
 
 
 def pending_live_attempt(context, act, chair, resolved, declarations) -> Any:
@@ -1912,7 +1914,19 @@ def pending_live_attempt(context, act, chair, resolved, declarations) -> Any:
     if isinstance(resolved, AbsentChair):
         # Pending would put an absent chair into the live schedule to be started.
         return dead_attempt(resolved)
-    return PENDING_LIVE_ATTEMPT
+    return PENDING_ATTEMPT
+
+
+def fixture_attempt(context, act, chair, resolved, declarations) -> Any:
+    """The fixture preflight's resolver: `resolve_attempt`, except for a detector reader.
+
+    A chair that reads its page one detector record at a time answers an act
+    only through its page record, so its pairs stay pending until that page is
+    read.
+    """
+    if reads_detector_records(resolved):
+        return PENDING_ATTEMPT
+    return resolve_attempt(context, act, chair, resolved, declarations)
 
 
 def _attempt_from_retained_testimonium(tree, record: dict[str, Any]) -> Attempt:
@@ -3474,11 +3488,10 @@ def publish_page_testimonia_and_attachments(
             if reads_detector_records(resolved):
                 # Sealed when the page was read; its act slices come from record ownership.
                 record = sealed_page_records.get((page_ordinal, chair))
-                if page_captures is None or record is None:
+                if record is None:
                     raise FatalAccounting(
                         f"chair {chair!r} reads page {page_ordinal} one detector record at a "
-                        "time, and no page record was sealed for it; this chair has no "
-                        "fixture page join and is read only by a live pass"
+                        "time, and no page record was sealed for it"
                     )
                 page_records[(page_ordinal, chair)] = context.artifact_ref(
                     ATTESTATORES, "page-testimonium", record["artifact_id"]
@@ -3749,14 +3762,10 @@ def _publish_prepared_attempts(
             if pair in sealed_pairs:
                 recorded += 1
                 continue
-            if live:
-                attempt = attempts_by_pair[pair]
-                if attempt is PENDING_LIVE_ATTEMPT:
-                    continue
-                resolved = context.registry.resolve(chair)
-            else:
-                resolved = context.registry.resolve(chair)
-                attempt = attempts_by_pair[pair]
+            attempt = attempts_by_pair[pair]
+            if attempt is PENDING_ATTEMPT:
+                continue
+            resolved = context.registry.resolve(chair)
             publish_attempt(
                 context,
                 act=act,
@@ -3781,9 +3790,11 @@ def attempt_pass(
 ) -> tuple[int, bool]:
     """Publish the fixture pass, counting sealed pairs without republishing them."""
     # Publish exactly the preflight-checked attempts so its collision check remains valid.
-    return _publish_prepared_attempts(
+    recorded, isolated_crop_failure = _publish_prepared_attempts(
         context, acts, ordinal, regions_by_act, attempts_by_pair, sealed_pairs, live=False
     )
+    recorded += fixture_detector_pages(context, acts, ordinal, regions_by_act, attempts_by_pair)
+    return recorded, isolated_crop_failure
 
 
 def witness_serving_modes(context, recipes: ServingRecipes, tier: str | None) -> dict[str, str]:
@@ -4035,7 +4046,7 @@ def _live_work_schedule(
                 rows.append({"act_id": unit_id, "page_ordinal": page_ordinal})
         else:
             for act in acts:
-                if attempts_by_pair[(act["act_id"], chair)] is not PENDING_LIVE_ATTEMPT:
+                if attempts_by_pair[(act["act_id"], chair)] is not PENDING_ATTEMPT:
                     continue
                 units[(chair, act["act_id"])] = act
                 rows.append({"act_id": act["act_id"], "page_ordinal": act["page_ordinal"]})
@@ -4247,7 +4258,7 @@ def live_attempt_pass(
             raise ContractError(f"a live witness reading was refused: {error}") from error
 
     unresolved = sorted(
-        pair for pair, value in attempts_by_pair.items() if value is PENDING_LIVE_ATTEMPT
+        pair for pair, value in attempts_by_pair.items() if value is PENDING_ATTEMPT
     )
     if unresolved:
         raise FatalAccounting(
@@ -4389,10 +4400,7 @@ def publish_page_act_views(
     recorded = 0
     for act in page_acts:
         pair = (act["act_id"], chair)
-        if (
-            act["page_ordinal"] != page_ordinal
-            or attempts_by_pair[pair] is not PENDING_LIVE_ATTEMPT
-        ):
+        if act["page_ordinal"] != page_ordinal or attempts_by_pair[pair] is not PENDING_ATTEMPT:
             continue
         attempts_by_pair[pair] = attempt
         publish_attempt(
@@ -4822,6 +4830,204 @@ def _serve_detector_page(
         regions_by_act=regions_by_act,
         attempts_by_pair=attempts_by_pair,
     )
+
+
+# The fixture's declared DAI answers: one row per detector record, keyed by the
+# record's page and detector ordinal, and optionally scoped to one scenario.
+_DAI_RECORD_RESPONSE_FIELDS: Final = frozenset(
+    {"scenario", "page_ordinal", "detector_ordinal", "chair", "text"}
+)
+_DAI_RECORD_RESPONSE_REQUIRED_FIELDS: Final = _DAI_RECORD_RESPONSE_FIELDS - {"scenario"}
+# The stop word a fixture-declared response is retained under: declared, never
+# an engine's.
+FIXTURE_COMPLETE_STOP: Final = "fixture-complete"
+
+
+def _detector_ordinal(region: dict[str, Any]) -> int:
+    """The detector ordinal a record crop's subject names."""
+    _, separator, ordinal = region["subject_id"].rpartition("-detector-")
+    if not separator or not ordinal.isdigit():
+        raise SchemaRefusal(
+            f"detector region {region.get('artifact_id')} does not name its detector ordinal"
+        )
+    return int(ordinal)
+
+
+def declared_dai_record_text(context, chair: str, page_ordinal: int, detector_ordinal: int) -> str:
+    """The fixture's declared DAI answer for one record; one row, or a refusal."""
+    rows = _scenario_rows(
+        context,
+        (
+            row
+            for row in context.fixture.get("dai_record_response", [])
+            if isinstance(row, dict)
+            and row.get("chair") == chair
+            and row.get("page_ordinal") == page_ordinal
+            and row.get("detector_ordinal") == detector_ordinal
+        ),
+    )
+    if len(rows) != 1:
+        raise SchemaRefusal(
+            f"the fixture declares {len(rows)} DAI answers for chair {chair!r}, page "
+            f"{page_ordinal}, record {detector_ordinal}; a record DAI is shown needs exactly one"
+        )
+    row = rows[0]
+    if set(row) - _DAI_RECORD_RESPONSE_FIELDS or _DAI_RECORD_RESPONSE_REQUIRED_FIELDS - set(row):
+        raise SchemaRefusal(
+            f"a fixture DAI answer declares fields {sorted(row)}, not "
+            f"{sorted(_DAI_RECORD_RESPONSE_REQUIRED_FIELDS)} and an optional scenario"
+        )
+    if not isinstance(row["text"], str):
+        raise SchemaRefusal("a fixture DAI answer's text is not text")
+    return row["text"]
+
+
+def fixture_detector_units(
+    context,
+    *,
+    chair: str,
+    resolved: ChairIdentity,
+    page_ordinal: int,
+    units: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, Any], Attempt]]:
+    """Each record shown to DAI as a live pass shows it, answered by the fixture.
+
+    The presentation, the closed model view and the retained capture are built
+    exactly as for a served record; only the answer is declared.
+    """
+    adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
+    capabilities = _declared_format_capabilities(adapter)
+    prompt = adapter.prompt()
+    served = []
+    for region in units:
+        source = presentation_for_region(region)
+        presented = adapter.present(context, dict(source))
+        witness_adapters.validate_adapter_presentation(resolved.witness_adapter, source, presented)
+        text = declared_dai_record_text(context, chair, page_ordinal, _detector_ordinal(region))
+        capture = adapter.retain(
+            context,
+            view=live_witness.dai_model_view(
+                context,
+                source,
+                presented,
+                prompt,
+                feeding.dai_generation(),
+                feeding.dai_generation_accounting(),
+            ),
+            raw_response=text.encode("utf-8"),
+            transport_stop_reason=FIXTURE_COMPLETE_STOP,
+            parser="text",
+        )
+        parsed = capture["parse"]
+        if parsed["state"] == "parsed":
+            attempt = Attempt(
+                "genuinely-empty" if parsed["text"] == "" else "read",
+                parsed["text"],
+                None,
+                capabilities,
+                content_health(parsed["text"], completed=True),
+                None,
+                raw_response_ref=capture["raw_response_ref"],
+                native_capture=capture,
+                raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT,
+            )
+        else:
+            reason = f"the provider response was retained but not usable: {parsed['reason']}"
+            attempt = Attempt(
+                "failed",
+                None,
+                None,
+                capabilities,
+                _unrecordable_health(parsed["reason"]),
+                reason,
+                raw_response_ref=capture["raw_response_ref"],
+                native_capture=capture,
+                raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT,
+            )
+        served.append((region, presented, attempt))
+    return served
+
+
+def fixture_detector_pages(
+    context,
+    acts: list[dict[str, Any]],
+    ordinal: int,
+    regions_by_act: dict[str, tuple[list[dict], str | None]],
+    attempts_by_pair: dict[tuple[str, str], Attempt],
+) -> int:
+    """The fixture pass's detector readers: each page read record by record, then its act views.
+
+    A page record already sealed is resumed and never read again, and a page
+    the detector found nothing on is sealed `not-run`, as on the live pass.
+    """
+    page_chairs = declared_page_witness_chairs(context)
+    detector_chairs = sorted(
+        chair
+        for chair in set(context.witness_chairs) & page_chairs
+        if reads_detector_records(context.registry.resolve(chair))
+    )
+    if not detector_chairs:
+        return 0
+    _contributing_pages, acts_by_page = page_denominator(context, acts, regions_by_act)
+    page_ids = exemplar_page_ids(context)
+    page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any] | None]] = {}
+    units_by_page = _prepared_detector_pages(
+        context,
+        detector_chairs=detector_chairs,
+        acts_by_page=acts_by_page,
+        ordinal=ordinal,
+        regions_by_act=regions_by_act,
+        page_captures=page_captures,
+        page_ids=page_ids,
+    )
+    recorded = 0
+    for chair in detector_chairs:
+        resolved = context.registry.resolve(chair)
+        for page_ordinal, page_acts in sorted(acts_by_page.items()):
+            if (page_ordinal, chair) not in page_captures:
+                served = fixture_detector_units(
+                    context,
+                    chair=chair,
+                    resolved=resolved,
+                    page_ordinal=page_ordinal,
+                    units=units_by_page[page_ordinal],
+                )
+                page_captures[(page_ordinal, chair)] = (
+                    publish_detector_page_testimonium(
+                        context,
+                        chair=chair,
+                        resolved=resolved,
+                        page_ordinal=page_ordinal,
+                        page_acts=page_acts,
+                        ordinal=ordinal,
+                        regions_by_act=regions_by_act,
+                        served=served,
+                        receipt_ref=None,
+                        page_ids=page_ids,
+                    ),
+                    None,
+                )
+            recorded += publish_page_act_views(
+                context,
+                chair=chair,
+                resolved=resolved,
+                attempt=page_captures[(page_ordinal, chair)][0],
+                page_ordinal=page_ordinal,
+                page_acts=page_acts,
+                ordinal=ordinal,
+                regions_by_act=regions_by_act,
+                attempts_by_pair=attempts_by_pair,
+            )
+    unresolved = sorted(
+        pair for pair, value in attempts_by_pair.items() if value is PENDING_ATTEMPT
+    )
+    if unresolved:
+        raise FatalAccounting(
+            f"the fixture pass finished with {len(unresolved)} unresolved witness attempt(s) "
+            f"{unresolved[:3]}; every configured chair answers for every expected act, or the "
+            "record says why"
+        )
+    return recorded
 
 
 def _detector_page_attempt(record: dict[str, Any]) -> Attempt:
@@ -6084,7 +6290,12 @@ def refuse_unread_fixture_declarations(context, live_chairs: list[str]) -> None:
             and row.get("chair") in live_chairs
             and row.get("scenario") in (None, context.scenario)
         )
-        for family in ("churro_page_response", "native_observation", *families)
+        for family in (
+            "churro_page_response",
+            "dai_record_response",
+            "native_observation",
+            *families,
+        )
     }
     # Anchors have no chair, and a live pass ignores all of them.
     counted["chandra_anchor"] = sum(
@@ -6122,7 +6333,7 @@ def _run_full_pass(
             index,
             # A live chair cannot reproduce immutable bytes.
             resume_incomplete_pass=bool(live_chairs) or not has_prior_boundary,
-            resolve=pending_live_attempt if live_chairs else None,
+            resolve=pending_live_attempt if live_chairs else fixture_attempt,
             fixture_declared=not real,
         )
     except ContractError as error:
@@ -6212,17 +6423,6 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     )
     if real:
         require_every_witness_served(modes)
-    unserved_record_readers = sorted(
-        chair
-        for chair, mode in modes.items()
-        if mode != "live" and reads_detector_records(context.registry.resolve(chair))
-    )
-    if unserved_record_readers:
-        raise ContractError(
-            f"chair(s) {unserved_record_readers} read each page one detector record at a time, "
-            "one request per record, and the fixture posture has no such reading to declare; "
-            "serve them live or scope them 'act'"
-        )
     live_chairs = sorted(chair for chair, mode in modes.items() if mode == "live")
     acts = expected_acts(context)
     try:

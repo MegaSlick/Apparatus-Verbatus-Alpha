@@ -452,18 +452,26 @@ def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=Fa
 # What the fake Perlector answers when it reads a page whole (`reading_unit =
 # "page"`). The ids are the page feed's: A is attestator_1 (Chandra, one boxed
 # unit per declared act on page 1, one unboxed unit of page text on page 2), B
-# is attestator_3 (Churro, one unit per line, no boxes), L are Surya's lines.
+# is attestator_2 (DAI, one boxed unit per detector record), C is attestator_3
+# (Churro, one unit per line, no boxes), L are Surya's lines.
 # `happy` places every entry: page 1's by Chandra's boxes, page 2's by the
 # Surya lines over a2's continuation. `page-review` reads page 1 the same way
-# but cites no boxed id on page 2, so that entry is unplaced and the page
-# accounting holds it (rules b, d, f and g), as `review` holds a2 in act mode.
+# but cites no boxed id on page 2, so that entry is unplaced, DAI's record there
+# goes unread, and the page accounting holds it (rules b, c, d, f, g and i), as
+# `review` holds a2 in act mode.
 # `page-no-act` reads page 1 as `happy` and page 2's one entry, placed as in
-# `happy`, as `other`: a page the reading says holds no act.
+# `happy`, as `other`: a page the reading says holds no act, and on which the
+# record detector finds nothing, so DAI is shown nothing there. `page-other`
+# reads a1 as `other`: the detector finds no record over a1, so DAI's one
+# record on page 1 is a2's (B1), and no record lies in the `other` reading.
 # Proves wiring only, never reading ink.
+_WITHOUT_DAI = ["attestator_1", "attestator_3"]
 _PAGE_ONE_ANSWER = {
     "acts": [
-        _page_entry(1, "a1", ["A1", "B1"], text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]"),
-        _page_entry(2, "a2", ["A2", "B2"], to_next=True),
+        _page_entry(
+            1, "a1", ["A1", "B1", "C1"], text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]"
+        ),
+        _page_entry(2, "a2", ["A2", "B2", "C2"], to_next=True),
     ],
     "set_aside": [],
 }
@@ -473,7 +481,7 @@ PAGE_ANSWERS = (
         "scenario": "happy",
         "page_ordinal": 2,
         "answer": {
-            "acts": [_page_entry(1, "a2", ["A1", "B1", "L1-L3"], from_previous=True)],
+            "acts": [_page_entry(1, "a2", ["A1", "B1", "C1", "L1-L3"], from_previous=True)],
             "set_aside": [],
         },
     },
@@ -482,7 +490,7 @@ PAGE_ANSWERS = (
         "scenario": "page-review",
         "page_ordinal": 2,
         "answer": {
-            "acts": [_page_entry(1, "a2", ["A1", "B1"], from_previous=True)],
+            "acts": [_page_entry(1, "a2", ["A1", "C1"], from_previous=True)],
             "set_aside": [],
         },
     },
@@ -491,7 +499,59 @@ PAGE_ANSWERS = (
         "scenario": "page-no-act",
         "page_ordinal": 2,
         "answer": {
+            "acts": [_page_entry(1, "a2", ["A1", "C1", "L1-L3"], from_previous=True, kind="other")],
+            "set_aside": [],
+        },
+    },
+    # `page-no-act` read by Chandra (A) and Churro (B) alone, with DAI absent
+    # from the roster: the page witnesses a confirmed no-act page can have,
+    # since DAI either reads a record inside the `other` reading (rule i) or is
+    # shown nothing on the page (rule e).
+    {
+        "scenario": "page-no-act",
+        "page_ordinal": 1,
+        "witnesses": _WITHOUT_DAI,
+        "answer": {
+            "acts": [
+                _page_entry(
+                    1, "a1", ["A1", "B1"], text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]"
+                ),
+                _page_entry(2, "a2", ["A2", "B2"], to_next=True),
+            ],
+            "set_aside": [],
+        },
+    },
+    {
+        "scenario": "page-no-act",
+        "page_ordinal": 2,
+        "witnesses": _WITHOUT_DAI,
+        "answer": {
             "acts": [_page_entry(1, "a2", ["A1", "B1", "L1-L3"], from_previous=True, kind="other")],
+            "set_aside": [],
+        },
+    },
+    {
+        "scenario": "page-other",
+        "page_ordinal": 1,
+        "answer": {
+            "acts": [
+                _page_entry(
+                    1,
+                    "a1",
+                    ["A1", "C1"],
+                    text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]",
+                    kind="other",
+                ),
+                _page_entry(2, "a2", ["A2", "B1", "C2"], to_next=True),
+            ],
+            "set_aside": [],
+        },
+    },
+    {
+        "scenario": "page-other",
+        "page_ordinal": 2,
+        "answer": {
+            "acts": [_page_entry(1, "a2", ["A1", "B1", "C1", "L1-L3"], from_previous=True)],
             "set_aside": [],
         },
     },
@@ -529,7 +589,7 @@ _CHURRO_PAGE_CHAIRS = ("attestator_3",)
 # `page-review` and `page-no-act` carry the same pages as `happy`, so a
 # page-read run of either shows Churro in its own units on every page, as
 # `happy` does.
-_NATIVE_CHURRO_SCENARIOS = ("happy", "page-review", "page-no-act")
+_NATIVE_CHURRO_SCENARIOS = ("happy", "page-review", "page-no-act", "page-other")
 CHURRO_PAGE_RESPONSES = tuple(
     {
         "scenario": scenario,
@@ -622,6 +682,71 @@ SURYA_BLOCKS = tuple(
     }
     for page in ALL_PAGES
     for position, act in enumerate(sorted(page["acts"], key=lambda act: act["bounds"]["y"]))
+)
+
+
+# What DAI's own project's record detector finds on the synthetic pages: one
+# record over each act's ink, inset from the act's bounds, in the order the acts
+# sit down the page. Page 3 carries no ink, so the detector finds nothing there.
+# Two scenarios declare records of their own, which replace these: `page-other`
+# finds no record over a1, and `page-no-act` none on page 2 (`_SCENARIO_RECORDS`).
+DETECTOR_RECORD_INSET_PX = 5
+_SCENARIO_RECORDS = {"page-other": {1: ("a2",), 2: ("a2",)}, "page-no-act": {1: ("a1", "a2")}}
+
+
+def _page_records(pages: dict[int, tuple[str, ...]]) -> tuple:
+    """`(page_ordinal, detector_ordinal, bounds, act_key)` for each record on `pages`."""
+    return tuple(
+        (page["ordinal"], position, bounds, act_key)
+        for page in ALL_PAGES
+        for position, (act_key, bounds) in enumerate(
+            (act_key, act["bounds"])
+            for act, act_key in zip(
+                sorted(page["acts"], key=lambda act: act["bounds"]["y"]),
+                _PAGE_ACTS.get(page["ordinal"], ()),
+                strict=True,
+            )
+            if act_key in pages.get(page["ordinal"], ())
+        )
+    )
+
+
+_RECORDS_BY_SCENARIO = {None: _page_records(_PAGE_ACTS)} | {
+    scenario: _page_records(pages) for scenario, pages in _SCENARIO_RECORDS.items()
+}
+DETECTOR_RECORDS = tuple(
+    {
+        **({} if scenario is None else {"scenario": scenario}),
+        "page_ordinal": page_ordinal,
+        "corners": _surya_polygon(
+            bounds["x"] + DETECTOR_RECORD_INSET_PX,
+            bounds["y"] + DETECTOR_RECORD_INSET_PX,
+            bounds["x"] + bounds["w"] - DETECTOR_RECORD_INSET_PX,
+            bounds["y"] + bounds["h"] - DETECTOR_RECORD_INSET_PX,
+        ),
+        "score_bp": 9500 - position,
+    }
+    for scenario, records in _RECORDS_BY_SCENARIO.items()
+    for page_ordinal, position, bounds, _act_key in records
+)
+# What DAI (attestator_2) answers for each record it is shown: its testimony for
+# the act whose ink the record covers. A scenario's own answer replaces the
+# unscoped one for the same record, so only an answer that differs is scoped.
+_BASE_ANSWERS = {
+    (page_ordinal, position): act_key
+    for page_ordinal, position, _bounds, act_key in _RECORDS_BY_SCENARIO[None]
+}
+DAI_RECORD_RESPONSES = tuple(
+    {
+        **({} if scenario is None else {"scenario": scenario}),
+        "page_ordinal": page_ordinal,
+        "detector_ordinal": position,
+        "chair": "attestator_2",
+        "text": TESTIMONY[act_key]["attestator_2"],
+    }
+    for scenario, records in _RECORDS_BY_SCENARIO.items()
+    for page_ordinal, position, _bounds, act_key in records
+    if scenario is None or _BASE_ANSWERS.get((page_ordinal, position)) != act_key
 )
 
 
@@ -975,6 +1100,27 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"transport_stop_reason = {toml_string(row['transport_stop_reason'])}",
         ]
 
+    for row in DETECTOR_RECORDS:
+        lines += [
+            "",
+            "[[detector_record]]",
+            *([f"scenario = {toml_string(row['scenario'])}"] if "scenario" in row else []),
+            f"page_ordinal = {row['page_ordinal']}",
+            f"corners = {toml_value(row['corners'])}",
+            f"score_bp = {row['score_bp']}",
+        ]
+
+    for row in DAI_RECORD_RESPONSES:
+        lines += [
+            "",
+            "[[dai_record_response]]",
+            *([f"scenario = {toml_string(row['scenario'])}"] if "scenario" in row else []),
+            f"page_ordinal = {row['page_ordinal']}",
+            f"detector_ordinal = {row['detector_ordinal']}",
+            f"chair = {toml_string(row['chair'])}",
+            f"text = {toml_string(row['text'])}",
+        ]
+
     lines += [
         "",
         "# The happy scenario establishes both acts. The review scenario recovers act",
@@ -1011,9 +1157,18 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "hold_acts = []",
         "",
         "# page-no-act is a page-read run whose page 2 answer names one `other`",
-        "# entry and no act. Read act by act it declares neither a recovery nor a hold.",
+        "# entry and no act, on a page the record detector finds nothing on. Read act",
+        "# by act it declares neither a recovery nor a hold.",
         "[[scenario]]",
         'name = "page-no-act"',
+        "recover_acts = []",
+        "hold_acts = []",
+        "",
+        "# page-other is a page-read run whose page 1 answer reads a1 as `other`, over",
+        "# which the record detector finds no record. Read act by act it declares",
+        "# neither a recovery nor a hold.",
+        "[[scenario]]",
+        'name = "page-other"',
         "recover_acts = []",
         "hold_acts = []",
         "",
@@ -1250,7 +1405,8 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         lines.append("")
     lines += [
         "# The fake Perlector's answer to a whole-page reading, one per scenario and page,",
-        '# read only under reading_unit = "page". `answer` is the reply text exactly.',
+        '# read only under reading_unit = "page". `answer` is the reply text exactly. A',
+        "# row naming `witnesses` answers only a run whose page witnesses are those chairs.",
         "",
     ]
     for row in PAGE_ANSWERS:
@@ -1258,6 +1414,7 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             "[[page_answer]]",
             f"scenario = {toml_string(row['scenario'])}",
             f"page_ordinal = {row['page_ordinal']}",
+            *([f"witnesses = {toml_value(row['witnesses'])}"] if "witnesses" in row else []),
             "answer = " + toml_string(json.dumps(row["answer"], separators=(",", ":"))),
             "",
         ]

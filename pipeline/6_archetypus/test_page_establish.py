@@ -1,9 +1,10 @@
 """The Archetypus on a page-read run: every accepted reading, act or other, established once.
 
-The trees are the fixture's `happy` and `page-review` scenarios read with
-`reading_unit = "page"` and reviewed by the real Recensor. Two tests forge a
-review the Recensor does not write on the fixture (`conftest.forge_page_review`),
-each saying why.
+The trees are the fixture's `happy`, `page-review` and `page-other` scenarios
+read with `reading_unit = "page"` and reviewed by the real Recensor, and
+`page-no-act` read by Chandra and Churro alone. Two tests forge a review the
+Recensor does not write on the fixture (`conftest.forge_page_review`), each
+saying why.
 """
 
 from __future__ import annotations
@@ -43,6 +44,12 @@ def happy(tmp_path_factory) -> tuple[Path, dict]:
 
 
 @pytest.fixture(scope="module")
+def page_other(tmp_path_factory) -> tuple[Path, dict]:
+    """a1 read as `other`, over which the record detector finds no record."""
+    return build_page_tree(tmp_path_factory.mktemp("page-other"), "page-other")
+
+
+@pytest.fixture(scope="module")
 def page_review(tmp_path_factory) -> tuple[Path, dict]:
     return build_page_tree(tmp_path_factory.mktemp("page-review"), "page-review")
 
@@ -68,23 +75,6 @@ def _establish(root: Path, options: dict, scenario: str):
     return _archetypus(root, options, scenario)
 
 
-def _confirm_no_act(root: Path, act_key: str) -> None:
-    """The review of `act_key` accepting it and releasing its page's no-act hold.
-
-    The fixture configures no record detector, so page accounting rule (i)
-    never passes and the real Recensor cannot confirm a page holds no act.
-    """
-    forge_page_review(
-        root,
-        RUN_ID,
-        act_key,
-        "accepted",
-        hold_codes=[],
-        reason="confirmed",
-        release={"hold_codes": [NO_ACT_ON_PAGE_HOLD], "reason": "confirmed"},
-    )
-
-
 def _records(root: Path) -> dict[str, dict]:
     tree = RunTree(root, RUN_ID)
     return {
@@ -97,10 +87,9 @@ def _records(root: Path) -> dict[str, dict]:
     }
 
 
-def test_every_accepted_page_reading_is_established_from_its_own_act_region(happy, tmp_path):
-    root, options = _copy(happy, tmp_path)
-    rewrite_page_answer_entry(root, RUN_ID, 1, 1, kind="other")
-    result = _establish(root, options, "happy")
+def test_every_accepted_page_reading_is_established_from_its_own_act_region(page_other, tmp_path):
+    root, options = _copy(page_other, tmp_path)
+    result = _establish(root, options, "page-other")
     assert result.returncode == 0, result.stderr
     records = _records(root)
     assert sorted(records) == ["p1:1", "p1:2", "p2:1"]
@@ -181,10 +170,9 @@ def _resealed(payload: dict, **changes) -> dict:
     return record
 
 
-def test_index_rows_name_each_reading_s_kind(happy, tmp_path):
-    root, options = _copy(happy, tmp_path)
-    rewrite_page_answer_entry(root, RUN_ID, 1, 1, kind="other")
-    assert _establish(root, options, "happy").returncode == 0
+def test_index_rows_name_each_reading_s_kind(page_other, tmp_path):
+    root, options = _copy(page_other, tmp_path)
+    assert _establish(root, options, "page-other").returncode == 0
     tree = RunTree(root, RUN_ID)
     index = json.loads(tree.resolve(tree.index_path(ARCHETYPUS)).read_text(encoding="utf-8"))
     assert {row["act_key"]: row["kind"] for row in index["rows"]} == {
@@ -214,26 +202,31 @@ def test_a_refused_reading_leaves_no_record_of_the_readings_before_it(happy, tmp
     assert _records(root) == {}
 
 
-def _no_act_page_two(root: Path, options: dict) -> None:
-    """Page 2's one entry read as `other`, its accounting measured again."""
+@pytest.fixture(scope="module")
+def no_act(tmp_path_factory) -> tuple[Path, dict]:
+    """`page-no-act` read by Chandra and Churro alone, DAI absent.
+
+    With DAI a page witness, a page of `other` entries either has a record
+    inside one (rule i) or DAI was shown nothing on it (rule e), and neither is
+    confirmed; on this roster the page's record detector finds nothing on page 2.
+    """
+    return build_page_tree(
+        tmp_path_factory.mktemp("page-no-act"), "page-no-act", floor=2, absent=("attestator_2",)
+    )
+
+
+def test_a_confirmed_no_act_page_establishes_its_other_reading(no_act, tmp_path):
+    root, options = _copy(no_act, tmp_path)
     rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
-    rewrite_page_answer_entry(root, RUN_ID, 2, 1, kind="other", continues_from_previous_page=False)
-    reaccount_page(root, RUN_ID, "happy", options, 2)
-
-
-def test_a_confirmed_no_act_page_establishes_its_other_reading(happy, tmp_path):
-    root, options = _copy(happy, tmp_path)
-    _no_act_page_two(root, options)
-    held = _establish(root, options, "happy")
-    assert held.returncode == 0, held.stderr
-    assert "p2:1" not in _records(root)
-
-    root, options = _copy(happy, tmp_path / "confirmed")
-    _no_act_page_two(root, options)
-    _recense(root, options, "happy")
-    _confirm_no_act(root, "p2:1")
-    confirmed = _archetypus(root, options, "happy")
-    assert confirmed.returncode == 0, confirmed.stderr
+    rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_from_previous_page=False)
+    reaccount_page(root, RUN_ID, "page-no-act", options, 2)
+    result = _establish(root, options, "page-no-act")
+    assert result.returncode == 0, result.stderr
+    context = page_context(root, RUN_ID, "page-no-act", options)
+    reviews = current_page_reviews(context, reading_acts(context)).values()
+    [review] = [review for review in reviews if review["payload"]["act_key"] == "p2:1"]
+    assert review["outcome"] == "accepted"
+    assert review["payload"]["release"]["hold_codes"] == [NO_ACT_ON_PAGE_HOLD]
     assert _records(root)["p2:1"]["payload"]["kind"] == "other"
 
 

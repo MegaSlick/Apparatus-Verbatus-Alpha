@@ -148,7 +148,7 @@ chair is asked and what it is read as are the vendor's, not this repository's.
 **Fixture declarations a live pass does not read.** A live pass reads the
 fixture's pages, acts, continuations and proposals — that is the corpus — and
 reads none of its declared witness responses (`testimony`, `witness_failure`,
-`witness_empty`, `witness_not_run`, `churro_page_response`) or declared
+`witness_empty`, `witness_not_run`, `churro_page_response`, `dai_record_response`) or declared
 `native_observation` geometry, which are the offline posture's stand-in for a
 model. The pass names on stderr how many such rows it passed over, so an
 operator cannot mistake one posture's record for the other's. Fixture-declared
@@ -1409,9 +1409,9 @@ DAI was trained on crops of the records its own project's detector finds, so a
 page-scoped `dai.v1` chair is shown its page that way and never the
 Designator's act crops. The adapter declares it (`RunnableAdapter.page_units =
 "detector-records"`), and a roster that scopes such a chair `page` without a
-configured `secondary_proposer` is refused before anything runs. The fixture
-posture has no per-record reading to declare, so such a chair must be served
-live; a fixture row for it is refused by name.
+configured `secondary_proposer` is refused before anything runs. The chair
+runs on the fixture pass as on a live one: its detector's fixture row answers
+from the fixture's `[[detector_record]]` rows (see the fixture posture below).
 
 **Units.** A page's units are the Designator's `detector-region` crops of that
 page, in the detector's own order, read from its `detector-page` census. A
@@ -1430,6 +1430,17 @@ again, and a page record already sealed is resumed and never asked again. A
 page the detector found nothing on is sealed `not-run` without a request, with
 reason "DAI's own record detector found no record on this page, so DAI was
 shown nothing here".
+
+**The fixture posture.** A fixture row reads each record exactly as a served
+one is read -- the same presentation, the same closed model view and the same
+retained capture under the `text` parser -- and only the answer is declared: one
+`[[dai_record_response]]` row `{page_ordinal, detector_ordinal, chair, text}`
+per record, optionally scoped to a scenario, retained under the stop word
+`fixture-complete` with its receipt saying `fixture://`. A record with no
+declared answer, or with two, refuses by name. Its act views stay pending in
+preflight and are published from the page record once it is sealed, as on the
+live pass, and a sealed act view is reused rather than re-derived, because the
+page record it derives from is never read again.
 
 **The page record.** One `page-testimonium` per page, in the closed page shape
 plus two fields. `presentations` lists every image the chair was shown, in

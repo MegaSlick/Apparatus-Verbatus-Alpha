@@ -337,15 +337,24 @@ def _existing_reading(context, page_id: str) -> dict[str, Any] | None:
 
 
 def _fixture_answer(context, ordinal: int) -> dict[str, Any]:
+    """The fixture's answer for this scenario and page, as the page's witnesses were lettered.
+
+    A row naming `witnesses` answers only a run whose page witnesses are exactly
+    those chairs, and replaces a row that names none.
+    """
     rows = [
         row
         for row in context.fixture.get("page_answer", [])
         if row.get("scenario") == context.scenario and row.get("page_ordinal") == ordinal
     ]
+    roster = sorted(declared_page_witness_chairs(context))
+    rows = [row for row in rows if row.get("witnesses") == roster] or [
+        row for row in rows if "witnesses" not in row
+    ]
     if len(rows) != 1:
         raise ContractError(
             f"the fixture declares {len(rows)} page answers for scenario {context.scenario!r}, "
-            f"page {ordinal}; a page read offline needs exactly one"
+            f"page {ordinal} and page witnesses {roster}; a page read offline needs exactly one"
         )
     row = rows[0]
     if not isinstance(row.get("answer"), str) or row.get("stop_reason", "stop") not in (

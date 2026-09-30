@@ -437,6 +437,7 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "review",
         "page-review",
         "page-no-act",
+        "page-other",
         "continuation-recovery",
         "coverage-recovery",
         "churro-native",

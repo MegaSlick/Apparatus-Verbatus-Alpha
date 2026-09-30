@@ -576,10 +576,10 @@ def _open_record_detector(
     """
     mode = _record_detector_mode(context, identity, fixture_allowed=fixture_allowed)
     if mode == "fixture":
-        rows = [
-            row
-            for row in context.fixture.get("detector_record", [])
-            if row.get("scenario") in (None, context.scenario)
+        # A scenario that declares its own records replaces the unscoped ones.
+        declared = context.fixture.get("detector_record", [])
+        rows = [row for row in declared if row.get("scenario") == context.scenario] or [
+            row for row in declared if row.get("scenario") is None
         ]
         detector = fixture_record_detector(rows, identity, fixture_serving_details(identity))
         return _configured_chair_record(context, identity), detector

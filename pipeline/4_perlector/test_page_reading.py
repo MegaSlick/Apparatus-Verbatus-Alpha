@@ -49,7 +49,7 @@ from common.imaging import crop_png
 from common.page_accounting import is_inside, load_page_accounting_policy, placement_boxes
 from common.page_witness_units import DAI
 from common.runtree.store import RunTree
-from conftest import file_bytes_snapshot, load_stage, programs_through
+from conftest import file_bytes_snapshot, load_stage, page_models_config, programs_through
 from operations.serving.config import profile_preflight_digest
 from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
 
@@ -62,7 +62,6 @@ PAGE_ANSWERS = {
     for row in FIXTURE["page_answer"]
     if row["scenario"] == "happy"
 }
-TIERS = ("generic-24gb", "generic-48gb", "generic-80gb-plus")
 POLICY = load_page_accounting_policy()
 
 perlector = load_stage("4_perlector")
@@ -85,7 +84,14 @@ def _page_protocol(directory: Path, **feed: Any) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "perlector_protocol.toml"
     path.write_text(text, encoding="utf-8")
+    if not _page_roster(path).exists():
+        page_models_config(_page_roster(path).parent)
     return path
+
+
+def _page_roster(protocol: Path) -> Path:
+    """The page-read roster written beside a page protocol (`conftest.page_models_config`)."""
+    return protocol.parent / "models" / "models.toml"
 
 
 def _feed_value(value: Any) -> str:
@@ -109,6 +115,11 @@ def _run(
             scenario,
             "--perlector-protocol-config",
             str(protocol),
+            *(
+                ()
+                if "--models-config" in extra
+                else ("--models-config", str(_page_roster(protocol)))
+            ),
             *extra,
         ],
         cwd=ROOT,
@@ -160,32 +171,14 @@ def _union(boxes: list[dict[str, int]]) -> dict[str, int]:
 
 
 def _roster(base: Path, *replacements: tuple[str, str]) -> Path:
-    """The shipped roster with chair blocks replaced, beside its fixture snapshots."""
-    config_root = base / "chair-config"
-    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
-    text = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
+    """The page-read roster with chair blocks replaced, beside its fixture snapshots."""
+    path = page_models_config(base / "chair-config")
+    text = path.read_text(encoding="utf-8")
     for old, new in replacements:
         assert old in text
         text = text.replace(old, new)
-    path = config_root / "models.toml"
     path.write_text(text, encoding="utf-8")
     return path
-
-
-_STRUCTURE_DIGEST = tomllib.loads((ROOT / "config" / "models.toml").read_text(encoding="utf-8"))[
-    "chairs"
-]["designator_structure"]["digest_manifest"]
-
-
-def _configured_block(chair: str, recipe: str) -> str:
-    """A chair standing on the structure chair's fixture snapshot, as the stage-2 tests do."""
-    return (
-        f'[chairs.{chair}]\nstate = "configured"\nsource = "local-repository"\n'
-        f'path = "designator_structure"\ndigest_manifest = "{_STRUCTURE_DIGEST}"\n'
-        f'manifest = "manifests/designator_structure.json"\nserving_recipe = "{recipe}"\n'
-        'license_note = "fixture identity only; no model weights or model license apply"\n'
-    )
 
 
 def _chair_block(chair: str) -> str:
@@ -199,33 +192,7 @@ _ABSENT_SURYA = (
     '[chairs.designator_surya]\nstate = "absent"\n'
     'reason = "no Surya detector is configured for this test run"\n'
 )
-_ABSENT_DETECTOR = (
-    '[chairs.secondary_proposer]\nstate = "absent"\n'
-    'reason = "no secondary proposer is configured for the offline walking skeleton"\n'
-)
 _NO_SURYA = (_chair_block("designator_surya"), _ABSENT_SURYA)
-_DETECTOR = (_ABSENT_DETECTOR, _configured_block("secondary_proposer", "fake-secondary-v0"))
-
-
-def _fixture_rows(recipe: str, chair: str) -> str:
-    return "".join(
-        f'\n[[profiles]]\nkind = "fixture"\nrecipe = "{recipe}"\nchair = "{chair}"\n'
-        f'tier = "{tier}"\ndescription = "fixture rows under test"\n'
-        for tier in TIERS
-    )
-
-
-_DETECTOR_ROWS = _fixture_rows("fake-secondary-v0", "secondary_proposer")
-
-
-def _fixture_catalogue(base: Path, rows: str) -> Path:
-    path = base / "chair-config" / "serving_recipes.toml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8") + rows,
-        encoding="utf-8",
-    )
-    return path
 
 
 # --- the fixture page path --------------------------------------------------------
@@ -272,7 +239,8 @@ def test_every_sealed_page_is_read_whole_into_a_feed_a_reading_and_its_acts(page
     assert feed["witness_testimony"] == "present"
     assert [(row["letter"], row["witness_label"]) for row in feed["witnesses"]] == [
         ("A", "attestator_1"),
-        ("B", "attestator_3"),
+        ("B", "attestator_2"),
+        ("C", "attestator_3"),
     ]
     assert len(_records(root, "act-region")) == len(_records(root, "perlectio")) == 3
     # The act path read nothing: no reading of a Designator act was published.
@@ -361,8 +329,9 @@ def test_a_perlectio_carries_clean_text_doubt_dissent_truncation_and_autopsia(pa
     assert payload["autopsia"] is True
     rows = {row["letter"]: row for row in payload["dissent"]}
     assert rows["A"]["cited_units"] == ["A1"] and rows["A"]["departed"] is False
-    # Churro's line reads "... alpha beta": it stops short, so the reading departs.
+    # DAI's record reads "gamna" and Churro's line "... alpha beta": both depart.
     assert rows["B"]["cited_units"] == ["B1"] and rows["B"]["departed"] is True
+    assert rows["C"]["cited_units"] == ["C1"] and rows["C"]["departed"] is True
     assert payload["holds"] == [] and payload["page_holds"] == []
     assert first["outcome"] == "read"
     last = next(
@@ -404,8 +373,9 @@ def test_a_second_pass_and_a_fresh_run_leave_the_same_bytes_and_act_ids(page_tre
 def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, review_page_tree):
     """Each page is read whole and placed, and its readings cover every Surya line:
     nothing holds it. In `page-review`, page 2's one entry cites no boxed id: it is
-    unplaced, has no region to measure truncation over, and the page's ink and
-    Surya's lines lie outside every reading region."""
+    unplaced, has no region to measure truncation over, DAI's record goes
+    uncited and unread, and the page's ink and Surya's lines lie outside every
+    reading region."""
     root, _protocol = page_tree
     accounts = {r["payload"]["page_ordinal"]: r for r in _records(root, "page-accounting")}
     assert set(accounts) == {1, 2}
@@ -414,13 +384,16 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, r
         assert payload["schema"] == "page-accounting.v1" and account["outcome"] == "read"
         assert payload["holds"] == []
         assert {unit["disposition"] for unit in payload["units"]} == {"cited"}
-        assert payload["rules"]["i"]["status"] == "not-applicable"
+        # Every DAI record lies inside exactly one act region.
+        assert payload["rules"]["i"]["status"] == "pass"
     root, _protocol = review_page_tree
     accounts = {r["payload"]["page_ordinal"]: r for r in _records(root, "page-accounting")}
     assert accounts[1]["payload"]["holds"] == []
     assert accounts[2]["payload"]["holds"] == [
         "reading-unplaced",
+        "record-not-read",
         "truncation-not-classified",
+        "unaccounted-witness-unit",
         "unread-ink",
         "unread-line",
     ]
@@ -494,7 +467,7 @@ def test_each_feed_switch_changes_the_sealed_feed(page_tree, tmp_path, feed, pro
         ]
         paths = {ref["relative_path"] for ref in hidden["inputs"]}
         shown = {row["testimonium_ref"]["relative_path"] for row in hidden["payload"]["witnesses"]}
-        assert len(shown) == 1 and len(paths & _testimonium_paths(tmp_path / "runs", 1)) == 2
+        assert len(shown) == 1 and len(paths & _testimonium_paths(tmp_path / "runs", 1)) == 3
         [account] = [
             record
             for record in _records(tmp_path / "runs", "page-accounting")
@@ -593,18 +566,13 @@ def _detector_tree(
 ):
     """A page-read tree whose stage-2 record detector declared `detections`.
 
-    The fixture detector states no detection cap, so its records would leave
-    rule (i) unmeasured; here it states one (`max_det`), as the in-process
-    detector does, so the rule is measured over real stage-2 records. With
-    `max_det` None it states none, as the fixture detector does.
+    The fixture detector states its cap, 300, as the in-process detector does;
+    `max_det` states another, and None states none, so rule (i) is not
+    measured. DAI reads each cut record with the fixture's declared answer for
+    its page and ordinal.
     """
     protocol = _page_protocol(base / "config")
-    flags = (
-        "--models-config",
-        str(_roster(base, _DETECTOR)),
-        "--serving-recipes-config",
-        str(_fixture_catalogue(base, _DETECTOR_ROWS)),
-    )
+    flags = ("--models-config", str(_page_roster(protocol)))
     root = base / "runs"
     _chain(root, protocol, *flags, programs=programs_through("ink-map"))
     designator = load_stage("2_designator")
@@ -612,9 +580,10 @@ def _detector_tree(
 
     def declared(_rows, identity, details):
         detector = original(detections, identity, details)
-        if max_det is None:
-            return detector
-        return dataclasses.replace(detector, run_facts={**detector.run_facts, "max_det": max_det})
+        facts = {key: value for key, value in detector.run_facts.items() if key != "max_det"}
+        if max_det is not None:
+            facts["max_det"] = max_det
+        return dataclasses.replace(detector, run_facts=facts)
 
     monkeypatch.setattr(designator, "fixture_record_detector", declared)
     monkeypatch.chdir(ROOT)
@@ -739,26 +708,13 @@ def test_each_detector_record_is_named_by_the_dai_unit_with_its_box(tmp_path, mo
     page = _first_page(root)
     records, census, references = _record_detections(_reading_context(root), page)
     assert census == {"detection_count": 3, "max_det": 300, "max_det_reached": False}
+    # With no DAI witness named, no record is named by a unit.
     assert [record.get("id") for record in records] == [None, None, None]
     assert references[0]["relative_path"].startswith("2_designator/artifacts/detector-page/")
-    # The fixture roster shows no DAI page witness; give page 1 one whose units are
-    # the two cut records, as DAI's own reading of them would be.
+    # DAI (B) read the two cut records; the collapsed one was never a unit.
     page.witnesses = [{"witness_label": "attestator_2", "adapter": DAI}]
-    page.feed = {
-        **page.feed,
-        "witnesses": [
-            *page.feed["witnesses"],
-            {
-                "witness_label": "attestator_2",
-                "units": [
-                    {"id": f"D{n}", "box_px": record["box_px"]}
-                    for n, record in enumerate(records[:2], start=1)
-                ],
-            },
-        ],
-    }
     records, _census, _references = _record_detections(_reading_context(root), page)
-    assert [record.get("id") for record in records] == ["D1", "D2", None]
+    assert [record.get("id") for record in records] == ["B1", "B2", None]
 
 
 @pytest.mark.parametrize(
@@ -1026,6 +982,8 @@ def _read_pages(tree: _Live, tmp_path, monkeypatch, *answers: ScriptedAnswer, ex
             TIER,
             "--perlector-protocol-config",
             str(tree.protocol),
+            "--models-config",
+            str(_page_roster(tree.protocol)),
             *extra,
         ],
     )

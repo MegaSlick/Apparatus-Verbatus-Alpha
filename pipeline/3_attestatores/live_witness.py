@@ -536,7 +536,7 @@ def _failed_parse_composition(
     return parse_reason, parse_reason
 
 
-def _dai_model_view(
+def dai_model_view(
     context: Any,
     presentation: Mapping[str, Any],
     presented: Mapping[str, Any],
@@ -705,7 +705,7 @@ def live_attempt_from_response(
         return _malformed_response_attempt(response, adapter=adapter)
 
     transport_stop_reason, completed, cut_off = _finish_reason_facts(response)
-    view = _dai_model_view(
+    view = dai_model_view(
         context,
         presentation,
         presented,

@@ -1,7 +1,9 @@
 """The Armarium on a page-read run: acts, the other layer, page rows and page accounting.
 
-The trees are the fixture's `happy` and `page-review` scenarios read with
-`reading_unit = "page"` and reviewed by the real Recensor. A test that needs a
+The trees are the fixture's `happy`, `page-review` and `page-other` scenarios
+read with `reading_unit = "page"` and reviewed by the real Recensor, and
+`page-no-act` read by Chandra and Churro alone, the page witnesses a confirmed
+no-act page can have (see `no_act`). A test that needs a
 decision the Recensor does not make on the fixture forges it
 (`conftest.forge_page_review`, `conftest.forge_continuation_links`) and says
 why. Every bundle is checked the way a recipient would, by
@@ -34,7 +36,7 @@ from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.stages import ARCHETYPUS, ARMARIUM
 from common.page_accounting import load_page_accounting_policy
 from common.runtree.store import RunTree
-from common.stage import NO_ACT_ON_PAGE_HOLD, PAGE_BLANK_HOLD
+from common.stage import PAGE_BLANK_HOLD
 from conftest import (
     build_page_tree,
     forge_continuation_links,
@@ -60,13 +62,31 @@ def page_review(tmp_path_factory) -> tuple[Path, dict]:
 
 
 @pytest.fixture(scope="module")
-def complete(tmp_path_factory, happy) -> dict:
-    """Happy with p1:1 read as `other` and no continuation: nothing held, one other reading."""
-    root, options = _copy(happy, tmp_path_factory.mktemp("complete"))
-    rewrite_page_answer_entry(root, RUN_ID, 1, 1, kind="other")
+def page_other(tmp_path_factory) -> tuple[Path, dict]:
+    """a1 read as `other`, over which the record detector finds no record."""
+    return build_page_tree(tmp_path_factory.mktemp("page-other"), "page-other")
+
+
+@pytest.fixture(scope="module")
+def no_act(tmp_path_factory) -> tuple[Path, dict]:
+    """`page-no-act` read by Chandra and Churro alone, DAI absent.
+
+    With DAI a page witness, a page of `other` entries either has a record
+    inside one (rule i) or DAI was shown nothing on it (rule e), and neither is
+    confirmed; on this roster the page's record detector finds nothing on page 2.
+    """
+    return build_page_tree(
+        tmp_path_factory.mktemp("page-no-act"), "page-no-act", floor=2, absent=("attestator_2",)
+    )
+
+
+@pytest.fixture(scope="module")
+def complete(tmp_path_factory, page_other) -> dict:
+    """p1:1 read as `other` and no continuation: nothing held, one other reading."""
+    root, options = _copy(page_other, tmp_path_factory.mktemp("complete"))
     rewrite_page_answer_entry(root, RUN_ID, 1, 2, continues_to_next_page=False)
     rewrite_page_answer_entry(root, RUN_ID, 2, 1, continues_from_previous_page=False)
-    result = _export(root, options, "happy")
+    result = _export(root, options, "page-other")
     assert result.returncode == 0, result.stderr
     return _bundle(root, tmp_path_factory.mktemp("complete-clean"))
 
@@ -182,11 +202,8 @@ def test_the_page_accounting_and_what_was_not_measured_are_claimed(complete):
     assert [row["ordinal"] for row in accounting["pages"]] == [1, 2]
     assert accounting["held_pages"] == []
     assert set(accounting["pages"][0]["rules"]) == set("abcdefghi")
-    # Rule (i) needs a record detector, which the fixture does not configure.
-    assert accounting["pages"][0]["rules"] == {
-        **dict.fromkeys("abcdefgh", "pass"),
-        "i": "not-applicable",
-    }
+    # DAI's one record on page 1 lies inside a2's act region.
+    assert accounting["pages"][0]["rules"] == dict.fromkeys("abcdefghi", "pass")
     assert len(accounting["policy_sha256s"]) == 1
     entries = {entry["instrument"]: entry for entry in claims["not_measured"]["entries"]}
     assert list(entries) == list(PAGE_NOT_MEASURED_INSTRUMENTS)
@@ -415,10 +432,10 @@ def _held_page_one(members: dict) -> None:
     _claims(members, hold)
 
 
-def _page_roster_is_the_whole_roster(members: dict) -> None:
-    """The page witness chairs widened to the whole roster, in the basis and the manifest."""
+def _page_roster_narrowed(members: dict) -> None:
+    """The page witness chairs narrowed by one chair, in the basis and the manifest."""
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    roster = sorted(manifest["witness_chairs"])
+    roster = sorted(manifest["witness_chairs"])[:-1]
     manifest["aggregate_basis"]["page_witness_chairs"] = roster
     members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
     _sources(members, lambda s: s["aggregate_basis"].update(page_witness_chairs=roster))
@@ -460,7 +477,7 @@ def _page_roster_is_the_whole_roster(members: dict) -> None:
         (_held_page_one, "held by their page accounting yet delivered"),
         (_other_named_as_an_act, "other reading is counted in the act partition"),
         (_other_doubt, "formats carrying the other layer disagree"),
-        (_page_roster_is_the_whole_roster, "disagrees with the exported roster"),
+        (_page_roster_narrowed, "disagrees with the exported roster"),
     ],
     ids=[
         "other-count",
@@ -513,13 +530,6 @@ def test_a_held_other_reading_keeps_the_run_partial(page_review, tmp_path):
     ] == ("held-for-review")
 
 
-def _other_only_page_two(root: Path, options: dict) -> None:
-    """Page 2's one entry read as `other`, its accounting measured again."""
-    _no_continuation(root)
-    rewrite_page_answer_entry(root, RUN_ID, 2, 1, kind="other")
-    reaccount_page(root, RUN_ID, "happy", options, 2)
-
-
 def test_a_page_of_other_readings_is_held_until_the_recensor_confirms_no_act(
     tmp_path_factory, tmp_path
 ):
@@ -552,22 +562,12 @@ def test_a_page_of_other_readings_is_held_until_the_recensor_confirms_no_act(
     ]
 
 
-def test_a_confirmed_no_act_page_delivers_its_other_readings_and_completes(happy, tmp_path):
-    root, options = _copy(happy, tmp_path)
-    _other_only_page_two(root, options)
-    _recense(root, options, "happy")
-    # The fixture configures no record detector, so page accounting rule (i)
-    # never passes and the real Recensor cannot confirm a page holds no act.
-    forge_page_review(
-        root,
-        RUN_ID,
-        "p2:1",
-        "accepted",
-        hold_codes=[],
-        reason="confirmed",
-        release={"hold_codes": [NO_ACT_ON_PAGE_HOLD], "reason": "confirmed"},
-    )
-    result = _after_recensor(root, options, "happy")
+def test_a_confirmed_no_act_page_delivers_its_other_readings_and_completes(no_act, tmp_path):
+    root, options = _copy(no_act, tmp_path)
+    _no_continuation(root)
+    reaccount_page(root, RUN_ID, "page-no-act", options, 2)
+    # The real Recensor confirms the page holds no act.
+    result = _export(root, options, "page-no-act")
     assert result.returncode == 0, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
     manifest = bundle["manifest"]
@@ -636,12 +636,13 @@ def test_a_continuation_flag_no_link_pairs_is_named_and_keeps_the_run_partial(ha
     ],
     ids=["other-reading", "non-adjacent"],
 )
-def test_a_continuation_link_the_recensor_never_makes_is_refused(happy, tmp_path, links, refusal):
-    root, options = _copy(happy, tmp_path)
-    rewrite_page_answer_entry(root, RUN_ID, 1, 1, kind="other")
-    _recense(root, options, "happy")
-    forge_continuation_links(root, RUN_ID, "happy", options, links)
-    result = _after_recensor(root, options, "happy")
+def test_a_continuation_link_the_recensor_never_makes_is_refused(
+    page_other, tmp_path, links, refusal
+):
+    root, options = _copy(page_other, tmp_path)
+    _recense(root, options, "page-other")
+    forge_continuation_links(root, RUN_ID, "page-other", options, links)
+    result = _after_recensor(root, options, "page-other")
     assert result.returncode == 2
     assert refusal in result.stderr
 

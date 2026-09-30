@@ -565,8 +565,12 @@ engine for it. Its catalogue row is `in-process` (the verified weights, loaded
 on the CPU by `operations/serving/detector.py`) or `fixture`; a `vllm` row is
 refused, and a `fixture` row answers only the fixture pass. The fixture
 detector answers each page with the fixture's `[[detector_record]]` rows for
-that page (`page_ordinal`, four `corners`, `score_bp`, optional `class_id`);
-the shipped fixture declares none, so tests declare them on the stage context.
+that page (`page_ordinal`, four `corners`, `score_bp`, optional `class_id`,
+optional `scenario`): a scenario that declares rows of its own reads those
+alone, and any other scenario reads the unscoped rows. The shipped fixture
+declares one record over each act's ink on each page; the committed fixture
+roster configures no record detector, so only a roster that configures one
+reads them.
 On the live path the row is checked before the structure chair starts and the
 detector is loaded only after that chair has closed, so one model is resident
 at a time; a resumed pass reuses the `secondary-provenance` it already sealed.

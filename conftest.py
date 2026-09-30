@@ -436,9 +436,42 @@ def floor_models_config(directory: Path, floor: int) -> Path:
     return path
 
 
-# The fixture seals two page witnesses (DAI is act-scoped), so a page-read tree
-# whose pages should be accepted is sealed with a witness floor of 2.
-PAGE_WITNESS_FLOOR = 2
+_DAI_ACT_SCOPE = 'witness_adapter = "dai.v1"\nwitness_scope = "act"\n'
+_ABSENT_RECORD_DETECTOR = (
+    '[chairs.secondary_proposer]\nstate = "absent"\n'
+    'reason = "no secondary proposer is configured for the offline walking skeleton"\n'
+)
+
+
+def page_models_config(directory: Path, floor: int = 3, absent: tuple[str, ...] = ()) -> Path:
+    """The page-read roster, written under `directory`: every witness chair page-scoped.
+
+    The committed roster with DAI (`attestator_2`) page-scoped and its record
+    detector (`secondary_proposer`) configured on the `fake-secondary-proposer-v0`
+    fixture row, standing on the structure chair's fixture snapshot; the witness
+    floor set to `floor`, and each chair in `absent` configured absent.
+    """
+    path = floor_models_config(directory, floor)
+    text = path.read_text(encoding="utf-8")
+    structure = tomllib.loads(text)["chairs"]["designator_structure"]
+    assert text.count(_DAI_ACT_SCOPE) == 1 and _ABSENT_RECORD_DETECTOR in text
+    text = text.replace(_DAI_ACT_SCOPE, _DAI_ACT_SCOPE.replace('"act"', '"page"')).replace(
+        _ABSENT_RECORD_DETECTOR,
+        '[chairs.secondary_proposer]\nstate = "configured"\nsource = "local-repository"\n'
+        f'path = "designator_structure"\ndigest_manifest = "{structure["digest_manifest"]}"\n'
+        'manifest = "manifests/designator_structure.json"\n'
+        'serving_recipe = "fake-secondary-proposer-v0"\n'
+        'license_note = "fixture identity only; no model weights or model license apply"\n',
+    )
+    for chair in absent:
+        start = text.index(f"[chairs.{chair}]\n")
+        end = text.index("\n\n", start) + 1
+        text = f'{text[:start]}[chairs.{chair}]\nstate = "absent"\nreason = "absent under test"\n{text[end:]}'
+    path.write_text(text, encoding="utf-8")
+    config = tomllib.loads(text)
+    assert config["chairs"]["attestator_2"].get("witness_scope", "page") == "page"
+    assert all(config["chairs"][chair]["state"] == "absent" for chair in absent)
+    return path
 
 
 def build_page_tree(
@@ -446,19 +479,22 @@ def build_page_tree(
     scenario: str,
     run_id: str = "r",
     *,
-    floor: int | None = PAGE_WITNESS_FLOOR,
+    floor: int = 3,
+    absent: tuple[str, ...] = (),
     **options,
 ) -> tuple[Path, dict[str, object]]:
     """A fixture tree read page by page, through the Perlector; returns (root, stage options).
 
     The options, which every later stage of the run takes too, name the page
-    protocol and, unless `floor` is `None` (the live floor), a model config
-    with that witness floor; `options` adds others (for example
-    `witness_context="blinded"`).
+    protocol and the page-read roster (`page_models_config`) with witness floor
+    `floor` and each chair in `absent` absent; `options` adds others (for
+    example `witness_context="blinded"`).
     """
-    options = {"perlector_protocol_config": page_protocol_config(base / "config"), **options}
-    if floor is not None:
-        options["models_config"] = floor_models_config(base / "models", floor)
+    options = {
+        "perlector_protocol_config": page_protocol_config(base / "config"),
+        "models_config": page_models_config(base / "models", floor, absent),
+        **options,
+    }
     root = base / "runs"
     for program in programs_through("perlector"):
         result = run_stage(root, run_id, scenario, program, **options)

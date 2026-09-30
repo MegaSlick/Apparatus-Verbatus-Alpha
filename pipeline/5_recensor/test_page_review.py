@@ -1,11 +1,11 @@
 """The Recensor's page path: one review per unit a page-read run counts.
 
 The trees are the synthetic fixture's `happy`, `page-review` and `page-no-act`
-scenarios read with `reading_unit = "page"`. The fixture seals two page
-witnesses (Chandra and Churro; DAI is act-scoped), so the trees that should be
-accepted are sealed with a witness floor of 2, and the default floor of 3 is the
-shortfall case. The fixture has no record detector, so page accounting rule (i)
-does not apply on any page.
+scenarios read with `reading_unit = "page"`. The fixture seals three page
+witnesses (Chandra, DAI and Churro) on the page-read roster, against a floor
+of 3; a floor of 4 is the shortfall case. DAI reads the records of the
+fixture's record detector, so page accounting rule (i) is measured on every
+page.
 """
 
 from __future__ import annotations
@@ -76,29 +76,29 @@ class Tree:
         return json.loads(path.read_text("utf-8"))
 
 
-def _tree(base: Path, scenario: str, floor: int | None) -> Tree:
+def _tree(base: Path, scenario: str, floor: int = 3) -> Tree:
     root, options = build_page_tree(base, scenario, RUN_ID, floor=floor)
     return Tree(root, scenario, options)
 
 
 @pytest.fixture(scope="module")
 def happy(tmp_path_factory) -> Tree:
-    return _tree(tmp_path_factory.mktemp("happy"), "happy", floor=2)
+    return _tree(tmp_path_factory.mktemp("happy"), "happy")
 
 
 @pytest.fixture(scope="module")
 def review(tmp_path_factory) -> Tree:
-    return _tree(tmp_path_factory.mktemp("page-review"), "page-review", floor=2)
+    return _tree(tmp_path_factory.mktemp("page-review"), "page-review")
 
 
 @pytest.fixture(scope="module")
 def no_act(tmp_path_factory) -> Tree:
-    return _tree(tmp_path_factory.mktemp("page-no-act"), "page-no-act", floor=2)
+    return _tree(tmp_path_factory.mktemp("page-no-act"), "page-no-act")
 
 
 @pytest.fixture(scope="module")
 def under_floor(tmp_path_factory) -> Tree:
-    return _tree(tmp_path_factory.mktemp("floor"), "happy", floor=None)
+    return _tree(tmp_path_factory.mktemp("floor"), "happy", floor=4)
 
 
 def _forge(tree: Tree, kind: str, ordinal: int, change: Callable[[dict], None]) -> None:
@@ -172,9 +172,9 @@ def test_a_happy_page_tree_accepts_every_unit_with_its_evidence(happy, tmp_path)
         assert payload["notes"] == []
         coverage = payload["coverage"]
         assert (coverage["configured"], coverage["floor"], coverage["by_outcome"]) == (
-            2,
-            2,
-            {"read": 2},
+            3,
+            3,
+            {"read": 3},
         )
         assert coverage["under_witnessed"] is False
         assert payload["continuation"] == {
@@ -240,8 +240,10 @@ def test_the_page_review_scenario_holds_the_unplaced_entry_naming_every_reason(r
     assert held["unit_class"] == "reading-unplaced" and held["act_region_ref"] is not None
     assert held["hold_codes"] == [
         "reading-unplaced",
+        "record-not-read",
         "residual-ink",
         "truncation-not-classified",
+        "unaccounted-witness-unit",
         "unread-ink",
         "unread-line",
     ]
@@ -263,10 +265,10 @@ def test_a_page_under_the_witness_floor_holds_every_unit_on_it(under_floor, tmp_
     for review in tree.reviews().values():
         assert review["outcome"] == "held-for-review"
         assert review["payload"]["hold_codes"] == ["under-witnessed"]
-        assert "2 page witness(es) read page" in review["payload"]["reason"]
-        assert "against a floor of 3" in review["payload"]["reason"]
+        assert "3 page witness(es) read page" in review["payload"]["reason"]
+        assert "against a floor of 4" in review["payload"]["reason"]
     reasons = tree.receipt()["reasons"]
-    assert sum("under-witnessed (2 page reads of a floor of 3)" in r for r in reasons) == 3
+    assert sum("under-witnessed (3 page reads of a floor of 4)" in r for r in reasons) == 3
 
 
 def test_an_unread_page_is_one_held_unit_and_its_break_is_one_sided(happy, tmp_path):
@@ -350,19 +352,22 @@ def test_a_page_read_as_blank_with_ink_and_witness_text_is_not_confirmed(happy, 
     confirmation = payload["confirmation"]
     assert confirmation["confirms"] == "page-blank" and confirmation["confirmed"] is False
     assert "Surya detected 3 line(s) on the page" in confirmation["failures"]
-    assert {w["chair"] for w in confirmation["witnesses"]} == {"attestator_1", "attestator_3"}
+    chairs = {"attestator_1", "attestator_2", "attestator_3"}
+    assert {w["chair"] for w in confirmation["witnesses"]} == chairs
     assert all(
         f"witness {chair} read the page and its retained text is not blank"
         in confirmation["failures"]
-        for chair in ("attestator_1", "attestator_3")
+        for chair in chairs
     )
-    # No record detector: rule (i) does not apply to a blank page, and is no failure.
-    assert confirmation["rules"]["i"] == "not-applicable"
-    assert not any("rule (i)" in failure for failure in confirmation["failures"])
+    # DAI's record on the page was set aside, not read: rule (i) holds, a failure too.
+    assert confirmation["rules"]["i"] == "hold"
+    assert (
+        "page accounting rule (i) is hold, not not-applicable or pass" in confirmation["failures"]
+    )
     assert "the page is not confirmed to hold no act" in payload["reason"]
 
 
-def test_a_page_of_other_entries_is_held_unconfirmed_without_a_record_detector(no_act, tmp_path):
+def test_a_page_of_other_entries_dai_was_shown_nothing_on_is_held_unconfirmed(no_act, tmp_path):
     tree = no_act.copy(tmp_path)
     assert tree.recensor().returncode == 3
     reviews = tree.reviews()
@@ -373,12 +378,19 @@ def test_a_page_of_other_entries_is_held_unconfirmed_without_a_record_detector(n
     }
     payload = reviews["p2:1"]["payload"]
     assert (payload["unit_class"], payload["kind"]) == ("reading", "other")
-    assert payload["hold_codes"] == [page_review.NO_ACT_HOLD]
+    # The record detector found nothing on page 2, so DAI was shown nothing
+    # there: the page is under-witnessed and rule (e) holds its witness unread.
+    assert payload["hold_codes"] == [
+        page_review.NO_ACT_HOLD,
+        "under-witnessed",
+        "unresolved-witness",
+        "witness-not-read",
+    ]
     assert payload["release"] is None
     confirmation = payload["confirmation"]
     assert confirmation["confirms"] == "no-act-on-page" and confirmation["confirmed"] is False
-    assert confirmation["rules"]["i"] == "not-applicable"
-    assert confirmation["failures"] == ["page accounting rule (i) is not-applicable, not pass"]
+    assert confirmation["rules"] == {"d": "pass", "e": "hold", "f": "pass", "i": "pass"}
+    assert confirmation["failures"] == ["page accounting rule (e) is hold, not pass"]
     # The `other` entry's own continuation flag is a note, never a side of a break.
     assert payload["notes"] == [
         {"code": page_review.CONTINUATION_ON_OTHER, "flags": ["continues_from_previous_page"]}

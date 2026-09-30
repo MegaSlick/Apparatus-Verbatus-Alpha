@@ -46,6 +46,7 @@ from common.stage import (
     stage_parser,
 )
 from conftest import (
+    page_models_config,
     programs_through,
     rebind_stage_seal_artifact,
     rewitness_stage_boundary,
@@ -71,38 +72,43 @@ def _protocol(directory: Path, unit: str, lines: dict[str, str]) -> Path:
 
 def _tree(
     base: Path, scenario: str, unit: str = "page", lines: dict[str, str] | None = None
-) -> tuple[Path, Path, str]:
-    protocol = _protocol(base / "config", unit, lines or {})
+) -> tuple[Path, dict[str, Path], str]:
+    """A tree read by `unit`; a page-read one on the page-read roster."""
+    options = {"perlector_protocol_config": _protocol(base / "config", unit, lines or {})}
+    if unit == "page":
+        options["models_config"] = page_models_config(base / "models")
     root = base / "runs"
     for program in programs_through("perlector"):
-        result = run_stage(root, RUN_ID, scenario, program, perlector_protocol_config=protocol)
+        result = run_stage(root, RUN_ID, scenario, program, **options)
         assert result.returncode == 0, f"{program}: {result.stderr}"
-    return root, protocol, scenario
+    return root, options, scenario
 
 
 @pytest.fixture(scope="module")
-def happy_tree(tmp_path_factory) -> tuple[Path, Path, str]:
+def happy_tree(tmp_path_factory) -> tuple[Path, dict[str, Path], str]:
     return _tree(tmp_path_factory.mktemp("happy"), "happy")
 
 
 @pytest.fixture(scope="module")
-def review_tree(tmp_path_factory) -> tuple[Path, Path, str]:
+def review_tree(tmp_path_factory) -> tuple[Path, dict[str, Path], str]:
     return _tree(tmp_path_factory.mktemp("page-review"), "page-review")
 
 
 @pytest.fixture(scope="module")
-def act_tree(tmp_path_factory) -> tuple[Path, Path, str]:
+def act_tree(tmp_path_factory) -> tuple[Path, dict[str, Path], str]:
     return _tree(tmp_path_factory.mktemp("act"), "happy", unit="act")
 
 
-def _copy(tree: tuple[Path, Path, str], tmp_path: Path) -> tuple[Path, Path, str]:
-    root, protocol, scenario = tree
+def _copy(
+    tree: tuple[Path, dict[str, Path], str], tmp_path: Path
+) -> tuple[Path, dict[str, Path], str]:
+    root, options, scenario = tree
     shutil.copytree(root, tmp_path / "runs")
-    return tmp_path / "runs", protocol, scenario
+    return tmp_path / "runs", options, scenario
 
 
-def _context(tree: tuple[Path, Path, str]):
-    root, protocol, scenario = tree
+def _context(tree: tuple[Path, dict[str, Path], str]):
+    root, options, scenario = tree
     args = stage_parser("page-read denominator").parse_args(
         [
             "--run-root",
@@ -111,8 +117,11 @@ def _context(tree: tuple[Path, Path, str]):
             RUN_ID,
             "--scenario",
             scenario,
-            "--perlector-protocol-config",
-            str(protocol),
+            *(
+                item
+                for name, value in options.items()
+                for item in (f"--{name.replace('_', '-')}", str(value))
+            ),
         ]
     )
     return open_context(args, RECENSOR)
@@ -162,7 +171,7 @@ def _drop_act_records(root: Path, ordinal: int) -> None:
                 path.unlink()
 
 
-def _reaccount(tree: tuple[Path, Path, str], ordinal: int) -> list[str]:
+def _reaccount(tree: tuple[Path, dict[str, Path], str], ordinal: int) -> list[str]:
     """Measure page `ordinal`'s accounting again, as the denominator does, and carry it on.
 
     The page's act records take the new holds, as stage 4 would have written
@@ -300,7 +309,9 @@ def test_an_unplaced_entry_is_counted_and_held_by_the_recomputed_accounting(revi
     assert unplaced["region_ref"] is not None and unplaced["perlectio_ref"] is not None
     assert unplaced["hold_codes"] == [
         "reading-unplaced",
+        "record-not-read",
         "truncation-not-classified",
+        "unaccounted-witness-unit",
         "unread-ink",
         "unread-line",
     ]
@@ -331,7 +342,7 @@ def test_a_hidden_witness_is_measured_again_as_stage_4_measured_it(tmp_path):
     _path, feed = _one(root, "page-feed", 1)
     assert [row["witness_label"] for row in feed["payload"]["witnesses"]] == ["attestator_1"]
     _path, accounting = _one(root, "page-accounting", 1)
-    assert {unit["id"][0] for unit in accounting["payload"]["units"]} == {"A", "B"}
+    assert {unit["id"][0] for unit in accounting["payload"]["units"]} == {"A", "B", "C"}
     # The fixture's answer cites the hidden witness's ids, which this feed does not define.
     acts = reading_acts(_context(tree))
     assert {act["class"] for act in acts} == {"page-unread"}
@@ -470,7 +481,7 @@ def test_a_reading_with_no_stop_reason_is_held_whole_by_that_tail(happy_tree, tm
 # --- the page the Exemplar refused -------------------------------------------------
 
 
-def _refuse_page_two(tree: tuple[Path, Path, str]) -> str:
+def _refuse_page_two(tree: tuple[Path, dict[str, Path], str]) -> str:
     """Make page 2 one the Exemplar refused, with the not-run reading stage 4 writes for it."""
     root = tree[0]
     run = RunTree(root, RUN_ID)
