@@ -172,6 +172,12 @@ ACT_CLASSES: Final = frozenset({"proposal", "residual", "page-fallback", "page-r
 # entries with one union box still get two identities. `reading-unplaced` is an
 # entry that cites no boxed id: its box is `None`.
 READING_ACT_CLASSES: Final = frozenset({"reading", "reading-unplaced"})
+# The two classes the page-read denominator (`common.stage.reading_acts`) mints
+# for a page with no act entry, each over the page rectangle, as `page-fallback`
+# is: `page-unread` for a page whose reading is not a parsed, valid answer, and
+# `page-blank` for a parsed, valid answer that names no act. Each stands for the
+# page so it is never counted as zero acts; both are held.
+PAGE_READING_ROW_CLASSES: Final = frozenset({"page-unread", "page-blank"})
 _READING_BINDING_FIELDS: Final = frozenset({"page_reading", "n", "union_box_px"})
 
 
@@ -209,8 +215,11 @@ def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
         _identity(page, "pg", "act page")
         _reading_binding(bounds, act_class)
         return {"page_id": page, "class": act_class, "bounds": bounds}
-    if act_class not in ACT_CLASSES:
-        allowed = ", ".join(repr(name) for name in sorted(ACT_CLASSES | READING_ACT_CLASSES))
+    if act_class not in ACT_CLASSES | PAGE_READING_ROW_CLASSES:
+        allowed = ", ".join(
+            repr(name)
+            for name in sorted(ACT_CLASSES | READING_ACT_CLASSES | PAGE_READING_ROW_CLASSES)
+        )
         raise IdentityRefusal(f"act class must be one of {allowed}")
     _identity(page, "pg", "act page")
     _bounds(bounds, "act bounds")
