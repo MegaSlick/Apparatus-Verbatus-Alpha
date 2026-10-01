@@ -147,6 +147,24 @@ own pinned retry recipe belongs to that witness and gives the Recensor no extra 
 cannot reconsider itself indefinitely. Every attempt is recorded, and nothing may
 disappear inside one.
 
+**Operator review.** A run whose Recensor holds anything stops there, before anything
+is established or exported, in every mode and on the pod. A person then decides each
+held unit or page with `verbatus decide`. Each decision binds to the review it was made
+against and goes stale when that review changes. The decisions are:
+
+- an **override**, which sends the model's reading to export exactly as read, its own
+  holds included, labelled "released by operator" with who, when, why and the holds it
+  cleared;
+- an **exclusion**, which keeps a unit out of the delivered text but in the record,
+  citing the decision;
+- a **request to read a page again**, which is recorded and keeps the page held.
+
+A reading with no place on the page, unreadable doubt marks or no text cannot be
+overridden, because the export could not carry it. When more than 1 in 50 of a run's
+pages are held, the run has a systemic problem, not a few hard pages. It stops as any
+hold does and says so, and a person who advances it anyway carries that warning into
+the export and the notification.
+
 Roughly, with the branches drawn out:
 
 ```mermaid
