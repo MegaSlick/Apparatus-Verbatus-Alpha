@@ -266,20 +266,6 @@ def _page_rect(bounds) -> bool:
     )
 
 
-SURVEY_ABSENT = "act-visibility-survey-absent"
-
-
-REGISTRATION_ABSENT = "cross-capture-registration-absent"
-
-
-# A view spanning pages has no single grid; record absence, not measurement.
-SURVEY_SPANS_TWO_PAGES = "act-visibility-survey-spans-two-pages"
-
-
-# An absent instrument is recorded but does not become a measured shortfall.
-INSTRUMENT_ABSENT_CODES = frozenset({SURVEY_ABSENT, REGISTRATION_ABSENT, SURVEY_SPANS_TWO_PAGES})
-
-
 def _payload(record: dict, what: str) -> dict:
     """One record payload, refused unless it is an object."""
     payload = record.get("payload")

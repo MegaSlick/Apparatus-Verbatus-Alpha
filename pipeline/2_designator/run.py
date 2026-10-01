@@ -1811,22 +1811,6 @@ def _publish_conservation(
     return rows
 
 
-def _publish_conservation_and_secondary(
-    context,
-    ordinal: int,
-    page_record: dict,
-    analysis: dict,
-    claimed: list[dict],
-    secondary: None,
-    grouping_policy: dict,
-) -> tuple[list[dict], bool]:
-    """`_publish_conservation` in the call shape the Armarium's conservation tests use."""
-    if secondary is not None:
-        raise ContractError("the Designator runs no secondary pixel scan")
-    rows = _publish_conservation(context, ordinal, page_record, analysis, claimed, grouping_policy)
-    return rows, False
-
-
 def _conservation_reason(measurable: bool, aggregated: bool, component_count: int) -> str | None:
     """Explain an unmeasured or aggregated conservation record."""
     if not measurable:
