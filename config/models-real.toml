@@ -131,4 +131,4 @@ license_note = "Apache-2.0, read from the repository card 2026-08-20; accepted u
 
 [chairs.annotator]
 state = "absent"
-reason = "the ARCHITECTURE annotation-layer wording is owed before Spec 11 builds"
+reason = "no annotation layer is defined in ARCHITECTURE.md yet"

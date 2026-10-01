@@ -751,7 +751,7 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
 def _act_identity(value: Any, label: str) -> str:
     """Shape only: well-formed and specifically an act identity.
 
-    Gold consumes no Designator output, so it checks act identity by shape only
+    Gold consumes no Perlector act record, so it checks act identity by shape only
     and has no act authority to check existence against. Shared by every gold
     record that names an act so they all refuse the same shapes for the same reason.
     """
@@ -769,8 +769,8 @@ def bind_instrument(
 
     `act_identity` is checked for shape only: well-formed and specifically
     `act_`-prefixed, per `common/contracts/identities.py`. Gold consumes no
-    Designator output, so it cannot verify the act against a proposal's
-    bindings, and a well-formed but never-derived act id will pass. Pass
+    Perlector act record, so it cannot verify the act against the page reading
+    that named it, and a well-formed but never-derived act id will pass. Pass
     `run_path` to additionally re-check the
     bound sample's frame and page against the R0 run authority; it does not and
     cannot reach act existence.
@@ -1349,8 +1349,8 @@ def validate_corpus(
     one act two custody chains and two established readings. Every stored
     transcription must terminate in an adjudication, and every record using one
     shaped act identity must resolve to the same ordinal/digest page. The latter
-    is only an internal contradiction check: without a Designator authority R7a
-    cannot prove that the first page named is the act's true page.
+    is only an internal contradiction check: gold consumes no Perlector act
+    record, so it cannot prove that the first page named is the act's true page.
 
     Page-level facts have the same collection boundary. One page has one sample
     record per selection method and one layout/padding fact set; manual and seeded
@@ -1358,7 +1358,7 @@ def validate_corpus(
     order nor a missing legacy draw may turn two conflicting records into one fact.
 
     This proves consistency and closure among records present, not act coverage
-    over a sampled page. R7a has no authority enumerating the acts that ought to
+    over a sampled page. Gold consumes no record enumerating the acts that ought to
     exist, so deletion of an entire act chain leaves no local fact to contradict.
     The retained draw is the narrower exception: it enumerates seeded pages, so
     their disappearance is detectable below.
@@ -1550,8 +1550,8 @@ def validate_corpus(
     def reconcile_act_page(record: dict[str, Any], label: str) -> None:
         """Hold one shaped act id to one page everywhere this corpus uses it.
 
-        R7a has no Designator authority from which to rederive an act identity, so
-        this cannot prove that the first page named is the true one. It can and must
+        Gold consumes no Perlector act record from which to rederive an act
+        identity, so this cannot prove that the first page named is the true one. It can and must
         refuse a corpus that contradicts itself by placing that same identity on a
         second page. Page identity includes ordinal as well as bytes: duplicate scans
         at two ordinals are distinct pages under the sampler and under act derivation.

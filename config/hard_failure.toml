@@ -3,108 +3,47 @@
 # one bounds how many accounted hard failures ONE RUN may carry before it needs
 # the project lead rather than another automatic stage invocation.
 #
-# The ruling behind this threshold (quoted so a later reader does not have to
-# go looking): "2 hard failures continues till the next checkpoint (if errors
-# happened in chandra stage it finishes that section but pauses) and this is
-# per run... if we have more then 2 failures within a 1000 page run that to me
-# is a failure that needs fixing." One is a fluke, two is an early warning,
-# more than two stops the run at the next stage boundary -- the section already
-# in flight finishes; nothing already running is torn down mid-stage.
-#
 # `threshold` is the count a run may reach without halting; the cap trips at
-# threshold + 1. This is the ruled value, not a tunable ceiling: two continues
-# as an early warning and the third stops.
+# threshold + 1. One hard failure is a fluke and two an early warning; the third
+# stops the run at the next stage boundary. The stage already in flight
+# finishes, and nothing running is torn down mid-stage.
 threshold = 2
 
-# APPROVED. The closed list below is what counts as a "hard failure" for this
-# cap. It was proposed by this build and confirmed in the same terms it was
-# first ruled -- one is a fluke, two is a pattern, more than two in a thousand
-# pages needs looking at before more resources are spent -- and the taxonomy
-# is not being reopened further, having been answered twice already. The
-# list stands as written.
+# The closed list of what counts as a hard failure. A hard failure is a corrupt
+# or unrenderable image, or a page so damaged it must be run again: a signal that
+# the run itself is going wrong. A blank page is not one, and neither is a hard
+# page that a bounded retry or review already handles, so ordinary document
+# variance never trips the cap.
 #
-# What follows is the argument that produced it, kept because a closed list whose
-# reasoning is lost cannot be amended safely later.
+# `(perlector, failed)`: a page whose engine call failed (transport failure,
+# endpoint unavailable, an engine refusal or an unrecognised stop), published as
+# a `page-reading` with outcome `failed` and parse state `call-failed`, its page
+# held as `page-unread`. A failed re-ask call is also a `failed` `page-reading`
+# and counts, since a failing engine is the same trouble on either call; its page
+# stands on its first reading, held as `reask-unread`. A truncated reading does
+# not count: the entry is held, never delivered, but a long entry truncating is
+# ordinary in parish registers, not a broken run. A capacity refusal does not
+# count either: it is a page too large for the sealed row.
 #
-# SHARPENED AGAINST THE OLD PIPELINE'S OWN MEASURED DEFINITION (window pass).
-# The old repository's `page_health.py`
-# recorded this ruling verbatim: a hard failure is "a corrupt or
-# unrenderable image, or a page so damaged it must be re-run" -- and named two
-# things a hard failure explicitly is NOT: "a blank page is NOT a hard failure,
-# and neither is a tough page the [recovery] ladder is built to rescue." Its
-# three HARD classes were render-unreadable, an unparseable terminal result,
-# and an exception escaping the read path -- all code/infrastructure signals.
-# Its SOFT classes -- read-failed-after-every-retry ("a tough page") and
-# truncated ("a dense page, not a damaged one") -- were structurally barred
-# from the cap. Independently, this matches the general circuit-breaker
-# literature: a systemic-breakage gate should trip on infrastructure signals,
-# never on ordinary per-item content variance a bounded retry already handles.
+# `(door, refused)` with reason `corrupt` or `unreadable`: real bytes that fail
+# structural decode, or a PDF or TIFF page that fails to render, refused page by
+# page in `pipeline/1_exemplar/door.py`. The Door's other refusal reasons do not
+# count: `empty` and `too-large` are policy bounds, `unrecognized-format` is a
+# file that should never have been submitted, `unsupported-variant` is a decoder
+# gap, and `digest-mismatch` is a copy whose bytes changed after their digest
+# was declared: the submission is sent again, not the page run again.
 #
-# `(perlector, truncated)` is REMOVED for exactly this reason. ARCHITECTURE's
-# "truncation is a failure, not an output" is true and is honoured -- a
-# truncated entry of a page reading is held, never delivered -- but that is a
-# question about ONE reading, not about whether the RUN is going wrong. A page
-# with an unusually long entry (a marriage record with many witnesses, a
-# lengthy marginal note) will truncate routinely in real parish
-# registers; folding that into a 2-failure early-warning cap would trip it on
-# ordinary document variance and defeat the cap's purpose. `(perlector, failed)`
-# is KEPT, and on the page path it means the old pipeline's "exception escaping
-# the read path": a page whose engine call failed (transport failure, endpoint
-# unavailable, an engine refusal or an unrecognised stop) is published as a
-# `page-reading` with outcome `failed` and parse state `call-failed`, its page
-# held for review as `page-unread`. A failed re-ask call is also a `failed`
-# `page-reading` and counts toward the cap, since a failing engine is the same
-# run trouble on either call; its page is not `page-unread` but stands on its
-# first reading, held under `reask-unread`. A capacity refusal is not counted:
-# like a truncation, it is a page too large for the sealed row, not a broken run.
+# `(exemplar, refused)` does not count: the Exemplar refuses a page only by
+# passing on the Door's refusal of it, so counting it would count that page twice.
 #
-# `(door, refused, reason="corrupt")` and `(door, refused, reason="unreadable")`
-# are ADDED. `pipeline/1_exemplar/admission.py`'s closed `RefusalReason`
-# vocabulary already separates exactly the old pipeline's hard/soft split by
-# name: `corrupt` and `unreadable` are raised only when real bytes fail
-# structural decode or a PDF/TIFF page fails to render inside `door.py`'s
-# per-page `container_page_index` path -- this is
-# "a corrupt or unrenderable image" almost verbatim, at the same per-page
-# granularity the old pipeline measured 218 silent losses at. The other five
-# reasons are deliberately NOT added: `empty`/`too-large` are policy bounds,
-# not document damage; `unrecognized-format` is routine bulk-upload noise (a
-# non-image file that should never have been submitted); `unsupported-variant`
-# is a decoder GAP ("visible work for the pipeline", per admission.py's own
-# docstring), not a broken document. This is also the reasoning the previous
-# pass's blanket exclusion of every `(door, refused)` was reaching for --
-# reading its own citation of "ruling 2" against `pipeline/1_exemplar/
-# image_formats.py` and `door.py` finds that ruling is the corrupt-vs-
-# unsupported CLASSIFICATION rule (spec 03), not a ruling about what the
-# run-level cap should count; the "would stop every real corpus within
-# minutes" concern is real for the whole unqualified set but this reason-scoped
-# pair is precisely the subset that should NOT be excused by it. Whether
-# `(door, refused, reason="digest-mismatch")` belongs here too is a closer
-# call -- it is an integrity signal, not literally "corrupt or unrenderable" --
-# and is left to the project lead rather than decided here.
+# `(recensor, held-for-review)` does not count: holding for a person is the
+# system working. Witness outcomes do not count either: no witness outcome ends
+# an act on its own, a coverage shortfall already marks the run `partial`, and
+# one dead chair is a different question from a broken reading pipeline.
 #
-# `(exemplar, refused)` stays excluded. In the current architecture Exemplar's
-# own page-refusal is only ever a pass-through of the Door's refusal for the
-# same page (`pipeline/1_exemplar/run.py`'s `outcome="refused"` branch copies
-# the admission it read) -- there is no independent Exemplar-side render
-# failure today, so counting it would double-count exactly the `(door,
-# refused, reason=...)` incidents above.
-#
-# (recensor, held-for-review) is UNRESOLVED, not FAILED, and is the ordinary,
-# expected shape of a run that is working correctly -- holding for a human is the
-# system succeeding at its job, not failing at it. Witness (attestatores)
-# outcomes are deliberately left out even though `failed`/`dead` classify FAILED:
-# no witness outcome ever terminates an act on its own (the transition table
-# maps every one of them to `None`), coverage shortfall already forces the run
-# `partial` and visible, and folding witness noise into this same cap would
-# conflate "one dead chair" with "the reading pipeline is broken", which is a
-# different question. Propose adding them later if repeated witness death
-# turns out to be a real early-warning signal in alpha.
-#
-# (designator, failed) and (archetypus, refused) are named even though neither
-# stage emits them today (the Designator emits only `proposed`, the
-# Archetypus only `established`) -- the outcome algebra already reserves both as
-# FAILED-classified members of their stage's closed vocabulary, and this policy
-# is ready for the day a stage actually uses them without needing a second edit.
+# `(designator, failed)` and `(archetypus, refused)` are failure members of
+# their stages' closed outcome vocabularies that no stage emits yet; they are
+# listed so the cap counts them the day a stage does.
 
 [[kind]]
 stage = "perlector"

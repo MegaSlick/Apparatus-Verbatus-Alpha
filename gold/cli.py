@@ -1,4 +1,4 @@
-"""Create and validate append-only R7a gold records."""
+"""Create and validate append-only human gold records."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from .core import (
     write_append_only,
 )
 
-DESCRIPTION = "Create and validate append-only R7a gold records."
+DESCRIPTION = "Create and validate append-only human gold records."
 # Records that name their sample by digest; only a corpus resolves them to a page.
 _DIGEST_BOUND_SCHEMAS = frozenset({TRANSCRIPTION_SCHEMA, ADJUDICATION_SCHEMA, MEASUREMENT_SCHEMA})
 

@@ -227,10 +227,9 @@ license_note = "fixture identity only; no model weights or model license apply"
 # serving_recipe = "<serving-recipe>"
 # license_note = "Apache-2.0, read from the repository card 2026-08-20; accepted under the research track (2026-08-20)"
 #
-# The ledger item spec 02 carries: the ARCHITECTURE annotation-layer wording is
-# owed before Spec 11 builds, so the annotator role is listed and stays commented
-# out with the rest of the roster until that lands.
+# No annotation layer is defined in ARCHITECTURE.md yet, so the annotator role is
+# listed and stays commented out with the rest of the roster until one is.
 #
 # [chairs.annotator]
 # state = "absent"
-# reason = "the ARCHITECTURE annotation-layer wording is owed before Spec 11 builds"
+# reason = "no annotation layer is defined in ARCHITECTURE.md yet"

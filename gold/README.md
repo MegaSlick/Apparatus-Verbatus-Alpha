@@ -67,11 +67,11 @@ carrying a sample digest, an R0 act identity, and a protocol digest.
 
 Every act identity in this module — instrument membership, transcription, and
 adjudication — is checked for shape only (well-formed and `act_`-prefixed): gold
-consumes no Designator output, so it cannot check that the act actually exists or
+consumes no Perlector act record, so it cannot check that the act actually exists or
 rederive its page binding. Collection validation can prove
 the narrower fact available here: every use of one act identity resolves through
 its sample to the same `{ordinal, sha256}` page. It cannot prove that the first such
-page is the page a later Designator authority would bind.
+page is the page the Perlector's page reading binds the act to.
 
 ## The adjudication flow
 
@@ -220,8 +220,8 @@ different act identities; they remain two pages and may each carry one establish
 reading.
 
 `validate-corpus` proves consistency and closure among the records it can see; it
-does **not** prove act coverage over each sampled page. R7a has no Designator
-authority or other inventory enumerating which acts ought to exist, so removing an
+does **not** prove act coverage over each sampled page. Gold consumes no Perlector
+act record or other inventory enumerating which acts ought to exist, so removing an
 entire act chain leaves no local record to contradict. The retained draw is the
 narrow exception because it enumerates seeded pages, and a surviving transcription
 is another because it requires its adjudication. A successful collection check must

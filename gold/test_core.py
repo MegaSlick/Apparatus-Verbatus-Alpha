@@ -1,4 +1,4 @@
-"""Attack the R7a gold-record custody boundaries through real JSON records."""
+"""Attack the gold-record custody boundaries through real JSON records."""
 
 from __future__ import annotations
 
