@@ -24,29 +24,9 @@ ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
 def _run(
-    tmp_path: Path, *, scenario: str = "page-unbroken", expected_exit: int = 0
+    orchestrated_run, tmp_path: Path, *, scenario: str = "page-unbroken", expected_exit: int = 0
 ) -> tuple[Path, str]:
-    root = tmp_path / "runs"
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(ORCHESTRATOR),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            scenario,
-            "--run-id",
-            "staged",
-            "--run-root",
-            str(root),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert completed.returncode == expected_exit, completed.stderr
-    return root, "staged"
+    return orchestrated_run(tmp_path / "runs", "staged", scenario, expected_exit), "staged"
 
 
 @pytest.mark.parametrize(
@@ -78,8 +58,10 @@ def test_semi_mode_refuses_an_intermediate_boundary_that_cannot_hold() -> None:
         )
 
 
-def test_review_run_seals_attestatores_before_the_terminal_hold(tmp_path: Path) -> None:
-    root, run_id = _run(tmp_path, scenario="page-review", expected_exit=3)
+def test_review_run_seals_attestatores_before_the_terminal_hold(
+    orchestrated_run, tmp_path: Path
+) -> None:
+    root, run_id = _run(orchestrated_run, tmp_path, scenario="page-review", expected_exit=3)
     tree = RunTree(root, run_id)
     assert any(
         entry["kind"] == "stage-seal" for entry in tree.build_manifest("attestatores")["artifacts"]
@@ -205,11 +187,11 @@ def test_a_range_endpoint_with_no_boundary_names_the_boundaries_that_do() -> Non
 
 
 def test_auto_mode_shows_boundary_state_then_refuses_an_advance_record(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    orchestrated_run, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Designator cannot hold in auto mode, unlike Attestatores and Armarium."""
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
 
     with pytest.raises(OperatorError) as refusal:
         cli._advance_with_confirmation(
@@ -229,9 +211,12 @@ def test_auto_mode_shows_boundary_state_then_refuses_an_advance_record(
 
 @requires_host_boundary
 def test_semi_mode_confirmation_binds_the_displayed_last_boundary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    orchestrated_run,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
 
     cli._advance_with_confirmation(
@@ -257,9 +242,12 @@ def test_semi_mode_confirmation_binds_the_displayed_last_boundary(
 
 @requires_host_boundary
 def test_manual_mode_confirmation_binds_the_named_boundary_end_to_end(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    orchestrated_run,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
 
     cli._advance_with_confirmation(
@@ -280,12 +268,12 @@ def test_manual_mode_confirmation_binds_the_named_boundary_end_to_end(
 
 @requires_host_boundary
 def test_a_supplied_surface_records_the_advance_for_status(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    orchestrated_run, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Passing `surface` wires the advance into status; omitting it costs nothing."""
     from .surface import OperatorSurface
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
     surface = OperatorSurface(ROOT, tmp_path / "operator-state", present=lambda _line="": None)
 
@@ -306,9 +294,9 @@ def test_a_supplied_surface_records_the_advance_for_status(
 
 
 def test_semi_mode_refuses_an_intermediate_boundary_end_to_end(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    orchestrated_run, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
     receipts = RunTree(run_root, run_id).root / "receipts" / "sha256"
     before = set(receipts.glob("*.json"))
@@ -333,11 +321,11 @@ def test_semi_mode_refuses_an_intermediate_boundary_end_to_end(
 
 
 def test_a_boundary_resealed_between_presentation_and_confirmation_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    orchestrated_run, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The typed digest binds the shown seal even if it changes during the prompt."""
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     receipts = tree.root / "receipts" / "sha256"
     before = set(receipts.glob("*.json"))
@@ -389,11 +377,11 @@ def test_a_boundary_resealed_between_presentation_and_confirmation_is_refused(
 
 @requires_host_boundary
 def test_typed_grant_binds_the_exact_reason_written_to_the_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    orchestrated_run, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The worker may not record decision text the operator never confirmed."""
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     reason = 'reviewed "census"\nwith the page image'
     shown: list[str] = []
 
@@ -421,11 +409,11 @@ def test_typed_grant_binds_the_exact_reason_written_to_the_receipt(
 
 
 def test_auto_mode_never_solicits_a_typed_confirmation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    orchestrated_run, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An ineligible auto boundary must refuse before asking for a decision."""
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     solicited: list[str] = []
 
     def record_then_fail(phrase: str) -> str:
@@ -450,11 +438,14 @@ def test_auto_mode_never_solicits_a_typed_confirmation(
 
 @requires_host_boundary
 def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    orchestrated_run,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Auto may advance Attestatores because its sealed hold precedes mode handling."""
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
 
     cli._advance_with_confirmation(
@@ -479,11 +470,14 @@ def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
 
 @requires_host_boundary
 def test_auto_mode_can_advance_the_armarium_boundary_that_may_hold_in_every_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    orchestrated_run,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Auto may advance Armarium: its terminal report can hold without consulting mode."""
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
 
     cli._advance_with_confirmation(
@@ -504,11 +498,11 @@ def test_auto_mode_can_advance_the_armarium_boundary_that_may_hold_in_every_mode
 
 
 def test_an_unvalidated_mode_selection_states_no_boundary_before_it_refuses(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    orchestrated_run, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """An invalid semi range must not be presented as an established boundary claim."""
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
 
     with pytest.raises(OperatorError) as refusal:
         cli._advance_with_confirmation(
@@ -535,7 +529,7 @@ def test_an_unvalidated_mode_selection_states_no_boundary_before_it_refuses(
     "missing", ["census", "config_digest", "artifact_inventory", "blob_inventory"]
 )
 def test_a_seal_payload_missing_a_displayed_key_is_a_named_refusal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
+    orchestrated_run, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
 ) -> None:
     """Damaged evidence this tool can name must not arrive as an unclassified fault.
 
@@ -554,7 +548,7 @@ def test_a_seal_payload_missing_a_displayed_key_is_a_named_refusal(
     a payload, which is what its caller depends on.
     """
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     seal, digest = advance.stored_boundary(tree, "designator")
     damaged = {**seal, "payload": {k: v for k, v in seal["payload"].items() if k != missing}}
@@ -565,11 +559,14 @@ def test_a_seal_payload_missing_a_displayed_key_is_a_named_refusal(
 
 
 def test_unreadable_boundary_evidence_is_refused_not_reported_as_unsealed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    orchestrated_run,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A damaged seal is evidence of damage, not evidence that no seal exists."""
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     seal, _ = advance.sealed_boundary(tree, "designator")
     tree.resolve(tree.artifact_path("designator", "stage-seal", seal["artifact_id"])).write_text(
@@ -598,11 +595,14 @@ def test_unreadable_boundary_evidence_is_refused_not_reported_as_unsealed(
 
 
 def test_missing_earlier_seal_in_a_later_sealed_chain_is_refused_as_lost_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    orchestrated_run,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A deleted seal in a completed chain is not an ordinary unstarted stage."""
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     seal, _ = advance.sealed_boundary(tree, "designator")
     tree.resolve(tree.artifact_path("designator", "stage-seal", seal["artifact_id"])).unlink()
@@ -631,11 +631,14 @@ def test_missing_earlier_seal_in_a_later_sealed_chain_is_refused_as_lost_evidenc
 
 @requires_host_boundary
 def test_the_advance_presentation_never_phrases_a_recommendation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    orchestrated_run,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The console may project facts but must never recommend a boundary."""
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
 
     cli._advance_with_confirmation(
@@ -739,7 +742,10 @@ def test_a_range_given_to_a_rangeless_mode_is_refused_not_ignored(mode: str, exp
 
 @requires_host_boundary
 def test_the_declared_mode_is_presented_as_a_declaration_not_a_read_fact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    orchestrated_run,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """`--mode` is unverifiable, and the surface has to say so.
 
@@ -747,7 +753,7 @@ def test_the_declared_mode_is_presented_as_a_declaration_not_a_read_fact(
     must remain distinct from seal facts read from the tree.
     """
 
-    run_root, run_id = _run(tmp_path)
+    run_root, run_id = _run(orchestrated_run, tmp_path)
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
 
     cli._advance_with_confirmation(

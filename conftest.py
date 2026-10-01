@@ -362,6 +362,29 @@ def rewitness_boundary():
     return rewitness_stage_boundary
 
 
+@pytest.fixture(scope="session")
+def orchestrated_run(tmp_path_factory):
+    """`copy(destination, run_id, scenario, expected_exit=0)` lays a fixture orchestrator run
+    at `destination`, running the orchestrator once per run id and scenario per session.
+
+    The run tree holds no wall-clock time and no path of its own, so a copy is the tree a
+    fresh run there would write (pipeline/orchestrator/test_orchestrated_run_copy.py holds
+    that); each caller gets its own copy to change.
+    """
+    built: dict[tuple[str, str], tuple[Path, subprocess.CompletedProcess[str]]] = {}
+
+    def copy(destination: Path, run_id: str, scenario: str, expected_exit: int = 0) -> Path:
+        if (run_id, scenario) not in built:
+            root = tmp_path_factory.mktemp("orchestrated") / "runs"
+            built[run_id, scenario] = root, run_orchestrator(root, run_id, scenario)
+        root, result = built[run_id, scenario]
+        assert result.returncode == expected_exit, result.stderr
+        shutil.copytree(root, destination, symlinks=True)
+        return destination
+
+    return copy
+
+
 @pytest.fixture
 def empty_triage_manifest(tmp_path: Path) -> Path:
     """An empty but valid Door decision manifest for malformed-input cases."""
