@@ -1,10 +1,10 @@
-"""Ink map: measure every sealed page before the Designator proposes acts.
+"""Ink map: measure every sealed page before any page is read.
 
 One ``ink-map`` record is written for every sealed Exemplar page, including a
-page on which this measure finds no ink; proposals do not exist yet. The record
-is bounded evidence: ``unclaimed-edge-ink`` names an edge signal without holding
-anything; the Armarium decides the hold by re-measuring the retained runs
-against the Designator's verified crops.
+page on which this measure finds no ink. The record is bounded evidence:
+``unclaimed-edge-ink`` names an edge signal without holding anything; the
+Armarium decides the hold by re-measuring the retained runs against the
+reading's claimed regions.
 
 This stage infers each page's paper value through
 ``common.background``, the same inference and the same sealed ``[background]``
@@ -16,9 +16,7 @@ all. A page is published as ``ink-not-measurable`` -- present in the census,
 with its refusal named and no counts -- rather than as a page that measured
 clean, for either of two reasons: the shared inference refuses its paper, or
 the paper it infers is too dark for this audit's own contrast
-(``MINIMUM_CONTRAST_BELOW_BACKGROUND``) to leave any level to count as ink. The
-second happens on pages the Designator measures, since its own floor margin is
-smaller.
+(``MINIMUM_CONTRAST_BELOW_BACKGROUND``) to leave any level to count as ink.
 """
 
 import sys
@@ -52,7 +50,7 @@ from common.stage import (  # noqa: E402
     stage_parser,
 )
 
-DESCRIPTION = "Ink map: measure every sealed page before the Designator proposes acts."
+DESCRIPTION = "Ink map: measure every sealed page before any page is read."
 
 
 def sealed_pages(context):
