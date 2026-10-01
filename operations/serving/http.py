@@ -180,17 +180,15 @@ class UrllibHttpTransport:
 class OpenAIResult:
     """A structurally parsed OpenAI-compatible answer.
 
-    ``finish_reasons`` and ``usage`` default so every existing caller and
-    ``outputs_sha256`` keep working unchanged; both parsers below populate
-    them from the wire, verbatim, never defaulting an absent value to
-    anything but ``None``.
+    Both parsers below fill ``finish_reasons`` and ``usage`` verbatim from the
+    wire, recording an absent value as ``None``.
     """
 
     model_id: str
     outputs: tuple[str, ...]
     response_sha256: str
-    finish_reasons: tuple[str | None, ...] = ()
-    usage: Mapping[str, object] | None = None
+    finish_reasons: tuple[str | None, ...]
+    usage: Mapping[str, object] | None
 
 
 def models_url(endpoint: str) -> str:

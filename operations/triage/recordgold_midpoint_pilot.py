@@ -47,21 +47,51 @@ def main(argv: list[str] | None = None) -> int:
         help="existing empty sibling folder for deterministic split PNGs",
     )
     args = parser.parse_args(argv)
+
+    created: list[Path] = []
+
+    def write(path: Path, data: bytes) -> None:
+        # A failed write removes every file this run created, so the
+        # directories are as they were and the command can be rerun.
+        try:
+            atomic_create(path, data)
+        except OSError as error:
+            left = []
+            for done in reversed(created):
+                try:
+                    done.unlink()
+                except OSError:
+                    left.append(str(done))
+            detail = f"; could not remove {', '.join(left)}" if left else ""
+            parser.error(f"could not write {path}: {error}{detail}")
+        created.append(path)
+
     if not args.output_dir.is_dir():
         parser.error("--output-dir must already exist")
     if len({identifier for identifier, _rotation in args.page}) != len(args.page):
         parser.error("each --page id may appear once")
+    manifest_output = args.output_dir / "triage-decision-manifest.json"
+    binding_output = args.output_dir / "scantailor-triage-binding.json"
+    if args.geometry_document is not None:
+        if manifest_output.exists() or binding_output.exists():
+            parser.error("--output-dir already holds a triage manifest or binding")
+        if args.prepared_source_dir is not None:
+            if not args.prepared_source_dir.is_dir() or any(args.prepared_source_dir.iterdir()):
+                parser.error("--prepared-source-dir must be an existing empty directory")
+            stems = [
+                Path(f"pages/{identifier}.jpg").stem.casefold()
+                for identifier, _rotation in args.page
+            ]
+            if len(set(stems)) != len(stems):
+                # Prepared pages are named by the page's file stem alone.
+                parser.error("two --page ids share a file name, so their prepared pages collide")
     frames: dict[str, producer.SubmittedFrame] = {}
     prescribed: list[PrescribedSpread] = []
     orientations: dict[str, int] = {}
     for identifier, degrees in args.page:
         relative = f"pages/{identifier}.jpg"
         source = args.source_root / relative
-        # Resolved and contained *before* the read, not after. A page
-        # identifier carrying separators or `..` otherwise makes this tool read
-        # an unrelated local file, and the containment check that exists
-        # further down only rejects the escaped path once its bytes are already
-        # in hand.
+        # Contained before the read, so an identifier with `..` cannot read an unrelated file.
         root = args.source_root.resolve()
         if not source.resolve().is_relative_to(root):
             parser.error(f"page identifier {identifier!r} leaves --source-root")
@@ -71,6 +101,10 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, producer.ProducerRefusal) as error:
             parser.error(f"could not read the submitted master {source}: {error}")
         source_path = str(source.resolve())
+        if source_path in frames:
+            parser.error(
+                f"page identifier {identifier!r} names a source another --page already names"
+            )
         frames[source_path] = producer.SubmittedFrame(relative, data)
         prescribed.append(PrescribedSpread(relative, width, height))
         orientations[source_path] = degrees
@@ -96,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
             PrescribedSpread(str(relative_prefix / source.source_path), source.width, source.height)
             for source in prescribed
         ]
-        atomic_create(project, prescribed_midpoint_project(project_sources))
+        write(project, prescribed_midpoint_project(project_sources))
         print(project)
         return 0
     translated = transcribe_imported_geometry(
@@ -114,8 +148,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     materialized: list[dict[str, object]] = []
     if args.prepared_source_dir is not None:
-        if not args.prepared_source_dir.is_dir() or any(args.prepared_source_dir.iterdir()):
-            parser.error("--prepared-source-dir must be an existing empty directory")
+        # Every page is rendered before any is written, so a refusal leaves the
+        # directory empty and the command can be rerun.
+        rendered: list[tuple[str, bytes]] = []
         for source_path, frame in frames.items():
             row = translated.rows_by_submitted_path[frame.path]
             stem = Path(frame.path).stem
@@ -125,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
                 except ValueError as error:
                     parser.error(f"could not materialize {frame.path} part {part_index}: {error}")
                 output_name = f"{stem}-{'left' if part_index == 0 else 'right'}.png"
-                atomic_create(args.prepared_source_dir / output_name, pixels)
+                rendered.append((output_name, pixels))
                 materialized.append(
                     {
                         "prepared_relative_path": output_name,
@@ -138,14 +173,12 @@ def main(argv: list[str] | None = None) -> int:
                         "triage_part_index": part_index,
                     }
                 )
+        for output_name, pixels in rendered:
+            write(args.prepared_source_dir / output_name, pixels)
         translated.binding["materialized_pages"] = materialized
-    atomic_create(
-        args.output_dir / "scantailor-triage-binding.json", canonical_bytes(translated.binding)
-    )
-    atomic_create(
-        args.output_dir / "triage-decision-manifest.json", canonical_bytes(admitted.manifest)
-    )
-    print(args.output_dir / "triage-decision-manifest.json")
+    write(binding_output, canonical_bytes(translated.binding))
+    write(manifest_output, canonical_bytes(admitted.manifest))
+    print(manifest_output)
     return 0
 
 

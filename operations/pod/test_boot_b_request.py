@@ -1,11 +1,9 @@
 """Boot B renders, and the shape it renders is one the money path accepts.
 
 The first half of this module is the ordinary rendering contract. The second
-half is the regression a pre-launch review found by composing a ``pod_run``
-``docker_start_cmd`` by hand: nothing in the tree had ever built one, so the
-create gate's "at most one nested --report-path" rule -- which a ``pod_run``
-argv necessarily breaks, because each of its two halves requires its own --
-made the first real pipeline run unconstructible with a green suite over it.
+half composes a real ``pod_run`` ``docker_start_cmd`` and pins that the create
+gate accepts one nested ``--report-path`` per half of it, since each of its two
+halves requires its own.
 """
 
 from __future__ import annotations

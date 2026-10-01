@@ -23,6 +23,12 @@ def _page_reading(ordinal: int) -> dict:
             "relative_path": f"4_perlector/artifacts/page-reading/p{ordinal}.json",
             "sha256": DIGEST,
         },
+        "reask_ref": None,
+        "accounting_ref": {
+            "relative_path": f"4_perlector/artifacts/page-accounting/p{ordinal}.json",
+            "sha256": DIGEST,
+        },
+        "reask": None,
     }
 
 
@@ -30,7 +36,7 @@ def _build(items: list[dict], pages: tuple[int, ...] = (1,)):
     return build_recensor_reading_receipt(
         run_id="r",
         config_digest="a" * 64,
-        page_reading_refs=[_page_reading(ordinal) for ordinal in pages],
+        pages=[_page_reading(ordinal) for ordinal in pages],
         items=items,
     )
 

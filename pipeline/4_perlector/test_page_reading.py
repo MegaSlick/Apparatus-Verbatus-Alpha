@@ -58,6 +58,7 @@ from conftest import (
     floor_models_config,
     load_stage,
     programs_through,
+    reask_recovery_config,
     rewitness_stage_boundary,
 )
 from operations.serving.assembly import SERVING_READER
@@ -347,13 +348,21 @@ def test_a_perlectio_carries_clean_text_doubt_dissent_truncation_and_autopsia(pa
 
 def test_an_entry_citing_no_boxed_id_is_held_unplaced_with_no_crop(review_page_tree):
     root, _protocol = review_page_tree
-    [region] = [r for r in _records(root, "act-region") if r["payload"]["page_ordinal"] == 2]
+    [region] = [
+        r
+        for r in _records(root, "act-region")
+        if r["payload"]["page_ordinal"] == 2 and "reading_attempt" not in r["payload"]
+    ]
     payload = region["payload"]
     assert region["outcome"] == "held"
     assert payload["union_box_px"] is None and payload["act_class"] == "reading-unplaced"
     assert payload["holds"] == ["reading-unplaced"]
     assert (payload["region_id"], payload["image_path"], payload["transform"]) == (None,) * 3
-    [reading] = [r for r in _records(root, "perlectio") if r["payload"]["page_ordinal"] == 2]
+    [reading] = [
+        r
+        for r in _records(root, "perlectio")
+        if r["payload"]["page_ordinal"] == 2 and "reading_attempt" not in r["payload"]
+    ]
     assert reading["outcome"] == "held" and reading["payload"]["truncation"] is None
     assert reading["payload"]["continues_from_previous_page"] is True
 
@@ -390,9 +399,10 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, r
         # Every DAI record lies inside exactly one act region.
         assert payload["rules"]["i"]["status"] == "pass"
     root, _protocol = review_page_tree
-    accounts = {r["payload"]["page_ordinal"]: r for r in _records(root, "page-accounting")}
-    assert accounts[1]["payload"]["holds"] == []
-    assert accounts[2]["payload"]["holds"] == [
+    [page_one] = _accountings(root, 1)
+    first, last = _accountings(root, 2)
+    assert page_one["payload"]["holds"] == []
+    assert first["payload"]["holds"] == [
         "reading-unplaced",
         "record-not-read",
         "truncation-not-classified",
@@ -400,6 +410,16 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, r
         "unread-ink",
         "unread-line",
     ]
+    # Re-asked about DAI's record and Surya's lines, the reader reads the a2 it
+    # already read: the ids are accounted for, and the entry is held as a duplicate
+    # of it. The first reading's unplaced entry still holds, as it did.
+    assert last["payload"]["holds"] == [
+        "reading-unplaced",
+        "reask-duplicate",
+        "truncation-not-classified",
+    ]
+    [duplicate] = last["payload"]["rules"]["j"]["findings"]
+    assert duplicate == {"code": "reask-duplicate", "n": 2, "reading_n": 1, "attempt_1_n": 1}
 
 
 # Each switch changes what the page is shown, so it changes the sealed feed and,
@@ -423,7 +443,9 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, r
 def test_each_feed_switch_changes_the_sealed_feed(page_tree, tmp_path, feed, prompt_changes):
     root, _protocol = page_tree
     protocol = _page_protocol(tmp_path / "config", **feed)
-    _chain(tmp_path / "runs", protocol, through_perlector=True)
+    # The re-ask is off: each run shows what one switch changes in a first reading.
+    recovery = reask_recovery_config(tmp_path / "config", 0)
+    _chain(tmp_path / "runs", protocol, "--recovery-config", str(recovery), through_perlector=True)
     shipped = {r["payload"]["page_ordinal"]: r["payload"] for r in _records(root, "page-feed")}
     switched = {
         r["payload"]["page_ordinal"]: r["payload"] for r in _records(tmp_path / "runs", "page-feed")
@@ -912,7 +934,7 @@ def test_entries_on_one_region_are_held_and_keep_their_own_ids():
     entries = page_path.answer_entries(answer, feed, load_page_accounting_policy())
     assert [entry["holds"] for entry in entries] == [["duplicate-region"]] * 2
     assert [entry["union_box_px"] for entry in entries] == [box, box]
-    attempt = page_path.page_reading_attempt("pg_0000000000000001")
+    attempt = page_path.page_reading_attempt("pg_0000000000000001", 1)
     ids = {
         digest_of(
             act_bindings(
@@ -1069,6 +1091,7 @@ class _Live:
     catalogue: Path
     protocol: Path
     scenario: str = "happy"
+    recovery: Path = ROOT / "config" / "recovery.toml"
 
 
 def _live_chain(
@@ -1076,12 +1099,16 @@ def _live_chain(
     *,
     scenario: str = "happy",
     feed: dict[str, Any] | None = None,
+    reask: int = 1,
     **row: Any,
 ) -> _Live:
+    """A live tree through the Attestatores, sealed with the page re-ask budget `reask`."""
     protocol = _page_protocol(base / "config", **(feed or {}))
     catalogue = _catalogue(base / "config", **row)
-    _chain(base / "runs", protocol, "--serving-recipes-config", str(catalogue), scenario=scenario)
-    return _Live(base / "runs", catalogue, protocol, scenario)
+    recovery = reask_recovery_config(base / "config", reask)
+    extra = ("--serving-recipes-config", str(catalogue), "--recovery-config", str(recovery))
+    _chain(base / "runs", protocol, *extra, scenario=scenario)
+    return _Live(base / "runs", catalogue, protocol, scenario, recovery)
 
 
 @pytest.fixture(scope="module")
@@ -1127,6 +1154,8 @@ def _read_pages(tree: _Live, tmp_path, monkeypatch, *answers: ScriptedAnswer, ex
             str(tree.protocol),
             "--models-config",
             str(MODELS),
+            "--recovery-config",
+            str(tree.recovery),
             *extra,
         ],
     )
@@ -1141,6 +1170,14 @@ def _answers() -> tuple[ScriptedAnswer, ScriptedAnswer]:
 
 def _scripted(answer: dict[str, Any], finish_reason: Any = "stop") -> ScriptedAnswer:
     return ScriptedAnswer(content=json.dumps(answer), finish_reason=finish_reason)
+
+
+def _accountings(root: Path, ordinal: int) -> list[dict[str, Any]]:
+    """A page's accountings in reading order: its first reading's, then its re-ask's."""
+    return sorted(
+        (r for r in _records(root, "page-accounting") if r["payload"]["page_ordinal"] == ordinal),
+        key=lambda record: record["payload"]["answer_basis"] != "attempt-1",
+    )
 
 
 def _chat_requests(endpoint: FakeEndpoint) -> list[dict[str, Any]]:
@@ -1364,18 +1401,26 @@ def test_a_real_act_set_aside_is_published_but_its_page_holds(live_tree, tmp_pat
         {"id": "A2", "reason": "not an entry"},
         {"id": "B2", "reason": "not an entry"},
     ]
+    # a2's lines are left outside every entry, so the page is re-asked about them;
+    # the re-ask sets them aside too.
+    reask = _scripted(
+        {
+            "acts": [],
+            "set_aside": [{"id": f"L{line}", "reason": "not an entry"} for line in range(5, 10)],
+        }
+    )
     _endpoint, exit_code = _read_pages(
-        live_tree, tmp_path, monkeypatch, _scripted(answer), _answers()[1]
+        live_tree, tmp_path, monkeypatch, _scripted(answer), _answers()[1], reask
     )
     assert exit_code == 0
     reading = _records(root, "page-reading")[0]
     assert reading["payload"]["disposition"] == "read"
-    account = next(
-        r["payload"] for r in _records(root, "page-accounting") if r["payload"]["page_ordinal"] == 1
-    )
-    dispositions = {unit["id"]: unit["disposition"] for unit in account["units"]}
-    assert dispositions["A2"] == dispositions["B2"] == "set-aside"
-    assert "unread-ink" in account["holds"]
+    first, last = (r["payload"] for r in _accountings(root, 1))
+    for account in (first, last):
+        dispositions = {unit["id"]: unit["disposition"] for unit in account["units"]}
+        assert dispositions["A2"] == dispositions["B2"] == "set-aside"
+        assert "unread-ink" in account["holds"]
+    assert "reask-set-aside" in last["holds"]
 
 
 def test_a_page_held_by_rule_e_holds_every_act_record_on_it(live_tree, tmp_path, monkeypatch):
@@ -1711,10 +1756,10 @@ def test_a_retained_reply_no_record_names_stops_the_resume(live_tree, tmp_path, 
     root = live_tree.root
     original = page_run._publish_reading
 
-    def stopped_before_page_two_is_recorded(state, page, result):
+    def stopped_before_page_two_is_recorded(state, page, request, result):
         if page.ordinal == 2:
             raise KeyboardInterrupt
-        return original(state, page, result)
+        return original(state, page, request, result)
 
     monkeypatch.setattr(page_run, "_publish_reading", stopped_before_page_two_is_recorded)
     with pytest.raises(KeyboardInterrupt):
@@ -1813,21 +1858,31 @@ def test_a_retained_accounting_measured_from_other_inputs_is_not_adopted(
 def test_a_retained_page_reading_or_perlectio_from_other_inputs_is_not_adopted():
     state = SimpleNamespace(context=SimpleNamespace())
     page = SimpleNamespace(page_id="pg_0000000000000001", feed_ref={"relative_path": "f"})
+    request = page_run._Request(1, page_run.PAGE_READING_PASS)
     reading = {
         "payload": {
             "schema": page_run.PAGE_READING_SCHEMA,
             "feed_ref": {"relative_path": "f"},
+            "attempt_ordinal": 1,
             "disposition": "read",
+            "reask": None,
             "engine_call": None,
         },
     }
-    page_run._check_adopted(state, page, reading)
+    page_run._check_adopted(state, page, request, reading)
     for changed in (
         {"payload": {**reading["payload"], "feed_ref": {}}},
         {"payload": {**reading["payload"], "schema": "perlector-page-reading.v0"}},
+        {"payload": {**reading["payload"], "attempt_ordinal": 2}},
     ):
         with pytest.raises(ContractError, match="retained page reading .* not adopted"):
-            page_run._check_adopted(state, page, {**reading, **changed})
+            page_run._check_adopted(state, page, request, {**reading, **changed})
+    retired = {"payload": {**reading["payload"], "schema": "perlector-page-reading.v1"}}
+    with pytest.raises(ContractError, match="perlector-page-reading.v1, a retired shape"):
+        page_run._check_adopted(state, page, request, retired)
+    asked = {"payload": {**reading["payload"], "reask": {"named": []}}}
+    with pytest.raises(FatalAccounting, match="names another re-ask"):
+        page_run._check_adopted(state, page, request, asked)
     expected = {"page_accounting_ref": {"relative_path": "a"}, "text": "Marie Roy"}
     sealed = {**expected, "dissent": []}
     page_run._check_adopted_perlectio({"payload": sealed}, expected, "act_1")
@@ -1866,7 +1921,7 @@ def test_under_flat_witnesses_the_accounting_measures_the_regions_the_stage_cut(
     """Flat witnesses place nothing: act 1's region is its one cited Surya line, in the
     published act-region and in the accounting both, so the lines it leaves out are
     unread by both readings of the page."""
-    tree = _live_chain(tmp_path / "flat", feed={"witness_units": "flat"})
+    tree = _live_chain(tmp_path / "flat", feed={"witness_units": "flat"}, reask=0)
     answer = json.loads(PAGE_ANSWERS[1])
     answer["acts"][0]["cites"] = ["A1", "B1", "L1"]
     answer["acts"][1]["cites"] = ["A2", "B2", "L5", "L6", "L7", "L8", "L9"]

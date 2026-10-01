@@ -273,7 +273,7 @@ def test_refuses_record_not_in_row_snapshot(scratch):
     # mismatched-row-snapshot check) but whose own `records` were tampered to
     # name a record_id the snapshot never carried — the shape a corrupted or
     # hand-built plan could take even though `build_fetch_plan` itself never
-    # produces one, per rule 7's "nothing is lost silently, not merely trusted".
+    # produces one, per "nothing is lost silently, not merely trusted".
     import copy
 
     from common.contracts.canonical import self_hash as recompute_self_hash
@@ -906,7 +906,7 @@ def test_validate_sidecar_refuses_region_outside_page():
         )
 
 
-# --- integrate.fetched_pages_from_log: the U2/U3 seam --------------------------------
+# --- integrate.fetched_pages_from_log: the fetch-log/submission seam ------------------
 
 
 def _fetched_entry(identifier: str, response_sha256: str, **overrides) -> dict:

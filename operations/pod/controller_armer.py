@@ -440,8 +440,7 @@ class _HandoverStoreFailure(Exception):
     ``FileExistsError`` naming another controller, refused separately) and
     from the supervisor process itself failing to start: this is a durable-
     store fault under the leases root, and it must be reported as that, not
-    folded into ``SUPERVISOR_FAILED`` -- see the ``operations/pod/**`` review
-    instruction this exists to satisfy.
+    folded into ``SUPERVISOR_FAILED``.
     """
 
 
@@ -620,11 +619,9 @@ class ChannelControllerArmer:
                 receipt,
             )
         # The probe runs *inside* a pass, so the real gap between two
-        # heartbeats is the poll interval plus one probe. `poll_seconds` alone
-        # was the only term checked, and a provider status call is allowed 30
-        # seconds by the shipped transport: with the 5s poll and a 30s
-        # heartbeat timeout, one slow call produced a ~35s silence and the
-        # supervisor closed a pod that was still pulling its image.
+        # heartbeats is the poll interval plus one worst-case probe, and both
+        # together must fit inside the laptop heartbeat timeout. A provider
+        # status call is allowed 30 seconds by the shipped transport.
         if self.liveness is not None:
             try:
                 probe_seconds = float(self.liveness.worst_case_seconds())

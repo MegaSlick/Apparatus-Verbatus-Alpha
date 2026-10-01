@@ -19,10 +19,12 @@ from types import SimpleNamespace
 import pytest
 
 from common.churro_document import CHURRO_PROMPT_VARIANTS
+from common.page_render import render_size
 from common.request_capacity import (
     DECLARED_ANSWER_BOUND_TOKENS,
     MEASURED_PROMPT_TOKENS,
     PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST,
+    TEXT_TURN_OVERHEAD_TOKENS,
     dense_page_answer_budget,
     page_request_capacity,
     request_fits,
@@ -65,7 +67,12 @@ PROMPT_TOKENS = {
     # one entry per framing a chair can be asked in, and the first is the one a
     # run sends unless it names another (`churro.DEFAULT_FRAMING`).
     **{chair: entries[0].tokens for chair, entries in MEASURED_PROMPT_TOKENS.items()},
+    # The Coniector is charged one token per byte: a dense page's text and the two
+    # neighbouring pages' edge acts, 12,000 bytes each, and its fixed instructions.
+    "reconstructor": TEXT_TURN_OVERHEAD_TOKENS + 3 * 12_000 + 4_000,
 }
+# The Coniector's sealed answer cap (config/decoding.toml).
+RECONSTRUCTOR_ANSWER_TOKENS = 8192
 # The comment above is true only because entry 0 happens to be Churro's
 # default framing's own measurement today; nothing enforces the order, so a
 # tuple reordered on a later edit would silently swap in the wrong framing's
@@ -90,7 +97,16 @@ def _shipped_rows():
 
 
 def _witness_rows():
-    return [row for row in _shipped_rows() if row.chair != "perlector"]
+    return [row for row in _shipped_rows() if row.chair not in {"perlector", "reconstructor"}]
+
+
+def test_the_reconstructor_row_admits_a_dense_page_s_text_and_its_answer():
+    """The Coniector sends text only: a dense page, its neighbours' edge acts, its cap."""
+    rows = [row for row in _shipped_rows() if row.chair == "reconstructor"]
+    assert rows
+    for row in rows:
+        record = request_fits(row, [], PROMPT_TOKENS["reconstructor"], RECONSTRUCTOR_ANSWER_TOKENS)
+        assert record["fits"] is True, record["reason"]
 
 
 @pytest.mark.parametrize(
@@ -332,7 +348,7 @@ def test_a_legible_render_stays_inside_the_rows_pixel_bound():
     """So the chair sees exactly the rendered pixels, on a letter leaf and on A4."""
     row, sealed = fit.perlector_row(), fit.sealed_protocol()
     for page in (LETTER, A4_300DPI):
-        width, height = fit._rendered(page, sealed["page_context"]["maximum_edge"])
+        width, height = render_size(page, sealed["page_context"]["maximum_edge"])
         assert width * height <= row.max_pixels
 
 

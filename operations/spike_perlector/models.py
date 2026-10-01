@@ -15,7 +15,7 @@ from uniseg.graphemecluster import GCB, grapheme_cluster_break
 
 from .encoding import canonical_json_bytes, is_sha256, sha256_bytes
 from .errors import MatrixRefusal, MeasurementRefusal
-from .normalization import PROFILES, normalize_text
+from .normalization import MAX_COMBINING_RUN, MAX_TEXT_LENGTH, PROFILES, normalize_text
 
 
 class Condition(StrEnum):
@@ -76,10 +76,7 @@ class PublicLimitationCode(StrEnum):
     CANDIDATE_NONANSWERS_PRESENT = "candidate_nonanswers_present_v1"
     MALFORMED_CANDIDATE_RESPONSES_PRESENT = "malformed_candidate_responses_present_v1"
     # ARCHITECTURE's Perlector "reads through to the end; truncation is a failure,
-    # not an output". Every other predeclared response state that is not a complete
-    # reading already has a code here, so leaving this one out meant a run whose
-    # readings all stopped early derived no code, declared `clear`, and published an
-    # empty limitations array beside a CER that says nothing about why it stopped.
+    # not an output", so a run with truncated readings names that beside its CER.
     TRUNCATED_READINGS_PRESENT = "truncated_readings_present_v1"
 
 
@@ -123,29 +120,15 @@ class RunLimitations:
             )
 
 
-# UAX #15's Stream-Safe Text Format caps a run of non-starters at 30, and this
-# instrument adopts that cap for a measured reason: uniseg's grapheme
-# segmentation is quadratic in the length of a *single* cluster. Measured
-# against uniseg 0.10.1 -- one base character carrying 4,000
-# combining marks segments in 5.9s and 8,000 in 23.5s, so MAX_TEXT_LENGTH alone
-# would let 20 KB of vendor output cost minutes of CPU per scored cell. Real
-# diplomatic transcription never stacks more than a handful of marks on one
-# character; polytonic Greek reaches three. The property table must be the same
-# pinned Unicode-16 table that performs segmentation: Python 3.13 and 3.14 ship
-# different ``unicodedata`` versions and otherwise disagree about newly assigned
-# combining marks such as U+0897.
-MAX_COMBINING_RUN = 30
-
-
 def require_measurable_text(value: str, field: str) -> None:
     """Refuse text this instrument can hold but cannot hash or segment.
 
     Both arrive from an ordinary vendor JSON body: ``json.loads`` decodes
     ``"\\ud800"`` into a perfectly valid ``str``, and a model may emit any number
-    of combining marks.  Refused at the boundary where a response is built, so an
-    adapter can record the predeclared ``malformed`` state for that cell;
-    discovered later, inside a digest or a score, either one takes the whole
-    matrix down with an error naming neither the act nor the reason.
+    of combining marks.  Checked before any digest or score, so the runner can
+    record the predeclared ``malformed`` state for that one cell; inside a digest
+    or a score, either would take the whole matrix down with an error naming
+    neither the act nor the reason.
     """
 
     try:
@@ -174,15 +157,6 @@ def _require_nonempty(value: str, field: str) -> None:
     require_measurable_text(value, field)
 
 
-# The one text bound in this instrument, for every field that can reach a
-# quadratic comparison: scoring.py's Levenshtein.editops is worse-than-linear in
-# the product of its two input lengths, and adjudication.py's SequenceMatcher is
-# quadratic outright on repetitive input. One act's diplomatic transcription --
-# an entry, or at most a short letter or essay (GLOSSARY's "act") -- is never
-# near this length; text this long is a mis-pasted file, not a reading.
-MAX_TEXT_LENGTH = 20_000
-
-
 def repository_of(source_ref: object) -> str:
     """The comparable repository name inside a source reference.
 
@@ -192,8 +166,7 @@ def repository_of(source_ref: object) -> str:
     "is this the same model?" must ask it of this value and not of the raw string,
     because an exact comparison answers "no" for all three spellings — and each of
     those rules is structural. Defined here rather than in ``roster`` so the witness
-    configuration and the roster share one definition instead of drifting apart,
-    which is exactly what happened when only one of them was normalized.
+    configuration and the roster share one definition.
     """
 
     if not isinstance(source_ref, str):
@@ -201,7 +174,18 @@ def repository_of(source_ref: object) -> str:
     return source_ref.strip().split("@", 1)[0].strip().casefold()
 
 
-def _require_status_conditioned_text(status: OutputStatus, text: str | None, label: str) -> None:
+def require_bounded_text(text: str, label: str) -> None:
+    """Refuse text over the one-act length bound or that cannot be hashed or segmented."""
+
+    if len(text) > MAX_TEXT_LENGTH:
+        raise MeasurementRefusal(
+            f"a {label} of {len(text)} characters exceeds the {MAX_TEXT_LENGTH}-character "
+            "bound for one act"
+        )
+    require_measurable_text(text, label)
+
+
+def _require_status_text_shape(status: OutputStatus, text: str | None, label: str) -> None:
     """Text is present and non-blank exactly when status is complete or truncated.
 
     Every other status is a non-answer under the response-state table (README
@@ -212,14 +196,16 @@ def _require_status_conditioned_text(status: OutputStatus, text: str | None, lab
     if status in (OutputStatus.COMPLETE, OutputStatus.TRUNCATED):
         if not isinstance(text, str) or not text.strip():
             raise MeasurementRefusal(f"a complete or truncated {label} must carry non-blank text")
-        if len(text) > MAX_TEXT_LENGTH:
-            raise MeasurementRefusal(
-                f"a {label} of {len(text)} characters exceeds the {MAX_TEXT_LENGTH}-character "
-                "bound for one act"
-            )
-        require_measurable_text(text, label)
     elif text is not None:
         raise MeasurementRefusal(f"a non-reading {label} carries status, not text")
+
+
+def _require_status_conditioned_text(status: OutputStatus, text: str | None, label: str) -> None:
+    """The status/text shape above, with any text also inside the measurable bounds."""
+
+    _require_status_text_shape(status, text, label)
+    if text is not None:
+        require_bounded_text(text, label)
 
 
 def _require_finite_nonnegative_or_none(value: float | None, field: str, label: str) -> None:
@@ -858,7 +844,9 @@ class CandidateResponse:
     def __post_init__(self) -> None:
         if not isinstance(self.status, OutputStatus):
             raise MeasurementRefusal("candidate response status must be an OutputStatus")
-        _require_status_conditioned_text(self.status, self.text, "candidate response")
+        # The text bounds are deliberately not checked here: an over-bound text is a
+        # delivered response the runner scores `malformed` with these receipts.
+        _require_status_text_shape(self.status, self.text, "candidate response")
         for field, value in (("elapsed_ms", self.elapsed_ms), ("cost_usd", self.cost_usd)):
             _require_finite_nonnegative_or_none(value, field, "candidate response")
         for name, value in (

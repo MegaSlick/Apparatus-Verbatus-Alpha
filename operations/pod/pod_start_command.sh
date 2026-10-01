@@ -1,6 +1,9 @@
 #!/bin/sh
 # Prints the container start command that arms a new pod's guard, for
-# `runpodctl create pod ... --args "$(sh operations/pod/pod_start_command.sh <hours> <sha>)"`.
+# `runpodctl pod create ... --docker-args "$(sh operations/pod/pod_start_command.sh <hours> <sha>)"`.
+#
+# The guard keeps its records on the network volume, which must be mounted at
+# /workspace/private: the one mount path the bootstrap and the data gate accept.
 #
 # The command fetches pod_guard.sh from this public repository at commit <sha> and runs it,
 # and separately runs a backstop that deletes the pod an hour after its deadline (the one
@@ -15,10 +18,11 @@ case $hours in *[!0-9.]* | '' | . | *.*.*) echo "pod_start_command: <hours> must
 window=$(awk -v h="$hours" 'BEGIN { printf "%d", h * 3600 }')
 grace=${POD_BACKSTOP_GRACE:-3600}
 poll=${POD_BACKSTOP_POLL:-300}
+guard_dir=/workspace/private/.pod_guard
 url="https://raw.githubusercontent.com/MegaSlick/Apparatus-Verbatus-Alpha/$sha/operations/pod/pod_guard.sh"
 
 cat <<COMMAND
-bash -c 'd=\${POD_GUARD_DIR:-/workspace/.pod_guard}; first=\$((\$(date +%s) + $window)); \
+bash -c 'd=\${POD_GUARD_DIR:-$guard_dir}; export POD_GUARD_DIR=\$d; first=\$((\$(date +%s) + $window)); \
 (curl -fsSL --max-time 120 $url -o /tmp/pod_guard.sh && sh /tmp/pod_guard.sh $hours 30) > /tmp/pod_guard.out 2>&1 & \
 t=; command -v timeout >/dev/null && t="timeout 60"; \
 (while :; do dl=\$(cat "\$d/deadline-\$RUNPOD_POD_ID" 2>/dev/null); case \$dl in ""|*[!0-9]*) dl=\$first;; esac; \

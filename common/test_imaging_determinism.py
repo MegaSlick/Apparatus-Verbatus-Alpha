@@ -140,9 +140,9 @@ def test_a_crop_is_framed_so_that_no_compressor_chooses_any_of_its_bytes(page):
 
 
 def test_a_grayscale_crop_survives_a_zlib_that_compresses_differently():
-    """The audit's own demonstration: a shim that makes `zlib.compress` emit a
-    valid stream at a different level, which is precisely what a different zlib
-    build legitimately does. It used to rename every crop in the run."""
+    """A zlib that compresses differently does not change the crop's bytes. The
+    shim makes `zlib.compress` emit a valid stream at a different level, which
+    is what a different zlib build legitimately does."""
     page = grayscale_page()
     before = crop_png(page, BOUNDS)
 
@@ -366,9 +366,8 @@ def test_undecodable_bytes_are_refused_rather_than_compared():
 
 
 def test_a_text_chunk_beside_the_pixels_is_not_an_image_only_png():
-    """The byte comparison used to refuse this for free. Once two framings of one
-    image are accepted as equal, payload travelling beside the picture is the
-    thing that comparison stopped saying anything about."""
+    """Two framings of one image are accepted as equal, so payload travelling
+    beside the picture is refused on its own."""
     crop = crop_png(grayscale_page(), BOUNDS)
     tag, data = b"tEXt", b"note\x00anything at all"
     smuggled = (

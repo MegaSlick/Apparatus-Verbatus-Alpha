@@ -7,7 +7,6 @@ from operations.spike_perlector.errors import MatrixRefusal, MeasurementRefusal
 from operations.spike_perlector.models import (
     CandidateResponse,
     Condition,
-    DeliveryMode,
     DissentSummary,
     DossierTestimonium,
     OutputStatus,
@@ -42,31 +41,6 @@ def test_testimonium_refuses_stray_text_on_a_non_reading_status(status):
             delivery_attempted=True,
             delivery_confirmed=True,
         )
-
-
-def test_a_testimonium_retains_the_act_crop_and_delivery_provenance_it_was_given():
-    """Named for what it checks: retention, not a requirement.
-
-    Its previous name promised that a Testimonium *requires* its exact act crop
-    and delivery provenance, and the body asserted only that four supplied
-    values came back unchanged — it stayed green with every crop and delivery
-    rule deleted. Those rules are covered below and at the act level.
-    """
-
-    testimonium = models.Testimonium(
-        private_source_id="w1",
-        public_source_index=1,
-        text=None,
-        status=OutputStatus.UNAVAILABLE,
-        opaque_act_id="act-1",
-        crop_sha256=digest("crop"),
-        delivery_attempted=True,
-        delivery_confirmed=False,
-    )
-    assert testimonium.opaque_act_id == "act-1"
-    assert testimonium.crop_sha256 == digest("crop")
-    assert testimonium.delivery_attempted is True
-    assert testimonium.delivery_confirmed is False
 
 
 def test_testimonium_refuses_a_claim_of_confirmation_without_an_attempt():
@@ -152,24 +126,15 @@ def test_perlectio_refuses_stray_text_on_a_non_reading_status(status):
         )
 
 
-def test_candidate_response_refuses_text_over_the_one_act_bound():
+def test_response_text_over_the_one_act_bound_is_unmeasurable():
     """scoring.py's Levenshtein.editops is worse-than-linear in the product of its
-
     two input lengths; an unbounded adapter response is a denial-of-service
     surface the same way an unbounded transcription draft is (adjudication.py).
     """
 
     oversized = "x" * (models.MAX_TEXT_LENGTH + 1)
     with pytest.raises(MeasurementRefusal, match="exceeds"):
-        CandidateResponse(
-            status=OutputStatus.COMPLETE,
-            text=oversized,
-            elapsed_ms=None,
-            cost_usd=None,
-            observed_prompt_sha256=digest("prompt"),
-            observed_dossier_sha256=digest("dossier"),
-            observed_delivery_sha256=digest("delivery"),
-        )
+        models.require_bounded_text(oversized, "candidate response")
 
 
 def test_ground_truth_refuses_text_over_the_one_act_bound():
@@ -187,26 +152,17 @@ def test_ground_truth_refuses_text_over_the_one_act_bound():
 LONE_SURROGATE = "alpha " + chr(0xD800) + " beta"
 
 
-def test_candidate_response_refuses_text_python_cannot_encode():
+def test_response_text_python_cannot_encode_is_unmeasurable():
     """A vendor JSON body can carry an unpaired surrogate, and this one does.
 
-    It passes every "is it a non-blank string" check, then raises a bare
-    UnicodeEncodeError inside the first digest or score -- losing every cell
-    already measured, with an error naming neither the act nor the reason.
-    Refused at the boundary, an adapter can record `malformed` for that cell
-    and the matrix survives.
+    It passes every "is it a non-blank string" check, then would raise a bare
+    UnicodeEncodeError inside the first digest or score, naming neither the act
+    nor the reason. The bound check names it, so the runner can score the cell
+    `malformed` and the matrix survives.
     """
 
     with pytest.raises(MeasurementRefusal, match="unpaired surrogate"):
-        CandidateResponse(
-            status=OutputStatus.COMPLETE,
-            text=LONE_SURROGATE,
-            elapsed_ms=None,
-            cost_usd=None,
-            observed_prompt_sha256=digest("prompt"),
-            observed_dossier_sha256=digest("dossier"),
-            observed_delivery_sha256=digest("delivery"),
-        )
+        models.require_bounded_text(LONE_SURROGATE, "candidate response")
 
 
 def test_ground_truth_refuses_a_reference_python_cannot_encode():
@@ -228,35 +184,18 @@ def test_a_stack_of_combining_marks_is_bounded_where_segmentation_is_quadratic()
     Greek, so nothing a transcriber writes comes near it.
     """
 
-    def response(text):
-        return CandidateResponse(
-            status=OutputStatus.COMPLETE,
-            text=text,
-            elapsed_ms=None,
-            cost_usd=None,
-            observed_prompt_sha256=digest("prompt"),
-            observed_dossier_sha256=digest("dossier"),
-            observed_delivery_sha256=digest("delivery"),
-        )
-
     at_the_cap = "a" + "́" * models.MAX_COMBINING_RUN
-    assert response(at_the_cap).text == at_the_cap
+    models.require_bounded_text(at_the_cap, "candidate response")
     with pytest.raises(MeasurementRefusal, match="combining marks"):
-        response("a" + "́" * (models.MAX_COMBINING_RUN + 1))
+        models.require_bounded_text("a" + "́" * (models.MAX_COMBINING_RUN + 1), "candidate response")
 
 
 def test_combining_mark_bound_uses_the_pinned_unicode_table_across_python_versions():
     """U+0897 is a Unicode-16 combining mark but unassigned in Python 3.13's UCD."""
 
     with pytest.raises(MeasurementRefusal, match="combining marks"):
-        CandidateResponse(
-            status=OutputStatus.COMPLETE,
-            text="a" + chr(0x0897) * (models.MAX_COMBINING_RUN + 1),
-            elapsed_ms=None,
-            cost_usd=None,
-            observed_prompt_sha256=digest("prompt"),
-            observed_dossier_sha256=digest("dossier"),
-            observed_delivery_sha256=digest("delivery"),
+        models.require_bounded_text(
+            "a" + chr(0x0897) * (models.MAX_COMBINING_RUN + 1), "candidate response"
         )
 
 
@@ -349,18 +288,6 @@ def test_resolved_identity_refuses_a_delivery_mode_that_is_not_a_delivery_mode()
         )
 
 
-def test_resolved_identity_accepts_a_genuine_delivery_mode():
-    resolved = ResolvedIdentity(
-        candidate_key="k",
-        public_slot=1,
-        source_ref="ref",
-        revision="rev",
-        artifact_digest=digest("artifact"),
-        delivery=DeliveryMode.LOCAL,
-    )
-    assert resolved.delivery is DeliveryMode.LOCAL
-
-
 def _witness_primed_perlectio(**overrides):
     fields = dict(
         identity=identity("candidate", 1),
@@ -396,6 +323,6 @@ def test_a_perlectio_testimonia_count_must_be_a_count_before_it_is_read_as_a_fla
 
 
 def test_a_real_testimonia_count_is_still_accepted():
-    """Invariant #14: a valid count is retained unchanged, not only accepted."""
+    """A valid count is retained unchanged, not only accepted."""
 
     assert _witness_primed_perlectio(testimonia_count=3).testimonia_count == 3

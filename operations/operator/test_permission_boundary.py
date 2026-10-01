@@ -80,6 +80,7 @@ def test_read_surface_walks_stage_records_seals_census_pages_and_crops(
         "perlector",
         "recensor",
         "archetypus",
+        "coniector",
         "armarium",
     }
     assert all(row["sealed"] and len(row["seal_digest"]) == 64 for row in projected.boundaries)
@@ -3280,7 +3281,9 @@ def test_review_refuses_a_compressed_bundle_member_before_decompressing_it(
     assert "is compressed, not stored" in excinfo.value.detail
 
 
-@pytest.mark.parametrize("missing", ["pages", "delivered", "non_delivered", "bundle-reference"])
+@pytest.mark.parametrize(
+    "missing", ["pages", "delivered", "non_delivered", "other_readings", "bundle-reference"]
+)
 def test_review_refuses_a_missing_required_armarium_projection_field(
     orchestrated_run, tmp_path: Path, missing: str
 ):

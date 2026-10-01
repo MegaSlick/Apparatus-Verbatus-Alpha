@@ -22,9 +22,9 @@ from .errors import ResidencyError, ServiceStopError
 
 # Shared by every serving caller on one pod (preflight and each pipeline
 # stage). Container-local, not on the network volume: an advisory lock there
-# is not guaranteed honoured, and the boundary is the GPU card, not a run
-# tree -- a run-scoped lock let two stages each acquire their own and put two
-# vLLM servers on one GPU with no refusal. A caller wanting a different
+# is not guaranteed honoured. The boundary is the GPU card, not a run tree:
+# every caller on the pod must contend on this one container-local file, or
+# two vLLM servers could share one GPU with no refusal. A caller wanting a different
 # boundary passes its own path to `FileResidencyLease` instead.
 POD_RESIDENCY_LOCK_PATH: Final = Path("/tmp/verbatus-pod-gpu.lock")
 

@@ -13,6 +13,7 @@ from operations.spike_perlector.models import (
     ALL_CONDITIONS,
     CandidateResponse,
     Condition,
+    DissentSummary,
     GapSpan,
     GroundTruth,
     OutputStatus,
@@ -23,7 +24,11 @@ from operations.spike_perlector.models import (
     Testimonium as WitnessTestimonium,  # bare `Testimonium` is collected as a test class
 )
 from operations.spike_perlector.normalization import GRAPHEMIC_V1
-from operations.spike_perlector.runner import run_matrix
+from operations.spike_perlector.runner import (
+    FailedAttemptKind,
+    FailedCandidateAttempt,
+    run_matrix,
+)
 from operations.spike_perlector.testkit import digest, evaluation_act, identity, registry
 
 
@@ -118,10 +123,20 @@ def test_missing_but_proved_response_remains_a_scored_matrix_cell():
     assert primed.metrics.cer == 1
 
 
-def test_an_overlong_response_scores_malformed_instead_of_discarding_the_matrix():
-    """A model producing unmeasurable text (README section 7's ``malformed`` row)
-    is a named response state, not a harness delivery failure: the cell it broke
-    is recorded and scored empty, and every other cell survives with it."""
+@pytest.mark.parametrize(
+    "text",
+    [
+        "x" * 20_001,
+        "alpha " + chr(0xD800) + " beta",
+        "a" + chr(0x0301) * 31,
+    ],
+    ids=["over-length", "unpaired-surrogate", "combining-run"],
+)
+def test_an_unmeasurable_response_scores_malformed_with_the_adapters_own_receipts(text):
+    """A delivered, receipted response whose text is outside the measurable bounds
+    is README section 7's `malformed` state: the cell keeps the adapter's observed
+    receipts, wall time and cost, scores as an empty hypothesis, and every other
+    cell survives with it."""
 
     base = identity("base-private", 1)
     act = evaluation_act()
@@ -129,7 +144,7 @@ def test_an_overlong_response_scores_malformed_instead_of_discarding_the_matrix(
         base,
         replies={
             (act.opaque_act_id, Condition.LECTIO_NUDA): FakeReply(
-                OutputStatus.COMPLETE, "x" * 20_001
+                OutputStatus.COMPLETE, text, elapsed_ms=7.0, cost_usd=0.25
             )
         },
     )
@@ -140,16 +155,203 @@ def test_an_overlong_response_scores_malformed_instead_of_discarding_the_matrix(
         profile=GRAPHEMIC_V1,
         authorization=RunAuthorization.synthetic_fixture(),
     )
+    assert run.failed_attempts == ()
     assert len(run.cells) == len(ALL_CONDITIONS)
     broken = next(cell for cell in run.cells if cell.perlectio.condition is Condition.LECTIO_NUDA)
+    request = next(
+        item for item in candidate.requests if item.dossier.condition is Condition.LECTIO_NUDA
+    )
     assert broken.perlectio.status is OutputStatus.MALFORMED
     assert broken.perlectio.text is None
     assert broken.raw_response_text is None
+    assert broken.perlectio.prompt_format_sha256 == request.prompt_format_sha256
+    assert broken.perlectio.dossier_sha256 == request.dossier.wire_sha256
+    assert broken.perlectio.delivery_sha256 == request.delivery_sha256
+    assert broken.perlectio.elapsed_ms == 7.0
+    assert broken.perlectio.cost_usd == 0.25
     assert broken.score.cer.rate == 1.0
+    assert PublicLimitationCode.MALFORMED_CANDIDATE_RESPONSES_PRESENT in (
+        run.derived_limitation_codes()
+    )
     survivors = [
         cell for cell in run.cells if cell.perlectio.condition is not Condition.LECTIO_NUDA
     ]
     assert all(cell.perlectio.status is OutputStatus.COMPLETE for cell in survivors)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        FakeReply(prompt_digest_override=""),
+        FakeReply(dossier_digest_override=""),
+        FakeReply(delivery_digest_override=""),
+        FakeReply(dossier_digest_override="zz"),
+        FakeReply(elapsed_ms=-1.0),
+        FakeReply(cost_usd=-1.0),
+        FakeReply(OutputStatus.COMPLETE, "   "),
+    ],
+    ids=[
+        "blank-prompt-receipt",
+        "blank-dossier-receipt",
+        "blank-delivery-receipt",
+        "non-hex-dossier-receipt",
+        "negative-wall-time",
+        "negative-cost",
+        "complete-without-text",
+    ],
+)
+def test_a_response_the_adapter_cannot_build_is_a_failed_attempt_not_a_score(reply):
+    """An invalid receipt, timing or status/text shape is an adapter defect, not a
+    model answer: it is retained as a failed attempt, the later reads still run,
+    and the run cannot publish."""
+
+    base = identity("base-private", 1)
+    act = evaluation_act()
+    candidate = FakeCandidate(base, replies={(act.opaque_act_id, Condition.LECTIO_NUDA): reply})
+    run = run_matrix(
+        (candidate,),
+        (act,),
+        prompt_registry=registry(base),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    assert len(candidate.requests) == len(ALL_CONDITIONS)
+    assert [failure.kind for failure in run.failed_attempts] == [
+        FailedAttemptKind.ADAPTER_EXCEPTION
+    ]
+    assert run.failed_attempts[0].condition is Condition.LECTIO_NUDA
+    assert all(cell.perlectio.condition is not Condition.LECTIO_NUDA for cell in run.cells)
+    assert len(run.cells) == len(ALL_CONDITIONS) - 1
+    with pytest.raises(MatrixRefusal, match="unproved or invalid candidate attempts"):
+        run.require_publishable()
+
+
+def test_adapter_dossier_digest_mismatch_is_retained_as_a_failed_attempt():
+    resolved = identity("candidate-private", 1)
+    candidate = FakeCandidate(
+        resolved,
+        replies={
+            ("synthetic-act-1", Condition.LECTIO_NUDA): FakeReply(
+                OutputStatus.COMPLETE, "alpha beta", dossier_digest_override="0" * 64
+            )
+        },
+    )
+    run = run_matrix(
+        (candidate,),
+        (evaluation_act(),),
+        prompt_registry=registry(resolved),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    assert len(candidate.requests) == len(ALL_CONDITIONS)
+    assert [failure.kind for failure in run.failed_attempts] == [
+        FailedAttemptKind.DOSSIER_RECEIPT_MISMATCH
+    ]
+    with pytest.raises(MatrixRefusal, match="unproved or invalid candidate attempts"):
+        run.require_publishable()
+
+
+def test_an_adapter_returning_something_other_than_a_response_is_invalid_and_malformed():
+    invalid_identity = identity("invalid-private", 1)
+
+    class InvalidCandidate:
+        identity = invalid_identity
+
+        def read(self, request):
+            return {"text": "alpha beta"}
+
+    run = run_matrix(
+        (InvalidCandidate(),),
+        (evaluation_act(),),
+        prompt_registry=registry(invalid_identity),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+    assert run.cells == ()
+    assert {failure.kind for failure in run.failed_attempts} == {FailedAttemptKind.INVALID_RESPONSE}
+    assert run.derived_limitation_codes() == frozenset(
+        {
+            PublicLimitationCode.CANDIDATE_NONANSWERS_PRESENT,
+            PublicLimitationCode.MALFORMED_CANDIDATE_RESPONSES_PRESENT,
+        }
+    )
+
+
+def run_with_one_failed_attempt():
+    resolved = identity("candidate-private", 1)
+    candidate = FakeCandidate(
+        resolved,
+        replies={
+            ("synthetic-act-1", Condition.LECTIO_NUDA): FakeReply(
+                OutputStatus.COMPLETE, "alpha beta", prompt_digest_override="0" * 64
+            )
+        },
+    )
+    return run_matrix(
+        (candidate,),
+        (evaluation_act(),),
+        prompt_registry=registry(resolved),
+        profile=GRAPHEMIC_V1,
+        authorization=RunAuthorization.synthetic_fixture(),
+    )
+
+
+def test_a_planned_cell_cannot_be_both_a_perlectio_and_a_failed_attempt():
+    run, _, _ = run_three_candidates()
+    cell = run.cells[0]
+    duplicate = FailedCandidateAttempt(
+        identity=cell.perlectio.identity,
+        opaque_act_id=cell.opaque_act_id,
+        condition=cell.perlectio.condition,
+        prompt_format_sha256=cell.perlectio.prompt_format_sha256,
+        dossier_sha256=cell.perlectio.dossier_sha256,
+        delivery_sha256=cell.perlectio.delivery_sha256,
+        kind=FailedAttemptKind.ADAPTER_EXCEPTION,
+        detail="synthetic",
+    )
+    with pytest.raises(MatrixRefusal, match="both a Perlectio and a failed attempt"):
+        replace(run, failed_attempts=(duplicate,))
+
+
+def test_a_failed_attempt_naming_an_identity_outside_its_run_is_refused():
+    run = run_with_one_failed_attempt()
+    failure = run.failed_attempts[0]
+    forged = replace(failure, identity=replace(failure.identity, revision="revision-other"))
+    with pytest.raises(MatrixRefusal, match="failed attempt names evidence outside its run"):
+        replace(run, failed_attempts=(forged,))
+
+
+def test_a_failed_attempt_must_bind_the_runs_exact_dossier():
+    run = run_with_one_failed_attempt()
+    forged = replace(run.failed_attempts[0], dossier_sha256=digest("other-dossier"))
+    with pytest.raises(MatrixRefusal, match="failed attempt does not bind the run's exact dossier"):
+        replace(run, failed_attempts=(forged,))
+
+
+def test_a_cell_whose_dissent_differs_from_the_retained_witnesses_is_refused():
+    run, _, _ = run_three_candidates()
+    primed = next(
+        cell for cell in run.cells if cell.perlectio.condition is Condition.WITNESS_PRIMED
+    )
+    assert primed.perlectio.dissent.compared > 0
+    forged = replace(primed, perlectio=replace(primed.perlectio, dissent=DissentSummary(0, 0, 0)))
+    cells = tuple(forged if cell is primed else cell for cell in run.cells)
+    with pytest.raises(MatrixRefusal, match="dissent differs from the retained witness evidence"):
+        replace(run, cells=cells)
+
+
+def test_a_cell_whose_identity_differs_from_its_run_is_refused():
+    run, _, _ = run_three_candidates()
+    first = run.cells[0]
+    forged = replace(
+        first,
+        perlectio=replace(
+            first.perlectio,
+            identity=replace(first.perlectio.identity, revision="revision-other"),
+        ),
+    )
+    with pytest.raises(MatrixRefusal, match="resolved identity different from its run"):
+        replace(run, cells=(forged, *run.cells[1:]))
 
 
 def test_aggregate_cer_is_micro_averaged_across_acts_of_different_lengths():
@@ -535,7 +737,7 @@ def test_condition_and_pairwise_deltas_expose_witness_only_advantage_without_ver
 
 
 def test_a_gapped_reference_is_scored_against_its_readable_ink_only():
-    """Ruling 3's common case, carried through the whole matrix.
+    """A gapped checked reference, the common case, carried through the whole matrix.
 
     An act with unread ink in the middle of it is a checked reference with a gap,
     not an unreadable crop. A candidate that reproduces the readable ink exactly

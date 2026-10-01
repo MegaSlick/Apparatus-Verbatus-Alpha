@@ -1,9 +1,13 @@
-"""Read-only per-witness RecordGold scoring over sealed page Testimonia.
+"""Read-only per-witness RecordGold scoring.
 
-Every witness reads a whole page, so each chair is scored on its current sealed
-page Testimonium against the reference page's acts joined in reference order.
-The Perlector's act geometry is paired independently of witness and reference text,
-and a reference act no read act matched is counted, never dropped.
+Every witness reads a whole page. Two bases score it. `page-feed`, the
+default: each witness the Perlector's page feed showed is scored from its own
+units, a unit belonging to the reference record holding most of its box and a
+record no unit lies on being an empty hypothesis, so each record is scored for
+each witness. `page-testimonium`: each chair is scored on its current sealed
+page Testimonium against the reference page's acts joined in reference order;
+the Perlector's act geometry is paired independently of witness and reference
+text, and a reference act no read act matched is counted, never dropped.
 """
 
 from __future__ import annotations
@@ -22,13 +26,14 @@ from common.contracts.canonical import (
     verify_self_hash,
 )
 from common.contracts.errors import ContractError
-from common.contracts.stages import ATTESTATORES, EXEMPLAR
+from common.contracts.stages import ATTESTATORES, EXEMPLAR, PERLECTOR
 from common.exemplar_boundary import verify_sealed_page_pixels
 from common.imaging import dimensions
 from common.native_witness import (
     validate_page_testimonium_payload,
     validate_presented_page_binding,
 )
+from common.page_feed import SCHEMA as PAGE_FEED_SCHEMA
 from common.runtree.store import RunTree
 from common.stage import latest_attempt
 from operations.spike_perlector.models import OutputStatus
@@ -122,7 +127,9 @@ def _score_row(
 
 
 def _totals(
-    rows: Sequence[Mapping[str, Any]], chairs: tuple[str, ...], missing_proposals: int
+    rows: Sequence[Mapping[str, Any]],
+    chairs: Sequence[str],
+    missing_proposals: int | None = None,
 ) -> dict[str, dict[str, Any]]:
     totals: dict[str, dict[str, Any]] = {}
     for chair in chairs:
@@ -137,8 +144,9 @@ def _totals(
             "cer_units": sum(row["cer_units"] for row in chair_rows),
             "wer_errors": sum(row["wer"] for row in chair_rows),
             "wer_units": sum(row["wer_units"] for row in chair_rows),
-            "missing_proposals": missing_proposals,
         }
+        if missing_proposals is not None:
+            totals[chair]["missing_proposals"] = missing_proposals
     return totals
 
 
@@ -529,6 +537,258 @@ def evaluate_run(
     return body
 
 
+# --- page path: the witnesses the page feed showed ------------------------------------
+
+PAGE_SCHEMA = "recordgold-witness-evaluation.page.v1"
+PAGE_FEED = "page-feed"
+PAGE_TESTIMONIUM = "page-testimonium"
+
+
+def _area_overlap(a: Mapping[str, int], b: Mapping[str, int]) -> int:
+    width = min(a["x"] + a["w"], b["x"] + b["w"]) - max(a["x"], b["x"])
+    height = min(a["y"] + a["h"], b["y"] + b["h"]) - max(a["y"], b["y"])
+    return max(width, 0) * max(height, 0)
+
+
+def _unit_record(unit_box: Mapping[str, int], acts: Sequence[Mapping[str, Any]]) -> str | None:
+    """The reference record a unit lies on: the one holding most of its area, at least half.
+
+    A unit on no record (marginalia, a heading, ink between records) belongs to
+    none, and a tie goes to the lower record id, so the assignment depends on
+    geometry alone and never on what either text says.
+    """
+    best_overlap, best = 0, None
+    for act in sorted(acts, key=lambda act: act["record_id"]):
+        overlap = _area_overlap(unit_box, act["region"])
+        if overlap > best_overlap:
+            best_overlap, best = overlap, act["record_id"]
+    return best if best is not None and 2 * best_overlap >= unit_box["w"] * unit_box["h"] else None
+
+
+def _witness_name(witness: Mapping[str, Any]) -> str:
+    return witness["chair"] if witness.get("chair") else witness["witness_label"]
+
+
+def _record_row(act: Mapping[str, Any], **score: Any) -> dict[str, Any]:
+    """One reference record scored for one witness: `_score_row` keyed by its record id."""
+    row = _score_row({"record_ids": [act["record_id"]], "text": act["text"]}, **score)
+    del row["record_ids"]
+    return {"record_id": act["record_id"], **row}
+
+
+def evaluate_feed_page(
+    *,
+    reference_page: dict[str, Any],
+    feed: Mapping[str, Any],
+    roster: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Score every reference record for every witness row of one page feed.
+
+    A witness's text for a record is its units lying on that record
+    (`_unit_record`), joined in the witness's own order. A record no unit lies
+    on is an empty hypothesis (`no-unit-on-record`); a witness that did not
+    read, or whose units carry no box, gives every record an empty hypothesis
+    by name. A witness in `roster` (those shown on any page of the run) that
+    this feed does not show -- a page fed with no testimony, say -- gives every
+    record an empty hypothesis too (`witness-not-in-feed`). Every row is kept,
+    so the denominator is every record on the page for every witness.
+    """
+    reference_page = validate_reference_page(reference_page)
+    acts = sorted(reference_page["acts"], key=lambda act: act["record_id"])
+    rows: list[dict[str, Any]] = []
+    units: dict[str, dict[str, int]] = {}
+    witnesses = sorted(feed.get("witnesses") or [], key=_witness_name)
+    for witness in witnesses:
+        name = _witness_name(witness)
+        if name in units:
+            raise Refusal(f"malformed-record: page feed shows witness {name!r} twice")
+        own = witness.get("units") or []
+        boxed = [unit for unit in own if unit.get("box_px") is not None]
+        by_record: dict[str, list[str]] = {}
+        off_record = 0
+        for unit in boxed:
+            record_id = _unit_record(unit["box_px"], acts)
+            if record_id is None:
+                off_record += 1
+            else:
+                by_record.setdefault(record_id, []).append(unit["text"])
+        units[name] = {
+            "units": len(own),
+            "boxed": len(boxed),
+            "on_a_record": len(boxed) - off_record,
+            "on_no_record": off_record,
+        }
+        truncated = (witness.get("answer_health") or {}).get("truncated")
+        for act in acts:
+            text: str | None = None
+            if witness.get("outcome") != "read":
+                status, reason = OutputStatus.UNAVAILABLE, f"witness-{witness.get('outcome')}"
+            elif own and not boxed:
+                status, reason = OutputStatus.UNAVAILABLE, "witness-units-unboxed"
+            elif act["record_id"] not in by_record:
+                status, reason = OutputStatus.MISSING, "no-unit-on-record"
+            else:
+                text = "\n".join(by_record[act["record_id"]])
+                status = OutputStatus.TRUNCATED if truncated is True else OutputStatus.COMPLETE
+                reason = "truncation-unknown" if truncated is None else None
+            rows.append(_record_row(act, chair=name, status=status, text=text, reason=reason))
+    for name in sorted(set(roster) - set(units)):
+        units[name] = {"units": 0, "boxed": 0, "on_a_record": 0, "on_no_record": 0}
+        for act in acts:
+            rows.append(
+                _record_row(
+                    act,
+                    chair=name,
+                    status=OutputStatus.MISSING,
+                    text=None,
+                    reason="witness-not-in-feed",
+                )
+            )
+    names = tuple(sorted(units))
+    body = {
+        "schema": PAGE_SCHEMA,
+        "reference_page_self_hash": reference_page["self_hash"],
+        "page_id": feed["page_id"],
+        "source_page_ordinal": feed["page_ordinal"],
+        "witness_testimony": feed.get("witness_testimony"),
+        "units": units,
+        "rows": rows,
+        "totals": _totals(rows, names),
+    }
+    body["self_hash"] = self_hash(body)
+    return body
+
+
+def page_feeds(tree: ReadOnlyRunTree) -> dict[int, dict[str, Any]]:
+    """Every Perlector page feed of a page-read run, by page ordinal."""
+    feeds: dict[int, dict[str, Any]] = {}
+    for entry in tree.build_manifest(PERLECTOR)["artifacts"]:
+        if entry["kind"] != PAGE_FEED:
+            continue
+        feed = tree.read_artifact(PERLECTOR, PAGE_FEED, entry["artifact_id"])["payload"]
+        ordinal = feed.get("page_ordinal")
+        if feed.get("schema") != PAGE_FEED_SCHEMA or not isinstance(ordinal, int):
+            raise Refusal(
+                f"malformed-record: page feed {entry['artifact_id']!r} is not a "
+                f"{PAGE_FEED_SCHEMA} record"
+            )
+        if ordinal in feeds:
+            raise Refusal(f"malformed-record: two page feeds for page ordinal {ordinal}")
+        feeds[ordinal] = feed
+    return feeds
+
+
+def evaluate_page_feed_run(
+    *,
+    tree: RunTree,
+    ledger_path: Path,
+    reference_pages_path: Path,
+    page_ids: Collection[str] | None = None,
+) -> dict[str, Any]:
+    """One self-hashed report of each page-feed witness against the reference records.
+
+    The pages scored are the admitted reference pages the run sealed, or the
+    named `page_ids` among them; an admitted page the run did not seal is
+    counted in `reference_pages_outside_run`, never scored as a miss. A
+    sealed page with no page feed is refused by name.
+    """
+    try:
+        ledger_bytes = ledger_path.read_bytes()
+        ledger = validate_local_admission_ledger(json.loads(ledger_bytes))
+    except (OSError, UnicodeDecodeError, ValueError, CorpusRefusal) as error:
+        raise Refusal(f"reference-ledger-invalid: {error}") from error
+    pages = _reference_pages(reference_pages_path)
+    admitted: dict[str, set[tuple[str, str]]] = {}
+    for row in ledger["rows"]:
+        if row["decision"] == "admitted":
+            admitted.setdefault(row["page_id"], set()).add(
+                (row["page_sha256"], row["reference_page_self_hash"])
+            )
+    for page_id, identities in admitted.items():
+        if len(identities) != 1:
+            raise Refusal(
+                f"malformed-record: page id {page_id!r} names more than one admitted page"
+            )
+    requested = sorted(admitted) if page_ids is None else list(page_ids)
+    if len(set(requested)) != len(requested):
+        raise Refusal("malformed-record: duplicate selected page id")
+    unknown = sorted(set(requested) - set(admitted))
+    if unknown:
+        raise Refusal(f"reference-page-not-in-ledger: selected page {unknown[0]!r} is not admitted")
+
+    read_only = ReadOnlyRunTree(tree)
+    ordinal_by_sha: dict[str, int] = {}
+    for ordinal, digest in load_exemplar_page_shas(read_only).items():
+        if digest in ordinal_by_sha:
+            raise Refusal("malformed-record: two sealed source pages carry the same sha256")
+        ordinal_by_sha[digest] = ordinal
+    feeds = page_feeds(read_only)
+
+    scored: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    outside = []
+    reference_records = 0
+    for page_id in sorted(requested):
+        [(digest, reference_hash)] = admitted[page_id]
+        ordinal = ordinal_by_sha.get(digest)
+        if ordinal is None:
+            if page_ids is not None:
+                raise Refusal(
+                    f"reference-page-not-in-run: selected page {page_id!r} was not sealed by "
+                    "the Exemplar"
+                )
+            outside.append(page_id)
+            continue
+        page = pages.get(digest)
+        if page is None or page["self_hash"] != reference_hash:
+            raise Refusal(
+                f"reference-page-not-in-ledger: page {page_id!r} has no exact admitted "
+                "reference page"
+            )
+        if ordinal not in feeds:
+            raise Refusal(
+                f"malformed-record: sealed page {page_id!r} (ordinal {ordinal}) has no page feed"
+            )
+        scored.append((page, feeds[ordinal]))
+        reference_records += len(page["acts"])
+    shown = sorted(
+        {_witness_name(w) for feed in feeds.values() for w in feed.get("witnesses") or []}
+    )
+    reports = [
+        evaluate_feed_page(reference_page=page, feed=feed, roster=shown) for page, feed in scored
+    ]
+    names = tuple(sorted({row["chair"] for report in reports for row in report["rows"]}))
+    rows = [row for report in reports for row in report["rows"]]
+    totals = _totals(rows, names)
+    for name, total in totals.items():
+        scoreable_rows = [
+            row
+            for row in rows
+            if row["chair"] == name
+            and row["status"] in {OutputStatus.COMPLETE.value, OutputStatus.TRUNCATED.value}
+        ]
+        total["scoreable_cer_errors"] = sum(row["cer"] for row in scoreable_rows)
+        total["scoreable_cer_units"] = sum(row["cer_units"] for row in scoreable_rows)
+        total["reasons"] = dict(
+            sorted(
+                Counter(row["reason"] or "scored" for row in rows if row["chair"] == name).items()
+            )
+        )
+    body = {
+        "schema": PAGE_SCHEMA,
+        "basis": PAGE_FEED,
+        "run_id": tree.run_id,
+        "ledger_sha256": digest_bytes(ledger_bytes),
+        "selected_page_ids": sorted(requested),
+        "reference_pages_outside_run": sorted(outside),
+        "witnesses": list(names),
+        "reference_records": reference_records,
+        "pages": reports,
+        "totals": totals,
+    }
+    body["self_hash"] = self_hash(body)
+    return body
+
+
 def write_report(report: Mapping[str, Any], output: Path, *, run_root: Path) -> None:
     """Create an immutable report outside the run tree."""
     body = dict(report)
@@ -550,16 +810,37 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--ledger", required=True)
     parser.add_argument("--reference-pages", required=True)
-    parser.add_argument("--page-id", action="append", required=True)
+    parser.add_argument(
+        "--page-id",
+        action="append",
+        help="a page to score; a page-read run defaults to every admitted page it sealed",
+    )
+    parser.add_argument(
+        "--basis",
+        choices=(PAGE_FEED, PAGE_TESTIMONIUM),
+        default=PAGE_FEED,
+        help="what a witness is scored from: the page feed's units (default) or the whole "
+        "page Testimonium, which needs --page-id",
+    )
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     tree = RunTree(Path(args.run_root), args.run_id)
-    report = evaluate_run(
-        tree=tree,
-        ledger_path=Path(args.ledger),
-        reference_pages_path=Path(args.reference_pages),
-        page_ids=args.page_id,
-    )
+    if args.basis == PAGE_FEED:
+        report = evaluate_page_feed_run(
+            tree=tree,
+            ledger_path=Path(args.ledger),
+            reference_pages_path=Path(args.reference_pages),
+            page_ids=args.page_id,
+        )
+    else:
+        if not args.page_id:
+            parser.error("--basis page-testimonium needs at least one --page-id")
+        report = evaluate_run(
+            tree=tree,
+            ledger_path=Path(args.ledger),
+            reference_pages_path=Path(args.reference_pages),
+            page_ids=args.page_id,
+        )
     write_report(report, Path(args.output), run_root=tree.root)
     return 0
 

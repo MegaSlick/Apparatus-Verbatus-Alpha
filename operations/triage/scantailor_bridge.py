@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Final, Mapping
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
+from common.contracts.stages import TRIAGE_MODES
 from common.imaging import ENCODER_LOSSLESS_MODES
 from operations.triage import producer
 from operations.triage.producer import SubmittedFrame, triage_manifest
@@ -33,6 +34,7 @@ _DOCUMENT_FIELDS: Final = {
     "source_image_count",
     "geometry",
 }
+_MAX_GEOMETRY_BYTES: Final = 16 * 1024 * 1024
 
 
 class ScantailorBridgeRefusal(ValueError):
@@ -49,12 +51,23 @@ class ScantailorTriageRows:
 
 def load_imported_geometry(path: str | Path) -> tuple[dict[str, Any], str]:
     """Read the canonical bytes published by the ScanTailor importer once."""
-    raw = Path(path).read_bytes()
+    try:
+        raw = producer._read_direct_regular_bytes(Path(path), _MAX_GEOMETRY_BYTES)
+    except OSError as error:
+        raise ScantailorBridgeRefusal(
+            "imported ScanTailor geometry could not be read as one direct regular file"
+        ) from error
     try:
         value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as error:
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise ScantailorBridgeRefusal("imported ScanTailor geometry is not JSON") from error
-    if canonical_bytes(value) + b"\n" != raw:
+    try:
+        canonical = canonical_bytes(value) + b"\n"
+    except TypeError as error:
+        raise ScantailorBridgeRefusal(
+            "imported ScanTailor geometry cannot be represented as canonical JSON"
+        ) from error
+    if canonical != raw:
         raise ScantailorBridgeRefusal("imported ScanTailor geometry is not canonical bytes")
     _document(value)
     return value, digest_bytes(raw)
@@ -67,31 +80,31 @@ def transcribe_midpoint_splits(
     submitted_by_source_path: Mapping[str, SubmittedFrame],
     corpus_id: str,
     mode: str,
-    orientation_degrees_by_source_path: Mapping[str, int] | None = None,
+    orientation_degrees_by_source_path: Mapping[str, int],
 ) -> ScantailorTriageRows:
     """Make exact decision rows from a checked imported ScanTailor document.
 
     ``orientation_degrees_by_source_path`` is supplied from dataset metadata,
-    never ground-truth text.  A 180-degree source emits its source-right half
+    never ground-truth text, and names every source.  A 180-degree source emits its source-right half
     first, then source-left, so the rotated outputs stay in physical reading
     order.  The original regions remain in source-frame coordinates.
     """
     _document(document)
     if not is_sha256(geometry_document_sha256):
         raise ScantailorBridgeRefusal("geometry document digest is not a SHA-256")
-    if (
-        not isinstance(corpus_id, str)
-        or not corpus_id.strip()
-        or mode not in {"manual", "semi", "auto"}
-    ):
+    if not isinstance(corpus_id, str) or not corpus_id.strip() or mode not in TRIAGE_MODES:
         raise ScantailorBridgeRefusal("corpus id or triage mode is not declared")
     if not isinstance(submitted_by_source_path, Mapping) or not submitted_by_source_path:
         raise ScantailorBridgeRefusal("every imported geometry needs a submitted source frame")
-    orientations = orientation_degrees_by_source_path or {}
+    orientations = orientation_degrees_by_source_path
     source_paths = [entry["image"]["source_path"] for entry in document["geometry"]]
-    if set(source_paths) != set(submitted_by_source_path) or set(orientations) - set(source_paths):
+    if set(source_paths) != set(submitted_by_source_path):
         raise ScantailorBridgeRefusal(
             "submitted sources and imported geometry do not have exact coverage"
+        )
+    if not isinstance(orientations, Mapping) or set(orientations) != set(source_paths):
+        raise ScantailorBridgeRefusal(
+            "every imported source needs exactly one declared orientation"
         )
     rows: dict[str, dict[str, Any]] = {}
     bindings: list[dict[str, Any]] = []
@@ -106,15 +119,10 @@ def transcribe_midpoint_splits(
             raise ScantailorBridgeRefusal("two ScanTailor sources map to one submitted path")
         width, height, image_mode = _dimensions(frame.data)
         image = entry["image"]
-        # A half the operator deleted in ScanTailor is a decision about what is
-        # on the page, and this bridge emits both halves unconditionally below.
-        # Read but never honoured, `removed_half` would let an excluded half
-        # reach the Door as an ordinary row and be established as an act, with
-        # nothing downstream able to tell the removal was discarded
-        # Refused rather than honoured: emitting only the retained
-        # half would leave that half's physical ordering decided silently here,
-        # and this bridge already refuses every other shape it cannot translate
-        # exactly.
+        # A half the operator deleted in ScanTailor is a decision about what is on
+        # the page, and this bridge always emits both halves. Emitting only the
+        # retained half would decide its physical ordering silently, so a removal
+        # is refused like every other shape the bridge cannot translate exactly.
         if image["removed_half"] is not None:
             raise ScantailorBridgeRefusal(
                 "imported ScanTailor geometry declares a removed half; this bridge translates "
@@ -126,8 +134,8 @@ def transcribe_midpoint_splits(
                 "imported ScanTailor dimensions disagree with submitted bytes"
             )
         cutter = _vertical_full_frame_cutter(entry, width, height)
-        degrees = orientations.get(source_path, 0)
-        if degrees not in {0, 180}:
+        degrees = orientations[source_path]
+        if isinstance(degrees, bool) or degrees not in {0, 180}:
             raise ScantailorBridgeRefusal("source orientation must be 0 or 180 degrees")
         regions = ((0, cutter), (cutter, width)) if degrees == 0 else ((cutter, width), (0, cutter))
         colour_mode = "keep" if image_mode in ENCODER_LOSSLESS_MODES else "rgb"
@@ -179,7 +187,7 @@ def transcribe_imported_geometry(
     submitted_by_source_path: Mapping[str, SubmittedFrame],
     corpus_id: str,
     mode: str,
-    orientation_degrees_by_source_path: Mapping[str, int] | None = None,
+    orientation_degrees_by_source_path: Mapping[str, int],
 ) -> ScantailorTriageRows:
     """Read a published geometry document and bind it before making any rows."""
     document, document_sha256 = load_imported_geometry(path)
@@ -242,6 +250,13 @@ def _document(value: Any) -> None:
         ):
             raise ScantailorBridgeRefusal("imported ScanTailor geometry repeats a source path")
         seen.add(image["source_path"])
+        file_image = image["file_image"]
+        if not isinstance(file_image, int) or isinstance(file_image, bool) or file_image != 0:
+            # A triage row names a whole submitted frame and carries no page index,
+            # so only the first image of a source file can be bound to one.
+            raise ScantailorBridgeRefusal(
+                "imported ScanTailor geometry names a page other than the first of its file"
+            )
 
 
 def _dimensions(data: bytes) -> tuple[int, int, str]:

@@ -144,6 +144,27 @@ description = "offline walking-skeleton fixture for Attestator 3"
 
 [[profiles]]
 kind = "fixture"
+recipe = "fake-reconstructor-v0"
+chair = "reconstructor"
+tier = "generic-24gb"
+description = "offline walking-skeleton fixture for the Coniector's reconstructor chair"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-reconstructor-v0"
+chair = "reconstructor"
+tier = "generic-48gb"
+description = "offline walking-skeleton fixture for the Coniector's reconstructor chair"
+
+[[profiles]]
+kind = "fixture"
+recipe = "fake-reconstructor-v0"
+chair = "reconstructor"
+tier = "generic-80gb-plus"
+description = "offline walking-skeleton fixture for the Coniector's reconstructor chair"
+
+[[profiles]]
+kind = "fixture"
 recipe = "fake-perlector-v0"
 chair = "perlector"
 tier = "generic-24gb"

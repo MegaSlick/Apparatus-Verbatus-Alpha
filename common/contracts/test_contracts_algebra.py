@@ -26,7 +26,15 @@ from common.contracts.outcomes import (
     terminal_category,
     witness_coverage,
 )
-from common.contracts.stages import ARMARIUM, ATTESTATORES, DESIGNATOR, INK_MAP, PERLECTOR, RECENSOR
+from common.contracts.stages import (
+    ARMARIUM,
+    ATTESTATORES,
+    CONIECTOR,
+    DESIGNATOR,
+    INK_MAP,
+    PERLECTOR,
+    RECENSOR,
+)
 
 # The exact shape of the algebra as this spec defines it. Pinned as counts so that
 # adding a state without deciding its class and its terminal category fails here,
@@ -39,8 +47,9 @@ EXPECTED_VOCABULARY_SIZES = {
     "designator": 4,
     "attestatores": 8,
     "perlector": 6,
-    "recensor": 6,
+    "recensor": 7,
     "archetypus": 4,
+    "coniector": 7,
     "armarium": 7,
 }
 
@@ -58,6 +67,11 @@ def test_ink_map_names_edge_evidence_without_owning_unit_14s_hold():
 def test_unmeasurable_ink_remains_unresolved_page_evidence_that_flows_onward():
     assert classify(INK_MAP, "ink-not-measurable") is OutcomeClass.UNRESOLVED
     assert terminal_category(INK_MAP, "ink-not-measurable") is None
+
+
+def test_no_coniector_outcome_decides_where_an_act_ends():
+    for outcome in outcomes.VOCABULARIES[CONIECTOR]:
+        assert terminal_category(CONIECTOR, outcome) is None
 
 
 def test_vocabulary_shape_is_pinned():
@@ -411,8 +425,8 @@ def test_a_continuation_join_forces_partial_over_two_delivered_acts():
         continuation_joins=[
             {
                 "join_id": "join-1-2-0",
-                "status": "reconstructed",
-                "not_reconstructed_reason": None,
+                "status": "not-reconstructed",
+                "not_reconstructed_reason": "no-code-join",
                 "head_page_ordinal": 1,
                 "tail_page_ordinal": 2,
             }
@@ -421,7 +435,8 @@ def test_a_continuation_join_forces_partial_over_two_delivered_acts():
     assert aggregate["status"] == "partial"
     assert aggregate["by_category"] == {"delivered": 2}
     (reason,) = aggregate["reasons"]
-    assert reason.startswith("continuation join join-1-2-0 (reconstructed)")
+    assert reason.startswith("continuation join join-1-2-0 (not-reconstructed)")
+    assert "no reconstruction was made (no-code-join)" in reason
 
 
 def test_an_unaddressed_chair_is_named_once_however_often_it_is_supplied():
@@ -956,3 +971,99 @@ def test_a_coverage_record_stripped_of_its_flags_cannot_read_as_witnessed(record
             act_pages={"act_a": [1]},
             act_text_status={"act_a": "established"},
         )
+
+
+def test_a_recensor_exclusion_is_completed_only_with_its_approval() -> None:
+    """An operator's `exclude` ends a unit as excluded-with-approval, never on the word alone."""
+    assert classify(RECENSOR, "excluded") is OutcomeClass.COMPLETED
+    assert terminal_category(RECENSOR, "excluded") is ArmariumCategory.EXCLUDED_WITH_APPROVAL
+    with pytest.raises(ApprovalRefusal, match="no approval-record reference"):
+        require_approval(RECENSOR, "excluded", None)
+    require_approval(RECENSOR, "excluded", "receipts/sha256/" + "a" * 64 + ".json")
+
+
+def _cleared_run(clearances: list[dict], page_holds: dict | None = None) -> dict:
+    return run_aggregate(
+        {"a1": ArmariumCategory.DELIVERED},
+        {"a1": {"under_witnessed": False, "unresolved_chairs": 0}},
+        {1: {"outcome": "sealed"}},
+        act_pages={"a1": [1]},
+        act_text_status={"a1": "established"},
+        review_clearances=clearances,
+        review_page_holds=page_holds,
+    )
+
+
+def test_a_run_whose_every_hold_was_cleared_stays_partial_and_names_each_clearance() -> None:
+    assert _cleared_run([])["status"] == "complete"
+    aggregate = _cleared_run(
+        [
+            {
+                "scope": "unit",
+                "subject": "o2",
+                "page": 1,
+                "decision": "exclude",
+                "cleared": [],
+            },
+            {
+                "scope": "page",
+                "subject": 1,
+                "page": 1,
+                "decision": "no-missed-act",
+                "cleared": ["unread-line"],
+            },
+            {
+                "scope": "unit",
+                "subject": "a1",
+                "page": 1,
+                "decision": "release",
+                "cleared": ["doubt-marks-malformed"],
+            },
+        ]
+    )
+    assert aggregate["status"] == "partial"
+    assert aggregate["reasons"] == [
+        "page 1 was cleared by an operator review decision (no-missed-act), clearing "
+        "unread-line; a person's decision, not a machine check",
+        "act a1 on page 1 was cleared by an operator review decision (release), clearing "
+        "doubt-marks-malformed; a person's decision, not a machine check",
+        "reading o2 on page 1 was cleared by an operator review decision (exclude), clearing "
+        "no machine hold; a person's decision, not a machine check",
+    ]
+
+
+def test_a_page_still_held_after_review_keeps_the_run_partial() -> None:
+    aggregate = _cleared_run([], {1: ["review-missed-act"]})
+    assert aggregate["status"] == "partial"
+    assert aggregate["reasons"] == ["page 1 is still held by review-missed-act"]
+    for holds in ({2: ["review-missed-act"]}, {1: []}):
+        with pytest.raises(FatalAccounting, match="not a held census page"):
+            _cleared_run([], holds)
+    for codes in ("review-missed-act", ["review-missed-act", ""], [1]):
+        with pytest.raises(FatalAccounting, match="page 1 names .*not a list of hold codes"):
+            _cleared_run([], {1: codes})
+
+
+def _row(**overrides) -> dict:
+    row = {"scope": "unit", "subject": "a1", "page": 1, "decision": "release", "cleared": []}
+    row.update(overrides)
+    return row
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    [
+        ([_row(page=2)], "names page 2, not a census page"),
+        ([_row(subject="")], "names 'unit' '' on page 1"),
+        ([_row(scope="page", subject=2, decision="no-missed-act")], "names 'page' 2 on page 1"),
+        ([_row(scope="page", subject="1", decision="no-missed-act")], "names 'page' '1' on page 1"),
+        ([_row(decision="hold")], "names no clearing decision or no codes"),
+        ([_row(decision="no-missed-act")], "names no clearing decision or no codes"),
+        ([_row(cleared="x")], "names no clearing decision or no codes"),
+        ([{key: value for key, value in _row().items() if key != "page"}], "is not the closed"),
+        ([_row(), _row(decision="exclude")], "named by more than one review clearance"),
+    ],
+)
+def test_a_malformed_or_repeated_clearance_is_fatal(rows: list[dict], message: str) -> None:
+    with pytest.raises(FatalAccounting, match=message):
+        _cleared_run(rows)

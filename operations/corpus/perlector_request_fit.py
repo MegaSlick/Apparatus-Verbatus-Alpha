@@ -38,6 +38,7 @@ from common.decoding import (  # noqa: E402
     perlector_page_max_tokens,
 )
 from common.imaging import encode_grayscale_png_deterministic  # noqa: E402
+from common.page_render import render_size  # noqa: E402
 from common.request_capacity import (  # noqa: E402
     RequestCapacityRefusal,
     page_request_capacity,
@@ -56,12 +57,6 @@ def perlector_row() -> ServingProfile:
 
 def sealed_protocol() -> dict[str, Any]:
     return protocol.load(ROOT / "config" / "perlector_protocol.toml")[0]
-
-
-def _rendered(page: tuple[int, int], edge: int) -> tuple[int, int]:
-    width, height = page
-    scale = min(1, edge / max(width, height))
-    return (max(1, round(width * scale)), max(1, round(height * scale)))
 
 
 PAGE_CONTEXTS: Final = (32_768, 65_536)
@@ -145,7 +140,7 @@ def _blank_render(size: tuple[int, int]) -> bytes:
 def page_feed_for(sealed: dict[str, Any], shape: dict[str, Any], change: dict) -> dict[str, Any]:
     """The page feed one gold page would be read under, with one feed setting changed."""
     size = shape["size"]
-    render = _rendered(size, sealed["page_context"]["maximum_edge"])
+    render = render_size(size, sealed["page_context"]["maximum_edge"])
     switches = {**sealed["feed"], **change}
     render_bytes = _blank_render(render) if switches["page_overlay"] != "off" else None
     chairs = [chair for chair, _adapter, _units in shape["witnesses"]]

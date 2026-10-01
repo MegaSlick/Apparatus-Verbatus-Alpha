@@ -15,12 +15,15 @@ what it measures itself:
   at its page's act edge names is recorded as a `continuation-link` between
   `act` entries, held when only one side says the text runs across; a flag on
   an `act` entry off that edge holds the entry, and a flag on an `other` entry
-  is a note in its review.
+  is a note in its review. A page's edges are its first reading's: an entry
+  the Perlector's re-ask recovered never moves them and is never a side.
 
 A unit is `accepted` only when its row is `read`, the floor holds, no chair is
 unresolved and the page's ink is covered; every other unit is `held-for-review`
 with every reason named. Nothing here reads, repairs or chooses text, and
-nothing asks for a recovery: `recoveries_used` is always 0.
+nothing asks for a recovery: `recoveries_used` is the page's re-asks, which
+stage 4 planned itself (0 or 1, from the page's row), and the receipt binds
+each page's re-ask and what it did.
 """
 
 from __future__ import annotations
@@ -38,7 +41,13 @@ from common.contracts.outcomes import (
 )
 from common.contracts.stages import ATTESTATORES, EXEMPLAR, PERLECTOR, RECENSOR
 from common.page_accounting import NOT_APPLICABLE, PASS
-from common.page_path import ACT_REGION_SCHEMA, PAGE_ACCOUNTING_KIND, refs_by_path
+from common.page_path import (
+    ACT_REGION_SCHEMA,
+    PAGE_ACCOUNTING_KIND,
+    PAGE_READING_KIND,
+    refs_by_path,
+)
+from common.page_reask import reask_outcome
 from common.page_review import (
     CONTINUATION_LINK_KIND,
     HELD,
@@ -119,13 +128,13 @@ def page_testimonia(context, chairs: set[str]) -> dict[str, list[dict[str, Any]]
 
 
 def page_witness_coverage(records: list[dict[str, Any]], floor: int, chairs: set[str]) -> dict:
-    """One page's witness coverage over the sealed page roster, in the v4 receipt's shape.
+    """One page's witness coverage over the sealed page roster, in the page-read receipt's shape.
 
     `witness_coverage` over each roster chair's current outcome, judged on page
     reads: a page-read run's witnesses read the whole page, so none is
     attached to an act. A roster chair with no Testimonium for the page is
     `not-run`. The floor counts chairs that read the page (`read` or
-    `genuinely-empty`) and were not cut off, by the v4 receipt's own formula
+    `genuinely-empty`) and were not cut off, by the page-read receipt's own formula
     (`outcomes.witnessed_count`). A reading chair whose Testimonium
     records no truncation state counts toward the floor, and is named in
     `health_unrecorded`; `shortfalls` counts the failed and truncated ones.
@@ -149,7 +158,7 @@ def page_witness_coverage(records: list[dict[str, Any]], floor: int, chairs: set
             "unaligned": 0,
         },
     }
-    # The page-read floor formula the v4 receipt checks, not `witness_coverage`'s own.
+    # The page-read floor formula the page-read receipt checks, not `witness_coverage`'s own.
     coverage["under_witnessed"] = witnessed_count(coverage) < floor
     return coverage
 
@@ -297,9 +306,10 @@ def _flags(act: dict) -> list[str]:
 def continuation_off_edge(acts: list[dict]) -> dict[str, list[str]]:
     """Each `act` entry whose continuation flag is not at its page's act edge, flags named.
 
-    A page's act edge is its last `act` entry (for running on) and its first
-    (for running on from before); `other` entries around them, a catchword
-    for one, do not move it.
+    A page's act edge is its last first-reading `act` entry (for running on)
+    and its first (for running on from before), `act_entries_by_page`'s; the
+    `other` entries around them, a catchword for one, and an entry the
+    re-ask recovered do not move it.
     """
     found: dict[str, list[str]] = {}
     for page in act_entries_by_page(acts).values():
@@ -342,6 +352,34 @@ def link_inputs(payload: dict, by_id: dict[str, dict], pages: dict[int, dict]) -
 
 def link_outcome(payload: dict) -> str:
     return ACCEPTED if payload["agreed"] else HELD
+
+
+def page_reasks(page: dict) -> int:
+    """How many times stage 4 re-asked a page, from its `page_readings` row: 0 or 1."""
+    return 0 if page["reask_ref"] is None else 1
+
+
+def page_receipt_row(context, page: dict) -> dict[str, Any]:
+    """A page as the v5 receipt binds it: its readings, last accounting and what its re-ask did."""
+    reask = None
+    if page["reask_ref"] is not None:
+        reading = context.tree.read_artifact_reference(
+            page["reask_ref"], stage=PERLECTOR, kind=PAGE_READING_KIND, subject_id=page["page_id"]
+        )
+        accounting = context.tree.read_artifact_reference(
+            page["accounting_ref"],
+            stage=PERLECTOR,
+            kind=PAGE_ACCOUNTING_KIND,
+            subject_id=page["page_id"],
+        )
+        reask = reask_outcome(reading["payload"]["reask"]["named"], accounting["payload"])
+    return {
+        "page_ordinal": page["page_ordinal"],
+        "reading_ref": page["reading_ref"],
+        "reask_ref": page["reask_ref"],
+        "accounting_ref": page["accounting_ref"],
+        "reask": reask,
+    }
 
 
 # --- one review --------------------------------------------------------------------
@@ -450,6 +488,7 @@ def review_of(
     assessment: dict | None,
     confirmed: dict | None,
     off_edge: list[str] | None = None,
+    recoveries_used: int = 0,
 ) -> tuple[str, dict[str, Any]]:
     """The outcome and payload of one unit's review, without its attempt ordinal."""
     ordinal = act["page_ordinal"]
@@ -517,7 +556,7 @@ def review_of(
         "confirmation": confirmed,
         "release": release,
         "notes": continuation_notes(act),
-        "recoveries_used": 0,
+        "recoveries_used": recoveries_used,
     }
     return outcome, payload
 
@@ -541,7 +580,7 @@ def plan_reviews(
 
     Every fact is measured from disk: the page witnesses, the residual ink,
     each unit's page accounting and uncertainty assessment, and whether a page
-    said to hold no act is confirmed so. The Recensor publishes these; its v4
+    said to hold no act is confirmed so. The Recensor publishes these; its v5
     receipt measures them again and requires the reviews on disk to be them.
     """
     pages = denominator["pages"]
@@ -570,6 +609,7 @@ def plan_reviews(
             assessment=_assessment(context, act),
             confirmed=confirmed,
             off_edge=off_edge.get(act["act_id"]),
+            recoveries_used=page_reasks(pages[act["page_ordinal"]]),
         )
         exemplar_page = context.artifact_ref(
             EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", act["page_id"])
@@ -762,7 +802,7 @@ def current_links(context, expected: list[tuple[str, dict]], by_id, pages) -> li
 def write_reading_receipt(
     context, *, page_coverage_findings: Callable[..., dict[int, dict]]
 ) -> None:
-    """Rebuild the v4 partition receipt from disk: units, reviews, coverage, page breaks.
+    """Rebuild the v5 partition receipt from disk: pages, units, reviews, coverage, page breaks.
 
     The units are re-derived through `reading_denominator` and every review is
     measured again (`plan_reviews`): its coverage, residual ink, confirmation,
@@ -848,10 +888,7 @@ def write_reading_receipt(
     receipt = build_recensor_reading_receipt(
         run_id=context.tree.run_id,
         config_digest=context.run["config_digest"],
-        page_reading_refs=[
-            {"page_ordinal": ordinal, "reading_ref": pages[ordinal]["reading_ref"]}
-            for ordinal in sorted(pages)
-        ],
+        pages=[page_receipt_row(context, pages[ordinal]) for ordinal in sorted(pages)],
         items=items,
         continuation_links=links,
     )

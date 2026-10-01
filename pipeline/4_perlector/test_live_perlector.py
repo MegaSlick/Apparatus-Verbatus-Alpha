@@ -111,15 +111,9 @@ def _live_row(identity, *, max_num_seqs: int = 1) -> dict[str, Any]:
         "dtype": "bfloat16",
         "seed": 0,
         "required_packages": {"vllm": "0.test"},
-        # The 16,384 the shipped real catalogue states for this chair at every
-        # tier (`config/serving_recipes_real.toml`). It was 2,048 while the
-        # reader admitted on a prompt *floor* of 790; the seam now admits on the
-        # measured upper bound, and this suite's own four-image dossier costs
-        # 1,732 prompt tokens by it -- 2,080 with the images and the reserve,
-        # which 2,048 cannot hold. Raising the stand-in row toward the row it
-        # stands in for is the same disposition the capacity unit took for the
-        # real catalogue: raise the context, never shrink what the chair is
-        # shown.
+        # The real catalogue's 16,384 for this chair at every tier
+        # (`config/serving_recipes_real.toml`), so the stand-in row admits what
+        # the real row admits.
         "max_model_len": 16384,
         "max_num_seqs": max_num_seqs,
         "max_num_batched_tokens": 512,
@@ -458,8 +452,9 @@ def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
         served_model_id="perlector-under-test",
     )
 
-    assert perlector._failure_record(error, phase="audit-reproof") == {
-        "phase": "audit-reproof",
+    phase = perlector.page_run.PAGE_READING_PASS
+    assert perlector._failure_record(error, phase=phase) == {
+        "phase": phase,
         "kind": "transport",
         "code": "CHAIR_TRANSPORT_FAILURE",
         "detail": "timed out after request dispatch",
@@ -632,10 +627,9 @@ def test_an_engine_call_with_two_digests_for_one_response_is_refused():
 def test_a_failed_chair_shutdown_stops_the_pass_before_the_seal_is_written(
     live_run, tmp_path, monkeypatch
 ):
-    """CONTRACT.md: 'One chair, started late, stopped before the seal.' A
-    mutation probe deleting `service.close()` ahead of `context.seal_boundary()`
-    left the rest of this module green, so nothing else here pins the ordering.
-    This makes the shutdown itself fail and checks the seal was never reached:
+    """CONTRACT.md: 'One chair, started late, stopped before the seal.' Nothing
+    else in this module pins the ordering of `service.close()` ahead of
+    `context.seal_boundary()`. This makes the shutdown itself fail and checks the seal was never reached:
     if `close()` ran *after* the seal, the failure would either be swallowed by
     `main`'s own `finally` or reported over an already-sealed stage."""
     root, catalogue = live_run
@@ -707,13 +701,12 @@ def test_stage_chair_client_logs_under_the_run_tree_and_leases_off_it(live_run, 
     its manager), so this proves both locations, and the manager keyword set
     that builds them, without starting a service or needing a card.
 
-    **The two locations are deliberately not the same, and this used to pin the
-    lease under the run tree.** The logs belong to the run and travel with it.
-    The lease belongs to the *card*, which belongs to the pod: a lease resolved
-    inside a run tree let two stages resumed under different run ids each
-    acquire their own and co-reside on one GPU, never met the pod preflight's
-    own lock at all, and put an advisory lock on a network mount that is not
-    known to honour one."""
+    **The two locations are deliberately not the same.** The logs belong to the
+    run and travel with it. The lease belongs to the *card*, which belongs to
+    the pod: a lease resolved inside a run tree would let two stages resumed
+    under different run ids each acquire their own and co-reside on one GPU,
+    never meet the pod preflight's own lock at all, and put an advisory lock on
+    a network mount that is not known to honour one."""
     root, catalogue = live_run
     monkeypatch.chdir(ROOT)
     monkeypatch.setattr(
@@ -756,13 +749,11 @@ def test_stage_chair_client_logs_under_the_run_tree_and_leases_off_it(live_run, 
     context.seal_boundary()
 
 
-# --- the two consumer-side rules a served page witness reached first ----------
+# --- two consumer-side rules only a served page witness reaches ---------------
 #
-# Both were unreachable while no page witness parsed live: the fixture posture
-# declares no geometry on a continuation page, and a fixture page record's
-# partition and its capture never name one blob twice. A served Chandra reaches
-# both (`pipeline/3_attestatores/CONTRACT.md`), which is why they are fixed here
-# rather than left described.
+# The fixture posture declares no geometry on a continuation page, and a fixture
+# page record's partition and its capture never name one blob twice. A served
+# Chandra reaches both (`pipeline/3_attestatores/CONTRACT.md`).
 
 
 def _page_context(root: Path, catalogue: Path, monkeypatch):
@@ -944,16 +935,12 @@ def test_a_refused_job_source_still_finishes_every_job_already_sent():
 
 # --- resume never asks again about a reply it has on record -------------------
 
-# Each act by its prompt's own act line; a witness's text also reaches the other
-# act's request as a neighbour clue.
-ACT_ONE, ACT_TWO = b"act: a1", b"act: a2"
-
 
 def test_a_reply_another_record_binds_answers_no_send():
-    """Two acts with byte-identical crops share an attribution key.
+    """Two page readings sharing one call's attribution key.
 
-    A reply that some record binds is on record, whichever act that record is about, so
-    it never refuses the other act's unanswered send; an unbound one does.
+    A reply that some record binds is on record, so it never refuses another
+    unanswered send with the same key; an unbound one does.
     """
     receipt = {"relative_path": "receipts/r.json", "sha256": "0" * 64}
     images = ["1" * 64]
@@ -985,7 +972,7 @@ def test_a_reply_another_record_binds_answers_no_send():
     assert not perlector._answers_a_send(calls, send)
     calls, unattributed = perlector._unrecorded_replies(context([]))
     assert not unattributed and perlector._answers_a_send(calls, send)
-    # Raw bytes with no call record naming them cannot be attributed to any act.
+    # Raw bytes with no call record naming them cannot be attributed to any send.
     del blobs["call"]
     assert perlector._unrecorded_replies(context([])) == ([], True)
     # A call record from before the decoding bump is refused by its name, not

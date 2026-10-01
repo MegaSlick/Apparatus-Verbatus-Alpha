@@ -63,13 +63,7 @@ def test_unknown_candidate_cannot_fall_back_to_another_prompt_format():
     ),
 )
 def test_prompt_format_binds_its_model_revision_and_digest(field, value):
-    """Each bound field on its own, with the other two held equal.
-
-    `identity` derives `revision` and `artifact_digest` from the key, so varying
-    only `source_ref` left two of the three fields `verify_identity` compares
-    untested — either could have been dropped from the comparison with this
-    test still green.
-    """
+    """Each bound field on its own, with the other two held equal."""
 
     candidate = identity("synthetic-a", 1)
     changed = replace(candidate, **{field: value})

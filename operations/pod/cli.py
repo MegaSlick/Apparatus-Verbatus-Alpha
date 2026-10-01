@@ -181,9 +181,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         balance_wiring = _wire_balance_notify(provider, enabled=args.notify)
     except Exception as error:  # noqa: BLE001 -- notification is never fatal, on any verb
-        # `--notify` is notification-only by ruling: a phone that cannot be
-        # reached may not decide a launch, and it certainly may not abort a
-        # close and leave a pod billing. The failure is written into the record
+        # `--notify` is notification only: a phone that cannot be reached may
+        # not decide a launch, and it certainly may not abort a close and leave
+        # a pod billing. The failure is written into the record
         # the same way an unwired seam already is.
         balance_wiring = _BalanceWiring(
             f"--notify could not wire balance notifications: {type(error).__name__}: {error}"
@@ -272,11 +272,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             record["balance_notification"] = balance_wiring.to_record()
             try:
                 _notify_launch_and_close(record, result, request, runtime.spend_policy)
-            except Exception as error:  # noqa: BLE001 -- contained so the record below still prints (rule 7)
+            except Exception as error:  # noqa: BLE001 -- contained so the record below still prints
                 # `notify_hooks` promises never to raise; contained here anyway so a
-                # future bug in that promise cannot take this printed record with it --
-                # the record naming the pod and lease is the one artifact rule 7 exists
-                # to protect, and it must still print even when notification breaks.
+                # bug in that promise cannot take this printed record with it: the
+                # record naming the pod and lease must still print even when
+                # notification breaks.
                 detail = f"notification raised and was contained: {error!r}"
                 if len(detail) > 160:
                     detail = f"{detail[:160]} (reason truncated at 160 characters)"
@@ -777,10 +777,9 @@ def _wire_balance_notify(provider: PodProvider, *, enabled: bool) -> _BalanceWir
     gate for all three notification moments -- launch, close, and every
     account-balance observation -- rather than two of them.
 
-    A provider that cannot take the hook is *recorded*, never refused: ruling
-    (b) makes this seam tracking plus notifications only, and a launch that
-    failed because a phone could not be reached would be exactly the new
-    enforcement that ruling forbids.
+    A provider that cannot take the hook is *recorded*, never refused: this
+    seam is tracking plus notifications only, and notification is never
+    allowed to decide a launch or a close.
     """
 
     if not enabled:

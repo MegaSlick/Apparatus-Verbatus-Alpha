@@ -1,8 +1,13 @@
 # How many times one page may be asked again before it is held for review.
 # Recovery recovers coverage, never quality: a poor reading is flagged, never
 # re-asked until it looks better. `common/recovery.py` reads and bounds it.
-# No stage re-asks a page yet; the budget is sealed into every run for the
-# page re-ask that will spend it.
+#
+# `page_level_reread`: per page, per page-read run. It bounds how many times the
+# Perlector re-asks a page (`common/page_reask.py`): 0 turns the re-ask off, 1
+# lets a page whose first reading left witness units, lines or detector records
+# unaccounted for be asked once more about exactly those, and more is refused
+# by name. Stage 4 plans the re-ask itself. Every request and every outcome is
+# an artifact.
 
 [budget]
 page_level_reread = 1

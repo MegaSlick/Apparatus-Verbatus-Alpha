@@ -48,7 +48,8 @@ silicon is still unproven; only a boot proves it.
 **TRANSFER's direction is named, not defaulted.**  A pod that is *consuming* a
 submission already on its volume passes neither ``--submission-manifest`` nor
 ``--transfer-target-factory``, and TRANSFER is a vacuous success requiring no
-object-store client at all (``transfer.py:103-104``).  A pod that is producing
+object-store client at all (``TransferExecutor.resume`` returns
+``nothing-to-transfer`` when the manifest is absent).  A pod that is producing
 one passes both.  Half of that pair -- either half -- is refused at plan time,
 before the ten-gigabyte environment sync, rather than as a red TRANSFER step
 after it.  A manifest present with no configured target is still a refusal,

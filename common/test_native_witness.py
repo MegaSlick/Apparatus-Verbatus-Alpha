@@ -23,7 +23,6 @@ from common.native_witness import (
     RESIZING_ADAPTER_CROP_OPERATIONS,
     churro_fit_target,
     derive_churro_capture,
-    detect_churro_repetition,
     detect_repetition,
     parse_churro_response,
     validate_capture_text_view,
@@ -661,9 +660,8 @@ def _page_with_churro_capture() -> dict:
             "terminal parse record",
         ),
         (
-            # A parser this chair has no branch for. Unit 12 widened the
-            # admissible parser names from `{"xml"}` to `CHURRO_PARSERS`; it did
-            # not open them.
+            # A parser this chair has no branch for: admitting a name in
+            # `CHURRO_PARSERS` does not open a terminal record for it.
             lambda value: value["native_capture"].update(
                 parse={"state": "parsed", "parser": "json", "text": "x"}
             ),
@@ -738,7 +736,7 @@ def test_churro_capture_derivation_is_checked_against_its_authoritative_raw_byte
 
 
 def test_a_churro_capture_admits_the_live_unreported_stop_reason():
-    """U5: a live page-scoped chair (Churro) whose wire response carried no
+    """A live page-scoped chair (Churro) whose wire response carried no
     `finish_reason` at all retains `STOP_REASON_UNREPORTED`
     (`common/contracts/serving.py`) as its transport word -- distinct from
     every fixture/engine word already in `_CHURRO_STOP_REASONS`, and it must
@@ -751,16 +749,12 @@ def test_a_churro_capture_admits_the_live_unreported_stop_reason():
 
 
 def test_an_unreported_churro_boundary_publishes_unknown_truncation_not_false():
-    """U8, the contract's third owed gap: three states, not two.
+    """Three states, not two.
 
-    The shared page contract re-derived a Churro page record's health from its
-    capture by asking one question -- "is this word a cut-off word" -- and an
-    engine that reported *nothing* answered it "no", which the record then
-    published as `truncated: false`: a completed boundary nobody observed.
-    The live boundary measures three states, and this is the
-    third: unknown, said so in the basis. Before the fix this payload was
-    refused by name, so a live Churro chair whose wire carried no
-    `finish_reason` could not publish a page record at all.
+    An engine that reported no stop reason has not shown a completed boundary,
+    so the page record publishes `truncated: None` with basis `not-recorded`,
+    and `truncated: false` for that capture is refused as a claim about a
+    boundary nobody observed.
     """
 
     value = _page_with_churro_capture()
@@ -770,8 +764,7 @@ def test_an_unreported_churro_boundary_publishes_unknown_truncation_not_false():
 
     assert validate_page_testimonium_payload(value) is value
 
-    # And the two-valued answer it replaces is now refused: `false` here is a
-    # claim about a boundary the engine never reported.
+    # `false` here is a claim about a boundary the engine never reported.
     value["content_health"].update(truncated=False, truncation_basis="trusted-response-boundary")
     with pytest.raises(SchemaRefusal, match="health differs"):
         validate_page_testimonium_payload(value)
@@ -823,15 +816,12 @@ def test_a_reported_natural_stop_is_unchanged_by_the_third_state():
 
 
 def test_a_capture_may_record_a_shape_its_parser_ran_over_and_could_not_place():
-    """U8, the contract's fourth owed gap: `unrecognized-shape` is admitted.
+    """`unrecognized-shape` is admitted.
 
-    `pipeline/3_attestatores/chandra.py` has produced this state since it was
-    written -- the vendor publishes no response specimen, so a real Chandra
-    body is a named surprise rather than a parse failure -- and
-    `feeding.retain_model_view` records it. The shared contract had no room for
-    it, so the retained model view of the one state a live Chandra response
-    actually reaches could be attached to no record at all: the bytes stayed,
-    the adapter's own account of them was dropped.
+    `pipeline/3_attestatores/chandra.py` produces this state -- the vendor
+    publishes no response specimen, so a real Chandra body is a named surprise
+    rather than a parse failure -- and `feeding.retain_model_view` records it,
+    so the shared contract must let the retained model view attach to a record.
     """
 
     value = _native_capture()
@@ -1171,11 +1161,9 @@ def test_native_capture_refuses_a_blank_relative_path():
         validate_native_capture(value)
 
 
-# ============ U10: Churro reads its vendor's own HistoricalDocument grammar ========
+# ============ Churro reads its vendor's own HistoricalDocument grammar ============
 #
-# One grammar, one parser name, in both postures. Unit 12's second parser and
-# the JSON coordinate contract behind it are retired with the prompt that asked
-# for them; what a Churro capture records now is what
+# One grammar, one parser name, in both postures: a Churro capture records what
 # `common/churro_document.py` read out of the vendor's own answer. Everything
 # below is offline and byte-level.
 
@@ -1219,11 +1207,8 @@ def test_the_retired_output_envelope_still_reads_and_says_that_it_is_retired():
 def test_a_well_formed_body_rooted_elsewhere_is_an_unrecognized_shape_not_a_failure():
     """The parser ran, read the whole response, and could name no shape it knows.
 
-    This is the state Unit 12 coupled to a parser name that no longer exists.
-    `validate_churro_xml` -- the door it replaced -- refused the vendor's own
-    grammar outright, because it admitted a bare `<output>` element and nothing
-    else, so a real `HistoricalDocument` answer would have landed as
-    unparseable bytes.
+    A well-formed body rooted elsewhere is an unrecognized shape, named in the
+    reason, not unparseable bytes.
     """
     result = parse_churro_response(b"<transcription>x</transcription>")
     assert result["state"] == "unrecognized-shape"
@@ -1512,10 +1497,9 @@ def test_native_parse_refusal_names_failed_and_unrecognized_shape():
             native_parse_refusal({"state": state, "text": "x"})
 
 
-# ============ Unit 3: the vocabulary the vendor grammars arrive through ===========
+# ============ the vocabulary the vendor grammars arrive through ===================
 #
-# Everything below closes a contract *before* the adapters that write it land:
-# the two vendor preprocessing operations, the colour step they may perform, the
+# The contract the adapters write against: the two vendor preprocessing operations, the colour step they may perform, the
 # parser names a retained model view may record, the chair-neutral repetition
 # scan, and the vendor pin that travels beside the model identity.
 
@@ -1689,7 +1673,7 @@ def test_the_vendors_minimum_area_is_not_a_bound_its_own_output_obeys():
 
 
 def test_the_vendor_maximum_area_is_the_number_the_port_is_held_to():
-    """An area, which is how the vendor applies it and how U8 tests the port."""
+    """An area, which is how the vendor applies it and how the parity tests hold the port."""
     assert CHANDRA_SCALE_MAX_PIXELS == 3072 * 2048 == 6_291_456
 
 
@@ -1953,7 +1937,7 @@ def test_a_sealed_page_carrying_alpha_still_has_a_legal_churro_presentation(mode
 
 
 def test_a_bitonal_crop_replays_through_our_lanczos_not_the_vendors_nearest():
-    """The one named departure in the Churro port, pinned so U8 inherits it stated.
+    """The one named departure in the Churro port, pinned so it stays stated.
 
     `resize_image_to_fit` resizes whatever it loaded, and Pillow 12.3.0 silently
     substitutes NEAREST for LANCZOS on mode `"1"`. `resize_png_lanczos` promotes
@@ -1961,8 +1945,8 @@ def test_a_bitonal_crop_replays_through_our_lanczos_not_the_vendors_nearest():
     and the door seals it as `"1"` -- the replayed pixels are a true LANCZOS and
     the vendor's are nearest-neighbour. The departure is deliberate: a recipe
     that recorded `pillow-lanczos` and delivered nearest neighbour would be a
-    record that reads false. U8's parity table needs a mode-`"1"` row that
-    expects this inequality rather than byte equality.
+    record that reads false. A parity row for mode `"1"` expects this inequality
+    rather than byte equality.
     """
     bitonal = Image.new("1", (2600, 40))
     bitonal.putdata([(x * 7 + y * 3) % 2 for y in range(40) for x in range(2600)])
@@ -2100,11 +2084,6 @@ def test_every_parse_state_this_contract_names_stays_recordable(parse):
 
 
 # ------------------- the chair-neutral tail-cycle scan --------------------
-
-
-def test_the_repetition_scan_kept_its_old_name_as_an_alias_of_the_same_function():
-    """One function, two names, so the two cannot drift into two thresholds."""
-    assert detect_churro_repetition is detect_repetition
 
 
 def test_the_repetition_scan_reads_text_and_bytes_to_the_same_finding():

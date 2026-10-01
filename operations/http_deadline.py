@@ -4,12 +4,9 @@ A socket timeout bounds *one* blocking receive, never the call.  A responder
 that delivers a byte just inside it holds the request open for as long as it
 likes, and both loops built on these transports — the readiness watchdog and
 the shutdown absence poll — consult their own deadline only *between* requests.
-Measured at 36acde636f against a 0.15 s configured timeout: a loopback provider
-response dribbling its body one byte at a time returned HTTP 200 after 8.559 s,
-and a response dribbling its *headers* returned 200 after 1.273 s.  The serving
-transport bounded its body and so returned in 0.220 s, but its headers escaped
-that bound and took 1.280 s.  On a card that bills by the hour, a bound the
-whole design rests on was not a bound.
+A responder that dribbles its headers or its body one byte at a time can hold a
+call many times past its socket timeout, and on a card that bills by the hour
+those loops need a bound on the whole call.
 
 **The mechanism is a worker thread joined with the remaining budget, and that is
 a decision rather than a preference.**  The alternative — re-arming the socket
@@ -35,8 +32,7 @@ timeout itself, which every caller here sets to no more than the same budget.
 
 This module holds no provider, model-host, or endpoint behavior.  It is the
 shared primitive under ``operations/serving/http.py`` and
-``operations/pod/provider_runpod.py``, which had this protection in different
-strengths and in different places.
+``operations/pod/provider_runpod.py``, so both get the same bound.
 """
 
 from __future__ import annotations

@@ -15,6 +15,7 @@ import textwrap
 import tomllib
 from pathlib import Path
 from types import ModuleType
+from unittest import mock
 
 import pytest
 
@@ -91,6 +92,7 @@ def stage_programs() -> dict[str, str]:
         "perlector",
         "recensor",
         "archetypus",
+        "coniector",
         "armarium",
     ], "a stage was added to or dropped from the orchestrator's sequence"
     return programs
@@ -369,14 +371,18 @@ def orchestrated_run(tmp_path_factory):
 
     The run tree holds no wall-clock time and no path of its own, so a copy is the tree a
     fresh run there would write (pipeline/orchestrator/test_orchestrated_run_copy.py holds
-    that); each caller gets its own copy to change.
+    that); each caller gets its own copy to change. Every run is made under the environment
+    as it stood when the fixture was set up, so a test that changed it before asking for a
+    copy cannot change the run every later caller shares.
     """
     built: dict[tuple[str, str], tuple[Path, subprocess.CompletedProcess[str]]] = {}
+    environment = dict(os.environ)
 
     def copy(destination: Path, run_id: str, scenario: str, expected_exit: int = 0) -> Path:
         if (run_id, scenario) not in built:
             root = tmp_path_factory.mktemp("orchestrated") / "runs"
-            built[run_id, scenario] = root, run_orchestrator(root, run_id, scenario)
+            with mock.patch.dict(os.environ, environment, clear=True):
+                built[run_id, scenario] = root, run_orchestrator(root, run_id, scenario)
         root, result = built[run_id, scenario]
         assert result.returncode == expected_exit, result.stderr
         shutil.copytree(root, destination, symlinks=True)
@@ -436,6 +442,19 @@ def _notification_sink() -> None:
     os.environ["NTFY_TOPIC"] = NOTIFY_TEST_SINK_TOPIC
 
 
+def reask_recovery_config(directory: Path, page_level_reread: int) -> Path:
+    """The committed recovery policy with its page re-ask budget set, written under `directory`."""
+    text = (ROOT / "config" / "recovery.toml").read_text(encoding="utf-8")
+    assert "\npage_level_reread = 1\n" in text
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "recovery.toml"
+    path.write_text(
+        text.replace("\npage_level_reread = 1\n", f"\npage_level_reread = {page_level_reread}\n"),
+        "utf-8",
+    )
+    return path
+
+
 def floor_models_config(directory: Path, floor: int) -> Path:
     """The live model config with its witness floor set to `floor`, written under `directory`."""
     shutil.copytree(ROOT / "config" / "model-fixtures", directory / "model-fixtures")
@@ -454,15 +473,20 @@ def build_page_tree(
     run_id: str = "r",
     *,
     floor: int = 3,
+    reask: int | None = 0,
     **options,
 ) -> tuple[Path, dict[str, object]]:
     """A fixture tree read page by page, through the Perlector; returns (root, stage options).
 
     The committed protocol and roster read page by page. The options, which
-    every later stage of the run takes too, set the witness floor to `floor`
-    when it is not the committed one; `options` adds others (for example
-    `witness_context="blinded"`).
+    every later stage of the run takes too, name a recovery policy with the page
+    re-ask budget `reask` (off by default, so each page stands on its first
+    reading; `None` keeps the committed policy and names none), and set the
+    witness floor to `floor` when it is not the committed one; `options` adds
+    others (for example `witness_context="blinded"`).
     """
+    if reask is not None:
+        options = {"recovery_config": reask_recovery_config(base / "config", reask), **options}
     if floor != 3:
         options = {"models_config": floor_models_config(base / "models", floor), **options}
     root = base / "runs"
@@ -472,8 +496,16 @@ def build_page_tree(
     return root, options
 
 
-def page_context(root: Path, run_id: str, scenario: str, options: dict[str, object], stage=None):
-    """A page-read tree's context under `options`, opened as `stage` (the Recensor's by default)."""
+def page_context(
+    root: Path,
+    run_id: str,
+    scenario: str,
+    options: dict[str, object],
+    stage=None,
+    serving_reader=None,
+):
+    """A page-read tree's context under `options`, opened as `stage` (the Recensor's by
+    default), with `serving_reader` for a test that reads a live call again."""
     from common.contracts.stages import RECENSOR
     from common.stage import open_context, stage_parser
 
@@ -492,7 +524,7 @@ def page_context(root: Path, run_id: str, scenario: str, options: dict[str, obje
             ),
         ]
     )
-    return open_context(args, stage or RECENSOR)
+    return open_context(args, stage or RECENSOR, serving_reader=serving_reader)
 
 
 def _stage_records(root: Path, run_id: str, stage_dir: str, kind: str) -> list[tuple[Path, dict]]:

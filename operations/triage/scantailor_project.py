@@ -44,10 +44,10 @@ def prescribed_midpoint_project(sources: list[PrescribedSpread]) -> bytes:
             isinstance(value, int) and not isinstance(value, bool) and value > 1
             for value in (source.width, source.height)
         ):
-            raise ValueError("prescribed ScanTailor source dimensions must be positive integers")
+            raise ValueError(
+                "prescribed ScanTailor source dimensions must be integers of at least 2 pixels"
+            )
         midpoint = source.width // 2
-        if midpoint == 0 or midpoint == source.width:
-            raise ValueError("prescribed ScanTailor midpoint leaves an empty half")
         directory_id, file_id, image_id = str(ordinal), str(ordinal), str(ordinal)
         SubElement(
             directories, "directory", {"id": directory_id, "path": relative.parent.as_posix()}

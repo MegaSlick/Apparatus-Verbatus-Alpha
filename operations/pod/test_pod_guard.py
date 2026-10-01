@@ -8,6 +8,7 @@ advances, so a test waits on what the guard did rather than on seconds passing.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -39,20 +40,25 @@ def pod(tmp_path):
             'case "$*" in "$FAKE_RUNPODCTL_FAIL"*) exit 1 ;; esac\n'
         ),
         "nvidia-smi": 'echo "${FAKE_GPU_UTIL:-0}"\n',
-        # Records its argv and the contents of any -K config, which the caller deletes.
+        # Records the contents of any -K config, which the caller deletes, and then its
+        # argv: a test that waits for the argv line finds the config already written.
         "curl": (
+            'previous=""\n'
+            'for argument in "$@"; do\n'
+            f'  [ "$previous" = -K ] && cat "$argument" >> "{curl_configs}"\n'
+            '  previous="$argument"\n'
+            "done\n"
             f'printf "%s\\n" "$*" >> "{curl_calls}"\n'
             '[ "${FAKE_CURL_FAIL:-}" = yes ] && exit 22\n'
             "while [ $# -gt 0 ]; do\n"
             '  case "$1" in\n'
             '    -o) cp "$FAKE_GUARD" "$2"; exit 0 ;;\n'
-            f'    -K) cat "$2" >> "{curl_configs}" ;;\n'
             "  esac\n"
             "  shift\n"
             "done\n"
             "exit 0\n"
         ),
-        "date": f'[ "$*" = "+%s" ] && exec cat "{clock}"\nexec {shutil.which("date")} "$@"\n',
+        "date": f'case "$*" in "+%s" | "-u +%s") exec cat "{clock}" ;; esac\nexec {shutil.which("date")} "$@"\n',
         # A whole-second sleep is one tick: it advances the clock by FAKE_SLEEP_ADVANCE per
         # second (default 1; 0 leaves the clock to the test), then runs the test's FAKE_TICK script with the tick number,
         # which is how a test does work "during" that second. Once a runpodctl call has been
@@ -104,10 +110,9 @@ def on_each_tick(env, tmp_path, script):
     env["FAKE_TICK"] = str(hook)
 
 
-def halted(env):
+def halted(env) -> bool:
     """Whether the scripts made a runpodctl call and froze in the sleep after it."""
-    marker = Path(env["POD_GUARD_DIR"]).parent / "halted"
-    return marker.exists
+    return (Path(env["POD_GUARD_DIR"]).parent / "halted").exists()
 
 
 def run_until(argv, env, done, limit=20):
@@ -170,7 +175,7 @@ def test_the_start_command_refuses_a_malformed_hours_value(pod):
 
 
 def run_guard(env, hours):
-    run_until(["sh", str(GUARD), hours, "30"], env, halted(env))
+    run_until(["sh", str(GUARD), hours, "30"], env, lambda: halted(env))
 
 
 def test_container_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
@@ -301,7 +306,7 @@ def test_a_deadline_rewritten_while_running_ignores_garbage_and_honours_an_exten
         wait_for(lambda: len(lines(ticks)) >= seen + 3, "ticks past the first deadline")
         assert "pod delete testpod" not in lines(calls)
         rewrite(start + 60)
-        wait_for(halted(env), "the delete")
+        wait_for(lambda: halted(env), "the delete")
     finally:
         os.killpg(process.pid, signal.SIGKILL)
         process.wait()
@@ -316,7 +321,13 @@ def test_the_rest_api_deletes_the_pod_when_both_runpodctl_forms_fail(pod, tmp_pa
     env["FAKE_RUNPODCTL_FAIL"] = ""  # the empty prefix matches every runpodctl call
     env["RUNPOD_API_KEY"] = "test-key-not-real"
     curl_calls = tmp_path / "curl-calls.txt"
-    run_guard(env, "5")
+    # The guard logs the request once curl has returned, so waiting for that line
+    # leaves nothing of the call still to be written.
+    run_until(
+        ["sh", str(GUARD), "5", "30"],
+        env,
+        lambda: "delete requested (attempt 1)" in log_of(state),
+    )
     delete = next(line for line in lines(curl_calls) if "DELETE" in line)
     assert delete.endswith("-X DELETE https://api.runpod.io/v2/pods/testpod")
     assert "test-key-not-real" not in "".join(lines(curl_calls))
@@ -336,9 +347,81 @@ def test_a_topic_file_sends_one_notification_when_the_guard_deletes(pod, tmp_pat
     [notification] = lines(curl_calls)
     assert "-H Title: Pod guard" in notification
     assert "Pod testpod: its guard requested deletion (no GPU, CPU or network work" in notification
+    # ntfy's answer echoes the topic; it must not land in the guard log.
+    assert notification.endswith("-o /dev/null")
+    assert "guard-test-topic" not in log_of(state)
     # Assembled from pieces so the ingress check does not read a topic URL here.
     topic_url = "https://ntfy" + ".sh/" + "guard-test-topic"
     assert lines(tmp_path / "curl-configs.txt") == [f'url = "{topic_url}"']
+
+
+def test_a_released_run_s_outcome_is_in_the_delete_notice(pod, tmp_path):
+    """pod_run --no-hold names the run and its outcome; the phone ping must carry it."""
+
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    deadline = state / "deadline-testpod"
+    deadline.write_text(f"{clock_of(env) + 3600}\n")
+    curl_calls = tmp_path / "curl-calls.txt"
+    released = state / "released-testpod"
+    staging = state / "deadline-testpod.new"
+    # Written once while the guard runs (from its first tick on, after it armed), as pod_run
+    # does; one left from before it armed is cleared. Read as text, never run: anything
+    # outside a plain name is dropped. The new deadline is the guard's clock at that tick.
+    on_each_tick(
+        env,
+        tmp_path,
+        f'[ "$1" -ge 1 ] && [ ! -e "{tmp_path}/released-once" ] || exit 0\n'
+        f'touch "{tmp_path}/released-once"\n'
+        f"printf '%s\\n' 'run proof-1 ended complete $(id)`id`' > \"{released}\"\n"
+        f'cat "{tmp_path}/clock" > "{staging}"\n'
+        f'mv "{staging}" "{deadline}"\n',
+    )
+    run_until(["sh", str(GUARD), "5", "30"], env, lambda: bool(lines(curl_calls)))
+    [notification] = lines(curl_calls)
+    assert (
+        "its guard requested deletion (approved time is up; pod_run reported: "
+        "run proof-1 ended complete idid)." in notification
+    )
+    assert "pod_run reported: run proof-1 ended complete" in log_of(state)
+
+
+@pytest.mark.parametrize("left_over", [False, True])
+def test_without_a_release_the_notice_names_only_the_guard_s_reason(pod, tmp_path, left_over):
+    """A notice left by an earlier run on a restarted pod is not this guard's run."""
+
+    env, calls, state = pod
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    (state / "deadline-testpod").write_text(f"{clock_of(env)}\n")
+    if left_over:
+        (state / "released-testpod").write_text("run old-run ended complete\n")
+    curl_calls = tmp_path / "curl-calls.txt"
+    run_until(["sh", str(GUARD), "5", "30"], env, lambda: bool(lines(curl_calls)))
+    [notification] = lines(curl_calls)
+    assert "its guard requested deletion (approved time is up)." in notification
+    assert "pod_run reported" not in log_of(state)
+    assert not (state / "released-testpod").exists()
+
+
+def test_the_guard_touches_its_heartbeat_every_tick(pod):
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    heartbeat = state / "heartbeat-testpod"
+    seen: list[int] = []
+
+    def two_beats():
+        if heartbeat.exists():
+            mtime = heartbeat.stat().st_mtime_ns
+            if not seen or seen[-1] != mtime:
+                seen.append(mtime)
+        return len(seen) >= 2
+
+    run_until(["sh", str(GUARD), "5", "30"], env, two_beats)
+    assert len(seen) >= 2
+    assert not lines(calls)
 
 
 def test_a_deadline_more_than_a_week_out_is_ignored(pod):
@@ -370,9 +453,9 @@ def test_the_idle_limit_runs_from_the_last_keepalive_touch(pod):
     os.utime(keepalive, (started, started))
     run_guard(env, "5")
     assert "no GPU, CPU or network work" in log_of(state)
-    # One idle limit (2 s) after the touch, give or take a tick, not a further idle limit
-    # after the touch expires. The clock stops at the delete.
-    assert clock_of(env) - started <= 3
+    # One idle limit (2 s) after the touch: not the one tick an untouched idle pod lasts,
+    # and not a further idle limit after the touch expires. The clock stops at the delete.
+    assert clock_of(env) - started == 2
 
 
 def test_a_garbled_deadline_file_is_replaced_not_trusted(pod):
@@ -423,7 +506,7 @@ def start_command(env, hours):
 def test_the_start_command_arms_the_guard_and_keeps_the_container_up(pod):
     env, calls, state = pod
     argv, env = start_command(env, "5")
-    alive = run_until(argv, env, halted(env))
+    alive = run_until(argv, env, lambda: halted(env))
     assert "armed for pod testpod" in log_of(state)
     assert "no GPU, CPU or network work" in log_of(state)
     assert alive
@@ -433,7 +516,7 @@ def test_the_backstop_deletes_the_pod_when_the_guard_cannot_be_fetched(pod):
     env, calls, state = pod
     env["FAKE_CURL_FAIL"] = "yes"
     argv, env = start_command(env, "0.0003")
-    run_until(argv, env, halted(env))
+    run_until(argv, env, lambda: halted(env))
     assert "pod delete testpod" in lines(calls)
     assert log_of(state) == ""
 
@@ -450,3 +533,37 @@ def test_the_backstop_honours_an_extended_deadline(pod):
     run_until(argv, env, lambda: clock_of(env) >= started + 10)
     assert clock_of(env) >= started + 10
     assert lines(calls) == []
+
+
+def test_the_guard_keeps_its_records_under_the_volume_mount_the_bootstrap_requires():
+    from operations.pod.models import POD_VOLUME_MOUNT_PATH
+
+    expected = f"{POD_VOLUME_MOUNT_PATH}/.pod_guard"
+    env = {key: value for key, value in os.environ.items() if key != "POD_GUARD_DIR"}
+    printed = subprocess.run(
+        ["sh", str(START_COMMAND), "1", "0" * 40], env=env, capture_output=True, text=True
+    ).stdout
+    assert f"${{POD_GUARD_DIR:-{expected}}}; export POD_GUARD_DIR=$d;" in printed
+    assert f"dir=${{POD_GUARD_DIR:-{expected}}}" in GUARD.read_text()
+    policy = json.loads((HERE.parents[1] / "config" / "data_handling_policy.json").read_text())
+    assert POD_VOLUME_MOUNT_PATH in policy["storage_roots"]
+    from operations.pod import pod_run
+
+    assert expected == f"{POD_VOLUME_MOUNT_PATH}/{pod_run.POD_GUARD_DIRECTORY}"
+
+
+def test_a_guard_fetched_from_an_older_commit_still_uses_the_start_command_s_directory(
+    pod, tmp_path
+):
+    env, calls, state = pod
+    older = tmp_path / "older_guard.sh"
+    older.write_text(
+        GUARD.read_text().replace("/workspace/private/.pod_guard", str(tmp_path / "wrong"))
+    )
+    env = {key: value for key, value in env.items() if key != "POD_GUARD_DIR"}
+    env["FAKE_GUARD"] = str(older)
+    argv, env = start_command(env, "5")
+    argv[2] = argv[2].replace("/workspace/private/.pod_guard", str(state))
+    run_until(argv, env, lambda: "pod delete testpod" in lines(calls))
+    assert "armed for pod testpod" in log_of(state)
+    assert not (tmp_path / "wrong").exists()

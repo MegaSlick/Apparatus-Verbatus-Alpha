@@ -38,7 +38,7 @@ from operations.spike_perlector.testkit import (
     run_plan_approval_for,
     witness_configuration_for,
 )
-from operations.submit.gate import DEFAULT_POLICY_PATH, load_policy
+from operations.submit.gate import DEFAULT_POLICY_PATH, ROOT, load_policy
 
 POLICY = load_policy()
 RUN_ENGINEERING_DECLARATION = {
@@ -374,9 +374,6 @@ def test_run_authorization_refuses_a_forged_in_memory_approval_object():
         def require_scope(self, **_kwargs):
             return None
 
-        def require_profile(self, _profile):
-            return None
-
     forged = _Forged()
     roster = private_roster()
     manifest = manifest_for(evaluation_act(material_class=MaterialClass.PRIVATE_REGISTER))
@@ -438,12 +435,8 @@ def test_generic_matrix_refuses_real_material_before_any_adapter_call():
 # --- DataGateAuthority's own refusals -----------------------------------------
 #
 # This class decides whether private-register material may be disclosed to an
-# external adapter.  Until now its stale/missing/tampered behaviour was covered
-# only through `common/contracts/test_contracts_approval.py`, against the shared
-# "data-gate" action retired for that reason.  When the rebase onto that cut
-# moved the behaviour into this class, the coverage did not come with it — and two
-# real regressions then passed the whole suite unnoticed.  These tests are the
-# protection moving to where the behaviour now lives.
+# external adapter, so its stale, missing and tampered cases are tested here,
+# where the behaviour lives.
 
 
 def test_a_missing_data_gate_approval_refuses_by_name_not_by_attribute_error():
@@ -506,7 +499,7 @@ def test_data_gate_resolves_the_single_repository_policy_identity_and_revision()
         read_bytes=lambda _path: payload,
     )
 
-    assert DEFAULT_POLICY_PATH.as_posix().endswith(DATA_GATE_POLICY_REPOSITORY_PATH)
+    assert DEFAULT_POLICY_PATH == ROOT / DATA_GATE_POLICY_REPOSITORY_PATH
     assert authority.policy_identity == DATA_GATE_POLICY_IDENTITY
     assert authority.policy_repository_path == DATA_GATE_POLICY_REPOSITORY_PATH
     assert authority.policy_revision == POLICY["policy_version"]

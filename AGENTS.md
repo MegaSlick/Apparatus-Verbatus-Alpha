@@ -103,6 +103,9 @@ conflict.
   different model family, such as Codex, is worth having on big changes.
 - Fix or decline every real finding, with a reason. Reviewers read the exact commit that
   is pushed.
+- Every review and workflow also looks at the tests and comments in what it touches:
+  fix weak tests, remove ones that prove nothing, and fix comments that are stale or
+  carry history.
 
 ## Agents
 

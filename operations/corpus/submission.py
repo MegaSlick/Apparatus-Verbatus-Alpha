@@ -39,7 +39,7 @@ is fully admitted, so a page refused for an unrelated reason can never be named 
 the "original" of someone else's `duplicate-page-bytes` refusal; and a page whose
 decoded pixels disagree with the IIIF response's declared dimensions is refused
 `dimension-mismatch`, because `record_url`'s `x,y,w,h` is defined in the declared
-frame. None of these refusals abort the whole build: following rule 7, every
+frame. None of these refusals abort the whole build: every
 refusal is recorded by name and the build proceeds around it, the same shape
 `plan.py` already uses for a malformed row.
 
@@ -65,9 +65,8 @@ disjoint trees rather than one tree with a filter, so there is no filename
 convention standing between an accidental sidecar and a refused Door admission.
 
 **Partitioning.** A submission is capped at 1000 pages, with
-`(split, source, volume)` as the partition key; `content_aware_shards` is
-explicitly not this problem ("Unit 8's, it reasons about triage split pairs
-... a RecordGold submission has none of"). This module sorts admitted pages by
+`(split, source, volume)` as the partition key; `content_aware_shards` plans
+triage split-pair seams, which a RecordGold submission has none of. This module sorts admitted pages by
 that exact key (plus `designation`, for a fully deterministic order) and slices
 the sorted list into shards of at most `max_pages_per_shard` — simple, exact for
 this corpus's page counts (val ≈ 225-315 pages, comfortably under the cap

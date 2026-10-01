@@ -28,6 +28,7 @@ FIXTURE = "synthetic-two-page-v0"
 ATTESTATORES_PROGRAM = "pipeline/3_attestatores/run.py"
 RECENSOR_PROGRAM = "pipeline/5_recensor/run.py"
 ARCHETYPUS_PROGRAM = "pipeline/6_archetypus/run.py"
+CONIECTOR_PROGRAM = "pipeline/4b_coniector/run.py"
 ARMARIUM_PROGRAM = "pipeline/7_armarium/run.py"
 
 
@@ -138,6 +139,7 @@ def test_no_later_stage_completes_over_a_page_witness_superseded_after_the_readi
     _supersede_a_page_witness(tree, 2, "attestator_2")
     before = snapshot(root)
 
+    # The Coniector reads no witness basis; the run's sealed one stands for the Armarium.
     for program in (RECENSOR_PROGRAM, ARCHETYPUS_PROGRAM, ARMARIUM_PROGRAM):
         result = invoke(root, "r", "page-unbroken", program)
         assert result.returncode != 0, f"{program} accepted a superseded page witness"

@@ -1026,3 +1026,67 @@ def test_no_pipeline_module_imports_operations_corpus():
             if name == "operations.corpus" or name.startswith("operations.corpus."):
                 offenders.append((relative_path, name))
     assert offenders == [], f"pipeline/ modules importing operations.corpus: {offenders}"
+
+
+class _PageReadTree:
+    """The read surface the act-region loaders use, over in-memory records."""
+
+    def __init__(self, regions: dict[str, dict]):
+        self.records = {
+            (EXEMPLAR, "page", "page-1"): {
+                "subject_id": "page-1",
+                "outcome": "sealed",
+                "payload": {"ordinal": 1, "source_sha256": "a" * 64},
+            }
+        }
+        for act, payload in regions.items():
+            self.records[(PERLECTOR, "act-region", act)] = {"subject_id": act, "payload": payload}
+
+    def build_manifest(self, stage, *, verify_inputs=True):
+        return {
+            "artifacts": [
+                {"kind": kind, "artifact_id": artifact}
+                for (s, kind, artifact) in self.records
+                if s == stage
+            ]
+        }
+
+    def read_artifact(self, stage, kind, artifact_id):
+        return self.records[(stage, kind, artifact_id)]
+
+
+def _region(kind="act", act_class="reading", ordinal=1, **extra) -> dict:
+    return {
+        "kind": kind,
+        "act_class": act_class,
+        "transform": None
+        if act_class != "reading"
+        else {"source_page_ordinal": ordinal, "bounds": {"x": 1, "y": 2, "w": 30, "h": 40}},
+        **extra,
+    }
+
+
+def test_reading_acts_are_the_placed_act_regions_a_re_ask_included():
+    tree = _PageReadTree(
+        {
+            "act_1": _region(),
+            "act_2": _region(reading_attempt=2, reading_n=1),
+            "act_3": _region(kind="other"),
+            "act_4": _region(act_class="reading-unplaced"),
+        }
+    )
+
+    acts = load_pipeline_reading_acts(tree)
+
+    assert sorted(act["act_id"] for act in acts) == ["act_1", "act_2"]
+    assert acts[0]["bounds"] == {"x": 1, "y": 2, "w": 30, "h": 40}
+    assert {act["page_sha256"] for act in acts} == {"a" * 64}
+    assert count_excluded_reading_regions(tree) == {
+        "by_kind": {"other": 1},
+        "by_origin": {"reading-unplaced": 1},
+    }
+
+
+def test_a_reading_act_on_a_page_the_exemplar_did_not_seal_is_refused():
+    with pytest.raises(CorpusRefusal, match="^unresolvable-page-ordinal:"):
+        load_pipeline_reading_acts(_PageReadTree({"act_1": _region(ordinal=2)}))

@@ -1,9 +1,9 @@
 """The Exemplar's byte-led routes and its closed alarm vocabulary.
 
-Spec 03's admission-by-bytes checks live here: a reader route never decides from an
-extension, PDF and TIFF containers are sent to page fan-out, and a reader gap is an
-alarm rather than a policy refusal.  The all-refused-folder check needs a run tree
-and remains in `test_door.py`.
+Admission by bytes: a reader route never decides from an extension, PDF and TIFF
+containers are sent to page fan-out, and a reader gap is an alarm rather than a
+policy refusal. The all-refused-folder check needs a run tree and lives in
+`test_door.py`.
 """
 
 from io import BytesIO
@@ -299,8 +299,7 @@ def test_the_closed_alarm_vocabulary_has_no_format_policy_member():
 
 
 def test_a_reason_outside_the_closed_set_is_refused_when_it_is_read_back():
-    """The skeleton's free-text reasons are what this spec replaced. A consumer that
-    accepted one because it happened to be a string would have replaced nothing."""
+    """A free-text reason is not a reason code, even though it is a string."""
     for text in ("page.png does not carry a PNG signature", "", None, 42, "invented: detail"):
         with pytest.raises(ContractError):
             reason_code(text)

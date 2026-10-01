@@ -42,10 +42,8 @@ def write_public_finding(
         f"{finding_date.year:04d}-{finding_date.month:02d}-{finding_date.day:02d}"
         "_reading_claim_metrics.json"
     )
-    # Outside the guard below: `mkdir` raises `FileExistsError` too, when the
-    # history path is a file rather than a directory. Inside, that surfaced as
-    # "this finding was already published" — an operator would read it as work
-    # already done and stop looking, with nothing ever written.
+    # Outside the guard below: `mkdir` raises `FileExistsError` too when the
+    # history path is a file, and that must not read as "already published".
     try:
         history_directory.mkdir(parents=True, exist_ok=True)
     except FileExistsError as error:

@@ -43,6 +43,7 @@ from conftest import (
     forge_continuation_links,
     forge_page_review,
     load_stage,
+    reask_recovery_config,
     run_stage,
 )
 
@@ -105,8 +106,12 @@ def _recense(root: Path, options: dict, scenario: str) -> None:
 
 
 def _after_recensor(root: Path, options: dict, scenario: str):
-    """The Archetypus, then (when it completes) the Armarium; the last result."""
-    for program in ("pipeline/6_archetypus/run.py", "pipeline/7_armarium/run.py"):
+    """The Archetypus, then (when it completes) the Coniector and the Armarium; the last result."""
+    for program in (
+        "pipeline/6_archetypus/run.py",
+        "pipeline/4b_coniector/run.py",
+        "pipeline/7_armarium/run.py",
+    ):
         result = run_stage(root, RUN_ID, scenario, program, **options)
         if program.startswith("pipeline/6") and result.returncode != 0:
             return result
@@ -175,7 +180,7 @@ def _unit_types(manifest: dict) -> dict:
 def test_a_page_read_run_exports_its_acts_and_other_readings_complete(complete):
     manifest, members = complete["manifest"], complete["members"]
     claims = manifest["claims"]
-    assert manifest["schema"] == "armarium-export-manifest.v10"
+    assert manifest["schema"] == "armarium-export-manifest.v11"
     assert claims["status"] == "complete" and manifest["aggregate"]["status"] == "complete"
     partition = claims["act_partition"]
     assert partition["denominator"] == "page-read reading acts"
@@ -203,9 +208,12 @@ def test_the_page_accounting_and_what_was_not_measured_are_claimed(complete):
     accounting = claims["page_accounting"]
     assert [row["ordinal"] for row in accounting["pages"]] == [1, 2]
     assert accounting["held_pages"] == []
-    assert set(accounting["pages"][0]["rules"]) == set("abcdefghi")
-    # DAI's one record on page 1 lies inside a2's act region.
-    assert accounting["pages"][0]["rules"] == dict.fromkeys("abcdefghi", "pass")
+    assert set(accounting["pages"][0]["rules"]) == set("abcdefghij")
+    # DAI's one record on page 1 lies inside a2's act region; no page was re-asked.
+    assert accounting["pages"][0]["rules"] == {
+        **dict.fromkeys("abcdefghi", "pass"),
+        "j": "not-applicable",
+    }
     assert len(accounting["policy_sha256s"]) == 1
     entries = {entry["instrument"]: entry for entry in claims["not_measured"]["entries"]}
     assert list(entries) == list(NOT_MEASURED_INSTRUMENTS)
@@ -287,6 +295,7 @@ def test_a_page_whose_answer_was_not_read_is_one_held_item_with_its_reasons(tmp_
     ledger = bundle["manifest"]["claims"]["terminal_ledger"]
     [page_two] = [unit for unit in ledger["units"] if unit["unit_id"] == "page:2"]
     assert page_two["category"] == "held-for-review"
+    _assert_no_entry_reads_nothing(bundle, "p2:unread")
 
 
 @pytest.mark.parametrize(
@@ -320,21 +329,28 @@ def test_a_page_read_as_blank_is_confirmed_blank_only_when_the_recensor_confirms
     ledger = bundle["manifest"]["claims"]["terminal_ledger"]
     [page_two] = [unit for unit in ledger["units"] if unit["unit_id"] == "page:2"]
     assert page_two["category"] == category
+    _assert_no_entry_reads_nothing(bundle, "p2:blank")
 
 
-def test_an_agreed_continuation_is_a_labelled_reconstruction_and_keeps_the_run_partial(
-    happy, tmp_path
-):
+def _assert_no_entry_reads_nothing(bundle: dict, key: str) -> None:
+    """A row standing for no entry names no reading and counts in neither re-ask total."""
+    assert _jsonl(bundle["members"], "acts.jsonl")[key]["reading"] is None
+    reask = bundle["manifest"]["claims"]["reask"]
+    assert reask["pages"][1] == {"ordinal": 2, "first_reading_acts": 0, "read_on_reask_acts": 0}
+    assert reask["read_on_reask_acts"] == 0
+
+
+def test_an_agreed_continuation_is_joined_by_no_code_and_keeps_the_run_partial(happy, tmp_path):
     root, options = _copy(happy, tmp_path)
     result = _export(root, options, "happy")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
-    [reconstruction] = [
-        json.loads(line) for line in bundle["members"]["reconstructions.jsonl"].splitlines()
-    ]
-    assert reconstruction["head_page_ordinal"] == 1 and reconstruction["tail_page_ordinal"] == 2
+    assert "reconstructions.jsonl" not in bundle["members"]
+    [join] = json.loads(bundle["members"]["sources.json"])["continuation_joins"]
+    assert (join["head_page_ordinal"], join["tail_page_ordinal"]) == (1, 2)
+    assert join["not_reconstructed_reason"] == "no-code-join"
     [reason] = bundle["manifest"]["aggregate"]["reasons"]
-    assert reason.startswith("continuation join") and "(reconstructed)" in reason
+    assert reason.startswith("continuation join") and "(no-code-join)" in reason
 
 
 # --- the verifier recomputes every claim from the package's own sources ------------
@@ -403,6 +419,35 @@ def _held_page_one(members: dict) -> None:
     _claims(members, hold)
 
 
+def _relabel_jsonl_act(members: dict) -> None:
+    """acts.jsonl's first act relabelled as read on re-ask, every other carrier unchanged."""
+    rows = [json.loads(line) for line in members["acts.jsonl"].splitlines()]
+    rows[0]["reading"] = "read on re-ask"
+    members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+
+
+def _move_act_reading_to_page_one(members: dict) -> None:
+    """Page 2's act counted on page 1, in the source rows and the claim alike."""
+
+    def move(sources):
+        [row] = [row for row in sources["act_readings"] if row["act_key"] == "p2:1"]
+        row["page_ordinal"] = 1
+
+    _sources(members, move)
+
+    def recount(claims):
+        pages = claims["reask"]["pages"]
+        pages[0]["first_reading_acts"] += 1
+        pages[1]["first_reading_acts"] -= 1
+
+    _claims(members, recount)
+
+
+def _unlabel_text_bundle_act(members: dict) -> None:
+    [name] = [name for name in members if name.startswith("text/")]
+    members[name] = members[name].replace(b"reading: first reading\n", b"", 1)
+
+
 def _page_roster_narrowed(members: dict) -> None:
     """The page witness chairs narrowed by one chair, in the basis and the manifest."""
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
@@ -450,6 +495,29 @@ def _page_roster_narrowed(members: dict) -> None:
         (_other_named_as_an_act, "other reading is counted in the act partition"),
         (_other_doubt, "formats carrying the other layer disagree"),
         (_page_roster_narrowed, "disagrees with the exported roster"),
+        (
+            lambda m: _claims(m, lambda c: c["reask"].update(read_on_reask_acts=1)),
+            "re-ask claim does not follow",
+        ),
+        (
+            lambda m: _sources(m, lambda s: s["act_readings"][0].update(reading="second")),
+            "a reading other than",
+        ),
+        (
+            lambda m: _sources(m, lambda s: s["act_readings"].pop()),
+            "act readings do not reconcile to the manifest act partition",
+        ),
+        (
+            lambda m: _sources(m, lambda s: s["act_readings"][0].update(reading="read on re-ask")),
+            "does not name the reading",
+        ),
+        (
+            lambda m: _sources(m, lambda s: s["act_readings"][0].update(reading=None)),
+            "null for a row with no entry",
+        ),
+        (_move_act_reading_to_page_one, "sealed page its key names"),
+        (_relabel_jsonl_act, "acts JSONL does not name the reading"),
+        (_unlabel_text_bundle_act, "text-bundle act does not name the reading"),
     ],
     ids=[
         "other-count",
@@ -462,6 +530,14 @@ def _page_roster_narrowed(members: dict) -> None:
         "other-as-act",
         "formats-disagree",
         "page-roster",
+        "reask-count",
+        "unknown-reading",
+        "reading-dropped",
+        "relabelled-source",
+        "entry-without-reading",
+        "moved-page",
+        "relabelled-jsonl",
+        "unlabelled-text",
     ],
 )
 def test_the_clean_verifier_recomputes_the_page_claims_and_refuses_a_tampered_one(
@@ -659,14 +735,16 @@ def test_a_blinded_run_exports_each_witness_by_chair_and_by_the_label_its_reader
 def test_page_rows_carry_the_page_read_lectio_kind_under_their_own_ids(complete):
     members = complete["members"]
     for row in _jsonl(members, "acts.jsonl").values():
-        assert row["schema"] == "armarium-act.v4"
+        assert row["schema"] == "armarium-act.v5"
         assert row["uncertainty"]["lectio_kind"] == "page-read"
         assert row["uncertainty"]["self_revisions"] is None
+        assert row["reading"] == "first reading"
     with sqlite3.connect(complete["clean"] / "acts.sqlite") as connection:
         assert connection.execute(
             "SELECT value FROM export_metadata WHERE key = 'schema'"
-        ).fetchone() == ("armarium-acts-sqlite.v4",)
-        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
+        ).fetchone() == ("armarium-acts-sqlite.v5",)
+        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+        assert set(connection.execute("SELECT reading FROM acts")) == {("first reading",)}
 
 
 # --- the export's own checks of a page reading's category ---------------------------
@@ -721,3 +799,46 @@ def test_the_exported_threshold_list_refuses_a_threshold_that_is_not_an_integer(
     context = SimpleNamespace(page_accounting_config_path=None)
     with pytest.raises(FatalAccounting, match="band_slack is True, not an integer"):
         armarium.page_not_measured_basis(context, {}, [])
+
+
+def test_a_re_asked_page_exports_its_recovered_act_with_the_rest(tmp_path):
+    """reask-recovers with the re-ask on: page 1's recovered act is a counted unit that
+    the Archetypus and the Armarium accept and export, held or delivered on its own."""
+    root, options = build_page_tree(
+        tmp_path, "reask-recovers", recovery_config=reask_recovery_config(tmp_path / "reask", 1)
+    )
+    result = _export(root, options, "reask-recovers")
+    assert result.returncode == 3, result.stderr
+    bundle = _bundle(root, tmp_path / "clean")
+    claims = bundle["manifest"]["claims"]
+    partition = claims["act_partition"]
+    assert partition["expected_count"] == 3
+    exported = {**_jsonl(bundle["members"], "acts.jsonl")}
+    assert sorted(exported) == ["p1:1", "p1:2", "p2:1"]
+    # The recovered act is in the main act layer, labelled apart from the first reading's.
+    assert {key: row["reading"] for key, row in exported.items()} == {
+        "p1:1": "first reading",
+        "p1:2": "read on re-ask",
+        "p2:1": "first reading",
+    }
+    with sqlite3.connect(bundle["clean"] / "acts.sqlite") as connection:
+        assert dict(connection.execute("SELECT act_key, reading FROM acts")) == {
+            key: row["reading"] for key, row in exported.items()
+        }
+    assert claims["reask"] == {
+        "label": "read on re-ask",
+        "first_reading_acts": 2,
+        "read_on_reask_acts": 1,
+        "read_on_reask_act_ids": [exported["p1:2"]["act_id"]],
+        "pages": [
+            {"ordinal": 1, "first_reading_acts": 1, "read_on_reask_acts": 1},
+            {"ordinal": 2, "first_reading_acts": 1, "read_on_reask_acts": 0},
+        ],
+    }
+    # Page 1 stays held by Churro's unboxed line, which no re-ask may name, so both
+    # of its acts are held; page 2's is delivered.
+    assert {key: row["category"] for key, row in exported.items()} == {
+        "p1:1": "held-for-review",
+        "p1:2": "held-for-review",
+        "p2:1": "delivered",
+    }

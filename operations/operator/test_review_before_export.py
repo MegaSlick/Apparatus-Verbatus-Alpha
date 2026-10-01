@@ -123,6 +123,7 @@ def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_
         "perlector": "not-run",
         "recensor": "not-run",
         "archetypus": "not-run",
+        "coniector": "not-run",
         "armarium": "not-run",
     }
     assert projected.next_action["resume_from"] == "perlector"
@@ -132,7 +133,10 @@ def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_
     assert f"`verbatus run --run-id {RUN_ID}`" in summary
     assert "picks up from perlector" in summary
     assert "door, exemplar, ink-map, designator, attestatores sealed" in summary
-    assert "perlector, recensor, archetypus, armarium left no record or seal here" in summary
+    assert (
+        "perlector, recensor, archetypus, coniector, armarium left no record or seal here"
+        in summary
+    )
     assert "--from" not in summary, "an operator surface prints no orchestrator flag"
     assert projected.next_action["held_acts"] == 0
     assert projected.next_action["hold_records"] == 0
@@ -220,6 +224,38 @@ def test_a_page_read_without_an_entry_is_named_before_export(
     text = "\n".join(review_text.render(dataclasses.asdict(projected)))
     assert "the Perlector has not read the pages" not in text
     assert "pages read without an entry: page 1" in text
+
+
+def test_a_labelled_other_reading_is_listed_apart_from_the_acts_before_and_after_export(
+    tmp_path: Path,
+):
+    """An `other` entry never counts as an act, in either view of the same run.
+
+    `page-other-unbroken` reads one labelled other entry on page 1 beside two
+    acts. Before export it comes from the Perlector's act-region records;
+    after export from the export's `other_readings` layer. Both views list it
+    apart from the acts, so the act count does not change across the export.
+    """
+    views = {}
+    for view, extra in (("before", ("--from", "door", "--to", "perlector")), ("after", ())):
+        run_root = tmp_path / view / "runs"
+        completed = _orchestrate(run_root, *extra, scenario="page-other-unbroken")
+        assert completed.returncode == 0, completed.stderr
+        views[view] = _projection(run_root)
+
+    before, after = views["before"], views["after"]
+    assert after.export["present"] is True and before.export["present"] is False
+    assert len(before.acts) == len(after.acts) == 2
+    assert [act["act_key"] for act in before.acts] == [act["act_key"] for act in after.acts]
+    others = [(other["act_id"], other["act_key"]) for other in before.other_readings]
+    assert len(others) == 1
+    assert [(other["act_id"], other["act_key"]) for other in after.other_readings] == others
+    assert others[0][0] not in {act["act_id"] for act in before.acts + after.acts}
+    for projected in (before, after):
+        assert projected.other_readings[0]["crops"], "the other reading keeps its crop"
+        text = "\n".join(review_text.render(dataclasses.asdict(projected)))
+        assert f"Acts ({len(projected.acts)}" in text
+        assert "Other readings (1; never counted as acts)" in text
 
 
 def test_opening_an_unfinished_run_changes_no_path_bytes_size_or_mtime(witnessed_run: Path):
@@ -457,33 +493,6 @@ def test_a_newline_becomes_a_separator_and_the_length_notice_names_two_lengths()
     cut = review_text._one_line("x" * 500, 300)
     assert cut.endswith("(first 300 characters as shown, of a 500-character value)")
     assert cut.count("x") == 300
-
-
-def test_a_crop_line_says_which_attempt_it_was():
-    text = "\n".join(
-        review_text.render(
-            {
-                "run_id": "r",
-                "acts": [
-                    {
-                        "act_id": "a1",
-                        "act_key": "a1",
-                        "category": "held-for-review",
-                        "crops": [
-                            {
-                                "region_id": "r1",
-                                "ordinal": 1,
-                                "attempt_ordinal": 2,
-                                "image_path": "2_designator/blobs/sha256/aa/bb",
-                                "image_sha256": "aabb",
-                            }
-                        ],
-                    }
-                ],
-            }
-        )
-    )
-    assert "(attempt 2)" in text
 
 
 def test_an_empty_queue_row_is_named_by_its_line_number():

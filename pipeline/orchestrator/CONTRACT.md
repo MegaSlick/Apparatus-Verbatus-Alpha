@@ -15,14 +15,15 @@ forwards the same two paths from its volume-bound run plan.
 
 ```
 door → exemplar → ink map → designator → attestatores → perlector → recensor
-     → archetypus → armarium
+     → archetypus → coniector → armarium
 ```
 
-Every member is a stage program with its own completion boundary. No member re-asks a
-reading: the Recensor holds what it cannot accept. The sealed recovery budget
-(`config/recovery.toml`) is a forward binding: every run seals it at the Door, and
-the page re-ask will spend it. No stage reads it yet, and `common/test_recovery.py`
-names that.
+Every member is a stage program with its own completion boundary. The orchestrator
+dispatches no re-reading: the Recensor holds what it cannot accept. The sealed
+recovery budget (`config/recovery.toml`) is spent by the Perlector's page re-ask
+alone, inside stage 4 (`common/page_reask.py`); the denominator plans the re-ask
+again from the same sealed budget to verify it, and `common/test_recovery.py` names
+those two as its only readers.
 
 ## The three selections
 

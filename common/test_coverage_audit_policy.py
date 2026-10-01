@@ -1,8 +1,7 @@
 """The sealed `[coverage_audit]` policy: what it refuses, and what it resolves to.
 
-The two gates in `common/residual_ink.py` used to be flat pixel counts
-and are fractions of the page now. This module holds the loader and
-the resolver to the same shape `common/background.py`'s policy is held to: a
+The two gates in `common/residual_ink.py` are fractions of the page in basis
+points. This module holds the loader and the resolver to the same shape `common/background.py`'s policy is held to: a
 closed field set, both ends of both bounds refused by name, and a resolution
 that is measurably proportional rather than merely renamed.
 """
@@ -29,10 +28,9 @@ from common.sealed_config import read_sealed_toml
 ROOT = Path(__file__).resolve().parents[1]
 
 # The shipped noise floor and fraction gate, and a well-formed `[coverage_audit]`
-# table to vary one field of at a time. Both values used to be module constants
-# (`MINIMUM_INK_PIXELS = 24`, `MINIMUM_FRACTION_OUTSIDE_COVERAGE =
-# 0.02`) and are sealed in their own sub-table now, with their own provenance,
-# so the calibration claim over the two gates is not read as covering them.
+# table to vary one field of at a time. The noise floor is sealed in its own
+# sub-table with its own provenance, so the calibration claim over the two gates
+# is not read as covering it.
 NOISE_FLOOR = {"minimum_ink_pixels": 24, "minimum_fraction_outside_bp": 200}
 GATES = {"substantial_ink_area_bp": 4, "edge_band_bp": 100}
 SEALED_VALUES = {**GATES, **NOISE_FLOOR}
@@ -102,8 +100,7 @@ def test_the_gates_resolve_proportionally_and_the_flat_constants_did_not():
     assert fixture["edge_band_px"] == 2
     assert leaf["substantial_ink_pixels"] == 5025
     assert leaf["edge_band_px"] == 35
-    # The two fields that are not lengths pass through unresolved, exactly as
-    # they do in `GroupingThresholds`.
+    # The two fields that are not lengths pass through unresolved.
     assert leaf["page_spanning_area_bp"] == fixture["page_spanning_area_bp"] == 5000
     assert leaf["gap_tolerance_px"] == fixture["gap_tolerance_px"] == 3
     # And so do the two noise-floor values: a speck is a speck at every
@@ -160,7 +157,7 @@ def test_a_noise_floor_outside_its_range_is_refused(value):
 
 @pytest.mark.parametrize("value", [0, -1, BASIS_POINTS + 1, 0.02, True, "200"])
 def test_a_fraction_gate_outside_its_range_is_refused(value):
-    """An integer in basis points, never the float it used to be in source."""
+    """An integer in basis points, never a float."""
     with pytest.raises(ContractError, match="minimum_fraction_outside_bp"):
         validate_coverage_audit_table(_table(minimum_fraction_outside_bp=value))
 
@@ -249,15 +246,8 @@ def _sealed_toml_without(block: str) -> str:
 def test_a_shipped_policy_with_no_provenance_block_is_refused_by_the_common_loader(
     tmp_path, block, named
 ):
-    """The Ink Map resolves this policy through the loader alone.
-
-    `pipeline/1_ink_map/run.py` calls `load_coverage_audit_config` and publishes
-    `ink-map` records under what it returns, without ever calling the
-    Designator's own loader -- and it runs before the Designator does. So a file
-    whose numbers are well-formed and whose provenance block is missing used to
-    reach a published measurement with nothing having asked where those numbers
-    came from.
-    """
+    """The Ink Map resolves this policy through the loader alone, so the loader
+    must refuse a missing provenance block."""
     path = tmp_path / "no-provenance.toml"
     path.write_text(_sealed_toml_without(block), encoding="utf-8")
 

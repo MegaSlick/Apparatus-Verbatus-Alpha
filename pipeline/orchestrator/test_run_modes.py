@@ -31,6 +31,7 @@ SEQUENCE = (
     "perlector",
     "recensor",
     "archetypus",
+    "coniector",
     "armarium",
 )
 
@@ -57,12 +58,18 @@ def drive(root: Path, run_id: str, scenario: str, *selection: str) -> subprocess
 
 
 @pytest.fixture(scope="module")
-def automatic(tmp_path_factory) -> Path:
-    """`--all` over page-unbroken, run once for the tests that compare against it or copy it."""
+def automatic_once(tmp_path_factory) -> Path:
+    """`--all` over page-unbroken, run once per module; tests take `automatic`, a copy of it."""
     root = tmp_path_factory.mktemp("automatic") / "runs"
     result = drive(root, "r", "page-unbroken", "--all")
     assert result.returncode == 0, result.stdout + result.stderr
     return root
+
+
+@pytest.fixture
+def automatic(automatic_once, tmp_path) -> Path:
+    """This test's own copy of the `--all` run, free to change."""
+    return shutil.copytree(automatic_once, tmp_path / "automatic", symlinks=True)
 
 
 def test_store_root_reaches_a_stage_registry(tmp_path, monkeypatch) -> None:
@@ -85,6 +92,7 @@ def test_store_root_reaches_a_stage_registry(tmp_path, monkeypatch) -> None:
         "designator_geometry_config",
         "alignment_config",
         "page_accounting_config",
+        "reconstruction_config",
         "ink_map_config",
         "formats_config",
         "recovery_config",
@@ -273,7 +281,7 @@ def test_a_damaged_armarium_decode_environment_stops_the_run_at_its_producer(aut
     ``common/test_stage_seal.py`` separately drives ``verify_final_seal`` against
     exactly this damage, on the layer that still owns the check.
     """
-    root = shutil.copytree(automatic, tmp_path / "runs")
+    root = automatic
     record = next((root / "r" / "7_armarium" / "artifacts" / "decode-environment").iterdir())
     kept = record.read_bytes()
     record.unlink()

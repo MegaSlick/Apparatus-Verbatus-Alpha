@@ -1,4 +1,5 @@
-"""F004: a top-level flag typed after the verb gets a fix, not a bare 'unrecognized'."""
+"""The verbatus command line: a top-level flag typed after the verb gets a fix, not a bare
+'unrecognized', and `clear-leftovers` removes only publication leftovers."""
 
 from __future__ import annotations
 

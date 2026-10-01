@@ -298,7 +298,7 @@ def test_a_float_in_a_refused_record_does_not_abort_the_whole_admission(tmp_path
 
     A box written `239.0` instead of `239` is correctly refused by name -- and
     then, stored raw, would have aborted the ledger's own sealing step with a
-    bare `TypeError` naming no record at all (round 2 item 2).
+    bare `TypeError` naming no record at all.
     """
     root = _two_page_set(tmp_path / "set", **{"r-rot": {"bbox": [140.0, 160, 160, 100]}})
     ledger = _only_reason(admit_local_set(root, split="val"), "malformed-record")

@@ -38,9 +38,9 @@ def drafts(first_text: str, second_text: str):
 def test_identical_drafts_reconcile_and_still_produce_two_distinct_digests():
     """The good case: two people read an easy act the same way.
 
-    Lane B's ground-truth rule refuses two equal draft digests, which is right for
-    one draft counted twice and wrong for two transcribers agreeing. Hashing the
-    draft *record* rather than the bare text is what keeps both true.
+    Two equal draft digests must be refused when one draft is counted twice and
+    accepted when two transcribers agree. Hashing the draft *record* rather than
+    the bare text is what keeps both true.
     """
     first, second = drafts("Jean Baptiste", "Jean Baptiste")
     assert disagreement_spans(first.text, second.text) == ()
@@ -317,7 +317,7 @@ def test_disagreement_spans_refuses_something_that_is_not_text():
 
 
 def test_disagreement_spans_still_answers_the_empty_case_the_protocol_pins():
-    """Invariant #14: the refusal above must not have cost a documented answer.
+    """The type refusal above leaves the documented empty-text answers intact.
 
     An insertion is a zero-width span at the offset it would land in the first
     draft, which is why the empty-against-`abc` case is `((0, 0),)` and not `()`

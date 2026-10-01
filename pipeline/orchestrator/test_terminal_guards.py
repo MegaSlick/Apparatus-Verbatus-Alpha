@@ -20,7 +20,9 @@ from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
-from common.contracts.stages import ARCHETYPUS, ARMARIUM, DOOR, EXEMPLAR, INK_MAP
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, CONIECTOR, DOOR, EXEMPLAR, INK_MAP
+from common.reconstruction import load_reconstruction_policy
+from common.reconstruction_records import PLAN_KIND, plan_payload
 from common.residual_ink import (
     ink_map_page,
     load_coverage_audit_config,
@@ -103,6 +105,7 @@ class _RecordingContext:
             ink_map_config=config / "ink_map.toml",
             perlector_protocol_config=config / "perlector_protocol.toml",
             alignment_config=config / "alignment.toml",
+            reconstruction_config=config / "reconstruction.toml",
         )
         self.perlector_audit_config_path = config / "perlector_audit.toml"
         # Read for the sealed reading unit, which decides the act or page export.
@@ -121,6 +124,14 @@ class _RecordingContext:
                 1
             ],
             "alignment": read_sealed_toml(self.args.alignment_config, "config")[1],
+            "reconstruction": load_reconstruction_policy(self.args.reconstruction_config).sha256,
+        }
+        # The Coniector plans no call over this synthetic run; the export proves its one plan.
+        self.coniector_plan = {
+            "artifact_id": "coniector-plan",
+            "payload": plan_payload(
+                load_reconstruction_policy(self.args.reconstruction_config), []
+            ),
         }
 
         # Build the mapped page with the same policies, measures, and canonical
@@ -175,7 +186,9 @@ class _RecordingContext:
             }
         }
 
-        def build_manifest(stage: str) -> dict:
+        def build_manifest(stage: str, **_options) -> dict:
+            if stage == CONIECTOR:
+                return {"artifacts": [{"kind": PLAN_KIND, "artifact_id": "coniector-plan"}]}
             if stage != INK_MAP:
                 # An empty manifest is the truthful answer, not a swallowed
                 # lookup: the code under test polls this method for stages this
@@ -193,6 +206,8 @@ class _RecordingContext:
             }
 
         def read_artifact(stage: str, kind: str, artifact_id: str) -> dict:
+            if stage == CONIECTOR and kind == PLAN_KIND:
+                return self.coniector_plan
             if stage != INK_MAP or kind != "ink-map":
                 raise AssertionError(f"the stage read an unstored artifact: {stage}/{kind}")
             return self.ink_map_records[artifact_id]
@@ -355,6 +370,7 @@ def _reading_row(act_id: str, act_key: str, page_ordinal: int) -> dict:
         "kind": "act",
         "class": "reading",
         "page_ordinal": page_ordinal,
+        "reading_attempt": 1,
         "hold_codes": [],
         "region_ref": None,
         "perlectio_ref": {
@@ -402,6 +418,19 @@ def _stub_page_export(monkeypatch, armarium, context, rows: list[dict], category
         lambda _context, pages, *_args: {"pages_sealed": len(pages)},
     )
     monkeypatch.setattr(armarium, "page_accounting_rows", lambda *_args: [])
+    # The Coniector made nothing over these rows.
+    monkeypatch.setattr(
+        armarium,
+        "verified_reconstructions",
+        lambda _context, _rows: {
+            "plan": {},
+            "acts": {},
+            "joins": [],
+            "calls": {},
+            "refs": {},
+            "diplomatic_raw": {},
+        },
+    )
 
 
 def test_only_sealed_canary_readings_leave_the_bundle_and_real_canary_named_paths_stay(

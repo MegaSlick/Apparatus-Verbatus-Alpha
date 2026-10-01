@@ -5,7 +5,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | File | Status and question |
 |---|---|
 | `models.toml` | which model and revision fills each numbered role |
-| `recovery.toml` | how many times one page may be asked again before review; sealed into every run, though no stage re-asks a page yet |
+| `recovery.toml` | how many times one page may be asked again before review; sealed into every run and spent by the Perlector's page re-ask |
 | `hard_failure.toml` | how many accounted hard failures one run may carry before it stops; the threshold and the outcome taxonomy are both settled by ruling (see the file's own header) |
 | `pdf_render.toml` | what whole-page PDF resolution the next run targets |
 | `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
@@ -213,12 +213,12 @@ triage records carry a digest of their raw bytes instead.
 through its `StageContext`; the orchestrator, which is not a stage, asks the run
 authority directly. A name that is sealed has a point of use that requires it, and a
 policy a stage needs the *values* of is carried already parsed rather than reopened —
-`recovery.toml` travels as `StageContext.recovery_policy` (no stage reads it yet; the
-budget is sealed for the page re-ask that will spend it), `formats.toml` as
+`recovery.toml` travels as `StageContext.recovery_policy` (read only through
+`common/page_reask.py::reask_budget`, by the Perlector and the denominator), `formats.toml` as
 `StageContext.armarium_formats`.
 
-Sealed names today: `designator-geometry`,
-`ink-map`, `page-accounting`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
+Sealed names today: `designator-geometry`, `alignment`,
+`ink-map`, `page-accounting`, `reconstruction`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
 `pdf-render`, `recovery`, `hard-failure` and `triage-modes` on every run (Unit 6's
 pre-door producer/door seam must call `require_triage_modes` before using its
 vocabulary). Real ingress adds `data-handling`, `serving-recipes`, `pod-placement`,

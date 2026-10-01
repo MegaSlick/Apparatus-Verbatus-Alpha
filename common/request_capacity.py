@@ -250,11 +250,15 @@ PROMPT_TOKENS_MEASURED_FLOOR: Final = "measured-floor-for-this-prompt-shape"
 PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED: Final = (
     "reported-text-per-byte-fixed-text-at-carried-act-rate"
 )
+# A text-only prompt charged whole at one token per UTF-8 byte, an upper bound for
+# a byte-level BPE tokenizer whatever the text, with the chat template's cost.
+PROMPT_TOKENS_ALL_TEXT_PER_BYTE: Final = "all-text-per-byte"
 PROMPT_TOKENS_BASES: Final = frozenset(
     {
         PROMPT_TOKENS_MEASURED_CONSTANT,
         PROMPT_TOKENS_MEASURED_FLOOR,
         PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
+        PROMPT_TOKENS_ALL_TEXT_PER_BYTE,
     }
 )
 
@@ -263,6 +267,7 @@ PROMPT_TOKENS_ADMITTING_BASES: Final = frozenset(
     {
         PROMPT_TOKENS_MEASURED_CONSTANT,
         PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
+        PROMPT_TOKENS_ALL_TEXT_PER_BYTE,
     }
 )
 
@@ -485,6 +490,9 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = Ma
 PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS: Final = 4127
 # Kept apart from the ratio so measurement and margin stay visible.
 PERLECTOR_BOUND_SAFETY_MARGIN: Final = (105, 100)
+# The Perlector chat template's measured cost of one turn, and of each image in it.
+CHAT_TURN_TOKENS: Final = 52
+CHAT_IMAGE_TOKENS: Final = 2
 # Reconciled with `config/models-real.toml`: with no fixed prompt to digest, the
 # pinned revision is what expires the Perlector's measurements.
 PERLECTOR_MEASURED_TOKENIZER: Final = (
@@ -552,12 +560,14 @@ def _rate_bound_tokens(characters: int) -> int:
 # The carried rate is sealed against the page builder's own digest, so editing
 # the builder expires it.
 PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST: Final = (
-    "4133f3538842f1a4c45b620d3a2863a5cf592c9fa7bb51f99292ed635ef17db1"
+    "e8e3e2232ae481228b541bc02225b74027f9ff8c5a6475b0f8b329ebc31b7e74"
 )
-# Chat-template cost: 52 for the one turn plus 2 per image, charged at the most a
+# Chat-template cost: one turn plus each image, charged at the most a
 # page request sends -- the page render and its overlay (`[feed] page_overlay`).
 PERLECTOR_PAGE_MAX_IMAGES: Final = 2
-PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS: Final = 52 + 2 * PERLECTOR_PAGE_MAX_IMAGES
+PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS: Final = (
+    CHAT_TURN_TOKENS + CHAT_IMAGE_TOKENS * PERLECTOR_PAGE_MAX_IMAGES
+)
 
 # The page answer's reserve. The answer transcribes the same ink the witnesses
 # read, so its text is estimated at the page's longest witness text, each act
@@ -747,6 +757,143 @@ def page_request_capacity(
     return {"capacity": record, "answer_reserve": answer_reserve, "max_tokens": min(cap, room)}
 
 
+def reask_answer_measure(
+    named_units: Sequence[tuple[str, str]], named_ids: int, *, named_lines: int
+) -> dict[str, int]:
+    """What a page re-ask's answer is reserved on, as ``page_request_capacity`` takes it.
+
+    ``named_units`` are ``(witness letter, text)`` of each witness unit the
+    re-ask names, ``named_ids`` how many distinct ids it names and
+    ``named_lines`` how many of them are Surya lines. Its answer transcribes
+    only the ink at those ids, so its text is measured by the most text one
+    witness gave for them, its entries are at most one per named id, and each
+    named line adds one cite of its own, as on the first request. With no
+    named witness text (only lines or records named) nothing measures the
+    ink, and the reserve is the whole page cap.
+    """
+    by_witness: dict[str, int] = {}
+    for letter, text in named_units:
+        by_witness[letter] = by_witness.get(letter, 0) + len(text)
+    return {
+        "longest_witness_characters": max(by_witness.values(), default=0),
+        "act_entries": _nonnegative(named_ids, "named_ids"),
+        "surya_lines": _nonnegative(named_lines, "named_lines"),
+    }
+
+
+# The Coniector's request (`common/reconstruction_prompt.py`) is text only, so it
+# is charged whole at one token per byte (`PROMPT_TOKENS_ALL_TEXT_PER_BYTE`), plus
+# the chat template's cost for one text turn, the page request's measured 52.
+TEXT_TURN_OVERHEAD_TOKENS: Final = 52
+
+# The answer's reserve, charged per byte like the prompt: the answer's wrapper,
+# and for each act and each join its entry skeleton, one finding with a reason at
+# its longest, and the most departures an act may carry, each with both sides and
+# its reason at their longest. The reserve decides admission only and is at most
+# the sealed cap; the `max_tokens` sent is the cap or the context the prompt
+# leaves, whichever is smaller.
+RECONSTRUCTION_ANSWER_WRAPPER: Final = '{"acts": [], "joins": []}'
+RECONSTRUCTION_ENTRY_SKELETON: Final = (
+    '{"act": "p9999:999", "findings": [{"code": "cut-at-page-break", "reason": ""}], '
+    '"departures": []}, '
+)
+RECONSTRUCTION_JOIN_SKELETON: Final = (
+    '{"acts": ["p9999:999", "p9999:999"], "continues": false, "departures": []}, '
+)
+RECONSTRUCTION_DEPARTURE_SKELETON: Final = (
+    '{"diplomatic": "", "reconstruction": "", "reason": ""}, '
+)
+
+
+def all_text_prompt_bound(text: str) -> tuple[int, str]:
+    """``(tokens, basis)`` for one text-only prompt: every byte a token, plus one turn."""
+    if not isinstance(text, str):
+        raise RequestCapacityRefusal("a text-only prompt is not a string")
+    return TEXT_TURN_OVERHEAD_TOKENS + _reported_bytes(text), PROMPT_TOKENS_ALL_TEXT_PER_BYTE
+
+
+def reconstruction_answer_bound(
+    *,
+    acts: int,
+    joins: int,
+    max_departures_per_act: int,
+    max_departure_characters: int,
+    max_reason_characters: int,
+    answer_max_tokens: int,
+) -> tuple[int, bool]:
+    """``(tokens, reserve_clamped)``: the tokens reserved for one Coniector answer.
+
+    Each character is charged at four bytes, the most one code point takes in
+    UTF-8, and each act one finding with a reason at the departure reason's
+    bound. The grammar bounds neither a finding's count nor its reason, so this
+    is an estimate, not a ceiling: it decides admission only, and an answer
+    longer than the context left stops as a visible cut-off.
+    """
+    acts = _nonnegative(acts, "acts")
+    joins = _nonnegative(joins, "joins")
+    departures = _positive(max_departures_per_act, "max_departures_per_act")
+    side = _positive(max_departure_characters, "max_departure_characters")
+    reason = _positive(max_reason_characters, "max_reason_characters")
+    cap = _positive(answer_max_tokens, "answer_max_tokens")
+    departure = len(RECONSTRUCTION_DEPARTURE_SKELETON) + 4 * (2 * side + reason)
+    per_item = departures * departure + 4 * reason
+    estimate = (
+        len(RECONSTRUCTION_ANSWER_WRAPPER)
+        + acts * (len(RECONSTRUCTION_ENTRY_SKELETON) + per_item)
+        + joins * (len(RECONSTRUCTION_JOIN_SKELETON) + per_item)
+    )
+    return min(estimate, cap), estimate > cap
+
+
+def reconstruction_request_capacity(
+    row: Any,
+    *,
+    prompt_text: str,
+    acts: int,
+    joins: int,
+    policy: Any,
+    answer_max_tokens: int,
+) -> dict[str, Any]:
+    """Admit one Coniector request against its sealed row, or refuse it whole.
+
+    ``policy`` is the sealed `common.reconstruction.ReconstructionPolicy`, whose
+    bounds size the answer. Returns ``{"capacity": <request-capacity record>,
+    "answer_reserve": {acts, joins, tokens, reserve_clamped, answer_max_tokens},
+    "max_tokens": min(answer_max_tokens, context the prompt leaves)}``; raises
+    :class:`RequestCapacityRefusal` carrying the record when the row cannot hold
+    prompt and reserve. Nothing is trimmed to fit.
+    """
+    prompt_tokens, basis = all_text_prompt_bound(prompt_text)
+    cap = _positive(answer_max_tokens, "answer_max_tokens")
+    reserve, clamped = reconstruction_answer_bound(
+        acts=acts,
+        joins=joins,
+        max_departures_per_act=policy.max_departures_per_act,
+        max_departure_characters=policy.max_departure_characters,
+        max_reason_characters=policy.max_reason_characters,
+        answer_max_tokens=cap,
+    )
+    record = request_fits(row, [], prompt_tokens, reserve, prompt_tokens_basis=basis)
+    if not record["fits"]:
+        raise RequestCapacityRefusal(
+            f"the Coniector request does not fit the sealed serving row ({_row_name(row)}): "
+            f"{record['reason']}. Nothing was sent; the page's reconstructions are not made",
+            capacity=record,
+        )
+    room = record["max_model_len"] - record["prompt_tokens"]
+    return {
+        "capacity": record,
+        "answer_reserve": {
+            "acts": acts,
+            "joins": joins,
+            "tokens": reserve,
+            "reserve_clamped": clamped,
+            "answer_max_tokens": cap,
+        },
+        "max_tokens": min(cap, room),
+    }
+
+
 # What a dense page's answer costs, per chair, in the chair's own response
 # grammar: the same 800-word `FRENCH_ACT` body for every row, so the rows stay
 # comparable.  DAI and the Perlector answer it as one record or act covering
@@ -789,7 +936,7 @@ MEASURED_RECORD_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 #   section B.2) says only "chosen to allow generation of all gold outputs".
 #
 # The Perlector is a stock base model with no vendor bound;
-# `pipeline/4_perlector/live_reader.py` sends none.
+# `operations/serving/chat_request.py` sends none.
 DECLARED_ANSWER_BOUND_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
         "attestator_1": 12_384,

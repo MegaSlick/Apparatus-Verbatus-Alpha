@@ -32,7 +32,7 @@ roster chair with no Testimonium for the page counted `not-run`, so `configured`
 the sealed page roster's size. The floor counts chairs that read the page (`read` or
 `genuinely-empty`) and were not truncated, against the sealed `witness_floor`;
 `health_unrecorded` and `shortfalls` (`failed`, `truncated`, `unaligned: 0`) complete
-the shape the v4 receipt recomputes; a receipt whose `shortfalls.unaligned` is not 0 is
+the shape the page-read receipt recomputes; a receipt whose `shortfalls.unaligned` is not 0 is
 refused. DAI's page on which its own record detector found
 no record below its stated cap is `genuinely-empty` with empty text, bound to the
 detector's census (Attestatores CONTRACT, "A page the detector found nothing on"): it
@@ -94,7 +94,7 @@ fields below and is how the Archetypus and the Armarium read both records):
  confirmation: {confirms, rules, surya_lines, witnesses, confirmed, failures} | null,
  release: {hold_codes, reason} | null,
  notes: [{code: "continuation-flag-on-other", flags}],
- recoveries_used: 0, attempt_ordinal}
+ recoveries_used: 0 | 1, attempt_ordinal}
 ```
 
 Its inputs are the page reading, the page accounting, the act-region and Perlectio
@@ -103,9 +103,15 @@ every page Testimonium counted for the floor.
 
 ## Continuation
 
-From the answer's flags alone, and only between `act` entries. For each page break,
-the last `act` entry of page p and the first `act` entry of page p+1 are its sides;
-`other` entries around them, a catchword for one, do not move them. When either side's
+From the answer's flags alone, and only between the first reading's `act` entries
+(`reading_attempt` 1). For each page break, the last such entry of page p and the
+first of page p+1 are its sides; `other` entries around them, a catchword for one, do
+not move them. Nor does an entry the Perlector's re-ask recovered: it was asked about
+ids alone, may set no continuation flag, and its place in page order is not
+established, so it never moves a page's act edge, is never a side of a link (a link
+naming one is refused) and never holds `continuation-off-page-edge`, and a
+first-reading entry at the edge stays at the edge whatever the re-ask added after it.
+When either side's
 flag says the text runs across, one `kind="continuation-link"` (subject
 `page-break:<p>:<p+1>`, attempt `attempt_id(subject, "link", 1)`) records it:
 
@@ -125,15 +131,30 @@ with a one-sided break exits held, and the receipt names it. A continuation flag
 `continuation-off-page-edge`. A flag on an `other` entry joins nothing and holds
 nothing; its review records it in `notes`.
 
-**No recovery.** The stage publishes no `recovery-request`, and every review carries
-`recoveries_used: 0`.
+**No recovery request.** The stage publishes no `recovery-request`, and one on disk is
+refused. A page's one re-ask is stage 4's own (`pipeline/4_perlector/CONTRACT.md`,
+"The re-ask"): every review of a unit on the page carries `recoveries_used`, the
+page's re-asks from its `page_readings` row (1 when it names a `reask_ref`, else 0),
+and the receipt measures it again with the rest of the review.
 
 ## The partition receipt
 
-`page_review.write_reading_receipt` rebuilds `recensor-partition-receipt.v4` from
-disk: the units re-derived through `reading_denominator` (`expected_unit_count` of
-them), `page_reading_refs` keyed by page ordinal in page order (`[{page_ordinal,
-reading_ref}]`), each item's `page_disposition`, review and coverage recomputed from
+`page_review.write_reading_receipt` rebuilds `recensor-partition-receipt.v5` from
+disk (a v4 receipt, whose `page_reading_refs` is `[{page_ordinal, reading_ref}]`, is
+still read): the units re-derived through `reading_denominator` (`expected_unit_count`
+of them), `pages` keyed by page ordinal in page order,
+
+```
+pages: [{page_ordinal, reading_ref, reask_ref | null, accounting_ref,
+         reask: {named, cleared, set_aside, held, unread, duplicate} | null}]
+```
+
+binding each page's first reading, its re-ask and its last accounting, with `reask`
+what the re-ask did (`common.page_reask.reask_outcome`): the named ids, split into
+those a re-ask entry rule (j) does not hold accounts for (`cleared`), those the re-ask
+set aside (`set_aside`), those only a re-ask entry rule (j) holds accounts for
+(`held`) and those still unread (`unread`), and the entry numbers rule (j) holds as
+duplicates (`duplicate`); each item's `page_disposition`, review and coverage recomputed from
 the Testimonia, and its `release_reason`: the review's `release.reason` for a unit its
 page reading held and this stage released, `null` otherwise. A held unit so released
 is resolved and adds no receipt reason, so a run whose only held page is a blank page

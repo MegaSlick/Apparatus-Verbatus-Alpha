@@ -104,9 +104,8 @@ def _derived_ink_margin(paper: int, dark_mode: int, ink_margin_bp: int) -> int:
 class BackgroundPolicy(TypedDict):
     """The sealed policy the background inference runs under.
 
-    Resolved per page, and deliberately not a field of `GroupingThresholds`:
-    this policy is an input to the inference that runs before any threshold
-    touches any geometry. Passed in whole, not as four loose integers, so a
+    Resolved per page: this policy is an input to the inference that runs
+    before any threshold touches any geometry. Passed in whole, not as four loose integers, so a
     caller cannot supply three of the four. `band_px_x`/`band_px_y` are already
     resolved to this page's own pixels; the `_bp` fields are basis points of a
     *population*, not a page dimension -- which is why `ink_margin_bp` can live
@@ -600,7 +599,6 @@ def round_half_up_bp(dimension: int, bp: int) -> int:
 # The sealed ink-measurement policy: background inference, the page-spanning
 # bound, the connectivity radius and the coverage audit. Sealed as `ink-map`.
 DEFAULT_INK_MAP_CONFIG_PATH: Final = Path(__file__).resolve().parents[1] / "config" / "ink_map.toml"
-INK_MAP_SEALED_NAME: Final = "ink-map"
 # The file's closed top-level tables.
 INK_MAP_TABLES: Final = ("background", "page_spanning", "connectivity", "coverage_audit")
 

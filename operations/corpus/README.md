@@ -45,7 +45,11 @@ transcribes anything and never adjudicates anything; every human-custody act sta
   booleans and named failures in a self-hashed verdict, and never places that
   text in the run tree or export. The reader is checked page by page: the readings of
   each canary page, joined in entry order, against that page's reference text, and the
-  export's `canary` block must name every one of them. Fetch-run saves the verdict under
+  export's `canary` block must name every one of them. On a run read by page (the
+  Perlector published page feeds) a held reading counts as read, since a page with any
+  hold holds every entry on it while each still carries its text, and each witness is
+  checked from its page Testimonium of each canary page rather than from act
+  attachments, which a page-scoped witness never has. Fetch-run saves the verdict under
   the private canary root and sends one decision ping when a stage fails.
 
 Build a canary submission from an external RecordGold local set containing
@@ -153,15 +157,110 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   and no page unchecked; the exit status is 0 only when it passes. The JSON report and the
   printed summary carry counts and identifiers, never text.
 
+  Only gold on pages the run sealed is scored: a ledger page outside the run is counted
+  under `scope` (`ledger_pages_outside_run`, `ledger_records_outside_run`), never lost, so
+  a proof run over part of a set is judged on its own pages; a sealed page with gold and
+  no page feed is still lost. A page may be re-asked once (`attempt_ordinal` 2). Both
+  readings and both accountings are kept, told apart by the reading's `attempt_ordinal`
+  and the accounting's `answer_basis` (records without those fields are a page's only
+  reading), and two records for one reading are refused. The gate is judged on the
+  sealed final accounting -- the re-ask's on a re-asked page -- over every act region the
+  page holds; `reask` reports the same records on the first reading alone (its regions
+  and accounting) beside it: pages re-asked, acts recovered on the re-ask (an added act
+  rule (j) holds as a duplicate of a first-reading entry is counted in `reask_duplicates`
+  instead), exactly-once before and after, overall and on the re-asked pages. Parse states, the `length` finish
+  rate and the 65,536-token fit describe each page's first reading; the re-ask's parse
+  states are under `reask`, and prompt tokens compare every call. With `--selection`
+  (`proof_pages`' `selection.json`, checked against the ledger) the pages in scope are
+  the ones chosen for the run, so a chosen page the run did not seal is lost; `scope.basis`
+  says which. The report is a new file outside the run tree.
+
   ```sh
   .venv/bin/python -m operations.corpus.exactly_once --run-root runs --run-id <run> \
     --gold /path/to/set/gold.jsonl --ledger /path/to/admission-ledger.json \
     --out /path/outside/the/tree/exactly-once.json
   ```
+- `witness_evaluate.py` — each witness scored against reference truth. By default
+  (`--basis page-feed`) it scores every witness the page feed showed from its own units: a unit belongs to
+  the reference record holding most of its box (at least half; a tie goes to the lower
+  record id), its units on a record are joined in the witness's order and scored with the
+  sealed scorer, and a record no unit lies on is an empty hypothesis. A witness that did
+  not read, or whose units carry no box, gives every record an empty hypothesis by name,
+  and so does a witness shown on another page of the run that this page's feed does not
+  show (`witness-not-in-feed`), so the denominator is every record on every page for
+  every witness;
+  `scoreable_cer_*` is the rate over the records a unit lay on. With no `--page-id` it
+  scores every admitted page the run sealed and lists the rest under
+  `reference_pages_outside_run`. `--basis page-testimonium` with one or more
+  `--page-id` scores each chair's whole sealed page Testimonium against the page's
+  reference acts joined in order instead.
+- `reconstruction_evaluate.py` — the Coniector's reconstructions measured apart from the
+  diplomatic reading, which never counts them. It reads the sealed export bundle's
+  continuation joins and the reconstructions `sources.json` names, and `coniector.jsonl`;
+  it reports the joins by status and reason (code joins nothing, so each is
+  `not-reconstructed`) and each shown reconstruction by unit (act or join), maker, made or
+  not made (by code), its departures and flags, and the characters by which its text
+  differs from its delivered literals joined by one line break. Only where reference
+  truth has every act of a made reconstruction (paired by IoU as `evaluate.py` pairs
+  them) it scores CER and WER of the reconstruction and, on the same records, of the
+  diplomatic literals, so the report states what the reconstruction changed; some or none
+  of its acts is counted and not scored. An export that shows reconstructions but packaged
+  no `coniector.jsonl` (JSONL not selected) has them counted with `measured: false` and
+  exit 1. Counts and identifiers only, never text.
+- `proof_pages.py` — the proof-page picker. From an admitted set's ledger it takes a
+  declared list (`--page-sha`, repeated) or a seeded draw (`--count N --seed TEXT`: the N
+  admitted pages first by `sha256(seed:page_sha256)`), copies each image, checked against
+  its digest, into `<output>/pages/`, and writes a Door-ready `submission-manifest.json`,
+  the chosen pages' `reference-pages.jsonl` and a self-hashed `selection.json` naming the
+  ledger, the rule and the chosen digests, which it also prints. The set must be outside
+  the repository and an output inside it must be under `private/`; nothing leaves the
+  machine.
 
 All four units exist as of this commit; the fetch protocol, comparator, and
 hold-out sections below describe behaviour that runs, not a shape still to be
 built.
+
+## A proof run, end to end
+
+On the Mac, before the pod run: admit the set, pick the pages, and submit
+`private/proof/<name>/pages/` with its `submission-manifest.json` as the run's input.
+
+```sh
+.venv/bin/python -m operations.corpus.local_admission /path/to/recordgold_evaluation_val_v1 \
+  --split val --output-dir private/corpora/recordgold/admission/val
+.venv/bin/python -m operations.corpus.proof_pages \
+  --ledger private/corpora/recordgold/admission/val/ledger.json \
+  --count 10 --seed proof-1 --output-root private/proof/proof-1
+```
+
+After the pod run, with `RUN` the run id and `P=private/proof/proof-1`:
+
+```sh
+mkdir -p $P/reports
+verbatus fetch-run --run-id $RUN --into runs --network-volume DATACENTER:VOLUME_ID
+verbatus export --run-id $RUN
+.venv/bin/python -m operations.corpus.exactly_once --run-root runs --run-id $RUN \
+  --gold /path/to/recordgold_evaluation_val_v1/gold.jsonl \
+  --ledger private/corpora/recordgold/admission/val/ledger.json \
+  --selection $P/selection.json --out $P/reports/exactly-once.json
+.venv/bin/python -m operations.corpus.evaluate --run-root runs --run-id $RUN \
+  --reference-pages $P/reference-pages.jsonl \
+  --reference-ledger private/corpora/recordgold/admission/val/ledger.json \
+  --code-ref "$(git rev-parse HEAD)" --output $P/reports/evaluation.json
+.venv/bin/python -m operations.corpus.witness_evaluate --run-root runs --run-id $RUN \
+  --ledger private/corpora/recordgold/admission/val/ledger.json \
+  --reference-pages $P/reference-pages.jsonl --output $P/reports/witnesses.json
+.venv/bin/python -m operations.corpus.reconstruction_evaluate --run-root runs --run-id $RUN \
+  --reference-pages $P/reference-pages.jsonl --out $P/reports/reconstructions.json
+```
+
+`fetch-run` runs the canary check itself when `private/canary/` exists, and `export`
+takes the run `fetch-run` brought home verified (not a fetch that stopped, or one that
+verified a stage by envelope only). `exactly_once` exits 1 when its gate
+fails and `reconstruction_evaluate` when the reconstructions shown could not be measured;
+the others write their record or refuse by name. Every report is written outside the
+run tree, carries counts and identifiers rather than reference text, and gives the same
+bytes for the same inputs.
 
 ## `private/` and the fetch protocol
 
@@ -204,8 +303,12 @@ run-level set — a request-ceiling or 403-stop refusal never reaches a fetch-lo
 entry, so it cannot share the per-page set), `integrate.INTEGRATE_REFUSAL_REASONS`,
 `submission.SUBMISSION_REFUSAL_REASONS`, `sidecar.SIDECAR_REFUSAL_REASONS`,
 `reference.REFERENCE_REFUSAL_REASONS`, `compare.COMPARE_REFUSAL_REASONS`,
-`local_admission.LOCAL_ADMISSION_REFUSAL_REASONS`, and
-`evaluate.EVALUATION_REFUSAL_REASONS`.
+`local_admission.LOCAL_ADMISSION_REFUSAL_REASONS`,
+`evaluate.EVALUATION_REFUSAL_REASONS`,
+`exactly_once.EXACTLY_ONCE_REFUSAL_REASONS`,
+`witness_evaluate.WITNESS_EVALUATION_REFUSAL_REASONS`,
+`reconstruction_evaluate.RECONSTRUCTION_EVALUATION_REFUSAL_REASONS`, and
+`proof_pages.PROOF_PAGES_REFUSAL_REASONS`.
 Every refusal in this package is a `CorpusRefusal` whose message leads with its
 reason token, dispatched by `str(error).split(":", 1)[0]` (`__init__.py`).
 
@@ -368,3 +471,81 @@ and calibration set until Tyrel rules otherwise. This package is built so that
 ruling, whenever it comes, is a decision about which corpus a number is drawn
 from — not a schema migration, because RecordGold truth was never filed where
 `gold/` truth lives.
+
+## The crop census
+
+`crop_census.py` counts, with no model and no network, how many pages of a
+RecordGold page manifest would qualify for crops on request: a second round in
+which the Perlector, having read the whole page from its capped render, is sent
+up to k regions of the sealed page at native resolution. It decides whether a
+paid on/off comparison is worth running; the feature itself stays off
+(`[feed] crops = "off"`).
+
+```sh
+.venv/bin/python -m operations.corpus.crop_census /path/to/set/page_manifest.jsonl \
+  --out /path/outside/the/tree/crop-census.json
+```
+
+Per page it records:
+
+- `native`: the manifest's `width` and `height`, taken to be the sealed page's
+  (`local_admission.py` checks them against the decoded pixels); no image is
+  opened;
+- `sent`: the page render the page request embeds, at `[page_context]
+  maximum_edge` (`common.page_render.render_size`, the rule the renderer uses);
+- `seen`: the size the Perlector row's processor resizes that render to
+  (`common.request_capacity.smart_resize`, with the row's `min_pixels`,
+  `max_pixels`, `patch_size` and `merge_size`; the token count is the
+  processor's `image_grid_thw.prod() // merge_size**2`);
+- `page_gain_bp`: how many times finer, linearly, native pixels are than those
+  seen, `sqrt(native area / seen area)`, in basis points; a page the processor
+  enlarges gains 1, since enlargement adds no detail;
+- `crop_native`, `crop_seen` and `gain_bp`: one crop's native size, the size the
+  processor resizes it to, and the gain the chair actually gets from it —
+  `page_gain_bp` scaled by the crop's own seen-over-native factor, never above
+  one, so a crop the processor shrinks gains less;
+- `need` and `headroom`: the page request's capacity record against the sealed
+  row's 65,536-token context, built as `perlector_request_fit.py` builds it (the
+  sealed feed, the page's gold text standing in for three witnesses, Surya lines
+  estimated from it);
+- `k`, `k_cap` and `k_capped`: the most crops round two fits, the cap it was
+  counted up to (`--max-crops`, since the protocol seals no image ceiling; 0 for a
+  page whose request is refused), and whether k reached a cap above 0. Round two is
+  the page request as admitted, plus the request's `max_tokens` for the
+  round-one reply carried in context (the most the engine lets that reply run,
+  so no real reply leaves fewer crops than k), two more chat turns
+  (`CHAT_TURN_TOKENS` each, for the carried reply and the new request) and k
+  crops, each charged its image tokens (`request_fits`) and `CHAT_IMAGE_TOKENS`,
+  answered within the page's answer reserve. Wording that asks for the crops is
+  not charged beyond those turns;
+- `reserve_clamped`: whether the page's answer reserve was clamped to the page
+  cap (`page_max_tokens`), so round two's answer is reserved the full cap; it
+  does not bear on k, which carries the round-one reply at its `max_tokens`;
+- `qualifies`: `gain_bp` at least `--min-gain` and k at least 1. A page whose
+  request is refused at 65,536 tokens has k 0 and does not qualify.
+
+The census counts only the legible page render (`[feed] page_image =
+"legible"`) and refuses any other setting. It refuses a manifest that is not
+UTF-8 JSON lines, a line without a unique `page_id`, positive integer `width`
+and `height`, or a `records` list of objects each with a four-integer `bbox`
+and a `text`, and a crop the processor refuses on aspect ratio; a refusal exits
+2 and writes no report.
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `--min-gain` | 1.5 | the least linear gain worth a crop |
+| `--crop-width` | 0.5 | a crop's width as a share of the page's |
+| `--crop-height` | 0.125 | a crop's height as a share of the page's |
+| `--max-crops` | 8 | the most crops round two may ask for |
+
+The default crop is half the page wide and an eighth tall, a few lines of an
+act; k falls as the crop's area grows until the crop reaches the processor's
+`max_pixels`, where its cost levels off, so the census is worth running at more
+than one crop size. The report is sorted-key JSON with no timestamps, carrying
+its inputs (the manifest's digest, the digests of the three configs it reads and
+of the page-prompt builder), every page and a summary: the share of pages
+qualifying, gain quantiles (nearest rank, as `{q, value}` pairs), a histogram
+of k, how many pages reached their cap and how many reserves were clamped. The
+printed summary carries counts only, and says they are estimates: gold text
+stands in for the witnesses and round two has never been measured against the
+engine.
