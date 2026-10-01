@@ -169,11 +169,11 @@ def test_a_refused_page_keeps_its_door_alarm_evidence_at_the_downstream_boundary
     assert snapshot(tree.root) == before
 
 
-def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_act_is_cut(
+def test_a_page_outcome_missing_from_the_exemplar_stops_before_any_evidence_is_published(
     tmp_path, rebind_stage_seal, rewitness_boundary
 ):
-    """The reconciliation branch at `common/exemplar_boundary.py`, previously
-    untested: reaching it means removing both the page artifact and the
+    """The reconciliation branch at `common/exemplar_boundary.py`: reaching
+    it means removing both the page artifact and the
     seal's reference to it (a producer bug with nothing dangling to notice),
     not just the artifact alone. The refusal names ordinals, never a submitted
     filename, per the data-handling policy's logging rule.

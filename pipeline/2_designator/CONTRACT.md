@@ -34,14 +34,10 @@ pixels are cropped. The check is deliberately before the first record is written
 
 That reconciliation includes the merged page — two byte-identical files deriving
 one `page_id` — which this stage refuses because `page_records` keys on the
-submitted ordinal and would otherwise publish that page's evidence twice. **It
-is no longer where an operator meets that case.** The Door now refuses the whole
-submission when two submitted files would merge, naming their ordinals, while it
-still has the filenames and before it seals its own boundary
-(`pipeline/1_exemplar/door.py::require_no_duplicate_sources`). This check stays
-as the second line of defence over the sealed shape itself, rather than over one
-route into it; what it no longer has to be is the first thing that tells an
-operator their export wrote one scan twice.
+submitted ordinal and would otherwise publish that page's evidence twice. The
+Door refuses a submission whose files would merge, naming their ordinals, before it
+seals its own boundary (`pipeline/1_exemplar/door.py::require_no_duplicate_sources`);
+this check refuses the sealed shape itself as a second line.
 
 Each chair's sealed serving row says how it answers, never a flag and never the
 ingress route; a `fixture` row answers only a synthetic run. A real submission
@@ -128,8 +124,12 @@ pipeline does so. The score is recorded in basis points, rounded half to even
 (`score-round-half-even-bp.v1`). A detection whose corners collapse to fewer
 than three distinct pixels encloses no crop: its record is kept with
 `cut: false`, `bounds: null`, `raw_proposal: null` and `region_ref: null`,
-never dropped. Two detections that quantize to the same box share one geometry
-proposal and still keep a record and a crop each.
+never dropped. Two detections that quantize to the same box and score share one
+geometry proposal and still keep a record and a crop each. A proposal's
+`observed_ordinals` index the retained `record-detector-output.v1` detections:
+`geometry_layer.yolo_obb` takes each detection's source ordinal, so the
+ordinals stay true when the caller passes only some detections. Two detections
+share one proposal only with the same box and score.
 
 **Determinism.** The in-process detector loads only weights whose SHA-256
 matches the pin, only under the exact package versions its catalogue row names,

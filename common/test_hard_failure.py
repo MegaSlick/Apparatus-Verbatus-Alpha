@@ -496,26 +496,6 @@ def test_an_ordinary_held_for_review_never_counts(tmp_path):
 # --- Reason-scoped kinds: the old pipeline's own hard/soft split -----------------
 
 
-def test_a_truncated_reading_never_counts_toward_the_run_level_cap(tmp_path):
-    """The old pipeline's own ruled distinction (`page_health.py`):
-    a dense page is not a damaged one. Three truncated Perlectiones is heavy
-    ordinary per-page traffic, never evidence the run itself is going wrong."""
-    tree = make_run(tmp_path)
-    for ordinal in (1, 2, 3):
-        publish(
-            tree,
-            stage=PERLECTOR,
-            kind="perlectio",
-            subject=f"act_000000000000000{ordinal}",
-            outcome="truncated",
-            adapter_revision="fake-perlector-v0",
-        )
-    policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
-    tally = tally_hard_failures(tree, policy)
-    assert tally["count"] == 0
-    assert tally["breached"] is False
-
-
 def test_a_door_refusal_for_an_unmatched_reason_does_not_count(tmp_path):
     """`unrecognized-format` is routine bulk-corpus noise (a non-image file that
     should never have been submitted), not "a corrupt or unrenderable image" --

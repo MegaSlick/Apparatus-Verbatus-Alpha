@@ -102,6 +102,7 @@ def test_yolo_retains_obb_and_derives_aabb_under_default_policy():
         response_ref=RESPONSE,
         detections=[
             {
+                "ordinal": 0,
                 "obb": [
                     {"x": 10, "y": 20},
                     {"x": 20, "y": 10},
@@ -128,7 +129,10 @@ def test_proposal_identity_is_reproducible_without_first_seen_observation_proven
         policy=load_geometry_policy(),
         receipt_ref=RECEIPT,
         response_ref=RESPONSE,
-        detections=[{"obb": obb, "score_bp": 8000}, {"obb": obb, "score_bp": 8000}],
+        detections=[
+            {"ordinal": 0, "obb": obb, "score_bp": 8000},
+            {"ordinal": 1, "obb": obb, "score_bp": 8000},
+        ],
     )[0]
     assert proposal["observed_ordinals"] == [0, 1]
     for ordinals in ([0], [1], [0, 1]):
@@ -150,6 +154,7 @@ def test_raw_proposal_transform_refuses_a_non_identity_scale_in_page_pixel_space
         response_ref=RESPONSE,
         detections=[
             {
+                "ordinal": 0,
                 "obb": [
                     {"x": 10, "y": 20},
                     {"x": 20, "y": 10},
@@ -201,6 +206,7 @@ def test_degenerate_obb_with_only_three_distinct_corners_is_accepted():
         response_ref=RESPONSE,
         detections=[
             {
+                "ordinal": 0,
                 "obb": [
                     {"x": 10, "y": 10},
                     {"x": 10, "y": 10},  # duplicate corner: degenerate but not refused
@@ -226,6 +232,7 @@ def test_score_bp_boundary_values_are_accepted(score_bp):
         response_ref=RESPONSE,
         detections=[
             {
+                "ordinal": 0,
                 "obb": [
                     {"x": 10, "y": 20},
                     {"x": 20, "y": 10},
@@ -252,6 +259,7 @@ def test_score_bp_boundary_values_are_refused(score_bp):
             response_ref=RESPONSE,
             detections=[
                 {
+                    "ordinal": 0,
                     "obb": [
                         {"x": 10, "y": 20},
                         {"x": 20, "y": 10},
@@ -280,7 +288,10 @@ def test_content_identity_unions_exact_duplicate_single_call_detections():
         policy=policy,
         receipt_ref=RECEIPT,
         response_ref=RESPONSE,
-        detections=[{"obb": obb, "score_bp": 8000}, {"obb": obb, "score_bp": 8000}],
+        detections=[
+            {"ordinal": 0, "obb": obb, "score_bp": 8000},
+            {"ordinal": 1, "obb": obb, "score_bp": 8000},
+        ],
     )
     assert len(yolo) == 1
     assert yolo[0]["observation_unit"] == "response-detection"
@@ -300,6 +311,7 @@ def test_a_raw_proposal_must_name_what_its_observation_ordinals_count():
         response_ref=RESPONSE,
         detections=[
             {
+                "ordinal": 0,
                 "obb": [
                     {"x": 10, "y": 20},
                     {"x": 20, "y": 10},
@@ -315,3 +327,36 @@ def test_a_raw_proposal_must_name_what_its_observation_ordinals_count():
         validate_raw_proposal({**proposal, "observation_unit": "pass"})
     with pytest.raises(SchemaRefusal, match="observed ordinals"):
         validate_raw_proposal({**proposal, "observed_ordinals": [1, 0]})
+
+
+@pytest.mark.parametrize("ordinals", [[1, 1], [2, 1], [-1, 0], [True, 2]])
+def test_detection_ordinals_must_increase_from_zero_or_above(ordinals):
+    """Ordinals are indices into the retained response, so they cannot repeat,
+    run backwards or be negative."""
+    obb = [{"x": 10, "y": 20}, {"x": 20, "y": 10}, {"x": 30, "y": 20}, {"x": 20, "y": 30}]
+    with pytest.raises(SchemaRefusal, match="ordinals must be increasing"):
+        yolo_obb(
+            page_id="pg_fixture",
+            page_ordinal=0,
+            page_w=100,
+            page_h=100,
+            policy=load_geometry_policy(),
+            receipt_ref=RECEIPT,
+            response_ref=RESPONSE,
+            detections=[{"ordinal": ordinal, "obb": obb, "score_bp": 8000} for ordinal in ordinals],
+        )
+
+
+def test_a_proposal_keeps_the_source_ordinal_it_was_given():
+    obb = [{"x": 10, "y": 20}, {"x": 20, "y": 10}, {"x": 30, "y": 20}, {"x": 20, "y": 30}]
+    [proposal] = yolo_obb(
+        page_id="pg_fixture",
+        page_ordinal=0,
+        page_w=100,
+        page_h=100,
+        policy=load_geometry_policy(),
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        detections=[{"ordinal": 3, "obb": obb, "score_bp": 8000}],
+    )
+    assert proposal["observed_ordinals"] == [3]

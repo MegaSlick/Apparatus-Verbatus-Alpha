@@ -1061,10 +1061,10 @@ def test_the_page_path_refuses_to_publish_dissent_its_own_validator_refuses(monk
     """The producer checks what it built before it is published."""
     feed, witnesses = _three_witness_feed()
 
-    def drops_a_witness(text, testimonia, *, max_comparison_steps):
-        return [{"chair": "A", "compared": True}]
+    def a_malformed_row(text, reported, *, max_comparison_steps):
+        return {"compared": True}
 
-    monkeypatch.setattr(page_path.dissent, "dissent_against", drops_a_witness)
+    monkeypatch.setattr(page_path.dissent, "dissent_against", a_malformed_row)
     with pytest.raises(SchemaRefusal, match="page dissent\\[0\\]"):
         page_path.page_dissent("Marie  Roy", feed, ["A1"], witnesses, BUDGET)
 
@@ -1908,7 +1908,7 @@ def test_the_page_deadline_refusal_speaks_in_pages(live_tree, tmp_path, monkeypa
     message = str(refused.value)
     per_page = page_run.planned_seconds_per_page(12288)
     assert f"at {per_page}s a page" in message and "reading 2 pages" in message
-    assert "--act" not in message and "a call" not in message
+    assert "a call" not in message
     assert _records(live_tree.root, "reader-sent") == []
 
 

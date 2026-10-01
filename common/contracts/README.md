@@ -21,18 +21,19 @@ would misread needs a new label.
 | `errors.py` | the refusals, kept separate so a stage can catch what it means to catch |
 | `uncertainty.py` | the canonical uncertainty layer: uncertain spans, gaps and self-revisions anchored to one text |
 | `annotations.py` | the Archetypus annotation layer, shared by the stages that seal and check it |
-| `prior_draft.py` | the recorded relationship between a prior draft and its establishing reading |
 | `serving.py` | the closed shapes and vocabularies of the live reading seam, shared by stages and `operations/` |
 
 ## Three things worth knowing before you change anything here
 
-**Identity is derived, not assigned.** An `act_id` hashes the *original* proposal,
-so a recrop cannot change it; a `region_id` hashes the act *and* the transform, so
-a recrop must. "Act identity survives recropping" is therefore the only thing the
-derivation is able to do, rather than something code has to remember.
+**Identity is derived, not assigned.** A reading act's `act_id` hashes its page,
+its class and its binding -- the page-reading attempt, the entry's number `n` and
+its union box (`identities.act_bindings`) -- so two entries that share a box still
+get two identities, and a new attempt mints new ones. A `region_id` hashes the act
+*and* the transform, so the same act seen through a different transform is a
+different region and the same act.
 
 **Witness outcomes terminate nothing.** Chair results aggregate into a coverage
-record and never into a manifest category or a character of text. An act whose
+record and never into a manifest category or a character of text. A page whose
 every chair is `failed` still reaches the Perlector, which reads the ink. If you
 ever find yourself giving a witness outcome a terminal category, you are building a
 picker under an accounting name.

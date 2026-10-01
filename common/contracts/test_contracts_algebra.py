@@ -46,7 +46,7 @@ EXPECTED_VOCABULARY_SIZES = {
     "ink-map": 5,
     "designator": 4,
     "attestatores": 8,
-    "perlector": 8,
+    "perlector": 6,
     "recensor": 7,
     "archetypus": 4,
     "coniector": 7,
@@ -160,19 +160,8 @@ def test_perlector_failures_flow_to_the_recensor_rather_than_terminating():
     """Bounded recovery is the Recensor's, so a Perlector failure must not end the
     act before the Recensor has seen it — that would remove the recovery loop from
     the architecture by accident (ARCHITECTURE, "The Recensor")."""
-    for outcome in ("truncated", "failed", "not-run"):
+    for outcome in ("failed", "not-run"):
         assert terminal_category(PERLECTOR, outcome) is None
-
-
-def test_no_readable_text_is_unresolved_until_a_blank_proof_exists():
-    """Silence is not blank proof, so it cannot reach an Archetypus.
-
-    The Recensor's existing unresolved branch holds this status. A future
-    proof-bearing `confirmed-blank` may complete, but a Perlector saying it found
-    no characters is not that proof.
-    """
-    assert classify(PERLECTOR, "no-readable-text") is OutcomeClass.UNRESOLVED
-    assert terminal_category(PERLECTOR, "no-readable-text") is None
 
 
 # --- Unknown states are fatal, never routed around ----------------------------

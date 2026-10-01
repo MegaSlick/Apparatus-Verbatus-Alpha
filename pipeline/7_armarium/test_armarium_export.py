@@ -4188,7 +4188,7 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
         )["detail"]["configurations"].clear(),
         "geometry-zero-samples": lambda m: _entry(
             m["claims"]["not_measured"], "designator-geometry-calibration"
-        )["detail"]["configurations"][2].update(calibrated_for_this_corpus=True),
+        )["detail"]["configurations"][1].update(calibrated_for_this_corpus=True, sample_count=0),
         "untyped-count": lambda m: _entry(m["claims"]["not_measured"], "perlector-pass-c")[
             "detail"
         ].update(pages_read="1"),

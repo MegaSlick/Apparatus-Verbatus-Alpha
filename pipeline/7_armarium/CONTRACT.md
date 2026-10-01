@@ -201,7 +201,7 @@ shape, so a consumer keying on it never reads an older shape out of a newer reco
 - `sources.json` — cited source-page/frame rows with filename and digest, plus
   text-free per-act citation/outcome records, the non-text accounting basis, the
   text-free `continuation_joins` rows when any exist, and
-  one `ink_map_pages` row per sealed page: what Unit 9's pre-proposal map found,
+  one `ink_map_pages` row per sealed page: what the Ink Map found,
   and what this stage re-measured its retained runs to once the readings' verified
   act-regions were known (`remeasured: null` for a page the map never
   flagged, because writing zeros would record a measurement nobody took).

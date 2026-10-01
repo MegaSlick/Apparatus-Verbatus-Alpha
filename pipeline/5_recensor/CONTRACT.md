@@ -32,7 +32,8 @@ roster chair with no Testimonium for the page counted `not-run`, so `configured`
 the sealed page roster's size. The floor counts chairs that read the page (`read` or
 `genuinely-empty`) and were not truncated, against the sealed `witness_floor`;
 `health_unrecorded` and `shortfalls` (`failed`, `truncated`, `unaligned: 0`) complete
-the shape the page-read receipt recomputes. DAI's page on which its own record detector found
+the shape the page-read receipt recomputes; a receipt whose `shortfalls.unaligned` is not 0 is
+refused. DAI's page on which its own record detector found
 no record below its stated cap is `genuinely-empty` with empty text, bound to the
 detector's census (Attestatores CONTRACT, "A page the detector found nothing on"): it
 counts toward the floor, and the validation above re-derives the census it rests on.
@@ -172,7 +173,7 @@ flag; a missing, stray or different link is refused. `continuation_links` names 
 receipt is `partial` while any page break is unresolved. A review whose subject is
 outside `reading_acts`, or any recovery request, is refused. A receipt written as
 `recensor-partition-receipt.v1`, `.v2` or `.v3` counts the Designator's proposal acts,
-which no run counts any more, and is refused by name.
+which a run does not have, and is refused by name.
 
 ## Stage-completion seal
 

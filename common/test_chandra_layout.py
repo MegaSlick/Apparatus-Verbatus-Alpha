@@ -54,7 +54,6 @@ from common.chandra_layout import (
     layout_block_text,
     parse_bbox_attribute,
     parse_layout_html,
-    text_digest,
     to_page_bounds,
 )
 
@@ -771,27 +770,7 @@ def test_a_page_of_only_empty_texts_never_produces_a_bare_separator():
     assert join_delivered_texts(["", ""]) == ("", [{"start": 0, "end": 0}, {"start": 0, "end": 0}])
 
 
-def test_text_digest_is_sha256_over_the_utf8_bytes_and_nothing_else():
-    """A reader with the retained bytes re-derives it with stock SHA-256 over UTF-8;
-    the non-ASCII vector is the one that fails if the encoding moves off UTF-8."""
-    assert (
-        text_digest("hello") == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-    )
-    assert (
-        text_digest("Élise") == "62875e5633fe8a4fe8bfd9070fe90c87fb9e1b7b4861abfe64acef5b4f891ad2"
-    )
-
-
 def test_to_page_bounds_floors_the_low_edges_and_reaches_the_last_page_pixel():
     assert to_page_bounds([0, 0, 500, 500], 1000, 1000) == {"x": 0, "y": 0, "w": 500, "h": 500}
     assert to_page_bounds([0, 0, 1000, 1000], 7, 11) == {"x": 0, "y": 0, "w": 7, "h": 11}
     assert to_page_bounds([1, 1, 999, 999], 7, 11) == {"x": 0, "y": 0, "w": 7, "h": 11}
-
-
-def test_the_rule_names_sealed_into_structure_records_are_pinned():
-    """Every structure record names these; a changed string would tell a stored
-    record that its arithmetic had moved when it had not."""
-    assert chandra_layout.QUANTIZATION_RULE == (
-        "structure-answer.v1.box1000-floor-low-ceil-far.sealed-page-pixels"
-    )
-    assert chandra_layout.PAGE_TEXT_RULE == "structure-answer.v1.newline-between-delivered-acts"

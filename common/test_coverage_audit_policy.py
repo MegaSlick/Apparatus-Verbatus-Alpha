@@ -75,11 +75,13 @@ def test_the_block_is_read_from_the_sealed_ink_map_policy():
 
 
 def test_the_noise_floor_carries_its_own_unmeasured_provenance():
-    """The two gates are measured and say so; the two noise-floor values are
-    not, and must not sit under that claim. Each block speaks for itself."""
+    """The two gates carry their own measured sample, and the two noise-floor
+    values carry none; each block speaks for itself. The gates were measured
+    against a grouping that no longer runs, so neither block claims calibration."""
     raw = tomllib.loads(DEFAULT_COVERAGE_AUDIT_CONFIG_PATH.read_bytes().decode("utf-8"))
     audit = raw["coverage_audit"]
-    assert audit["provenance"]["calibrated_for_this_corpus"] is True
+    assert audit["provenance"]["calibrated_for_this_corpus"] is False
+    assert audit["provenance"]["sample_count"] == 44
     floor = audit[COVERAGE_NOISE_FLOOR_TABLE]["provenance"]
     assert floor["calibrated_for_this_corpus"] is False
     assert floor["sample_count"] == 0

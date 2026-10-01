@@ -58,9 +58,9 @@ clamped, as a `page_edge_overshoots` finding on the page Testimonium
 ## Page reading
 
 This stage reads every Exemplar
-page (`common.stage.exemplar_page_ids`), not only pages with a Designator act, once --
-re-asking a page at most once about ids its reading left unaccounted for ("The
-re-ask", below) -- and the Perlector establishes the acts on it.
+page (`common.stage.exemplar_page_ids`) once -- re-asking a page at most once about ids
+its reading left unaccounted for ("The re-ask", below) -- and the Perlector establishes
+the acts on it.
 
 **Recorded, not run:** the sealed Pass-C audit policy (`config/perlector_audit.toml`,
 read by `audit.load`). Every `page-reading` carries
@@ -173,8 +173,12 @@ page render and the sealed page it names, each re-derived from the bytes on disk
   `not-run` (nothing asked; `problems` names every reason: `page-not-sealed` -- the
   Exemplar refused the page, and `feed_ref` is null since there is no feed --
   `chair-absent`, `no-witness-testimony`, `nothing-to-show`).
-- `disposition` is `read` only for `parsed` with no problem; outcome is `read` or
-  `held` accordingly. A parsed answer is read by `common/page_accounting.py`'s
+- `disposition` is `read` only for `parsed` with no problem. The record's outcome is
+  its disposition (`read` or `held`), except a `call-failed` reading, whose outcome is
+  `failed` (`page_path.reading_outcome`) so that `(perlector, failed)` in
+  `config/hard_failure.toml` counts it toward the run-level hard-failure cap; its
+  disposition stays `held` and the denominator counts the page as a `page-unread`
+  act. A parsed answer is read by `common/page_accounting.py`'s
   `validate_answer` against `feed_candidates`, the feed's ids placed by
   `placement_boxes` under the sealed `page-accounting` policy -- the one placement
   map, which the accounting measures against too. The answer grammar is
@@ -323,7 +327,8 @@ held:
   alone (`page_image = "off"`) cannot be established from the ink, so every act of
   such a run holds `no-autopsia`.
 - `dissent`: one row per shown witness, `{letter, witness_label, cited_units, ...}`
-  with `dissent_against`'s fields against that witness's cited units joined by
+  with `dissent_against`'s fields: one reading against one witness comparison text,
+  that witness's cited units joined by
   newlines in its own order -- with its own doubt markers removed
   (`common.alignment.bracket_marker_view`) when its Testimonium's
   `format_capabilities.can_express_uncertainty` is true, so a witness's own doubt is
@@ -333,8 +338,8 @@ held:
   `compared: "unknown"` and carries that budget, and `page_path.validate_page_dissent`
   refuses a record that loses a shown witness or names a budget the run never sealed.
 - `truncation` is `truncation.classify` over the region's pixels (the area of the union
-  of `region_boxes_px`, each pixel once) against the page's;
-  null for an unplaced entry. A `truncated` or `unknown` classification adds hold
+  of `region_boxes_px`, each pixel once) against the page's; the measure's
+  `smallest_page_pixels` equals its `page_pixels`; null for an unplaced entry. A `truncated` or `unknown` classification adds hold
   `reading-incomplete`; the page accounting's rule (g) records an entry with no
   classification (an unplaced one) as `truncation-not-classified`, not measured,
   which holds.

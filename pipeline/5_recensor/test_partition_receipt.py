@@ -61,7 +61,7 @@ def _valid_coverage() -> dict:
         "under_witnessed": True,
         "unresolved_chairs": 1,
         "health_unrecorded": 1,
-        "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 1},
+        "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0},
     }
 
 
@@ -261,3 +261,11 @@ def test_the_reading_outcome_set_has_exactly_one_definition():
         for outcome, klass in vocabulary.VOCABULARIES[vocabulary.ATTESTATORES].items()
         if klass is vocabulary.OutcomeClass.COMPLETED
     }, "a reading outcome is completed-class, but the completed class is wider"
+
+
+def test_an_unaligned_shortfall_is_refused():
+    """The writer always records 0; any other count is a claim nothing measured."""
+    coverage = _valid_coverage()
+    coverage["shortfalls"]["unaligned"] = 1
+    with pytest.raises(SchemaRefusal, match="unaligned shortfall"):
+        _build_with_coverage(coverage)

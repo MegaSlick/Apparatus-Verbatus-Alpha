@@ -248,7 +248,7 @@ def ink_map_page_rows(
 ) -> tuple[dict, ...]:
     """Re-measure the Ink Map against the readings' actual regions, and say so.
 
-    The pre-proposal map cannot know whether edge ink belongs to an act. Its
+    The Ink Map cannot know whether edge ink belongs to an act. Its
     lossless page-space runs let this final boundary apply the verified
     act-region geometry to the *same measurement*, so a claimed edge mark
     releases and a genuinely unclaimed one remains visible for review.

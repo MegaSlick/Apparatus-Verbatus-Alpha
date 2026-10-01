@@ -170,16 +170,11 @@ def test_an_unlive_row_is_refused_by_name_on_a_real_submission():
 def test_the_unlive_refusal_actually_fires_before_any_write(real_root, monkeypatch):
     """Drives `_read_the_pages` itself, so deleting the refusal -- or
     introducing a write ahead of it under any name -- fails this test. It is
-    the whole proof that the refusal lands before the partition blob is
-    written: a companion test comparing the two calls' positions in the
-    function's source text asserted the same ordering far more weakly, and
-    would have gone on passing over any rewrite that kept the textual order
-    while changing what runs. `verify_predecessor_seal` is stubbed out because
-    the real route that would reach this line refuses earlier still, at the
-    predecessor seal (see the parametrized test above) -- there is no real
-    Designator yet to build a submission past that point -- and the chair and
-    serving-mode resolution are pinned directly to the case under test rather
-    than requiring a real catalogue and a live-tier flag.
+    the proof that the refusal lands before any write. `verify_predecessor_seal`
+    is stubbed out because the fixture tree stops at the Ink Map seal (see the
+    parametrized test above), and the chair and serving-mode resolution are
+    pinned directly to the case under test rather than requiring a real
+    catalogue and a live-tier flag.
     """
     monkeypatch.chdir(ROOT)
     monkeypatch.setattr(stage_module, "verify_predecessor_seal", lambda *_a, **_k: None)
@@ -250,8 +245,8 @@ def _run_program(program: Path, *argv: str) -> subprocess.CompletedProcess:
 def real_template(tmp_path_factory) -> Path:
     """One real submission, carried by the real programs to the Ink Map's seal.
 
-    The Designator refuses on real ingress by design, so this is as far as any
-    real run goes today; the three stages under test open on top of it.
+    The fixture stops at the Ink Map seal because the tests need nothing
+    further; the three stages under test open on top of it.
     """
     base = tmp_path_factory.mktemp("real-ingress-stages-template")
     approved = base / "approved-storage"

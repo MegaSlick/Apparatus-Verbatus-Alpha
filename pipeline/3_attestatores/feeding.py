@@ -66,11 +66,9 @@ _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 
 #: Declared from the grammar: plain UTF-8 text carrying the RecordGold card's
 #: uncertainty convention (`_UNCERTAINTY_TOKENS`), so it can express doubt but
-#: has no coordinate vocabulary, so it cannot express layout. Safe to declare
-#: uncertainty only because the Perlector's bracket-marker comparison view is
-#: already wired for capability-declaring chairs
-#: (`pipeline/4_perlector/run.py::dissent_testimonia`); declared earlier, this
-#: chair would have gone permanently `compared: unknown`.
+#: has no coordinate vocabulary, so it cannot express layout. Dissent removes
+#: the doubt markers of a chair that declares uncertainty before comparing
+#: (`common/page_path.py::_comparison_text`).
 DAI_FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
     {"can_express_uncertainty": True, "can_express_layout": False}
 )
@@ -262,8 +260,7 @@ def dai_model_view(
     stage-owned paths. Equal digests are equal pixels because
     `_verify_detector_region` already proves the source crop is exactly
     `crop_png(sealed page, bounds)`, which `_dai_present` re-derives the same
-    way. Requiring the whole dict to match instead refused every genuine
-    no-resize DAI act after its response had already come back.
+    way.
     """
     for name, reference in (
         ("source image", source_image_ref),

@@ -77,32 +77,11 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
         }
 
 
-# Why a page render has the size it has: the page's ink made legible, or a
-# layout-sized render of a page the act's own full-resolution crops already
-# show whole.
-LEGIBLE_INK: Final = "legible-ink"
-COVERED_BY_CROP: Final = "covered-by-crop"
-MULTI_PAGE_ACT: Final = "multi-page-act"
-# The whole sealed page at its own size, for a page reading sealed to show it
+# Why a page render has the size it has: the page's ink made legible, or the
+# whole sealed page at its own size for a page reading sealed to show it
 # unscaled (`[feed] page_image = "full"`).
+LEGIBLE_INK: Final = "legible-ink"
 FULL_PAGE: Final = "full-page"
-
-
-def union_area(rectangles: list[tuple[int, int, int, int]]) -> int:
-    """The area covered by at least one `(x0, y0, x1, y1)` rectangle, by coordinate
-    compression. Exact in integers; quadratic in the handful of regions one act carries.
-    """
-    xs = sorted({x for rectangle in rectangles for x in (rectangle[0], rectangle[2])})
-    ys = sorted({y for rectangle in rectangles for y in (rectangle[1], rectangle[3])})
-    area = 0
-    for x0, x1 in zip(xs, xs[1:], strict=False):
-        for y0, y1 in zip(ys, ys[1:], strict=False):
-            if any(
-                left <= x0 and x1 <= right and top <= y0 and y1 <= bottom
-                for left, top, right, bottom in rectangles
-            ):
-                area += (x1 - x0) * (y1 - y0)
-    return area
 
 
 def build_page_render(
@@ -111,60 +90,26 @@ def build_page_render(
     source_page_id: str,
     source_page_ordinal: int,
     page_context: dict[str, int],
-    crop_bounds: list[dict[str, int]],
-    multi_page: bool = False,
     full_page: bool = False,
     retain: Callable[[bytes], dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """The page render for one act's page, with its transform and its reason
+    """The page render for one page reading, with its transform and its reason
     recorded (ARCHITECTURE invariant 3: the exact image shown is reproducible
     from the Exemplar plus the recorded transforms).
 
-    `page_context` is the run's sealed `[page_context]` table. A page is
-    rendered at `maximum_edge`, large enough that its ink is legible, unless the
-    act's own crops on it (`crop_bounds`, sealed-page coordinates) cover the
-    whole page: those crops already carry every pixel at full resolution, so the
-    page is rendered at `covered_page_edge` as layout only, and a second
-    full-resolution copy does not crowd the act out of the served row. Every
-    page of an act spanning more than one page (`multi_page`) is rendered at
-    `covered_page_edge` too: a legible render of each page would refuse acts
-    over a page turn that the served row holds with layout renders.
-    `full_page` renders the sealed page at its own size, whatever the crops.
-    `retain` stores the render's bytes and returns their reference; it is the
-    stage's own `context.retain` unless a reader re-deriving a sealed render
-    passes one that only checks the bytes are already retained.
+    `page_context` is the run's sealed `[page_context]` table: the page is
+    rendered at `maximum_edge`, large enough that its ink is legible.
+    `full_page` renders the sealed page at its own size instead. `retain`
+    stores the render's bytes and returns their reference; it is the stage's
+    own `context.retain` unless a reader re-deriving a sealed render passes one
+    that only checks the bytes are already retained.
     """
     page, page_bytes = read_sealed_page(context.tree, source_page_id)
     width, height = dimensions(page_bytes)
-    retain = context.retain if retain is None else retain
-    if full_page:
-        return _published_render(
-            retain,
-            page,
-            page_bytes,
-            source_page_id=source_page_id,
-            source_page_ordinal=source_page_ordinal,
-            edge=max(width, height),
-            reason=FULL_PAGE,
-        )
-    covered = (
-        union_area(
-            [
-                (
-                    max(0, bounds["x"]),
-                    max(0, bounds["y"]),
-                    min(width, bounds["x"] + bounds["w"]),
-                    min(height, bounds["y"] + bounds["h"]),
-                )
-                for bounds in crop_bounds
-            ]
-        )
-        == width * height
-    )
-    reason = MULTI_PAGE_ACT if multi_page else COVERED_BY_CROP if covered else LEGIBLE_INK
-    edge = page_context["maximum_edge" if reason == LEGIBLE_INK else "covered_page_edge"]
+    full = (max(width, height), FULL_PAGE)
+    edge, reason = full if full_page else (page_context["maximum_edge"], LEGIBLE_INK)
     return _published_render(
-        retain,
+        context.retain if retain is None else retain,
         page,
         page_bytes,
         source_page_id=source_page_id,

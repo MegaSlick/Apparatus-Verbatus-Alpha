@@ -1443,6 +1443,27 @@ def test_a_detector_that_found_nothing_on_a_page_of_acts_holds():
     assert "no-detector-record-on-act-page" in record["holds"]
 
 
+def test_records_with_no_box_are_not_measured_rather_than_absent():
+    """A detector that found records it could not box did not find an empty page."""
+    case = page()
+    case["detections"]["records"] = [
+        {"box_px": None, "ref": "record-0"},
+        {"box_px": None, "ref": "record-1"},
+    ]
+
+    record = account(case)
+
+    assert record["rules"]["i"] == {
+        "status": "not-measured",
+        "findings": [
+            {"code": "detector-record-not-measured", "id": None, "ref": "record-0"},
+            {"code": "detector-record-not-measured", "id": None, "ref": "record-1"},
+        ],
+        "records_not_measured": 2,
+    }
+    assert "no-detector-record-on-act-page" not in record["holds"]
+
+
 def test_a_detector_that_found_nothing_on_a_page_of_other_entries_passes_rule_i():
     case = page()
     _detector_found_nothing(case)

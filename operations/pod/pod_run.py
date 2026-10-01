@@ -542,20 +542,15 @@ def _require_selection_predecessor(plan: RunPlan) -> None:
     """Refuse a selection whose first stage's predecessor is not sealed in this run's tree.
 
     The orchestrator refuses the same thing when that stage opens; asking
-    first keeps the refusal ahead of a paid bootstrap. Recovery has no stage
-    program of its own, so it is checked as Archetypus, whose predecessor is
-    Recensor. The orchestrator checks that seal for recovery only once the run
-    has a ``run.json``; this check asks for it always, which refuses earlier,
-    never later.
+    first keeps the refusal ahead of a paid bootstrap.
     """
 
     first = plan.selected_stages()[0]
-    consumer = "archetypus" if first == "recovery" else first
-    predecessor = SEAL_PREDECESSORS.get(consumer)
+    predecessor = SEAL_PREDECESSORS.get(first)
     if predecessor is None:
         return
     try:
-        verify_predecessor_seal(RunTree(plan.run_root, plan.run_id), consumer)
+        verify_predecessor_seal(RunTree(plan.run_root, plan.run_id), first)
     except ContractError as error:
         raise RunRefusal(
             f"starting at {first} requires this run's sealed {predecessor} stage: {error}",

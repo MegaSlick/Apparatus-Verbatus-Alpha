@@ -19,8 +19,10 @@ door → exemplar → ink map → designator → attestatores → perlector → 
 ```
 
 Every member is a stage program with its own completion boundary. No member re-asks a
-reading: the Recensor holds what it cannot accept, and the sealed recovery budget
-(`config/recovery.toml`) is not yet spent by any stage.
+reading: the Recensor holds what it cannot accept. The sealed recovery budget
+(`config/recovery.toml`) is a forward binding: every run seals it at the Door, and
+the page re-ask will spend it. No stage reads it yet, and `common/test_recovery.py`
+names that.
 
 ## The three selections
 
@@ -46,7 +48,7 @@ publishing did not, so the next entry is a named missing-seal refusal.
 
 | Stop | Exit | How it is said |
 |---|---|---|
-| a member **held** | 3 | `manual`/`semi`: `run <id>: <mode> mode stopped at held <name>`. A held Attestatores stops every mode, including `auto`, and says so. The Armarium is excluded: it is always last, so its hold falls through to the run's terminal report rather than losing it. |
+| a member **held** | 3 | `manual`/`semi`: `run <id>: <mode> mode stopped at held <name>`, unless the selection ends at the Armarium: such a selection runs through every held member, as `auto` does, so the Armarium's terminal report names every hold. A held Attestatores stops every mode, including `auto`, and says so. |
 | a boundary **refused** | 2 | the refusing stage's own named `ContractError`/`SchemaRefusal` on stderr, forwarded verbatim |
 | the run-level **cap** breached | 4 | `run <id>: halted at the <checkpoint> checkpoint — …`, plus the offending subjects by kind |
 
@@ -68,13 +70,13 @@ between the three and fail.
 
 **Scan triage and the driver share one mode vocabulary.** Triage chooses `manual`, `semi`,
 or `auto` per batch through confidence-threshold settings (`config/triage_modes.toml`).
-`common/contracts/stages.py:103` declares that triple once as `TRIAGE_MODES`, and
-`common/stage.py:222` aliases it as `RUN_MODES`; `pipeline/0_triage/CONTRACT.md:49-53`
+`common.contracts.stages.TRIAGE_MODES` declares that triple once, and
+`common.stage.RUN_MODES` aliases it; `pipeline/0_triage/CONTRACT.md` ("Modes and refusals")
 records the same join.
 
 The selections have different lifetimes. Triage persists its member as a batch property;
 the driver infers one for an invocation and never writes it to the run tree, as the
 byte-identity tests above require. Other contracts use a field named `mode` for unrelated
 vocabularies, so the field name alone identifies no selection
-(`common/contracts/approval.py:112-138`,
-`pipeline/2_designator/geometry_layer.py:570`).
+(the ingress record in `common/contracts/approval.py`, `parse_ingress_record`, and the
+crop-policy `mode` of `pipeline/2_designator/geometry_layer.py`, `yolo_obb`).

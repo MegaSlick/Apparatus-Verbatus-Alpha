@@ -7,6 +7,7 @@ records published over a real run tree.
 """
 
 import hashlib
+import json
 import shutil
 import subprocess
 import sys
@@ -172,6 +173,36 @@ def test_declared_detections_become_page_evidence_that_decides_nothing(tmp_path)
 
     # Records enter no act: the stage cuts no act region.
     assert _records(context, designator, "region") == []
+
+
+def test_a_record_s_proposal_names_its_own_detection_after_a_collapsed_one(tmp_path):
+    """Observed ordinals index the retained detector output, so a collapsed box
+    ahead of a cut one does not shift the cut record's proposal onto it."""
+    designator = load_stage("2_designator")
+    context = _prepared_context(
+        designator, tmp_path / "runs", _configured(tmp_path), "collapsed-first test"
+    )
+    collapsed, inside, straddling = (
+        DECLARED_DETECTIONS[2],
+        DECLARED_DETECTIONS[0],
+        DECLARED_DETECTIONS[1],
+    )
+    context.fixture["detector_record"] = [dict(row) for row in (collapsed, inside, straddling)]
+    designator.publish_page_evidence(context, real=False)
+    context.finish()
+    records = {
+        record["payload"]["detector_ordinal"]: record["payload"]
+        for record in _records(context, designator, "detector-record")
+    }
+    assert records[0]["cut"] is False and records[0]["raw_proposal"] is None
+    for ordinal, declared in ((1, inside), (2, straddling)):
+        proposal = records[ordinal]["raw_proposal"]
+        assert proposal["observed_ordinals"] == [ordinal]
+        assert proposal["score_bp"] == declared["score_bp"]
+        output = json.loads(
+            context.tree.read_bytes(records[ordinal]["raw_output_ref"]["relative_path"])
+        )
+        assert output["detections"][ordinal]["corners"] == declared["corners"]
 
 
 def test_a_detector_score_enters_its_record_and_proposal_rounded_half_to_even(

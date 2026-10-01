@@ -34,12 +34,10 @@ caveat = "MEASURED ON RECORDGOLD, NOT ON THE QUEBEC REGISTERS THIS INSTRUMENT SE
 # ink legible, not only its layout: 2,560 keeps a 300-DPI letter leaf
 # (2,550x3,300 -> 1,978x2,560, 5.06 MP) and A4 inside the 27B Perlector row's
 # max_pixels (5,299,200), so the chair sees exactly the rendered pixels (4,960
-# image tokens for the letter page). covered_page_edge is the layout-only size
-# (about 800 tokens). The live reader refuses a request that does not fit its row
-# before sending, never dropping or shrinking a page.
+# image tokens for the letter page). The live reader refuses a request that does
+# not fit its row before sending, never dropping or shrinking a page.
 [page_context]
 maximum_edge = 2560
-covered_page_edge = 1024
 
 # The page path's feed: what one page call shows the Perlector. Every input has
 # a switch, and the page-feed record of every reading carries the switches it

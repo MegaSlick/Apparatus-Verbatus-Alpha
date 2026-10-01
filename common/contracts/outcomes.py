@@ -105,9 +105,6 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
     PERLECTOR: {
         "read": _C.COMPLETED,
-        # Silence does not prove a blank, so it stays unresolved.
-        "no-readable-text": _C.UNRESOLVED,
-        "truncated": _C.FAILED,
         "failed": _C.FAILED,
         "not-run": _C.UNRESOLVED,
         # A whole-page reading, or one entry of it, kept for review: read, but
@@ -198,8 +195,6 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (ATTESTATORES, "not-run"): None,
     (ATTESTATORES, "excluded"): None,
     (PERLECTOR, "read"): None,
-    (PERLECTOR, "no-readable-text"): None,
-    (PERLECTOR, "truncated"): None,
     (PERLECTOR, "failed"): None,
     (PERLECTOR, "not-run"): None,
     (PERLECTOR, "held"): None,
@@ -636,8 +631,8 @@ def run_aggregate(
 
     `edge_hold_pages` is page-scoped because no act can yet own the unclaimed
     ink, so a held page keeps the aggregate partial even if its acts were
-    delivered. Each `continuation_joins` row does the same for a page break the
-    geometry says an act may cross: its sides are delivered apart, unjoined.
+    delivered. Each `continuation_joins` row does the same for a page break an
+    answer's continuation flag names: its sides are delivered apart, unjoined.
 
     A sealed page with no act row is a page whose readings are all `other` (`other_categories_by_page`
     names their categories): held, with its reason, until every one is

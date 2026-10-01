@@ -83,12 +83,10 @@ FIXTURE_ROOT = ROOT / "proof"
 
 # Chandra answers in its vendor's own layout grammar (`common/chandra_layout.py`,
 # the answer `OCR_LAYOUT_PROMPT` asks for): top-level divs carrying a
-# `data-bbox` normalized 0-1000 against the sealed page. The boxes below are the
-# ones this module has always used and they convert, through the same
-# `to_page_bounds` the retired JSON contract used, to exactly the sealed
-# proposal rectangles of `a1` (20,20 160x81), `a2` (20,120 160x100) and a2's
-# page-2 continuation, so the served witness's own geometry overlaps the acts it
-# reports on. Only whitespace sits between the divs: text outside every
+# `data-bbox` normalized 0-1000 against the sealed page. The boxes below convert
+# by `chandra_layout.to_page_bounds` to the page-pixel rectangles (20,20 160x81)
+# and (20,120 160x100) on page 1 and the matching block on page 2, over the
+# fixture's ink. Only whitespace sits between the divs: text outside every
 # top-level block would be a `content-outside-blocks` finding, which is the
 # grammar reporting ink no block carries rather than anything this fixture means
 # to say.

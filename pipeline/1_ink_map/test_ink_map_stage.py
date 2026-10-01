@@ -122,25 +122,22 @@ def test_unclaimed_edge_ink_is_named_and_bounded_but_not_held():
     assert terminal_category(INK_MAP, "unclaimed-edge-ink") is None
 
 
-def test_only_the_area_gate_and_the_perimeter_band_carry_a_calibration_claim():
-    """The sealed provenance says which audit values were measured and which were not.
+def test_no_coverage_audit_value_claims_calibration_for_the_pipeline_that_runs():
+    """The sealed provenance says which audit values were measured and against what.
 
     The area gate (`substantial_ink_area_bp`) and the perimeter band
-    (`edge_band_bp`) were measured on 44 real pages and sealed under
-    `[coverage_audit.provenance]` with `calibrated_for_this_corpus = true`. The
-    noise floor and fraction gate are reasoned defaults and sit under a
-    provenance block of their own that denies the claim, so the first block's
-    claim cannot be read as covering them.
+    (`edge_band_bp`) were measured on 44 real pages against a grouping that no
+    longer runs, so `[coverage_audit.provenance]` keeps its sample and denies the
+    claim until they are re-measured against page-reading regions. The noise
+    floor and fraction gate are reasoned defaults under a block of their own.
     """
     import tomllib
 
     config = tomllib.loads((ROOT / "config/ink_map.toml").read_bytes().decode("utf-8"))
     provenance = config["coverage_audit"]["provenance"]
-    assert provenance["calibrated_for_this_corpus"] is True
+    assert provenance["calibrated_for_this_corpus"] is False
     assert provenance["sample_count"] == 44
-    # The claim is bounded by its own caveat, which is what keeps "calibrated"
-    # from being read as "calibrated for the corpus this pipeline will run on".
-    assert "WHAT THE SAMPLE DOES NOT ESTABLISH" in provenance["caveat"]
+    assert "re-measure both gates against page-reading regions" in provenance["caveat"]
     noise_floor = config["coverage_audit"]["noise_floor"]["provenance"]
     assert noise_floor["calibrated_for_this_corpus"] is False
     assert noise_floor["sample_count"] == 0

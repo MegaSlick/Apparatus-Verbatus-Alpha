@@ -1016,10 +1016,8 @@ def test_dai_carried_request_bytes_and_uncertainty_tokens_are_not_normalized():
 def test_dai_declares_its_own_format_capabilities():
     """DAI's grammar carries a doubt and no geometry, and says exactly that.
 
-    The uncertainty flag is true only because the Perlector can now derive a
-    bracket-marker comparison view for a chair that declares it
-    (`pipeline/4_perlector/run.py::dissent_testimonia`, U12). Declared before
-    that wiring it would have put this chair at `compared: "unknown"` for good.
+    Dissent strips the doubt markers of a chair that declares uncertainty
+    (`common/page_path.py::_comparison_text`).
     """
     assert dict(DAI_FORMAT_CAPABILITIES) == {
         "can_express_uncertainty": True,

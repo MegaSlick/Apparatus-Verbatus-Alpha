@@ -17,10 +17,10 @@ The knobs. One question per planned file, each answerable without reading code.
 | `perlector_protocol.toml` | the sealed Perlector protocol: what one whole-page reading is shown (`[feed]`), the page render's edges (`[page_context]`), and the truncation instrument's length floor and legibility gate (`[truncation]`) |
 | `alignment.toml` | the sealed step budget of the Perlector's dissent comparisons |
 | `corpus_frame.toml` | R0's sealed shard boundary: how many pages one bounded failure and accounting unit may hold |
-| `designator_geometry.toml` | the sealed crop policy under which the Designator turns a record detector's oriented box into the crop DAI reads |
+| `designator_geometry.toml` | the sealed crop policy for the record detector (`secondary_proposer`): the Designator cuts every detector record's crop under it, on fixture and real rosters alike, and DAI reads those crops |
 | `ink_map.toml` | the ink measurement's sealed policy: background inference, the page-spanning bound and connectivity radius, and the outside-coverage audit's gates, read by the Ink Map, the Perlector's page accounting, the Recensor and the Armarium |
-| `perlector_audit.toml` | the sealed Pass-C audit policy: flag classes and the round cap the audit refuses to exceed |
-| `witness_context.toml` | the factual per-witness context the Perlector's dossier may carry: identity, provenance, training domain, and nothing evaluative |
+| `perlector_audit.toml` | the sealed Pass-C audit policy: the round cap the audit refuses to exceed |
+| `witness_context.toml` | the factual per-witness context declaration a run seals beside its witness regime: identity, provenance, training domain, and nothing evaluative; sealed and roster-checked, and not shown to the Perlector on the page path |
 | `witness_context-real.toml` | the same declaration for the real roster's three chairs, each training domain stated as far as this repository can cite it and named as unknown where it cannot; selected with the full trio `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml --witness-context-config config/witness_context-real.toml`; published witness identities paired with a known fixture declaration are refused |
 | `triage_modes.toml` | the three pipeline-wide triage modes and their closed-ordinal review thresholds |
 | `decoding.toml` | each reading chair's sampling values as its makers recommend them, with source and revision; the Perlector's whole-page output cap; and Chandra's native recipe |
@@ -234,6 +234,8 @@ coverage audit takes out of its counts, and the radius it is found at), and
 its own provenance. The Ink Map, the Perlector's page accounting, the Recensor and the
 Armarium read it through `load_background_config` and `load_coverage_audit_config`,
 and every record measured under it names its digest as `background_config_sha256`.
+
+The coverage-audit gates are not calibrated for this corpus (`calibrated_for_this_corpus = false`); they are re-measured against page-reading regions on the proof run.
 
 ## Pre-door triage instrument
 

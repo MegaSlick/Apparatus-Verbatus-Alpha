@@ -333,11 +333,23 @@ def yolo_obb(
     response_ref: dict[str, str],
     detections: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Adapt OBB fixture output without loss: retain OBB and derive sealed crop policy."""
+    """Adapt OBB detections without loss: retain OBB and derive sealed crop policy.
+
+    Each detection carries `ordinal`, its index in the retained detector response,
+    so a proposal's `observed_ordinals` name detections in that response even when
+    the caller passes only some of them.
+    """
     checked = load_geometry_policy_record(policy)
     union: dict[str, dict[str, Any]] = {}
-    for ordinal, detection in enumerate(detections):
-        item = _closed(detection, {"obb", "score_bp"}, "YOLO OBB detection")
+    previous = -1
+    for detection in detections:
+        item = _closed(detection, {"ordinal", "obb", "score_bp"}, "YOLO OBB detection")
+        ordinal = item["ordinal"]
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal <= previous:
+            raise SchemaRefusal(
+                "YOLO OBB detection ordinals must be increasing non-negative integers"
+            )
+        previous = ordinal
         points = _polygon(item["obb"], page_w, page_h, "YOLO OBB")
         if len(points) != 4:
             raise SchemaRefusal("YOLO OBB must contain exactly four corners")
