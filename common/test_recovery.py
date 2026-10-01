@@ -26,7 +26,7 @@ def test_the_shipped_policy_bounds_re_asks_per_page():
     assert load_recovery_policy()["page_level_reread"] == 1
 
 
-def test_the_ruled_ceiling_accepts_one_re_ask(tmp_path):
+def test_the_ceiling_accepts_one_re_ask(tmp_path):
     policy = _policy(
         tmp_path / "at-ceiling.toml", f"[budget]\npage_level_reread = {REREAD_CEILING}\n"
     )
@@ -34,7 +34,7 @@ def test_the_ruled_ceiling_accepts_one_re_ask(tmp_path):
     assert load_recovery_policy(policy)["page_level_reread"] == REREAD_CEILING == 1
 
 
-def test_the_ruled_ceiling_refuses_more_re_asks(tmp_path):
+def test_the_ceiling_refuses_more_re_asks(tmp_path):
     policy = _policy(
         tmp_path / "over-ceiling.toml", f"[budget]\npage_level_reread = {REREAD_CEILING + 1}\n"
     )

@@ -22,7 +22,7 @@ DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
 )
 
 # Two continues as an early warning, the third stops; not tunable by config.
-RULED_THRESHOLD: Final = 2
+HARD_FAILURE_THRESHOLD: Final = 2
 # A policy is bounded operator declaration, not a corpus payload: a
 # caller-selected file must not turn one checkpoint into unbounded memory or
 # policy-length-times-corpus work.
@@ -60,10 +60,10 @@ def load_hard_failure_policy(path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH
     threshold = config.get("threshold")
     if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 0:
         raise ContractError("the hard-failure configuration has no non-negative integer threshold")
-    if threshold != RULED_THRESHOLD:
+    if threshold != HARD_FAILURE_THRESHOLD:
         raise ContractError(
-            f"the hard-failure configuration names threshold {threshold}, but the ruled value "
-            f"is exactly {RULED_THRESHOLD}: two is an early warning and the third stops"
+            f"the hard-failure configuration names threshold {threshold}, but it is fixed at "
+            f"{HARD_FAILURE_THRESHOLD}: two is an early warning and the third stops"
         )
 
     raw_kinds = config.get("kind")
