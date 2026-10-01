@@ -445,17 +445,20 @@ def build_page_tree(
     run_id: str = "r",
     *,
     floor: int = 3,
+    reask: int | None = 0,
     **options,
 ) -> tuple[Path, dict[str, object]]:
     """A fixture tree read page by page, through the Perlector; returns (root, stage options).
 
     The committed protocol and roster read page by page. The options, which
     every later stage of the run takes too, name a recovery policy with the page
-    re-ask off, so each page stands on its first reading, and set the witness
-    floor to `floor` when it is not the committed one; `options` adds others (for
-    example `witness_context="blinded"`).
+    re-ask budget `reask` (off by default, so each page stands on its first
+    reading; `None` keeps the committed policy and names none), and set the
+    witness floor to `floor` when it is not the committed one; `options` adds
+    others (for example `witness_context="blinded"`).
     """
-    options = {"recovery_config": reask_recovery_config(base / "config", 0), **options}
+    if reask is not None:
+        options = {"recovery_config": reask_recovery_config(base / "config", reask), **options}
     if floor != 3:
         options = {"models_config": floor_models_config(base / "models", floor), **options}
     root = base / "runs"
