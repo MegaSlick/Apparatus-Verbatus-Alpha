@@ -20,7 +20,7 @@ names which of the two a given record holds. A wire body that could not be
 parsed at all produces ``native_capture = None``: no adapter ever ran, so
 there is no adapter-shaped capture to retain.
 
-**The generation split** (DAI, act-scoped): ``generation_declared`` retains
+**The generation split** (DAI): ``generation_declared`` retains
 DAI's whole carried ``generation_config.json`` as evidence. Its sampling
 values reach the wire only through the sealed decoding table
 (``config/decoding.toml``'s ``chair_decoding``), which ``ChairClient`` applies
@@ -46,17 +46,17 @@ and never a silent downscale.
 **DAI's closed model view**: unlike Churro or Chandra, DAI's retained view is
 closed to its own schema (``feeding.validate_dai_model_view``).
 ``live_attempt_from_response`` builds it with ``feeding.dai_model_view`` from
-the act's presentation, the adapter's published crop, its exact prompt text
-and declared generation config. The no-resize case is satisfied by content,
-not path identity: DAI's crop on that path is ``crop_png`` of the same sealed
-page at the same bounds as the Designator's proposal crop, so the two
+the record crop's presentation, the adapter's published crop, its exact prompt
+text and declared generation config. The no-resize case is satisfied by
+content, not path identity: DAI's crop on that path is ``crop_png`` of the same
+sealed page at the same bounds as the Designator's record crop, so the two
 references share one digest under two stage-owned paths.
 
 **Confirming a blank response**: ``genuinely-empty`` is confirmed only when
 the transport word is a recognized natural completion; an empty response
 whose stop word is a cut-off, unreported, or unrecognized is held as
 ``failed`` instead (none of those default to "finished
-naturally"). This applies on both the page-scoped and act-scoped paths alike.
+naturally"). This applies to a whole-page response and a DAI record response alike.
 """
 
 from __future__ import annotations
@@ -230,8 +230,8 @@ def request_capacity_or_refuse(
     resize. The prompt cost is the measured constant for this chair, bound to
     a digest of the exact text (no tokenizer is available offline here). The
     answer budget is that chair's own measured response at the scope it was
-    asked at: a page chair reserves a dense page's answer, an act chair one
-    act's answer, since reserving a page's would refuse ordinary act crops.
+    asked at: Chandra reserves a dense page's answer, DAI one record's answer,
+    since reserving a page's would refuse ordinary record crops.
     Churro is the exception: its whole vendor answer bound is reserved, so a
     row that cannot hold it refuses the page rather than letting the engine
     stop the answer short of what the vendor's own pipeline allows.
@@ -262,14 +262,12 @@ def request_capacity_or_refuse(
 def act_chair_request(
     context: Any, adapter: Any, presentation: Mapping[str, Any], *, profile: Any
 ) -> ActChairRequest:
-    """Build one act-scoped (DAI) reading request from an act's proposal presentation.
+    """Build one DAI reading request from one detector record crop's presentation.
 
     ``presentation`` is exactly what `run.py::presentation_for_region` returns
-    for the act's one proposal region; ``adapter.present`` is DAI's own
-    crop-and-resize step, publishing and returning the image this request
-    embeds. ``profile`` is the sealed serving row this chair runs under. Even
-    a page-fallback act's crop (one fallback band, not a whole page) is real
-    pixels this seam weighs against the row rather than assuming away.
+    for the record's crop; ``adapter.present`` is DAI's own crop-and-resize
+    step, publishing and returning the image this request embeds. ``profile``
+    is the sealed serving row this chair runs under.
     """
 
     presented = adapter.present(context, dict(presentation))
@@ -519,7 +517,7 @@ def _failed_parse_composition(
 ) -> tuple[str, str]:
     """Compose a parse failure's ``reason`` suffix and content-health basis.
 
-    Shared by the act-scoped and page-scoped parse-failure branches so a
+    Shared by the DAI record and whole-page parse-failure branches so a
     provider-truncated response cannot go on being folded into one and
     dropped from the other. When ``cut_off`` is ``True`` — the provider's stop
     word was a recognized cut-off — both strings name the truncation ahead of
@@ -687,19 +685,19 @@ def live_attempt_from_response(
     parser: str,
     generation_accounting: Mapping[str, Any] | None = None,
 ) -> LiveAttempt:
-    """Derive one act-scoped chair's `LiveAttempt` from its retained response.
+    """Derive one DAI record reading's `LiveAttempt` from its retained response.
 
-    ``dai.v1`` is the only act-scoped adapter today; refuses any other name
-    rather than guessing at a view shape it does not know.
+    ``dai.v1`` is the only adapter read one crop at a time; refuses any other
+    name rather than guessing at a view shape it does not know.
     ``presentation``/``presented``/``prompt`` are exactly what
-    `act_chair_request` computed for this same act, reused here so DAI's real
-    crop and resize runs once per act, not twice.
+    `act_chair_request` computed for this same record, reused here so DAI's real
+    crop and resize runs once per record, not twice.
     """
 
     if adapter_name != "dai.v1":
         raise SchemaRefusal(
             f"live_attempt_from_response has no capture recipe for adapter {adapter_name!r}; "
-            "only dai.v1 is act-scoped today"
+            "only dai.v1 is read one crop at a time"
         )
     if response.parse_problem is not None:
         return _malformed_response_attempt(response, adapter=adapter)

@@ -561,7 +561,7 @@ def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_th
 
 
 def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
-    """DAI is act-scoped, and a page-fallback act's crop is the whole page.
+    """A DAI crop as large as the whole page is refused at the same row.
 
     The measured case from the token study: a fallback band's presented crop
     was 1,291x1,826, costing 2,990 image tokens against DAI's own
@@ -925,7 +925,7 @@ def _identity(role: str = "attestator_1", recipe: str = "recipe-1") -> ChairIden
         serving_recipe=recipe,
         license_note="test identity only",
         witness_adapter="dai.v1",
-        witness_scope="act",
+        witness_scope="page",
     )
 
 
@@ -1764,7 +1764,7 @@ def test_both_live_retention_call_sites_declare_the_served_posture(tmp_path: Pat
     fixture posture wants and what every offline call site relies on -- so a
     live call site that forgot to pass it would restore exactly the acceptance
     this guards against, silently and with every other test still green. Both
-    live sites are pinned here, page-scoped and act-scoped.
+    live sites are pinned here, the whole page and the DAI record.
     """
     response, _, _ = _read_one(
         tmp_path, script=ScriptedAnswer(content="<output>page text</output>", finish_reason="stop")

@@ -1,8 +1,8 @@
 """Retain every witness attempt without changing its history.
 
-Attempts are append-only. A whole pass reads every chair at one ordinal; reread
-advances one chair and act. A witness's self-reported confidence is retained but
-never used for channel health, which comes from the response and transport.
+Attempts are append-only. A whole pass reads every chair, each on its whole page,
+at one ordinal. A witness's self-reported confidence is retained but never used
+for channel health, which comes from the response and transport.
 """
 
 import json
@@ -202,8 +202,8 @@ def _confidence_problem(value: Any, path: str = "witness_reported") -> str | Non
 
 
 # Checked by name because the shared parser gives `--operation` no `choices`; a
-# mistyped reread would otherwise run the whole pass and exit 0.
-OPERATIONS = frozenset({"initial", "reread"})
+# mistyped operation would otherwise run the whole pass and exit 0.
+OPERATIONS = frozenset({"initial"})
 
 # A witness response is untrusted: deep nesting would raise an uncaught
 # `RecursionError` in `_native_problem` and kill the whole run, not one attempt.
@@ -541,7 +541,7 @@ def _sorted_refs(references: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
-    """An unnumbered fixture row belongs to attempt one, never to rereads."""
+    """An unnumbered fixture row belongs to attempt one, never to a later attempt."""
     declared = row.get("attempt_ordinal", 1)
     if not _is_positive_int(declared):
         raise SchemaRefusal("a fixture witness declaration has no positive attempt ordinal")
@@ -1378,22 +1378,14 @@ AttemptHistory = dict[tuple[str, str], list[dict[str, Any]]]
 class AttemptIndex(NamedTuple):
     """This stage's own prior output, indexed once per invocation."""
 
-    stage_has_artifacts: bool
     by_pair: AttemptHistory
-    attachments_by_act: dict[str, list[dict[str, Any]]]
 
 
 def _attempt_history(context) -> AttemptIndex:
     """Index once for append decisions; the tally validates independently."""
     manifest = context.tree.build_manifest(ATTESTATORES)
     by_pair: AttemptHistory = {}
-    attachments_by_act: dict[str, list[dict[str, Any]]] = {}
     for entry in manifest["artifacts"]:
-        if entry["kind"] == "act-attachment":
-            attachments_by_act.setdefault(entry["subject_id"], []).append(
-                context.tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
-            )
-            continue
         if entry["kind"] != "testimonium":
             continue
         record = context.tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
@@ -1403,7 +1395,7 @@ def _attempt_history(context) -> AttemptIndex:
         chair = payload.get("chair") if isinstance(payload, dict) else None
         if isinstance(chair, str):
             by_pair.setdefault((entry["subject_id"], chair), []).append(record)
-    return AttemptIndex(bool(manifest["artifacts"]), by_pair, attachments_by_act)
+    return AttemptIndex(by_pair)
 
 
 def _current_testimonium(records: list[dict[str, Any]], act_id: str, chair: str) -> dict[str, Any]:
@@ -1425,10 +1417,7 @@ def _records_at_ordinal(
 def require_appendable_ordinal(
     history: AttemptHistory, act_id: str, chair: str, ordinal: int
 ) -> None:
-    """Allow existing or next ordinals; RunTree checks repeat bytes.
-
-    Lower ordinals let an ordinal-1 pass resume after one chair was reread.
-    """
+    """Allow existing or next ordinals; RunTree checks repeat bytes."""
     records = history.get((act_id, chair), [])
     if not records:
         if ordinal != 1:
@@ -1455,9 +1444,8 @@ def _refuse_write_collision(
 ) -> None:
     """Refuse every collision before writing any Testimonium in this pass.
 
-    A reread and whole pass can give one identity different outcomes; RunTree
-    would catch that only mid-pass. Provenance cannot differ between the paths;
-    earlier raw response blobs stay in custody.
+    Two passes at one ordinal can give one identity different outcomes; RunTree
+    would catch that only mid-pass. Earlier raw response blobs stay in custody.
     """
     existing = _records_at_ordinal(history, (act["act_id"], chair), ordinal)
     if not existing:
@@ -1496,34 +1484,6 @@ def pass_would_append(history: AttemptHistory, act_id: str, chairs, ordinal: int
         if ordinal > _current_testimonium(records, act_id, chair)["payload"]["attempt_ordinal"]:
             return True
     return False
-
-
-def require_shared_whole_pass_ordinal(
-    index: "AttemptIndex", act: dict[str, Any], chairs, ordinal: int
-) -> None:
-    """Refuse a reread's moved attachment ordinal before writing new attempts.
-
-    A later refusal would leave attempts the attachment inventory does not name.
-    If every chair was reread to the same ordinal, the later attachment write
-    still refuses; preflighting that case would re-derive every attachment.
-    """
-    current: dict[str, int] = {}
-    for chair in chairs:
-        records = index.by_pair.get((act["act_id"], chair), [])
-        if not records:
-            continue
-        current[chair] = _current_testimonium(records, act["act_id"], chair)["payload"][
-            "attempt_ordinal"
-        ]
-    if len(set(current.values())) <= 1:
-        return
-    raise SchemaRefusal(
-        f"act {act['act_id']} ({act['act_key']}) carries chairs at different current "
-        f"ordinals {dict(sorted(current.items()))}: that act was reread, which takes it off "
-        f"the shared whole-pass ordinal. A whole pass at ordinal {ordinal} would re-derive "
-        "its act-attachment over the one the reread already sealed. Nothing was written "
-        "for this pass"
-    )
 
 
 def _shown_regions(context, act: dict[str, Any]) -> tuple[list[dict], str | None]:
@@ -1578,7 +1538,6 @@ def preflight_appendable_ordinals(
     ]
     closed = witness_bound_reading_acts(context) if appending else frozenset()
     for act in appending:
-        # An appending whole pass meets the same closed-layer rule as a reread.
         require_open_witness_layer(closed, act, f"a whole pass at ordinal {ordinal}")
     for act in acts:
         regions, not_read = _shown_regions(context, act)
@@ -1622,9 +1581,6 @@ def preflight_appendable_ordinals(
                     )
                 continue
             _refuse_write_collision(index.by_pair, act, chair, ordinal, attempt)
-    # Last, so `_refuse_write_collision` names the underlying chair conflict first.
-    for act in appending:
-        require_shared_whole_pass_ordinal(index, act, context.witness_chairs, ordinal)
     return regions_by_act, attempts_by_pair, frozenset(sealed_pairs)
 
 
@@ -2238,7 +2194,7 @@ def not_read_attempt(resolved: ChairIdentity | AbsentChair, reason: str) -> Atte
 def declarations_for(context, ordinal: int) -> dict[str, Any]:
     """Every fixture declaration that applies to this exact attempt ordinal.
 
-    Bound to the ordinal so a first-attempt failure cannot describe a reread.
+    Bound to the ordinal so a first-attempt failure cannot describe a later one.
     `empty` is a declared empty response, not an outcome.
     """
     declarations = {
@@ -2350,10 +2306,8 @@ def resolve_attempt(
     chair: str,
     resolved: ChairIdentity | AbsentChair,
     declarations: dict[str, Any],
-    *,
-    reread: bool = False,
 ) -> Attempt:
-    """A reread invocation is an attempt, so an undeclared response fails."""
+    """One chair's fixture-declared outcome for one act at this attempt ordinal."""
     if isinstance(resolved, AbsentChair):
         return dead_attempt(resolved)
 
@@ -2379,11 +2333,7 @@ def resolve_attempt(
         )
     else:
         response = declared_response(context, act["act_key"], chair, declarations)
-        if response is None and reread:
-            outcome = "failed"
-            health = no_response_health(reason="attempted-but-no-usable-response")
-            reason = "the reread reached this chair and it returned no response"
-        elif response is None:
+        if response is None:
             outcome = "not-run"
             reason = "no attempt was made for this configured chair"
         else:
@@ -2823,7 +2773,7 @@ def act_scoped_attachment_entry(
     attempt: "Attempt",
     ordinal: int,
 ) -> dict[str, Any]:
-    """Share the whole-reading span between pass and reread attachment paths."""
+    """The attachment entry no page reading describes: a held act or an absent chair."""
     attached = act["outcome"] == "proposed" and attempt.outcome in WITNESS_READING_OUTCOMES
     act_attempt = attempt_id(act["act_id"], f"read:{chair}", ordinal)
     return {
@@ -3280,8 +3230,7 @@ def _page_witness_entries(
                 and isinstance(page_texts.get((contributing_page, chair)), str),
                 "attachment_basis": attachment_basis,
                 # The act attempt's health, even under a page capture: the Perlector
-                # and Recensor compare it with the current act Testimonium to detect
-                # a later reread.
+                # and Recensor compare it with the current act Testimonium.
                 "content_health": act_attempt.health,
                 "alignment": page_alignment,
                 "span": (
@@ -4040,36 +3989,20 @@ def resumed_page_captures(
     return captures
 
 
-def _live_work_schedule(
-    context,
-    acts,
-    acts_by_page,
-    page_chairs,
-    page_captures,
-    page_ids,
-    attempts_by_pair,
-):
-    # One schedule per chair keeps a page or act unit with its resident chair.
+def _live_work_schedule(context, acts_by_page, page_chairs, page_captures, page_ids):
+    # One schedule per chair keeps each page unit with its resident chair.
     units: dict[tuple[str, str], Any] = {}
     schedule: list[dict[str, str]] = []
-    for chair in sorted(set(context.witness_chairs)):
-        resolved = context.registry.resolve(chair)
-        if not isinstance(resolved, ChairIdentity):
+    for chair in sorted(set(context.witness_chairs) & page_chairs):
+        if not isinstance(context.registry.resolve(chair), ChairIdentity):
             continue
         rows: list[dict[str, Any]] = []
-        if chair in page_chairs:
-            for page_ordinal in sorted(acts_by_page):
-                if (page_ordinal, chair) in page_captures:
-                    continue
-                unit_id = page_subject(context, page_ordinal, page_ids=page_ids)
-                units[(chair, unit_id)] = page_ordinal
-                rows.append({"act_id": unit_id, "page_ordinal": page_ordinal})
-        else:
-            for act in acts:
-                if attempts_by_pair[(act["act_id"], chair)] is not PENDING_ATTEMPT:
-                    continue
-                units[(chair, act["act_id"])] = act
-                rows.append({"act_id": act["act_id"], "page_ordinal": act["page_ordinal"]})
+        for page_ordinal in sorted(acts_by_page):
+            if (page_ordinal, chair) in page_captures:
+                continue
+            unit_id = page_subject(context, page_ordinal, page_ids=page_ids)
+            units[(chair, unit_id)] = page_ordinal
+            rows.append({"act_id": unit_id, "page_ordinal": page_ordinal})
         schedule.extend(feeding.stage_major_schedule(context.tree.run_id, rows, [chair]))
     return units, schedule
 
@@ -4198,10 +4131,11 @@ def live_attempt_pass(
             ordinal=ordinal,
             regions_by_act=regions_by_act,
             attempts_by_pair=attempts_by_pair,
+            page_ids=page_ids,
         )
 
     units, schedule = _live_work_schedule(
-        context, acts, acts_by_page, page_chairs, page_captures, page_ids, attempts_by_pair
+        context, acts_by_page, page_chairs, page_captures, page_ids
     )
 
     # `None` for an adapter with a single framing.
@@ -4232,7 +4166,7 @@ def live_attempt_pass(
                 units=units_by_page[unit],
                 page_ids=page_ids,
             )
-        elif chair in page_chairs:
+        else:
             recorded += _serve_page_unit(
                 context,
                 client=client,
@@ -4247,18 +4181,6 @@ def live_attempt_pass(
                 page_captures=page_captures,
                 page_ids=page_ids,
                 framing=framings[chair],
-            )
-        else:
-            recorded += _serve_act_unit(
-                context,
-                client=client,
-                chair=chair,
-                resolved=resolved,
-                adapter=adapter,
-                act=unit,
-                ordinal=ordinal,
-                regions=regions_by_act[unit["act_id"]][0],
-                attempts_by_pair=attempts_by_pair,
             )
 
     def load(chair: str) -> ChairClient:
@@ -4346,68 +4268,6 @@ def capacity_refusal_attempt(
     )
 
 
-def _serve_act_unit(
-    context,
-    *,
-    client: ChairClient,
-    chair: str,
-    resolved: ChairIdentity,
-    adapter,
-    act: dict[str, Any],
-    ordinal: int,
-    regions: list[dict],
-    attempts_by_pair: dict[tuple[str, str], Attempt],
-) -> int:
-    """One act-scoped chair, one act: ask, derive, publish, before the next act."""
-    presentation = presentation_for_region(regions[0])
-    try:
-        built = live_witness.act_chair_request(
-            context,
-            adapter,
-            presentation,
-            # Checked against the row this chair runs under, like any request.
-            profile=client.handle.profile,
-        )
-    except RequestCapacityRefusal as error:
-        # Only this act's crop failed; the next may fit.
-        attempt = capacity_refusal_attempt(
-            error,
-            receipt_ref=client.handle.receipt_reference,
-            what=f"the {resolved.witness_adapter} request for act {act['act_id']}",
-            adapter=adapter,
-        )
-    else:
-        response = client.read(built.request)
-        live = live_witness.live_attempt_from_response(
-            context,
-            adapter,
-            resolved.witness_adapter,
-            response,
-            presentation=presentation,
-            presented=built.presented,
-            prompt=built.prompt,
-            generation_declared=built.request.generation_declared,
-            parser="text",
-            generation_accounting=built.generation_accounting,
-        )
-        _refuse_unpublishable_response(
-            response, f"the {resolved.witness_adapter} response for act {act['act_id']}"
-        )
-        attempt = attempt_from_live(live)
-    attempts_by_pair[(act["act_id"], chair)] = attempt
-    publish_attempt(
-        context,
-        act=act,
-        chair=chair,
-        resolved=resolved,
-        ordinal=ordinal,
-        regions=regions,
-        attempt=attempt,
-        live=True,
-    )
-    return 1
-
-
 def publish_page_act_views(
     context,
     *,
@@ -4419,13 +4279,14 @@ def publish_page_act_views(
     ordinal: int,
     regions_by_act: dict[str, tuple[list[dict], str | None]],
     attempts_by_pair: dict[tuple[str, str], Attempt],
+    page_ids: dict[int, str],
 ) -> int:
     """Publish pending primary-page act views; continuations use the page record.
 
     An act view of DAI's blank page testimony is `not-run`: the chair was never
     asked about the act's crop, so its view names no serving moment.
     """
-    if is_blank_detector_page(context, resolved, chair, page_ordinal, ordinal):
+    if is_blank_detector_page(context, resolved, chair, page_ordinal, ordinal, page_ids=page_ids):
         attempt = Attempt(
             outcome="not-run",
             native_payload=None,
@@ -4482,7 +4343,7 @@ UNCAPPED_DETECTOR_REASON: Final = (
 
 
 def is_blank_detector_page(
-    context, resolved: Any, chair: str, page_ordinal: int, ordinal: int
+    context, resolved: Any, chair: str, page_ordinal: int, ordinal: int, *, page_ids: dict[int, str]
 ) -> bool:
     """Whether this pass sealed the chair's page as DAI's blank testimony.
 
@@ -4492,7 +4353,7 @@ def is_blank_detector_page(
     """
     if not reads_detector_records(resolved):
         return False
-    subject = page_subject(context, page_ordinal)
+    subject = page_subject(context, page_ordinal, page_ids=page_ids)
     identifier = artifact_id(
         ATTESTATORES, "page-testimonium", subject, attempt_id(subject, f"read:{chair}", ordinal)
     )
@@ -4872,7 +4733,7 @@ def _serve_detector_page(
     attempts_by_pair: dict[tuple[str, str], Attempt],
     page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any] | None]],
     units: list[dict[str, Any]],
-    page_ids: dict[int, str] | None = None,
+    page_ids: dict[int, str],
 ) -> int:
     """One DAI page: one request per record, then the page record and its act views.
 
@@ -4936,6 +4797,7 @@ def _serve_detector_page(
         ordinal=ordinal,
         regions_by_act=regions_by_act,
         attempts_by_pair=attempts_by_pair,
+        page_ids=page_ids,
     )
 
 
@@ -5125,6 +4987,7 @@ def fixture_detector_pages(
                 ordinal=ordinal,
                 regions_by_act=regions_by_act,
                 attempts_by_pair=attempts_by_pair,
+                page_ids=page_ids,
             )
     unresolved = sorted(
         pair for pair, value in attempts_by_pair.items() if value is PENDING_ATTEMPT
@@ -6146,7 +6009,7 @@ def _serve_page_unit(
     regions_by_act: dict[str, tuple[list[dict], str | None]],
     attempts_by_pair: dict[tuple[str, str], Attempt],
     page_captures: dict[tuple[int, str], tuple[Attempt, dict[str, Any]]],
-    page_ids: dict[int, str] | None = None,
+    page_ids: dict[int, str],
     framing: str | None = None,
 ) -> int:
     """One page-scoped chair, one page: one request, then every act view it feeds."""
@@ -6171,11 +6034,7 @@ def _serve_page_unit(
         )
         capture = None
     else:
-        if (
-            resolved.role == "attestator_1"
-            and resolved.witness_adapter == "chandra.v1"
-            and resolved.witness_scope == "page"
-        ):
+        if resolved.role == "attestator_1" and resolved.witness_adapter == "chandra.v1":
             attempt = _serve_chandra_native_page(
                 context,
                 client=client,
@@ -6215,14 +6074,15 @@ def _serve_page_unit(
         ordinal=ordinal,
         regions_by_act=regions_by_act,
         attempts_by_pair=attempts_by_pair,
+        page_ids=page_ids,
     )
 
 
 def witness_bound_reading_acts(context) -> frozenset[str]:
     """Find acts whose Perlectio cited testimony and closed the witness layer.
 
-    New testimony would collide with that immutable reading; new ink needs a
-    recovery crop, not a witness reroll. A not-run reading cites no testimony.
+    New testimony would collide with that immutable reading. A not-run reading
+    cites no testimony.
     """
     closed = set()
     for entry in context.tree.build_manifest(PERLECTOR)["artifacts"]:
@@ -6242,172 +6102,9 @@ def require_open_witness_layer(closed: frozenset[str], act: dict[str, Any], what
         raise ContractError(
             f"act {act['act_id']} ({act['act_key']}) already carries a Perlectio, so its "
             f"witness layer is closed: {what} would append testimony no reading can be "
-            "established from. A witness pass may add coverage, but a reading is made only "
-            "by a crop: new ink must route through a Recensor recovery request, which mints "
-            "a region and moves the reading ordinal. New testimony after a reading is "
-            "refused; new INK after a reading is a recovery request. Re-asking a witness "
-            "because it spoke again is a re-roll, and recovery restores coverage, never quality"
+            "established from. Re-asking a witness because it spoke again is a re-roll. "
+            "The reading stands; to witness this act again, start a new run"
         )
-
-
-def next_attempt_ordinal(history: AttemptHistory, act_id: str, chair: str) -> int:
-    """The ordinal a reread of this one chair appends at, from its history on disk."""
-    records = history.get((act_id, chair), [])
-    if not records:
-        raise ContractError(
-            f"a reread named chair {chair!r} on act {act_id!r}, which has no prior attempt for "
-            "that chair to follow — a reread is a second attempt, and there is no first"
-        )
-    return _current_testimonium(records, act_id, chair)["payload"]["attempt_ordinal"] + 1
-
-
-def reread_pass(
-    context,
-    acts: list[dict[str, Any]],
-    act_id: str,
-    chair: str,
-    index: "AttemptIndex",
-) -> int:
-    """Reread one chair on original proposal pixels, leaving other chairs current."""
-    act = next((row for row in acts if row["act_id"] == act_id), None)
-    if act is None:
-        raise ContractError(
-            f"a reread named act {act_id!r}, which the Designator proposal seal does not"
-        )
-    if chair not in context.witness_chairs:
-        raise ContractError(f"a reread named chair {chair!r}, which this run is not sealed with")
-    if act["outcome"] == "held":
-        raise ContractError(f"act {act_id} is held; no witness was shown a reading there to reread")
-    resolved = context.registry.resolve(chair)
-    if isinstance(resolved, AbsentChair):
-        raise ContractError(
-            f"chair {chair!r} is explicitly absent: {resolved.reason}; there is no witness "
-            "to reread"
-        )
-    if chair in declared_page_witness_chairs(context):
-        # A page witness's act view is derived from its page reading; rereading
-        # one act would contradict the page record. (`page-level-reread` is a
-        # Perlector operation, unrelated.)
-        raise ContractError(
-            f"chair {chair!r} is page-scoped in this run: it reports one reading per "
-            "page and its act-level view is derived from that page reading, so there is no "
-            f"act-scoped attempt for act {act_id} to repeat. No operation exists to re-ask "
-            "a page witness; building one would be new page-scoped Attestatores work, and "
-            "an act-scoped reread of a derived view is not it"
-        )
-    require_open_witness_layer(
-        witness_bound_reading_acts(context), act, f"a reread of chair {chair!r}"
-    )
-
-    # `next_attempt_ordinal` is always current + 1, so no appendable check is needed.
-    ordinal = next_attempt_ordinal(index.by_pair, act_id, chair)
-    attempt = resolve_attempt(
-        context,
-        act,
-        chair,
-        resolved,
-        declarations_for(context, ordinal),
-        reread=True,
-    )
-    next_ordinal, entries = prepared_act_attachment(context, index, act, chair)
-    publish_attempt(
-        context,
-        act=act,
-        chair=chair,
-        resolved=resolved,
-        ordinal=ordinal,
-        regions=proposed_regions(context, act_id),
-        attempt=attempt,
-    )
-    republish_act_attachment(context, act, chair, attempt, ordinal, next_ordinal, entries)
-    return 1
-
-
-def prepared_act_attachment(
-    context,
-    index: "AttemptIndex",
-    act: dict[str, Any],
-    chair: str,
-) -> tuple[int, list[dict[str, Any] | None]]:
-    """Preflight reread attachments before writing the new Testimonium.
-
-    Its chair's slot is pending; other entries carry forward after staleness checks.
-    Refuse before publication so a bad attachment leaves the folder untouched.
-    """
-    records = index.attachments_by_act.get(act["act_id"], [])
-    if not records:
-        raise ContractError(
-            f"act {act['act_id']} has no act-attachment for the reread to re-derive; a "
-            "targeted reread follows a whole pass and never stands in for one"
-        )
-    current = latest_attempt(
-        records, f"act-attachment for {act['act_id']}", operation="act-attachment"
-    )
-    attachments = current.get("payload", {}).get("attachments")
-    if not isinstance(attachments, list) or {
-        item.get("chair") if isinstance(item, dict) else None for item in attachments
-    } != set(context.witness_chairs):
-        raise SchemaRefusal(
-            f"act {act['act_id']}'s current act-attachment does not describe this run's "
-            "configured witnesses; a reread may not re-derive it"
-        )
-    entries: list[dict[str, Any] | None] = []
-    for item in attachments:
-        if item["chair"] == chair:
-            entries.append(None)
-            continue
-        other = _current_testimonium(
-            index.by_pair.get((act["act_id"], item["chair"]), []), act["act_id"], item["chair"]
-        )
-        if item.get("content_health") != other["payload"].get("content_health"):
-            raise SchemaRefusal(
-                f"act {act['act_id']}'s current act-attachment already describes an attempt "
-                f"that is no longer chair {item['chair']!r}'s current Testimonium; a reread "
-                "of another chair does not make that record current again"
-            )
-        if (
-            not item.get("page_witness")
-            and item.get("attached")
-            and other["outcome"] not in WITNESS_READING_OUTCOMES
-        ):
-            # Act-scoped only: a page witness's `attached` comes from alignment.
-            raise SchemaRefusal(
-                f"act {act['act_id']}'s current act-attachment claims chair "
-                f"{item['chair']!r} attached while its current outcome is "
-                f"{other['outcome']!r}; a reread of another chair does not make that "
-                "claim current again"
-            )
-        entries.append(item)
-    return current["payload"]["attempt_ordinal"] + 1, entries
-
-
-def republish_act_attachment(
-    context,
-    act: dict[str, Any],
-    chair: str,
-    attempt: "Attempt",
-    ordinal: int,
-    next_ordinal: int,
-    entries: list[dict[str, Any] | None],
-) -> None:
-    """Publish the attachment `prepared_act_attachment` already checked, filling
-    the reread chair's slot."""
-    filled = [
-        act_scoped_attachment_entry(context, act, chair, attempt, ordinal) if item is None else item
-        for item in entries
-    ]
-    context.publish(
-        kind="act-attachment",
-        subject_id=act["act_id"],
-        outcome="read",
-        attempt=attempt_id(act["act_id"], "act-attachment", next_ordinal),
-        inputs=[],
-        payload={
-            "act_key": act["act_key"],
-            "attempt_ordinal": next_ordinal,
-            "attachments": filled,
-        },
-    )
 
 
 def refuse_unread_fixture_declarations(context, live_chairs: list[str]) -> None:
@@ -6449,12 +6146,7 @@ def refuse_unread_fixture_declarations(context, live_chairs: list[str]) -> None:
 def _run_full_pass(
     context, acts, args, index, real, live_chairs, has_prior_boundary, serving_factory
 ):
-    if args.act or args.chair:
-        raise ContractError(
-            "--act and --chair name a targeted reread; a whole pass reads every "
-            "configured chair on every expected act and cannot narrow to them"
-        )
-    ordinal = 1 if args.attempt_ordinal is None else args.attempt_ordinal
+    ordinal = args.attempt_ordinal
     try:
         # A live fixture run still refuses contradictory fixture declarations.
         declarations = real_declarations(ordinal) if real else declarations_for(context, ordinal)
@@ -6531,16 +6223,28 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     parser.add_argument(
         "--attempt-ordinal",
         type=_positive_ordinal,
-        # No default, so a reread can tell an explicit ordinal from none.
-        default=None,
+        default=1,
         help="append this ordinal for every act/chair, or repeat the current one byte-identically",
     )
     args = parser.parse_args()
+    if args.operation == "reread":
+        # Every witness reads whole pages, so no act-scoped attempt exists to repeat.
+        raise ContractError(
+            f"chair {args.chair!r} is page-scoped in this run: it reports one reading per "
+            "page and its act-level view is derived from that page reading, so there is no "
+            f"act-scoped attempt for act {args.act!r} to repeat. No operation exists to re-ask "
+            "a page witness"
+        )
     if args.operation not in OPERATIONS:
         raise ContractError(
             f"the Attestatores has no {args.operation!r} operation; it implements "
-            f"{sorted(OPERATIONS)}. A mistyped reread would otherwise run a whole pass, "
-            "ignore the act and chair it was given, and report success"
+            f"{sorted(OPERATIONS)}. An unknown operation would otherwise run a whole pass "
+            "and report success"
+        )
+    if args.act or args.chair:
+        raise ContractError(
+            "--act and --chair name one act or chair, and a whole pass reads every configured "
+            "chair on every expected act; it cannot narrow to it"
         )
     context = open_stage_context(args, ATTESTATORES, registry_factory=registry_factory)
     real = real_ingress(context)
@@ -6582,35 +6286,12 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
             print(f"Attestatores attempt tally UNKNOWN: {prior_tally['reason']}", file=sys.stderr)
             return EXIT_HELD
 
-    isolated_crop_failure = False
-    if args.operation == "reread":
-        if live_chairs:
-            # A live reread needs its own residency and publication, not yet built.
-            raise ContractError(
-                "this run's witness chairs serve live, and no live reread is built: a reread "
-                "asks one chair for one act again, and the live boundary here publishes a whole "
-                "pass chair-outer. Run the whole pass at the next ordinal, or reread under the "
-                "fixture catalogue"
-            )
-        if not args.act or not args.chair:
-            raise ContractError(
-                "a reread names the one act and the one chair it rereads; without both it "
-                "would be a whole second pass wearing a narrower name"
-            )
-        if args.attempt_ordinal is not None:
-            raise ContractError(
-                "a reread appends at the ordinal the named chair's own history says comes "
-                f"next; --attempt-ordinal {args.attempt_ordinal} names a different attempt "
-                "and honouring neither of the two silently is not an option"
-            )
-        recorded = reread_pass(context, acts, args.act, args.chair, index)
-    else:
-        result = _run_full_pass(
-            context, acts, args, index, real, live_chairs, has_prior_boundary, serving_factory
-        )
-        if result is None:
-            return EXIT_HELD
-        recorded, isolated_crop_failure = result
+    result = _run_full_pass(
+        context, acts, args, index, real, live_chairs, has_prior_boundary, serving_factory
+    )
+    if result is None:
+        return EXIT_HELD
+    recorded, isolated_crop_failure = result
 
     return _finish_pass(context, acts, recorded, isolated_crop_failure)
 

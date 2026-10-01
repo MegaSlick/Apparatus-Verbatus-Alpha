@@ -75,10 +75,9 @@ def test_an_unknown_page_witness_chair_is_refused_not_dropped_from_the_join():
 
 
 def test_an_unknown_page_witness_chair_is_refused_by_the_shared_accessor_itself():
-    """`publish_attempt` and `reread_pass` read `declared_page_witness_chairs`
-    directly and never call `publish_page_testimonia_and_attachments` (the
-    reread path does not call it at all; the whole-pass path calls it only
-    after `attempt_pass` has already sealed every attempt). The roster check
+    """`publish_attempt` reads `declared_page_witness_chairs` directly, and the
+    whole pass calls `publish_page_testimonia_and_attachments` only after
+    `attempt_pass` has already sealed every attempt. The roster check
     must live in the accessor itself or a mismatched chair silently reaches those
     write paths unrefused before the join ever runs."""
     context = _scope_context(["attestator_33"])

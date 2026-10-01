@@ -36,7 +36,7 @@ def real_region(tmp_path):
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-root",
             str(tmp_path / "runs"),
             "--run-id",
@@ -54,7 +54,6 @@ def real_region(tmp_path):
     return _Context(tree), tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
 
 
-@pytest.mark.act_path
 def test_attestatores_verifies_crop_lineage_before_a_witness_reads_it(real_region, monkeypatch):
     context, region = real_region
     monkeypatch.setattr(attestatores, "validate_serving_provenance", lambda *args, **kwargs: None)
@@ -67,7 +66,6 @@ def test_attestatores_verifies_crop_lineage_before_a_witness_reads_it(real_regio
         attestatores.proposed_regions(context, region["subject_id"])
 
 
-@pytest.mark.act_path
 def test_attestatores_names_a_designator_region_with_missing_provenance(real_region, monkeypatch):
     context, region = real_region
     missing = copy.deepcopy(region)

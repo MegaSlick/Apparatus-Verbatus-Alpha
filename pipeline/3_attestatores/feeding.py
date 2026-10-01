@@ -71,7 +71,7 @@ _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 #: uncertainty convention (`_UNCERTAINTY_TOKENS`), so it can express doubt but
 #: has no coordinate vocabulary, so it cannot express layout. Safe to declare
 #: uncertainty only because the Perlector's bracket-marker comparison view is
-#: already wired for act-scoped capability-declaring chairs
+#: already wired for capability-declaring chairs
 #: (`pipeline/4_perlector/run.py::dissent_testimonia`); declared earlier, this
 #: chair would have gone permanently `compared: unknown`.
 DAI_FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
@@ -259,7 +259,7 @@ def dai_model_view(
 
     The identity transform is a claim about bytes, not paths: when no resize
     is needed the two image references must name the same SHA-256, not the
-    same reference dict. The source is the Designator's proposal crop under
+    same reference dict. The source is the Designator's record crop under
     `2_designator/`; every image a witness is shown is published into
     `3_attestatores/`, so a byte-identical image legitimately appears at two
     stage-owned paths. Equal digests are equal pixels because

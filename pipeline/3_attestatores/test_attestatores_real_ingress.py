@@ -86,6 +86,7 @@ from common.contracts.identities import act_id as derive_act_id  # noqa: E402
 from common.contracts.identities import attempt_id, region_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, INK_MAP  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
+from common.exemplar_boundary import cut_exemplar_crop  # noqa: E402
 from common.imaging import crop_png  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -112,9 +113,9 @@ RUN_ID = "real-attestatores"
 WITNESS_CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
 
 # Three structural acts over the two submitted 200x260 pages: two on page 1,
-# one on page 2. The page-scoped chairs therefore answer twice and the
-# act-scoped chair three times; a script whose length disagreed would be the
-# first thing to notice a scope regression.
+# one on page 2. Chandra and Churro therefore answer once per page, and DAI once
+# per detector record, three times; a script whose length disagreed would be the
+# first thing to notice a unit regression.
 ACTS: tuple[tuple[int, dict[str, int], str], ...] = (
     (1, {"x": 10, "y": 10, "w": 180, "h": 100}, "structural:1:1"),
     (1, {"x": 10, "y": 130, "w": 180, "h": 100}, "structural:1:2"),
@@ -273,9 +274,18 @@ class _RealDesignator:
             )
             if record["outcome"] == "sealed"
         }
-        resolved = registry.resolve("designator_structure")
+        self.provenance = self._served_provenance(registry, "designator_structure")
+        self.detector_provenance = self._served_provenance(registry, "secondary_proposer")
+        # Built lazily by `scan`: standing one up writes a serving receipt the
+        # moment it exists, and the tests that never seal a proposal never need
+        # the served chain at all.
+        self._served: _StructureDesignator | None = None
+        self.rows: list[dict[str, Any]] = []
+
+    def _served_provenance(self, registry: ChairRegistry, chair: str) -> dict[str, Any]:
+        resolved = registry.resolve(chair)
         assert isinstance(resolved, ChairIdentity)
-        self.provenance = {
+        return {
             "chair": resolved.role,
             "chair_state": "configured",
             "resolved_identity": resolved.to_record(),
@@ -288,11 +298,64 @@ class _RealDesignator:
             ),
             "adapter_revision": self.context.adapter_revision,
         }
-        # Built lazily by `scan`: standing one up writes a serving receipt the
-        # moment it exists, and the tests that never seal a proposal never need
-        # the served chain at all.
-        self._served: _StructureDesignator | None = None
-        self.rows: list[dict[str, Any]] = []
+
+    def detect(self, ordinal: int, rectangles: list[dict[str, int]]) -> None:
+        """DAI's record detector census for one page: one cut record per rectangle.
+
+        Shaped as the Designator's `_publish_detector_records` publishes it, so
+        the Attestatores' own crop re-derivation holds over every record crop.
+        """
+        page = self.pages[ordinal]
+        page_id = page["subject_id"]
+        page_bytes = self.tree.read_bytes(page["payload"]["image_path"])
+        page_ref = self.context.input_ref(page["payload"]["image_path"])
+        subjects = []
+        for index, bounds in enumerate(rectangles):
+            subject = f"{page_id}-detector-{index}"
+            crop = cut_exemplar_crop(self.context.retain, page_bytes, ordinal, page_id, bounds)
+            region = self.context.publish(
+                kind="detector-region",
+                subject_id=subject,
+                outcome="proposed",
+                inputs=[page_ref],
+                payload={
+                    "region_id": region_id(subject, crop["transform"]),
+                    "record_key": subject,
+                    "origin": "detector",
+                    **crop,
+                    "raw_bounds": bounds,
+                    "padding": None,
+                    "provenance": self.detector_provenance,
+                },
+            )
+            region_ref = self.context.input_ref(region.relative_path)
+            self.context.publish(
+                kind="detector-record",
+                subject_id=subject,
+                outcome="proposed",
+                inputs=[page_ref, region_ref],
+                payload={
+                    "page_ordinal": ordinal,
+                    "detector_ordinal": index,
+                    "bounds": bounds,
+                    "cut": True,
+                    "region_ref": region_ref,
+                    "provenance": self.detector_provenance,
+                },
+            )
+            subjects.append(subject)
+        self.context.publish(
+            kind="detector-page",
+            subject_id=page_id,
+            outcome="proposed",
+            inputs=[page_ref],
+            payload={
+                "page_ordinal": ordinal,
+                "detection_count": len(subjects),
+                "record_subjects": subjects,
+                "provenance": self.detector_provenance,
+            },
+        )
 
     def scan(self, ordinal: int, rectangles: list[dict[str, int]]) -> None:
         """One page's served-chair records: its retained answer, then its status.
@@ -401,6 +464,7 @@ def _designate(run_root: Path) -> _RealDesignator:
         by_page.setdefault(ordinal, []).append(bounds)
     for ordinal in sorted(by_page):
         designator.scan(ordinal, by_page[ordinal])
+        designator.detect(ordinal, by_page[ordinal])
     for ordinal, bounds, key in ACTS:
         designator.propose(ordinal, bounds, key)
     designator.seal()
@@ -541,7 +605,6 @@ def test_the_shipped_real_catalogue_serves_every_witness_chair_at_every_tier():
 # ================================ the full pass ================================
 
 
-@pytest.mark.act_path
 def test_every_witness_runs_its_full_pass_over_a_real_submission(served_run, tmp_path, capsys):
     """The pass this section exists for, offline: three served chairs, no fixture.
 
@@ -565,7 +628,7 @@ def test_every_witness_runs_its_full_pass_over_a_real_submission(served_run, tmp
     assert "does not read" not in capsys.readouterr().err, "no fixture rows exist to pass over"
     assert world.loads == list(WITNESS_CHAIRS), "one residency per chair, chair-outer"
     assert len(world.requests("attestator_1")) == 2, "a page-scoped chair is asked once per page"
-    assert len(world.requests("attestator_2")) == 3, "an act-scoped chair is asked once per act"
+    assert len(world.requests("attestator_2")) == 3, "DAI is asked once per detector record"
     assert len(world.requests("attestator_3")) == 2
 
     tree = RunTree(run_root, RUN_ID)
@@ -580,12 +643,7 @@ def test_every_witness_runs_its_full_pass_over_a_real_submission(served_run, tmp
             "a real act record's receipt answers for a live chair, not a fixture"
         )
     page = page_records(tree)
-    assert set(page) == {
-        (1, "attestator_1"),
-        (1, "attestator_3"),
-        (2, "attestator_1"),
-        (2, "attestator_3"),
-    }
+    assert set(page) == {(ordinal, chair) for ordinal in (1, 2) for chair in WITNESS_CHAIRS}
     for (ordinal, _chair), record in page.items():
         assert record["subject_id"] == pages[ordinal], (
             "the page record names the Exemplar's own page"
@@ -676,7 +734,6 @@ def test_page_subject_reuses_a_supplied_index_rather_than_rewalking_the_exemplar
         attestatores.page_subject(context, 9, page_ids={1: "page-one"})
 
 
-@pytest.mark.act_path
 def test_live_and_publish_passes_walk_the_exemplar_index_once_each(
     served_run, tmp_path, monkeypatch
 ):

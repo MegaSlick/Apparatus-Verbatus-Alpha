@@ -15,7 +15,7 @@ from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
 from common.imaging import dimensions
 from common.runtree.store import RunTree
-from conftest import load_stage
+from conftest import load_stage, run_through
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -80,11 +80,14 @@ def test_unknown_field_is_refused_at_both_act_and_page_writer_validators():
         attestatores.validate_page_testimonium_payload(page)
 
 
-def test_rederived_reread_rule_names_new_ink_as_a_recovery_request():
-    with pytest.raises(ContractError, match="New testimony after a reading is refused; new INK"):
+def test_a_closed_witness_layer_refuses_new_testimony():
+    with pytest.raises(
+        ContractError, match="witness layer is closed: a whole pass at ordinal 2"
+    ) as refusal:
         attestatores.require_open_witness_layer(
-            frozenset({"act-1"}), {"act_id": "act-1", "act_key": "a1"}, "a reread"
+            frozenset({"act-1"}), {"act_id": "act-1", "act_key": "a1"}, "a whole pass at ordinal 2"
         )
+    assert "to witness this act again, start a new run" in str(refusal.value)
 
 
 def _attempt(outcome):
@@ -354,16 +357,15 @@ def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tm
     assert single != continuation
 
 
-@pytest.mark.act_path
 def test_page_native_geometry_stays_with_page_witnesses_and_inside_witness_views(tmp_path):
     """Native page-space geometry may ride only records owned by a page witness.
 
     A page witness's act view may restate its page-space geometry (boxes may
     exceed that record's one-crop presentation); every other record's observed
     boxes must stay inside the exact presentation the witness was shown, and
-    no act-scoped chair may carry native geometry.
+    no other record may carry native geometry.
     """
-    tree = _happy_run(tmp_path, "native-page-scope", "happy")
+    tree = _happy_run(tmp_path, "native-page-scope")
     native = []
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
         if entry["kind"] not in {"testimonium", "page-testimonium"}:
@@ -377,12 +379,17 @@ def test_page_native_geometry_stays_with_page_witnesses_and_inside_witness_views
                 native.append((entry["kind"], payload["chair"]))
                 assert entry["kind"] == "page-testimonium" or page_witness_view
             if presented and not page_witness_view:
-                outer = presented["transform"]["bounds"]
+                # A record shown several images (DAI's record crops) keeps each
+                # box inside one of them.
+                shown = payload.get("presentations") or [presented]
                 inner = observation["bounds"]
-                assert outer["x"] <= inner["x"]
-                assert outer["y"] <= inner["y"]
-                assert outer["x"] + outer["w"] >= inner["x"] + inner["w"]
-                assert outer["y"] + outer["h"] >= inner["y"] + inner["h"]
+                assert any(
+                    outer["x"] <= inner["x"]
+                    and outer["y"] <= inner["y"]
+                    and outer["x"] + outer["w"] >= inner["x"] + inner["w"]
+                    and outer["y"] + outer["h"] >= inner["y"] + inner["h"]
+                    for outer in (image["transform"]["bounds"] for image in shown)
+                ), entry["artifact_id"]
     assert ("page-testimonium", "attestator_1") in native
     assert all(chair in {"attestator_1", "attestator_3"} for _kind, chair in native)
 
@@ -425,28 +432,10 @@ def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_
         attestatores.validate_testimonium_presentation(context, forged)
 
 
-@pytest.mark.act_path
 def test_a_page_witness_shown_pixels_carries_the_serving_moment_that_produced_them(tmp_path):
     """One record may not say both "I was shown this image" and "no serving
     happened"; attempted testimony must carry its receipt."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "review",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--run-id",
-            "page-serving-moment",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 3, result.stderr
+    run_through(tmp_path / "runs", "page-serving-moment", "review", "attestatores")
     tree = RunTree(tmp_path / "runs", "page-serving-moment")
     seen_failed_but_presented = False
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
@@ -508,26 +497,10 @@ def test_a_sealed_region_missing_its_presentation_fields_is_named_not_indexed(re
         attestatores.presentation_for_region(region)
 
 
-@pytest.mark.act_path
 def test_a_never_presented_page_witness_is_not_run_and_carries_no_receipt(tmp_path):
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "ink-free-page-unwitnessed",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--run-id",
-            "page-never-presented",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
+    run_through(
+        tmp_path / "runs", "page-never-presented", "ink-free-page-unwitnessed", "attestatores"
     )
-    assert result.returncode == 3, result.stderr
     tree = RunTree(tmp_path / "runs", "page-never-presented")
     records = [
         tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
@@ -540,7 +513,9 @@ def test_a_never_presented_page_witness_is_not_run_and_carries_no_receipt(tmp_pa
     ]
     assert records
     for record in records:
-        assert record["outcome"] == "not-run"
+        # DAI's own detector found nothing there, which is its blank testimony.
+        expected = "genuinely-empty" if record["payload"]["chair"] == "attestator_2" else "not-run"
+        assert record["outcome"] == expected
         assert record["payload"]["presented"] == {}
         assert record["payload"]["provenance"]["receipt_ref"] is None
 

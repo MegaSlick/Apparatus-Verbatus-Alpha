@@ -14,8 +14,9 @@ from pathlib import Path
 import pytest
 
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import ATTESTATORES, RECENSOR
+from common.contracts.stages import ATTESTATORES
 from common.runtree.store import RunTree
+from conftest import run_through
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline/orchestrator/run.py"
@@ -67,18 +68,14 @@ def _attachments(tree: RunTree) -> dict[str, list[dict]]:
 @pytest.fixture(scope="module")
 def native_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("churro-native") / "runs"
-    result = _orchestrate(root, "churro-native")
-    # Unattributed page furniture must make the scenario partial, not disappear.
-    assert result.returncode == 3, result.stderr
+    run_through(root, "r", "churro-native", "attestatores")
     return RunTree(root, "r")
 
 
 @pytest.fixture(scope="module")
 def truncation_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("churro-truncation") / "runs"
-    result = _orchestrate(root, "churro-truncation")
-    # Page furniture still holds the acts; the truncation itself is retained.
-    assert result.returncode == 3, result.stderr
+    run_through(root, "r", "churro-truncation", "attestatores")
     return RunTree(root, "r")
 
 
@@ -90,7 +87,6 @@ def happy_run(tmp_path_factory):
     return RunTree(root, "r")
 
 
-@pytest.mark.act_path
 def test_a_captured_page_reading_parses_and_keeps_its_raw_bytes(native_run):
     record = _page_testimonia(native_run)[(1, "attestator_3")]
     payload = record["payload"]
@@ -113,7 +109,6 @@ def test_a_captured_page_reading_parses_and_keeps_its_raw_bytes(native_run):
     assert payload["content_health"]["characters"] == len(payload["payload"])
 
 
-@pytest.mark.act_path
 def test_each_act_lands_on_its_own_words_across_page_furniture(native_run):
     page_text = _page_testimonia(native_run)[(1, "attestator_3")]["payload"]["payload"]
     attachments = _attachments(native_run)
@@ -137,21 +132,6 @@ def test_each_act_lands_on_its_own_words_across_page_furniture(native_run):
     assert HEADER not in spans["a1"] and HEADER not in spans["a2"]
 
 
-@pytest.mark.act_path
-def test_page_text_no_act_accounts_for_holds_rather_than_disappearing(native_run):
-    reviews = [
-        native_run.read_artifact(RECENSOR, "review", entry["artifact_id"])
-        for entry in native_run.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review"
-    ]
-    assert reviews and all(review["outcome"] == "held-for-review" for review in reviews)
-    for review in reviews:
-        coverage = review["payload"]["testimony_content_coverage"]["by_chair"]["attestator_3"]
-        assert coverage["uncovered_non_whitespace"]["count"] > 0
-        assert "outside the ordered union" in review["payload"]["reason"]
-
-
-@pytest.mark.act_path
 def test_a_truncated_capture_is_visible_and_is_never_completed_or_retried(truncation_run):
     record = _page_testimonia(truncation_run)[(2, "attestator_3")]
     payload = record["payload"]
@@ -166,7 +146,6 @@ def test_a_truncated_capture_is_visible_and_is_never_completed_or_retried(trunca
     assert payload["attempt_ordinal"] == 1
 
 
-@pytest.mark.act_path
 def test_a_captured_response_that_cannot_be_parsed_keeps_its_bytes_and_names_the_cut(native_run):
     record = _page_testimonia(native_run)[(2, "attestator_3")]
     payload = record["payload"]
@@ -195,7 +174,6 @@ def test_a_captured_response_that_cannot_be_parsed_keeps_its_bytes_and_names_the
     assert not raw.endswith(b"</HistoricalDocument>")
 
 
-@pytest.mark.act_path
 def test_a_failed_page_capture_does_not_claim_a_missing_anchor(native_run):
     entry = next(
         item
