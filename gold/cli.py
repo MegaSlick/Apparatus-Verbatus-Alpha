@@ -15,8 +15,12 @@ from typing import Iterator
 from common.contracts.errors import ContractError, SchemaRefusal
 
 from .core import (
+    ADJUDICATION_SCHEMA,
     DRAW_SCHEMA,
+    MEASUREMENT_SCHEMA,
     SAMPLE_SCHEMA,
+    TRANSCRIPTION_SCHEMA,
+    _open_directory_no_follow,
     _portable_name,
     adjudicate,
     bind_instrument,
@@ -33,6 +37,8 @@ from .core import (
 )
 
 DESCRIPTION = "Create and validate append-only R7a gold records."
+# Records that name their sample by digest; only a corpus resolves them to a page.
+_DIGEST_BOUND_SCHEMAS = frozenset({TRANSCRIPTION_SCHEMA, ADJUDICATION_SCHEMA, MEASUREMENT_SCHEMA})
 
 
 @dataclass(frozen=True)
@@ -43,33 +49,6 @@ class _CorpusDirectory:
     descriptor: int
 
 
-def _open_corpus_directory(root: Path) -> int:
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    directory = getattr(os, "O_DIRECTORY", None)
-    if no_follow is None or directory is None:
-        raise SchemaRefusal(
-            "safe gold-directory access requires O_NOFOLLOW and O_DIRECTORY support"
-        )
-    try:
-        descriptor = os.open(
-            root,
-            os.O_RDONLY | no_follow | directory | getattr(os, "O_NONBLOCK", 0),
-        )
-    except OSError as error:
-        raise SchemaRefusal(
-            f"{root} is not a directory of gold records that can be opened without following links"
-        ) from error
-    try:
-        details = os.fstat(descriptor)
-    except OSError:
-        os.close(descriptor)
-        raise
-    if not stat.S_ISDIR(details.st_mode):
-        os.close(descriptor)
-        raise SchemaRefusal(f"{root} is not a directory of gold records")
-    return descriptor
-
-
 def _records_in(directory: str | Path | _CorpusDirectory) -> list[dict[str, object]]:
     """Read regular, non-symlink records from one directory inode in stable order."""
     if isinstance(directory, _CorpusDirectory):
@@ -77,7 +56,7 @@ def _records_in(directory: str | Path | _CorpusDirectory) -> list[dict[str, obje
         owns_descriptor = False
     else:
         root = Path(directory)
-        corpus = _CorpusDirectory(root, _open_corpus_directory(root))
+        corpus = _CorpusDirectory(root, _open_directory_no_follow(root, "gold-record directory"))
         owns_descriptor = True
     try:
         try:
@@ -136,7 +115,7 @@ def _locked_corpus(directory: str | Path) -> Iterator[_CorpusDirectory]:
     root = Path(directory)
     try:
         root.mkdir(parents=True, exist_ok=True)
-        descriptor = _open_corpus_directory(root)
+        descriptor = _open_directory_no_follow(root, "gold-record directory")
     except OSError as error:
         raise SchemaRefusal(
             f"the gold-record directory {root} could not be opened for a publication "
@@ -340,7 +319,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         validate_corpus(corpus_records, args.run)
     else:
-        validate_record(read_json(args.record), args.run)
+        record = read_json(args.record)
+        schema = record.get("schema") if isinstance(record, dict) else None
+        if args.run is not None and schema in _DIGEST_BOUND_SCHEMAS:
+            raise SchemaRefusal(
+                f"--run cannot check a {schema} record: it names its sample only by digest, "
+                "so it carries no page or frame to hold against the run. Run validate-corpus "
+                "--run on its gold-record directory instead"
+            )
+        validate_record(record, args.run)
     return 0
 
 

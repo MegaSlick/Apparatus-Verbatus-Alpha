@@ -7,21 +7,28 @@ Where a run's evidence lives, and the only code that writes to it.
 <run>/<NN-stage>/artifacts/<kind>/<artifact-id>.json
 <run>/<NN-stage>/blobs/sha256/<digest>
 <run>/<NN-stage>/manifest.json
+<run>/<NN-stage>/index.json
+<run>/<NN-stage>/serving-logs/
 <run>/1_exemplar/manifest-door.json
 <run>/receipts/sha256/<digest>.json
+<run>/run-health/recensor-partition-receipt.json
 ```
+
+Serving receipts and approval records share `receipts/sha256/`. `serving-logs/` is
+written by the serving launcher, not by this store, and is never inventoried as
+evidence.
 
 ## Three promises
 
 **Artifacts are immutable.** Publishing identical bytes under an identity that
 already exists is a no-op reported as `reused` — that is how a resumed run proves
 it did not redo work. Publishing *different* bytes under the same identity is
-refused before anything is written, and the existing file is not touched.
+refused: the existing file is not touched and nothing is left behind.
 
 **Publication is atomic.** Immutable artifacts and receipts use same-directory
 temporary files, flush and fsync them, then atomically hard-link them into an
 otherwise-unused identity; a different existing identity is refused. Derived
-manifests use `os.replace`. A crash cannot make a half-written artifact trusted by
+manifests, indexes and the Recensor partition receipt use `os.replace`. A crash cannot make a half-written artifact trusted by
 a resume.
 
 **Manifests are derived.** `manifest.json` is rebuilt from the artifacts on disk
@@ -38,9 +45,12 @@ of completion seals the earlier producer's last inventory named.
 
 The immutable authority for what this run *is*: its source pages, its configured
 witness chairs, its configuration digest, its adapter recipes — self-hashed, so an
-edit after sealing is detectable. Reopening a run id whose source, configuration,
-recipes, or chair roster have changed is refused before any write: that is a
-different run wearing an old name.
+edit after sealing is detectable. Reopening a run id is refused before any write
+when anything it is bound to has changed: the source manifest, configuration digest,
+adapter recipes, witness chairs, corpus frame membership, corpus-register digest and
+whether a register was required, and, when either run records them, the ingress,
+render settings, sealed configuration digests and seal method. That is a different
+run wearing an old name.
 
 It deliberately does not predeclare acts. Pages are given; acts are discovered, and
 the Designator's proposal seal is the downstream expected-act authority.

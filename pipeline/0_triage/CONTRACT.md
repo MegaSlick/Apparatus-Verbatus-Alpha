@@ -123,6 +123,57 @@ of the project; its confidence is `0`, since a project carries no confidence ord
 and its actor is `kind: "scantailor"`, which is what keeps a transcribed row
 distinguishable from a natively produced one by actor alone.
 
+## ScanTailor midpoint bridge
+
+`operations/triage/scantailor_bridge.py` does not read project XML: it reads the
+`scantailor-geometry.v1` document that the confined importer
+(`operations/operator/scantailor_worker.py`, whose v4 project shape is read from ScanTailor
+Advanced's own project writer) publishes, and it accepts only one shape of it. The
+document must be the importer's exact canonical bytes, read as one direct regular file
+of at most 16 MiB without following a final symlink, with `project_version` 4. Every
+entry must be a full-frame rectangular `two-pages` layout whose outline is exactly the
+submitted frame and whose single primary cutter is one full-height internal vertical
+line at an integral pixel. Each source path appears once, names the first image of its
+file (`file_image` 0, because a triage row carries no page index), and declares no
+removed half. Perspective, deskew, slanted or fractional cutters, partial outlines, a
+removed half, a later image of a multi-page file, dimensions that disagree with the
+decoded submitted bytes, and any source without exactly one submitted frame and one
+declared orientation are refusals, never approximations.
+
+Each accepted entry becomes one ordinary decision row with two frame-space parts, left
+and right of the cutter. Orientation (0 or 180 degrees) comes from dataset metadata the
+caller declares for every source, never from ScanTailor; a 180-degree source lists its
+source-right half first and rotates both parts by 180 000 millidegrees, so the outputs
+stay in physical reading order. Confidence is `0`, and colour mode is `keep` only for
+an encoder-lossless source mode, otherwise `rgb`. The rows go through the ordinary
+producer, so the Door admits them like any other.
+
+The actor the bridge currently records is fixed in code, not read from the document:
+`{kind: "scantailor", identity: "ScanTailor Advanced", revision: "v4"}`. `v4` is the
+project-file format version, not a ScanTailor release, and the bridge records it
+whatever produced the geometry — including a project written by the prescribed-midpoint
+generator below, which ScanTailor never measured.
+
+Beside the rows the bridge returns a `scantailor-triage-binding.v1` sidecar that is
+retained with them. It names the geometry document's digest and the project's digest,
+and for each geometry entry its index, source path, submitted path, source-frame digest,
+`manifest_row_sha256` and orientation. The imported document keeps ScanTailor's original
+decimal coordinates; the sidecar is what ties the derived rows back to it, so the
+triage manifest schema stays unchanged.
+
+`operations/triage/scantailor_project.py` writes a deterministic v4 project with one
+prescribed vertical cut at `width // 2` per source, for sources named by canonical
+relative paths with integer dimensions of at least 2 pixels. It runs no ScanTailor; its
+geometry is an operator's declaration, never a measurement.
+`operations/triage/recordgold_midpoint_pilot.py` is the two-step CPU handoff that uses
+both: step one writes that project into a strict ancestor of the source root, the
+operator imports it, and step two runs the bridge and the producer over the import and
+writes the manifest and binding, optionally rendering every split page with
+`common.imaging.render_triage_derivative` into an empty directory before writing any.
+It refuses a page identifier that leaves the source root, a project directory that is
+not a strict ancestor of the source root, a non-empty prepared-page directory, output
+files that already exist, and two pages whose prepared file names would collide.
+
 ## Two fields that look redundant and are not
 
 `actor` records what produced the proposal — a person working directly, a resolved

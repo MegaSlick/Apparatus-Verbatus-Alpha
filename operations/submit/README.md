@@ -8,8 +8,8 @@ must be under an approved storage root, and neither its manifest nor a private
 refusal report can sit inside the folder it inventories. It does not decode, sniff
 or judge image content — that is admission,
 and admission belongs to `pipeline/1_exemplar/door.py` and its one format policy.
-It does not transfer anything to a pod either; spec 04 owns "checksummed and
-resumable", and no pod exists yet.
+It does not transfer anything to a pod either: `operations/pod/transfer.py` uploads
+the files a sealed manifest names, checksummed and resumable.
 
 ## What lives here
 
@@ -30,9 +30,9 @@ resumable", and no pod exists yet.
 
 ## The storage-root check is mechanical; the approval-record requirement is cut
 
-**No per-run approval record.** A submission once also needed a signed-off data-gate
-approval record; the project lead removed it because this material never goes near git:
-it runs on a GPU host and `workbench/` is gitignored. The commit hooks refuse
+**No per-run approval record.** A submission needs no signed-off data-gate approval
+record, because this material never goes near git: it runs on a GPU host and
+`workbench/` is gitignored. The commit hooks refuse
 credentials and oversized payloads before anything is committed; CI's full-history scan
 runs only after a push, so it detects a leak but cannot prevent one. Keeping real
 transcriptions and images out of the repository is the rule CONTRIBUTING.md sets for
@@ -62,10 +62,9 @@ never appear there.
   indices. An export retains those links both in its page census and alongside
   every delivered source region. Terminals are presentation only: they report a
   count and private report location, never image bytes.
-- **What produced a file decides where it goes, never the file's extension.** The
-  old repository ignored personal material by extension and leaked acts as `.md`
-  through the gap; a rule keyed on a suffix is a rule anyone can walk past by
-  renaming. Storage roots are chosen by the stage that wrote the file.
+- **What produced a file decides where it goes, never the file's extension.** A rule
+  keyed on a suffix is a rule anyone can walk past by renaming. Storage roots are
+  chosen by the stage that wrote the file.
 - **Testimonia survive per-stage cleanup.** They are pipeline records — evidence
   is never overwritten — and remain until the whole run
   reaches its sealed disposal condition; they are destroyed with that whole volume,
@@ -75,20 +74,18 @@ never appear there.
   the whole run is dead/broken or complete/exported. Only the lifecycle owner may
   then destroy the whole run volume; this tool intentionally has no routine
   deletion command.
-- The synthetic cleanup drill measures only declared target paths, temporary
-  paths, log markers, and a volume listing when one exists. It cannot claim
-  forensic unrecoverability from media, snapshots, or provider backups.
 - Sending real images or transcriptions to an external API is disclosure and
   needs Tyrel's approval naming the vendor and pages, recorded as an approval
   artifact. Any data-handling testing shortcut belongs in
   `workbench/standing/ALPHA_SHORTCUTS.md`; git remains absolute.
 
-## What the cleanup drill does and does not claim
+## What a cleanup drill may claim
 
-It checks that declared synthetic target paths and temporary paths are absent, that
-declared logs contain no forbidden marker, and that a volume object listing is empty
-where a volume applies. It is never a claim of forensic unrecoverability from storage
-media, snapshots or provider backups, which no filesystem check can establish.
-Where there is no volume, it reports `None` rather than an empty
-listing: unknown is never zero. Routine deletion is unavailable here: retain every
-run artifact until the settled whole-run disposal condition is recorded elsewhere.
+No cleanup drill is implemented. The policy's `cleanup_drill` clause, which `gate.py`
+requires every policy to carry, bounds what any future drill may claim: run on
+synthetic material only, it may show that declared target paths and temporary paths
+are absent, that declared logs contain no forbidden marker, and that a volume object
+listing is empty where a volume exists. Where there is no volume it must report
+`None` rather than an empty listing: unknown is never zero. It can never claim
+forensic unrecoverability from storage media, snapshots or provider backups, which no
+filesystem check can establish.

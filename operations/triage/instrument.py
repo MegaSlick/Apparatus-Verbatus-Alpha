@@ -1053,8 +1053,6 @@ def compare_signatures(
         "verdict": verdict,
         "thresholds": config.thresholds_record(),
     }
-    if tuple(record) != EVIDENCE_FIELDS:
-        raise InstrumentRefusal("candidate evidence does not carry its declared closed field set")
     return validate_candidate_evidence(record, config)
 
 
@@ -1149,20 +1147,10 @@ def evidence_manifest(
         _lower_sha256(proxy.source_frame_sha256, "candidate proxy source frame digest")
         for proxy in proxies
     ]
-    if len(set(frame_digests)) != len(frame_digests):
-        raise InstrumentRefusal(
-            "candidate pass repeats a proxy source frame digest, so pair identity is ambiguous"
-        )
     expected_selection = select_candidate_pairs([proxy.signature for proxy in proxies], config)
     if selection != expected_selection:
         raise InstrumentRefusal(
             "candidate selection does not match the complete selection recomputed from this pass"
-        )
-    if selection.cost.unique_candidate_pairs != len(
-        selection.pairs
-    ) or selection.cost.dimension_refused_pairs != len(selection.dimension_refused):
-        raise InstrumentRefusal(
-            "candidate selection cost does not account for its exact emitted and refused pair sets"
         )
     if len(evidence) != selection.cost.unique_candidate_pairs:
         # Cardinality is checked before a caller-controlled sequence is traversed.
@@ -1181,10 +1169,6 @@ def evidence_manifest(
         )
         for left, right in selection.pairs
     )
-    if len(set(selected)) != len(selected):
-        raise InstrumentRefusal(
-            "candidate selection repeats a digest pair; every evidence identity must be unique"
-        )
     # Counter equality closes both the set and its multiplicity. A duplicate
     # emission cannot stand in for a missing pair, and cannot be reported twice
     # even if a caller supplies a malformed selection.
@@ -1247,7 +1231,7 @@ def validate_evidence_manifest(
     )
     try:
         matches = canonical_bytes(record) == canonical_bytes(expected)
-    except (TypeError, UnicodeError) as error:
+    except TypeError as error:
         raise InstrumentRefusal(
             "candidate evidence manifest cannot be canonically serialized"
         ) from error

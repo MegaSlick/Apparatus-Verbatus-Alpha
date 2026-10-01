@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.canonical import canonical_bytes
+from operations.triage import reconcile as reconcile_module
 from operations.triage.reconcile import (
     EXPECTED_SCHEMA,
     ReconciliationRefusal,
@@ -420,3 +421,71 @@ def test_every_dated_measured_pass_is_a_whole_pair_and_a_sealed_one_verifies():
         if dated.name == "2026-08-22_005469606_62-68":
             assert len(disagreements["facts"]) == 7
             assert len(expected["seats"]) == 3
+
+
+def _seats() -> tuple[dict, dict]:
+    return (
+        json.loads((FIXTURES / "seat-a.json").read_text(encoding="utf-8")),
+        json.loads((FIXTURES / "seat-b.json").read_text(encoding="utf-8")),
+    )
+
+
+def test_a_verdict_file_past_the_intake_limit_is_refused(tmp_path: Path, monkeypatch):
+    sources = _local_verdicts(tmp_path)
+    monkeypatch.setattr(reconcile_module, "_MAX_VERDICT_BYTES", 16)
+    with pytest.raises(ReconciliationRefusal, match="exceeds the 16-byte intake limit$"):
+        reconcile_files(sources, tmp_path / "expected.json", tmp_path / "disagreements.json")
+
+
+def test_a_verdict_whose_canonical_form_passes_the_limit_is_refused(monkeypatch):
+    verdict, other = _seats()
+    monkeypatch.setattr(reconcile_module, "_MAX_VERDICT_BYTES", 16)
+    with pytest.raises(ReconciliationRefusal, match="exceeds the 16-byte intake limit$"):
+        reconcile([verdict, other])
+
+
+def test_a_verdict_with_too_many_facts_is_refused(monkeypatch):
+    verdict, other = _seats()
+    monkeypatch.setattr(reconcile_module, "_MAX_FACTS_PER_VERDICT", len(verdict["facts"]) - 1)
+    with pytest.raises(ReconciliationRefusal, match="facts must be a non-empty mapping$"):
+        reconcile([verdict, other])
+
+
+def test_a_verdict_with_too_many_observations_is_refused(monkeypatch):
+    verdict, other = _seats()
+    monkeypatch.setattr(reconcile_module, "_MAX_OBSERVATIONS_PER_VERDICT", 3)
+    with pytest.raises(ReconciliationRefusal, match="exceeds the bounded observation count$"):
+        reconcile([verdict, other])
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [b"{not json", b"\xff\xfe", b"[" * 100_000 + b"]" * 100_000],
+)
+def test_an_unparseable_verdict_file_is_a_named_refusal(tmp_path: Path, raw: bytes):
+    sources = _local_verdicts(tmp_path)
+    sources[0].write_bytes(raw)
+    with pytest.raises(ReconciliationRefusal, match="structural verdict file could not be read$"):
+        reconcile_files(sources, tmp_path / "expected.json", tmp_path / "disagreements.json")
+
+
+@pytest.mark.parametrize("stray", [7, ["not", "pairs"], "text"])
+def test_a_non_mapping_verdict_is_a_named_refusal(stray):
+    verdict, _other = _seats()
+    with pytest.raises(
+        ReconciliationRefusal, match="is not a verdict mapping; nothing was reconciled$"
+    ):
+        reconcile([verdict, stray])
+
+
+def test_a_numeric_fact_one_seat_omits_is_a_disagreement_not_an_interval():
+    verdict, other = _seats()
+    omitted = next(iter(other["facts"]["frame-63"]["numeric"]))
+    del other["facts"]["frame-63"]["numeric"][omitted]
+    expected, disagreements = reconcile([verdict, other])
+    assert omitted not in expected["facts"]["frame-63"]["numeric_intervals"]
+    assert f"numeric:{omitted}" in disagreements["facts"]["frame-63"]["failed"]
+    values = [
+        row["value"] for row in disagreements["facts"]["frame-63"]["per_seat"][f"numeric:{omitted}"]
+    ]
+    assert values[1] is None and values[0] == verdict["facts"]["frame-63"]["numeric"][omitted]

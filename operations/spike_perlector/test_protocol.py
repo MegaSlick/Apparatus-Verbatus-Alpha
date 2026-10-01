@@ -13,11 +13,8 @@ def test_predeclared_protocol_pin_matches_the_committed_protocol_document():
 
 
 def test_an_unreadable_protocol_document_refuses_by_name_not_as_an_os_error(monkeypatch):
-    """A caller holding on `MatrixRefusal` would not have caught a bare `OSError`.
-
-    The same defect class this branch already fixed in `gates.py`, where strict
-    canonicalization's `TypeError` left a gate unconverted.
-    """
+    """Every caller holds on `MatrixRefusal`, so an unreadable document is named
+    as one rather than escaping as a bare `OSError`."""
 
     def unreadable(self):
         raise FileNotFoundError(2, "No such file or directory")

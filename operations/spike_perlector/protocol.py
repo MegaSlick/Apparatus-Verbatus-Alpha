@@ -7,11 +7,10 @@ from pathlib import Path
 from .encoding import is_sha256, sha256_bytes
 from .errors import MatrixRefusal
 
-# Updated only in the same reviewable change as the protocol document itself,
-# so this digest can never drift silently from what the document says. The
-# protocol's measure definitions (bounds, profiles, scoring rules) stay pinned
-# and fail closed across a re-pin; only prose, provenance and closed
-# limitations move.
+# The digest of the committed protocol document, changed only in the same
+# reviewable change as the document. It binds the document's text, not the code:
+# the normalization profile digest separately binds the character mappings,
+# whitespace class and text bounds, and a test pins that digest.
 PREDECLARED_PROTOCOL_SHA256 = "c1c8f77fa03014bc95220e253609b7279bbd05d6359a3165f2dedb528a3e944a"
 
 

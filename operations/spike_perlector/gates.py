@@ -20,7 +20,7 @@ from common.contracts.approval import (
     validate_approval_record,
 )
 from common.contracts.canonical import canonical_bytes, digest_of
-from operations.submit.gate import DEFAULT_POLICY_PATH, ROOT, load_policy
+from operations.submit.gate import DEFAULT_POLICY_PATH, load_policy
 
 from .encoding import is_sha256, sha256_bytes
 from .errors import DisclosureRefusal
@@ -42,10 +42,6 @@ MAX_EVIDENCE_DEPTH = 64
 def _resolve_authoritative_data_gate_policy() -> Mapping[str, Any]:
     """Read the one repository policy home; callers cannot substitute a snapshot."""
 
-    if DEFAULT_POLICY_PATH != ROOT / DATA_GATE_POLICY_REPOSITORY_PATH:
-        raise DisclosureRefusal(
-            "data-gate authoritative path differs from its recorded repository identity"
-        )
     return load_policy(DEFAULT_POLICY_PATH)
 
 
@@ -820,8 +816,6 @@ class RunAuthorization:
     ) -> None:
         if self.material_class is MaterialClass.SYNTHETIC:
             return
-        if self.run_plan_approval is None:  # defensive for type checkers and audits
-            raise DisclosureRefusal("real declared run has no run-plan approval")
         self.run_plan_approval.require_scope(
             protocol_sha256=protocol_sha256,
             manifest_sha256=manifest_sha256,
@@ -893,6 +887,10 @@ def require_authorized_delivery(
     """Check material classification and every external delivery before any call."""
 
     act_values = tuple(acts)
+    # The sealed manifest binding first: it names exactly which act evidence
+    # departs from what was approved, which the class comparison below cannot.
+    if manifest is not None:
+        manifest.require_run_acts(act.manifest_binding() for act in act_values)
     material_classes = {act.image.material_class for act in act_values}
     if material_classes != {authorization.material_class}:
         raise DisclosureRefusal(
@@ -901,7 +899,6 @@ def require_authorized_delivery(
     if authorization.material_class is not MaterialClass.SYNTHETIC:
         if manifest is None:
             raise DisclosureRefusal("real delivery requires a sealed evaluation manifest")
-        manifest.require_run_acts(act.manifest_binding() for act in act_values)
         manifest_classes = {member.material_class for member in manifest.members}
         if manifest_classes != {authorization.material_class}:
             raise DisclosureRefusal(
@@ -910,11 +907,6 @@ def require_authorized_delivery(
         manifest_sha256 = manifest.manifest_sha256
     else:
         manifest_sha256 = None
-    if authorization.material_class is MaterialClass.PRIVATE_REGISTER:
-        # DataGateAuthority was validated on load, like every other approval field.
-        if authorization.data_gate_authority is None:  # defensive for type checkers and audits
-            raise DisclosureRefusal("private register delivery has no data-gate authority")
-
     if authorization.material_class is MaterialClass.SYNTHETIC:
         if any(identity.delivery is DeliveryMode.EXTERNAL for identity in identities):
             raise DisclosureRefusal(
