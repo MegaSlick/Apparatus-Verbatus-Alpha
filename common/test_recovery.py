@@ -107,15 +107,36 @@ def test_the_run_authority_names_the_recovery_policy_it_was_sealed_under(tmp_pat
     )
 
 
-def test_the_budget_is_sealed_ahead_of_the_re_ask_that_spends_it():
-    """A deliberate forward binding: every run seals its re-ask budget at the Door,
-    and no stage re-asks a page yet. When a stage starts reading
-    `StageContext.recovery_policy`, this test goes and config/recovery.toml says so."""
+def test_the_page_re_ask_planner_is_the_only_reader_of_the_budget():
+    """The sealed budget is spent by the page re-ask alone.
+
+    Every stage line that reads `StageContext.recovery_policy` hands it straight
+    to `common.page_reask.reask_budget` (the Perlector that plans the re-ask, and
+    the denominator that plans it again to verify it), and only that function
+    and the loader read `page_level_reread` out of the record.
+    """
     root = Path(__file__).resolve().parents[1]
-    readers = sorted(
-        str(path.relative_to(root))
-        for folder in ("pipeline", "operations")
+    sources = {
+        str(path.relative_to(root)): path.read_text("utf-8")
+        for folder in ("common", "pipeline", "operations")
         for path in (root / folder).rglob("*.py")
-        if not path.name.startswith("test_") and ".recovery_policy" in path.read_text("utf-8")
+        if not path.name.startswith("test_")
+    }
+    readers = sorted(
+        (name, line.strip())
+        for name, text in sources.items()
+        for line in text.splitlines()
+        if ".recovery_policy" in line
     )
-    assert readers == []
+    assert readers, "no stage reads the sealed recovery policy"
+    assert all("page_reask.reask_budget(" in line for _name, line in readers), readers
+    assert {name for name, _line in readers} == {
+        "common/stage.py",
+        "pipeline/4_perlector/page_run.py",
+    }
+    budget_readers = sorted(
+        name
+        for name, text in sources.items()
+        if '["page_level_reread"]' in text or '.get("page_level_reread")' in text
+    )
+    assert budget_readers == ["common/page_reask.py", "common/recovery.py"]
