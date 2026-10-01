@@ -161,6 +161,7 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
         )
     if (
         not isinstance(record, dict)
+        or not isinstance(schema, str)
         or schema not in PAGE_READ_RECEIPT_SCHEMAS
         or set(record) != _COMMON_FIELDS | _READING_FIELDS[schema]
     ):

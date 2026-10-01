@@ -105,3 +105,11 @@ def _forged(change) -> dict:
 def test_a_malformed_v5_page_is_refused(change, refusal):
     with pytest.raises(SchemaRefusal, match=refusal):
         validate_recensor_partition_receipt(_forged(change))
+
+
+@pytest.mark.parametrize("schema", [[], {}], ids=["list", "dict"])
+def test_a_receipt_whose_schema_is_not_text_is_refused(schema):
+    record = _receipt()
+    record["schema"] = schema
+    with pytest.raises(SchemaRefusal, match="wrong closed schema"):
+        validate_recensor_partition_receipt(record)
