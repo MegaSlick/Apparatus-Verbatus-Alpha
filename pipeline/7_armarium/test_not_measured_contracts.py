@@ -3,7 +3,6 @@
 import importlib.util
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -48,61 +47,6 @@ def _load_armarium_contract_run():
 armarium = _load_armarium_contract_run()
 
 
-def _conservation_context(rows):
-    artifacts = {f"c-{index}": {"payload": row} for index, row in enumerate(rows)}
-    return SimpleNamespace(
-        tree=SimpleNamespace(
-            build_manifest=lambda _stage: {
-                "artifacts": [{"kind": "conservation", "artifact_id": key} for key in artifacts]
-            },
-            read_artifact=lambda _stage, _kind, artifact_id: artifacts[artifact_id],
-        )
-    )
-
-
-@pytest.mark.parametrize(
-    "rows, sealed, expected",
-    [
-        (
-            [{"page_ordinal": 1, "ink_measurable": False, "reason": "background unavailable"}],
-            {1},
-            {1: "background unavailable"},
-        ),
-        ([{"page_ordinal": 1, "ink_measurable": True}], {1}, {}),
-    ],
-)
-def test_conservation_exact_census_keeps_legitimate_degraded_sealed_pages(rows, sealed, expected):
-    assert armarium.conservation_not_reconciled(_conservation_context(rows), {}, sealed) == expected
-
-
-@pytest.mark.parametrize(
-    "rows, sealed, message",
-    [
-        (
-            [],
-            {1},
-            "the Designator conservation ordinal census does not exactly cover the sealed page census",
-        ),
-        (
-            [
-                {"page_ordinal": 1, "ink_measurable": True},
-                {"page_ordinal": 1, "ink_measurable": True},
-            ],
-            {1},
-            "the Designator conservation inventory repeats a sealed page ordinal",
-        ),
-        (
-            [{"page_ordinal": 2, "ink_measurable": True}],
-            {1},
-            "the Designator conservation ordinal census does not exactly cover the sealed page census",
-        ),
-    ],
-)
-def test_conservation_refuses_missing_duplicate_or_unsealed_ordinals(rows, sealed, message):
-    with pytest.raises(armarium.FatalAccounting, match=message):
-        armarium.conservation_not_reconciled(_conservation_context(rows), {}, sealed)
-
-
 @pytest.mark.parametrize("value", ["false", 0, None])
 def test_calibration_flag_refuses_non_boolean_values(value):
     with pytest.raises(armarium.FatalAccounting, match="non-boolean"):
@@ -123,85 +67,3 @@ def test_geometry_may_omit_sample_count():
     provenance = {"calibrated_for_this_corpus": False}
     assert armarium._typed_calibration_flag(provenance, "designator-geometry") is False
     assert armarium._typed_sample_count(provenance, "designator-geometry") is None
-
-
-@pytest.mark.parametrize(
-    "payload, match, cause_match",
-    [
-        (
-            {
-                "testimony_content_coverage": {"by_chair": {}, "shortfall": "unknown"},
-                "testimony_content_coverage_continuation": [],
-                "cross_capture_coverage": None,
-            },
-            "testimony-content",
-            "shortfall is not true, false, or null",
-        ),
-        (
-            {
-                "testimony_content_coverage": {
-                    "by_chair": {
-                        "chair": {
-                            "attached_spans": [],
-                            "uncovered_non_whitespace": {"ranges": [], "count": 0},
-                        }
-                    },
-                    "shortfall": False,
-                },
-                "testimony_content_coverage_continuation": [
-                    {"by_chair": {}, "shortfall": None, "reason": "unmeasured", "page_ordinal": 2},
-                    {"by_chair": {}, "shortfall": None, "reason": "unmeasured", "page_ordinal": 2},
-                ],
-                "cross_capture_coverage": None,
-            },
-            "testimony-content",
-            "repeats a page ordinal",
-        ),
-        (
-            {
-                "testimony_content_coverage": {
-                    "by_chair": {
-                        "chair": {
-                            "attached_spans": [],
-                            "uncovered_non_whitespace": {"ranges": [], "count": 0},
-                        }
-                    },
-                    "shortfall": False,
-                },
-                "testimony_content_coverage_continuation": [],
-                "cross_capture_coverage": {"components": []},
-            },
-            "cross-capture",
-            "cross-capture coverage record is not closed",
-        ),
-    ],
-)
-def test_armarium_consumption_refuses_malformed_review_measurements(
-    monkeypatch, payload, match, cause_match
-):
-    monkeypatch.setattr(armarium, "conservation_not_reconciled", lambda *_args: {})
-    monkeypatch.setattr(armarium, "sealed_audit_round_cap", lambda _context: 1)
-    monkeypatch.setattr(armarium, "geometry_calibration_rows", lambda _context: [])
-    with pytest.raises(armarium.FatalAccounting, match=match) as refusal:
-        armarium.not_measured_basis(SimpleNamespace(), {}, {}, {"act-one": payload}, [], set())
-    assert cause_match in str(refusal.value.__cause__)
-
-
-def test_armarium_consumption_refuses_a_review_without_cross_capture_coverage(monkeypatch):
-    payload = {
-        "testimony_content_coverage": {
-            "by_chair": {
-                "chair": {
-                    "attached_spans": [],
-                    "uncovered_non_whitespace": {"ranges": [], "count": 0},
-                }
-            },
-            "shortfall": False,
-        },
-        "testimony_content_coverage_continuation": [],
-    }
-    monkeypatch.setattr(armarium, "conservation_not_reconciled", lambda *_args: {})
-    monkeypatch.setattr(armarium, "sealed_audit_round_cap", lambda _context: 1)
-    monkeypatch.setattr(armarium, "geometry_calibration_rows", lambda _context: [])
-    with pytest.raises(armarium.FatalAccounting, match="act-one.*no cross-capture coverage field"):
-        armarium.not_measured_basis(SimpleNamespace(), {}, {}, {"act-one": payload}, [], set())

@@ -35,7 +35,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common import page_path  # noqa: E402
-from common.alignment import markup_text_view  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.annotations import (  # noqa: E402, F401  (re-export)
     ANNOTATION_KINDS,
@@ -54,7 +53,6 @@ from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusa
 from common.contracts.identities import is_well_formed  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     TEXT_STATUSES,
-    classify,
     derive_record_text_status,
     terminal_category,
 )
@@ -62,8 +60,6 @@ from common.contracts.outcomes import derive_text_status as derive_text_status  
 from common.contracts.prior_draft import validate_establishing_view  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
     ARCHETYPUS,
-    ATTESTATORES,
-    DESIGNATOR,
     PERLECTOR,
     RECENSOR,
 )
@@ -87,23 +83,12 @@ from common.physical_act_partition import validate_physical_act_partition  # noq
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
-    READING_UNIT_PAGE,
-    WITNESS_CONTEXT_REGIMES,
-    WITNESS_READING_OUTCOMES,
-    expected_acts,
-    latest_attempt,
     open_stage_context,
     reading_acts,
-    reading_basis_regions,
-    recovery_region_count,
-    require_current_witness_basis,
     run_stage,
-    sealed_reading_unit,
-    stage_manifest,
     stage_parser,
     validate_serving_provenance,
 )
-from common.witness_regime import witness_label  # noqa: E402
 
 DESCRIPTION = "Archetypus: exactly one established reading per act, written once."
 
@@ -131,6 +116,7 @@ _RECORD_FIELDS = frozenset(
         "act_id",
         "act_key",
         "page_id",
+        "kind",
         "text",
         "text_hash",
         "status",
@@ -147,11 +133,25 @@ _RECORD_FIELDS = frozenset(
     }
 )
 
-# Exactly what the shared crop verification returns to the Perlector
-# (`common/exemplar_boundary.py`), plus the `witness_covered` flag the Perlector
-# adds before sealing its basis. Spelled out rather than derived, so a producer
-# that starts writing a tenth field is refused here and read by a person instead
-# of travelling sealed into the record and out through the export.
+# `kind` is `act` or `other`: the Perlector names both on a page, and each is
+# established so every export shows the one established reading.
+READING_KINDS = frozenset({"act", "other"})
+# Exactly what `verify_reading_region_lineage` proves of the Perlector's
+# `act-region`. Spelled out, so a producer that starts writing another field is
+# refused here rather than travelling sealed into the record and the export.
+_PAGE_REGION_FIELDS = frozenset(
+    {
+        "region_id",
+        "image_path",
+        "image_sha256",
+        "verified_dimensions",
+        "source_page_ordinal",
+        "source_page_id",
+        "transform",
+    }
+)
+# A logical record's regions: the crop verification's fields plus the Designator
+# structure and the per-witness coverage flag the joint reading carries.
 _REGION_FIELDS = frozenset(
     {
         "region_id",
@@ -166,31 +166,20 @@ _REGION_FIELDS = frozenset(
     }
 )
 
-# A page-read run's record adds the reading's `kind` (`act` or `other`): the
-# Perlector names both on a page it reads whole, and each is established here
-# so every export shows the one established reading. Its region is exactly what
-# `verify_reading_region_lineage` proves of the Perlector's `act-region`; there
-# is no Designator structure behind it and no per-witness coverage flag.
-_PAGE_RECORD_FIELDS = _RECORD_FIELDS | {"kind"}
-READING_KINDS = frozenset({"act", "other"})
-_PAGE_REGION_FIELDS = frozenset(
+# An index row names the reading's `kind`, so a reader of the index alone can
+# tell an act from an other reading.
+_INDEX_ROW_FIELDS = frozenset(
     {
-        "region_id",
-        "image_path",
-        "image_sha256",
-        "verified_dimensions",
-        "source_page_ordinal",
-        "source_page_id",
-        "transform",
+        "act_id",
+        "act_key",
+        "kind",
+        "artifact_id",
+        "text_status",
+        "text_hash",
+        "relative_path",
+        "sha256",
     }
 )
-
-_INDEX_ROW_FIELDS = frozenset(
-    {"act_id", "act_key", "artifact_id", "text_status", "text_hash", "relative_path", "sha256"}
-)
-# A page-read run's index row also names the reading's `kind`, so a reader of the
-# index alone can tell an act from an other reading.
-_PAGE_INDEX_ROW_FIELDS = _INDEX_ROW_FIELDS | {"kind"}
 _INDEX_FIELDS = frozenset({"schema", "run_id", "stage", "record_count", "rows", "self_hash"})
 
 # Unit 19D is additive while image-local runs remain valid.  A physical-act
@@ -322,203 +311,6 @@ def _reference_key(reference: dict) -> tuple[str, str]:
     return (reference["relative_path"], reference["sha256"])
 
 
-def _verify_comparison_views(
-    context, act_id: str, derived: dict[str, str], embedded: dict, dossier: dict
-) -> None:
-    """Bind every displayed witness label to its retained Testimonium slice.
-
-    The dossier keys views by chair under ``named`` and by a run-scoped pseudonym
-    under ``blinded``. Comparing only the text multiset would let two authentic
-    slices exchange pseudonyms and silently corrupt their attribution.
-    """
-    if not isinstance(embedded, dict):
-        raise SchemaRefusal(f"act {act_id} embedded comparison views are not a mapping")
-    regime = dossier.get("witness_regime")
-    if regime not in WITNESS_CONTEXT_REGIMES:
-        raise SchemaRefusal(
-            f"act {act_id} embeds a dossier under witness regime {regime!r}, which is not one "
-            f"of {sorted(WITNESS_CONTEXT_REGIMES)}; an unrecognized regime is refused, never "
-            "checked as though it were the default"
-        )
-    rows = dossier.get("testimonia")
-    if not isinstance(rows, list):
-        raise SchemaRefusal(f"act {act_id} embeds a dossier with no testimonium rows")
-    labels = [row.get("witness_label") for row in rows if isinstance(row, dict)]
-    if (
-        len(labels) != len(rows)
-        or any(not isinstance(label, str) or not label for label in labels)
-        or len(set(labels)) != len(labels)
-    ):
-        raise SchemaRefusal(f"act {act_id} embeds malformed or repeated witness labels")
-    try:
-        expected = {
-            witness_label(
-                chair,
-                regime=regime,
-                run_id=context.tree.run_id,
-                config_digest=context.config_digest,
-            ): text
-            for chair, text in derived.items()
-        }
-    except ValueError as error:
-        raise SchemaRefusal(
-            f"act {act_id} attachment names a witness that cannot be labelled"
-        ) from error
-    if len(expected) != len(derived):
-        raise SchemaRefusal(
-            f"act {act_id} attachment witness labels collide; one comparison view would "
-            "silently replace another"
-        )
-    if not set(expected).issubset(labels):
-        raise SchemaRefusal(
-            f"act {act_id} embeds comparison view(s) that name no witness this dossier carries"
-        )
-    if embedded != expected:
-        raise SchemaRefusal(f"act {act_id} embedded comparison views disagree with its attachment")
-
-
-def _verify_act_attachment_view(
-    context, act_id: str, page_id: str, regions: list[dict], dossier: dict
-) -> None:
-    """Re-derive a Perlectio's page-witness facts from retained evidence.
-
-    ``page_id`` is the act roster's attachment subject. Basis regions may span
-    pages, so their first entry cannot supply that identity, but at least one basis
-    region must cite it.
-    """
-    attachment_view = dossier.get("act_attachment")
-    if (
-        not isinstance(attachment_view, dict)
-        or set(attachment_view)
-        != {"reference", "page_witness_count", "comparison_views", "edge_deltas"}
-        or not isinstance(attachment_view["page_witness_count"], int)
-        or isinstance(attachment_view["page_witness_count"], bool)
-        or attachment_view["page_witness_count"] < 0
-        or not isinstance(attachment_view["comparison_views"], dict)
-        or not isinstance(attachment_view["edge_deltas"], dict)
-    ):
-        raise SchemaRefusal(f"act {act_id} has malformed embedded act-attachment facts")
-    reference = attachment_view["reference"]
-    if not _is_ref_shaped(reference):
-        raise SchemaRefusal(f"act {act_id} has no direct act-attachment reference")
-    attachment_record = context.tree.read_artifact_reference(
-        reference, stage=ATTESTATORES, kind="act-attachment", subject_id=act_id
-    )
-    payload = attachment_record.get("payload")
-    attachments = payload.get("attachments") if isinstance(payload, dict) else None
-    if not isinstance(attachments, list):
-        raise SchemaRefusal(f"act {act_id} referenced act-attachment has no attachment list")
-    if not isinstance(page_id, str) or not page_id:
-        raise SchemaRefusal(f"act {act_id} has no source page for attachment verification")
-    if page_id not in {region.get("source_page_id") for region in regions}:
-        raise SchemaRefusal(
-            f"act {act_id} is accounted to page {page_id!r}, which none of its basis regions "
-            "cites; a record's page identity and the ink it was read from are one fact"
-        )
-    views: dict[str, str] = {}
-    page_witness_chairs: set[str] = set()
-    seen_rows: set[tuple[str, int | None]] = set()
-    for item in attachments:
-        if (
-            not isinstance(item, dict)
-            or not isinstance(item.get("page_witness"), bool)
-            or not isinstance(item.get("attached"), bool)
-            or not isinstance(item.get("chair"), str)
-            or not item["chair"]
-        ):
-            raise SchemaRefusal(
-                f"act {act_id} referenced act-attachment has malformed witness scope"
-            )
-        # A row is identified by (chair, page), not by chair alone. A continuation
-        # act's crop spans more than one source page, so one chair legitimately
-        # contributes one row per contributing page -- exactly one of which is the
-        # act's own page and can be `attached`. The duplicate-row refusal below and
-        # the per-chair comparison-view refusal further down are both kept: between
-        # them nothing a repeated chair could silently replace survives.
-        # Scope decides which rule applies, in the same words the Recensor uses on
-        # the same artifact. Accepting a page-witness row with no ordinal — which
-        # this check did while `page_ordinal is not None` gated it — left two
-        # consumers of one act-attachment disagreeing about whether that row is
-        # valid, and keyed it as `(chair, None)`, so a chair with one row on page 2
-        # and one row missing the field made two distinct keys and passed the
-        # duplicate guard below as two contributing pages when nobody could say
-        # what the second page was. A stock run is protected only because the
-        # Recensor refuses first, and this function documents itself as the whole
-        # of the boundary for a caller that resolved its arguments another way.
-        page_ordinal = item.get("page_ordinal")
-        if item["page_witness"]:
-            if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool):
-                raise SchemaRefusal(
-                    f"act {act_id} referenced act-attachment page witness {item['chair']!r} "
-                    "has no integer page ordinal; its attachment cannot be placed"
-                )
-        elif page_ordinal is not None:
-            raise SchemaRefusal(
-                f"act {act_id} referenced act-attachment act-scoped witness "
-                f"{item['chair']!r} carries page ordinal {page_ordinal!r}; its scope "
-                "is contradictory"
-            )
-        row = (item["chair"], page_ordinal)
-        if row in seen_rows:
-            raise SchemaRefusal(
-                f"act {act_id} referenced act-attachment repeats witness {item['chair']!r} "
-                f"on page {page_ordinal!r}; a repeated row would silently replace a "
-                "comparison view"
-            )
-        seen_rows.add(row)
-        if not item["page_witness"]:
-            continue
-        # What the dossier discloses is how many distinct chairs witnessed a page,
-        # never how many attachment rows there are: a two-page continuation act must
-        # not report four witnesses where the run configured two.
-        page_witness_chairs.add(item["chair"])
-        if not item.get("attached"):
-            continue
-        chair, alignment, testimony_ref = (
-            item.get("chair"),
-            item.get("alignment"),
-            item.get("testimonium_ref"),
-        )
-        span = alignment.get("witness_span") if isinstance(alignment, dict) else None
-        if not _is_ref_shaped(testimony_ref):
-            raise SchemaRefusal(f"act {act_id} referenced act-attachment has malformed witness")
-        testimony = context.tree.read_artifact_reference(
-            testimony_ref, stage=ATTESTATORES, kind="page-testimonium", subject_id=page_id
-        )
-        # Guarded like `alignment` above: a payload that is present but not a
-        # mapping would otherwise reach `.get` and raise AttributeError, and a
-        # traceback is not a refusal -- this stage's contract is a named one.
-        testimony_payload = testimony.get("payload")
-        reported = testimony_payload.get("payload") if isinstance(testimony_payload, dict) else None
-        if (
-            not isinstance(reported, str)
-            or not isinstance(span, dict)
-            or set(span) != {"start", "end"}
-            or any(not isinstance(value, int) or isinstance(value, bool) for value in span.values())
-            or span["start"] < 0
-            or span["end"] < span["start"]
-            or span["end"] > len(reported)
-        ):
-            raise SchemaRefusal(
-                f"act {act_id} referenced act-attachment has no valid comparison view"
-            )
-        if chair in views:
-            raise SchemaRefusal(
-                f"act {act_id} referenced act-attachment gives witness {chair!r} a second "
-                "comparison view; a repeated chair would silently replace a comparison view"
-            )
-        views[chair] = markup_text_view(reported[span["start"] : span["end"]])["text"]
-    if len(page_witness_chairs) != attachment_view["page_witness_count"]:
-        raise SchemaRefusal(
-            f"act {act_id} embedded page-witness count disagrees with its attachment"
-        )
-    _verify_comparison_views(context, act_id, views, attachment_view["comparison_views"], dossier)
-    if dossier.get("dossier_digest") != digest_of(
-        {key: value for key, value in dossier.items() if key != "dossier_digest"}
-    ):
-        raise SchemaRefusal(f"act {act_id} embedded dossier digest disagrees with its dossier")
-
-
 def validate_text_status(text: str, text_status: str, evidence_ref) -> None:
     """Refuse a status the text does not support.
 
@@ -551,83 +343,6 @@ def validate_text_status(text: str, text_status: str, evidence_ref) -> None:
             f"text_status {text_status!r} carries a no_readable_text evidence reference, "
             "which only that status may carry"
         )
-
-
-# --- The single constructor path: an accepted, primed Perlectio, and nothing else
-
-
-def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
-    records = []
-    # Once per pass for a stage this one only reads; `stage_manifest` falls
-    # through to a fresh build for this stage's own inventory, which this pass
-    # is writing (`common/stage.py`).
-    for entry in stage_manifest(context, stage)["artifacts"]:
-        if entry["kind"] == kind and entry["subject_id"] == subject:
-            records.append(context.tree.read_artifact(stage, kind, entry["artifact_id"]))
-    return records
-
-
-def final_review(context, act_id: str) -> dict:
-    """The Recensor's last word on this act."""
-    return latest_attempt(
-        artifacts_for(context, RECENSOR, "review", act_id),
-        f"review of {act_id}",
-        operation="recense",
-    )
-
-
-def reviewed_reading(context, review: dict, act_id: str) -> tuple[dict, dict[str, str]]:
-    """Resolve the exact Perlectio the Recensor reviewed, never a newer one.
-
-    The current review carries the evidence of the reading it assessed. Looking
-    the current Perlectio up independently would silently establish a recovery
-    attempt nobody reviewed — a reconciliation failure, not a useful fallback.
-
-    This lookup is also the structural half of "single path": the reference's
-    declared stage and kind are checked against the actual bytes, so nothing but
-    a `(perlector, perlectio)` artifact can reach this stage by being named in
-    `perlectio_ref`.
-    """
-    payload = review.get("payload")
-    if not isinstance(payload, dict):
-        raise FatalAccounting(f"review of {act_id} has no payload")
-    reference = payload.get("perlectio_ref")
-    if not isinstance(reference, dict) or reference not in review.get("inputs", []):
-        raise FatalAccounting(
-            f"accepted review of {act_id} does not retain its digest-checked Perlectio reference"
-        )
-    reading = context.tree.read_artifact_reference(
-        reference,
-        stage=PERLECTOR,
-        kind="perlectio",
-        subject_id=act_id,
-    )
-    readings = artifacts_for(context, PERLECTOR, "perlectio", act_id)
-    current = latest_attempt(readings, f"reading of {act_id}", operation="perlegere")
-    if current["artifact_id"] != reading["artifact_id"]:
-        raise FatalAccounting(
-            f"act {act_id} has a newer Perlectio that the accepted Recensor review did not "
-            "assess; no unreconciled reading may become established"
-        )
-    recovery_regions = recovery_region_count(
-        act_id, artifacts_for(context, DESIGNATOR, "region", act_id)
-    )
-    if len(readings) != recovery_regions + 1:
-        raise FatalAccounting(
-            f"act {act_id} has {recovery_regions} recovery crop(s) but {len(readings)} "
-            "Perlectio attempt(s); a recovery crop must be reread before any text is established"
-        )
-    # The same question on the other side of the reading. Above: is this the
-    # newest Perlectio, and does the crop history account for every attempt.
-    # Here: is the testimony it was established from still the current testimony.
-    # Nothing established a text over evidence a later attempt has superseded.
-    require_current_witness_basis(
-        act_id,
-        reading,
-        artifacts_for(context, ATTESTATORES, "testimonium", act_id),
-        f"the accepted Perlectio of {act_id}",
-    )
-    return reading, reference
 
 
 _LECTIO_PRIOR_PATH = "4_perlector/artifacts/lectio-prior/"
@@ -669,212 +384,15 @@ def _prior_draft_of(reading: dict, payload: dict, dossier: dict, subject: str) -
     return prior_draft
 
 
-def _verify_prior_draft(context, reading: dict, payload: dict, dossier: dict, act_id: str) -> None:
-    """A fed reading's cited draft must be its own attempt's lectio-prior, text for text."""
-    prior_draft = _prior_draft_of(reading, payload, dossier, f"act {act_id}")
-    if prior_draft is None:
-        return
-    prior_reference = prior_draft["reference"]
-    prior_record = context.tree.read_artifact_reference(
-        prior_reference,
-        stage=PERLECTOR,
-        kind="lectio-prior",
-        subject_id=act_id,
-    )
-    prior_payload = prior_record.get("payload")
-    if (
-        not isinstance(prior_payload, dict)
-        or not isinstance(prior_draft.get("text"), str)
-        or prior_draft["text"] != prior_payload.get("text")
-    ):
-        raise SchemaRefusal(
-            f"act {act_id} embeds prior-draft text that disagrees with its referenced lectio-prior"
-        )
-    # The reference is bound to stage, kind, subject and digest above -- and
-    # not, until here, to the attempt. A recovered act carries one Pass-A
-    # draft per attempt, and a Perlectio citing a superseded one would
-    # publish `self_revision` measured against a draft its reader never saw.
-    # Where the two drafts happen to read alike (the ordinary case: recovery
-    # recovers coverage, not text) every other check above passes, so this
-    # is the binding that makes the citation the reading's own.
-    #
-    # Both ordinals are held to be integers before the comparison. The reading's
-    # own is already proven by `latest_attempt`, but this function documents
-    # itself as the whole of the boundary for a caller that resolved its
-    # arguments some other way — and two absent ordinals comparing None == None
-    # would pass the one binding this block exists to make.
-    for owner, candidate in (("lectio-prior", prior_payload), ("Perlectio", payload)):
-        ordinal = candidate.get("attempt_ordinal")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise SchemaRefusal(
-                f"act {act_id} carries a {owner} payload with no integer attempt ordinal; "
-                "an attempt binding cannot be made over a missing ordinal"
-            )
-    if prior_payload.get("attempt_ordinal") != payload.get("attempt_ordinal"):
-        raise SchemaRefusal(
-            f"act {act_id} cites a prior draft from reading attempt "
-            f"{prior_payload.get('attempt_ordinal')!r}, not its own "
-            f"{payload.get('attempt_ordinal')!r}"
-        )
-
-
-def accepted_primed_perlectio(
-    context, review, reading, reading_ref, act_id, *, page_id
-) -> tuple[dict, dict, list]:
-    """The only material permitted to reach the establishing constructor.
-
-    Spec 10 test 1 names four things that must not reach it: a Testimonium, a
-    salvage-tier piece, a Lectio nuda, and a raw Perlectio the Recensor never
-    accepted. `read_artifact_reference` closes the first structurally, before
-    either argument arrives; the rest are closed here by name, so a producer that
-    later starts labelling its readings cannot slip an unprimed or salvage one
-    through on a field this stage does not look at.
-
-    The `stage`/`kind` checks below are redundant at the one current call site,
-    and kept anyway: this is the single function spec 10 names as the whole of
-    the boundary, and a caller that resolves `review`/`reading` some other way
-    must not be able to walk past it in silence.
-
-    **A boundary, not a ranking mechanism.** It compares, counts and scores
-    nothing. The only witness text it reads is the roster an annotation may
-    cite, and every entry of that roster is a digest-checked direct input of the
-    reading that claims to have seen it.
-    """
-    review_payload = review.get("payload")
-    if (
-        review.get("stage") != RECENSOR
-        or review.get("kind") != "review"
-        or review.get("outcome") != "accepted"
-        or not isinstance(review_payload, dict)
-        or review_payload.get("perlectio_ref") != reading_ref
-        or reading_ref not in review.get("inputs", [])
-    ):
-        raise SchemaRefusal(
-            f"the Archetypus constructor for {act_id} accepts only the exact Perlectio a "
-            "Recensor accepted"
-        )
-    if reading.get("stage") != PERLECTOR or reading.get("kind") != "perlectio":
-        raise SchemaRefusal("only a Perlectio may enter the Archetypus constructor")
-    reading_class = classify(PERLECTOR, reading.get("outcome"))
-    # Boundary records use the ordinary envelope vocabulary too.  Their
-    # ``recorded``/``sealed`` outcomes are completed *boundary evidence*, never
-    # a successful Perlectio: the constructor accepts the one reading outcome
-    # that can establish text, rather than treating every completed-class value
-    # for this producer as interchangeable.
-    if reading.get("outcome") != "read":
-        raise FatalAccounting(
-            f"act {act_id} would be established from a {reading['outcome']!r} "
-            f"reading ({reading_class.value}); the established text may only come "
-            "from a reading that succeeded, and a failed one is held, never written"
-        )
-    payload = reading.get("payload")
-    if not isinstance(payload, dict):
-        raise SchemaRefusal(f"the accepted Perlectio for {act_id} has no object payload")
-
-    lectio_kind = payload.get("lectio_kind")
-    claimed_dossier = payload.get("dossier")
-    claimed_prior_draft = (
-        claimed_dossier.get("prior_draft") if isinstance(claimed_dossier, dict) else None
-    )
-    if lectio_kind == "primed-without-prior" and claimed_prior_draft is not None:
-        raise SchemaRefusal(
-            f"act {act_id} claims primed-without-prior but carries a prior-draft reference"
-        )
-    if lectio_kind not in ("primed-with-prior", "primed-draft-withheld"):
-        raise SchemaRefusal(
-            f"act {act_id} names lectio_kind {lectio_kind!r}; only an explicitly primed "
-            "Lectio may establish, and a Lectio nuda is an instrument record, never an "
-            "establishing read"
-        )
-    if payload.get("primed") not in (None, True):
-        raise SchemaRefusal(
-            f"act {act_id} carries an explicitly non-primed Lectio, which is an instrument "
-            "record, never an establishing read"
-        )
-    for field in ("tier", "source_tier", "reading_tier"):
-        if payload.get(field) == "salvage":
-            raise SchemaRefusal(
-                f"act {act_id} carries salvage-tier material, which can never become an "
-                "Archetypus (invariant #31's boundary)"
-            )
-
-    # Regions first, so a resealed reading with no object basis is refused in the
-    # words every consumer of a completed Perlectio uses, rather than in this
-    # stage's narrower ones.
-    regions = reading_basis_regions(reading, f"accepted reading of {act_id}")
-    basis = payload.get("basis")
-    testimonia = basis.get("testimonia") if isinstance(basis, dict) else None
-    if not isinstance(testimonia, list) or not testimonia:
-        raise SchemaRefusal(
-            f"act {act_id} reached the Archetypus constructor with no retained Testimonium "
-            "basis; a reading shown no witness at all is a Lectio nuda by any other name"
-        )
-    attachment = (
-        claimed_dossier.get("act_attachment") if isinstance(claimed_dossier, dict) else None
-    )
-    # Required, exactly as the Testimonium basis above is required, and for the
-    # same reason. Every primed reading this pipeline seals carries the
-    # act-attachment dossier view, so a reading that reaches here without one is
-    # a reading whose page-witness custody nobody checked -- and checking it only
-    # `if attachment is not None` made the whole chain opt-out at the one stage
-    # that reads a Perlectio back off disk. Found in audit; F-O2.
-    if not isinstance(attachment, dict):
-        raise SchemaRefusal(
-            f"act {act_id} reached the Archetypus constructor with no act-attachment view; "
-            "the page-witness evidence a reading was built on is consumed here or the "
-            "reading is refused"
-        )
-    reference = attachment.get("reference")
-    if not _is_ref_shaped(reference) or reference not in reading.get("inputs", []):
-        raise SchemaRefusal(
-            f"act {act_id} carries an act-attachment dossier view without a direct input reference"
-        )
-    validate_establishing_view(payload, claimed_dossier, f"act {act_id}")
-    _verify_act_attachment_view(context, act_id, page_id, regions, claimed_dossier)
-    _verify_prior_draft(context, reading, payload, claimed_dossier, act_id)
-    witnesses: dict[tuple[str, str], str | None] = {}
-    for index, item in enumerate(testimonia):
-        if not isinstance(item, dict):
-            raise SchemaRefusal(f"act {act_id} Testimonium basis {index} is not an object")
-        reference = item.get("reference")
-        if not _is_ref_shaped(reference) or reference not in reading.get("inputs", []):
-            raise SchemaRefusal(
-                f"act {act_id} Testimonium basis {index} is not a digest-checked direct input "
-                "of the reading that claims to have seen it"
-            )
-        reference_key = _reference_key(reference)
-        if reference_key in witnesses:
-            raise SchemaRefusal(
-                f"act {act_id} repeats Testimonium basis {index}; one retained witness "
-                "reference may not count twice as evidence that this reading was primed"
-            )
-        testimonium = context.tree.read_artifact_reference(
-            reference,
-            stage=ATTESTATORES,
-            kind="testimonium",
-            subject_id=act_id,
-        )
-        testimonium_payload = testimonium.get("payload")
-        if not isinstance(testimonium_payload, dict):
-            raise SchemaRefusal(f"act {act_id} Testimonium basis {index} has no object payload")
-        reported = testimonium_payload.get("payload")
-        witnesses[reference_key] = (
-            reported if testimonium["outcome"] in WITNESS_READING_OUTCOMES else None
-        )
-    return payload, witnesses, regions
-
-
 def validate_record_fields(record: dict) -> None:
     """The closed record schema, checked mechanically rather than by reading.
 
     Refuses any field the record is not defined to carry, and any absence of
     one it is, so a second text-bearing field cannot be reintroduced one name
-    at a time. The dead shape this guards against is `kind="archetypus"` in
-    CONTRACT.md.
+    at a time (CONTRACT.md, `kind="archetypus"`).
     """
-    fields = _PAGE_RECORD_FIELDS if "kind" in record else _RECORD_FIELDS
-    unexpected = sorted(set(record) - fields)
-    missing = sorted(fields - set(record))
+    unexpected = sorted(set(record) - _RECORD_FIELDS)
+    missing = sorted(_RECORD_FIELDS - set(record))
     if unexpected or missing:
         raise SchemaRefusal(
             f"the Archetypus record schema is closed and this one does not match it "
@@ -903,8 +421,7 @@ def validate_record(record: dict) -> dict:
     for field in ("act_id", "act_key", "page_id"):
         if not isinstance(record[field], str) or not record[field]:
             raise SchemaRefusal(f"the Archetypus record has no {field}")
-    page_record = "kind" in record
-    if page_record and record["kind"] not in READING_KINDS:
+    if record["kind"] not in READING_KINDS:
         raise SchemaRefusal(
             f"the Archetypus record kind {record['kind']!r} is neither act nor other"
         )
@@ -936,7 +453,7 @@ def validate_record(record: dict) -> dict:
         _validate_region_fields(
             region,
             f"Archetypus record region {index}",
-            fields=_PAGE_REGION_FIELDS if page_record else _REGION_FIELDS,
+            fields=_PAGE_REGION_FIELDS,
         )
     if not isinstance(record["provenance"], dict):
         raise SchemaRefusal("the Archetypus provenance is not an object")
@@ -1091,7 +608,7 @@ def _require_the_partition_this_reading_was_made_over(
 
     Nothing here reads a member, a view, or an observation as text. The
     partition is re-validated rather than trusted, on the same principle the
-    Armarium's ``verify_established_record`` re-derives Archetypus's own
+    Armarium's ``verify_established_page_record`` re-derives Archetypus's own
     checks: a denominator a consumer never re-computes is one refactor away
     from being wrong where nobody looks.
     """
@@ -1330,10 +847,9 @@ def establish_logical_record(
         or not _is_ref_shaped(cross_capture_dissent_ref)
     ):
         raise SchemaRefusal("logical establishment has malformed parent references")
-    # The image-local constructor resolves its reading and review itself through
-    # `context.tree.read_artifact_reference` (`reviewed_reading`,
-    # `accepted_primed_perlectio`), so its evidence is provably the sealed bytes
-    # a digest-checked reference names. This constructor takes them as plain
+    # The page constructor resolves its reading and review itself through
+    # `context.tree.read_artifact_reference`, so its evidence is provably the
+    # sealed bytes a digest-checked reference names. This constructor takes them as plain
     # dicts, so it must make that proof itself or nothing ties
     # `accepted_perlectio`/`accepted_review` to their references at all. Every
     # artifact in this tree is written as exactly `canonical_bytes(envelope)`
@@ -1450,7 +966,7 @@ def establish_logical_record(
         logical_act=logical_act,
     )
     text = payload["text"]
-    # Normalized before it is sealed, as the image-local constructor does: an
+    # Normalized before it is sealed: an
     # `illegible` note may legally arrive without `witness_evidence` (the
     # Perlector's contract says so), and `validate_logical_record` compares the
     # stored layer against the validated form of itself. Storing the raw layer
@@ -1605,7 +1121,7 @@ def _crop_references(
         label = f"accepted reading of {act_id} region {index}"
         _validate_region_fields(region, label, fields=fields)
         image_path = region["image_path"]
-        # The Armarium's frozen `verify_established_record` builds its expected
+        # The Armarium's `verify_established_page_record` builds its expected
         # input set as one reference per region, undeduplicated, and requires
         # exact equality with what this stage names. Two regions naming one path
         # would satisfy this stage's own envelope (a content-addressed crop
@@ -1644,7 +1160,7 @@ def _direct_inputs(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
     only remaining way two groups could name one path is the review or the
     Perlectio itself coinciding with a crop path — which the run tree's own
     layout (`5_recensor/artifacts/...`, `4_perlector/artifacts/...` and
-    `2_designator/blobs/...` never overlap) makes structurally impossible today.
+    `4_perlector/blobs/...` never overlap) makes structurally impossible.
     The dedup-by-path stays as the cheap defensive form of that same guarantee:
     every digest here was read off the same disk moments earlier, so two
     entries naming one path cannot disagree.
@@ -1662,94 +1178,6 @@ def _direct_inputs(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
                 )
             by_path[path] = reference
     return list(by_path.values())
-
-
-def establish_from_accepted_primed_perlectio(
-    context, *, act: dict, review_ref: dict[str, str]
-) -> tuple[dict, list[dict[str, str]]]:
-    """The one public constructor, resolving all canonical characters from evidence.
-
-    A caller supplies only an act and a sealed Recensor-review reference.  It
-    cannot pass an in-memory reading or text around the acceptance boundary.
-    """
-    if not _is_ref_shaped(review_ref):
-        raise SchemaRefusal("accepted Recensor review reference is malformed")
-    review = context.tree.read_artifact_reference(
-        review_ref, stage=RECENSOR, kind="review", subject_id=act["act_id"]
-    )
-    reading, reading_ref = reviewed_reading(context, review, act["act_id"])
-    payload, witnesses, regions = accepted_primed_perlectio(
-        context, review, reading, reading_ref, act["act_id"], page_id=act.get("page_id")
-    )
-    # Before the record exists, not after: these regions are about to be
-    # self-hashed into something write-once.
-    crop_references = _crop_references(context, regions, act["act_id"])
-    if "text" not in payload:
-        raise SchemaRefusal(
-            "the accepted Perlectio has no text field; missing evidence cannot mean blank"
-        )
-    text = payload["text"]
-    if not isinstance(text, str):
-        raise SchemaRefusal("the accepted Perlectio text is not a string")
-    annotations = validate_annotations(
-        payload.get("annotations", []),
-        text,
-        witnesses,
-        f"accepted reading of {act['act_id']} annotations",
-    )
-    uncertainty = from_perlectio(payload)
-    text_status = derive_record_text_status(text, annotations, uncertainty)
-    evidence_ref = _no_readable_text_evidence(review, reading_ref, reading.get("inputs", []))
-    if evidence_ref is not None and text_status != "no_readable_text":
-        raise FatalAccounting(
-            f"the accepted review of {act['act_id']} retains a proof that this act held no "
-            f"readable ink, but the reading it accepted establishes {text_status!r} text; two "
-            "upstream claims that contradict each other are a reconciliation failure, and "
-            "dropping the unread one is how the contradiction disappears"
-        )
-    validate_text_status(text, text_status, evidence_ref)
-    validate_serving_provenance(
-        context,
-        payload.get("provenance"),
-        producer_stage=PERLECTOR,
-        require_receipt=True,
-    )
-    # The one construction site. No helper anywhere accepts free-standing
-    # canonical text: these characters are in scope only because this function
-    # resolved them from the exact accepted Perlectio above.
-    record = {
-        "act_id": act["act_id"],
-        "act_key": act["act_key"],
-        "page_id": act["page_id"],
-        "text": text,
-        "text_hash": digest_of(text),
-        # The Armarium's frozen record-level literal; text_status separately
-        # describes whether the one reading is full, partial, or blank-proved.
-        "status": "established",
-        "text_status": text_status,
-        "regions": regions,
-        "provenance": payload.get("provenance"),
-        "annotations": annotations,
-        "uncertainty": uncertainty,
-        "evidence_ref": evidence_ref,
-        # Dissent lives inside the one Perlectio and therefore travels by the
-        # same reference, never as a copied value beside the established text.
-        "dissent_ref": reading_ref,
-        "perlectio_ref": reading_ref,
-        "recensor_ref": review_ref,
-    }
-    record["self_hash"] = self_hash(record)
-    validate_record(record)
-    # Not `evidence_ref`, however natural it looks beside the other two. The
-    # Armarium's frozen `verify_established_record` reconciles these `inputs`
-    # against exactly `[review_ref, reading_ref, *crop refs]`, so a fourth kind
-    # makes every `no_readable_text` record unexportable. Nothing goes unchecked
-    # for its absence: `_no_readable_text_evidence` has already proven it a
-    # digest-checked direct input of the *review*.
-    return record, _direct_inputs([review_ref, reading_ref], crop_references)
-
-
-# --- Page-read runs: the readings the Perlector established on each page it read whole
 
 
 def establish_from_accepted_page_reading(
@@ -1792,7 +1220,6 @@ def establish_from_accepted_page_reading(
         reading.get("outcome") != "read"
         or not isinstance(payload, dict)
         or payload.get("schema") != page_path.PERLECTIO_SCHEMA
-        or payload.get("reading_unit") != READING_UNIT_PAGE
         or payload.get("kind") != row["kind"]
         or payload.get("holds") != []
         or payload.get("page_holds") != []
@@ -1875,95 +1302,17 @@ def establish_from_accepted_page_reading(
     return record, _direct_inputs([review_ref, reading_ref, region_ref], crop_references)
 
 
-def accepted_page_act_ids(context, rows: list[dict] | None = None) -> set[str]:
-    """The counted readings whose current Recensor review is exactly `accepted`."""
+def accepted_act_ids(context, rows: list[dict] | None = None) -> set[str]:
+    """The counted readings whose current Recensor review is exactly `accepted`.
+
+    Recomputed from the immutable review records rather than remembered from
+    this invocation's own loop: the index reconciles with what the *Recensor*
+    accepted, and an index checked only against the list the writer just built
+    would agree with itself about a reading it had skipped.
+    """
     rows = reviewed_rows(reading_acts(context)) if rows is None else rows
     reviews = current_page_reviews(context, rows)
     return {act_id for act_id, review in reviews.items() if review["outcome"] == "accepted"}
-
-
-def _main_page(context) -> int:
-    """Establish every accepted reading of a page-read run, and reconcile the index."""
-    rows = reviewed_rows(reading_acts(context))
-    reviews = current_page_reviews(context, rows)
-    testimonia = current_page_testimonia(context, sealed_proposal_regions(context))
-    unresolved: list[str] = []
-    # Every record is built and checked before any is published, so a refused
-    # one leaves no partial set of established readings behind it.
-    established: list[tuple[dict, dict, list[dict[str, str]]]] = []
-    for row in rows:
-        review = reviews[row["act_id"]]
-        if review["outcome"] != "accepted":
-            # Held and page rows end at the Recensor with no record; only an
-            # outcome the algebra leaves open is unfinished work.
-            if terminal_category(RECENSOR, review["outcome"]) is None:
-                unresolved.append(row["act_key"])
-            continue
-        require_establishable(row, review)
-        review_ref = context.artifact_ref(RECENSOR, "review", review["artifact_id"])
-        record, inputs = establish_from_accepted_page_reading(
-            context,
-            row=row,
-            review_ref=review_ref,
-            page_testimonia=testimonia.get(row["page_id"], []),
-        )
-        established.append((row, record, inputs))
-    for row, record, inputs in established:
-        context.publish(
-            kind="archetypus",
-            subject_id=row["act_id"],
-            outcome="established",
-            inputs=inputs,
-            payload=record,
-        )
-    on_disk = {row["act_id"]: row for row in _archetypus_rows(context)}
-    accepted = accepted_page_act_ids(context, rows)
-    index = validate_index(context, build_index(context), on_disk=on_disk, accepted=accepted)
-    context.tree.write_index(ARCHETYPUS, index)
-    validate_index(context, context.tree.read_index(ARCHETYPUS), on_disk=on_disk, accepted=accepted)
-    context.seal_boundary()
-    context.finish()
-    if unresolved:
-        print(
-            f"held: {len(unresolved)} reading(s) have no terminal review yet: {sorted(unresolved)}",
-            file=sys.stderr,
-        )
-        return EXIT_HELD
-    return EXIT_COMPLETE
-
-
-# --- index.json: a rebuildable manifest, reconciled against the accepted acts ---
-
-
-def accepted_act_ids(context) -> set[str]:
-    """The acts whose current Recensor review is exactly `accepted`.
-
-    Recomputed from the immutable review records rather than remembered from
-    this invocation's own loop: spec 10 test 6 asks the index to reconcile with
-    what the *Recensor* accepted, and an index checked only against the list the
-    writer just built would agree with itself about an act it had skipped.
-    """
-    if sealed_reading_unit(context) == READING_UNIT_PAGE:
-        return accepted_page_act_ids(context)
-    # One walk of the Recensor manifest, not one per act: `final_review` per
-    # act re-walks and re-verifies the whole stage, an O(acts^2) finishing
-    # step a whole parish would pay for. `latest_attempt` per act keeps every
-    # refusal — a missing, duplicate or non-contiguous attempt still fails.
-    by_subject: dict[str, list[dict]] = {}
-    for entry in stage_manifest(context, RECENSOR)["artifacts"]:
-        if entry["kind"] != "review":
-            continue
-        record = context.tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
-        by_subject.setdefault(entry["subject_id"], []).append(record)
-    accepted: set[str] = set()
-    for act in expected_acts(context):
-        act_id = act["act_id"]
-        review = latest_attempt(
-            by_subject.get(act_id, []), f"review of {act_id}", operation="recense"
-        )
-        if review["outcome"] == "accepted":
-            accepted.add(act_id)
-    return accepted
 
 
 def _archetypus_rows(context) -> list[dict]:
@@ -1996,7 +1345,7 @@ def _archetypus_rows(context) -> list[dict]:
                 "text_hash": payload["text_hash"],
                 "relative_path": entry["relative_path"],
                 "sha256": entry["sha256"],
-                **({"kind": payload["kind"]} if "kind" in payload else {}),
+                "kind": payload["kind"],
             }
         )
     return sorted(rows, key=lambda row: row["act_id"])
@@ -2055,14 +1404,12 @@ def validate_index(context, index, *, on_disk=None, accepted=None) -> dict:
 
     if on_disk is None:
         on_disk = {row["act_id"]: row for row in _archetypus_rows(context)}
-    page_read = sealed_reading_unit(context) == READING_UNIT_PAGE
-    row_fields = _PAGE_INDEX_ROW_FIELDS if page_read else _INDEX_ROW_FIELDS
     seen: set[str] = set()
     for row in rows:
         if (
             not isinstance(row, dict)
-            or set(row) != row_fields
-            or (page_read and row["kind"] not in READING_KINDS)
+            or set(row) != _INDEX_ROW_FIELDS
+            or row["kind"] not in READING_KINDS
         ):
             raise FatalAccounting("the Archetypus index carries a malformed row")
         if any(
@@ -2095,85 +1442,56 @@ def validate_index(context, index, *, on_disk=None, accepted=None) -> dict:
 
 
 def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run under the explicitly supplied chair/config implementation."""
+    """Establish every accepted reading, and reconcile the index."""
     args = stage_parser(DESCRIPTION).parse_args()
     # Either ingress route, decided from one read of the run authority. This
-    # stage reads no fixture declaration at all: its one denominator is
-    # `expected_acts`, which on a real run recomputes every row from the
-    # Designator's own sealed evidence rather than from a declared floor.
+    # stage reads no fixture declaration: its denominator is `reading_acts`.
     context = open_stage_context(args, ARCHETYPUS, registry_factory=registry_factory)
-    if sealed_reading_unit(context) == READING_UNIT_PAGE:
-        return _main_page(context)
-
-    unresolved_acts: list[str] = []
-    for act in expected_acts(context):
-        act_id = act["act_id"]
-        review = final_review(context, act_id)
-
-        # An act the seal already holds is terminal at the Designator. If the
-        # Recensor nonetheless accepted it, establishing a text here would
-        # resurrect a held act into a delivered one — refused before a single
-        # character is written, because the Archetypus is the last stage before
-        # the text exists.
-        if terminal_category(DESIGNATOR, act["outcome"]) is not None and (
-            review["outcome"] == "accepted"
-        ):
-            raise FatalAccounting(
-                f"act {act_id} is {act['outcome']!r} at the proposal seal, but the "
-                "Recensor accepted it; a stage may not resurrect a held act into "
-                "an established reading"
-            )
-
+    rows = reviewed_rows(reading_acts(context))
+    reviews = current_page_reviews(context, rows)
+    testimonia = current_page_testimonia(context, sealed_proposal_regions(context))
+    unresolved: list[str] = []
+    # Every record is built and checked before any is published, so a refused
+    # one leaves no partial set of established readings behind it.
+    established: list[tuple[dict, dict, list[dict[str, str]]]] = []
+    for row in rows:
+        review = reviews[row["act_id"]]
         if review["outcome"] != "accepted":
-            # A held-for-review, confirmed-blank, or failed act is already
-            # terminal at the Recensor — the outcome algebra resolves its
-            # category without an Archetypus record — and that absence is what
-            # the Armarium reconciles against. An outcome the algebra leaves
-            # unresolved (recovery-requested: "flows onward, nobody has decided
-            # yet") is different in kind: skipping it silently and exiting 0
-            # would report success over an act whose reread never happened.
+            # Held and page rows end at the Recensor with no record; only an
+            # outcome the algebra leaves open is unfinished work.
             if terminal_category(RECENSOR, review["outcome"]) is None:
-                unresolved_acts.append(act_id)
+                unresolved.append(row["act_key"])
             continue
-
+        require_establishable(row, review)
         review_ref = context.artifact_ref(RECENSOR, "review", review["artifact_id"])
-        record, inputs = establish_from_accepted_primed_perlectio(
-            context, act=act, review_ref=review_ref
+        record, inputs = establish_from_accepted_page_reading(
+            context,
+            row=row,
+            review_ref=review_ref,
+            page_testimonia=testimonia.get(row["page_id"], []),
         )
-
+        established.append((row, record, inputs))
+    for row, record, inputs in established:
         context.publish(
             kind="archetypus",
-            subject_id=act_id,
+            subject_id=row["act_id"],
             outcome="established",
             inputs=inputs,
             payload=record,
         )
-
-    # Reconciled against the Recensor's accepted set *before* it is published, so
-    # a run that fails its accounting never leaves an internally consistent index
-    # on disk that summarizes fewer acts than the Recensor accepted. Then read
-    # back and checked again against the same cached rows, proving the bytes on
-    # disk parse to the index just checked. The read-back deliberately does NOT
-    # re-derive the rows — nothing can publish a record between these two calls
-    # in one process, and re-reading a parish of records per pass buys nothing.
-    # A change that moves record publication after this point must drop the
-    # cached arguments, or the read-back would pass against stale rows.
+    # Reconciled against the Recensor's accepted set before it is written, then
+    # read back and checked again against the same cached rows: nothing can
+    # publish a record between the two calls in one process.
     on_disk = {row["act_id"]: row for row in _archetypus_rows(context)}
-    accepted = accepted_act_ids(context)
+    accepted = accepted_act_ids(context, rows)
     index = validate_index(context, build_index(context), on_disk=on_disk, accepted=accepted)
     context.tree.write_index(ARCHETYPUS, index)
     validate_index(context, context.tree.read_index(ARCHETYPUS), on_disk=on_disk, accepted=accepted)
     context.seal_boundary()
     context.finish()
-    # Establishment for the accepted acts is real either way; the exit code
-    # answers a different question — "is this stage's work finished?" — and an
-    # outstanding recovery request means it is not (the Armarium refuses the
-    # same state as fatal). EXIT_HELD, exactly as the Recensor reports its own
-    # unfinished acts.
-    if unresolved_acts:
+    if unresolved:
         print(
-            f"held: {len(unresolved_acts)} act(s) with an outstanding recovery request "
-            f"await a reread before an Archetypus can exist: {sorted(unresolved_acts)}",
+            f"held: {len(unresolved)} reading(s) have no terminal review yet: {sorted(unresolved)}",
             file=sys.stderr,
         )
         return EXIT_HELD

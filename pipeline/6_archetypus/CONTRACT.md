@@ -2,15 +2,17 @@
 
 The Archetypus is the first and only current stage that calls one machine reading
 established. It is not a correction, a witness consensus, or a truth claim. It writes
-a once-only `kind="archetypus"` record under `6_archetypus/artifacts/` for an act whose
-current Recensor review is exactly `accepted`. A held act deliberately has no Archetypus
-record; that absence is part of the terminal accounting, not a gap to fill.
+a once-only `kind="archetypus"` record under `6_archetypus/artifacts/` for each counted
+reading whose current Recensor review is exactly `accepted`. A held reading deliberately
+has no Archetypus record; that absence is part of the terminal accounting, not a gap to
+fill.
 
-**Exit codes.** `EXIT_COMPLETE` when every accepted act has a record and the index
-reconciles. `EXIT_HELD` when any act's current review is `recovery-requested`: that
-outcome is unresolved rather than terminal, so the acts already established are real
-but the stage's work is not finished, and the held act ids are named on stderr. A
-refusal anywhere in establishment or index reconciliation is fatal, not a held act.
+**Exit codes.** `EXIT_COMPLETE` when every accepted reading has a record and the index
+reconciles. `EXIT_HELD` when any reading's current review is an outcome the shared
+outcome algebra leaves open (no terminal category): the readings already established
+are real but the stage's work is not finished, and the held act keys are named on
+stderr. A refusal anywhere in establishment or index reconciliation is fatal, not a
+held reading.
 
 ## Stage-completion seal
 
@@ -31,57 +33,11 @@ statement would then answer for a boundary it never witnessed.
 
 ## Input boundary
 
-The stage derives the current review by unique attempt ordinal. For an accepted review
-it takes the digest-checked `perlectio_ref` carried by that review and resolves that
-exact Perlectio — through `RunTree.read_artifact_reference`, which refuses a reference
-whose actual bytes name a different stage or kind. That single check is what makes a
-Testimonium, a hypothetical salvage-tier record, or any other non-Perlectio artifact
-unable to reach this stage by being named in `perlectio_ref`. It does not independently
-select whatever Perlectio is now latest. The Perlectio must be a completed-class reading
-with valid serving provenance; a held Designator act may not be resurrected by an
-accepted later review.
-
-`accepted_primed_perlectio` enforces spec 10's test 1:
-
-- an unprimed or instrument reading is refused — production `lectio_kind` is
-  `primed-with-prior` when the draft was fed or `primed-draft-withheld` when it was
-  withheld. The latter carries no self-revisions and no Pass-A reference (an `off` run
-  makes no Pass A, a `saved` run withholds it, and one that carries a reference is refused); the former retains
-  the same-attempt Pass-A reference. Lectio nuda, `lectio-prior`, and `primed-without-prior` cannot establish,
-  nor can a contradictory explicit `primed: false`;
-- `tier`, `source_tier` or `reading_tier` of `salvage` is refused (invariant #31's
-  boundary);
-- the reading must retain a non-empty Testimonium basis, and every entry's reference
-  must be a direct sealed input of that reading and resolve as an
-  `(attestatores, testimonium)` artifact for this act
-  (`pipeline/6_archetypus/run.py:689-696` requires the basis; `:776-796` makes the
-  per-entry custody check). This custody check does not substitute for the
-  priming discriminator.
-
-### Real ingress
-
-The stage opens through `common.stage.open_stage_context`, which decides the route from
-one read of the run authority and, on a real submission, carries the registry and the
-sealed digest map into the context. This stage reads no fixture declaration of its own on
-either route: its one denominator is `expected_acts`, and on a real run that reader
-skips the fixture floor by name and recomputes every row from the Designator's own
-sealed evidence. The context's fixture slot is `None` behind a refusing accessor and is
-never touched here. Nothing else changes with the route -- the constructor path, the
-closed record schema and the index reconciliation are the same on both. No real
-Recensor seal exists yet, so a real run refuses at `predecessor recensor has no
-stage-seal` with its context already opened, writing nothing;
-`pipeline/5_recensor/test_recensor_real_ingress.py` pins that for this stage beside the
-Recensor and the Perlector.
-
-## Page-read runs
-
-A run sealed with `reading_unit = "page"` (`config/perlector_protocol.toml`) takes
-its denominator from `common.stage.reading_acts` instead of `expected_acts`, and
-its reviews through `common/page_review.py`, the one reader of the Recensor's
-page path (`current_page_reviews`: one current `review` per row, every row
-reviewed, no review of an uncounted unit, each naming its row's key, kind and
-reading). A `page-refused` row is the census's and is never reviewed
-(`reviewed_rows`). The act path is unchanged.
+The denominator is `common.stage.reading_acts`, and the reviews come through
+`common/page_review.py`, the one reader of the Recensor's reviews
+(`current_page_reviews`: one current `review` per row, every row reviewed, no review
+of an uncounted unit, each naming its row's key, kind and reading). A `page-refused`
+row is the census's and is never reviewed (`reviewed_rows`).
 
 - **Which rows are established.** A row whose current review is `accepted`, and
   that `page_review.require_establishable` allows: a row with a reading whose
@@ -91,21 +47,27 @@ reading). A `page-refused` row is the census's and is never reviewed
   reading (`page-unread`, `page-blank`) or any other hold is fatal, because a stage
   may not resurrect a held reading. Every record is built and checked before any is
   published, so a refusal leaves no partial set behind. Held and page rows end at
-  the Recensor with no record and count toward held; `EXIT_HELD` only for an
-  outcome the algebra leaves open.
+  the Recensor with no record; only an outcome the algebra leaves open makes the
+  stage exit `EXIT_HELD`.
 - **`other` readings are established too.** The Perlector names `act` and `other`
   entries on a page; both are established here, so every export shows the one
-  established reading of each. The record gains `kind` (`act` | `other`); its
-  closed field set is the act record's plus `kind`.
+  established reading of each. The record carries `kind` (`act` | `other`).
 - **The constructor** is `establish_from_accepted_page_reading(context, row,
-  review_ref, page_testimonia)`, the last the row's page's entry in
-  `common.page_testimonia.current_page_testimonia`, computed once per pass. The reading is the row's `perlectio.v2`, which the review must name
-  and input; it must be `read` with no `holds` or `page_holds`, of the row's kind.
-  Its one region is the `act-region` the reading names (and the row counted),
-  proven from the Exemplar by `verify_reading_region_lineage`; the record's region
-  is exactly what that returns (`region_id`, `image_path`, `image_sha256`,
-  `verified_dimensions`, `source_page_ordinal`, `source_page_id`, `transform`),
-  a closed set of its own. There is no act-attachment requirement.
+  review_ref, page_testimonia)`, the only public constructor; `page_testimonia` is
+  the row's page's entry in `common.page_testimonia.current_page_testimonia`,
+  computed once per pass. Its caller supplies a row and the sealed Recensor-review
+  reference, never free-standing text or a reading payload. The review is resolved
+  through `RunTree.read_artifact_reference`, which refuses a reference whose actual
+  bytes name a different stage or kind; that check is what makes a Testimonium or
+  any other non-Perlectio artifact unable to reach this stage by being named. The
+  reading is the row's `perlectio.v2`, which the review must name and input; it must
+  be `read` with no `holds` or `page_holds`, of the row's kind, and not salvage-tier
+  (`tier`, `source_tier` or `reading_tier` of `salvage` is refused). Its one region
+  is the `act-region` the reading names (and the row counted), proven from the
+  Exemplar by `verify_reading_region_lineage`; the record's region is exactly what
+  that returns (`region_id`, `image_path`, `image_sha256`, `verified_dimensions`,
+  `source_page_ordinal`, `source_page_id`, `transform`), a closed set, and its
+  declared `image_sha256` is checked against the crop's bytes.
 - **Witness custody** is `page_testimonia.shown_page_witnesses`: the feed the reading
   inputs was built under this run's witness regime; it showed at least one
   witness, or the reading is a Lectio nuda and is refused by name; every row names
@@ -118,10 +80,19 @@ reading). A `page-refused` row is the census's and is never reviewed
   reading's spans and gaps (which must equal the copies in its
   `uncertainty_assessment`) with its `{state, problem}` assessment, under its own
   lectio kind `page-read`, whose `self_revisions` is `null` (not measured).
+- **Serving provenance** must validate (`validate_serving_provenance`, receipt
+  required).
 - **Inputs** are the review, the reading, its act-region and the crop.
-- **Index.** `accepted_act_ids` follows the sealed reading unit: a page-read run
-  reconciles against the page rows the Recensor accepted, 1:1, exactly as the act
-  path does, and its rows carry `kind`.
+
+### Real ingress
+
+The stage opens through `common.stage.open_stage_context`, which decides the route from
+one read of the run authority and, on a real submission, carries the registry and the
+sealed digest map into the context. This stage reads no fixture declaration of its own on
+either route; its denominator is `reading_acts`. The context's fixture slot is `None`
+behind a refusing accessor and is never touched here. Nothing else changes with the
+route -- the constructor path, the closed record schema and the index reconciliation are
+the same on both.
 
 ## `kind="archetypus"`
 
@@ -129,7 +100,7 @@ The artifact subject is the stable act identity. Its payload is separately self-
 its field set is **closed and checked** (`validate_record_fields`), and it contains:
 
 ```text
-act_id, act_key, page_id
+act_id, act_key, page_id, kind
 text, text_hash
 status = "established", text_status
 regions, provenance, annotations, uncertainty, evidence_ref
@@ -144,7 +115,7 @@ to carry, is refused before it is written.
 
 **`status` vs `text_status`.** `status` is a fixed literal, `"established"`, required
 verbatim by the Armarium's own
-`verify_established_record` — it means "this act has exactly one Archetypus record,"
+`verify_established_page_record` — it means "this act has exactly one Archetypus record,"
 record-level. `text_status` is the richer, separate claim spec 10 asks for:
 `established | partial | no_readable_text`, describing what the record's `text` actually
 contains. The two are deliberately different fields answering different questions. They
@@ -204,7 +175,9 @@ through
 `read_artifact_reference` against a real `kind="blank-proof"` — the way `perlectio_ref`
 and `recensor_ref` are resolved — is still owed once the Recensor lane defines that kind.
 
-**`annotations` — carried whole, never in `text`.** A list of:
+**`annotations` — carried whole, never in `text`.** A page reading records no
+annotation layer, so an established page record's `annotations` is `[]`; the shape
+below is what the logical record and `validate_annotations` hold it to. A list of:
 
 - `uncertain` — `{kind, start, end, certainty, alternatives}`. A span covering at least
   one *readable* character in `text` — width alone is not enough, because a span over
@@ -233,9 +206,9 @@ and `recensor_ref` are resolved — is still owed once the Recensor lane defines
 The shapes map onto the mature convention rather than inventing markup: `<unclear
 cert="">` and `<gap>` (TEI P5, "Representation of Primary Sources"; EpiDoc Guidelines).
 Rendering either of them — brackets, underdots, sigla — is the Armarium's business at
-export time and is deliberately not stored here. `annotations` is optional on the wire
-today: nothing upstream of this stage populates it yet, and it defaults to `[]`, which is
-exactly today's behaviour.
+export time and is deliberately not stored here. A page reading carrying an annotation
+layer is refused, so every page record's `annotations` is `[]`; the rules above and
+below are what `validate_annotations` holds the logical record's layer to.
 
 **Beside, not instead of, the canonical `uncertainty` layer.** The two describe the same
 kinds of damage — `uncertain` against `uncertain_spans`, `illegible` against `gaps` — and
@@ -253,7 +226,7 @@ integer offsets within `[0, len(text)]`, a closed `certainty` enum, non-empty
 `alternatives`, and — for `witness_evidence` — an **exact, unnormalized substring match**
 against what the cited witness reported. That comparison is correct for what this stage
 stores (normalizing here is where a record starts to differ from the testimony it quotes),
-but once the Perlector lane starts emitting annotations from a language model, several of
+but if a Perlector ever emits annotations from a language model, several of
 these become reachable on ordinary model variance rather than only on forged input: a
 witness quotation returned in a different Unicode normalization form (NFC vs. NFD) or with
 a stripped trailing space is byte-different and refused; offsets are model-computed, so a
@@ -266,13 +239,14 @@ the whole Archetypus run down for every other act. Whether the comparison itself
 Unicode-normalize before checking substring containment (while continuing to *store* exact
 bytes either way) is a product decision, not made here.
 
-`text`, `regions`, and provenance are exact copies of the one reviewed Perlectio;
+`text` and provenance are exact copies of the one reviewed Perlectio, and `regions` is
+exactly what `verify_reading_region_lineage` proves of the act-region it names;
 `dissent_ref` names that Perlectio artifact rather than making a second mutable dissent
 copy. **`dissent_ref` and `perlectio_ref` are the same value by design, not by
 accident**: `perlectio_ref` is the parent evidence this record establishes from,
 `dissent_ref` is where a reader finds this act's dissent (by reference,
 never copied); the dissent lives inside the Perlectio itself, so the two pointers
-coincide. The Armarium's own frozen verification requires them equal, so carrying only
+coincide. The Armarium's own verification requires them equal, so carrying only
 one under two names is not available without breaking that consumer. `perlectio_ref` and
 `recensor_ref` are typed, digest-checked references and both are direct inputs, together
 with the exact crop blobs named by the reading. `text_hash` is the canonical digest of
@@ -283,8 +257,8 @@ quotes included — not the raw UTF-8 bytes. Computing "the sha256 of the text" 
 obvious way produces a mismatch against every record.
 
 There is no alternate text, no witness text field, and no branch that chooses among
-readings. `establish_from_accepted_primed_perlectio` is the only public constructor: its
-caller supplies an act and the sealed Recensor-review reference, never free-standing
+readings. `establish_from_accepted_page_reading` is the only public constructor: its
+caller supplies a row and the sealed Recensor-review reference, never free-standing
 text or a reading payload. A later run cannot write a second different record under the
 same once-only identity.
 
@@ -294,22 +268,20 @@ A rebuildable per-run summary, derived from the immutable per-act records on dis
 as `manifest.json` is — never the only evidence. Written through `RunTree.write_index`,
 so it is rewritable (unlike an artifact) and safe to delete and rebuild identically.
 
-Each row is `{act_id, act_key, artifact_id, text_status, text_hash, relative_path,
-sha256}`, and the index itself is the closed set `{schema, run_id, stage, record_count,
+Each row is `{act_id, act_key, kind, artifact_id, text_status, text_hash,
+relative_path, sha256}`, and the index itself is the closed set `{schema, run_id, stage, record_count,
 rows, self_hash}` — `record_count` counts the records the index summarizes; the
 reconciliation below, not the field, is what ties that number to the Recensor's accepted
 set. The stage rebuilds it, reads it back, and reconciles it before finishing:
-rows, records on disk, and **the acts the Recensor accepted** must be the same set, and a
+rows, records on disk, and **the readings the Recensor accepted** must be the same set, and a
 missing or duplicate row is FATAL rather than a warning. The reconciliation target is
 deliberately the Recensor's accepted set, recomputed from the immutable review records —
 an index checked only against the writer's own list would agree with itself about an act
 the writer had skipped. `validate_index` proves the same thing for any consumer that
 wants it before relying on the file — with one practical caveat: its first argument is a
-stage-context-shaped object (`.tree`, `.fixture`, `.input_ref`, `.artifact_ref`, and
-the sealed Perlector protocol it reads the run's reading unit from:
-`.perlector_protocol_config_path`, `.require_sealed_config`), so a consumer outside a
-stage builds a small shim first, exactly as `test_index.py` does. A page-read run's
-rows also carry `kind` (`act` | `other`).
+stage-context-shaped object carrying `.tree`, `.input_ref`, `.artifact_ref` and what
+`common.stage.reading_acts` reads, so a consumer outside a stage opens one first,
+exactly as `test_index.py` does with `page_context`.
 
 **The clustered index has no such reconciliation yet — deliberately unfilled.**
 `build_logical_index` (Unit 19D) seals one `{logical_act_id, text_hash}` row per
@@ -319,41 +291,37 @@ clustered reading for it to establish: every act on a registered re-shoot arrive
 as a `not-run` Perlectio with `hold.code = "cross-capture-read-not-built"`, so it is
 held and reaches no record, like any other held act. Until the first consumer
 lands, the index can only agree with the writer's own list — the exact self-agreement
-the image-local reconciliation above exists to break. Wiring the clustered path must
+the reconciliation above exists to break. Wiring the clustered path must
 bring the same three-way reconciliation (rows, records on disk, the Recensor's
 accepted set) with it; an index without it would let a skipped logical act read as
 absent rather than as an error.
 
 ## Consumer obligations
 
-Armarium requires exactly one Archetypus record for an accepted act, rather than
-selecting one. Before export it verifies the nested self-hash, both parent references and
-direct-input chains, and exact equality of `text`, `regions`, `provenance`, `status`, and
-`dissent_ref` with the reviewed Perlectio. It then links each region back to the original
-Exemplar filename ledger.
+Armarium requires exactly one Archetypus record for an accepted reading, rather than
+selecting one. Before export `verify_established_page_record` verifies the nested
+self-hash, the record's binding to its row, its accepted review and its reading, exact
+equality of `text`, `provenance`, `status` and `dissent_ref` with that reading, its one
+region re-proven from the Exemplar, and its direct inputs (review, reading, act-region,
+crop). It then links each region back to the original Exemplar filename ledger.
 
 **It also reads `text_status` and `annotations`, and does not take either on trust.**
-`verify_established_record` validates and normalizes both annotation layers through
-the shared `validate_annotations` before comparing them — the sealed copy is
-normalized (an `illegible` note always carries `witness_evidence`, defaulted to
-`[]`) while the reading's raw copy may legally omit the field, so raw equality
-would refuse a correct record; the validated forms must be identical. It then
-*recomputes* `text_status` from that layer and the canonical `uncertainty`
-beside it, using the shared `derive_record_text_status`. A record claiming
-`established` over its own recorded gap is fatal at export. Both fields travel into the
-manifest entry, projection, and every selected literal format. `text_status` also enters
-the package's text-free source graph and run aggregate, where a non-`established` status
-adds its named reason and makes the run `partial`. A run whose acts are all delivered but
-damaged therefore exits `EXIT_HELD` at the Armarium rather than 0 —
-the act is delivered, and the run did not read all of it.
+It validates the reading's annotation layer through the shared `validate_annotations`,
+recomputes the uncertainty layer from the reading, and *recomputes* `text_status` from
+both using the shared `derive_record_text_status`. A record claiming `established`
+over its reading's own gap is fatal at export. Both fields travel into the manifest
+entry, projection, and every selected literal format. `text_status` also enters the
+package's text-free source graph and run aggregate, where a non-`established` status
+adds its named reason and makes the run `partial`. A run whose acts are all delivered
+but damaged therefore exits `EXIT_HELD` at the Armarium rather than 0 — the act is
+delivered, and the run did not read all of it.
 
 Consequences worth stating plainly:
 
 - the older `annotations` layer is **carried, not migrated**. It is projected under the
   name `transcription_annotations`, to keep it apart from the unbuilt *semantic*
-  annotation layer, whose per-row `not-produced` claim used to be written over it
-  under the bare name `annotations`.
-  Nothing upstream populates this layer yet, so `[]` remains the ordinary value;
+  annotation layer and its per-row `not-produced` claim. A page reading records no
+  annotations, so `[]` is the ordinary value;
 - `evidence_ref` and `index.json` are still not read at export. On the clustered
   logical projection path, Armarium checks `text_hash` against the text; and
 - the projection-identity test (`pipeline/orchestrator/test_projection_identity.py`)

@@ -1,7 +1,7 @@
 """Score what a sealed run actually exported against reference truth, denominator whole.
 
-`compare.py` owns the join and the scoring: it pairs sealed proposal regions with
-reference boxes by IoU and scores each pair with the sealed normaliser and
+`compare.py` owns the join and the scoring: it pairs the act-regions the page
+readings established their acts over with reference boxes by IoU and scores each pair with the sealed normaliser and
 scorer, taking its hypotheses from its caller. This module is that caller, and
 it takes texts from one place only: the Armarium export the run itself sealed,
 each delivered text re-digested against the Archetypus record that established
@@ -9,7 +9,7 @@ it, so a score is never computed over text the pipeline did not publish.
 
 The denominator is kept whole: every reference record ends in exactly one row
 (matched and scored, missed on a sealed page, or not attempted because the run
-never sealed its page), and every proposed act is counted by its export
+never sealed its page), and every read act is counted by its export
 category, with a held or missing act scored as an empty hypothesis rather than
 omitted or given a perfect score. An unmatched pipeline act is reported, not
 scored, since RecordGold annotates records only. The full IoU matrix travels in
@@ -69,9 +69,9 @@ from .cache import write_new_file
 from .compare import (
     ReadOnlyRunTree,
     compare_page,
-    count_excluded_designator_artifacts,
+    count_excluded_reading_regions,
     load_exemplar_page_shas,
-    load_pipeline_proposal_acts,
+    load_pipeline_reading_acts,
     validate_comparison,
 )
 from .local_admission import load_local_admission_ledger, validate_local_admission_ledger
@@ -81,7 +81,7 @@ DESCRIPTION = (
     "Score what a sealed run actually exported against reference truth, denominator whole."
 )
 
-SCHEMA = "recordgold-evaluation.v1"
+SCHEMA = "recordgold-evaluation.v2"
 FIXTURE_LABEL = (
     "fixture result: scored over synthetic fixture pages and fixture model answers; "
     "this is a proof of the evaluation driver, not a RecordGold reading-quality claim"
@@ -195,10 +195,10 @@ _DENOMINATOR_FIELDS = frozenset(
         "run_pages_compared",
         "run_pages_without_reference",
         "reference_pages_not_in_run",
-        "proposal_regions",
-        "proposed_acts",
+        "reading_regions",
+        "read_acts",
         "exported_acts_by_category",
-        "excluded_designator_artifacts",
+        "excluded_reading_regions",
         "reference_records_scored",
         "reference_records_scored_by_export_category",
         "reference_records_missed",
@@ -461,7 +461,7 @@ def evaluate_run(
     code_ref: str,
     reference_ledger: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """One `recordgold-evaluation.v1` report for one sealed run against reference pages.
+    """One `recordgold-evaluation.v2` report for one sealed run against reference pages.
 
     `reference_ledger` is a `recordgold-local-admission.v1` body. It is validated
     here rather than taken on the caller's word, its digest is derived from the
@@ -526,8 +526,8 @@ def evaluate_run(
     run = read_only.read_run()
     hypotheses = hypotheses_from_export(export_payload, _established_text_hashes(read_only))
     page_shas = load_exemplar_page_shas(read_only)
-    pipeline_acts = load_pipeline_proposal_acts(read_only)
-    excluded = count_excluded_designator_artifacts(read_only)
+    pipeline_acts = load_pipeline_reading_acts(read_only)
+    excluded = count_excluded_reading_regions(read_only)
     sha_by_act = {act["act_id"]: act["page_sha256"] for act in pipeline_acts}
 
     # One page's bytes sealed at two ordinals would compare that page twice and
@@ -546,11 +546,11 @@ def evaluate_run(
     by_category: dict[str, int] = {}
     for hypothesis in hypotheses.values():
         by_category[hypothesis["category"]] = by_category.get(hypothesis["category"], 0) + 1
-    proposed_without_export_row = sorted(set(sha_by_act) - set(hypotheses))
-    if proposed_without_export_row:
+    read_without_export_row = sorted(set(sha_by_act) - set(hypotheses))
+    if read_without_export_row:
         raise Refusal(
-            "malformed-record: proposal acts with no export row: "
-            f"{proposed_without_export_row}; the export does not account for every act"
+            "malformed-record: read acts with no export row: "
+            f"{read_without_export_row}; the export does not account for every act"
         )
 
     comparisons: list[dict[str, Any]] = []
@@ -724,12 +724,12 @@ def evaluate_run(
             "run_pages_compared": len(compared_shas),
             "run_pages_without_reference": len(pages_without_reference),
             "reference_pages_not_in_run": len(references) - len(compared_shas),
-            # One row per sealed proposal region; a continuation act has one per
-            # page it spans, so the distinct act count sits beside it.
-            "proposal_regions": len(pipeline_acts),
-            "proposed_acts": len(set(sha_by_act)),
+            # One row per act-region the page readings established their acts
+            # over, beside the distinct act count.
+            "reading_regions": len(pipeline_acts),
+            "read_acts": len(set(sha_by_act)),
             "exported_acts_by_category": dict(sorted(by_category.items())),
-            "excluded_designator_artifacts": excluded,
+            "excluded_reading_regions": excluded,
             "reference_records_scored": len(scored),
             "reference_records_scored_by_export_category": dict(sorted(scored_by_category.items())),
             "reference_records_missed": sum(1 for row in records if row["outcome"] == "missed"),
@@ -762,7 +762,7 @@ def _validate_units(value: Any, what: str) -> None:
 
 
 def validate_evaluation(report: Any) -> dict[str, Any]:
-    """Refuse an evaluation that is not exactly `recordgold-evaluation.v1`.
+    """Refuse an evaluation that is not exactly `recordgold-evaluation.v2`.
 
     This is the artifact a person reads as the measurement, and it was the one
     record in this package that nothing held to a shape.
@@ -951,8 +951,8 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         f"run pages sealed {totals['run_pages_sealed']}, compared {totals['run_pages_compared']}, "
         f"without reference {totals['run_pages_without_reference']}; reference pages not in run "
         f"{totals['reference_pages_not_in_run']}",
-        f"proposed acts {totals['proposed_acts']} ({totals['proposal_regions']} proposal "
-        f"region(s)) by export category {totals['exported_acts_by_category']}",
+        f"read acts {totals['read_acts']} ({totals['reading_regions']} act-region(s)) by "
+        f"export category {totals['exported_acts_by_category']}",
         f"reference records scored {totals['reference_records_scored']} "
         f"(by export category {totals['reference_records_scored_by_export_category']}), missed "
         f"{totals['reference_records_missed']}, not attempted "

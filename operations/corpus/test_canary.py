@@ -12,7 +12,6 @@ import pytest
 from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
-from common.contracts.identities import attempt_id
 from operations.corpus import canary
 from operations.corpus.local_admission import admit_local_set
 from operations.corpus.reference import build_reference_page
@@ -37,6 +36,8 @@ def _bundle(members=None):
         ("sources.json", canonical_bytes({"regions": [{"source_page_ordinal": 2}]})),
         ("text/_source_root/readings.txt", b"## act (act)\nact-id: act\n"),
         ("review-items.jsonl", canonical_bytes({"act_id": "act"}) + b"\n"),
+        ("other.jsonl", canonical_bytes({"act_id": "act"}) + b"\n"),
+        ("text/_source_root/readings.txt", b"## OTHER act (not an act)\nother-id: act\n"),
     ],
 )
 def test_bundle_inspection_finds_canary_identity_without_reference_text(member, contents):
@@ -106,17 +107,8 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
                 "delivered": [],
                 "non_delivered": [],
             }
-            self.seal_acts = [
-                {
-                    "act_id": "act",
-                    "act_key": "act",
-                    "page_id": "page-2",
-                    "page_ordinal": 2,
-                    "has_continuation": False,
-                    "outcome": "marked-out",
-                    "evidence": [],
-                }
-            ]
+            # The Perlector's readings: (act id, page ordinal, text).
+            self.readings = [("act", 2, reference_text)]
 
         def read_bytes(self, _path):
             return self.bundle_data
@@ -130,9 +122,10 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
         def build_manifest(self, stage):
             if stage == canary.PERLECTOR:
                 return {
-                    "artifacts": [
-                        {"kind": "stage-seal"},
-                        {"kind": "perlectio", "subject_id": "act", "artifact_id": "reading"},
+                    "artifacts": [{"kind": "stage-seal"}]
+                    + [
+                        {"kind": "perlectio", "subject_id": act_id, "artifact_id": act_id}
+                        for act_id, _ordinal, _text in self.readings
                     ]
                 }
             if stage == canary.ARMARIUM:
@@ -145,17 +138,13 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
             return {"artifacts": [{"kind": "stage-seal"}]}
 
         def read_artifact(self, stage, kind, artifact_id):
-            if kind == "proposal-seal":
-                payload = {"expected_acts": self.seal_acts, "count": len(self.seal_acts)}
-                payload["self_hash"] = self_hash(payload)
-                return {"payload": payload}
             if kind == "perlectio":
+                act_id, ordinal, text = next(row for row in self.readings if row[0] == artifact_id)
                 return {
-                    "subject_id": "act",
+                    "subject_id": act_id,
                     "artifact_id": artifact_id,
-                    "attempt_id": attempt_id("act", "perlegere", 1),
                     "outcome": "read",
-                    "payload": {"text": reference_text, "attempt_ordinal": 1},
+                    "payload": {"text": text, "page_ordinal": ordinal, "n": 1},
                 }
             return {
                 "payload": {
@@ -174,42 +163,24 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
     assert reference_text not in str(healthy)
     assert healthy["self_hash"] == self_hash(healthy)
 
-    tree.seal_acts.append(
-        {
-            "act_id": "crop-less",
-            "act_key": "crop-less",
-            "page_id": "page-2",
-            "page_ordinal": 2,
-            "has_continuation": False,
-            "outcome": "held",
-            "evidence": [],
-        }
-    )
-    tree.export_payload["non_delivered"] = [{"act_id": "crop-less"}]
+    # A second reading on the canary page, exported as a real act and missing
+    # from the block.
+    tree.readings.append(("second", 2, reference_text))
+    tree.export_payload["non_delivered"] = [{"act_id": "second"}]
     missing = canary.check_run(tree, tmp_path)
     assert {row["rule"] for row in missing["dead"]} >= {
         "canary-missing-from-block",
         "canary-in-real-export",
     }
-    tree.seal_acts.pop()
+    tree.readings.pop()
     tree.export_payload["non_delivered"] = []
 
-    tree.seal_acts.append(
-        {
-            "act_id": "real-act",
-            "act_key": "real-act",
-            "page_id": "page-1",
-            "page_ordinal": 1,
-            "has_continuation": False,
-            "outcome": "held",
-            "evidence": [],
-        }
-    )
+    tree.readings.append(("real-act", 1, reference_text))
     tree.export_payload["canary"]["acts"].append({"act_id": "real-act", "page_ordinals": [1]})
     wrong_block = canary.check_run(tree, tmp_path)
     assert {row["rule"] for row in wrong_block["dead"]} >= {"canary-missing-from-block"}
     tree.export_payload["canary"]["acts"].pop()
-    tree.seal_acts.pop()
+    tree.readings.pop()
 
     block = tree.export_payload.pop("canary")
     absent_block = canary.check_run(tree, tmp_path)
@@ -257,16 +228,18 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
     tree.build_manifest = original_manifest
     original_artifact = tree.read_artifact
 
-    def leaked(stage, kind, artifact_id):
-        record = original_artifact(stage, kind, artifact_id)
-        if kind == "export":
-            record["payload"]["delivered"] = [{"act_id": "act"}]
-        return record
+    for layer in ("delivered", "other_readings"):
 
-    tree.read_artifact = leaked
-    leak = canary.check_run(tree, tmp_path)
-    assert not leak["stages"][canary.ARMARIUM]
-    assert {row["rule"] for row in leak["dead"]} >= {"canary-in-real-export"}
+        def leaked(stage, kind, artifact_id, layer=layer):
+            record = original_artifact(stage, kind, artifact_id)
+            if kind == "export":
+                record["payload"][layer] = [{"act_id": "act"}]
+            return record
+
+        tree.read_artifact = leaked
+        leak = canary.check_run(tree, tmp_path)
+        assert not leak["stages"][canary.ARMARIUM], layer
+        assert {row["rule"] for row in leak["dead"]} >= {"canary-in-real-export"}
 
     tree.read_artifact = original_artifact
     tree.build_manifest = lambda stage: (
@@ -280,29 +253,20 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
     ambiguous = canary.check_run(tree, tmp_path)
     assert {row["rule"] for row in ambiguous["dead"]} >= {"canary-export-ambiguous"}
 
-    tree.build_manifest = lambda stage: (
-        {
-            "artifacts": original_manifest(stage)["artifacts"]
-            + [{"kind": "perlectio", "subject_id": "act", "artifact_id": "new-reading"}]
-        }
-        if stage == canary.PERLECTOR
-        else original_manifest(stage)
-    )
+    tree.build_manifest = original_manifest
+    tree.readings = [("act", 2, "unrelated symbols")]
+    unread = canary.check_run(tree, tmp_path)
+    assert {row["rule"] for row in unread["dead"]} >= {"canary-reading-shared-too-little-ink"}
+    assert not unread["stages"][canary.PERLECTOR]
 
-    def newer(stage, kind, artifact_id):
-        if artifact_id == "new-reading":
-            return {
-                "subject_id": "act",
-                "artifact_id": artifact_id,
-                "attempt_id": attempt_id("act", "perlegere", 2),
-                "outcome": "read",
-                "payload": {"text": "unrelated symbols", "attempt_ordinal": 2},
-            }
-        return original_artifact(stage, kind, artifact_id)
+    tree.readings = [("act", 2, reference_text), ("act", 2, reference_text)]
+    doubled = canary.check_run(tree, tmp_path)
+    assert {row["rule"] for row in doubled["dead"]} >= {"canary-reading-ambiguous"}
+    assert doubled["stages"][canary.ARMARIUM], "one ambiguity is the reader's, not the export's"
 
-    tree.read_artifact = newer
-    latest = canary.check_run(tree, tmp_path)
-    assert not latest["stages"][canary.PERLECTOR]
+    tree.readings = [("elsewhere", 1, reference_text)]
+    absent = canary.check_run(tree, tmp_path)
+    assert {row["rule"] for row in absent["dead"]} >= {"no-canary-reading"}
 
 
 def test_check_exception_seals_a_dead_verdict_for_every_chair(monkeypatch, tmp_path):

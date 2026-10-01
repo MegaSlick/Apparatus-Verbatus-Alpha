@@ -4,7 +4,7 @@ The Armarium's two boundary records carry the same non-terminal `sealed` and
 `recorded` outcomes as every other stage. They are completed bookkeeping, never
 `delivered` output; only the `export` record may make that terminal claim.
 The Armarium publishes the terminal `kind="export"` record and one
-`kind="manifest-entry"` per expected act. Both are ordinary artifacts under
+`kind="manifest-entry"` per counted reading. Both are ordinary artifacts under
 `7_armarium/artifacts/`; the stage manifest is derived inventory, never a competing
 output file. The `export` record's `bundle.reference` is a digest-checked input
 reference to the content-addressed Armarium ZIP blob. That ZIP is the product
@@ -46,13 +46,12 @@ statement would then answer for a boundary it never witnessed.
 
 The Armarium opens through `open_stage_context`, which decides the fixture or
 real route from one read of `run.json` and hands this stage the context that
-route produces; it no longer calls `open_context` directly. `expected_acts`,
-`page_census`, and every other reader that walks sealed upstream artifacts by
-stage and kind already work unchanged on either route — nothing about how the
-Armarium accounts for pages and acts is fixture-shaped.
+route produces. `reading_denominator`, `page_census`, and every other reader that
+walks sealed upstream artifacts by stage and kind work unchanged on either route —
+nothing about how the Armarium accounts for pages and acts is fixture-shaped.
 
 **The one thing that is fixture-shaped is the manifest's run identity, and it is
-now two closed shapes rather than one.** A fixture run's export names
+two closed shapes.** A fixture run's export names
 `fixture_id`; a real run's names `submission_id` — `common.stage.submission_identity`'s
 filename-ledger self-hash, which every real source row carries and which
 `pipeline/1_exemplar/run.py`'s ledger check already proves reproduces the
@@ -69,22 +68,21 @@ word" rule exists to prevent. `run.py` computes which shape applies once, from
 so the refusing fixture accessor is never asked a question on the route where
 it would refuse.
 
-**The gap above is closed.** `bundle.py::_expected_run_binding` now reads
-whichever identity key the sealed `export` artifact's payload actually carries
-— `fixture_id` or `submission_id`, refusing by name if it carries both or
-neither — instead of hardcoding `fixture_id`. `test_bundle_publish.py` pins a
+`bundle.py::_expected_run_binding` reads whichever identity key the sealed
+`export` artifact's payload carries — `fixture_id` or `submission_id`, refusing by
+name if it carries both or neither. `test_bundle_publish.py` pins a
 real-shaped export payload publishing clean and a both-named payload being
 refused by name.
 
 **The real-run identity union does not have a separate manifest schema id.**
-It remains part of the current image-local `armarium-export-manifest.v7` and
-clustered `armarium-export-manifest.v8` shapes. Those two ids distinguish the
-act-partition denominator: a reader must know whether `expected_count` counts
-proposal-seal rows or logical acts before interpreting the claims.
+The manifest ids distinguish the act-partition denominator
+(`armarium-export-manifest.v9` for the reading acts `run.py` exports; see "What
+is counted"), and a reader must know what `expected_count` counts before
+interpreting the claims.
 
-Run identity is a separate closed union within either schema. A fixture package
+Run identity is a separate closed union within each schema. A fixture package
 carries `run.fixture_id`; a real-submission package carries `run.submission_id`,
-with exactly one of those keys present. Consumers of v7 or v8 must branch on
+with exactly one of those keys present. Consumers must branch on
 that key before reading it. An unconditional `manifest["run"]["fixture_id"]`
 read is invalid for a real-run package, and the schema id alone intentionally
 does not distinguish which run-identity shape the package carries. The producer
@@ -97,17 +95,14 @@ When the run seals a canary ledger, the Armarium still publishes one
 `manifest-entry` per expected canary act. Its terminal `export` artifact carries
 a text-free `canary` block of page ordinals and act identities/categories. The
 ZIP projection, its page census, source manifest, act list, and aggregate count
-contain only real pages and acts. An act spanning canary and real pages refuses
-export rather than dropping the real side. A run without a sealed canary ledger
-has no `canary` block and retains the prior byte-identical export shape.
-Membership uses the Designator proposal seal's primary page ordinal together
-with every verified region page. A conservation hold with no crop still belongs
-to its sealed page, so it cannot leak into the real export or aggregate.
+contain only real pages and acts. A run without a sealed canary ledger has no
+`canary` block. Membership is the row's own page ordinal: each counted reading
+belongs to exactly one page.
 
 The export payload contains the aggregate result, the expected-act count, `delivered`
 entries, `non_delivered` entries (every act that was not delivered, including
-`confirmed-blank` and `excluded-with-approval`, not only `held-for-review` and
-`refused-with-reason`), witness coverage, `pages`, and the bundle reference. Every
+`confirmed-blank`, not only `held-for-review` and `refused-with-reason`),
+`other_readings`, witness coverage, `pages`, and the bundle reference. Every
 `pages` row is one submitted source ordinal and retains:
 
 ```text
@@ -145,6 +140,12 @@ projection configuration. The bundle may contain these plainly specified formats
   The rendering never replaces the canonical field: the clean verifier strips it and
   requires the canonical value back exactly. No convention has been chosen, and
   `claims.display.status` says so on the face of every bundle.
+`run.py` writes the page-read ids (`armarium-export-manifest.v9`,
+`armarium-act.v4`, `armarium-acts-sqlite.v4`, `armarium-sources.v4`; "Formats" under
+"What is exported"). The ids and shapes below are the builder's, each of which
+those extend; the image-local v7 and clustered v8 manifests are the builder's
+too, and `run.py` publishes neither.
+
 - `acts.sqlite` — an `acts` table with the literal Archetypus field, and a
   separate `act_search` / FTS5 layer whose search fold is visibly derived and
   revision-marked. Metadata schema `armarium-acts-sqlite.v3`
@@ -178,19 +179,18 @@ projection configuration. The bundle may contain these plainly specified formats
   claim from it instead of believing the self-hashed manifest.
 - `review-items.jsonl` — held and refused act records with reasons and
   digest-checked evidence references.
-- `continuation_joins` in `sources.json` and `reconstructions.jsonl` — present only when
-  the Designator published a `continuation-candidate`, and refused unless every act it
-  names has a review citing it. Each join row is text-free and `authoritative: false`:
-  `reconstructed` when each side names exactly one delivered act and `jsonl` or
-  `text-bundle` is selected, else `not-reconstructed` with a named reason and no text. The
-  head and tail pages must be adjacent and among the pages each named act was marked
-  out on. A reconstructed join is the head literal, one U+000A, then the tail literal
+- `continuation_joins` in `sources.json` and `reconstructions.jsonl` — one row per
+  Recensor continuation link ("Continuation joins" below). Each join row is text-free
+  and `authoritative: false`: `reconstructed` when each side names exactly one
+  delivered act and `jsonl` or `text-bundle` is selected, else `not-reconstructed`
+  with a named reason and no text. The head and tail pages must be adjacent and among
+  the pages each named act's regions were cut from. A reconstructed join is the head literal, one U+000A, then the tail literal
   (`verbatus-page-join.v2`, nothing added, removed or normalised), labelled
   `RECONSTRUCTED … not an act`, and carries each half's `text_status`, its reader
   assessment state and a count of its uncertain spans, gaps and self-revisions (the
-  offsets stay on each half's own literal). A `primed-draft-withheld` reading carries
-  `self_revisions: null` and its lectio kind: the reader did not see Pass A, so a
-  self-revision count was not measured. V2 permits null head/tail doubt counts
+  offsets stay on each half's own literal). A `page-read` reading carries
+  `self_revisions: null` and its lectio kind: a self-revision count was not
+  measured. V2 permits null head/tail doubt counts
   and carries each half's `lectio_kind` in `armarium-reconstructed-join.v2`.
   It is written to `reconstructions.jsonl` (with `jsonl`) and as a
   `## RECONSTRUCTED <join_id> (not an act)` section, with mirrored
@@ -207,8 +207,8 @@ projection configuration. The bundle may contain these plainly specified formats
   text-free per-act citation/outcome records, the non-text accounting basis, the
   text-free `continuation_joins` rows when any exist, and
   one `ink_map_pages` row per sealed page: what Unit 9's pre-proposal map found,
-  and what this stage re-measured its retained runs to once the Designator's
-  verified crops were known (`remeasured: null` for a page the map never
+  and what this stage re-measured its retained runs to once the readings' verified
+  act-regions were known (`remeasured: null` for a page the map never
   flagged, because writing zeros would record a measurement nobody took).
   The `unclaimed-edge-ink` held set is DERIVED from those counts by the ink
   map's own gate, on both sides — never carried beside them as a boolean, and
@@ -235,22 +235,16 @@ pixel resolution requires retained-source access.
 **A delivered act is not necessarily a whole one.** `delivered` says where the act
 ended; the Archetypus's `text_status` (`established | partial | no_readable_text`)
 says whether the reading that left carries ink the Perlector knew was there and
-could not read. Neither that field nor the record's `annotations` layer used to be
-read here at all, so an act the pipeline itself knew was damaged was exported and
-aggregated exactly like a whole one, and the run reported `complete` with an empty
-reason list — silent loss at the last boundary in a case expected to
-be ordinary ("many of our records are damaged").
+could not read. Both it and the record's `annotations` layer travel, and neither is
+taken on trust:
 
-Both now travel, and neither is taken on trust:
-
-- `verify_established_record` validates and normalises both annotation layers
-  through the shared `validate_annotations` and requires the validated forms to be
-  identical (raw equality would refuse a correct record, since the sealed copy is
-  normalised and the reading's raw one may omit `witness_evidence`), then
-  **recomputes** `text_status` from that layer and the canonical `uncertainty`
-  beside it (`common/contracts/outcomes.py::derive_record_text_status`,
-  the one spelling both stages share). A record claiming `established` over its own
-  recorded gap is fatal here.
+- `verify_established_page_record` validates the reading's annotation layer through
+  the shared `validate_annotations` (`[]`, since a page reading records none),
+  recomputes the uncertainty layer from the reading (`from_page_perlectio`), and
+  **recomputes** `text_status` from both
+  (`common/contracts/outcomes.py::derive_record_text_status`, the one spelling both
+  stages share). A record whose layers or status differ from the recomputed ones --
+  `established` over its reading's own gap included -- is fatal here.
 - The manifest entry, the projection, `sources.json`'s text-free `act_outcomes`, and
   every selected literal format carry the status; the transcription annotation layer
   rides in the literal formats beside the text it marks up, exactly as the canonical
@@ -267,10 +261,8 @@ Both now travel, and neither is taken on trust:
 
 **Two annotation layers, two names, because they are two things.** The *semantic*
 layer is spec 11's person/date/kinship apparatus, which no code produces; the
-*transcription* layer is the Archetypus's own `uncertain`/`illegible` marks. Every row
-used to carry `annotations: []` with `annotation_status: not-produced` — true of the
-first, written over an act whose record had sealed a real mark of the second. The row
-fields are now `semantic_annotations` / `semantic_annotation_status` and
+*transcription* layer is the Archetypus's own `uncertain`/`illegible` marks. The row
+fields are `semantic_annotations` / `semantic_annotation_status` and
 `transcription_annotations`, and the manifest carries `claims.semantic_annotations`
 (the fixed not-produced claim) beside `claims.transcription_annotations` (a measured
 carriage claim, like `claims.uncertainty`). Neither takes the bare word.
@@ -282,18 +274,10 @@ bundle. Counting damage is this stage's business; showing it is not.
 
 ### `claims.not_measured` — what this run did not measure
 
-Required on every bundle (it is what took the manifest to `.v5`/`.v6`) and
-derived, never constant. `DELIVERED` and `aggregate.status == "complete"` are
-reachable over five things this build does not fully measure, each recorded somewhere
-and none of them, before this, qualifying the word on the deliverable:
-
-| instrument | what is unmeasured | where the record lives |
-|---|---|---|
-| `page-testimony-content-coverage` | a page whose coverage was recorded `shortfall: null` — a continuation page, most often | each act's Recensor review, `testimony_content_coverage` and `testimony_content_coverage_continuation` |
-| `page-ink-conservation` | a page whose `ink_measurable: false` was never reconciled | the Designator's per-page conservation records |
-| `act-visibility-survey` | the Designator occlusion instrument, which no stage publishes, so every capture row carries a named absence code | each act's Recensor review, `cross_capture_coverage` |
-| `perlector-uncertain-spans` | `round_cap = 1` blocks exhausted-cap audit spans but still permits reader-supplied doubt spans; a cap of zero can add exhausted-cap spans. Status follows the recorded assessment and spans | `config/perlector_audit.toml` and each act's uncertainty layer |
-| `designator-geometry-calibration` | every crop's `calibrated_for_this_corpus = false`, the grouping thresholds' `sample_count = 0`, and the truncation instrument's length floor, reasoned and never measured against real ink | the `provenance` blocks of the three sealed Designator configurations and of `config/perlector_protocol.toml`'s `[truncation]` table. The instrument's name is older than its list: the truncation floor is not Designator geometry, and it is surveyed here because this row is the only surface on which a bundle discloses a threshold nobody calibrated |
+Required on every bundle and derived, never constant. `DELIVERED` and
+`aggregate.status == "complete"` are reachable over things this build does not fully
+measure; the block names each one with what this run recorded for it. The
+instruments an export names are listed under "What was not measured" below.
 
 Every instrument appears on every bundle with its own `status`
 (`measured` | `not-measured` | `declared-unproduced`), because an omitted row and
@@ -303,8 +287,8 @@ deliberately not a softer `not-measured`: saying only "not measured" there
 invites the reading that a measurement was attempted and came back empty.
 `count` is how many instruments did not measure, and the verifier recomputes it.
 
-`pipeline/7_armarium/run.py::not_measured_basis` derives the basis from retained-run
-records and sealed configurations before the export is sealed. The standalone verifier
+`pipeline/7_armarium/run.py::page_not_measured_basis` derives the basis from
+retained-run records and sealed configurations before the export is sealed. The standalone verifier
 checks the packaged block's closure and internal consistency only; the publisher then
 binds its exact ZIP to the immutable export artifact and run. A self-hash alone is not
 an external authenticity proof.
@@ -312,7 +296,8 @@ an external authenticity proof.
 ### The terminal ledger
 
 `claims.terminal_ledger` is the honesty ledger's total partition: every submitted
-source page or frame, every sealed page, and every proposed act lands in exactly one
+source page or frame, every sealed page, every counted act and every other reading
+lands in exactly one
 of the five closed categories, and a unit in none of them — or in two — stops the
 export. The three populations overlap on purpose, so `by_unit_type` is published
 beside `by_category`: an act, the page it was cut from, and the source that sealed
@@ -321,27 +306,18 @@ that page are three units describing one piece of material.
 A source unit inherits the category of the page it sealed into, and a refused source
 is `refused-with-reason` with the door's own reason. A sealed page is `delivered` when
 any act on it was delivered, `excluded-with-approval` or `confirmed-blank` only when
-every act on it was, and `held-for-review` otherwise — including when no act was
-marked out on it at all, because silence cannot tell a blank page from a detection
-failure and nothing here can prove one blank.
+every act on it was, and `held-for-review` otherwise — including when no reading
+accounts for it at all, because silence cannot tell a blank page from a detection
+failure. A page with no act row is decided by its other readings ("Pages with no
+act" below).
 
-**`excluded-with-approval` remains projection-only.** It arises only from a
-Designator `excluded` outcome, which no stage emits — the Recensor refuses an
-unhandled Designator terminal before the Armarium is ever reached, so `run.py`'s own
-`exclusion_approval_ref` guard, whose docstring states "this refuses every
-exclusion today, approved or not," is unreachable rather than merely strict.
-Recensor produces `confirmed-blank` only when the Perlector found `no-readable-text` and
-each eligible witness independently corroborates that absence against the configured
-witness floor. The gate also requires no continuation shortfall, flagged pages, or
-findings route
-(`pipeline/5_recensor/run.py:2891-2920`, over `blank_corroboration` at `:830-949`) — a
-`confirmed-blank` is COMPLETED-class and terminal, so its gate checks every ordinary hold
-cause before sealing. Both categories are exercised correctly and
-adversarially at this projection layer
+**`excluded-with-approval` is projection-only.** No stage emits an exclusion, so
+no exported row carries one; the category is exercised correctly and adversarially at
+the projection layer
 (`test_excluded_act_requires_and_carries_its_approval_reference`,
-`test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_act_agrees`);
-the exclusion path remains projection-only, while confirmed blank is available end to
-end when its evidence conditions are met.
+`test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_act_agrees`).
+`confirmed-blank` reaches the export only on a `page-blank` row whose review confirms
+it.
 
 **The denominator counts pages or frames, not source containers.** `run.json` binds one
 ordinal per submitted source *page or frame*, so a multi-page PDF or TIFF has one unit per
@@ -361,9 +337,8 @@ not, so it is never the less partial of the two — and it is the more partial o
 sealed page whose acts all reached a completed category but disagree about which
 (`_page_ledger_category` errs toward "a human must look"). Reporting the aggregate
 there would exit 0 and record `delivered` over a bundle whose own face said `partial`
-and named the held page. The aggregate remains a separate published measurement. Its
-disagreement with the ledger requires the Designator `excluded` path, which no current
-stage emits; the projection boundary nevertheless proves that accounting path.
+and named the held page. The aggregate remains a separate published measurement; the
+projection boundary proves that accounting path.
 
 Non-pixel references to receipts, Testimonia, and intermediate artifacts are
 labelled `requires-retained-run-access`; the product carries their paths and
@@ -380,10 +355,9 @@ in this repository. Spec 11 gates its build on the project lead approving the
 ARCHITECTURE wording that gives the layer its home; until then every export states
 `claims.semantic_annotations` as not produced.
 
-## Page-read runs
+## What is exported
 
-A run sealed with `reading_unit = "page"` exports through `_main_page` in
-`run.py`; the act path is unchanged. The denominator is
+`run.py` exports through `_export`. The denominator is
 `common.stage.reading_denominator`'s page form, and the Recensor's records are
 read only through `common/page_review.py`.
 
@@ -417,7 +391,7 @@ exported as `{chair, witness_label, outcome, testimonium_ref, provenance}`: the
 chair read from the Testimonium the feed row names, and the label the reader saw
 it under (a pseudonym in a blinded run, the chair in a named one). Only the
 sealed page witnesses read a page, so the Recensor's coverage records count
-exactly them: `aggregate_basis.page_witness_chairs` (page path only) names them,
+exactly them: `aggregate_basis.page_witness_chairs` names them,
 sorted, as part of `witness_chairs`; every coverage record's `configured` is
 their number, and a delivered reading's witnesses are a non-empty part of them.
 Each manifest entry carries its review's `notes` as `review_notes` (a
@@ -428,12 +402,12 @@ continuation flag on an `other` entry, which holds nothing).
 no act, its other readings are held and the aggregate and ledger name the page as
 read with no act, its other readings held until that confirmation; once every
 one is delivered the page is a confirmed no-act page: `delivered` in the ledger,
-with that reason, and no aggregate reason. Page-path reasons never speak of acts
+with that reason, and no aggregate reason. Reasons never speak of acts
 marked out or Designator crops: a page no reading accounts for is named as such,
 and an edge hold names the reading regions.
 
 **Regions and the ink map.** Source regions are the Archetypus's, each linked to
-the original filename ledger as on the act path. The rectangles that may release
+the original filename ledger. The rectangles that may release
 unclaimed edge ink are every placed act and other reading's `act-region`, each
 verified by `verify_reading_region_lineage` in the function that uses it.
 
@@ -442,18 +416,18 @@ records, read by `page_review.continuation_links` (one per flagged page break
 `page-break:<p>:<p+1>`, each named side a counted row on its side of the break
 carrying its own flag, `agreed` exactly when both flags are raised, `accepted`
 exactly when agreed). Every link becomes a join row (its `candidate_ref` is the
-link): agreed with both sides delivered, it is reconstructed exactly as on the
-act path; a side with no `act` entry is `not-reconstructed`
+link): agreed with both sides delivered, it is reconstructed as "Product bundle"
+describes; a side with no `act` entry is `not-reconstructed`
 (`side-names-no-act`); a link whose flags disagree is `not-reconstructed`
 (`flags-disagree`). A link naming an `other` reading is fatal. Every join keeps
-the run `partial` with its reason, as on the act path. Each delivered act's raised
-flags travel in `aggregate_basis.continuation_flags` (`{act_key: [flag, ...]}`,
-page path only), and a flag no join has as a side is a named partial reason, so a
+the run `partial` with its reason. Each delivered act's raised flags travel in
+`aggregate_basis.continuation_flags` (`{act_key: [flag, ...]}`), and a flag no join has as a side is a named partial reason, so a
 flag is never dropped.
 
 **Manifest `armarium-export-manifest.v9`**, its own id because its denominator
-differs (a v7/v8 reader must not read reading acts as proposal-seal rows), with
-two more required claims:
+is the reading acts (a reader of the builder's image-local v7 or clustered v8 shape
+must not read reading acts as proposal-seal rows or logical acts), with two more
+required claims:
 
 - `claims.other_readings` -- `{layer, counted_as_acts: false, count,
   by_category, act_ids, carried_by}`, derived from `sources.json`'s
@@ -465,26 +439,28 @@ two more required claims:
   (letter -> status), hold_codes, policy_sha256, accounting_ref}`, read from the
   page's `page-accounting` under the policy this run sealed.
 
-`claims.not_measured` names the page path's instruments, in order (every
-threshold must be an integer, and one that is not is fatal rather than left out):
-`perlector-uncertain-spans` and `designator-geometry-calibration` as on the act
-path, then `page-accounting-thresholds` (every threshold of the sealed
+**What was not measured.** `claims.not_measured` names these instruments, in
+order (every threshold must be an integer, and one that is not is fatal rather
+than left out): `perlector-uncertain-spans` (`config/perlector_audit.toml`'s
+`round_cap` and each delivered act's uncertainty assessment),
+`designator-geometry-calibration` (the `provenance` blocks of the sealed Designator
+configurations and of `config/perlector_protocol.toml`'s `[truncation]` table),
+then `page-accounting-thresholds` (every threshold of the sealed
 `config/page_accounting.toml`; all are starting values, so `not-measured`),
 `perlector-pass-c` (from each real sealed page's reading `audit`, `pages_read`
-bound to that page count; the page path never runs Pass C, so
+bound to that page count; no reading runs Pass C, so
 `declared-unproduced`) and `lectio-nuda` (the sealed
-`nuda_per_mille`, which the page path refuses above zero, and the Perlector's
-`lectio-nuda` records). The act path's testimony-content, page-ink-conservation
-and act-visibility instruments read act-path records a page-read run does not
-make; the page accounting measures what they did, and it is claimed above.
+`nuda_per_mille` and the Perlector's `lectio-nuda` records). The builder's v7/v8
+instrument set (testimony content coverage, page-ink conservation, act visibility)
+reads records a page reading does not make; the page accounting measures what they
+did, and it is claimed above.
 
 **Formats.** `sources.json` is `armarium-sources.v4`: v3 plus `other_outcomes`,
 `other_citations` and `page_accounting`. A page reading's uncertainty layer names
 its own lectio kind, `page-read` (`self_revisions: null`), a value the v3 act
-shapes do not know, so page-path act rows are `armarium-act.v4` and the acts
+shapes do not know, so exported act rows are `armarium-act.v4` and the acts
 database `armarium-acts-sqlite.v4` (`user_version` 4), each otherwise the v3
-shape; the act path's ids and bytes are unchanged. The other layer is carried
-by:
+shape. The other layer is carried by:
 
 - `other.jsonl` (with `jsonl`) -- one `armarium-other-reading.v1` row per other
   reading, text only when delivered. A separate member rather than a `kind` field
@@ -507,8 +483,7 @@ status, recomputes the ledger with its `other` units, requires the acts
 database's schema id to be the one its reading unit writes, binds Pass C's
 `pages_read` to the real sealed pages, requires `aggregate_basis.act_pages` to
 name every page a delivered act's cited regions were cut from, recomputes each
-join (a `flags-disagree` join only on the page path), and refuses a page the
-accounting holds that delivered any reading.
+join, and refuses a page the accounting holds that delivered any reading.
 
 ## Boundary checks
 
@@ -521,21 +496,17 @@ pixel blob before export. A missing, duplicate, altered, or unaccounted page is
 fatal; an Exemplar-refused page remains explicit evidence and contributes to a
 visibly partial export rather than disappearing from the page set.
 
-The act-level proposal seal remains the authority for expected acts. The Armarium
-places each one in exactly one terminal category and retains a review reason where a
-text cannot be delivered. An accepted act must have exactly one Archetypus record;
-a non-accepted terminal act must have none, so the stage never selects one record
-from an ambiguous or orphaned set. The Armarium does not choose among witness
-readings or put witness text in output.
+The reading denominator is the authority for expected acts. The Armarium places
+each counted reading in exactly one terminal category and retains a review reason
+where a text cannot be delivered. An accepted reading must have exactly one
+Archetypus record; a non-accepted terminal one must have none, so the stage never
+selects one record from an ambiguous or orphaned set. The Armarium does not choose
+among witness readings or put witness text in output.
 
-**Every sealed page must have had an act marked out on it, and that is checked per
-page rather than per run.** The stage derives each act's page coverage from the
-Designator regions actually cut -- not from the proposal seal's primary
-`page_ordinal`, because an act running over a page break is cut on both sides and
-examines both -- and hands it to the run aggregate, which names any sealed page no
-act reached. Silence is not `confirmed-blank` evidence, and a check that asked only
-whether the *run* produced any acts let every busy page discharge a silent page's
-proof obligation. Nothing here diagnoses a blank page; that is the Recensor's, and
-what artifact will eventually prove a page-level `confirmed-blank` is open -- the
-category algebra is act-oriented and has no way to say "this page was examined and
-held nothing".
+**Every sealed page must be accounted for by a reading, and that is checked per page
+rather than per run.** Each act's pages are its row's page and every page its
+delivered regions were cut from, handed to the run aggregate, which names any sealed
+page no reading reached. Silence is not `confirmed-blank` evidence, and a check that
+asked only whether the *run* produced any acts would let every busy page discharge a
+silent page's proof obligation. A page read as blank is `confirmed-blank` only when
+the Recensor confirms it.

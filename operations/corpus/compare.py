@@ -41,6 +41,9 @@ polynomial in the number of eligible acts, so it is exact for every page size
 this corpus actually has, not only a small one; `MAX_ACTS_PER_PAGE` is a sanity
 bound well above the corpus's own measured maximum (see below), refusing an
 absurd input rather than silently degrading to an approximation.
+`load_pipeline_reading_acts` supplies the same shape from the Perlector's
+act-regions, each the rectangle a page reading established its act over;
+`evaluate.py` scores over those.
 
 **Scoring.** A matched pair's CER/WER comes from the sealed instruments this
 package does not reimplement: `operations.spike_perlector.normalization`'s
@@ -63,7 +66,7 @@ from typing import Any, Mapping
 
 from common.contracts.canonical import is_sha256, self_hash, verify_self_hash
 from common.contracts.identities import is_well_formed
-from common.contracts.stages import DESIGNATOR, EXEMPLAR
+from common.contracts.stages import DESIGNATOR, EXEMPLAR, PERLECTOR
 from common.runtree.store import RunTree
 from operations.spike_perlector.models import OutputStatus
 from operations.spike_perlector.normalization import GRAPHEMIC_V1, NormalizationProfile
@@ -403,6 +406,77 @@ def load_pipeline_proposal_acts(tree: RunTree) -> list[dict[str, Any]]:
     return acts
 
 
+def load_pipeline_reading_acts(tree: RunTree) -> list[dict[str, Any]]:
+    """Every sealed Perlector `act-region` of a placed `act` reading, with its page sha256.
+
+    These are the rectangles a page reading established its acts over, each
+    keyed by the act id the export names. `other` readings are not acts, and an
+    unplaced reading (`act_class` `reading-unplaced`) has no rectangle; both are
+    left out and counted by `count_excluded_reading_regions`. Returns the
+    `load_pipeline_proposal_acts` shape, `[{"act_id", "bounds", "page_sha256"}, ...]`,
+    so `compare_page` takes either unchanged. A region with no integer page
+    ordinal or no page the Exemplar sealed is refused by name.
+    """
+    page_shas = load_exemplar_page_shas(tree)
+    acts: list[dict[str, Any]] = []
+    for entry in tree.build_manifest(PERLECTOR)["artifacts"]:
+        if entry["kind"] != "act-region":
+            continue
+        record = tree.read_artifact(PERLECTOR, "act-region", entry["artifact_id"])
+        payload = record["payload"]
+        if payload.get("kind") != "act" or payload.get("act_class") != "reading":
+            continue
+        transform = payload.get("transform")
+        ordinal = transform.get("source_page_ordinal") if isinstance(transform, dict) else None
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise Refusal(
+                f"malformed-record: act-region {record['subject_id']!r} carries no integer "
+                "transform.source_page_ordinal, so its page cannot be resolved"
+            )
+        page_sha256 = page_shas.get(ordinal)
+        if page_sha256 is None:
+            raise Refusal(
+                f"unresolvable-page-ordinal: act-region {record['subject_id']!r} names "
+                f"source page ordinal {ordinal}, which no sealed Exemplar page carries"
+            )
+        acts.append(
+            {
+                "act_id": record["subject_id"],
+                "bounds": dict(
+                    _bounds(
+                        transform.get("bounds"),
+                        f"act-region {record['subject_id']!r} transform.bounds",
+                    )
+                ),
+                "page_sha256": page_sha256,
+            }
+        )
+    return acts
+
+
+def count_excluded_reading_regions(tree: RunTree) -> dict[str, dict[str, int]]:
+    """Counts of Perlector act-regions `load_pipeline_reading_acts` left out.
+
+    The `count_excluded_designator_artifacts` shape, so a comparison record can
+    say how much of the run it declined to look at: `by_kind` counts regions of
+    a reading that is not an act (`other`), and `by_origin` counts act regions
+    by an `act_class` other than `reading` (an unplaced reading).
+    """
+    by_kind: dict[str, int] = {}
+    by_origin: dict[str, int] = {}
+    for entry in tree.build_manifest(PERLECTOR)["artifacts"]:
+        if entry["kind"] != "act-region":
+            continue
+        payload = tree.read_artifact(PERLECTOR, "act-region", entry["artifact_id"])["payload"]
+        kind = payload.get("kind", "<missing>")
+        act_class = payload.get("act_class", "<missing>")
+        if kind != "act":
+            by_kind[kind] = by_kind.get(kind, 0) + 1
+        elif act_class != "reading":
+            by_origin[act_class] = by_origin.get(act_class, 0) + 1
+    return {"by_kind": by_kind, "by_origin": by_origin}
+
+
 def count_excluded_designator_artifacts(tree: RunTree) -> dict[str, dict[str, int]]:
     """Counts of Designator artifacts `load_pipeline_proposal_acts`'s filter dropped.
 
@@ -681,8 +755,9 @@ def compare_page(
     never compares IoU in binary floating point, so a caller-supplied float
     threshold must not silently reach that comparison.
 
-    `excluded_region_counts` is this call's own `count_excluded_designator_artifacts`
-    result, when the caller read `pipeline_acts` from a run tree -- carried into
+    `excluded_region_counts` is the excluded count matching the loader the caller
+    read `pipeline_acts` with (`count_excluded_designator_artifacts` or
+    `count_excluded_reading_regions`), when it read them from a run tree -- carried into
     the record so a reader can see how much of the run this comparison declined to
     look at. Defaults to an explicit all-zero shape (never omitted from the
     record) for callers exercising this function without a run tree.
@@ -864,6 +939,8 @@ __all__ = [
     "load_exemplar_page_shas",
     "load_pipeline_proposal_acts",
     "count_excluded_designator_artifacts",
+    "load_pipeline_reading_acts",
+    "count_excluded_reading_regions",
     "compare_page",
     "compare_page_geometry",
     "validate_comparison",

@@ -45,13 +45,10 @@ class _Context:
     """Just enough of a stage context to call the index functions directly.
 
     `build_index` and `validate_index` read the tree; `accepted_act_ids` goes
-    through `expected_acts`, which binds the seal's act denominator back to the
-    fixture the run was sealed with and re-derives its region references. Both
-    are reproduced here rather than mocked away, so these tests reconcile against
-    the same evidence the real stage does. Both also read the run's sealed
-    reading unit and, on a page-read run, its page-read denominator, so the
-    shim carries the sealed Perlector protocol and page accounting policy and
-    the denominator cache a real context has.
+    through `reading_acts`, which verifies the page-read denominator against the
+    sealed Perlector protocol and page accounting policy. The shim carries both
+    and the denominator cache a real context has, so these tests reconcile
+    against the same evidence the real stage does.
     """
 
     def __init__(self, tree: RunTree):
