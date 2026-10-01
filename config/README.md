@@ -20,7 +20,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `designator_geometry.toml` | the sealed crop policy under which the Designator turns a record detector's oriented box into the crop DAI reads |
 | `ink_map.toml` | the ink measurement's sealed policy: background inference, the page-spanning bound and connectivity radius, and the outside-coverage audit's gates, read by the Ink Map, the Perlector's page accounting, the Recensor and the Armarium |
 | `perlector_audit.toml` | the sealed Pass-C audit policy: flag classes and the round cap the audit refuses to exceed |
-| `witness_context.toml` | the factual per-witness context the Perlector's dossier may carry: identity, provenance, training domain, and nothing evaluative |
+| `witness_context.toml` | the factual per-witness context declaration a run seals beside its witness regime: identity, provenance, training domain, and nothing evaluative |
 | `witness_context-real.toml` | the same declaration for the real roster's three chairs, each training domain stated as far as this repository can cite it and named as unknown where it cannot; selected with the full trio `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml --witness-context-config config/witness_context-real.toml`; published witness identities paired with a known fixture declaration are refused |
 | `triage_modes.toml` | the three pipeline-wide triage modes and their closed-ordinal review thresholds |
 | `decoding.toml` | each reading chair's sampling values as its makers recommend them, with source and revision; the Perlector's whole-page output cap; and Chandra's native recipe |
