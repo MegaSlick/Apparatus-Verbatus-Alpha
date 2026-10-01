@@ -1325,8 +1325,12 @@ def test_selected_and_refused_pairs_must_conserve_the_recorded_reach(tmp_path: P
         _produce_with(frames, confirmed, instrument.producer_recipe(config), unreached, evidence)
 
 
-def test_a_confirmation_file_nested_past_the_parser_is_a_named_refusal(tmp_path: Path):
+def test_a_confirmation_file_nested_past_the_parser_is_a_named_refusal(tmp_path: Path, monkeypatch):
+    def recursion_error(*_args, **_kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
     path = tmp_path / "confirmation.json"
-    path.write_bytes(b"[" * 100_000 + b"]" * 100_000)
+    path.write_bytes(b"[[]]")
+    monkeypatch.setattr(producer_module.json, "loads", recursion_error)
     with pytest.raises(ProducerRefusal, match="confirmation file could not be read$"):
         load_confirmation(path)

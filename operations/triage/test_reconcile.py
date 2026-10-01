@@ -460,11 +460,21 @@ def test_a_verdict_with_too_many_observations_is_refused(monkeypatch):
 
 @pytest.mark.parametrize(
     "raw",
-    [b"{not json", b"\xff\xfe", b"[" * 100_000 + b"]" * 100_000],
+    [b"{not json", b"\xff\xfe"],
 )
 def test_an_unparseable_verdict_file_is_a_named_refusal(tmp_path: Path, raw: bytes):
     sources = _local_verdicts(tmp_path)
     sources[0].write_bytes(raw)
+    with pytest.raises(ReconciliationRefusal, match="structural verdict file could not be read$"):
+        reconcile_files(sources, tmp_path / "expected.json", tmp_path / "disagreements.json")
+
+
+def test_a_verdict_file_nested_past_the_parser_is_a_named_refusal(tmp_path: Path, monkeypatch):
+    def recursion_error(*_args, **_kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    sources = _local_verdicts(tmp_path)
+    monkeypatch.setattr(reconcile_module.json, "loads", recursion_error)
     with pytest.raises(ReconciliationRefusal, match="structural verdict file could not be read$"):
         reconcile_files(sources, tmp_path / "expected.json", tmp_path / "disagreements.json")
 

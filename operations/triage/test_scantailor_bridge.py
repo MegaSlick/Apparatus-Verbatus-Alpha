@@ -13,6 +13,7 @@ from PIL import Image
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.imaging import render_triage_derivative
 from operations.operator.scantailor_worker import parse
+from operations.triage import scantailor_bridge
 from operations.triage.producer import SubmittedFrame, produce
 from operations.triage.scantailor_bridge import (
     ScantailorBridgeRefusal,
@@ -263,7 +264,6 @@ def test_published_geometry_is_read_once_and_bound_by_digest(tmp_path: Path):
     ("raw", "tail"),
     [
         (b"{not json\n", "imported ScanTailor geometry is not JSON"),
-        (b"[" * 100_000 + b"]" * 100_000, "imported ScanTailor geometry is not JSON"),
         (
             b"[" * 300 + b"]" * 300 + b"\n",
             "imported ScanTailor geometry cannot be represented as canonical JSON",
@@ -277,6 +277,17 @@ def test_published_geometry_refuses_unreadable_json(tmp_path: Path, raw: bytes, 
     path = tmp_path / "geometry.json"
     path.write_bytes(raw)
     with pytest.raises(ScantailorBridgeRefusal, match=f"{tail}$"):
+        load_imported_geometry(path)
+
+
+def test_published_geometry_nested_past_the_parser_is_not_json(tmp_path: Path, monkeypatch):
+    def recursion_error(*_args, **_kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    path = tmp_path / "geometry.json"
+    path.write_bytes(b"[[]]\n")
+    monkeypatch.setattr(scantailor_bridge.json, "loads", recursion_error)
+    with pytest.raises(ScantailorBridgeRefusal, match="imported ScanTailor geometry is not JSON$"):
         load_imported_geometry(path)
 
 
