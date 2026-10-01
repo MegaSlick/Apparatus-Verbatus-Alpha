@@ -116,6 +116,7 @@ def main() -> int:
         outcome = client.send("decision", " | ".join(parts))
         if not outcome.delivered:
             print(outcome.line())
+            return 1
     return 1 if unreachable else 0
 
 

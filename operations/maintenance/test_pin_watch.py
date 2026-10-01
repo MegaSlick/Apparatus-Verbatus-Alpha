@@ -165,3 +165,24 @@ def test_an_unreachable_pin_exits_nonzero_and_notifies(
         ("decision", "Vendor pins not checked: owner/missing: unreachable (TimeoutError)")
     ]
     assert "owner/missing: unreachable (TimeoutError)" in capsys.readouterr().out
+
+
+def test_an_undelivered_notification_exits_nonzero(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["pin_watch", "--notify"])
+    monkeypatch.setattr(
+        pin_watch, "_pins", lambda *_: [pin_watch.Pin("owner/moved", "a" * 40, "huggingface")]
+    )
+    monkeypatch.setattr(
+        pin_watch, "_get_json", lambda _url: {"sha": "b" * 40, "lastModified": "2026-09-01"}
+    )
+
+    class Outcome:
+        delivered = False
+
+        def line(self) -> str:
+            return "decision: attempted, NOT DELIVERED"
+
+    monkeypatch.setattr(pin_watch.client, "send", lambda event, message: Outcome())
+
+    assert pin_watch.main() == 1
+    assert "NOT DELIVERED" in capsys.readouterr().out
