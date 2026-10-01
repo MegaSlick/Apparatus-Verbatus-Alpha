@@ -741,7 +741,8 @@ def test_a_ledger_page_the_run_did_not_seal_is_counted_not_scored(
     ledger_path = tmp_path / "ledger.json"
     pages_path = tmp_path / "reference-pages.jsonl"
     ledger_path.write_bytes(canonical_bytes(_ledger_for(reference, elsewhere)))
-    pages_path.write_bytes(canonical_bytes(reference) + b"\n" + canonical_bytes(elsewhere) + b"\n")
+    # The proof subset's reference pages beside the whole set's ledger.
+    pages_path.write_bytes(canonical_bytes(reference) + b"\n")
 
     report = evaluate_page_feed_run(
         tree=sealed_run, ledger_path=ledger_path, reference_pages_path=pages_path

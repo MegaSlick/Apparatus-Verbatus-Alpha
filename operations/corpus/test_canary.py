@@ -269,6 +269,136 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
     assert {row["rule"] for row in absent["dead"]} >= {"no-canary-reading"}
 
 
+class _PageRunTree:
+    """A sealed page-read run with one canary page: its feed, one held reading, its export."""
+
+    run_id = "synthetic-page-canary"
+
+    def __init__(self, text: str, outcome: str = "held", page_run: bool = True):
+        self.text, self.outcome, self.page_run = text, outcome, page_run
+        self.bundle_data = _bundle()
+
+    def read_bytes(self, _path):
+        return self.bundle_data
+
+    def read_run(self):
+        return {
+            "sealed_config_digests": {"canary-ledger": "c" * 64},
+            "source_manifest": [{"ordinal": 2, "ledger_sha256": "c" * 64}],
+        }
+
+    def build_manifest(self, stage):
+        artifacts = [{"kind": "stage-seal"}]
+        if stage == canary.PERLECTOR:
+            artifacts += [{"kind": "perlectio", "subject_id": "act", "artifact_id": "act"}]
+            if self.page_run:
+                artifacts += [{"kind": "page-feed", "subject_id": "page-2", "artifact_id": "f"}]
+        if stage == canary.ARMARIUM:
+            artifacts += [{"kind": "export", "artifact_id": "export"}]
+        return {"artifacts": artifacts}
+
+    def read_artifact(self, stage, kind, artifact_id):
+        if kind == "perlectio":
+            return {
+                "subject_id": "act",
+                "artifact_id": "act",
+                "outcome": self.outcome,
+                "payload": {"schema": "perlectio.v2", "text": self.text, "page_ordinal": 2, "n": 1},
+            }
+        return {
+            "payload": {
+                "canary": {"ordinals": [2], "acts": [{"act_id": "act", "page_ordinals": [2]}]},
+                "pages": [{"ordinal": 1}],
+                "delivered": [],
+                "non_delivered": [],
+                "bundle": {
+                    "reference": {"relative_path": "bundle.zip"},
+                    "sha256": digest_bytes(self.bundle_data),
+                },
+            }
+        }
+
+
+def _page_testimonium(text: str, *, outcome: str = "read", truncated=False) -> dict:
+    return {
+        "outcome": outcome,
+        "payload": {"payload": text, "content_health": {"truncated": truncated}},
+    }
+
+
+@pytest.fixture
+def page_canary(monkeypatch):
+    """The canary's sealed-tree readers, answered for one page-run canary page."""
+    reference_text = "the synthetic record has enough distinct ink to compare"
+    reference = {"acts": [{"physical_act_id": "gold-act", "text": reference_text}]}
+    monkeypatch.setattr(canary, "_references", lambda _root: {"a" * 64: reference})
+    monkeypatch.setattr(canary, "load_exemplar_page_shas", lambda _tree: {2: "a" * 64})
+    monkeypatch.setattr(
+        canary, "load_pipeline_proposal_acts", lambda _tree: [{"page_sha256": "a" * 64}]
+    )
+    monkeypatch.setattr(
+        canary,
+        "compare_page_geometry",
+        lambda *_args: {
+            "matched_pairs": [{"pipeline_act_id": "act", "reference_physical_act_id": "gold-act"}]
+        },
+    )
+
+    def no_attachments(*_args, **_kwargs):
+        raise AssertionError("a page run's witnesses are not read from act attachments")
+
+    monkeypatch.setattr(canary, "attachment_index", no_attachments)
+    testimonia = {(chair, 2): _page_testimonium(reference_text) for chair in canary.CHAIRS}
+    monkeypatch.setattr(canary, "_page_testimonia", lambda _tree, _ordinals: testimonia)
+    return reference_text, testimonia
+
+
+def test_a_page_run_canary_reads_held_entries_and_page_witnesses_without_a_false_alarm(
+    page_canary, tmp_path
+):
+    reference_text, _testimonia = page_canary
+
+    verdict = canary.check_run(_PageRunTree(reference_text), tmp_path)
+
+    assert verdict["dead"] == []
+    assert all(verdict["stages"].values())
+
+
+def test_a_page_run_canary_still_names_a_reader_that_read_nothing(page_canary, tmp_path):
+    verdict = canary.check_run(_PageRunTree("unrelated symbols"), tmp_path)
+
+    assert {row["rule"] for row in verdict["dead"]} == {"canary-reading-shared-too-little-ink"}
+    assert not verdict["stages"][canary.PERLECTOR]
+
+
+def test_a_page_run_canary_names_a_failed_page_witness(page_canary, tmp_path):
+    reference_text, testimonia = page_canary
+    testimonia[("attestator_2", 2)] = _page_testimonium("unrelated symbols")
+    testimonia[("attestator_1", 2)] = _page_testimonium(reference_text, truncated=True)
+    del testimonia[("attestator_3", 2)]
+
+    verdict = canary.check_run(_PageRunTree(reference_text), tmp_path)
+
+    assert sorted((row["stage"], row["rule"]) for row in verdict["dead"]) == [
+        ("attestator_1", "canary-witness-reading-failed"),
+        ("attestator_2", "DAI failed on a page it was trained on"),
+        ("attestator_3", "missing-canary-testimonium"),
+    ]
+    assert verdict["stages"][canary.PERLECTOR]
+
+
+def test_a_held_reading_is_still_dead_on_a_run_read_act_by_act(monkeypatch, page_canary, tmp_path):
+    reference_text, _testimonia = page_canary
+    monkeypatch.setattr(canary, "sealed_page_bindings", lambda _tree: {})
+    monkeypatch.setattr(canary, "attachment_index", lambda *_args, **_kwargs: {})
+
+    verdict = canary.check_run(_PageRunTree(reference_text, page_run=False), tmp_path)
+
+    assert ("perlector", "canary-reading-empty-truncated-or-repeated") in {
+        (row["stage"], row["rule"]) for row in verdict["dead"]
+    }
+
+
 def test_check_exception_seals_a_dead_verdict_for_every_chair(monkeypatch, tmp_path):
     class Tree:
         run_id = "synthetic"
@@ -364,3 +494,21 @@ def test_build_derives_references_from_a_synthetic_recordgold_set(tmp_path):
     output = canary.build(source, [sha], tmp_path / "canary", split="val")
     assert len(json.loads((output / "reference-pages.json").read_text())) == 1
     assert len(list((output / "pages").iterdir())) == 1
+
+
+def test_page_testimonia_are_each_chairs_current_page_reading(tmp_path):
+    from common.runtree.store import RunTree
+
+    from .test_evaluate import _orchestrate
+
+    completed = _orchestrate(tmp_path, "page-unbroken")
+    assert completed.returncode == 0, completed.stderr
+    tree = RunTree(tmp_path, "r")
+
+    testimonia = canary._page_testimonia(tree, {1})
+
+    assert sorted(testimonia) == [(chair, 1) for chair in canary.CHAIRS]
+    assert canary._is_page_run(tree)
+    for record in testimonia.values():
+        assert record["payload"]["page_ordinal"] == 1
+        assert isinstance(record["payload"]["payload"], str)

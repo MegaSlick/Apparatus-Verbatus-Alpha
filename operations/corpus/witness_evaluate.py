@@ -849,12 +849,6 @@ def evaluate_page_feed_run(
     reference_records = 0
     for page_id in sorted(requested):
         [(digest, reference_hash)] = admitted[page_id]
-        page = pages.get(digest)
-        if page is None or page["self_hash"] != reference_hash:
-            raise Refusal(
-                f"reference-page-not-in-ledger: page {page_id!r} has no exact admitted "
-                "reference page"
-            )
         ordinal = ordinal_by_sha.get(digest)
         if ordinal is None:
             if page_ids is not None:
@@ -864,6 +858,12 @@ def evaluate_page_feed_run(
                 )
             outside.append(page_id)
             continue
+        page = pages.get(digest)
+        if page is None or page["self_hash"] != reference_hash:
+            raise Refusal(
+                f"reference-page-not-in-ledger: page {page_id!r} has no exact admitted "
+                "reference page"
+            )
         if ordinal not in feeds:
             raise Refusal(
                 f"malformed-record: sealed page {page_id!r} (ordinal {ordinal}) has no page feed"

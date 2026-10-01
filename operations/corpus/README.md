@@ -45,7 +45,11 @@ transcribes anything and never adjudicates anything; every human-custody act sta
   booleans and named failures in a self-hashed verdict, and never places that
   text in the run tree or export. The reader is checked page by page: the readings of
   each canary page, joined in entry order, against that page's reference text, and the
-  export's `canary` block must name every one of them. Fetch-run saves the verdict under
+  export's `canary` block must name every one of them. On a run read by page (the
+  Perlector published page feeds) a held reading counts as read, since a page with any
+  hold holds every entry on it while each still carries its text, and each witness is
+  checked from its page Testimonium of each canary page rather than from act
+  attachments, which a page-scoped witness never has. Fetch-run saves the verdict under
   the private canary root and sends one decision ping when a stage fails.
 
 Build a canary submission from an external RecordGold local set containing
@@ -154,15 +158,97 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   and no page unchecked; the exit status is 0 only when it passes. The JSON report and the
   printed summary carry counts and identifiers, never text.
 
+  Only gold on pages the run sealed is scored: a ledger page outside the run is counted
+  under `scope` (`ledger_pages_outside_run`, `ledger_records_outside_run`), never lost, so
+  a proof run over part of a set is judged on its own pages; a sealed page with gold and
+  no page feed is still lost. A page may be re-asked once (`attempt_ordinal` 2). Both
+  readings and both accountings are kept, told apart by the reading's `attempt_ordinal`
+  and the accounting's `answer_basis` (records without those fields are a page's only
+  reading), and two records for one reading are refused. The gate is judged on the
+  sealed final accounting -- the re-ask's on a re-asked page -- over every act region the
+  page holds; `reask` reports the same records on the first reading alone (its regions
+  and accounting) beside it: pages re-asked, acts recovered on the re-ask, exactly-once
+  before and after, overall and on the re-asked pages.
+
   ```sh
   .venv/bin/python -m operations.corpus.exactly_once --run-root runs --run-id <run> \
     --gold /path/to/set/gold.jsonl --ledger /path/to/admission-ledger.json \
     --out /path/outside/the/tree/exactly-once.json
   ```
+- `witness_evaluate.py` — each witness scored against reference truth. On a run read by
+  page it scores every witness the page feed showed from its own units: a unit belongs to
+  the reference record holding most of its box (at least half; a tie goes to the lower
+  record id), its units on a record are joined in the witness's order and scored with the
+  sealed scorer, and a record no unit lies on is an empty hypothesis. A witness that did
+  not read, or whose units carry no box, gives every record an empty hypothesis by name,
+  so the denominator is every record on every page for every witness shown;
+  `scoreable_cer_*` is the rate over the records a unit lay on. With no `--page-id` it
+  scores every admitted page the run sealed and lists the rest under
+  `reference_pages_outside_run`. A run read act by act, or `--basis act-attachment`,
+  scores the Designator-matched act attachments instead
+  (`recordgold-witness-evaluation.v1`).
+- `reconstruction_evaluate.py` — the Armarium's reconstructions measured apart from the
+  diplomatic reading, which never counts them. It reads the sealed export bundle's
+  continuation joins (`sources.json`) and `reconstructions.jsonl` and reports the joins by
+  status and reason; each reconstruction's departures from its two delivered literals
+  joined by one line break (characters, per reconstruction and per act; the join adds
+  nothing, so the exit status is 1 when any departs); and, only where reference truth has
+  both the head and the tail act (paired by IoU as `evaluate.py` pairs them), CER and WER
+  of the reconstruction against those two records joined the same way. One side or none
+  is counted by side and not scored. Counts and identifiers only, never text.
+- `proof_pages.py` — the proof-page picker. From an admitted set's ledger it takes a
+  declared list (`--page-sha`, repeated) or a seeded draw (`--count N --seed TEXT`: the N
+  admitted pages first by `sha256(seed:page_sha256)`), copies each image, checked against
+  its digest, into `<output>/pages/`, and writes a Door-ready `submission-manifest.json`,
+  the chosen pages' `reference-pages.jsonl` and a self-hashed `selection.json` naming the
+  ledger, the rule and the chosen digests, which it also prints. The set must be outside
+  the repository and an output inside it must be under `private/`; nothing leaves the
+  machine.
 
 All four units exist as of this commit; the fetch protocol, comparator, and
 hold-out sections below describe behaviour that runs, not a shape still to be
 built.
+
+## A proof run, end to end
+
+On the Mac, before the pod run: admit the set, pick the pages, and submit
+`private/proof/<name>/pages/` with its `submission-manifest.json` as the run's input.
+
+```sh
+.venv/bin/python -m operations.corpus.local_admission /path/to/recordgold_evaluation_val_v1 \
+  --split val --output-dir private/corpora/recordgold/admission/val
+.venv/bin/python -m operations.corpus.proof_pages \
+  --ledger private/corpora/recordgold/admission/val/ledger.json \
+  --count 10 --seed proof-1 --output-root private/proof/proof-1
+```
+
+After the pod run, with `RUN` the run id and `P=private/proof/proof-1`:
+
+```sh
+mkdir -p $P/reports
+verbatus fetch-run --run-id $RUN --into runs --network-volume DATACENTER:VOLUME_ID
+verbatus export --run-id $RUN
+.venv/bin/python -m operations.corpus.exactly_once --run-root runs --run-id $RUN \
+  --gold /path/to/recordgold_evaluation_val_v1/gold.jsonl \
+  --ledger private/corpora/recordgold/admission/val/ledger.json \
+  --out $P/reports/exactly-once.json
+.venv/bin/python -m operations.corpus.evaluate --run-root runs --run-id $RUN \
+  --reference-pages $P/reference-pages.jsonl \
+  --reference-ledger private/corpora/recordgold/admission/val/ledger.json \
+  --code-ref "$(git rev-parse HEAD)" --output $P/reports/evaluation.json
+.venv/bin/python -m operations.corpus.witness_evaluate --run-root runs --run-id $RUN \
+  --ledger private/corpora/recordgold/admission/val/ledger.json \
+  --reference-pages $P/reference-pages.jsonl --output $P/reports/witnesses.json
+.venv/bin/python -m operations.corpus.reconstruction_evaluate --run-root runs --run-id $RUN \
+  --reference-pages $P/reference-pages.jsonl --out $P/reports/reconstructions.json
+```
+
+`fetch-run` runs the canary check itself when `private/canary/` exists, and `export`
+takes the run `fetch-run` brought home verified. `exactly_once` exits 1 when its gate
+fails and `reconstruction_evaluate` when a reconstruction departs from its literals;
+the others write their record or refuse by name. Every report is written outside the
+run tree, carries counts and identifiers rather than reference text, and gives the same
+bytes for the same inputs.
 
 ## `private/` and the fetch protocol
 

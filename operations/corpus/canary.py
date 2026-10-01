@@ -24,7 +24,7 @@ from common.contracts.stages import (
     PERLECTOR,
 )
 from common.runtree.store import RunTree
-from common.stage import canary_ordinals
+from common.stage import canary_ordinals, latest_attempt
 from operations.spike_perlector.models import OutputStatus
 from operations.spike_perlector.normalization import GRAPHEMIC_V1
 from operations.spike_perlector.scoring import score_response
@@ -86,6 +86,47 @@ def _canary_readings(tree: RunTree, ordinals: set[int]) -> dict[int, list[dict[s
     for rows in readings.values():
         rows.sort(key=lambda record: record["payload"].get("n", 0))
     return readings
+
+
+def _is_page_run(tree: RunTree) -> bool:
+    """Whether the Perlector read this run by page (it published page feeds)."""
+    return any(
+        entry["kind"] == "page-feed" for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+    )
+
+
+def _page_testimonia(tree: RunTree, ordinals: set[int]) -> dict[tuple[str, int], dict[str, Any]]:
+    """Each chair's current page Testimonium on each canary page, by (chair, ordinal)."""
+    histories: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != "page-testimonium":
+            continue
+        record = tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        payload = record["payload"]
+        if payload["page_ordinal"] in ordinals:
+            histories.setdefault((payload["chair"], payload["page_ordinal"]), []).append(record)
+    return {
+        (chair, ordinal): latest_attempt(
+            history,
+            f"page Testimonium for page {ordinal}, chair {chair}",
+            operation=f"read:{chair}",
+        )
+        for (chair, ordinal), history in histories.items()
+    }
+
+
+def _page_witness_healthy(record: dict[str, Any], reference: str) -> bool:
+    """A page witness read the canary page: whole, not looping, sharing enough of its ink."""
+    payload = record["payload"]
+    text = payload.get("payload")
+    health = payload.get("content_health") or {}
+    return (
+        record.get("outcome") == "read"
+        and isinstance(text, str)
+        and health.get("truncated") is not True
+        and _shared(reference, text, OutputStatus.COMPLETE)
+        and not _repeated(text)
+    )
 
 
 def _contains_canary_identity(value: Any, act_ids: set[str], ordinals: set[int]) -> bool:
@@ -194,6 +235,11 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
             fail(stage, "canary-ingress-failed")
     else:
         try:
+            page_run = _is_page_run(tree)
+        except Exception as error:
+            fail(PERLECTOR, f"check-raised:{type(error).__name__}")
+            page_run = False
+        try:
             page_shas = load_exemplar_page_shas(tree)
         except Exception as error:
             fail(EXEMPLAR, f"check-raised:{type(error).__name__}")
@@ -205,8 +251,11 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
 
         try:
             proposals = load_pipeline_proposal_acts(tree)
-            bindings = sealed_page_bindings(tree)
-            attachments = attachment_index(tree, sealed_pages=bindings)
+            # Act attachments are the act path's witness evidence; a page run's
+            # witnesses are checked from their page Testimonia below.
+            attachments = (
+                {} if page_run else attachment_index(tree, sealed_pages=sealed_page_bindings(tree))
+            )
         except Exception as error:
             fail(DESIGNATOR, f"check-raised:{type(error).__name__}")
             proposals, attachments = [], {}
@@ -237,10 +286,41 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
             )
         if not matched:
             fail(DESIGNATOR, "no-matched-canary-acts")
-            for chair in CHAIRS:
-                fail(chair, "no-canary-testimonium")
+            if not page_run:
+                for chair in CHAIRS:
+                    fail(chair, "no-canary-testimonium")
 
-        for chair in CHAIRS:
+        def witness_failed(chair: str, rule: str) -> str:
+            return "DAI failed on a page it was trained on" if chair == "attestator_2" else rule
+
+        if page_run:
+            # A page-read run's witnesses read whole pages: each chair's page
+            # Testimonium of each canary page is checked against that page's text.
+            try:
+                testimonia = _page_testimonia(tree, ordinals)
+            except Exception as error:
+                for chair in CHAIRS:
+                    fail(chair, f"check-raised:{type(error).__name__}")
+                testimonia = None
+            for chair in CHAIRS if testimonia is not None else ():
+                for ordinal in sorted(ordinals):
+                    page = references.get(page_shas.get(ordinal))
+                    if page is None:
+                        continue
+                    record = testimonia.get((chair, ordinal))
+                    if record is None:
+                        fail(chair, witness_failed(chair, "missing-canary-testimonium"))
+                        continue
+                    page_text = "\n".join(act["text"] for act in page["acts"])
+                    try:
+                        healthy = _page_witness_healthy(record, page_text)
+                    except Exception as error:
+                        fail(chair, f"check-raised:{type(error).__name__}")
+                        continue
+                    if not healthy:
+                        fail(chair, witness_failed(chair, "canary-witness-reading-failed"))
+
+        for chair in CHAIRS if not page_run else ():
             for act_id, reference, ordinal in matched:
                 candidates = attachments.get(act_id, {}).get(chair, [])
                 candidates = [
@@ -250,12 +330,7 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                     or item["attachment"]["page_ordinal"] == ordinal
                 ]
                 if len(candidates) != 1:
-                    fail(
-                        chair,
-                        "DAI failed on a page it was trained on"
-                        if chair == "attestator_2"
-                        else "missing-canary-testimonium",
-                    )
+                    fail(chair, witness_failed(chair, "missing-canary-testimonium"))
                     continue
                 try:
                     status, reading, _ = witness_reading(
@@ -270,15 +345,13 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                     fail(chair, f"check-raised:{type(error).__name__}")
                     continue
                 if not healthy:
-                    fail(
-                        chair,
-                        "DAI failed on a page it was trained on"
-                        if chair == "attestator_2"
-                        else "canary-witness-reading-failed",
-                    )
+                    fail(chair, witness_failed(chair, "canary-witness-reading-failed"))
 
         # The reader is checked page by page: every entry it read on a canary
-        # page, joined in order, against that page's reference text.
+        # page, joined in order, against that page's reference text. A page
+        # read whole holds every entry on a page with any hold, and a held
+        # entry still carries its reading, so it counts as read.
+        read_outcomes = {"read", "held"} if page_run else {"read"}
         try:
             readings = _canary_readings(tree, ordinals)
         except FatalAccounting:
@@ -297,7 +370,7 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 continue
             texts = [row.get("payload", {}).get("text") for row in rows]
             if (
-                any(row.get("outcome") != "read" for row in rows)
+                any(row.get("outcome") not in read_outcomes for row in rows)
                 or not all(isinstance(text, str) and text.strip() for text in texts)
                 or _repeated("\n".join(texts))
             ):
