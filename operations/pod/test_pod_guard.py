@@ -176,6 +176,8 @@ def test_the_start_command_refuses_a_malformed_hours_value(pod):
 
 def run_guard(env, hours):
     run_until(["sh", str(GUARD), hours, "30"], env, lambda: halted(env))
+    # The fake sleep marks a halt only after a recorded runpodctl call.
+    assert halted(env), "the guard never made its runpodctl delete call"
 
 
 def test_container_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
