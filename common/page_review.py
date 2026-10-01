@@ -32,6 +32,7 @@ from common.stage import (
     COUNTED_READING_CLASSES,
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_HOLD,
+    boundary_advanced,
     exemplar_page_ids,
     latest_attempt,
     stage_manifest,
@@ -403,11 +404,17 @@ def current_review_decisions(context) -> dict[str, Any] | None:
 
     Only a run that holds operator review decisions has one.
     """
-    records = [
-        context.tree.read_artifact(RECENSOR, REVIEW_DECISIONS_KIND, entry["artifact_id"])
-        for entry in stage_manifest(context, RECENSOR)["artifacts"]
-        if entry["kind"] == REVIEW_DECISIONS_KIND
-    ]
+    return _review_decisions_payload(
+        [
+            context.tree.read_artifact(RECENSOR, REVIEW_DECISIONS_KIND, entry["artifact_id"])
+            for entry in stage_manifest(context, RECENSOR)["artifacts"]
+            if entry["kind"] == REVIEW_DECISIONS_KIND
+        ]
+    )
+
+
+def _review_decisions_payload(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The current one of the Recensor's `review-decisions` records, checked; None for none."""
     if not records:
         return None
     record = latest_attempt(
@@ -453,12 +460,16 @@ def held_by_recensor(tree) -> list[dict[str, Any]]:
 
     Each held unit's current review as `{subject_id, what, hold_codes}`, with
     `what` its unit key, then each held continuation link as `{subject_id,
-    what: "continuation link", hold_codes: []}`: the same held total the
-    Recensor exits held on, so a driver can tell a held Recensor from its
-    records without opening a stage.
+    what: "continuation link", hold_codes: []}`, then each page the current
+    `review-decisions` record still holds as `{subject_id: "operator-review",
+    what: "page <ordinal>", hold_codes}`. A page hold stands even when every
+    unit on the page was excluded, so it is counted by page. This is the same
+    held total the Recensor exits held on, so a driver can tell a held
+    Recensor from its records without opening a stage.
     """
     reviews: dict[str, list[dict[str, Any]]] = {}
     links: list[dict[str, Any]] = []
+    decisions: list[dict[str, Any]] = []
     for entry in tree.build_manifest(RECENSOR, verify_inputs=False)["artifacts"]:
         if entry["kind"] == REVIEW_KIND:
             reviews.setdefault(entry["subject_id"], []).append(
@@ -467,6 +478,10 @@ def held_by_recensor(tree) -> list[dict[str, Any]]:
         elif entry["kind"] == CONTINUATION_LINK_KIND and entry["outcome"] == HELD:
             links.append(
                 {"subject_id": entry["subject_id"], "what": "continuation link", "hold_codes": []}
+            )
+        elif entry["kind"] == REVIEW_DECISIONS_KIND:
+            decisions.append(
+                tree.read_artifact(RECENSOR, REVIEW_DECISIONS_KIND, entry["artifact_id"])
             )
     held = []
     for subject_id, records in sorted(reviews.items()):
@@ -480,7 +495,32 @@ def held_by_recensor(tree) -> list[dict[str, Any]]:
                     "hold_codes": list(payload.get("hold_codes") or []),
                 }
             )
-    return held + sorted(links, key=lambda link: link["subject_id"])
+    recorded = _review_decisions_payload(decisions)
+    pages = [
+        {
+            "subject_id": REVIEW_DECISIONS_SUBJECT,
+            "what": f"page {row['page_ordinal']}",
+            "hold_codes": list(row["hold_codes"]),
+        }
+        for row in ([] if recorded is None else recorded["page_holds"])
+    ]
+    return held + sorted(links, key=lambda link: link["subject_id"]) + pages
+
+
+def require_recensor_passed(tree) -> None:
+    """Refuse a stage after the Recensor while the Recensor holds what no person has passed.
+
+    A held Recensor (`held_by_recensor`) waits for a person: nothing is
+    established or exported over it until nothing is held, or until a person's
+    advance record binds the Recensor's current seal (`boundary_advanced`).
+    """
+    held = held_by_recensor(tree)
+    if held and not boundary_advanced(tree, RECENSOR):
+        raise ApprovalRefusal(
+            f"the Recensor holds {len(held)} item(s) and no advance record passes its current "
+            "seal; record review decisions and re-run the Recensor, or advance its seal with "
+            "`verbatus advance --stage recensor`, before this stage runs"
+        )
 
 
 def held_pages_after_review(tree) -> tuple[list[int], int]:

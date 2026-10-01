@@ -2902,3 +2902,24 @@ def test_a_stray_name_in_the_receipts_directory_is_refused_even_with_no_decision
 
     with pytest.raises(SchemaRefusal, match="not a content-addressed receipt"):
         tree.review_decision_records()
+
+
+def test_a_decision_renamed_to_a_dot_file_is_refused(tmp_path):
+    """Hidden by a leading dot, a decision is still no unfinished write to pass over."""
+    tree = make_run(tmp_path)
+    reference, _ = tree.write_approval_record(_review_decision())
+    path = tree.resolve(reference.relative_path)
+    path.rename(path.with_name(f".{path.name}"))
+
+    with pytest.raises(SchemaRefusal, match="not a content-addressed receipt"):
+        tree.review_decision_records()
+
+
+def test_an_unfinished_write_in_the_receipts_directory_is_passed_over(tmp_path):
+    """Only what an interrupted publication leaves, `.<name>.tmp-<unique>`, is skipped."""
+    tree = make_run(tmp_path)
+    reference, _ = tree.write_approval_record(_review_decision())
+    path = tree.resolve(reference.relative_path)
+    path.with_name(f".{path.name}.tmp-abc123").write_bytes(b"{")
+
+    assert [ref.to_record() for ref, _ in tree.review_decision_records()] == [reference.to_record()]

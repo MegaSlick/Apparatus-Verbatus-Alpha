@@ -364,9 +364,11 @@ pod.
 **Without `--no-hold`, it holds only for a finished full run.** A selection ending before Armarium records
 `selection-complete` and returns at once so the pod timer closes the card. A held
 selection ending before Armarium also closes promptly, and so does a full run held
-before its export (a held Attestatores or Recensor; `reached_export` finds no sealed
-Armarium export), since it waits for a person, not for the card. A full `complete`, or a
-`held` run whose export is sealed, holds toward the hard deadline (paid idle time),
+before its export (a held Attestatores or Recensor), since it waits for a person, not
+for the card. A full `complete`, or a `held` run whose orchestrator says in this
+invocation's own stop record (`--stop-record`, read by `exported_this_invocation`) that
+it reached a sealed export, holds toward the hard deadline (paid idle time); an export
+an earlier pass left in the run tree never counts. It holds
 because the pod timer
 treats an early exit as non-green. The hold does no work and touches no keep-alive, so the
 pod guard deletes the pod once its idle window passes and the hold ends there;

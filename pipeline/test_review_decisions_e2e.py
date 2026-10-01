@@ -39,10 +39,11 @@ from test_live_reading_seam_e2e import (  # noqa: F401  (`designated` is a fixtu
 from common.contracts.approval import build_review_decision_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.stages import ARCHETYPUS, ARMARIUM
+from common.page_review import held_by_recensor
 from common.review_decisions import READING_HELD, basis_digest, page_basis_digest
 from common.runtree.store import RunTree
 from common.stage import EXIT_COMPLETE, EXIT_HELD
-from conftest import build_page_tree, load_stage, run_stage
+from conftest import advance_held_recensor, build_page_tree, load_stage, run_stage
 from conftest import file_digest_snapshot as snapshot
 from operations.serving.fakes import ScriptedAnswer
 
@@ -121,7 +122,13 @@ def _recense(tree: SimpleNamespace) -> int:
 
 
 def _after_recensor(tree: SimpleNamespace) -> None:
-    """The Archetypus, the Coniector and the Armarium, each required to finish."""
+    """The Archetypus, the Coniector and the Armarium, each required to finish.
+
+    A Recensor that still holds anything is first advanced, as a person would
+    to export with every hold named; neither stage runs past it otherwise.
+    """
+    if held_by_recensor(RunTree(tree.root, RUN_ID)):
+        advance_held_recensor(tree.root, RUN_ID)
     for program in TAIL:
         result = _run(tree, program)
         assert result.returncode in (EXIT_COMPLETE, EXIT_HELD), f"{program}: {result.stderr}"
@@ -314,6 +321,22 @@ def test_an_exclusion_keeps_the_unit_out_of_the_delivered_text_but_recorded(held
     assert f"page 1 is still held by {UNDER_WITNESSED}" in reasons
 
 
+def test_a_page_held_after_every_unit_on_it_was_excluded_holds_the_recensor(held, tmp_path):
+    """Excluding both acts on under-witnessed page 1 leaves the page itself held."""
+    tree = _copy(held, tmp_path)
+    _decide(tree.root, "p1:1", "exclude")
+    _decide(tree.root, "p1:2", "exclude")
+
+    assert _recense(tree) == EXIT_HELD
+    reviews = _reviews(tree.root)
+    assert reviews["p1:1"]["outcome"] == reviews["p1:2"]["outcome"] == "excluded"
+    [page] = _decisions(tree.root)["page_holds"]
+    assert page["page_ordinal"] == 1 and UNDER_WITNESSED in page["hold_codes"]
+    assert held_by_recensor(RunTree(tree.root, RUN_ID)) == [
+        {"subject_id": "operator-review", "what": "page 1", "hold_codes": page["hold_codes"]}
+    ]
+
+
 def test_decisions_are_re_applied_identically_on_a_re_run(held, tmp_path):
     tree = _copy(held, tmp_path)
     _decide(tree.root, "p1", "no-missed-act")
@@ -352,6 +375,7 @@ def test_a_decision_after_an_archetypus_that_established_nothing_is_applied(held
     tree = _copy(held, tmp_path)
     _decide(tree.root, "p2:1", "hold", finding="text-misread")
     assert _recense(tree) == EXIT_HELD
+    advance_held_recensor(tree.root, RUN_ID)
     assert _run(tree, TAIL[0]).returncode in (EXIT_COMPLETE, EXIT_HELD)
     assert _bundle_established(tree.root) == set()
 
@@ -373,6 +397,45 @@ def test_a_stage_after_the_recensor_refuses_a_decision_its_last_pass_did_not_app
     result = _run(tree, program)
     assert result.returncode not in (EXIT_COMPLETE, EXIT_HELD)
     assert "re-run the Recensor" in result.stderr
+
+
+def test_the_archetypus_refuses_a_held_recensor_no_advance_passes(held, tmp_path):
+    """Run directly, the Archetypus establishes nothing over a hold no person has passed."""
+    tree = _copy(held, tmp_path)
+    _decide(tree.root, "p1:1", "exclude")
+    _decide(tree.root, "p1:2", "exclude")
+    assert _recense(tree) == EXIT_HELD
+
+    result = _run(tree, TAIL[0])
+    assert result.returncode not in (EXIT_COMPLETE, EXIT_HELD)
+    assert "no advance record passes its current seal" in result.stderr
+    assert not (tree.root / RUN_ID / "6_archetypus").exists()
+
+    _after_recensor(tree)
+    assert _bundle_established(tree.root) == {"p2:1"}
+
+
+def test_the_armarium_refuses_a_held_recensor_no_advance_passes(held, tmp_path):
+    """Run directly, the Armarium exports nothing over a hold no person has passed.
+
+    The Archetypus and the Coniector ran under an advance that is then removed,
+    so only the Armarium's own entry stands between the hold and an export.
+    """
+    tree = _copy(held, tmp_path)
+    advance_held_recensor(tree.root, RUN_ID)
+    [advance] = [
+        reference
+        for reference, record in RunTree(tree.root, RUN_ID).approval_records()
+        if record["action"] == "advance"
+    ]
+    for program in TAIL[:2]:
+        assert _run(tree, program).returncode in (EXIT_COMPLETE, EXIT_HELD)
+    (tree.root / RUN_ID / advance.relative_path).unlink()
+
+    result = _run(tree, TAIL[2])
+    assert result.returncode not in (EXIT_COMPLETE, EXIT_HELD)
+    assert "no advance record passes its current seal" in result.stderr
+    assert not (tree.root / RUN_ID / "7_armarium").exists()
 
 
 def _bundle_established(root: Path) -> set[str]:

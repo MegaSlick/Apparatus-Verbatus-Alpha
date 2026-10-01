@@ -97,10 +97,11 @@ FIXTURE = "synthetic-two-page-v0"
 #   - any string sealed into a record or the export manifest.
 #
 # The review pins are the page-read `page-review` scenario's tree, whose page 2
-# the committed re-ask budget asks once more. Its Recensor holds, so the run stops
-# there, before the Archetypus: the tree has no Archetypus or Armarium record. Both trees carry the Coniector's
-# records, since the committed reconstruction config runs it: a call per page,
-# a reconstruction per act, and the reconstructor's receipt.
+# the committed re-ask budget asks once more. Its Recensor holds, so the run
+# stops there, before the Archetypus: the tree has no Archetypus or Armarium
+# record. Both trees carry the Coniector's records, since the committed
+# reconstruction config runs it: a call per page, a reconstruction per act, and
+# the reconstructor's receipt.
 HAPPY_SNAPSHOT_FILES = 141
 REVIEW_SNAPSHOT_FILES = 132
 HAPPY_RUN_TREE_DIGEST = "2fb989378547ce7e0d857e898fc9476fa60568d567610790cbff1970f0246446"

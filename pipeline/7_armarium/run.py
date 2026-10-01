@@ -89,6 +89,7 @@ from common.page_review import (  # noqa: E402
     reading_holds_allowed,
     require_current_review_decisions,
     require_establishable,
+    require_recensor_passed,
     review_coverage,
     review_notes,
     review_reason,
@@ -1479,6 +1480,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     canaries = canary_ordinals(context.run)
     if not canaries <= set(census):
         raise FatalAccounting("sealed canary ordinals are absent from the Exemplar page census")
+    # Nothing is exported over a Recensor hold no person has passed.
+    require_recensor_passed(context.tree)
     return _export(context, formats, census, canaries)
 
 

@@ -253,6 +253,22 @@ def test_a_manual_archetypus_over_a_held_recensor_stops_too(tmp_path):
     assert not (root / "r" / "6_archetypus").exists()
 
 
+@pytest.mark.parametrize(
+    "selection",
+    [("--stage", "armarium"), ("--from", "coniector", "--to", "armarium")],
+    ids=["manual", "semi"],
+)
+def test_an_armarium_selection_over_a_held_recensor_stops_too(tmp_path, selection):
+    """A selection that skips the Archetypus still stops before exporting over the hold."""
+    root = tmp_path / "runs"
+    drive(root, "r", "page-review", "--from", "door", "--to", "recensor")
+    result = drive(root, "r", "page-review", *selection)
+    assert result.returncode == EXIT_HELD, result.stdout + result.stderr
+    assert "stopped at a held recensor, before the armarium" in result.stdout
+    assert "p2:1 (" in result.stdout
+    assert not (root / "r" / "7_armarium").exists()
+
+
 def test_the_big_models_range_stops_at_a_held_recensor_then_resumes_after_an_advance(tmp_path):
     """`pod_run --models big` runs perlector..armarium after the witnesses' own range.
 
@@ -275,26 +291,112 @@ def test_the_big_models_range_stops_at_a_held_recensor_then_resumes_after_an_adv
     assert "act p2:1 is held-for-review" in result.stdout
 
 
-def test_an_advance_bound_to_an_earlier_recensor_seal_passes_nothing(tmp_path):
-    """A Recensor pass that re-seals (new decisions, say) leaves an earlier advance stale."""
-    from common.contracts.approval import build_approval_record
+def _record_stale_hold(root: Path, act_key: str) -> None:
+    """Record a person's hold of one unit, bound to a basis its review no longer has."""
+    import json
+
+    from common.contracts.approval import build_review_decision_record
+    from common.contracts.canonical import digest_bytes
     from common.runtree.store import RunTree
+
+    tree = RunTree(root, "r")
+    [review] = [
+        record
+        for record in (
+            tree.read_artifact("recensor", "review", entry["artifact_id"])
+            for entry in tree.build_manifest("recensor")["artifacts"]
+            if entry["kind"] == "review"
+        )
+        if record["payload"]["act_key"] == act_key
+    ]
+    reading = root / "r" / review["payload"]["page_reading_ref"]["relative_path"]
+    tree.write_approval_record(
+        build_review_decision_record(
+            run_id="r",
+            scope="unit",
+            subject_id=review["subject_id"],
+            page_id=json.loads(reading.read_text(encoding="utf-8"))["subject_id"],
+            decision="hold",
+            finding="text-misread",
+            basis_digest=digest_bytes(b"an earlier review"),
+            reason="held by the test",
+            timestamp="2026-10-01T12:00:00Z",
+        )
+    )
+
+
+def test_an_advance_bound_to_an_earlier_recensor_seal_passes_nothing(tmp_path):
+    """A Recensor pass that re-seals (a new decision, here) leaves an earlier advance stale."""
+    from common.runtree.store import RunTree
+    from common.stage import boundary_advanced, current_stage_seal
 
     root = tmp_path / "runs"
     drive(root, "r", "page-review")
-    # An advance of the Recensor that binds a digest its current seal does not have.
-    RunTree(root, "r").write_approval_record(
-        build_approval_record(
-            ["stage-boundary:recensor"],
-            "advance",
-            "advanced before the last pass",
-            "0" * 64,
-            "2026-10-01T12:00:00Z",
-        )
-    )
+    advance_held_recensor(root, "r")
+    tree = RunTree(root, "r")
+    _seal, advanced = current_stage_seal(tree, "recensor")
+    assert boundary_advanced(tree, "recensor")
+    _record_stale_hold(root, "p2:1")
+
     result = drive(root, "r", "page-review", "--from", "recensor", "--to", "armarium")
     assert result.returncode == EXIT_HELD, result.stdout + result.stderr
     assert HELD_RECENSOR_STOP in result.stdout
+    _seal, current = current_stage_seal(tree, "recensor")
+    assert current != advanced
+    assert not boundary_advanced(tree, "recensor")
+    assert not (root / "r" / "6_archetypus").exists()
+
+
+def _stop_record(path: Path) -> dict:
+    import json
+
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_a_held_stop_is_recorded_as_no_export_though_an_earlier_export_is_sealed(tmp_path):
+    """The stop record is this invocation's word, never the tree's earlier export.
+
+    After an export under an advance, the advance is removed: the next
+    `--from recensor --to armarium` stops at the held Recensor while the tree
+    still holds the earlier sealed export.
+    """
+    from common.runtree.store import RunTree
+    from common.stage import verify_final_seal
+
+    root = tmp_path / "runs"
+    drive(root, "r", "page-review")
+    advance_held_recensor(root, "r")
+    exported = tmp_path / "exported.json"
+    result = drive(
+        root, "r", "page-review", "--from", "recensor", "--to", "armarium",
+        "--stop-record", str(exported),
+    )  # fmt: skip
+    assert result.returncode == EXIT_HELD, result.stdout + result.stderr
+    assert _stop_record(exported) == {
+        "schema": "orchestrator-stop.v1",
+        "run_id": "r",
+        "exit_code": EXIT_HELD,
+        "exported": True,
+    }
+    tree = RunTree(root, "r")
+    [advance] = [ref for ref, record in tree.approval_records() if record["action"] == "advance"]
+    (root / "r" / advance.relative_path).unlink()
+
+    held = tmp_path / "held.json"
+    result = drive(
+        root, "r", "page-review", "--from", "recensor", "--to", "armarium",
+        "--stop-record", str(held),
+    )  # fmt: skip
+    assert result.returncode == EXIT_HELD, result.stdout + result.stderr
+    assert HELD_RECENSOR_STOP in result.stdout
+    assert _stop_record(held)["exported"] is False
+    verify_final_seal(tree)  # the earlier export is still sealed
+
+    again = drive(
+        root, "r", "page-review", "--from", "recensor", "--to", "armarium",
+        "--stop-record", str(held),
+    )  # fmt: skip
+    assert again.returncode == 2 and "already exists" in again.stderr
 
 
 def test_a_held_armarium_reports_its_terminal_reasons_under_every_mode(tmp_path):
