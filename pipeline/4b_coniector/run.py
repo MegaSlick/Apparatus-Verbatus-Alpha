@@ -15,9 +15,8 @@ Per run, in order (`common/reconstruction_records.py` holds the shapes):
     reconstruction        one per subject act and one per join: made, or not made
 
 `mode` (config/reconstruction.toml) is on by default; with `mode = "off"` the plan
-asks nothing and no model is loaded. A run that read Designator acts one at a time has no page
-answers to reconstruct over, and its plan says so. A reconstruction that could
-not be made leaves the diplomatic reading delivered and says why.
+asks nothing and no model is loaded. A reconstruction that could not be made
+leaves the diplomatic reading delivered and says why.
 """
 
 import sys
