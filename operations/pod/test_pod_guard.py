@@ -360,13 +360,30 @@ def test_a_released_run_s_outcome_is_in_the_delete_notice(pod, tmp_path):
     """pod_run --no-hold names the run and its outcome; the phone ping must carry it."""
 
     env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
     state.mkdir()
     (state / "ntfy_topic").write_text("guard-test-topic\n")
-    (state / "deadline-testpod").write_text(f"{int(time.time())}\n")
-    # Read as text, never run: anything outside a plain name is dropped.
-    (state / "released-testpod").write_text("run proof-1 ended complete $(id)`id`\n")
+    deadline = state / "deadline-testpod"
+    deadline.write_text(f"{int(time.time()) + 3600}\n")
     curl_calls = tmp_path / "curl-calls.txt"
-    run_until(["sh", str(GUARD), "5", "30"], env, lambda: bool(lines(curl_calls)))
+
+    def release():
+        # Written while the guard runs, as pod_run does; one left from before it armed is cleared.
+        limit = time.monotonic() + 10
+        while not (state / "heartbeat-testpod").exists() and time.monotonic() < limit:
+            time.sleep(0.1)
+        # Read as text, never run: anything outside a plain name is dropped.
+        (state / "released-testpod").write_text("run proof-1 ended complete $(id)`id`\n")
+        staging = state / "deadline-testpod.new"
+        staging.write_text(f"{int(time.time())}\n")
+        staging.replace(deadline)
+
+    writer = threading.Thread(target=release)
+    writer.start()
+    try:
+        run_until(["sh", str(GUARD), "5", "30"], env, lambda: bool(lines(curl_calls)))
+    finally:
+        writer.join()
     [notification] = lines(curl_calls)
     assert (
         "its guard requested deletion (approved time is up; pod_run reported: "
@@ -375,16 +392,22 @@ def test_a_released_run_s_outcome_is_in_the_delete_notice(pod, tmp_path):
     assert "pod_run reported: run proof-1 ended complete" in log_of(state)
 
 
-def test_without_a_release_the_notice_names_only_the_guard_s_reason(pod, tmp_path):
+@pytest.mark.parametrize("left_over", [False, True])
+def test_without_a_release_the_notice_names_only_the_guard_s_reason(pod, tmp_path, left_over):
+    """A notice left by an earlier run on a restarted pod is not this guard's run."""
+
     env, calls, state = pod
     state.mkdir()
     (state / "ntfy_topic").write_text("guard-test-topic\n")
     (state / "deadline-testpod").write_text(f"{int(time.time())}\n")
+    if left_over:
+        (state / "released-testpod").write_text("run old-run ended complete\n")
     curl_calls = tmp_path / "curl-calls.txt"
     run_until(["sh", str(GUARD), "5", "30"], env, lambda: bool(lines(curl_calls)))
     [notification] = lines(curl_calls)
     assert "its guard requested deletion (approved time is up)." in notification
     assert "pod_run reported" not in log_of(state)
+    assert not (state / "released-testpod").exists()
 
 
 def test_the_guard_touches_its_heartbeat_every_tick(pod):

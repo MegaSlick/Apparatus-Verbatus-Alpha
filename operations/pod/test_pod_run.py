@@ -441,6 +441,21 @@ def test_a_protocol_outside_the_repository_or_missing_is_refused_before_bootstra
     assert "--perlector-protocol-config" in capsys.readouterr().err
 
 
+def _first_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pod_id: str) -> None:
+    environ = tmp_path / "pid1-environ"
+    environ.write_bytes(f"PATH=/usr/bin\0{pod_run.POD_ID_ENVIRONMENT}={pod_id}\0HOME=/\0".encode())
+    monkeypatch.setattr(pod_run, "PID1_ENVIRON", environ)
+
+
+def _armed(
+    ws: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: Clock, value: int
+) -> Path:
+    """This pod as --no-hold needs it: its id on its first process, and a live guard."""
+
+    _first_process(tmp_path, monkeypatch, "pod123")
+    return _guard_deadline(ws, value, heartbeat=clock.now().timestamp() - 30)
+
+
 def _guard_deadline(ws: Workspace, value: int, *, heartbeat: float | None = None) -> Path:
     guard = ws.volume / pod_run.POD_GUARD_DIRECTORY
     guard.mkdir()
@@ -464,12 +479,12 @@ def _guard_deadline(ws: Workspace, value: int, *, heartbeat: float | None = None
     ],
 )
 def test_no_hold_returns_at_once_and_moves_the_guard_deadline_to_now(
-    tmp_path: Path, orchestrator_exit: int, expected_exit: int
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, orchestrator_exit: int, expected_exit: int
 ) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
     later = int(clock.now().timestamp()) + 3600
-    deadline = _guard_deadline(ws, later, heartbeat=clock.now().timestamp() - 30)
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, later)
 
     code = main(
         _run_argv(ws, extra=("--no-hold",)),
@@ -527,11 +542,13 @@ def test_no_hold_is_refused_under_a_launch_token(tmp_path: Path) -> None:
     assert "--no-hold" in _report(ws, "pod-run-report-launch-abc123.json")["reason"]
 
 
-def test_no_hold_never_moves_an_earlier_guard_deadline_later(tmp_path: Path) -> None:
+def test_no_hold_never_moves_an_earlier_guard_deadline_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
     earlier = int(clock.now().timestamp()) - 60
-    deadline = _guard_deadline(ws, earlier)
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, earlier)
 
     main(
         _run_argv(ws, extra=("--no-hold",)),
@@ -546,34 +563,20 @@ def test_no_hold_never_moves_an_earlier_guard_deadline_later(tmp_path: Path) -> 
     assert _report(ws)["guard_release"]["released"] is True
 
 
-@pytest.mark.parametrize(
-    "case",
-    [
-        "no-pod-id",
-        "bad-pod-id",
-        "no-guard-directory",
-        "no-deadline-file",
-        "garbage-deadline",
-        "unwritable",
-    ],
-)
+@pytest.mark.parametrize("case", ["no-deadline-file", "garbage-deadline", "unwritable"])
 def test_no_hold_without_an_armed_guard_still_returns_and_says_so(
     tmp_path: Path, case: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
     extra = {pod_run.POD_ID_ENVIRONMENT: "pod123"}
-    if case == "no-pod-id":
-        extra = {}
-    elif case == "bad-pod-id":
-        extra = {pod_run.POD_ID_ENVIRONMENT: "pod/../x"}
-    elif case == "no-deadline-file":
-        (ws.volume / pod_run.POD_GUARD_DIRECTORY).mkdir()
+    later = int(clock.now().timestamp()) + 3600
+    deadline_path = _armed(ws, tmp_path, monkeypatch, clock, later)
+    if case == "no-deadline-file":
+        deadline_path.unlink()
     elif case == "garbage-deadline":
-        _guard_deadline(ws, 0).write_text("abc\n", encoding="ascii")
+        deadline_path.write_text("abc\n", encoding="ascii")
     elif case == "unwritable":
-        later = int(clock.now().timestamp()) + 3600
-        _guard_deadline(ws, later)
         # Root ignores a read-only directory, so the failed write is made directly.
         write = pod_run.atomic_write
 
@@ -607,11 +610,13 @@ def test_no_hold_without_an_armed_guard_still_returns_and_says_so(
         assert not deadline.exists()
 
 
-def test_no_hold_leaves_the_guard_alone_after_a_red_bootstrap(tmp_path: Path) -> None:
+def test_no_hold_leaves_the_guard_alone_after_a_red_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
     later = int(clock.now().timestamp()) + 3600
-    deadline = _guard_deadline(ws, later)
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, later)
     red = FakeActions(fail_step=BootstrapStep.PREFLIGHT)
 
     code = main(
@@ -627,20 +632,27 @@ def test_no_hold_leaves_the_guard_alone_after_a_red_bootstrap(tmp_path: Path) ->
     assert deadline.read_text(encoding="ascii") == f"{later}\n"
 
 
-def test_no_hold_says_when_no_guard_heartbeat_backs_the_release(tmp_path: Path) -> None:
+def test_no_hold_says_when_the_guard_heartbeat_went_stale_during_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
     later = int(clock.now().timestamp()) + 3600
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, later)
     stale = clock.now().timestamp() - pod_run.GUARD_HEARTBEAT_STALE_SECONDS - 1
-    _guard_deadline(ws, later, heartbeat=stale)
+    inner = RecordedRunner()
+
+    def guard_dies_mid_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        os.utime(deadline.with_name("heartbeat-pod123"), (stale, stale))
+        return inner(*args, **kwargs)
 
     main(
         _run_argv(ws, extra=("--no-hold",)),
-        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        environ=_environ(clock, lifetime=4.0),
         now=clock.now,
         sleeper=clock.sleep,
         actions_factory=lambda plan: PreflightedActions(),
-        runner=RecordedRunner(),
+        runner=guard_dies_mid_run,
     )
 
     release = _report(ws)["guard_release"]
@@ -650,21 +662,14 @@ def test_no_hold_says_when_no_guard_heartbeat_backs_the_release(tmp_path: Path) 
     assert "delete the pod by hand" in release["detail"]
 
 
-def _first_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pod_id: str) -> None:
-    environ = tmp_path / "pid1-environ"
-    environ.write_bytes(f"PATH=/usr/bin\0{pod_run.POD_ID_ENVIRONMENT}={pod_id}\0HOME=/\0".encode())
-    monkeypatch.setattr(pod_run, "PID1_ENVIRON", environ)
-
-
 def test_no_hold_reads_the_pod_id_from_the_container_s_first_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An SSH shell need not inherit the provider's pod id; the container's first process has it."""
 
     ws = _prepared(tmp_path)
-    _first_process(tmp_path, monkeypatch, "pod123")
     clock = Clock()
-    deadline = _guard_deadline(ws, int(clock.now().timestamp()) + 3600)
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, int(clock.now().timestamp()) + 3600)
 
     code = main(
         _run_argv(ws, extra=("--no-hold",)),
@@ -707,6 +712,66 @@ def test_no_hold_refuses_a_shell_pod_id_that_is_not_the_container_s_before_boots
     assert runner.calls == []
     assert "'otherpod'" in _report(ws)["reason"]
     assert deadline.read_text(encoding="ascii") == f"{later}\n"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "shell-id-only",
+        "no-pod-id",
+        "bad-first-process-id",
+        "no-guard-directory",
+        "missing-heartbeat",
+        "stale-heartbeat",
+    ],
+)
+def test_no_hold_without_this_pod_s_live_guard_is_refused_before_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A release must reach this pod's own guard; a shell's id could name another live pod."""
+
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    later = int(clock.now().timestamp()) + 3600
+    extra: dict[str, str] = {}
+    if case == "shell-id-only":
+        # /proc/1/environ unreadable; a hand-exported id names a pod whose guard is live.
+        _guard_deadline(ws, later, heartbeat=clock.now().timestamp() - 30)
+        extra = {pod_run.POD_ID_ENVIRONMENT: "pod123"}
+    elif case == "bad-first-process-id":
+        _first_process(tmp_path, monkeypatch, "pod١٢٣")
+    elif case != "no-pod-id":
+        _first_process(tmp_path, monkeypatch, "pod123")
+        if case == "missing-heartbeat":
+            _guard_deadline(ws, later)
+        elif case == "stale-heartbeat":
+            stale = clock.now().timestamp() - pod_run.GUARD_HEARTBEAT_STALE_SECONDS - 1
+            _guard_deadline(ws, later, heartbeat=stale)
+    actions = PreflightedActions()
+    runner = RecordedRunner()
+
+    code = main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0, extra=extra),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: actions,
+        runner=runner,
+    )
+
+    assert code == EXIT_REFUSED
+    assert actions.calls == []
+    assert runner.calls == []
+    reason = _report(ws)["reason"]
+    assert "--no-hold" in reason
+    if case in ("shell-id-only", "no-pod-id"):
+        assert "Run without --no-hold" in reason
+    if case in ("missing-heartbeat", "stale-heartbeat", "no-guard-directory"):
+        assert "heartbeat" in reason
+    deadline = ws.volume / pod_run.POD_GUARD_DIRECTORY / "deadline-pod123"
+    if deadline.exists():
+        assert deadline.read_text(encoding="ascii") == f"{later}\n"
+    assert not deadline.with_name("released-pod123").exists()
 
 
 def test_a_protocol_the_orchestrator_cannot_parse_is_refused_before_bootstrap(
@@ -788,6 +853,44 @@ def test_a_resume_naming_another_protocol_than_its_seal_is_refused_before_bootst
 
     assert code == EXIT_COMPLETE
     assert actions.calls
+
+
+@pytest.mark.parametrize("case", ["not-json", "read-oserror"])
+def test_a_resume_whose_run_json_cannot_be_read_is_refused_before_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
+    _protocols(ws)
+    run_json = ws.volume / "runs" / "first-real-run" / "run.json"
+    run_json.parent.mkdir(parents=True)
+    if case == "not-json":
+        run_json.write_text("{not json", encoding="utf-8")
+    else:
+        run_json.write_text("{}", encoding="utf-8")
+
+        def unreadable(self: RunTree) -> dict:
+            raise PermissionError(13, "Permission denied", str(run_json))
+
+        monkeypatch.setattr(RunTree, "read_run", unreadable)
+
+    code, actions = _resume(ws, ())
+
+    assert code == EXIT_REFUSED
+    assert actions.calls == []
+    assert "sealed inputs could not be checked" in _report(ws)["reason"]
+
+
+def test_a_pod_id_is_ascii_letters_and_digits_only(tmp_path: Path) -> None:
+    clock = Clock()
+    guard = tmp_path / pod_run.POD_GUARD_DIRECTORY
+    guard.mkdir()
+    for pod_id in ("pod١٢٣", "pod/../x", ""):
+        release = pod_run.release_pod_guard(
+            tmp_path, pod_id, run_id="r", state="complete", now=clock.now
+        )
+        assert release["released"] is False
+    assert list(guard.iterdir()) == []
 
 
 def test_a_real_resume_without_its_sealed_mechanics_qualification_is_refused_before_bootstrap(

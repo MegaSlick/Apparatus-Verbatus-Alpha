@@ -123,7 +123,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Mapping, MutableMapping, Sequence
+from typing import Callable, Mapping, MutableMapping, Sequence, TypeGuard
 
 from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity, is_witness_role
@@ -611,7 +611,10 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
                     "--mechanics-qualification the run started with, against the same "
                     "--witness-context-config"
                 )
-    except ContractError as error:
+    except (ContractError, OSError) as error:
+        # `read_run` already turns an unreadable or non-JSON run.json into a
+        # ContractError; an OSError from the tree around it must not escape
+        # either, or the refusal would be a traceback with no report.
         raise RunRefusal(
             f"run {plan.run_id!r} already exists and its sealed inputs could not be checked "
             f"against this launch: {error}",
@@ -1165,6 +1168,72 @@ def container_pod_id() -> str | None:
     return None
 
 
+def _is_pod_id(value: str | None) -> TypeGuard[str]:
+    # ASCII only: str.isalnum accepts other scripts' letters and digits, which
+    # are no provider pod id and would only name an odd file on the volume.
+    return value is not None and value.isascii() and value.isalnum()
+
+
+def _guard_heartbeat_age(volume: Path, pod_id: str, instant: float) -> int | None:
+    """Seconds since this pod's guard last touched its heartbeat, or None when it never did."""
+
+    try:
+        beat = (volume / POD_GUARD_DIRECTORY / f"heartbeat-{pod_id}").stat().st_mtime
+    except OSError:
+        return None
+    return max(0, int(instant - beat))
+
+
+def _require_live_guard_for_release(
+    volume: Path,
+    first_process_pod_id: str | None,
+    shell_pod_id: str | None,
+    *,
+    report_path: Path,
+    now: Callable[[], datetime],
+) -> None:
+    """Refuse a --no-hold whose release could not be shown to reach this pod's own live guard.
+
+    Only the container's first process names this pod: a shell's id can be
+    exported by hand and name another live pod on the shared volume, whose
+    guard would then delete it mid-stage. Without that id the guard never
+    armed here, so there is nothing to release. A fresh heartbeat under the
+    id proves, before anything is paid for, that a guard is watching it.
+    """
+
+    if first_process_pod_id is None:
+        raise RunRefusal(
+            f"--no-hold needs this pod's id from its first process ({PID1_ENVIRON} names no "
+            f"{POD_ID_ENVIRONMENT}), and a shell's own value is never trusted for it: without "
+            "that id no guard armed for this pod, so there is nothing to release. Run without "
+            "--no-hold; the guard's idle deletion still applies",
+            report_path=report_path,
+        )
+    if not _is_pod_id(first_process_pod_id):
+        raise RunRefusal(
+            f"--no-hold: the first process's {POD_ID_ENVIRONMENT} {first_process_pod_id!r} "
+            "is not a pod id",
+            report_path=report_path,
+        )
+    if shell_pod_id not in (None, first_process_pod_id):
+        raise RunRefusal(
+            f"--no-hold would move the guard deadline of pod {first_process_pod_id!r}, the "
+            f"container's own (its first process's {POD_ID_ENVIRONMENT}), but this shell exports "
+            f"{shell_pod_id!r}; the volume holds every pod's deadline, so one of the two is "
+            f"wrong. Unset or correct {POD_ID_ENVIRONMENT} in this shell",
+            report_path=report_path,
+        )
+    age = _guard_heartbeat_age(volume, first_process_pod_id, now().timestamp())
+    if age is None or age > GUARD_HEARTBEAT_STALE_SECONDS:
+        seen = "never" if age is None else f"{age} s ago"
+        raise RunRefusal(
+            f"--no-hold needs a live guard for pod {first_process_pod_id!r}, but its heartbeat "
+            f"was last touched {seen} (fresh means within {GUARD_HEARTBEAT_STALE_SECONDS} s). "
+            "Run without --no-hold, or check the guard first (operations/pod/README.md)",
+            report_path=report_path,
+        )
+
+
 def release_pod_guard(
     volume: Path, pod_id: str | None, *, run_id: str, state: str, now: Callable[[], datetime]
 ) -> dict[str, object]:
@@ -1181,7 +1250,7 @@ def release_pod_guard(
     deletes the pod.
     """
 
-    if not pod_id or not all(character.isalnum() for character in pod_id):
+    if not _is_pod_id(pod_id):
         return {"released": False, "detail": f"{POD_ID_ENVIRONMENT} is unset or not a pod id"}
     guard = volume / POD_GUARD_DIRECTORY
     path = guard / f"deadline-{pod_id}"
@@ -1204,12 +1273,7 @@ def release_pod_guard(
     except OSError as error:
         # The notice is the ping's wording, not the delete: the deadline still moves.
         record["notice_failure"] = str(error)
-    try:
-        heartbeat_age: int | None = max(
-            0, int(instant - (guard / f"heartbeat-{pod_id}").stat().st_mtime)
-        )
-    except OSError:
-        heartbeat_age = None
+    heartbeat_age = _guard_heartbeat_age(volume, pod_id, instant)
     record["guard_heartbeat_age_seconds"] = heartbeat_age
     record["guard_alive"] = (
         heartbeat_age is not None and heartbeat_age <= GUARD_HEARTBEAT_STALE_SECONDS
@@ -1463,8 +1527,8 @@ def main(
     # is credential-shaped and would be gone afterwards.
     launch_token = environment.get("VERBATUS_LAUNCH_TOKEN") or None
     shell_pod_id = environment.get(POD_ID_ENVIRONMENT) or None
-    first_process_pod_id = container_pod_id()
-    pod_id = first_process_pod_id or shell_pod_id
+    # Only the container's first process names this pod (see PID1_ENVIRON).
+    pod_id = container_pod_id()
     try:
         bootstrap_plan, hard_deadline = bootstrap_main.prepare(bootstrap_argv, environment, now=now)
     except PlanRefusal as refusal:
@@ -1483,13 +1547,13 @@ def main(
                 "reads its early exit as completed-early",
                 report_path=plan.report_path,
             )
-        if plan.no_hold and first_process_pod_id and shell_pod_id not in (None, pod_id):
-            raise RunRefusal(
-                f"--no-hold would move the guard deadline of pod {pod_id!r}, the container's own "
-                f"(its first process's {POD_ID_ENVIRONMENT}), but this shell exports "
-                f"{shell_pod_id!r}; the volume holds every pod's deadline, so one of the two is "
-                f"wrong. Unset or correct {POD_ID_ENVIRONMENT} in this shell",
+        if plan.no_hold:
+            _require_live_guard_for_release(
+                bootstrap_plan.volume_mount_path,
+                pod_id,
+                shell_pod_id,
                 report_path=plan.report_path,
+                now=now,
             )
         if plan.stage is not None or plan.from_stage is not None:
             bootstrap_plan = replace(

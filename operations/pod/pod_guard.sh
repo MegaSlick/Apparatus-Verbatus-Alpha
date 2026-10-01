@@ -33,6 +33,9 @@ deadline_file="$dir/deadline-$pod"
 # Without a writable log nothing below can be trusted, so the guard exits and the start
 # command's own backstop does the deleting instead.
 { mkdir -p "$dir" && touch "$log"; } 2>/dev/null || exit 3
+# A release notice belongs to the run that wrote it: a restarted pod keeps its id, and an
+# old notice would make this guard's delete read as that earlier run's ending.
+rm -f "$dir/released-$pod"
 
 if command -v timeout >/dev/null 2>&1; then limit="timeout 60"; else limit=""; fi
 # A lost volume must not cost the delete: without a writable log, output goes nowhere.
