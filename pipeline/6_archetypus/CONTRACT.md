@@ -177,7 +177,7 @@ and `recensor_ref` are resolved — is still owed once the Recensor lane defines
 
 **`annotations` — carried whole, never in `text`.** A page reading records no
 annotation layer, so an established page record's `annotations` is `[]`; the shape
-below is what the logical record and `validate_annotations` hold it to. A list of:
+below is what `validate_annotations` holds any layer to. A list of:
 
 - `uncertain` — `{kind, start, end, certainty, alternatives}`. A span covering at least
   one *readable* character in `text` — width alone is not enough, because a span over
@@ -208,7 +208,7 @@ cert="">` and `<gap>` (TEI P5, "Representation of Primary Sources"; EpiDoc Guide
 Rendering either of them — brackets, underdots, sigla — is the Armarium's business at
 export time and is deliberately not stored here. A page reading carrying an annotation
 layer is refused, so every page record's `annotations` is `[]`; the rules above and
-below are what `validate_annotations` holds the logical record's layer to.
+below are what `validate_annotations` holds a layer to.
 
 **Beside, not instead of, the canonical `uncertainty` layer.** The two describe the same
 kinds of damage — `uncertain` against `uncertain_spans`, `illegible` against `gaps` — and
@@ -283,19 +283,6 @@ stage-context-shaped object carrying `.tree`, `.input_ref`, `.artifact_ref` and 
 `common.stage.reading_acts` reads, so a consumer outside a stage opens one first,
 exactly as `test_index.py` does with `page_context`.
 
-**The clustered index has no such reconciliation yet — deliberately unfilled.**
-`build_logical_index` (Unit 19D) seals one `{logical_act_id, text_hash}` row per
-established logical record, but no consumer reads it and the stage does not yet run
-it: neither established stage dispatches by logical act. The Perlector publishes no
-clustered reading for it to establish: every act on a registered re-shoot arrives here
-as a `not-run` Perlectio with `hold.code = "cross-capture-read-not-built"`, so it is
-held and reaches no record, like any other held act. Until the first consumer
-lands, the index can only agree with the writer's own list — the exact self-agreement
-the reconciliation above exists to break. Wiring the clustered path must
-bring the same three-way reconciliation (rows, records on disk, the Recensor's
-accepted set) with it; an index without it would let a skipped logical act read as
-absent rather than as an error.
-
 ## Consumer obligations
 
 Armarium requires exactly one Archetypus record for an accepted reading, rather than
@@ -322,8 +309,7 @@ Consequences worth stating plainly:
   name `transcription_annotations`, to keep it apart from the unbuilt *semantic*
   annotation layer and its per-row `not-produced` claim. A page reading records no
   annotations, so `[]` is the ordinary value;
-- `evidence_ref` and `index.json` are still not read at export. On the clustered
-  logical projection path, Armarium checks `text_hash` against the text; and
+- `evidence_ref`, `text_hash` and `index.json` are not read at export; and
 - the projection-identity test (`pipeline/orchestrator/test_projection_identity.py`)
   guards the packaged bundle's own `formats.formats` selection (currently five:
   text-bundle, acts-database, jsonl, review-items, salvage-tier), not the Armarium's
