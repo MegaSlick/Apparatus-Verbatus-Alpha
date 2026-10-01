@@ -13,10 +13,12 @@ from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
 
+import armarium_export
 import pytest
 from armarium_export import EXPORT_MANIFEST_NAME, _zip_bytes, verify_export_bundle
 from coniector_layer import CONIECTOR_MEMBER, export_rows
 
+from common.armarium_formats import ArmariumFormats
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import SchemaRefusal
 from common.reconstruction_records import LABEL
@@ -312,9 +314,6 @@ def test_a_join_on_consecutive_pages_is_its_own_section_and_verifies(joined, tmp
 
 def _verify_two_folders(monkeypatch, tmp_path, shown_by_folder: dict[str, list[dict]]) -> None:
     """Run the text-bundle reconstruction check over two folders that section `act_a`."""
-    import armarium_export
-    from common.armarium_formats import ArmariumFormats
-
     monkeypatch.setattr(armarium_export, "_text_bundle_records", lambda _root: {})
     monkeypatch.setattr(armarium_export, "_package_lines", lambda path, _label: [str(path)])
     monkeypatch.setattr(
@@ -345,9 +344,7 @@ def _shown(text: str) -> dict:
     return {"act_ids": ["act_a"], "act_keys": ["p1:1"], "reconstruction_text": text}
 
 
-def test_the_text_bundle_check_accepts_one_row_shown_alike_in_every_folder(
-    monkeypatch, tmp_path
-):
+def test_the_text_bundle_check_accepts_one_row_shown_alike_in_every_folder(monkeypatch, tmp_path):
     _verify_two_folders(monkeypatch, tmp_path, {"a": [_shown("one")], "b": [_shown("one")]})
 
 

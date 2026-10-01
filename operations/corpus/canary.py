@@ -108,8 +108,7 @@ def _contains_canary_identity(value: Any, act_ids: set[str], ordinals: set[int])
             key == "reconstructions"
             and isinstance(item, list)
             and any(
-                isinstance(row, list) and any(act_id in act_ids for act_id in row)
-                for row in item
+                isinstance(row, list) and any(act_id in act_ids for act_id in row) for row in item
             )
         ):
             return True
