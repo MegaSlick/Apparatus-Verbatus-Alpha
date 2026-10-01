@@ -14,9 +14,8 @@ from pathlib import Path
 import pytest
 
 from common.contracts.envelope import build_envelope
-from common.contracts.errors import ContractError
 from common.contracts.identities import artifact_id, attempt_id
-from common.contracts.stages import DESIGNATOR, RECENSOR
+from common.contracts.stages import RECENSOR
 from common.recovery import FALLBACK_RECROP, PAGE_LEVEL_REREAD
 from common.runtree.store import RunTree
 from conftest import load_stage, programs_through, run_stage
@@ -270,55 +269,3 @@ def test_recovery_state_accepts_both_real_kinds(tmp_path):
     state = recensor.recovery_state(_MiniContext(tree), act_id, BUDGET)
     assert len(state["requests_by_kind"][PAGE_LEVEL_REREAD]) == 1
     assert len(state["requests_by_kind"][FALLBACK_RECROP]) == 1
-
-
-# --- The Designator: refuses to answer a request meant for another stage ------
-
-
-def test_the_designator_refuses_to_answer_a_non_recrop_recovery_kind(tmp_path, monkeypatch):
-    """The Designator only ever cuts crops. Asked to answer a request whose
-    `recovery_kind` names the OTHER operation, it must refuse rather than
-    substitute a recrop -- exactly the silent conflation finding #4 named.
-
-    `current_recovery_request` is stubbed rather than forged end-to-end: it
-    already has its own dedicated coverage (`test_recovery_idempotency.py`,
-    `test_orchestrator_acceptance.py`) proving it validates the request/review/
-    policy chain. What is new and under test here is `recovery_pass`'s own
-    reaction to the `recovery_kind` it returns, so that one dependency is
-    faked and everything upstream of it (a real seal, a real act) stays real.
-    """
-    root = tmp_path / "runs"
-    for program in programs_through("designator"):
-        _invoke(root, "r", "review", program)
-
-    designator = load_stage("2_designator")
-
-    from common.stage import open_context, stage_parser
-
-    args = stage_parser("recovery kind refusal").parse_args(
-        ["--run-root", str(root), "--run-id", "r", "--scenario", "review"]
-    )
-    context = open_context(args, DESIGNATOR)
-    seal = context.tree.read_artifact(
-        DESIGNATOR, "proposal-seal", artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
-    )
-    act_id = seal["payload"]["expected_acts"][0]["act_id"]
-    act_key = seal["payload"]["expected_acts"][0]["act_key"]
-
-    monkeypatch.setattr(
-        designator,
-        "current_recovery_request",
-        lambda *args, **kwargs: {
-            "artifact_id": "fake_request",
-            "payload": {
-                "attempt_ordinal": 1,
-                "act_key": act_key,
-                "recovery_kind": PAGE_LEVEL_REREAD,
-                "budget_used": 0,
-            },
-        },
-    )
-
-    with pytest.raises(ContractError, match="only answers") as caught:
-        designator.recovery_pass(context, act_id, "fake_request")
-    assert FALLBACK_RECROP in str(caught.value)

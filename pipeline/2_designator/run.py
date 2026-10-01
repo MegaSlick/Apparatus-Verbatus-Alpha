@@ -1,17 +1,14 @@
 """Designator marks acts and cuts crops; it establishes no text.
 
-Only this stage cuts, including Recensor-requested recrops, so each crop has one
-author. The proposal seal accounts for every act; holds name their cause and
-exit held, so an act lost later leaves a visible hole. Regions are append-only:
-witnesses read proposal regions; ink only a recovery uncovered was never shown
-to a witness. Act identity survives recrops; region identity binds the transform.
+Only this stage cuts, so each crop has one author. The proposal seal accounts
+for every act; holds name their cause and exit held, so an act lost later leaves
+a visible hole. Region identity binds the transform.
 
 `structure` finds ink, `grouping` assembles by geometry alone, `geometry` pads
 crops, and `conservation` reconciles claimed ink. `_analyze_page` resolves sealed
 thresholds per page because page fractions cannot be fixed pixels across scans.
 
     python pipeline/2_designator/run.py --run-root <dir> --run-id <id>
-    python pipeline/2_designator/run.py ... --operation recover --act <act_id>
 """
 
 import dataclasses
@@ -51,11 +48,8 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.identities import act_id as derive_minted_act_id  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
-    ATTESTATORES,
     DESIGNATOR,
     EXEMPLAR,
-    INK_MAP,
-    RECENSOR,
 )
 from common.decoding import (  # noqa: E402
     STRUCTURE_RECOVERY_SCHEDULE,
@@ -64,14 +58,12 @@ from common.decoding import (  # noqa: E402
 )
 from common.exemplar_boundary import (  # noqa: E402
     cut_exemplar_crop,
-    exemplar_crop_transform,
     sealed_page_bytes,
     verify_exemplar_corpus_seal,
     verify_sealed_page_pixels,
 )
 from common.fixture_identity import act_bounds, act_identity, page_identity  # noqa: E402
 from common.imaging import dimensions, grayscale_rows  # noqa: E402
-from common.recovery import FALLBACK_RECROP  # noqa: E402
 from common.stage import (  # noqa: E402
     DESIGNATOR_CHAIR,
     EXIT_COMPLETE,
@@ -87,8 +79,6 @@ from common.stage import (  # noqa: E402
     _stage_records,
     canary_ordinals,
     continuation_for,
-    current_recovery_request,
-    expected_acts,
     fallback_page_act_key,
     fixture_serving_details,
     open_stage_context,
@@ -103,7 +93,6 @@ from common.stage import (  # noqa: E402
 from operations.serving.assembly import bound_serving_recipes, stage_chair_client  # noqa: E402
 from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
 from operations.serving.detector import (  # noqa: E402
-    FIXTURE_ENGINE,
     RecordDetector,
     check_record_detector_runnable,
     fixture_record_detector,
@@ -118,11 +107,6 @@ DESCRIPTION = "Designator: marks out the acts and cuts the crops. It establishes
 # equal to common/recovery.py's RULED_ABSOLUTE_CAP by hand: recovery restores
 # coverage, never quality, so the attempt ceiling must equal the absolute cap.
 ABSOLUTE_STRUCTURE_ATTEMPT_CEILING = 3
-
-# How much of a page's secondary rescue pass its records enumerate. Kept here,
-# not in `common/`, because nothing outside this stage reads it.
-SECONDARY_ENUMERATION_COMPLETE = "complete"
-SECONDARY_ENUMERATION_WITHHELD = "withheld-page-held"
 
 # Why an act could not be marked out: a closed vocabulary, so consumers branch
 # on a code and a new cause must be declared here.
@@ -656,7 +640,7 @@ def _bounds_of(row: dict) -> dict:
     """The one reader of a fixture row's `x, y, w, h` fields as a `Bounds` dict.
 
     One reader, so every call site cuts and compares the same projection. Used
-    for continuation and recovery rows; declared acts use `act_bounds`.
+    for continuation rows; declared acts use `act_bounds`.
     """
     return {key: row[key] for key in ("x", "y", "w", "h")}
 
@@ -666,34 +650,6 @@ def _overlap_area(a: dict, b: dict) -> int:
     x1 = min(a["x"] + a["w"], b["x"] + b["w"])
     y1 = min(a["y"] + a["h"], b["y"] + b["h"])
     return max(0, x1 - x0) * max(0, y1 - y0)
-
-
-def _uncovered_area(target: dict, covers: list[dict]) -> int:
-    """How many pixels of `target` no rectangle in `covers` already contains.
-
-    Shares `_subtract_all` with the fallback tiling, so the two agree on what
-    "covered" means; overlapping covers are not double counted, and a rectangle
-    two covers contain only jointly still counts as covered.
-
-    `target` must be a validated rectangle of positive area; a degenerate one
-    yields a meaningless area rather than zero.
-    """
-    return sum(piece["w"] * piece["h"] for piece in _subtract_all(target, covers))
-
-
-def _coverage_on_page(records: list[dict], page_ordinal: int, page_id: str) -> list[dict]:
-    """The capture rectangles those region records already cut from one page.
-
-    The padded capture bounds, not `raw_bounds`, so a recrop inside the padding
-    does not count as recovery. Scoped by ordinal and page identity, since a
-    continuation region lies on another page and an ordinal alone can collide.
-    """
-    return [
-        record["payload"]["transform"]["bounds"]
-        for record in records
-        if record["payload"]["transform"]["source_page_ordinal"] == page_ordinal
-        and record["payload"]["transform"]["source_page_id"] == page_id
-    ]
 
 
 def _body_overlap_area(group: dict, declared_bounds: dict) -> int:
@@ -858,8 +814,6 @@ def cut_region(
     bounds,
     ordinal,
     page_ordinal,
-    origin,
-    recovery_request: dict[str, str] | None = None,
     *,
     padding: dict | None = None,
     provenance: dict | None = None,
@@ -873,8 +827,6 @@ def cut_region(
         bounds,
         ordinal,
         page_ordinal,
-        origin,
-        recovery_request,
         padding=padding,
         provenance=provenance,
     )
@@ -888,8 +840,6 @@ def cut_minted_region(
     bounds,
     ordinal,
     page_ordinal,
-    origin,
-    recovery_request: dict[str, str] | None = None,
     *,
     padding: dict | None = None,
     provenance: dict | None = None,
@@ -918,9 +868,9 @@ def cut_minted_region(
             "provenance": padding["provenance"],
         }
     else:
-        # A recovery rectangle skips `apply_padding`, which is what validates
-        # bounds; validate here so a bad one is a refusal, not a bare ValueError.
-        geometry.validate_bounds(bounds, page_w, page_h, "recovery bounds")
+        # A fallback tile skips `apply_padding`, which is what validates bounds;
+        # validate here so a bad one is a refusal, not a bare ValueError.
+        geometry.validate_bounds(bounds, page_w, page_h, "tile bounds")
         final_bounds = bounds
         padding_record = None
 
@@ -930,12 +880,12 @@ def cut_minted_region(
         subject_id=act_id,
         outcome="proposed",
         attempt=attempt_id(act_id, "crop", ordinal),
-        inputs=[context.input_ref(image_path)] + ([recovery_request] if recovery_request else []),
+        inputs=[context.input_ref(image_path)],
         payload={
             "region_id": region_id(act_id, crop["transform"]),
             "act_key": act_key,
             "attempt_ordinal": ordinal,
-            "origin": origin,
+            "origin": "proposal",
             **crop,
             "raw_bounds": bounds,
             "padding": padding_record,
@@ -1387,188 +1337,6 @@ def _claimed_regions_by_page(context) -> dict[int, list[dict]]:
     return claimed
 
 
-def _contains(outer: dict, inner: dict) -> bool:
-    return (
-        outer["x"] <= inner["x"]
-        and outer["y"] <= inner["y"]
-        and outer["x"] + outer["w"] >= inner["x"] + inner["w"]
-        and outer["y"] + outer["h"] >= inner["y"] + inner["h"]
-    )
-
-
-def _secondary_rescue_candidates(claimed: list[dict], candidates: list[dict]) -> list[dict]:
-    """Exclude candidates fully inside one claim; keep partial overlaps.
-
-    Count touching acts: a spanning mark may show a merged boundary, but padded
-    claims can abut, so the count is review evidence, never a verdict.
-    """
-    rescues = []
-    for candidate in candidates:
-        if any(_contains(entry["bounds"], candidate["bounds"]) for entry in claimed):
-            continue
-        rescues.append(
-            {
-                "candidate": candidate,
-                "overlapping_claimed_act_count": len(
-                    {
-                        entry["act_id"]
-                        for entry in claimed
-                        if _overlap_area(entry["bounds"], candidate["bounds"]) > 0
-                    }
-                ),
-            }
-        )
-    return rescues
-
-
-def _publish_secondary_proposals(
-    context,
-    ordinal: int,
-    page_record: dict,
-    analysis: dict,
-    claimed: list[dict],
-    secondary: dict | None,
-    grouping_policy: dict,
-) -> bool:
-    """Cut non-authoritative rescue candidates for review, up to the page bound.
-
-    `secondary` is the provenance the pixel-scan rescue runs under, or None
-    when it does not run (`_pixel_rescue_provenance`).
-
-    A speckled page could otherwise mint thousands of crops. Beyond the bound,
-    keep one held count and cut none; candidates are counted, never filtered.
-    Enumeration distinguishes no candidate from counted but not cut.
-    """
-    if secondary is None:
-        return False
-    validate_serving_provenance(
-        context,
-        secondary,
-        producer_stage=DESIGNATOR,
-        require_receipt=True,
-    )
-    if analysis["background"] is None:
-        # The secondary scan needs a background; a substituted one would crop
-        # paper.
-        return False
-    candidates = structure.secondary_scan(
-        analysis["width"],
-        analysis["height"],
-        analysis["rows"],
-        background=analysis["background"],
-        gap_tolerance_px=analysis["thresholds"].gap_tolerance_px,
-    )
-    rescues = _secondary_rescue_candidates(claimed, candidates)
-    image_path = page_record["payload"]["image_path"]
-    max_secondary_proposals = analysis["thresholds"].max_secondary_proposals
-    if len(rescues) > max_secondary_proposals:
-        return _publish_withheld_secondary_pass(
-            context,
-            ordinal,
-            page_record,
-            analysis,
-            secondary,
-            candidate_count=len(rescues),
-            max_secondary_proposals=max_secondary_proposals,
-            grouping_config_sha256=grouping_policy["config_sha256"],
-        )
-    page_bytes = _read_checked_page_bytes(context, page_record)
-    for index, rescue_row in enumerate(rescues):
-        candidate = rescue_row["candidate"]
-        # In-page by construction today; a detector chair would not be, and a
-        # bad box must refuse rather than raise a bare ValueError in `crop_png`.
-        geometry.validate_bounds(
-            candidate["bounds"], analysis["width"], analysis["height"], "secondary candidate bounds"
-        )
-        overlap_count = rescue_row["overlapping_claimed_act_count"]
-        subject = f"{page_record['subject_id']}-secondary-{index}"
-        crop = _stored_crop(context, page_bytes, ordinal, page_record, candidate["bounds"])
-        rescue_payload = {
-            "page_ordinal": ordinal,
-            "pixel_count": candidate["pixel_count"],
-            "origin": "secondary-proposer",
-            "padding": None,
-            "authoritative": False,
-            "authority_effect": "review-only",
-            "overlapping_claimed_act_count": overlap_count,
-            **crop,
-            "provenance": secondary,
-        }
-        _refuse_text_fields(rescue_payload)
-        rescue = context.publish(
-            kind="rescue-crop",
-            subject_id=subject,
-            outcome="held",
-            inputs=[context.input_ref(image_path)],
-            payload=rescue_payload,
-        )
-        proposal_payload = {
-            "page_ordinal": ordinal,
-            "bounds": candidate["bounds"],
-            "pixel_count": candidate["pixel_count"],
-            "authoritative": False,
-            "terminal_disposition": "held-for-review",
-            "secondary_enumeration": SECONDARY_ENUMERATION_COMPLETE,
-            "overlapping_claimed_act_count": overlap_count,
-            "rescue_ref": context.input_ref(rescue.relative_path),
-            "provenance": secondary,
-        }
-        _refuse_text_fields(proposal_payload)
-        context.publish(
-            kind="secondary-proposal",
-            subject_id=subject,
-            outcome="held",
-            inputs=[context.input_ref(image_path), context.input_ref(rescue.relative_path)],
-            payload=proposal_payload,
-        )
-    return bool(rescues)
-
-
-def _publish_withheld_secondary_pass(
-    context,
-    ordinal: int,
-    page_record: dict,
-    analysis: dict,
-    secondary: dict,
-    *,
-    candidate_count: int,
-    max_secondary_proposals: int,
-    grouping_config_sha256: str,
-) -> bool:
-    """One held record for a page whose secondary pass found more than the bound.
-
-    No crop is cut, but the count stays on the record. Like the rescues it
-    replaces, it mints no act and enters no seal; it does hold the run.
-    """
-    payload = {
-        "page_ordinal": ordinal,
-        "page_bounds": _page_bounds(analysis),
-        "authoritative": False,
-        "terminal_disposition": "held-for-review",
-        "secondary_enumeration": SECONDARY_ENUMERATION_WITHHELD,
-        "secondary_candidate_count": candidate_count,
-        "max_secondary_proposals": max_secondary_proposals,
-        "grouping_config_sha256": grouping_config_sha256,
-        "reason": (
-            f"this page's secondary pass found {candidate_count} rescue candidates no crop "
-            f"claims, more than the sealed bound of {max_secondary_proposals} this run may cut "
-            "and hold separately on one page, so the pass is held as a single review item and "
-            "no rescue crop was cut; nothing was filtered out of the scan, and the candidates "
-            "remain recomputable from the sealed page bytes under the sealed policy"
-        ),
-        "provenance": secondary,
-    }
-    _refuse_text_fields(payload)
-    context.publish(
-        kind="secondary-proposal",
-        subject_id=f"{page_record['subject_id']}-secondary-withheld",
-        outcome="held",
-        inputs=[context.input_ref(page_record["payload"]["image_path"])],
-        payload=payload,
-    )
-    return True
-
-
 def _seal_row(
     act_id: str,
     act_key: str,
@@ -1906,7 +1674,6 @@ def _publish_page_fallback(
             dict(tile["bounds"]),
             index + 1,
             ordinal,
-            "proposal",
             provenance=provenance,
         )
         evidence.append(context.input_ref(region.relative_path))
@@ -1977,16 +1744,15 @@ def _build_conservation_payload(
     return conservation_payload
 
 
-def _publish_conservation_and_secondary(
+def _publish_conservation(
     context,
     ordinal: int,
     page_record: dict,
     analysis: dict,
     claimed: list[dict],
-    secondary: dict | None,
     grouping_policy: dict,
-) -> tuple[list[dict], bool]:
-    """Reconcile ink against crops, then publish conservation and rescue evidence.
+) -> list[dict]:
+    """Reconcile ink against crops, then publish the page's conservation record.
 
     The scan is independent of grouping so missed ink remains visible. Without
     an inferable background, a substituted threshold would invent a measurement.
@@ -2027,9 +1793,6 @@ def _publish_conservation_and_secondary(
         inputs=[context.input_ref(page_record["payload"]["image_path"])],
         payload=conservation_payload,
     )
-    secondary_held = _publish_secondary_proposals(
-        context, ordinal, page_record, analysis, claimed, secondary, grouping_policy
-    )
     conservation_ref = context.input_ref(published.relative_path)
     rows = _publish_residual_holds(context, page_id, ordinal, promoted, conservation_ref)
     if aggregated:
@@ -2045,7 +1808,23 @@ def _publish_conservation_and_secondary(
                 conservation_ref=conservation_ref,
             )
         )
-    return rows, secondary_held
+    return rows
+
+
+def _publish_conservation_and_secondary(
+    context,
+    ordinal: int,
+    page_record: dict,
+    analysis: dict,
+    claimed: list[dict],
+    secondary: None,
+    grouping_policy: dict,
+) -> tuple[list[dict], bool]:
+    """`_publish_conservation` in the call shape the Armarium's conservation tests use."""
+    if secondary is not None:
+        raise ContractError("the Designator runs no secondary pixel scan")
+    rows = _publish_conservation(context, ordinal, page_record, analysis, claimed, grouping_policy)
+    return rows, False
 
 
 def _conservation_reason(measurable: bool, aggregated: bool, component_count: int) -> str | None:
@@ -2103,32 +1882,29 @@ def _publish_page_conservation(
     pages: dict[int, dict],
     failures: dict[int, str],
     page_cache: dict[int, dict],
-    secondary: dict | None,
     grouping_policy: dict,
-) -> tuple[list[dict], bool, bool]:
-    """Reconcile every sealed page and return rows plus named hold facts."""
+) -> tuple[list[dict], bool]:
+    """Reconcile every sealed page; return its residual rows and whether any went unmeasured."""
     residual_rows = []
-    secondary_held = False
     claimed_by_page = _claimed_regions_by_page(context)
     for ordinal, page_record in pages.items():
         analysis = _analyze_page(page_cache, context, ordinal, page_record, grouping_policy)
-        page_rows, page_secondary_held = _publish_conservation_and_secondary(
-            context,
-            ordinal,
-            page_record,
-            analysis,
-            claimed_by_page.get(ordinal, []),
-            secondary,
-            grouping_policy,
+        residual_rows.extend(
+            _publish_conservation(
+                context,
+                ordinal,
+                page_record,
+                analysis,
+                claimed_by_page.get(ordinal, []),
+                grouping_policy,
+            )
         )
-        secondary_held = secondary_held or page_secondary_held
-        residual_rows.extend(page_rows)
     unmeasured = any(
         analysis["background"] is None
         for ordinal, analysis in page_cache.items()
         if ordinal not in failures
     )
-    return residual_rows, secondary_held, unmeasured
+    return residual_rows, unmeasured
 
 
 def _evidence_of(rows: list[dict]) -> list[dict]:
@@ -2139,14 +1915,12 @@ def _initial_pass_has_holds(
     expected: list[dict],
     failures: dict[int, str],
     *,
-    secondary_held: bool,
     unmeasured: bool,
 ) -> bool:
     """One explicit list of the facts that withhold a complete exit."""
     hold_facts = (
         any(row["outcome"] == "held" for row in expected),
         bool(failures),
-        secondary_held,
         unmeasured,
     )
     return any(hold_facts)
@@ -2179,7 +1953,6 @@ def _cut_and_group_declared_act(
         act_bounds(act),
         1,
         page_ordinal,
-        "proposal",
         padding=padding,
         provenance=provenance,
     )
@@ -2199,7 +1972,6 @@ def _cut_and_group_declared_act(
             _bounds_of(continuation),
             2,
             far_ordinal,
-            "proposal",
             padding=padding,
             provenance=provenance,
         )
@@ -2428,36 +2200,16 @@ def initial_pass(context) -> bool:
         _publish_detector_records(context, pages, secondary, detector)
 
     # Every sealed page, including pages no act touched; residuals join the seal.
-    residual_rows, secondary_held, unmeasured = _publish_page_conservation(
-        context,
-        pages,
-        failures,
-        page_cache,
-        _pixel_rescue_provenance(secondary, detector),
-        grouping_policy,
+    residual_rows, unmeasured = _publish_page_conservation(
+        context, pages, failures, page_cache, grouping_policy
     )
     expected.extend(residual_rows)
     seal_inputs.extend(_evidence_of(residual_rows))
     _publish_proposal_seal(context, expected, seal_inputs, provenance)
-    # Any hold, secondary hold or unmeasured page withholds "complete".
+    # Any hold or unmeasured page withholds "complete".
     # An unmeasured page has not reconciled, but its crops still
     # go downstream; only the run's completion claim is withheld.
-    return _initial_pass_has_holds(
-        expected, failures, secondary_held=secondary_held, unmeasured=unmeasured
-    )
-
-
-def _pixel_rescue_provenance(secondary: dict, detector: RecordDetector | None) -> dict | None:
-    """The provenance the pixel-scan rescue runs under, or None when it does not run.
-
-    The rescue is the fixture pass's offline stand-in for a model proposer, so
-    it runs only when the secondary chair is answered by the fixture, under that
-    fixture's receipt. An in-process record detector never switches it on and
-    never lends it its provenance: a real run cuts no rescue crop.
-    """
-    if detector is None or detector.run_facts.get("engine") != FIXTURE_ENGINE:
-        return None
-    return secondary
+    return _initial_pass_has_holds(expected, failures, unmeasured=unmeasured)
 
 
 def _published_secondary_provenance(context) -> dict | None:
@@ -2564,13 +2316,11 @@ def _publish_detector_records(
 
     One `detector-page` per page says how many records were found, so a page
     with none reads differently from a page never asked. Each record keeps its
-    oriented box, score, class and its overlap with every act proposal on the
-    page, recorded and never acted on: records hold nothing, rescue nothing and
-    enter no act. They are the units DAI reads.
+    oriented box, score and class: records hold nothing and enter no act. They
+    are the units DAI reads.
     """
     geometry_policy = geometry_layer.load_geometry_policy(context.args.designator_geometry_config)
     context.require_sealed_config("designator-geometry", geometry_policy["config_sha256"])
-    claimed_by_page = _claimed_regions_by_page(context)
     for ordinal, page_record in pages.items():
         page_id = page_record["subject_id"]
         page_bytes = _read_checked_page_bytes(context, page_record)
@@ -2641,15 +2391,6 @@ def _publish_detector_records(
                 "cut": proposal is not None,
                 "authoritative": False,
                 "authority_effect": "none",
-                "act_overlaps": sorted(
-                    (
-                        {"act_id": entry["act_id"], "overlap_px": area}
-                        for entry in claimed_by_page.get(ordinal, [])
-                        if bounds is not None
-                        and (area := _overlap_area(entry["bounds"], bounds)) > 0
-                    ),
-                    key=lambda row: row["act_id"],
-                ),
                 "region_ref": (
                     context.input_ref(region.relative_path) if region is not None else None
                 ),
@@ -2941,7 +2682,6 @@ def _publish_live_proposals(
                 bounds,
                 1,
                 ordinal,
-                "proposal",
                 padding=padding,
                 provenance=provenance_by_page[ordinal],
             )
@@ -3180,13 +2920,8 @@ def live_initial_pass(
     if detector is not None:
         _publish_detector_records(context, pages, secondary, detector)
 
-    residual_rows, secondary_held, unmeasured = _publish_page_conservation(
-        context,
-        pages,
-        failures,
-        page_cache,
-        _pixel_rescue_provenance(secondary, detector),
-        grouping_policy,
+    residual_rows, unmeasured = _publish_page_conservation(
+        context, pages, failures, page_cache, grouping_policy
     )
     expected.extend(residual_rows)
     if not expected:
@@ -3195,9 +2930,7 @@ def live_initial_pass(
             "denominator to seal"
         )
     _publish_proposal_seal(context, expected, _evidence_of(expected), seal_provenance)
-    return _initial_pass_has_holds(
-        expected, failures, secondary_held=secondary_held, unmeasured=unmeasured
-    )
+    return _initial_pass_has_holds(expected, failures, unmeasured=unmeasured)
 
 
 def _refuse_duplicate_proposal_bounds(context) -> None:
@@ -3219,343 +2952,12 @@ def _refuse_duplicate_proposal_bounds(context) -> None:
         seen[key] = act["key"]
 
 
-def _ink_outside_cut_union(evidence: dict, bounds: dict, covered: list[dict]) -> int:
-    """Recompute ink in a requested rectangle outside the prior crop union."""
-    width, height, rows = evidence.get("width"), evidence.get("height"), evidence.get("rows")
-    if (
-        evidence.get("schema") != "ink-runs.v2"
-        or set(evidence) != {"schema", "width", "height", "rows"}
-        or not is_plain_int(width)
-        or width <= 0
-        or not is_plain_int(height)
-        or height <= 0
-        or not isinstance(rows, list)
-        or len(rows) != height
-    ):
-        raise ContractError("the recovery request's Ink Map evidence is malformed")
-    total = 0
-    for y in range(bounds["y"], bounds["y"] + bounds["h"]):
-        row = rows[y]
-        if not isinstance(row, list):
-            raise ContractError("the recovery request's Ink Map evidence has a malformed row")
-        previous_end = 0
-        ink_spans = []
-        for run in row:
-            if (
-                not isinstance(run, list)
-                or len(run) != 2
-                or any(not is_plain_int(value) for value in run)
-            ):
-                raise ContractError("the recovery request's Ink Map evidence has a malformed run")
-            start, length = run
-            end = start + length
-            if start < previous_end or length <= 0 or end > width:
-                raise ContractError(
-                    "the recovery request's Ink Map evidence has unordered or invalid runs"
-                )
-            previous_end = end
-            start, end = max(start, bounds["x"]), min(end, bounds["x"] + bounds["w"])
-            if start < end:
-                ink_spans.append((start, end))
-        cuts = sorted(
-            (max(bounds["x"], cut["x"]), min(bounds["x"] + bounds["w"], cut["x"] + cut["w"]))
-            for cut in covered
-            if cut["y"] <= y < cut["y"] + cut["h"]
-        )
-        merged = []
-        for start, end in cuts:
-            if start >= end:
-                continue
-            if merged and start <= merged[-1][1]:
-                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
-            else:
-                merged.append((start, end))
-        for start, end in ink_spans:
-            cursor = start
-            for cut_start, cut_end in merged:
-                if cut_end <= cursor:
-                    continue
-                if cut_start >= end:
-                    break
-                total += max(0, min(cut_start, end) - cursor)
-                cursor = max(cursor, cut_end)
-            total += max(0, end - cursor)
-    return total
-
-
-def _verify_coverage_recovery_evidence(
-    context,
-    request: dict,
-    request_payload: dict,
-    expected_act: dict,
-    page_id: str,
-    page_ordinal: int,
-    page_width: int,
-    page_height: int,
-) -> None:
-    """Follow and remeasure the exact Testimonium and Ink Map authorization."""
-    observation = request_payload.get("coverage_observation")
-    bounds = request_payload.get("recovery_bounds")
-    ink_map_ref = request_payload.get("ink_map_ref")
-    inputs = request.get("inputs")
-    if (
-        request_payload.get("origin") != "coverage-observation"
-        or not isinstance(observation, dict)
-        or set(observation)
-        != {"testimonium_ref", "testimonium_id", "observation_ordinal", "bounds"}
-        or observation.get("bounds") != bounds
-        or not isinstance(inputs, list)
-        or observation.get("testimonium_ref") not in inputs
-        or not isinstance(ink_map_ref, dict)
-        or ink_map_ref not in inputs
-    ):
-        raise ContractError(
-            "a real recovery request does not bind exact Testimonium and Ink Map evidence"
-        )
-    testimonium = context.tree.read_artifact_reference(
-        observation["testimonium_ref"],
-        stage=ATTESTATORES,
-        kind="page-testimonium",
-        subject_id=page_id,
-    )
-    ordinal = observation.get("observation_ordinal")
-    rows = testimonium.get("payload", {}).get("observed")
-    source_rows = (
-        [row for row in rows if isinstance(row, dict) and row.get("ordinal") == ordinal]
-        if isinstance(rows, list)
-        else []
-    )
-    if (
-        testimonium.get("artifact_id") != observation.get("testimonium_id")
-        or testimonium.get("payload", {}).get("page_ordinal") != page_ordinal
-        or not is_plain_int(ordinal)
-        or len(source_rows) != 1
-        or source_rows[0].get("bounds_source") not in {"native", "derived"}
-    ):
-        raise ContractError(
-            "a real recovery request does not resolve to one reported coverage observation"
-        )
-    source = source_rows[0].get("bounds")
-    if (
-        not isinstance(source, dict)
-        or set(source) != {"x", "y", "w", "h"}
-        or any(not is_plain_int(source[name]) for name in ("x", "y", "w", "h"))
-        or source["w"] <= 0
-        or source["h"] <= 0
-    ):
-        raise ContractError("the bound coverage observation has malformed geometry")
-    canonical = {
-        "x": max(0, source["x"]),
-        "y": max(0, source["y"]),
-        "w": max(0, min(page_width, source["x"] + source["w"]) - max(0, source["x"])),
-        "h": max(0, min(page_height, source["y"] + source["h"]) - max(0, source["y"])),
-    }
-    if canonical != bounds or canonical["w"] <= 0 or canonical["h"] <= 0:
-        raise ContractError(
-            "the requested recovery geometry is not the canonical on-page observation rectangle"
-        )
-    ink_map = context.tree.read_artifact_reference(
-        ink_map_ref, stage=INK_MAP, kind="ink-map", subject_id=page_id
-    )
-    ink_payload = ink_map.get("payload")
-    evidence = ink_payload.get("edge_findings") if isinstance(ink_payload, dict) else None
-    if (
-        not isinstance(evidence, dict)
-        or ink_payload.get("page_ordinal") != page_ordinal
-        or evidence.get("width") != page_width
-        or evidence.get("height") != page_height
-    ):
-        raise ContractError("the recovery request's Ink Map does not bind this sealed page")
-    minimum = _sealed_grouping_policy(context)["coverage_audit"]["minimum_ink_pixels"]
-    covered = _coverage_on_page(_regions_of(context), page_ordinal, page_id)
-    measured = _ink_outside_cut_union(evidence, bounds, covered)
-    if (
-        request_payload.get("minimum_ink_pixels") != minimum
-        or request_payload.get("outside_ink_pixels") != measured
-        or measured < minimum
-        or expected_act.get("page_ordinal") != page_ordinal
-    ):
-        raise ContractError(
-            "the recovery request's claimed outside ink does not recompute from its sealed evidence"
-        )
-
-
-def _declared_recovery(context, act_key: str) -> tuple[dict, list[dict]]:
-    """The fixture act for `act_key` and its one declared recovery row, as a list."""
-    fixture_acts = [item for item in context.fixture["act"] if item["key"] == act_key]
-    if not fixture_acts:
-        raise ContractError(
-            f"recovery fixture declares no act for key {act_key!r}; the fixture "
-            "cannot supply recovery geometry for an act it never declared"
-        )
-    if len(fixture_acts) != 1:  # pragma: no cover - fixture loading already refuses duplicates
-        raise ContractError(
-            f"recovery fixture declares {len(fixture_acts)} acts for key "
-            f"{act_key!r}; recovery geometry needs one unambiguous act"
-        )
-    act = fixture_acts[0]
-    recovery = [row for row in context.fixture.get("recovery", []) if row["act_key"] == act["key"]]
-    if len(recovery) != 1:
-        raise ContractError(
-            f"the fixture declares {len(recovery)} recovery regions for act {act['key']}; "
-            "a recovery request must name exactly one coverage rectangle"
-        )
-    return act, recovery
-
-
-def _validated_recrop_request(context, act_id: str, request_id: str):
-    """Require a current Recensor recrop for a proposed act."""
-    # The shared consumer verifies the seal and every minted premise first.
-    match = [item for item in expected_acts(context) if item["act_id"] == act_id]
-    if not match:
-        raise ContractError(f"recovery asked for {act_id}, which the proposal seal does not name")
-    if match[0].get("outcome") != "proposed":
-        raise ContractError(
-            f"recovery asked for {act_id}, which the seal holds as "
-            f"{match[0].get('outcome')!r}; a held act is terminal and may not be "
-            "recropped back to life"
-        )
-
-    # The policy the run bound, never re-read, so a recrop's budget is the
-    # sealed one.
-    policy = context.recovery_policy
-    context.require_sealed_config("recovery", policy["config_sha256"])
-    request = current_recovery_request(
-        context.tree,
-        act_id,
-        policy,
-        request_id=request_id,
-    )
-    request_payload = request.get("payload")
-    # Already verified by `current_recovery_request`; narrows the type only.
-    if not isinstance(request_payload, dict):  # pragma: no cover - common guard above
-        raise ContractError("the requested Recensor recovery record has no payload")
-    ordinal = request_payload.get("attempt_ordinal")
-    if not is_plain_int(ordinal):  # pragma: no cover
-        raise ContractError("the requested Recensor recovery record has no attempt ordinal")
-    if request_payload.get("act_key") != match[0]["act_key"]:
-        raise ContractError(
-            "the exact current Recensor recovery request does not bind this proposal-seal act"
-        )
-    # Only a recrop is this stage's to answer; a crop must never stand in for
-    # the Perlector's reread.
-    recovery_kind = request_payload.get("recovery_kind")
-    if recovery_kind != FALLBACK_RECROP:
-        raise ContractError(
-            f"recovery for {act_id} names recovery_kind {recovery_kind!r}; the Designator "
-            f"only answers {FALLBACK_RECROP!r} requests (a recrop). A different recovery "
-            "kind names a different owning stage, not a substitute crop"
-        )
-
-    return match[0], request, request_payload, ordinal
-
-
-def recovery_pass(context, act_id: str, request_id: str) -> None:
-    """Cut one replacement region for one act, at the Recensor's request.
-
-    The Recensor asks; only the Designator cuts, so crops keep one author.
-    """
-    sealed_act, request, request_payload, ordinal = _validated_recrop_request(
-        context, act_id, request_id
-    )
-
-    real_input = parse_ingress_record(context.run.get("ingress")) == REAL_INGRESS
-    # Real ingress has no fixture: its recrop geometry comes from the request.
-    act, recovery = (None, []) if real_input else _declared_recovery(context, sealed_act["act_key"])
-
-    pages = sealed_pages(page_records(context))
-    if real_input:
-        bounds = request_payload.get("recovery_bounds")
-        if not isinstance(bounds, dict):
-            raise ContractError(
-                "a real-ingress recovery request has no ink-confirmed recovery_bounds; a "
-                "Designator must never substitute fixture geometry"
-            )
-        page_ordinal = sealed_act["page_ordinal"]
-    else:
-        bounds = _bounds_of(recovery[0])
-        page_ordinal = act["page_ordinal"]
-    page_record = pages[page_ordinal]
-    # Validated before the coverage checks below, so a bad rectangle is refused
-    # as one rather than as "recovers no coverage".
-    page_w, page_h = dimensions(_read_checked_page_bytes(context, page_record))
-    geometry.validate_bounds(bounds, page_w, page_h, "recovery bounds")
-    if real_input:
-        _verify_coverage_recovery_evidence(
-            context,
-            request,
-            request_payload,
-            sealed_act,
-            page_record["subject_id"],
-            page_ordinal,
-            page_w,
-            page_h,
-        )
-    # The same builder `cut_region` uses, so the predicted identity matches.
-    transform = exemplar_crop_transform(page_ordinal, page_record["subject_id"], bounds)
-    duplicate = region_id(act_id, transform)
-    existing_regions = _regions_of(context, act_id)
-    already_recovered = [
-        record for record in existing_regions if record["payload"].get("origin") == "recovery"
-    ]
-    # Recutting an existing transform would be a re-roll, not recovered coverage.
-    if any(record["payload"].get("region_id") == duplicate for record in existing_regions):
-        raise ContractError(
-            f"recovery asked for {act_id}, which already has a region cut for this exact "
-            "transform; a recovery must add coverage rather than re-read identical pixels"
-        )
-    # The same rule over pixels: a recrop inside what the act already covers,
-    # even jointly, adds nothing. Refused rather than flagged,
-    # because it would spend the act's bounded recovery budget.
-    covered = _coverage_on_page(existing_regions, page_ordinal, page_record["subject_id"])
-    if not _uncovered_area(bounds, covered):
-        raise ContractError(
-            f"recovery asked for {act_id} with bounds {bounds}, which recovers no page "
-            f"pixel the act does not already have: every pixel of it already lies inside "
-            f"the {len(covered)} region(s) cut for it on page {page_ordinal}. A "
-            "recovery must add coverage, not recrop inside coverage it already has"
-        )
-    recovery_count = len(already_recovered)
-    if request_payload.get("budget_used") != recovery_count or ordinal != recovery_count + 1:
-        raise ContractError(
-            "the supplied recovery request is stale or skips a recovery ordinal; a recrop "
-            "may only answer the next recorded request"
-        )
-    region_ordinal = _next_region_ordinal(context, act_id)
-    request_ref = context.artifact_ref(RECENSOR, "recovery-request", request["artifact_id"])
-    if real_input:
-        cut_minted_region(
-            context,
-            act_id,
-            sealed_act["act_key"],
-            page_record,
-            bounds,
-            region_ordinal,
-            page_ordinal,
-            "recovery",
-            request_ref,
-        )
-    else:
-        cut_region(
-            context, act, page_record, bounds, region_ordinal, page_ordinal, "recovery", request_ref
-        )
-
-
-def _seal_artifact_id() -> str:
-    return artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
-
-
-def _next_region_ordinal(context, act_id: str) -> int:
-    ordinals = [record["payload"]["attempt_ordinal"] for record in _regions_of(context, act_id)]
-    return max(ordinals, default=0) + 1
-
-
-def _regions_of(context, act_id: str | None = None) -> list[dict]:
-    """Every region record cut so far, or only one act's."""
+def _regions_of(context) -> list[dict]:
+    """Every region record cut so far."""
     return [
         context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
         for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == "region" and (act_id is None or entry["subject_id"] == act_id)
+        if entry["kind"] == "region"
     ]
 
 
@@ -3583,16 +2985,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None, surya_r
     context, real_input = _open(args, registry_factory)
     surya = surya_detection.SURYA_SUBPROCESS if surya_runner is None else surya_runner
 
-    if args.operation == "recover":
-        if not args.act:
-            raise ContractError("a recovery operation must name the act it is recovering")
-        if not args.recovery_request:
-            raise ContractError(
-                "a recovery operation must name the exact Recensor recovery request it answers"
-            )
-        recovery_pass(context, args.act, args.recovery_request)
-        held = False
-    elif args.operation == "initial":
+    if args.operation == "initial":
         # The sealed serving catalogue picks the pass, never a flag or the route:
         # offline runs drive the live pass over fixture pages, and real input
         # under the fixture chair is refused.
@@ -3613,7 +3006,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None, surya_r
             raise ContractError(f"unknown serving mode {mode!r} for the structure chair")
     else:
         # The shared parser has no `choices=`, so refuse a typo here.
-        raise ContractError(f"--operation {args.operation!r} is not one of 'initial' or 'recover'")
+        raise ContractError(f"--operation {args.operation!r} is not 'initial'")
 
     context.seal_boundary()
     context.finish()

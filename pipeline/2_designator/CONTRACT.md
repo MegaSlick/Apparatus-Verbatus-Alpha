@@ -16,10 +16,6 @@ directory anywhere in this tree. Spec 06's contracts section names those as
 concepts — a crop, an act-to-crop grouping, a coverage reconciliation — and
 this contract expresses each as an artifact *kind* below rather than a path.
 
-## Neutral dark-distribution evidence
-
-The interior-mode branch still uses the same sealed band, interior-dark, whole-page-ink, and derived-margin arithmetic. Its published block is now `dark_distribution`, not `surround`: the branch can be reached by a real photographed frame, but the retained counts alone do not establish a frame, bezel, paper region, or pixels to exclude. They are the exact sampled border-band and page-wide dark populations at the recorded level, and every sampled pixel remains in the primary scan and conservation denominator. Historical passages below describing known photographed frames remain observations of those material pages; they are not a classifier guarantee for every page this admission rule accepts.
-
 ## Stage-completion seal
 
 Before this producer's final manifest it publishes one `decode-environment` and
@@ -92,7 +88,7 @@ from, and the sole reason `transform` keeps exactly its historical four fields.
 (`common/contracts/identities.py::act_bindings`): on the fixture path the
 rectangle the sealed synthetic fixture declared, on the live path the structure
 chair's own rectangle, converted from its normalized answer to page pixels once,
-at the edge (`common/structure_answer.py::to_page_bounds`). Either way it is the
+at the edge (`common/chandra_layout.py::to_page_bounds`). Either way it is the
 denominator `common/stage.py` recomputes the act's identity against, and on the
 live path it is also the rectangle the page's retained `structure-answer` must
 list. The visual grouping is recorded separately as `act-group.detected_bounds`
@@ -100,9 +96,7 @@ and reconciles against `raw_bounds` rather than replacing it. A
 proposal crop's `raw_bounds` differs from `transform.bounds` by the configured
 capture padding (`config/designator_padding.toml`), asymmetric and clamped to
 the page edge, with `padding.applied_px` recording the exact pixels actually
-added after clamping. A recovery crop carries `padding: null` — the Recensor's
-request already names the exact rectangle it wants, and structural pad and
-capture pad "must never be conflated" (`geometry.py`'s module docstring).
+added after clamping.
 `padding.provenance` is the config's own `[padding.provenance]` table, copied
 onto every proposal region so a reviewer sees on the evidence itself, not only
 in a repository file, that these four fractions are carried forward from a
@@ -110,12 +104,10 @@ third-party corpus and have not been calibrated against this project's own
 pages (`geometry.load_padding_config`, `pipeline/2_designator/padding_calibration.py`
 is the ready-to-run harness for doing so once a gold set exists).
 
-`origin="proposal"` is the evidence the witnesses saw. A later
-`origin="recovery"` record is a new crop for the same act, never a replacement
-for the proposal. Its direct inputs are exactly the sealed Exemplar pixel blob
-and the Recensor recovery-request it answers; a proposal crop inputs only the
-sealed Exemplar pixel blob. Consumers recompute the crop from that page and
-transform, so a same-sized crop from another page does not pass as this one.
+`origin="proposal"` is the only origin, and the evidence the witnesses saw. A
+region's one direct input is the sealed Exemplar pixel blob. Consumers
+recompute the crop from that page and transform, so a same-sized crop from
+another page does not pass as this one.
 
 ## `kind="act-group"`
 
@@ -318,8 +310,8 @@ the Perlector reads through every region of the act — so one act with N region
 delivers the page whole, and N acts would be an act count invented from a grid.
 
 The act is **`proposed`, not `held`**. A held act is terminal and is never read
-(`recovery_pass`; and `_publish_residual_holds`'s own "never witnessed and never
-read"), and crops nobody reads are precisely what the ruling forbids producing.
+(`_publish_residual_holds`'s own "never witnessed and never read"), and crops
+nobody reads are precisely what the ruling forbids producing.
 Its identity is `act_bindings(page_id, "page-fallback", page_bounds)` — the
 `"page-fallback"` act class is its own namespace in the identity ladder, beside
 the `"residual"` class, so the two minted-act identity spaces are disjoint by
@@ -332,8 +324,8 @@ fallback act minted over a page the structure pass detected regions on is
 refused there, so the extra denominator row proves its premise rather than
 asserting it.
 
-A fallback tile's region carries `padding: null`, like a recovery crop and for
-the same reason: the tile *is* the final rectangle, computed from the page's own
+A fallback tile's region carries `padding: null`: the tile *is* the final
+rectangle, computed from the page's own
 dimensions with this page's own resolved `fallback_overlap_px` already built
 into it.
 Expanding it again by the capture padding would conflate a structural pad with a
@@ -411,16 +403,14 @@ threshold that separates ink from paper, so there is nothing honest to count:
 the three counts are `null`, `residual_components` is empty, `reason` says why,
 and the record's outcome is `held`. The stage used to substitute the page's own
 mean as a divider so the accounting "had something defensible" — but on the
-inverted scan `test_structure.py` uses (80% of the page at 30, 20% at 220) that
+inverted scan `common/test_background_components.py` uses (80% of the page at 30, 20% at 220) that
 divider is 68, so every pixel of the *dark paper* counts as ink: four fifths of
 the page reconciles as unclaimed ink and mints a held act over the background,
 at scale. A count taken at a guessed divider is a guess reported as a
 measurement — precisely the defect measuring honestly rules out: a metric
 that cannot be measured is a failure, not a pass. The page's crops are still cut and still go
 downstream (`kind="page-fallback"`); what is refused is the claim to have
-measured them. The secondary scan is skipped on such a page for the same reason
-— it is the same threshold at a more sensitive margin, so at a guessed divider
-it publishes rescue crops over paper. **Every residual region is accounted regardless of size**:
+measured them. **Every residual region is accounted regardless of size**:
 `review_priority` ("high"/"low") orders which residual a reviewer looks at
 first and never decides whether one is recorded at all — deleting the priority
 threshold would only reorder the list, never shorten it.
@@ -482,76 +472,23 @@ own refusals and its own finding shape. It verifies both retained partitions,
 their held-act identities, and the combined component pixel sum against
 `residual_pixel_count`.
 
-## `kind="secondary-provenance"`, `kind="secondary-proposal"`, and `kind="rescue-crop"`
+## `kind="secondary-provenance"`
 
 `secondary-provenance` is published exactly once per run, subject
 `"secondary-provenance"`: the resolved `secondary_proposer` chair, absent or
 configured, in the same shape Perlector's `provenance_for` uses for its own
 optional chair. Every run resolves this role for real, whether or not one is
-configured — the day the roster is enabled, `common/stage.py::unaddressed_chairs`
-must already know to expect it, and only a real resolution keeps that claim
-honest.
+configured, so `common/stage.py::unaddressed_chairs` always knows to expect it.
 
-**Spec 06's "optional seat" wording describes the configuration, not the
-resolution path, and the two do not disagree.**
 "Optional" describes the *configuration* — `config/models.toml` may leave
 `secondary_proposer` absent, and an absence is a valid, recorded decision like
-any other chair's (`AbsentChair`, not a missing entry). It has never described
+any other chair's (`AbsentChair`, not a missing entry). It does not describe
 the *resolution path*: something must ask the registry for this role on every
-run, present or absent, or `unaddressed_chairs` cannot stay accurate the day
-the roster flips it on — a misspelt or newly-added role that nothing resolves
-is exactly the silent-drift shape invariant #2 forbids. `secondary_provenance()`
-is that resolution path, and it is unconditional by construction (called once
-in `initial_pass` regardless of scenario or configuration), which is what makes
-the optional *chair* possible without a mandatory *code path* ever being
-skippable: the chair is optional, its resolution is not.
-
-`secondary-proposal` exists only when the chair is answered by the fixture: the
-pixel-scan rescue is the fixture pass's offline stand-in for a model proposer
-and runs under that fixture's receipt. An in-process record detector never
-switches it on and never lends it its provenance, so a real run publishes
-neither kind. When it runs there is one held record
-per rescue candidate the secondary scan finds outside authoritative coverage —
-`authoritative: false`, always, at the schema level and in fact. A candidate
-wholly contained by one claimed act is ordinary coverage and is not published;
-merely overlapping one does not discard the additional area outside that claim.
-Every published candidate carries `overlapping_claimed_act_count`: how many
-already-claimed acts its box touches. That number is **recorded and never acted
-on**: a detector may add recall and never decide between two acts or refine
-either, and a held, page-subject, `authoritative: false` crop that enters no
-act, no act-group and no proposal seal decides nothing whichever count it
-carries.
-
-A count of two or more is not a hard refusal. A hard refusal was tried and
-measured: it let an optional, explicitly non-authoritative chair turn a complete run into a fatal
-one with no denominator at all — the exact inverse of spec 06's test 5,
-"removing the proposer changes no authority decision (it adds recall, never
-verdicts)". (Act a1's and a2's *padded* capture rectangles can abut at exactly
-one row of a fixture page, so a single ordinary pen mark in the blank band
-between two entries can produce a candidate touching both; refusing on that
-would raise before the proposal seal is even written.)
-
-**Bounded per page, like the residual review items beside it.** Each published
-candidate costs a cropped PNG blob and two records. Past `max_secondary_proposals`,
-the page's
-secondary pass is a single held `secondary-proposal` instead: the page
-rectangle, `secondary_candidate_count`, the bound it was judged against, the
-run's own sealed grouping digest, and no crop cut at all. Nothing is filtered
-out of the scan itself — `structure.secondary_scan` still
-returns everything it finds — and the candidates stay recomputable from the
-sealed page bytes. `secondary_enumeration` is `complete` or `withheld-page-held`
-on every one of these records, so "this page had no unclaimed candidate" and
-"this page's candidates were counted and not cut" cannot be read as each other.
-
-Each proposal directly references a `rescue-crop`: the exact unpadded source
-pixels inside the secondary box, with its origin, null padding, transform,
-image digests and the same `overlapping_claimed_act_count`. Both
-records have `outcome="held"`; the crop says `authority_effect="review-only"`,
-and neither enters an act, a structure region, or the proposal seal. This is the
-terminal review disposition that prevents an additive proposal from existing
-only as inert metadata while the stage exits complete. Removing the proposer
-changes no `region`, `act-group`, or `proposal-seal` outcome; only the secondary
-evidence and held exit disappear.
+run, present or absent, or `unaddressed_chairs` cannot stay accurate — a
+misspelt or newly-added role that nothing resolves is exactly the silent-drift
+shape invariant #2 forbids. `secondary_provenance()` is that resolution path,
+and it is unconditional by construction: the chair is optional, its resolution
+is not.
 
 ## `kind="detector-page"`, `kind="detector-record"`, and `kind="detector-region"`
 
@@ -568,9 +505,9 @@ detector answers each page with the fixture's `[[detector_record]]` rows for
 that page (`page_ordinal`, four `corners`, `score_bp`, optional `class_id`,
 optional `scenario`): a scenario that declares rows of its own reads those
 alone, and any other scenario reads the unscoped rows. The shipped fixture
-declares one record over each act's ink on each page; the committed fixture
-roster configures no record detector, so only a roster that configures one
-reads them.
+declares one record over each act's ink on each page, and the committed
+roster configures the detector on that fixture row, so every fixture run reads
+them.
 On the live path the row is checked before the structure chair starts and the
 detector is loaded only after that chair has closed, so one model is resident
 at a time; a resumed pass reuses the `secondary-provenance` it already sealed.
@@ -595,10 +532,9 @@ the engine's order: `page_ordinal`, `detector_ordinal` (`n`), `raw_output_ref`,
 `quantization`, `score_quantization`, `score_bp`, `class_id`, `class_name`,
 `raw_proposal` (the `yolo-obb` record `geometry_layer.yolo_obb` builds, which
 keeps the oriented polygon), `bounds` (its axis-aligned hull), `cut`,
-`authoritative: false`, `authority_effect: "none"`, `act_overlaps`,
-`region_ref` and `provenance`. `act_overlaps` lists every act proposal on the
-page the hull overlaps, as `{act_id, overlap_px}` sorted by `act_id`. Text
-fields are refused on both record kinds; a detector reports boxes, not words.
+`authoritative: false`, `authority_effect: "none"`, `region_ref` and
+`provenance`. A record names no act: it is page evidence, not a claim about
+any act's coverage. Text fields are refused on both record kinds; a detector reports boxes, not words.
 
 **`detector-region`**, same subject, one per record that was cut: the hull's
 pixels, cut by the stage's one crop path, with `origin: "detector"`,
@@ -625,12 +561,8 @@ on the CPU with deterministic algorithms and one thread, so the same sealed
 page gives the same boxes. A resumed pass re-derives the same records, and a
 difference meets the RunTree's immutable publish boundary and refuses.
 
-**They decide nothing.** No detector record holds, rescues, or enters an act, an
-`act-group`, a `region` or the proposal seal, and `act_overlaps` is recorded,
-never acted on. The pixel-scan rescue above is not the detector: it runs only
-beside the fixture detector, as the offline stand-in it has always been, and a
-real run's in-process detector leaves it off (`_pixel_rescue_provenance`).
-Leaving the chair absent publishes none of the three kinds and changes no
+**They decide nothing.** No detector record holds or enters an act, an
+`act-group`, a `region` or the proposal seal. Leaving the chair absent publishes none of the three kinds and changes no
 authoritative outcome (`pipeline/2_designator/test_secondary_proposer.py`).
 ## `kind="surya-provenance"`, `kind="surya-page"`, `kind="surya-line"` and `kind="surya-block"`
 
@@ -914,16 +846,14 @@ generation knobs of the stage's own: the engine bounds generation by
 `max_model_len`, and a `"length"` stop then honestly means the answer did not
 fit.
 
-**v2 was this repository's own instruction** and asked for the closed JSON
-object `common/structure_answer.py` accepted. Nothing about its wording was
-wrong; the premise was — a chair asked outside its own grammar reports what it
-can improvise. Its JSON acceptance (`STRUCTURE_ANSWER_SCHEMA`,
-`decode_json_body`, `validate_box_1000`, `parse`) has no live caller left after
-this unit; the module's shared geometry and page-text rules (`to_page_bounds`,
-`join_delivered_texts`, `text_digest`) are untouched and still the only
-conversion either Chandra reading uses, which is why the record's
-`quantization` and `page_text_rule` keep their `structure-answer.v1` names for
-arithmetic that did not move.
+**v2 was this repository's own instruction** and asked for a closed JSON
+object. Nothing about its wording was wrong; the premise was — a chair asked
+outside its own grammar reports what it can improvise. That JSON acceptance is
+gone. The shared geometry and page-text rules (`to_page_bounds`,
+`join_delivered_texts`, `text_digest`) live in `common/chandra_layout.py` and
+are the only conversion either Chandra reading uses; the record's
+`quantization` and `page_text_rule` keep their `structure-answer.v1` names
+because the arithmetic they name did not change.
 
 **What comes back** is read by `common/chandra_layout.py::parse_layout_html`,
 the one reader of that grammar in this tree and the same one the page witness
@@ -1280,20 +1210,9 @@ unit that sets both. The engine resizes the page internally, so the exact
 image the model saw is not the sealed page (ARCHITECTURE invariant 3): the
 request binds the sealed bytes, the receipt records `pixel_cap`, and normalized
 coordinates keep geometry resolution-independent — a residual gap, named, not
-closed. Bounded recovery from a structural hold stays unbuilt (below).
+closed.
 `excluded` stays unproduced: it exists only with the project lead's approval
 reference, and no Designator path resolves one.
-
-**What is still on the retired module.** The
-Designator calls `common/structure_answer.py` for `to_page_bounds`,
-`join_delivered_texts` and `text_digest` only — the shared rules, which are
-unchanged. Its JSON *acceptance* (`STRUCTURE_ANSWER_SCHEMA`, `parse`) has no
-live caller anywhere. `decode_json_body` and `validate_box_1000` still have two,
-`pipeline/3_attestatores/chandra_response.py` and `common/churro_response.py`,
-which are the two page-witness JSON readers the Chandra and Churro adapter units
-delete; the acceptance itself is removed once they are gone. Nothing here waits
-on that: this stage does not import it, and no answer this stage reads goes
-through it.
 
 **The fixture path is unchanged and re-pinned once.** Under the committed
 catalogue `initial_pass` runs as before: no answer record, no `engine_call`, no
@@ -1386,16 +1305,13 @@ stage's own pass can supply them, and no test may compose them on its behalf.
 
 ## Exit code
 
-`EXIT_COMPLETE` (0) only when the seal holds nothing, no page was held, no
-secondary rescue awaits review, and every sealed page's ink was actually
-measured. Anything held — an act, a page, ink no authoritative crop claimed, or
-a non-authoritative rescue — exits `EXIT_HELD` (3), and so does a page whose
+`EXIT_COMPLETE` (0) only when the seal holds nothing, no page was held, and
+every sealed page's ink was actually measured. Anything held — an act, a page,
+or ink no crop claimed — exits `EXIT_HELD` (3), and so does a page whose
 background could not be inferred. The exit code is the one signal an operator
 reads without opening the tree, and a 0 over a hold is a partial result wearing
-"complete". Act holds are computed from the seal's own rows;
-secondary holds are computed from the rescue records published in the same pass
-because that evidence deliberately does not enter the authority. A recovery
-invocation cuts one requested crop and exits 0 or fails; it publishes no holds.
+"complete". Holds are computed from the seal's own rows. `--operation` has one
+value, `initial`; any other refuses before any artifact is published.
 
 **An unmeasured page is not a held page, and the distinction is load-bearing.**
 Nothing is pulled out: no act is held, every declared act on it is still cut,
@@ -1434,72 +1350,10 @@ that was bound. The precondition is local write access to the
 configuration path during a run — the same class of precondition as the sealed-
 page-pixel re-check above, and closed the same way.
 
-## Recovery boundary
-
-`--operation recover --act <id> --recovery-request <id>` is the only recovery
-entry point. Fixture recrops use the fixture's declared rectangle. On real
-ingress, the exact Recensor request supplies measured `recovery_bounds` and a
-coverage observation; the Designator validates the bounds against the sealed
-page and verifies the observation's ink evidence before cutting. A real request
-without that evidence is refused rather than given fixture geometry.
-
-The request must be the exact current, digest-checked Recensor
-request for that act, its next ordinal, its Perlectio evidence, and the
-run-bound `config/recovery.toml` policy, including its reconciled total and
-per-kind budget counters. This stage fulfils `fallback-recrop` only; it refuses a
-`page-level-reread` rather than treating it as another crop, because a different
-recovery kind names a different owning stage and not a substitute crop. A command
-without that exact request does not cut a crop. The orchestrator, not this stage,
-decides whether such a request is outstanding and invokes this program.
-
-**A recrop must add coverage, and that is checked over pixels rather than over
-transform identity.** The requested rectangle is validated against its page
-first, so a degenerate or off-page one is refused as a rectangle rather than
-measured as one. Then two refusals in order: the rectangle already cut for this
-act under the same transform is a duplicate (identical crop bytes, identical
-`region_id`, a re-read rather than a recovery); and a rectangle every one of
-whose pixels already lies inside the union of the act's existing regions *on
-that page* recovers nothing at all. `_uncovered_area` computes that union
-exactly, through the same `_subtract_rectangle` fold the fallback tiling already
-uses, rather than by pairwise containment — two regions of one act can jointly
-cover a rectangle neither covers alone, and the guard and the tiling must not
-come to disagree about what "already covered" means. The
-union is taken over each region's final `transform["bounds"]` — the capture
-rectangle actually cut and shown — and not over `raw_bounds`, or a recrop back
-inside a proposal's own padding would count as recovery. It is scoped to the
-page being recropped, because a continuation region shares the act's identity
-and none of its geometry.
-
-The second refusal is what ARCHITECTURE's Recensor section — recovery
-restores coverage, never quality — and its "fallback or **expanded** recrop"
-have always said. Until it existed, `proof/skeleton_fixture.toml` declared act a1's
-recovery rectangle as `16,16,168,88` against a padded proposal capture rect of
-`12,15,188,99` — strictly inside it. The `review` scenario, the walking
-skeleton's single proof that bounded recovery works, spent its whole
-`fallback_recrop` budget on a crop that recovered not one pixel, and the export
-then carried a `witness_covered: false` caveat ("ink a recovery uncovers was
-never shown to them") over pixels every witness had already seen. Refused rather
-than flagged: a spent recovery budget does not come back, so accepting the
-recrop costs the act its one recorded chance to widen its crop.
-
-Two consequences worth stating plainly. **The refusal is fatal, like every other
-refusal in `recovery_pass`** — a held act, a wrong recovery kind, a stale
-ordinal, an off-page rectangle — so a Recensor that asks for a recrop it cannot
-have stops the run rather than holding the act. That is this stage's established
-failure mode for an impossible request and not a new severity class; a recovery
-invocation publishes no holds. **And an act whose capture rectangle has already
-clamped to all four page edges can never satisfy this check**, because there is
-no page pixel left for it to recover. That is the honest answer rather than a
-defect: the recrop it was asked for does not exist. It is reachable on a real
-page — the shipped right/bottom padding clamps a large act to the page edge, and
-in the synthetic fixture a1's capture rectangle already reaches `x=200` — so the
-first real corpus should expect it.
-
 ## Consumers
 
-Attestatores reads proposal regions only and records which pixels each witness
-saw. Perlector may read recovery regions but marks them witness-uncovered unless
-a Testimonium actually names them. Recensor, Archetypus, and Armarium use the
+Attestatores reads proposal regions and records which pixels each witness
+saw. Recensor, Archetypus, and Armarium use the
 proposal seal as the conserved act denominator; none may manufacture a new act
 or choose among competing crops.
 
@@ -1523,17 +1377,12 @@ Attestatores, and only for a page-scoped chair that reads its page one detector
 record at a time (DAI): they are its units. The Perlector's whole-page reading
 reads `detector-record`, `surya-page`, `surya-line` and `surya-block` as the
 page's candidate units and layout evidence (`pipeline/4_perlector/CONTRACT.md`).
-`act-group`, `secondary-provenance`, `secondary-proposal`, `rescue-crop`,
-`structure-status` and `surya-provenance` have no consumer downstream of this
-stage today.
+`act-group`, `secondary-provenance`, `structure-status` and `surya-provenance`
+have no consumer downstream of this stage today.
 `structure-status` is the exception in one direction only: it is not *read* by a
 later stage, but `common/stage.py::_verify_page_fallback_act_row` reads it back
 within this stage's own denominator check, as the independent evidence that a
-page-fallback act's premise is true. The two
-secondary kinds are explicitly held for review and make the Designator exit
-held rather than being mistaken for accepted authority. No other stage reads
-them, and every
-other stage's own reader of this stage's manifest already filters to the one or
+page-fallback act's premise is true. Every other stage's own reader of this stage's manifest already filters to the one or
 two kinds it actually wants (`entry["kind"] == "region"`, `== "hold"`), so a new
 kind appearing here changes nothing for them by construction.
 
@@ -1582,16 +1431,7 @@ Designator does not count a run-wide total while producing its records: the
 Armarium assembles the queue from every stage's review items, so a count made
 here would present a fraction as the whole.
 
-**The secondary rescue pass is bounded the same way, on the same page.**
-`max_secondary_proposals` caps how many rescue candidates one page cuts and
-holds separately; past it the pass becomes one held `secondary-proposal` record
-naming the count, the bound and the sealed grouping digest, and cuts no crop.
-That path mints a PNG blob per candidate as well as two records, so it is the
-more expensive of the stage's two per-page enumerations, and leaving it
-unbounded would have rebuilt the unopenable run by the one route the residual
-bound does not cover. `secondary_enumeration` is a closed pair on both shapes,
-for the reason `residual_enumeration` is one on every conservation record.
-`pipeline/2_designator/test_page_residual_bound.py` carries that case, marked
+`pipeline/2_designator/test_page_residual_bound.py` carries the dense-page case, marked
 `full` because the pure-Python structure pass takes ~100 seconds at that size.
 
 **The retained cost is explicit.** Every residual rectangle and pixel count,
@@ -1652,46 +1492,6 @@ rectangle pairs, not pages, so sample size clears it comfortably. Sample size
 was never the obstacle here, provenance is, and provenance is not a number a
 larger sample can fix.
 
-**The Ink Map's and the Recensor's own paper value is this stage's.** It used
-to be the raw histogram mode: `common/residual_ink.py::_background_level` returned the page's
-single most common pixel and `residual_ink` then called a pixel ink only if it
-was `MINIMUM_CONTRAST_BELOW_BACKGROUND = 40` levels below it, so on a
-photographed opening — whose most common value is the bezel, 0 or near it on
-every one of the 127 calibration pages that reaches the surround branch — the
-residual of a page full of writing computed to approximately zero and the
-independent coverage proof passed by construction.
-
-The inference now lives in `common/background.py` and all three stages call it
-on the same page bytes: this stage's `structure.py` re-exports it, and
-`pipeline/1_ink_map/run.py` and `pipeline/5_recensor/run.py` reach it through
-`common/residual_ink.py`. The decision the contract left open was whether the
-audit should share this inference and lose its independence, or grow its own on
-the same real material. **It shares the background and keeps its own contrast.**
-Paper is a property of the page, not of the stage looking at it — two stages
-inferring two different paper values for one page is a disagreement about the
-specimen, and there is no second opinion to be had about it. Sensitivity is a
-property of the instrument, and that stays separate: this stage scans at the
-margin each page derives for itself, reconciles at `SECONDARY_MARGIN = 2`, and
-the audit runs at its own fixed 40. All three now sit under one background,
-which is what turns `recensor_contrast >= SECONDARY_MARGIN` from arithmetic over
-an empty set into a real containment —
-`test_the_containment_is_not_vacuous_on_a_photographed_page` proves it on a
-photographed-shaped page where the three ink sets nest strictly.
-
-The background policy lives in `config/ink_map.toml`'s `[background]`, sealed as
-`ink-map`. Every stage that infers paper reads it, validates it through one
-function (`common.background.validate_background_table`) and proves the bytes
-against the run's own `ink-map` seal, so each record names the policy it ran
-under. This stage also takes `page_spanning_area_bp` and `gap_tolerance_px` from
-the ink map's `[page_spanning]` and `[connectivity]`, so the component it
-withholds is the one the coverage audit takes out.
-
-A page this inference refuses is now refused by name at all three: this stage
-records `background_source: "not-inferable"` and `ink_measurable: false`, the Ink
-Map publishes `outcome="ink-not-measurable"` with no counts, and the Recensor's
-audit carries the page in `page_coverage.unmeasurable_pages` on every act that
-touches it rather than in `checked_pages`.
-
 **A page-fallback tile's per-tile `rationale` still says "no ink to group"
 even on the live path.** The record-level `reason` on `page-fallback` now
 tells the live and fixture premises apart (see `kind="page-fallback"` above),
@@ -1719,18 +1519,6 @@ as one candidate naming every act within the edge reach. The `page_edge_reach_bp
 acted on; that file's bytes are sealed into every run's digest, so it is
 corrected here, and the caveat is stale.
 
-**Recovery from a structural hold.** Spec 06's test 4 asks for three things: the
-page held with a named reason, no silent gap downstream, and "the recovery
-operation proposes a replacement region on request". The first two are built and
-proven end to end (`test_structure_failure.py`). The third is not, and nothing
-here makes it: `recovery_pass` refuses any act the seal holds — "a held act is
-terminal and may not be recropped back to life" — which is the landed recovery
-contract this stage shares with the Recensor (spec 09), reached through
-`common.stage.current_recovery_request`. Making a *structural* hold recoverable
-while an *unsealed-page* hold stays terminal means distinguishing the two in a
-contract owned across two stages, and that is a decision for the project lead
-rather than a distinction to introduce quietly here.
-
 **Captured structure text — settled, not a gap.** Spec 06's contracts section
 said the structure pass's transcription is "captured and handed to the
 Attestatores stage as a Testimonium rather than re-run". That is retired: every
@@ -1740,329 +1528,11 @@ custody as its own evidence (`structure-answer.raw_response_ref`,
 `custody_ref`) and hands nothing to the witnesses; the Attestatores stage is
 untouched by the live Designator and reads a served seal under its own rows.
 
-**`infer_background_evidence`'s majority-paper assumption is checked from both sides,
-and it also knows a photographed page from a dark one.** The premise is
-that a scanned register page is overwhelmingly paper, so its modal pixel is the
-paper colour. Two shapes break it and both are refusals now. A page where ink is
-the numeric majority — heavy staining, bleed-through, an inverted or
-under-exposed scan — has a mode *darker than its own mean*, caught by
-`mode * count >= total`. A uniformly dark page has `mode == mean`, so that
-comparison passes exactly; it is caught instead by requiring the mode to be
-light enough to express an ink threshold at all (`mode >= PRIMARY_MARGIN`),
-because below that no 8-bit sample could ever be counted as ink and "zero ink"
-would be arithmetic rather than a measurement. Solid black used to infer a
-background of 0, threshold -20, and reconcile to zero ink on a visibly black
-page — and on a page with no declared act, nothing caught it and the run exited
-`EXIT_COMPLETE`.
-
-**The third shape, measured on real material, is a photograph rather than a
-scan.** A photographed register opening carries a black surround around the
-paper — 18 to 26% of the frame on the seven real proxies measured — and pure
-black is then by a wide margin the single most common value, because the paper
-itself is spread across dozens of tones in the 180-240 band. So the modal pixel
-was 0 on all seven, the majority-ink branch refused all seven, and the live
-path cut every one into blind fallback slabs and reconciled none of their ink.
-The premise "the modal pixel is paper" is sound for a flatbed scan and false
-for a photograph.
-
-`structure._dark_distribution` measures the dark fraction in a fixed interior
-sample. It admits the historical photographed examples and continues to refuse
-the measured inverted and dark-core controls, but it does not classify arbitrary
-spatial arrangements as a frame, bezel, or page boundary. Where the interior is
-within the sealed bound, the paper value is the modal pixel at or above the
-page's own mean; that value still faces the `PRIMARY_MARGIN` guard and the final
-ink-fraction guard. The thresholds are sealed in `config/ink_map.toml`'s
-`[background]`. Its provenance has
-`calibrated_for_this_corpus = true` and a positive `sample_count`; the
-grouping file's `[grouping.continuation]` and the ink map's `[page_spanning]`
-blocks also carry measured provenance, while other thresholds retain their own
-unmeasured provenance.
-
-**The fourth shape is the one the seven-page calibration could not see, and it is
-the quiet one.** On 6 of 127 real pages the modal pixel is 255 — a blown
-highlight, a scanner mount, a saturated margin — which is *lighter* than the
-mean, so the majority-ink question is never asked at all, 255 is taken as paper,
-and 71 to 85% of the page is counted as ink. `group_page` finds structure,
-`conservation.reconcile` balances exactly, residual is zero, and nothing in the
-record marks it. So a fourth question is asked of both branches, and it needs no
-geometry: does the inferred value leave the page a *minority* of ink? A
-background is the surface most of the page is; a value that puts more than 70% of
-its own page below the threshold it implies is not one. That bound is
-`max_ink_bp`, and a page over it is refused by name.
-
-### The background inference, calibrated on 127 pages
-
-This is the committed record `[background.provenance]`'s `source`
-points at. Measured over 60 RecordGold pages, 60 parish master pages and the
-seven review proxies, sampled by the fixed seed `designator-survey-2026-09-06`.
-Pages were read where they lie and never copied into this tree. Rows marked
-**SYNTHETIC** are shape tests built by
-`test_structure.py`/`test_structure_failure.py`, not photographs.
-
-**What each lever is, and what it was measured against.**
-
-| lever | value | rejected alternatives, measured | where it sits |
-|---|---:|---|---|
-| `band_bp` | 500 | 250 and 1000 bp. At the two bounds below, all three give an **identical** accept-or-refuse outcome and an identical paper value on every one of the 127 pages — the band is no longer a lever at all. 1000 is rejected because the band is then 20% of each dimension and 36% of the page's area and has stopped being a frame: it averages bezel against paper, and the real pages' border figure collapses from a median of 8166 to 5025. **Not for its valley** — 1000 has the widest of the three (5,527 bp), as the table below says. Against 250 the valley does decide: 2,067 bp with the dark-core SYNTHETIC control at 5990, so a 6000 bound would already admit it | unchanged from the seven-page calibration |
-| `max_interior_dark_bp` | 5000 | 3000 (the seven-page value) refuses 3 real pages and buys nothing; 6000 admits the dark-core SYNTHETIC control at a 250 bp band | in a measured 3,195 bp valley, 49 bp below its midpoint |
-| `max_ink_bp` | 7000 | 8000 admits 5 of the 6 silent pages; 10000 is the bound switched off and the loader now refuses it | a **policy** bound in a continuum, in the widest gap near the top (6595→7077) and 77 bp nearer the refusing side |
-| ~~`min_border_dark_bp`~~ | *removed* | 7000 refused 52 of 127; 3000–4000 would admit 82%/69% of the majority-ink pages. Removed rather than lowered: it refuses no control the interior bound does not, so no value of it earns its cost | — |
-
-**The interior statistic, at the level midway between the page's dark mode and
-its light mode**, over the 72 of 127 pages that reach the surround test:
-
-| band | real pages (min / median / max) | SYNTHETIC dark-core control | SYNTHETIC inverted scan | valley |
-|---:|---|---:|---:|---|
-| 250 bp | 409 / 1534 / 3923 | 5990 | 8170 | 2,067 bp |
-| **500 bp** | **287 / 955 / 3452** | **6647** | **8333** | **3,195 bp** |
-| 1000 bp | 233 / 790 / 2886 | 8413 | 8750 | 5,527 bp |
-
-The border-band figure at the same level, published and deciding nothing: real
-pages 4852 / 8166 / 10000 at 500 bp, against 6578 for the inverted-scan
-SYNTHETIC control — darker than 9 of the 72 real pages, which is why no bound on
-it can separate them.
-
-**The whole-page ink statistic** at `background - PRIMARY_MARGIN` under the
-inferred paper, over all 127: minimum 281, median 4052, maximum 8502 bp. It is a
-continuum with no gap wider than 505 bp anywhere in it, so `max_ink_bp` is
-placed and not derived. The gaps at the top: 6148 → 6595 (447), **6595 → 7077
-(482)**, 7077 → 7211 (134), then nothing wider than 168 until 7997 → 8502 (505).
-
-**Outcome on the 127, against the seven-page calibration it replaces:**
-
-| source | pages | inferred | `inferred-modal` | `inferred-interior-mode` | refused | refusal rate |
-|---|---:|---:|---:|---:|---:|---:|
-| teklia_dai_cretdhi | 24 | 21 | 9 | 12 | 3 | 12.5% |
-| recordgold_production_train_v1 | 32 | 29 | 11 | 18 | 3 | 9.4% |
-| recordgold_evaluation_val_v1 | 4 | 4 | 0 | 4 | 0 | 0.0% |
-| Embrun | 15 | 13 | 0 | 13 | 2 | 13.3% |
-| Oka | 15 | 15 | 14 | 1 | 0 | 0.0% |
-| Montebello | 15 | 13 | 0 | 13 | 2 | 13.3% |
-| Saint-Jacques | 15 | 15 | 15 | 0 | 0 | 0.0% |
-| control (7 proxies) | 7 | 4 | 0 | 4 | 3 | 42.9% |
-| **all** | **127** | **114** | **49** | **65** | **13** | **10.2%** |
-
-The seven-page calibration refused **52 of 127 (40.9%)**, every one of them by
-`min_border_dark_bp`. This one refuses **13 (10.2%)**, every one of them by
-`max_ink_bp` — that is, every remaining refusal is a page whose inferred paper
-was not a background, which is the failure this stage should be loud about. 48
-pages move from refused to inferred and 9 the other way; the 9 are the 6 silent
-paper-255 pages and 3 of the seven review proxies, whose ink fractions at
-`PRIMARY_MARGIN` (0.7449, 0.7557, 0.7690) are as unreadable as the six.
-
-**Scale invariance, measured rather than argued.** Over the 73 sampled pages that
-carry a DPI tag, resampled to a 300-DPI equivalent with LANCZOS: the outcome is
-unchanged on **72 of 73**, and on those 72 the inferred paper value moves by at
-most **2 grey levels** (median 0). The single page that changes is refused
-natively by `max_ink_bp` and inferred after the resample. The same 73 pairs under
-the seven-page calibration agree on **64 of 73**. The old block's admissibility
-argument — that its three values were population fractions and therefore
-scale-invariant — was wrong in a way worth naming: the fractions were
-scale-invariant and the *level they were measured at*, the page's own modal
-pixel, was not. A LANCZOS resample smooths a hard black spike away and the mode
-moves off it. The level is now a valley between two modes, which is what the 2
-grey levels above are measuring.
-
-**The dark distribution is measured, never removed.** Every sampled dark pixel
-stays on the page, stays below the ink threshold, and is counted as ink by
-`primary_scan` and reconciled as ink by `conservation.reconcile`. Masking any
-population out would mean deciding where the page ends, and a page edge misjudged
-by thirty pixels would silently delete a marginal name — the worst kind of
-loss. The `dark_distribution` block records two observed counts:
-`border_dark_pixel_count` in the fixed border band and `dark_pixel_count` across
-the whole page at the selected level. They are not bounds on a bezel or on a
-paper region. For the 65 historical calibration pages that inferred through this
-branch, the historical ratios of observed dark counts to counted ink at the
-derived margin were **34.1%-79.7%** (median 58.6%) for the border-band count and
-**78.5%-96.9%** (median 88.8%) for the whole-page count. These are descriptive
-historical ratios, not page-boundary or writing measurements. At the retired
-fixed margin of 20, the same ratios were 22.5%-58.1% (median 36.6%) and
-30.3%-83.6% (median 56.9%).
-
-**What the same 127 pages then fixed** is the constant this section used to end
-by naming: `PRIMARY_MARGIN = 20` is no longer the margin the scan runs at. It is
-the floor under a per-page derivation and the level `max_ink_bp` is probed at.
-The next section is that measurement.
-
-### The ink margin, derived on 127 pages
-
-`config/ink_map.toml`'s `[background] ink_margin_bp = 3333`. The page's ink threshold is
-`background - _derived_ink_margin(background, dark_mode, ink_margin_bp)`, that
-is `max(PRIMARY_MARGIN, (paper_mode - dark_mode) * 3333 // 10000)` below its own
-paper value. Measured on the same 127 pages, the same sample and seed, through
-the same driver.
-
-**What was wrong.** A photographed register leaf's paper is not one tone. It is a
-population spread over dozens of grey levels by lighting, page curl and the
-camera's response, and the modal value is that population's *peak*, not its
-edge. An offset of 20 below the peak therefore lands inside the paper. Over the
-127 pages at the old constant, the whole-page ink fraction ran 0.028 to 0.66 with
-a median of 0.39, and, in the historical calculation that subtracted the whole-page dark count
-from both ink and page counts, the resulting dark-excluded statistic still had a
-median of 23%. It is not a paper-region or ground-truth writing measurement; it
-only showed that the old fixed threshold included substantial lighter population.
-
-**Why a fraction of the two modes, and not a valley.** The obvious repair is the
-classical one: put the threshold in the valley between the ink population and the
-paper population. There is no such valley on this material, and that is a
-finding rather than a difficulty. On every photographed page in the sample the
-histogram has exactly two peaks — the bezel and the paper — with a long, smooth,
-monotonically rising ramp between them where the writing lives. The minimum-density
-level between the page's two modes therefore sits just *above the bezel*, around
-grey level 55-75, which is a page-boundary threshold and not an ink one: at it the
-scan would count the frame and drop most of the writing. The writing is not a
-mode. It is a few percent of the pixels smeared under the paper peak's own left
-skirt, and no density statistic separates it from that skirt.
-
-What the two modes *do* give is the page's own **scale**. The distance between
-them is large on a photograph with a black surround and small on a flat scan,
-in the same proportion as the paper population's own spread, so a fixed fraction
-of it tracks the paper's width where a fixed offset cannot. That is the whole
-claim, and the table below is what it is worth.
-
-**Why the fraction is 3333 and not its neighbours.** Two measurements decide it,
-and a third rules out the extremes.
-
-* **The historical dark-excluded statistic** — ink left after the sampled
-  whole-page dark count is subtracted from both ink and page counts. It is a
-  descriptive comparison, not a paper-region or writing measurement. Over the
-  ten photographed pages of the survey's own margin sweep, driven live through
-  the shipped pass: 4.1%-13.6% at 2500, 2.9%-9.0% at 3000, **2.2%-6.8% at
-  3333**, 1.6%-4.2% at 3750, 1.2%-3.1% at 4000. The range is retained as a
-  historical observation of how the threshold moves the sampled population.
-* **The component count at the sealed `gap_tolerance_px = 3`** — checked for the
-  two failures a wrong margin produces, and showing neither at 3333. The median
-  over the same ten pages is 2721 / 2557 / **2653** / 2982 / 3197 across
-  2500-4000: flat at the bottom through 3000-3333 and rising past it, which is
-  fragmentation beginning. It is a weak discriminator between 3000 and 3333 and
-  it is reported as one.
-* **Whether tightening changes the sampled distribution.** Going from 2500 to
-  3333 removes 39-53% of the historical dark-excluded pixels on all ten pages
-  while the component count moves by -24% to +35%, rising on three of them. The
-  result is retained as an observed component/threshold trade-off; it does not
-  identify paper, writing, or a physical boundary.
-
-3000 and 3333 are not separated by these historical comparisons, and the report
-says so. 3333 is retained as the sealed measured setting and because it is one
-third, which is a number the code can state without a second one beside it.
-
-**The floor is `PRIMARY_MARGIN` and it is load-bearing.** At 3333 it binds
-wherever the two modes are 60 grey levels apart or fewer. Ten of the 127 pages
-are — all from one source, all with 22 levels or fewer between their modes — and
-on those the derivation has no separation to scale by. The floor also makes the
-whole change one-directional: no page's derived margin is smaller than 20, so no
-page's threshold rises and no page can start counting as ink anything it did not
-count as ink before.
-
-**The bound `ink_margin_bp` is held under, and why it is structural.** The loader
-refuses any value at or past 5000. `_dark_distribution` measures at the midpoint of
-the two modes and publishes two dark counts *as fractions of the ink the page
-goes on to count*; that reading is true exactly while the derived threshold stays
-at or above the midpoint, which is exactly while the fraction stays under 5000.
-At 5000 the two coincide; past it the dark-distribution block would count pixels
-the scan does not. Zero is refused for the reason the two bounds beside it are:
-it is the derivation switched off by a value rather than by a decision.
-
-**Scale invariance, measured.** Over the same 73 DPI-tagged pages resampled to a
-300-DPI equivalent with LANCZOS, the derived margin moves by **at most 8 grey
-levels** (median 0) and the historical dark-excluded statistic by at most 0.51
-percentage points (median 0.01). The accept-or-refuse outcome is unchanged from the previous
-unit's 72 of 73, because the bound that decides it is not measured at the derived
-threshold — see the next paragraph.
-
-**`max_ink_bp` is probed at the floor, and that is a decision with a measurement
-behind it.** Asked at the page's own derived threshold the bound stops working:
-the derivation takes the same wrong paper value as its upper end and slides the
-threshold down with it. On the six pages whose modal branch inferred a paper of
-255 — the exact silent failure that bound exists for — the whole-page ink figure
-at the derived threshold is 2239-3498 bp against a median of 2434 over the other
-121, completely interleaved, so no value of `max_ink_bp` separates them there. At
-the floor they measure 7077-8502 against a maximum of 6595 among the pages it
-admits. The bound and the derivation ask different questions and are measured at
-different levels; the constant `PRIMARY_MARGIN` is what the first one needs — a
-level every page shares.
-
-**`SECONDARY_MARGIN` is not derived, by decision.** It stays 2, and so does
-`conservation.reconcile`'s margin, which defaults to it. The primary margin
-governs what this stage *proposes*; the secondary margin and the conservation
-denominator govern what it cannot *lose*, and erring sensitive there means a
-mark the grouping pass missed still appears as a residual component rather
-than as an absence. Deriving those too would trade a
-visible over-count for a possible silent loss. Two properties follow and both are
-still pinned: the secondary scan is strictly more sensitive than the primary on
-every page, because 2 is below the floor and no page can invert them; and the
-cross-stage containment with the Recensor's `MINIMUM_CONTRAST_BELOW_BACKGROUND`
-stays a comparison of two source literals that
-`common/test_designator_recensor_ink_calibration.py` reads statically.
-
-**The cost of that decision, stated rather than buried.** Conservation at a margin
-of 2 counts a photographed page as almost entirely ink — the measured
-distribution is in the table below — so on real material its residual accounting
-is an over-count by a very large factor, and it was already that before this unit.
-Nothing here makes it worse and nothing here fixes it. What this unit changes is
-that the two numbers no longer look alike: the primary scan's ink fraction is now
-a measurement of the page and conservation's is not, and a reader comparing them
-will see the difference rather than two plausible numbers that disagree.
-
-**What the 127 pages measure, before and after.** Both runs went through the
-shipped pass, one page per process, on the same pages in the same order.
-
-| statistic | min | p25 | median | p75 | p90 | max |
-|---|---:|---:|---:|---:|---:|---:|
-| historical dark-excluded statistic, fixed margin 20 | 0.0462 | 0.1857 | **0.2327** | 0.2762 | 0.3637 | 0.5266 |
-| historical dark-excluded statistic, derived margin | 0.0045 | 0.0301 | **0.0369** | 0.0503 | 0.0678 | 0.0962 |
-| whole-page ink fraction, fixed margin 20 | 0.0282 | 0.3448 | 0.3946 | 0.4630 | 0.5365 | 0.6595 |
-| whole-page ink fraction, derived margin | 0.0282 | 0.2097 | 0.2421 | 0.2752 | 0.3470 | 0.4728 |
-
-The historical dark-excluded statistic subtracts the sampled whole-page dark
-count from both ink and page counts. It does not identify a paper region or the
-part a register's writing is on. The whole-page figure retains every sampled
-pixel and reconciles; no page boundary is inferred or masked.
-
-Per source, on the 114 inferred pages:
-
-| source | paper (min/med/max) | dark mode | derived margin | ink fraction at 20 | ink fraction derived | historical dark-excluded, derived |
-|---|---|---|---|---|---|---|
-| teklia_dai_cretdhi | 172 / 212 / 231 | 0 / 0 / 22 | 57 / 69 / 75 | 0.2626 / 0.3710 / 0.6149 | 0.1875 / 0.2117 / 0.3899 | 0.0165 / 0.0356 / 0.0962 |
-| recordgold_production_train_v1 | 157 / 212 / 245 | 0 / 1 / 23 | 52 / 69 / 80 | 0.2816 / 0.3946 / 0.5365 | 0.1780 / 0.2481 / 0.4080 | 0.0192 / 0.0474 / 0.0696 |
-| recordgold_evaluation_val_v1 | 216 / 223 / 224 | 0 / 0 / 1 | 71 / 74 / 74 | 0.3062 / 0.4221 / 0.5624 | 0.2145 / 0.2437 / 0.2767 | 0.0221 / 0.0432 / 0.0490 |
-| Embrun | 171 / 217 / 230 | 0 / 0 / 0 | 56 / 72 / 76 | 0.1635 / 0.3886 / 0.5688 | 0.1270 / 0.2310 / 0.4096 | 0.0045 / 0.0369 / 0.0797 |
-| Oka | 176 / 189 / 252 | 0 / 176 / 247 | 20 / 20 / 66 | 0.0282 / 0.2137 / 0.5245 | 0.0282 / 0.2039 / 0.4571 | 0.0383 (one page) |
-| Montebello | 188 / 209 / 216 | 0 / 0 / 0 | 62 / 69 / 71 | 0.3263 / 0.3892 / 0.5818 | 0.1534 / 0.2633 / 0.4728 | 0.0249 / 0.0356 / 0.0678 |
-| Saint-Jacques | 185 / 197 / 208 | 9 / 10 / 26 | 56 / 62 / 65 | 0.3753 / 0.4722 / 0.5838 | 0.1837 / 0.2404 / 0.4581 | n/a (modal branch) |
-| control (7 proxies) | 189 / 196 / 196 | 0 / 0 / 0 | 62 / 65 / 65 | 0.4756 / 0.5218 / 0.6595 | 0.2991 / 0.3391 / 0.3579 | 0.0308 / 0.0549 / 0.0722 |
-
-Oka is the source the floor is for: 10 of its 15 pages have 22 grey levels or
-fewer between their two modes and derive the floor margin of 20, so their ink
-fraction barely moves. Saint-Jacques takes the plain modal branch on all 15, so
-it has no dark-distribution block or dark-excluded statistic to report; its
-whole-page figure is the relevant observed value, and it halves.
-
-**Components at the sealed `gap_tolerance_px = 3`**, over the 114 inferred pages:
-**87 / 2,772 / 24,617** against **87 / 6,237 / 24,617** at the fixed margin — the
-median more than halves, and the extremes are the two Oka pages that derive the
-floor and therefore do not move at all.
-
-**The refusal outcome is unchanged, page for page.** 114 inferred, 13 refused,
-every refusal `paper-is-not-a-background`, the same 13 files as before this unit.
-That is by construction: the bound is probed at the floor and the floor did not
-move.
-
-**A frame holding two differently-lit leaves gets one paper value, and the
-darker leaf reads as ink.** This is a limit of the design and it was found on
-real material rather than on a shape test: the review proxy `da9e07ec…` is a
-two-leaf opening whose right leaf is genuinely darker than the single value
-inferred for the whole frame, so at that page's own derived threshold the left
-leaf and the covering sheet fall out of the ink set correctly and the right leaf
-is counted as ink edge to edge (overlay `changed4_proxy_da9e07ec.png` in the
-session's Designator report; its ink fraction moves 0.6595 → 0.3579 and stops
-there). The derivation makes the threshold right for the page's *dominant* paper
-population and cannot make it right for two of them. **Nothing detects the
-case**: the page infers, reconciles and publishes like any other, no bound
-refuses it, and its ink fraction is the only place the failure shows — which
-makes this the same shape as the light-surround limit the sealed caveat already
-names, one level up. A per-region background is the repair, and it is a
-different unit.
+**Background inference and the ink margin** — the paper value every stage
+infers, the page's derived ink margin, and the 127-page calibration behind both
+— are described in `pipeline/1_ink_map/CONTRACT.md`, "Background inference,
+shared by every stage that reads paper". This stage runs that inference through
+`structure.py` and publishes its figures on `structure-status`.
 
 **What moved downstream, and what did not.** `structure-status` gains
 `ink_margin`, `ink_threshold` and `dark_mode` — the third added on a reader's
@@ -2161,18 +1631,16 @@ and has no notion of "claimed" to give — a change worth its own design and
 test pass. Named here rather than fixed quietly or left undiscovered. (Both
 sides of that shared adjacency label runs through one function,
 `common.components.label_component_runs`, and both are checked against the retired
-pixel-set labeller, `_test_support.label_components_reference`. The defect
+pixel-set labeller, `common/test_background_components.py::label_components_reference`. The defect
 described above is unchanged by that substitution: it is a property of the
 adjacency rule, not of how the rule is computed.)
 
 **Conservation uses `SECONDARY_MARGIN`, not the primary proposer's threshold.**
-The secondary proposer is optional, but its declared sensitivity is still the
-most inclusive threshold this stage has. Reconciliation therefore counts the
+It is the most inclusive ink threshold this stage has. Reconciliation therefore
+counts the
 faint band that `primary_scan` does not propose and mints it as residual held
-evidence when no crop claims it. A fixture-answered secondary chair may additionally
-publish a review-only rescue crop over the same area; that changes no authority
-decision and no pixel escapes the conservation denominator when the chair is
-absent. This closes a silent `EXIT_COMPLETE` path found by manual review; the
+evidence when no crop claims it, so no pixel escapes the conservation
+denominator. This closes a silent `EXIT_COMPLETE` path found by manual review; the
 remaining calibration limit is the unmeasured derivation of both thresholds
 recorded below.
 
@@ -2235,7 +1703,8 @@ directly instead of going through that shared helper.
 Seven fields are integer basis points of a page dimension — `margin_bp` of the
 page's **width**, the other six of its **height** — and each resolves
 bit-identically to its retired constant on the 200×260 fixture pages, so no
-fixture geometry changed. Two are bare counts: `max_secondary_proposals` and
+fixture geometry changed. Two are bare counts: `max_secondary_proposals` (sealed,
+read by nothing) and
 `fallback_bands`.
 
 Two do **not** move and never will. `PRIMARY_MARGIN` and `SECONDARY_MARGIN`

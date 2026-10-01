@@ -3,8 +3,7 @@
 Background inference (the threshold this scan runs against) lives in
 `common/background.py`, shared with the Ink Map and the Recensor's residual-ink
 audit so all three infer paper from the same page bytes; those names are
-re-exported below. This stage keeps only the ink set, the labeller aliases, the
-two sensitivity presets and the two scans.
+re-exported below. This stage keeps only the ink set, the labeller aliases and the scans.
 
 There is no model here: this is a real, deterministic, visual connected-component
 pass over the decoded page, not the textual structural classification a model
@@ -12,11 +11,9 @@ would add.
 
 `primary_scan` runs at each page's own derived `ink_margin`, not at
 `PRIMARY_MARGIN` -- that constant is only the floor under the derivation
-(`structure_pass.py:810`). `SECONDARY_MARGIN` backs `secondary_scan` at a
-fixed, lower margin so a real secondary detector has a principled difference
-to report: the secondary scan is strictly more sensitive, so it adds recall
-without ever missing what the primary catches, and `conservation.reconcile`
-uses it as the residual-ink denominator.
+(`structure_pass.py:810`). `conservation.reconcile` scans at the fixed, lower
+`SECONDARY_MARGIN`, strictly more sensitive, so its residual-ink denominator
+never misses what the primary catches.
 
 Connectivity tolerates a small gap rather than requiring strict pixel adjacency:
 real ink is not a solid fill, so two ink pixels within `gap_tolerance_px` of each
@@ -24,7 +21,7 @@ other are treated as one component. This is an ordinary morphological "close"
 before labelling.
 
 `label_components` is a fast row-run labeller, checked against the retired
-per-pixel implementation kept in `_test_support.py` as the oracle.
+per-pixel implementation kept in `common/test_background_components.py`.
 """
 
 from common.background import (  # noqa: F401  (re-exported: see the note above)
@@ -120,18 +117,5 @@ def primary_scan(
         rows,
         background=background,
         margin=margin,
-        gap_tolerance_px=gap_tolerance_px,
-    )
-
-
-def secondary_scan(
-    width: int, height: int, rows: list, *, background: int, gap_tolerance_px: int
-) -> list[Component]:
-    return scan_ink_components(
-        width,
-        height,
-        rows,
-        background=background,
-        margin=SECONDARY_MARGIN,
         gap_tolerance_px=gap_tolerance_px,
     )

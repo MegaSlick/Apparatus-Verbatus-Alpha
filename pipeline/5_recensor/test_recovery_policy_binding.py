@@ -21,7 +21,6 @@ orchestrator's dispatch, which is not a stage and proves it against the digests
 
 from __future__ import annotations
 
-import ast
 import shutil
 import subprocess
 import sys
@@ -161,19 +160,6 @@ def test_a_policy_swapped_after_the_binding_check_never_reaches_a_published_revi
                 f"{record['artifact_id']} was sealed under an allowance of "
                 f"{payload['budget_allowed']}, not the run's {sealed['allowed']}"
             )
-
-
-def test_designator_recovery_uses_the_sealed_policy():
-    source = (ROOT / "pipeline/2_designator/run.py").read_text(encoding="utf-8")
-    calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)]
-    assert not any(
-        ast.unparse(call.func).split(".")[-1] == "load_recovery_policy" for call in calls
-    )
-    assert any(
-        ast.unparse(call.func).split(".")[-1] == "require_sealed_config"
-        and any(isinstance(arg, ast.Constant) and arg.value == "recovery" for arg in call.args)
-        for call in calls
-    )
 
 
 def test_a_context_without_a_sealed_recovery_policy_refuses_rather_than_reading_as_zero():

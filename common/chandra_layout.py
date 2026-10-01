@@ -64,9 +64,8 @@ ever asked for.
 `data-bbox` is `"x0 y0 x1 y1"`, four integers normalized to `BBOX_SCALE`
 (1000), which is what the prompt tells the model and what
 `chandra/settings.py` sets. `block_page_bounds` converts to sealed-page pixels
-through `common.structure_answer.to_page_bounds` -- the one conversion the
-Designator's own Chandra reading uses, so both readings of a page land in one
-page-pixel mapping. The sealed page is the right denominator because the vendor
+through `to_page_bounds` -- the one conversion the Designator's own Chandra
+reading uses, so both readings of a page land in one page-pixel mapping. The sealed page is the right denominator because the vendor
 uses the same one: `InferenceManager` runs `parse_chunks` against the original
 image, not the resized one it sent.
 
@@ -98,8 +97,7 @@ blocks in `<p>`. So the text view is ours, named, and stated in full:
   reader can see it for what it is;
 * consecutive line breaks collapse to one, and the block's text is stripped.
 
-`page_text` is `common.structure_answer.join_delivered_texts` over the block
-texts -- a newline between delivered (non-empty) texts and nowhere else -- and
+`page_text` is `join_delivered_texts` over the block texts -- a newline between delivered (non-empty) texts and nowhere else -- and
 `spans` locates each block in it, empty blocks as a zero-width span. A
 `Blank-Page` block's text is kept like any other block's. A record naming a
 view in `RETIRED_LAYOUT_TEXT_VIEWS` is refused by that name rather than re-read
@@ -115,8 +113,8 @@ import re
 from html.parser import HTMLParser
 from typing import Any, Final, TypedDict
 
+from common.contracts.canonical import digest_bytes
 from common.imaging import Bounds
-from common.structure_answer import join_delivered_texts, to_page_bounds
 
 VENDOR_REPOSITORY: Final = "github.com/datalab-to/chandra"
 VENDOR_COMMIT: Final = "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
@@ -440,6 +438,62 @@ def parse_bbox_attribute(value: str | None) -> tuple[list[int] | None, str | Non
     if box[2] <= box[0] or box[3] <= box[1]:
         return None, "x1 <= x0 or y1 <= y0"
     return box, None
+
+
+# Declared rules the Designator's structure records name for how they read a
+# Chandra answer: box quantization onto sealed-page pixels, and the page join.
+QUANTIZATION_RULE: Final = "structure-answer.v1.box1000-floor-low-ceil-far.sealed-page-pixels"
+PAGE_TEXT_RULE: Final = "structure-answer.v1.newline-between-delivered-acts"
+
+
+def to_page_bounds(box_1000: list[int], page_w: int, page_h: int) -> Bounds:
+    """A normalized `box_1000` as a sealed-page rectangle, low edges floored, far ceiled.
+
+    The same rectangle `pipeline/2_designator/geometry_layer.py::chandra_layout`
+    encloses its four corner points in: ``x0*page_w//1000`` to
+    ``min(page_w-1, (x1*page_w+999)//1000 - 1)``, and likewise on y. A
+    Designator test holds the two equal over a grid of boxes wherever
+    `chandra_layout` returns a proposal; a one-pixel-wide box, which it refuses,
+    is pinned separately.
+    """
+    x0, y0, x1, y1 = box_1000
+    left = x0 * page_w // 1000
+    top = y0 * page_h // 1000
+    right = min(page_w - 1, (x1 * page_w + 999) // 1000 - 1)
+    bottom = min(page_h - 1, (y1 * page_h + 999) // 1000 - 1)
+    return {"x": left, "y": top, "w": right - left + 1, "h": bottom - top + 1}
+
+
+def text_digest(text: str) -> str:
+    """The digest that lets a reader prove it derived the same text from the same bytes."""
+    return digest_bytes(text.encode("utf-8"))
+
+
+def join_delivered_texts(texts: list[str]) -> tuple[str, list[dict[str, int]]]:
+    """`PAGE_TEXT_RULE`: a newline only between delivered (non-empty) texts.
+
+    Returns the page text and each input's `[start, end)` span in it; an empty
+    text gets a zero-width span where it would have sat. Every Chandra reading
+    of a page joins by this rule, so spans published against one reading's
+    page text land at the same offsets in another's.
+    """
+    parts: list[str] = []
+    spans: list[dict[str, int]] = []
+    cursor = 0
+    wrote_any = False
+    for text in texts:
+        if text == "":
+            spans.append({"start": cursor, "end": cursor})
+            continue
+        if wrote_any:
+            parts.append("\n")
+            cursor += 1
+        start = cursor
+        parts.append(text)
+        cursor += len(text)
+        spans.append({"start": start, "end": cursor})
+        wrote_any = True
+    return "".join(parts), spans
 
 
 def block_page_bounds(block: LayoutBlock, *, page_size: tuple[int, int]) -> Bounds | None:
@@ -843,7 +897,7 @@ def parse_layout_html(raw: Any) -> ParsedLayout | dict[str, str]:
             # `label` is deliberately not repeated into the finding. It is the
             # chair's own word for what it thinks a rectangle is -- a reading,
             # unbounded in length, which this repository publishes as a digest
-            # and a length and never as text (`common/structure_answer.py`).
+            # and a length and never as text (`text_digest`).
             # `ordinal` joins the finding to the block, which carries it.
             findings.append(
                 _finding("malformed-bbox", ordinal=ordinal, reason=reason, **_quoted(bbox_raw))

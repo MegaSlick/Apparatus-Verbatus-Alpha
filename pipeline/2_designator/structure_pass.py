@@ -73,7 +73,7 @@ from typing import Any, Final, Mapping, TypedDict, TypeVar, cast
 import geometry
 import structure_prompt
 
-from common import chandra_layout, structure_answer
+from common import chandra_layout
 from common.chair_wire import chandra_wire_fields
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.chandra_custody import retain_chandra_response
@@ -616,7 +616,7 @@ def _block_without_proposal(
         "reason": _no_proposal_reason(block, malformed),
         "blank_page": block["blank_page"],
         **_label_fields(block["label"], block["label_declared"]),
-        "text_digest": structure_answer.text_digest(block["text"]),
+        "text_digest": chandra_layout.text_digest(block["text"]),
         "text_length": len(block["text"]),
         "nested_bbox_count": len(block["nested_bboxes"]),
     }
@@ -641,7 +641,7 @@ def _label_fields(label: str, declared: bool) -> dict[str, Any]:
     return {
         "label_vocabulary": label if label in _LABEL_VOCABULARY else None,
         "label_declared": declared,
-        "label_digest": structure_answer.text_digest(label) if declared else None,
+        "label_digest": chandra_layout.text_digest(label) if declared else None,
         "label_length": len(label) if declared else None,
     }
 
@@ -703,7 +703,7 @@ def _designator_finding(finding: Mapping[str, Any]) -> dict[str, Any]:
         "kind": kind,
         "ordinal": finding["ordinal"],
         "reason": finding["reason"],
-        "data_bbox_digest": None if quoted is None else structure_answer.text_digest(quoted),
+        "data_bbox_digest": None if quoted is None else chandra_layout.text_digest(quoted),
         "data_bbox_truncated": finding["data_bbox_truncated"],
     }
 
@@ -810,7 +810,7 @@ def _act_record(act: StructureProposal) -> dict[str, Any]:
         "ordinal": act["ordinal"],
         "box_1000": list(act["box_1000"]),
         "raw_bounds": dict(act["raw_bounds"]),
-        "text_digest": structure_answer.text_digest(act["text"]),
+        "text_digest": chandra_layout.text_digest(act["text"]),
         "text_length": len(act["text"]),
         **_label_fields(act["label"], act["label_declared"]),
         "nested_bbox_count": act["nested_bbox_count"],
@@ -868,8 +868,8 @@ def _refused_page_answer(
         "acts": [],
         "blocks_without_proposal": [],
         "findings": [],
-        "quantization": structure_answer.QUANTIZATION_RULE,
-        "page_text_rule": structure_answer.PAGE_TEXT_RULE,
+        "quantization": chandra_layout.QUANTIZATION_RULE,
+        "page_text_rule": chandra_layout.PAGE_TEXT_RULE,
         "decoding": dict(decoding),
         "provenance": dict(provenance),
         "capacity": dict(capacity),
@@ -936,8 +936,8 @@ def _failed_call_page_answer(
         "acts": [],
         "blocks_without_proposal": [],
         "findings": [],
-        "quantization": structure_answer.QUANTIZATION_RULE,
-        "page_text_rule": structure_answer.PAGE_TEXT_RULE,
+        "quantization": chandra_layout.QUANTIZATION_RULE,
+        "page_text_rule": chandra_layout.PAGE_TEXT_RULE,
         "decoding": dict(decoding),
         "provenance": dict(provenance),
         "capacity": dict(capacity),
@@ -1226,8 +1226,8 @@ def ask_page(
         # These two keep their v1 names (they name rules, not that retired
         # contract): the arithmetic is unchanged, so renaming it here would
         # falsely tell every stored record that it had moved.
-        "quantization": structure_answer.QUANTIZATION_RULE,
-        "page_text_rule": structure_answer.PAGE_TEXT_RULE,
+        "quantization": chandra_layout.QUANTIZATION_RULE,
+        "page_text_rule": chandra_layout.PAGE_TEXT_RULE,
         "decoding": dict(decoding),
         "provenance": dict(provenance),
         "capacity": capacity,
