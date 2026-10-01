@@ -845,8 +845,8 @@ def run_aggregate(
     `subject` its ordinal), on census page `page`. A person's decision is not a
     machine check, so every clearance is a reason and a run whose every hold
     was cleared stays partial. `review_page_holds` maps each page still held
-    after review to its codes; it holds even when every unit on it was
-    excluded.
+    once decisions are applied, reviewed or not, to its codes; it holds even
+    when every unit on it was excluded.
     """
     reasons: list[str] = []
     by_category: dict[str, int] = {}
@@ -936,9 +936,11 @@ def run_aggregate(
                 f"a review page hold names page {ordinal!r} and codes {codes!r}, not a held "
                 "census page"
             )
-        reasons.append(
-            f"page {ordinal} is held after operator review by {', '.join(sorted(codes))}"
-        )
+        if not isinstance(codes, list) or not all(type(code) is str and code for code in codes):
+            raise FatalAccounting(
+                f"the review page hold of page {ordinal} names {codes!r}, not a list of hold codes"
+            )
+        reasons.append(f"page {ordinal} is still held by {', '.join(sorted(codes))}")
 
     for act in sorted(act_categories):
         category = act_categories[act]

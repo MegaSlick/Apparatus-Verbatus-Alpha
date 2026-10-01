@@ -694,10 +694,11 @@ def aggregate_clearances(result: Mapping[str, Any], *, unit_key: str) -> list[di
 
 
 def held_pages(result: Mapping[str, Any]) -> dict[int, list[str]]:
-    """Each page still held after review, by ordinal, with its page-scope hold codes.
+    """Each page still held once decisions are applied, by ordinal, with its page-scope codes.
 
     `run_aggregate`'s `review_page_holds`: a page hold stands even when every
     unit on the page was excluded, so it is reported by page, not only by unit.
+    A page no decision touched is listed too, with its machine holds.
     """
     return {
         page["page_ordinal"]: list(page["hold_codes"])
