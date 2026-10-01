@@ -2,10 +2,12 @@
 
 Reads handwritten historical parish and civil registers and recovers the *ipsissima
 verba*, the very words on the page. Several vision models act as witnesses and report
-what they see in each entry; a separate reader model, the **Perlector**, then reads the
-ink itself, uses the witnesses only as clues, and establishes the text. Every reading
-traces back to the exact region of the image it came from, and uncertainty is to be
-flagged, never guessed.
+what they see on each page; a separate reader model, the **Perlector**, then reads each
+whole page itself, names the entries on it, uses the witnesses only as clues, and
+establishes the text. Every reading traces back to the exact region of the image it came
+from, and uncertainty is to be flagged, never guessed. A page that cannot be read is a
+failure; a page read as having no text is held until its ink, its detected lines and
+every witness confirm that it is truly blank.
 
 It is built primarily for Quebec parish registers of the 1700s to 1900s, and developed
 and tested on those records and on French records of the same era (the RecordGold pages).
@@ -21,8 +23,11 @@ unreadable ink and `[[reading]]` for doubt; they become gaps and uncertain spans
 
 ```
 page images → Exemplar → Ink map → Designator → Attestatores → Perlector → Recensor → Archetypus → Armarium
-              sealed     where the   finds the    witness        reads the   checks     established  export
-              source     ink lies    entries      models         ink         coverage   reading
+              sealed     where the   lines and    witness        reads each  checks     established  export
+              source     ink lies    records      models         page        coverage   reading
+                                                                    │                                   ▲
+                                                                    └──────────► Coniector ─────────────┘
+                                                                                 labelled reconstruction
 ```
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains each stage and why it is shaped that way;
@@ -31,10 +36,12 @@ page images → Exemplar → Ink map → Designator → Attestatores → Perlect
 
 | Role | Model |
 |---|---|
-| Designator, Attestator 1 | `datalab-to/chandra-ocr-2` |
+| Designator | Surya line and layout detection (`datalab-to/surya`) and `Teklia/YOLOv26-DAI-CReTDHI-Record-Detection` (records) |
+| Attestator 1 | `datalab-to/chandra-ocr-2` |
 | Attestator 2 | `Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR` |
 | Attestator 3 | `stanford-oval/churro-3B` |
 | Perlector | `Qwen/Qwen3.8-27B` |
+| Coniector | `Qwen/Qwen3.8-27B` (the Perlector's model, text only) |
 
 Models are bound to roles in `config/models-real.toml` and can be swapped without code
 changes.
@@ -52,7 +59,7 @@ sh .githooks/check-static.sh                   # lint, format and document check
 
 **Try it without a GPU.** The default model roster (`config/models.toml`) uses fixture
 stand-ins in place of models, with answers scripted by the chosen scenario, so a local
-run on the synthetic pages in `proof/fixtures/` exercises sealing, accounting, recovery
+run on the synthetic pages in `proof/fixtures/` exercises sealing, accounting, review
 and export — not reading:
 
 ```sh
