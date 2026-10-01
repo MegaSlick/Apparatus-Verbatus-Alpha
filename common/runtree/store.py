@@ -1461,8 +1461,9 @@ def _read_bytes_bounded(path: Path, *, max_bytes: int | None = None) -> bytes:
 
     Checked before and after the read, because a file can grow in between.
     `max_bytes` defaults to the blob ceiling, read at call time so a test can
-    monkeypatch it.  Opened without following a link or blocking, and anything
-    but a regular file is an `OSError`: a FIFO would otherwise hang the read.
+    monkeypatch it.  Opened without blocking or following a final link (callers
+    pass paths `resolve` already checked), and anything but a regular file is
+    an `OSError`: a FIFO would otherwise hang the read.
     A missing or unreadable file raises `OSError` too, which callers convert to
     their own refusals; only the ceiling raises `SchemaRefusal`.
     """
