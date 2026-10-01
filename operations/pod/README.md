@@ -325,10 +325,10 @@ selection is the auto mode, which carries a held Recensor through to the Armariu
 - **`--perlector-protocol-config <path>`**, inside the repository, is forwarded to the
   orchestrator, which seals its bytes into the run's config digest, so every later
   selection or resume of that run must name the same file; the report records it
-  (`plan.perlector_protocol_config`, `null` for the orchestrator's default). Its
-  `reading_unit` picks the Perlector's act or page path. pod_run parses it with the same
-  seal reader the run binding uses before the bootstrap; the Perlector stage validates its
-  schema when it opens.
+  (`plan.perlector_protocol_config`, `null` for the orchestrator's default). pod_run
+  reads it with the Perlector's own protocol loader before the bootstrap, closed schema
+  included, so a protocol the Perlector would refuse is refused before anything is paid
+  for.
 - **A resume is checked against its seal before the bootstrap.** When the run already has
   a `run.json`, the protocol this launch hands the orchestrator (the named file, or the
   checkout's default) must have the `perlector-protocol` digest the run sealed, and on a
@@ -678,7 +678,7 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   materialized under another root on this volume, name that one; a new root downloads
   every chair's weights onto the volume during the paid bootstrap.
 - Add `--perlector-protocol-config <path in the repository>` to choose the Perlector's
-  protocol (and with it the act or page path); omitted, the orchestrator's default.
+  protocol; omitted, the orchestrator's default.
 - The file names carry the run id so a second run on the same volume cannot overwrite
   them. A gated Hugging Face model needs its token in the environment and
   `--keep-env HF_TOKEN` in the bootstrap half, never on the command line.
@@ -710,12 +710,11 @@ decision and a new deadline file.
 boundary once more than two distinct (stage, subject) incidents carry a counted failure
 (one act failing at two stages counts twice); the stage in flight finishes. It counts Door refusals for `corrupt` or `unreadable`
 pages, Designator and Recensor `failed`, Archetypus `refused`, and Perlector `failed`.
-On the Perlector's **act** path (`reading_unit = "act"`, the committed default today) a
-reading that failed is `failed` and counts, once per act however often it is retried. On
-the **page** path nothing is recorded `failed`: a page whose call failed, was cut off, was
-refused for capacity or did not parse is `held`, which the cap does not count, and yields
-no act records. So on the page path the cap never trips on Perlector trouble; watch the
-held pages in the transcript and the run tree instead. A halted run exits 4 and stays
+A page whose Perlector call failed (transport, endpoint or engine signal) is recorded
+`failed` and counts toward the cap, once per page; that includes a failed re-ask call,
+whose page still stands on its first reading. A page that was cut off, refused for
+capacity or did not parse is `held` and is not counted; watch held pages in the
+transcript and the run tree. A halted run exits 4 and stays
 halted: every stage refuses to start while the cap is breached.
 
 ### When it ends, and how results come home

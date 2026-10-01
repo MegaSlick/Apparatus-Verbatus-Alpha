@@ -709,6 +709,7 @@ def test_a_reasked_page_is_judged_on_its_final_accounting_and_reports_what_the_r
     assert reask["reasked_page_ids"] == ["page-1"]
     assert reask["reask_by_parse_state"] == {"parsed": 1}
     assert reask["acts_recovered_on_reask"] == 1
+    assert reask["reask_duplicates"] == 0
     assert reask["entries_added_by_reask"] == {"act": 1}
     assert reask["before_reask"] == {
         "records": 3,
@@ -722,6 +723,22 @@ def test_a_reasked_page_is_judged_on_its_final_accounting_and_reports_what_the_r
     assert reask["records_no_longer_exactly_once"] == 0
     # Both calls are compared against the engine's count.
     assert result["pages"]["prompt_tokens"]["compared"] == 2
+
+
+def test_a_reask_act_held_as_a_duplicate_is_not_counted_as_recovered():
+    """The re-ask read record 0 again: rule (j) holds the added entry as a duplicate of
+    the first reading's, so the re-ask recovered nothing."""
+    reasked = reasked_page()
+    reasked["accounting"]["rules"]["j"]["findings"] = [
+        {"code": "reask-duplicate", "n": 3, "reading_n": 1, "attempt_1_n": 1}
+    ]
+    result = report([reasked])
+
+    reask = result["reask"]
+    assert reask["entries_added_by_reask"] == {"act": 1}
+    assert reask["acts_recovered_on_reask"] == 0
+    assert reask["reask_duplicates"] == 1
+    assert "0 act(s) recovered, 1 duplicate(s) held" in "\n".join(summary_lines(result))
 
 
 def test_a_page_never_reasked_reads_the_same_before_and_after():

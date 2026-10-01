@@ -15,7 +15,8 @@ Two schemas share this family. `approval-record.v0` carries every action except
 operator review decision about one held unit or page of a run: action `review`, a
 closed `review` block naming the run, scope, page, decision and finding, and a
 `target_version_hash` that is the review's basis digest
-(`common.review_decisions`). Readers accept both.
+(`common.review_decisions`). Readers accept both. No stage applies a v1 decision
+yet: `common.review_decisions` is not called by any stage.
 
 `timestamp` is present here and absent from every other artifact in this package.
 Deterministic artifacts carry no timestamps, because two identical runs must

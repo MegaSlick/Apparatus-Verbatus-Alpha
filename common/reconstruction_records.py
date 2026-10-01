@@ -64,7 +64,6 @@ CALL_KIND: Final = "reconstruction-call"
 RECONSTRUCTION_KIND: Final = "reconstruction"
 CONIECTOR_KINDS: Final = frozenset({PLAN_KIND, CALL_KIND, RECONSTRUCTION_KIND})
 
-# v2 drops v1's `reading_unit` and `not_applicable`: every run reads pages whole.
 PLAN_SCHEMA: Final = "coniector-plan.v2"
 CALL_SCHEMA: Final = "coniector-call.v1"
 RECONSTRUCTION_SCHEMA: Final = "coniector-reconstruction.v1"
@@ -125,28 +124,6 @@ CALL_FIELDS: Final = frozenset(
         "parse_state",
         "problems",
         "maker",
-    }
-)
-RECONSTRUCTION_FIELDS: Final = frozenset(
-    {
-        "schema",
-        "unit",
-        "act_ids",
-        "act_keys",
-        "page_ordinal",
-        "call_ref",
-        "label",
-        "made",
-        "maker",
-        "diplomatic_raw_sha256",
-        "diplomatic_clean_sha256s",
-        "reconstruction_raw",
-        "reconstruction_text",
-        "reconstruction_uncertainty",
-        "continues",
-        "departures",
-        "findings",
-        "not_made",
     }
 )
 MAKER_FIELDS: Final = frozenset(

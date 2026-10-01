@@ -166,8 +166,9 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   reading), and two records for one reading are refused. The gate is judged on the
   sealed final accounting -- the re-ask's on a re-asked page -- over every act region the
   page holds; `reask` reports the same records on the first reading alone (its regions
-  and accounting) beside it: pages re-asked, acts recovered on the re-ask, exactly-once
-  before and after, overall and on the re-asked pages. Parse states, the `length` finish
+  and accounting) beside it: pages re-asked, acts recovered on the re-ask (an added act
+  rule (j) holds as a duplicate of a first-reading entry is counted in `reask_duplicates`
+  instead), exactly-once before and after, overall and on the re-asked pages. Parse states, the `length` finish
   rate and the 65,536-token fit describe each page's first reading; the re-ask's parse
   states are under `reask`, and prompt tokens compare every call. With `--selection`
   (`proof_pages`' `selection.json`, checked against the ledger) the pages in scope are
@@ -508,8 +509,8 @@ Per page it records:
   sealed feed, the page's gold text standing in for three witnesses, Surya lines
   estimated from it);
 - `k`, `k_cap` and `k_capped`: the most crops round two fits, the cap it was
-  counted up to (`--max-crops`, or fewer if more would take the request past the
-  protocol's `max_images`), and whether k reached a cap above 0. Round two is
+  counted up to (`--max-crops`, since the protocol seals no image ceiling; 0 for a
+  page whose request is refused), and whether k reached a cap above 0. Round two is
   the page request as admitted, plus the request's `max_tokens` for the
   round-one reply carried in context (the most the engine lets that reply run,
   so no real reply leaves fewer crops than k), two more chat turns

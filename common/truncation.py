@@ -10,8 +10,8 @@ testimony.
 Four declared signals. Three are genuinely computed, over the actual reading
 text and the actual region area. The fourth -- the serving engine's own
 stop-reason -- is observed, not computed: the reader
-(`pipeline/4_perlector/live_reader.py::send_page_request`) passes on the engine's own answer, and a
-fixture run's declared stand-in is named as one rather than disguised as a
+(`operations/serving/chat_request.py::send_page_request`) passes on the engine's own
+answer, and a fixture run's declared stand-in is named as one rather than disguised as a
 computed signal.
 
 **A reading whose engine reported nothing is never `complete`.** The three

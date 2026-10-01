@@ -4,8 +4,7 @@ The Coniector runs after the Archetypus and before the Armarium, on a side branc
 it reads the Perlector's sealed readings and only the Armarium reads what it
 writes. Its seal's predecessor is the Perlector (`common/contracts/stages.py`,
 `HANDOFFS`); the Armarium verifies its seal beside the Archetypus's
-(`SIDE_BRANCHES`). It runs after recovery so it reads the Perlector's final
-readings.
+(`SIDE_BRANCHES`).
 
 It proposes, beneath each diplomatic reading, a labelled and unconfirmed
 reconstruction from text alone. It never sees a page image, never changes the
@@ -33,8 +32,7 @@ Shapes and derivations are `common/reconstruction_records.py`, the one module
 both this stage and the Armarium derive them with.
 
 `reconstruction-plan` (subject `coniector`, outcome `planned`), schema
-`coniector-plan.v2`: `{mode, pages_are_consecutive, policy_sha256, calls}`
-(v1 also named the run's reading unit, which every run now reads whole). `calls` is
+`coniector-plan.v2`: `{mode, pages_are_consecutive, policy_sha256, calls}`. `calls` is
 `common.reconstruction.reconstruction_plan` over the entries: one call per page,
 `{page_ordinal, subjects, chains, context}`. Chains (an act crossing an agreed
 page break) and context (the neighbouring pages' edge acts) exist only when the
@@ -97,7 +95,8 @@ and the pieces carry no reconstruction.
 
 `common.reconstruction_records.verified_reconstructions` recomputes everything:
 the plan from the sealed switches and the Perlector's current readings (so a
-Coniector sealed over readings a later recovery replaced is refused); each
+Coniector sealed over readings that differ from the Perlector's sealed readings is
+refused); each
 call's prompt; its maker against the run's roster and its receipt; a call not
 asked against the evidence its reason leaves (the roster's absent chair, the
 capacity record that did not fit, the failure's retained bytes); each reply

@@ -383,8 +383,7 @@ def test_mechanics_qualification_reaches_orchestrator_and_report(tmp_path: Path)
 
 def test_perlector_protocol_config_reaches_orchestrator_and_report(tmp_path: Path) -> None:
     ws = _prepared(tmp_path)
-    protocol = ws.repository / "config" / "perlector_protocol_page.toml"
-    protocol.write_text('reading_unit = "page"\n', encoding="utf-8")
+    protocol = _alternative_protocol(ws.repository / "config" / "perlector_protocol_edge.toml")
     clock = Clock()
     runner = RecordedRunner()
 
@@ -789,15 +788,41 @@ def test_a_protocol_the_orchestrator_cannot_parse_is_refused_before_bootstrap(
     assert "not a protocol the orchestrator can seal" in capsys.readouterr().err
 
 
+def test_a_protocol_outside_the_perlectors_closed_schema_is_refused_before_bootstrap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _prepared(tmp_path)
+    protocol = ws.repository / "config" / "open_protocol.toml"
+    committed = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
+    protocol.write_text('reading_unit = "page"\n' + committed, encoding="utf-8")
+
+    exit_code, runner = _refused(
+        ws, _run_argv(ws, extra=("--perlector-protocol-config", str(protocol)))
+    )
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "not its closed schema" in capsys.readouterr().err
+
+
+def _alternative_protocol(path: Path) -> Path:
+    """The committed protocol with one legal value changed: a second valid seal."""
+
+    text = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
+    assert "\nmaximum_edge = 2560\n" in text
+    path.write_text(
+        text.replace("\nmaximum_edge = 2560\n", "\nmaximum_edge = 2048\n"), encoding="utf-8"
+    )
+    return path
+
+
 def _protocols(ws: Workspace) -> tuple[Path, Path]:
-    """The checkout's default protocol and a second, page-reading one."""
+    """The checkout's default protocol and a second valid one with another seal."""
 
     config = ws.repository / "config"
     default = config / "perlector_protocol.toml"
     default.write_bytes((ROOT / "config" / "perlector_protocol.toml").read_bytes())
-    page = config / "perlector_protocol_page.toml"
-    page.write_text('reading_unit = "page"\n', encoding="utf-8")
-    return default, page
+    return default, _alternative_protocol(config / "perlector_protocol_edge.toml")
 
 
 def _sealed_run(ws: Workspace, digests: dict[str, str]) -> None:
@@ -826,7 +851,7 @@ def _resume(ws: Workspace, extra: tuple[str, ...]) -> tuple[int, PreflightedActi
     return code, actions
 
 
-@pytest.mark.parametrize("sealed", ["default", "page"])
+@pytest.mark.parametrize("sealed", ["default", "alternative"])
 def test_a_resume_naming_another_protocol_than_its_seal_is_refused_before_bootstrap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sealed: str
 ) -> None:
@@ -834,11 +859,12 @@ def test_a_resume_naming_another_protocol_than_its_seal_is_refused_before_bootst
 
     ws = _prepared(tmp_path)
     monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
-    default, page = _protocols(ws)
-    sealed_path = default if sealed == "default" else page
+    default, alternative = _protocols(ws)
+    sealed_path = default if sealed == "default" else alternative
     _sealed_run(ws, {"perlector-protocol": read_sealed_toml(sealed_path, "protocol")[1]})
-    matching = () if sealed == "default" else ("--perlector-protocol-config", str(page))
-    other = ("--perlector-protocol-config", str(page)) if sealed == "default" else ()
+    named = ("--perlector-protocol-config", str(alternative))
+    matching = () if sealed == "default" else named
+    other = named if sealed == "default" else ()
 
     code, actions = _resume(ws, other)
 

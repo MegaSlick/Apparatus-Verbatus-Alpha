@@ -65,6 +65,7 @@ from common.page_accounting import (
     DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
     HOLD_CODES,
     MERGED_DETECTION,
+    REASK_DUPLICATE,
     SEALED_CONFIG_NAME,
     PageAccountingPolicy,
     best_substring_distance,
@@ -547,18 +548,41 @@ def _outcome_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _reask_duplicate_numbers(page: Mapping[str, Any]) -> set[int]:
+    """The entry numbers rule (j) of the page's final accounting holds as re-ask duplicates."""
+    accounting = page.get("accounting")
+    if accounting is None:
+        return set()
+    return {
+        finding["n"]
+        for finding in accounting["rules"]["j"]["findings"]
+        if finding["code"] == REASK_DUPLICATE
+    }
+
+
 def _reask_effect(
     pages: Sequence[Mapping[str, Any]],
     before: Sequence[Mapping[str, Any]],
     after: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """What the re-ask changed: pages re-asked, entries it added, records before and after."""
+    """What the re-ask changed: pages re-asked, entries it added, records before and after.
+
+    An added act that rule (j) holds as a duplicate of a first-reading entry is
+    counted in `reask_duplicates`, not among the acts the re-ask recovered.
+    """
     reasked = sorted(page["feed"]["page_id"] for page in pages if page.get("reask") is not None)
     added = [
         region
         for page in pages
         for region in page["act_regions"]
         if _region_attempt(region) == REASK_READING
+    ]
+    duplicates = [
+        region
+        for page in pages
+        for region in page["act_regions"]
+        if _region_attempt(region) == REASK_READING
+        and region["n"] in _reask_duplicate_numbers(page)
     ]
     on_reasked = set(reasked)
     pairs = list(zip(before, after, strict=True))
@@ -573,7 +597,9 @@ def _reask_effect(
             )
         ),
         "entries_added_by_reask": dict(sorted(Counter(r["kind"] for r in added).items())),
-        "acts_recovered_on_reask": sum(1 for region in added if region["kind"] == "act"),
+        "acts_recovered_on_reask": sum(1 for region in added if region["kind"] == "act")
+        - sum(1 for region in duplicates if region["kind"] == "act"),
+        "reask_duplicates": len(duplicates),
         "before_reask": _outcome_counts(before),
         "after_reask": _outcome_counts(after),
         "on_reasked_pages": {
@@ -807,7 +833,8 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         f"by merge class: {records['by_merge_class']}",
         f"scope: {report['scope']}",
         f"re-ask: {report['reask']['pages_reasked']} page(s), "
-        f"{report['reask']['acts_recovered_on_reask']} act(s) recovered; exactly once "
+        f"{report['reask']['acts_recovered_on_reask']} act(s) recovered, "
+        f"{report['reask']['reask_duplicates']} duplicate(s) held; exactly once "
         f"{report['reask']['before_reask']['exactly_once']} before, "
         f"{report['reask']['after_reask']['exactly_once']} after",
         f"merged-detection: fired on true merge {rule_i['fired_on_true_merge']}, on single "

@@ -114,6 +114,7 @@ refuse it after a paid bootstrap.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
@@ -192,6 +193,7 @@ GUARD_HEARTBEAT_STALE_SECONDS = 300
 # defaults govern them; a resume's run-policy digest is recomputed under them.
 ORCHESTRATOR_RUN_POLICY_DEFAULTS: Mapping[str, object] = {"witness_context": "named"}
 PERLECTOR_PROTOCOL_WHAT = "Perlector protocol configuration"
+PERLECTOR_PROTOCOL_MODULE = Path(__file__).resolve().parents[2] / "pipeline/4_perlector/protocol.py"
 
 # The transcript's two bounds. The head is written to the volume as it arrives,
 # so a process killed mid-run still leaves the beginning of the run durable; the
@@ -662,6 +664,17 @@ def _run_report_path(path: Path, bootstrap: Plan, launch_token: str | None) -> P
     return report_path
 
 
+def _perlector_protocol():
+    """The Perlector's protocol loader, by path: its stage folder is not a package."""
+    name = "verbatus_perlector_protocol"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, PERLECTOR_PROTOCOL_MODULE)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
 def build_parser() -> bootstrap_main.RefusingParser:
     parser = bootstrap_main.RefusingParser()
     parser.add_argument("--report-path", type=Path, required=True)
@@ -835,10 +848,10 @@ def resolve_run_plan(
                 "checked-out repository",
                 report_path=report_path,
             )
-        # Read as the run binding reads it, so a file the orchestrator would
-        # refuse is refused here, before the bootstrap is paid for.
+        # Read as the Perlector reads it, closed schema included, so a protocol
+        # the run would refuse is refused here, before the bootstrap is paid for.
         try:
-            read_sealed_toml(perlector_protocol_config, PERLECTOR_PROTOCOL_WHAT)
+            _perlector_protocol().load(perlector_protocol_config)
         except ContractError as error:
             raise RunRefusal(
                 f"--perlector-protocol-config {perlector_protocol_config} is not a protocol the "
