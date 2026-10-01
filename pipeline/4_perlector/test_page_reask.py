@@ -740,8 +740,8 @@ def test_a_failed_live_re_ask_call_is_failed_and_its_page_stands_on_its_first_re
     first_regions = _on_page(root, "act-region", 1)
     assert len(acts) == 1 and len(first_regions) == 1
     assert all("reading_attempt" not in r["payload"] for r in acts + first_regions)
-    assert first_regions[0]["payload"]["page_reading_attempt"] == (
-        _reading(root, 1, 1)["attempt_id"]
+    assert (
+        first_regions[0]["payload"]["page_reading_attempt"] == (_reading(root, 1, 1)["attempt_id"])
     )
 
     rows = reading_acts(_denominator_context(live))

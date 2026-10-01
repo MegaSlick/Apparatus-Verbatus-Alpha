@@ -30,7 +30,6 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from common.contracts.errors import ContractError
-from common.recovery import RULED_ABSOLUTE_CAP
 from common.page_accounting import (
     ANSWER_BASIS_FIRST,
     HOLD_CODES,
@@ -49,6 +48,7 @@ from common.page_accounting import (
     is_inside,
     validate_answer,
 )
+from common.recovery import RULED_ABSOLUTE_CAP
 
 # The findings a re-ask is asked about, and every other finding code.
 RE_ASKABLE: Final = frozenset({UNACCOUNTED_WITNESS_UNIT, UNREAD_LINE, RECORD_NOT_READ})
