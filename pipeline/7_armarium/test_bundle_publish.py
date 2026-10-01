@@ -70,16 +70,18 @@ def _publish(run_root: Path, run_id: str, out: Path, **extra) -> subprocess.Comp
 
 
 @pytest.fixture(scope="module")
-def happy_run(tmp_path_factory):
-    root = tmp_path_factory.mktemp("bundle-publish-happy")
-    result = _orchestrate(root, "r", "page-unbroken")
-    assert result.returncode == 0, result.stderr
-    return root
+def happy_run(orchestrated_run, tmp_path_factory):
+    return orchestrated_run(
+        tmp_path_factory.mktemp("bundle-publish-happy") / "runs", "r", "page-unbroken"
+    )
 
 
 @pytest.fixture(scope="module")
 def unreconstructed_run(tmp_path_factory):
-    """The same run with the Coniector switched off, so no reconstruction rides on a reading."""
+    """The same run with the Coniector switched off, so no reconstruction rides on a reading.
+
+    Run directly: the shared `orchestrated_run` copies hold only the committed configs.
+    """
     root = tmp_path_factory.mktemp("bundle-publish-unreconstructed")
     config = root / "reconstruction.toml"
     text = (ROOT / "config" / "reconstruction.toml").read_text(encoding="utf-8")
@@ -91,11 +93,9 @@ def unreconstructed_run(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def review_run(tmp_path_factory):
-    root = tmp_path_factory.mktemp("bundle-publish-review")
-    result = _orchestrate(root, "r", "page-review")
-    assert result.returncode == 3, result.stderr
-    return root
+def review_run(orchestrated_run, tmp_path_factory):
+    root = tmp_path_factory.mktemp("bundle-publish-review") / "runs"
+    return orchestrated_run(root, "r", "page-review", 3)
 
 
 def test_the_sealed_bundle_is_published_and_verifies_outside_the_run_tree(tmp_path, happy_run):
@@ -354,10 +354,9 @@ def test_a_nonexistence_mkdir_error_reports_the_os_reason(tmp_path, happy_run, m
     assert not out.exists()
 
 
-def test_publication_leaves_nothing_behind_when_the_run_has_no_export(tmp_path):
+def test_publication_leaves_nothing_behind_when_the_run_has_no_export(orchestrated_run, tmp_path):
     """Half a delivery is worse than none: the destination must simply not appear."""
-    root = tmp_path / "runs"
-    assert _orchestrate(root, "r", "page-unbroken").returncode == 0
+    root = orchestrated_run(tmp_path / "runs", "r", "page-unbroken")
     export = next((root / "r" / "7_armarium" / "artifacts" / "export").glob("*.json"))
     export.unlink()
 

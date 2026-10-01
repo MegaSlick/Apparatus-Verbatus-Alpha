@@ -15,6 +15,7 @@ import textwrap
 import tomllib
 from pathlib import Path
 from types import ModuleType
+from unittest import mock
 
 import pytest
 
@@ -361,6 +362,33 @@ def rebind_stage_seal():
 def rewitness_boundary():
     """The seal rebind above, extended to the stage's retained input references."""
     return rewitness_stage_boundary
+
+
+@pytest.fixture(scope="session")
+def orchestrated_run(tmp_path_factory):
+    """`copy(destination, run_id, scenario, expected_exit=0)` lays a fixture orchestrator run
+    at `destination`, running the orchestrator once per run id and scenario per session.
+
+    The run tree holds no wall-clock time and no path of its own, so a copy is the tree a
+    fresh run there would write (pipeline/orchestrator/test_orchestrated_run_copy.py holds
+    that); each caller gets its own copy to change. Every run is made under the environment
+    as it stood when the fixture was set up, so a test that changed it before asking for a
+    copy cannot change the run every later caller shares.
+    """
+    built: dict[tuple[str, str], tuple[Path, subprocess.CompletedProcess[str]]] = {}
+    environment = dict(os.environ)
+
+    def copy(destination: Path, run_id: str, scenario: str, expected_exit: int = 0) -> Path:
+        if (run_id, scenario) not in built:
+            root = tmp_path_factory.mktemp("orchestrated") / "runs"
+            with mock.patch.dict(os.environ, environment, clear=True):
+                built[run_id, scenario] = root, run_orchestrator(root, run_id, scenario)
+        root, result = built[run_id, scenario]
+        assert result.returncode == expected_exit, result.stderr
+        shutil.copytree(root, destination, symlinks=True)
+        return destination
+
+    return copy
 
 
 @pytest.fixture

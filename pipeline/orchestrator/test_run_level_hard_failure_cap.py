@@ -326,7 +326,9 @@ def _shipped_hard_failure() -> str:
     return (ROOT / "config" / "hard_failure.toml").read_text(encoding="utf-8")
 
 
-def test_the_run_authority_names_the_hard_failure_policy_it_was_sealed_under(tmp_path):
+def test_the_run_authority_names_the_hard_failure_policy_it_was_sealed_under(
+    orchestrated_run, tmp_path
+):
     """Recorded by name, not merely folded into `config_digest`.
 
     A reader holding only the tree can say which hard-failure bytes governed the
@@ -335,7 +337,7 @@ def test_the_run_authority_names_the_hard_failure_policy_it_was_sealed_under(tmp
     from common.hard_failure import load_hard_failure_policy
 
     root = tmp_path / "runs"
-    assert orchestrate(root, "sealed", "page-unbroken").returncode == 0
+    orchestrated_run(root, "sealed", "page-unbroken")
 
     run = RunTree(root, "sealed").read_run()
     assert (
