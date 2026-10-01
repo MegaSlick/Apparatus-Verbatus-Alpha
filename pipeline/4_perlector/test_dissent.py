@@ -68,6 +68,38 @@ def test_a_normalization_form_difference_alone_produces_no_dissent():
     )
 
 
+def test_dissent_compares_a_genuinely_empty_witness():
+    rows = dissent.dissent_against(
+        "visible characters",
+        [
+            {
+                "outcome": "genuinely-empty",
+                "payload": {"chair": "attestator_3", "reported": ""},
+            }
+        ],
+    )
+
+    assert rows == [
+        {
+            "chair": "attestator_3",
+            "compared": True,
+            "departed": True,
+            "departed_raw": True,
+            # A witness that read the pixels and found nothing to report departs
+            # across the whole reading -- one span covering every character the
+            # Perlector established and none of the witness's, which is exactly
+            # what "it saw nothing there and we read eighteen characters" means.
+            "departures": [
+                {
+                    "reading_span": {"start": 0, "end": len("visible characters")},
+                    "testimonium_span": {"start": 0, "end": 0},
+                }
+            ],
+            "comparison_loss": {"reading_dropped_characters": 0, "witness_dropped_characters": 0},
+        }
+    ]
+
+
 def test_a_witness_that_agrees_after_whitespace_normalization_departs_only_raw():
     testimonia = [
         {
@@ -167,6 +199,8 @@ def test_perlector_and_archetypus_have_no_direct_sum_call_over_a_chair_expressio
     """
     sources = [
         ROOT / "pipeline" / "4_perlector" / "run.py",
+        ROOT / "pipeline" / "4_perlector" / "page_run.py",
+        ROOT / "common" / "page_path.py",
         ROOT / "pipeline" / "6_archetypus" / "run.py",
     ]
     offenders = []
@@ -214,8 +248,7 @@ def test_a_non_reading_outcome_is_recorded_as_no_opinion_not_agreement():
 def test_a_witness_whose_format_can_express_uncertainty_is_unknown_not_guessed():
     """A capability-declared chair with no act-anchored comparison view (R4's
     alignment) stays honestly unmeasurable -- forged directly onto a bare
-    record, the same technique `test_testimonia_latest_attempt.py` already
-    uses to exercise a boundary no live act-scoped producer reaches."""
+    record, to exercise a boundary no live producer reaches."""
     testimonia = [
         {
             "outcome": "read",
@@ -272,8 +305,7 @@ def test_a_bracket_marker_view_lifts_the_exemption_for_an_act_scoped_chair():
     `[UNCERTAIN]`. An act-scoped chair declaring `can_express_uncertainty`
     therefore had no safe view at all and stayed `compared: "unknown"` forever
     -- the parroting instrument dark on the one chair whose grammar says most
-    about uncertain ink. `common/alignment.py::bracket_marker_view`, wired in by
-    `pipeline/4_perlector/run.py::dissent_testimonia`, is the view that lifts
+    about uncertain ink. `common/alignment.py::bracket_marker_view` is the view that lifts
     it, and the counterfactual below is why the strip has to happen at all.
     """
     raw = "Marie [UNCERTAIN] Dupont"

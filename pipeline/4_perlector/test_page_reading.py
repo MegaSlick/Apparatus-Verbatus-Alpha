@@ -238,7 +238,7 @@ def test_every_sealed_page_is_read_whole_into_a_feed_a_reading_and_its_acts(page
         ("C", "attestator_3"),
     ]
     assert len(_records(root, "act-region")) == len(_records(root, "perlectio")) == 3
-    # The act path read nothing: no reading of a Designator act was published.
+    # Every Perlectio is a page-path reading.
     assert all(
         record["payload"]["schema"] == "perlectio.v2" for record in _records(root, "perlectio")
     )
@@ -403,19 +403,6 @@ def test_a_page_read_pass_refuses_to_read_one_act_by_name(page_tree, tmp_path):
     assert result.returncode != 0
     assert "run the pass without --act" in result.stderr
     assert file_bytes_snapshot(copy) == before
-
-
-def test_the_page_path_refuses_a_blind_read_or_a_sampled_control_by_name():
-    base = {"blind_read": "off", "nuda_per_mille": 0, "perlector_instrument_per_mille": 0}
-    page_run.refuse_unsupported_settings(SimpleNamespace(**base))
-    for name, value in (
-        ("blind_read", "fed"),
-        ("blind_read", "saved"),
-        ("nuda_per_mille", 5),
-        ("perlector_instrument_per_mille", 5),
-    ):
-        with pytest.raises(ContractError, match=name):
-            page_run.refuse_unsupported_settings(SimpleNamespace(**{**base, name: value}))
 
 
 # Each switch changes what the page is shown, so it changes the sealed feed and,

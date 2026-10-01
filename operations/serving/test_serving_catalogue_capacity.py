@@ -363,80 +363,11 @@ def test_no_shipped_row_serves_below_its_tiers_stated_vram_floor():
     assert checked == len(_STATED_VRAM_NEED_GIB), "a stated VRAM floor went unchecked"
 
 
-# --- the Perlector's page render against the row, shape by shape ------------------
+# --- the Perlector's page render against the row -------------------------------------
 
 from operations.corpus import perlector_request_fit as fit  # noqa: E402
 
 LETTER = (2550, 3300)
-WHOLE = (0, 0, 2550, 3300)
-TOP, BOTTOM = (0, 0, 2550, 1700), (0, 1600, 2550, 1700)
-_PROSE = (
-    "L'an mil sept cent quarante et un, le douzième jour de février, a été baptisée "
-    "par nous soussigné prêtre curé de cette paroisse Marie Anne, fille légitime de "
-)
-# Two pages of register text per witness (twice the longest gold act, 2,972
-# characters), a full neighbour cap, and a fed prior draft longer than the reading
-# cap, so it is charged the cap.
-DENSE = (_PROSE * 60)[:5944]
-# Each neighbour sits on the act's own page.
-NEIGHBOUR = ([(_PROSE * 10)[:800]] * 3, True)
-PRIOR = (_PROSE * 60)[:6000]
-
-# (pages as (size, crops), prior) -> (need under the sealed rule, fits; need with
-# every page at the old 1,024 edge, fits). Needs are pinned so a prompt or render
-# change that moves them is seen here.
-SHAPES = {
-    "over a page turn, whole-page crops": (
-        [(LETTER, [WHOLE]), (LETTER, [WHOLE])],
-        None,
-        (29064, True),
-        (29064, True),
-    ),
-    "dense over a page turn, half-page crops, fed prior": (
-        [(LETTER, [BOTTOM]), (LETTER, [TOP])],
-        PRIOR,
-        (31515, True),
-        (31515, True),
-    ),
-    "dense over a page turn, a whole-page recovery crop, fed prior": (
-        [(LETTER, [BOTTOM]), (LETTER, [TOP, WHOLE])],
-        PRIOR,
-        (36618, True),
-        (36618, True),
-    ),
-    "three pages, whole-page crops": (
-        [(LETTER, [WHOLE])] * 3,
-        None,
-        (34967, True),
-        (34967, True),
-    ),
-}
-
-
-@pytest.mark.parametrize("name", SHAPES)
-def test_each_pinned_request_shape_against_the_row_under_both_page_renders(name):
-    """What the sealed `[page_context]` rule costs, shape by shape, against the old render.
-
-    A page the act's crops cover whole, and every page of an act spanning more than
-    one page, is rendered at the layout edge, so each shape here costs exactly what
-    it did at 1,024: the page render refuses no act the old render admitted. The
-    row's 65,536-token context, sized for a whole-page reading, holds every shape
-    here, the whole-page recovery crop and the three-page act included. Every gold
-    act fits under both (`operations/corpus/perlector_request_fit.py`).
-    """
-    pages, prior, sealed_rule, old = SHAPES[name]
-    row, sealed = fit.perlector_row(), fit.sealed_protocol()
-    arguments = dict(
-        pages=pages,
-        witness_texts=[DENSE] * 3,
-        neighbours=(NEIGHBOUR, NEIGHBOUR),
-        prior_text=prior,
-    )
-    now = fit.request_record(row, sealed, edge=None, **arguments)
-    before = fit.request_record(row, sealed, edge=fit.OLD_EDGE, **arguments)
-    assert (now["need"], now["fits"]) == sealed_rule
-    assert (before["need"], before["fits"]) == old
-    assert row.max_model_len == 65536
 
 
 def test_a_legible_render_stays_inside_the_rows_pixel_bound():

@@ -407,3 +407,31 @@ def test_a_request_refused_before_sending_is_a_failure_with_no_response_evidence
     failure["request_sha256"] = "0" * 64
     with pytest.raises(Refusal, match="no response evidence"):
         validate_failed_payload(payload)
+
+
+# --- Ink past the edge: a trailing gap -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "le vingt deux du mois [[?]]",
+        "le vingt deux du mois [[?]]\n",
+        "le vingt deux du mois [[?]].",
+        "le vingt deux du mois [[?]] ;»\n",
+    ],
+)
+def test_ink_past_the_crop_marked_at_the_end_is_a_trailing_gap(raw):
+    """What the instruction asks for: a zero-width gap at the end, visible, carrying no
+    text, even when the reader closes the line or the sentence after the mark."""
+    text, assessment = annotations.read_doubt_marks(raw)
+    gaps = [{"position": "trailing", "start": 22, "end": 22, "witness_evidence": []}]
+    assert assessment["gaps"] == gaps
+    annotations.validate_annotations(
+        {"text": text, "uncertain_spans": [], "gaps": gaps}, outcome="read"
+    )
+
+
+def test_a_mark_followed_by_more_words_stays_internal():
+    _text, assessment = annotations.read_doubt_marks("le vingt [[?]] du mois")
+    assert assessment["gaps"][0]["position"] == "internal"
