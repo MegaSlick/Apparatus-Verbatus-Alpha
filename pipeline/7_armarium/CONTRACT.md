@@ -75,8 +75,8 @@ real-shaped export payload publishing clean and a both-named payload being
 refused by name.
 
 **The real-run identity union does not have a separate manifest schema id.**
-The manifest ids distinguish the act-partition denominator
-(`armarium-export-manifest.v9` for the reading acts `run.py` exports; see "What
+The manifest id names the act-partition denominator
+(`armarium-export-manifest.v10`, the reading acts `run.py` exports; see "What
 is counted"), and a reader must know what `expected_count` counts before
 interpreting the claims.
 
@@ -140,43 +140,20 @@ projection configuration. The bundle may contain these plainly specified formats
   The rendering never replaces the canonical field: the clean verifier strips it and
   requires the canonical value back exactly. No convention has been chosen, and
   `claims.display.status` says so on the face of every bundle.
-`run.py` writes the page-read ids (`armarium-export-manifest.v9`,
-`armarium-act.v4`, `armarium-acts-sqlite.v4`, `armarium-sources.v4`; "Formats" under
-"What is exported"). The ids and shapes below are the builder's, each of which
-those extend; the image-local v7 and clustered v8 manifests are the builder's
-too, and `run.py` publishes neither.
+`run.py` writes `armarium-export-manifest.v10`, `armarium-act.v4`,
+`armarium-acts-sqlite.v4` and `armarium-sources.v4` ("Formats" under "What is
+exported"), and the verifier recognises only these. Each id moves with its closed
+shape, so a consumer keying on it never reads an older shape out of a newer record.
 
 - `acts.sqlite` — an `acts` table with the literal Archetypus field, and a
   separate `act_search` / FTS5 layer whose search fold is visibly derived and
-  revision-marked. Metadata schema `armarium-acts-sqlite.v3`
-  (`PRAGMA user_version=3`): v2 covers R8's `annotations_json` →
-  `uncertainty_json` rename (which kept v1 — a real versioning miss)
-  and the damage-record columns. V3 marks the nullable withheld-draft uncertainty.
+  revision-marked. Metadata schema `armarium-acts-sqlite.v4`
+  (`PRAGMA user_version=4`).
 - `acts.jsonl` — one record per expected act, with canonical text only for a
   delivered act, provenance, source regions, its established-text status and
   transcription annotation layer, and the explicit pending claim for the separate
-  semantic annotation layer. Record schema `armarium-act.v3`: v1's bare
-  `annotations`/`annotation_status` pair is renamed apart into
-  `semantic_annotations`/`semantic_annotation_status`, and `text_status`/
-  `transcription_annotations` join the row — a consumer keying on the schema id
-  must never read a v1 shape out of a v2 row. V3 requires `lectio_kind` and
-  permits null self-revisions when Pass A was withheld. `sources.json` is
-  `armarium-sources.v3` for the same reason twice over: at v2 its act-outcome
-  rows began to REQUIRE `text_status` under exact-field-set validation, and at
-  v3 `ink_map_pages` joins the source graph, so a v2 file cannot answer a v3
-  reader's question at all. The manifest is `armarium-export-manifest.v7` for
-  an image-local run and `armarium-export-manifest.v8` for a clustered one: v2
-  renamed the annotation claims apart, v3 added the required `ink_map` claim to
-  the closed claim set, v4 was the clustered act-partition claim — the
-  denominator names logical acts and `local_proposal_rows`/`logical_membership`
-  join the claim, so a v3 reader can never misread `expected_count` as
-  proposal-seal rows — and v5/v6 add the required `not_measured` claim to both
-  shapes at once, so a stale reader cannot present a bundle that names five
-  unmeasured instruments as one that names none. V7/v8 add the required
-  `ink_map.unmeasurable_pages` census to both shapes, so a complete bundle cannot
-  hide a page on which that distinct audit took no measurement. A clustered bundle also carries a `logical_accounting`
-  block in `sources.json`, and `verify_export_bundle` recomputes the clustered
-  claim from it instead of believing the self-hashed manifest.
+  semantic annotation layer (`semantic_annotations`/`semantic_annotation_status`,
+  named apart from `transcription_annotations`). Record schema `armarium-act.v4`.
 - `review-items.jsonl` — held and refused act records with reasons and
   digest-checked evidence references.
 - `continuation_joins` in `sources.json` and `reconstructions.jsonl` — one row per
@@ -424,10 +401,8 @@ the run `partial` with its reason. Each delivered act's raised flags travel in
 `aggregate_basis.continuation_flags` (`{act_key: [flag, ...]}`), and a flag no join has as a side is a named partial reason, so a
 flag is never dropped.
 
-**Manifest `armarium-export-manifest.v9`**, its own id because its denominator
-is the reading acts (a reader of the builder's image-local v7 or clustered v8 shape
-must not read reading acts as proposal-seal rows or logical acts), with two more
-required claims:
+**Manifest `armarium-export-manifest.v10`.** Its denominator is the reading acts,
+and it carries two claims beside the act partition:
 
 - `claims.other_readings` -- `{layer, counted_as_acts: false, count,
   by_category, act_ids, carried_by}`, derived from `sources.json`'s
@@ -447,20 +422,13 @@ than left out): `perlector-uncertain-spans` (`config/perlector_audit.toml`'s
 configurations and of `config/perlector_protocol.toml`'s `[truncation]` table),
 then `page-accounting-thresholds` (every threshold of the sealed
 `config/page_accounting.toml`; all are starting values, so `not-measured`),
-`perlector-pass-c` (from each real sealed page's reading `audit`, `pages_read`
-bound to that page count; no reading runs Pass C, so
-`declared-unproduced`) and `lectio-nuda` (the sealed
-`nuda_per_mille` and the Perlector's `lectio-nuda` records). The builder's v7/v8
-instrument set (testimony content coverage, page-ink conservation, act visibility)
-reads records a page reading does not make; the page accounting measures what they
-did, and it is claimed above.
+and `perlector-pass-c` (from each real sealed page's reading `audit`, `pages_read`
+bound to that page count; no reading runs Pass C, so `declared-unproduced`).
 
-**Formats.** `sources.json` is `armarium-sources.v4`: v3 plus `other_outcomes`,
-`other_citations` and `page_accounting`. A page reading's uncertainty layer names
-its own lectio kind, `page-read` (`self_revisions: null`), a value the v3 act
-shapes do not know, so exported act rows are `armarium-act.v4` and the acts
-database `armarium-acts-sqlite.v4` (`user_version` 4), each otherwise the v3
-shape. The other layer is carried by:
+**Formats.** `sources.json` (`armarium-sources.v4`) carries `other_outcomes`,
+`other_citations` and `page_accounting` beside the act rows. A page reading's
+uncertainty layer names its own lectio kind, `page-read` (`self_revisions: null`).
+The other layer is carried by:
 
 - `other.jsonl` (with `jsonl`) -- one `armarium-other-reading.v1` row per other
   reading, text only when delivered. A separate member rather than a `kind` field
@@ -480,7 +448,7 @@ which formats do.
 `other.jsonl` and every OTHER section against the source rows and requires the
 formats carrying the layer to agree on each reading's text, uncertainty and
 status, recomputes the ledger with its `other` units, requires the acts
-database's schema id to be the one its reading unit writes, binds Pass C's
+database's schema id to be the one this build writes, binds Pass C's
 `pages_read` to the real sealed pages, requires `aggregate_basis.act_pages` to
 name every page a delivered act's cited regions were cut from, recomputes each
 join, and refuses a page the accounting holds that delivered any reading.
