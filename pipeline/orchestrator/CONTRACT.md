@@ -64,8 +64,8 @@ recomputed from the same artifacts — the driver caches nothing between invocat
 
 Before the Archetypus is invoked, in every mode, the orchestrator reads what the
 Recensor's current records hold (`common/page_review.py::held_by_recensor`: each held
-review's unit and codes, each held continuation link, the same total the Recensor
-exits held on). When anything is held, nothing is established or exported: the
+review's unit and codes, each held continuation link, each page the
+`review-decisions` record still holds, the same total the Recensor exits held on). When anything is held, nothing is established or exported: the
 Archetypus and the Armarium are not invoked, the Coniector still runs when the
 selection includes it (it reads only the Perlector's readings, so what is left needs no
 model), and the run exits 3 after `run <id>: stopped at a held recensor, before the
