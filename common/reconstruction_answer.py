@@ -35,8 +35,6 @@ from typing import Any, Final
 
 from common.page_answer import decode_json_reply
 
-GRAMMAR: Final = "verbatus-reconstruction-answer.v1"
-
 PARSED: Final = "parsed"
 MALFORMED: Final = "malformed"
 ANSWER_INVALID: Final = "answer-invalid"

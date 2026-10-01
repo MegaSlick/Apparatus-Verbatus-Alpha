@@ -7,7 +7,6 @@ import pytest
 from common.reconstruction_answer import (
     ANSWER_INVALID,
     FINDING_CODES,
-    GRAMMAR,
     MALFORMED,
     PARSED,
     parse_reconstruction_answer,
@@ -43,10 +42,6 @@ def answer(**changes):
 
 def parse(value):
     return parse_reconstruction_answer(json.dumps(value), CALL)
-
-
-def test_the_grammar_is_named():
-    assert GRAMMAR == "verbatus-reconstruction-answer.v1"
 
 
 def test_a_planned_answer_parses_as_given():

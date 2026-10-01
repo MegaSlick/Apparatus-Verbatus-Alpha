@@ -4,7 +4,6 @@ from common.page_edges import (
     act_entries_by_page,
     agreed_breaks,
     break_chains,
-    break_sides,
     first_attempt_entries,
     page_edges,
 )
@@ -82,12 +81,3 @@ def test_an_other_entry_at_the_edge_does_not_hide_the_act_edge():
         entry(2, 2, start=True),
     ]
     assert keys(break_chains(entries)) == [["p1:1", "p2:2"]]
-
-
-def test_break_sides_name_every_break_touching_the_pages_with_null_sides():
-    sides = break_sides([entry(1, 1), entry(2, 1)], 1, 2)
-    assert [(left, a and a["act_key"], b and b["act_key"]) for left, a, b in sides] == [
-        (0, None, "p1:1"),
-        (1, "p1:1", "p2:1"),
-        (2, "p2:1", None),
-    ]

@@ -40,21 +40,6 @@ def page_edges(entries: Iterable[Entry]) -> dict[int, tuple[Entry, Entry]]:
     return {ordinal: (acts[0], acts[-1]) for ordinal, acts in act_entries_by_page(entries).items()}
 
 
-def break_sides(
-    entries: Iterable[Entry], first_ordinal: int, last_ordinal: int
-) -> list[tuple[int, Entry | None, Entry | None]]:
-    """`(left ordinal, last act of left, first act of left + 1)` for every break touching
-    pages `first_ordinal..last_ordinal`, including the one before the first page and the
-    one after the last; a side with no act entry is `None`."""
-    edges = page_edges(entries)
-    sides = []
-    for left in range(first_ordinal - 1, last_ordinal + 1):
-        last = edges[left][1] if left in edges else None
-        first = edges[left + 1][0] if left + 1 in edges else None
-        sides.append((left, last, first))
-    return sides
-
-
 def agreed_breaks(entries: Iterable[Entry]) -> list[tuple[Entry, Entry]]:
     """`(last act of p, first act of p+1)` for every break both sides flag, in page order."""
     edges = page_edges(entries)
