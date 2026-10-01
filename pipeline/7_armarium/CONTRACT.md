@@ -349,6 +349,16 @@ silence. A reading an operator override released (`pipeline/5_recensor/CONTRACT.
 "An override sends a held reading to export") is established and delivered like any
 other, after `page_review.operator_override` checks again that current decisions the
 record applied cleared every hold it carries; it is labelled in the operator layer.
+
+**A systemic held share travels with the export.** The stage runs over a held Recensor
+only on a person's advance, which may pass a run whose held share after the Recensor is
+above its sealed `review` limit (`pipeline/orchestrator/CONTRACT.md`). The stage
+measures that share as the orchestrator's alarm does (`common.page_review.held_share`)
+and, when it is above the limit, records `aggregate_basis.systemic_review`
+(`{held_pages, pages, max_held_page_share}`); the aggregate then carries the alarm's
+line as a `systemic: ...` reason, and the run stays `partial`. The clean verifier
+recomputes the aggregate with it and refuses a record whose share is within its limit.
+A run within its limit, or one that sealed no review policy, carries no such field.
 `confirmed-blank` reaches the export only on a `page-blank` row whose review confirms
 it.
 

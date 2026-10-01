@@ -4583,3 +4583,48 @@ def test_a_held_reading_without_its_operator_row_is_refused_at_build():
     projection = replace(_released_on_its_own_holds(), operator_actions=())
     with pytest.raises(SchemaRefusal, match="delivered over its own holds"):
         build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+
+
+def _systemic(share: str = "1/50") -> ArmariumProjection:
+    """The projection of a run a person advanced past a systemic held share."""
+    projection = _projection()
+    review = {"held_pages": [1], "pages": 1, "max_held_page_share": share}
+    basis = {**projection.aggregate_basis, "systemic_review": review}
+    return replace(
+        projection,
+        aggregate_basis=basis,
+        aggregate=run_aggregate(
+            {a["act_key"]: ArmariumCategory(a["category"]) for a in projection.acts},
+            basis["coverage_records"],
+            {page["ordinal"]: page for page in projection.pages},
+            unaddressed_chairs=basis["unaddressed_chairs"],
+            act_pages=basis["act_pages"],
+            act_text_status=basis["act_text_status"],
+            systemic_review=review,
+        ),
+    )
+
+
+def test_a_systemic_share_is_a_reason_the_package_carries_and_cannot_drop(tmp_path):
+    from common.contracts.outcomes import systemic_reason
+
+    bundle = build_armarium_bundle(_systemic(), _formats(embed_pixels=False), _source_bytes)
+    reasons = verify_export_bundle(bundle.data, tmp_path / "clean")["aggregate"]["reasons"]
+    assert systemic_reason([1], 1, "1/50") in reasons
+
+    members = _members(bundle.data)
+    sources = json.loads(members["sources.json"])
+    del sources["aggregate_basis"]["systemic_review"]
+    members["sources.json"] = canonical_bytes(sources)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["aggregate_basis"] = sources["aggregate_basis"]
+    members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
+    _refresh_manifest_member(members, "sources.json")
+    # The aggregate, recomputed from the basis without it, no longer matches.
+    with pytest.raises(SchemaRefusal, match="does not match its measured accounting basis"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "forged")
+
+
+def test_a_systemic_reason_within_its_limit_is_refused():
+    with pytest.raises(SchemaRefusal, match="held share within its limit"):
+        build_armarium_bundle(_systemic("1/1"), _formats(embed_pixels=False), _source_bytes)

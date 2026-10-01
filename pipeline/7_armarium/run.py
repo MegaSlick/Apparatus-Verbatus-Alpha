@@ -42,6 +42,7 @@ from armarium_export import (  # noqa: E402
     continuation_join_row,
     edge_hold_pages_from_rows,
     review_aggregate_arguments,
+    systemic_aggregate_argument,
     unpaired_continuations,
 )
 from coniector_layer import export_rows  # noqa: E402
@@ -85,6 +86,7 @@ from common.page_review import (  # noqa: E402
     applied_decision_hashes,
     continuation_links,
     current_page_reviews,
+    held_share,
     operator_override,
     reading_holds_allowed,
     require_current_review_decisions,
@@ -1148,11 +1150,26 @@ def review_decisions_basis(decisions: dict | None, canaries: set[int]) -> dict[s
     }
 
 
+def systemic_review_basis(context) -> dict | None:
+    """The run's systemic held share for its aggregate, or None when it is within its limit.
+
+    The Armarium runs over a held Recensor only on a person's advance, which
+    may pass a systemic share; the share is measured here as the orchestrator's
+    alarm measured it (`common.page_review.held_share`), so the export names
+    it as a reason. None too for a run that sealed no review policy.
+    """
+    share = held_share(context.tree, context.args.review_config)
+    if share is None or not share["systemic"]:
+        return None
+    return {key: share[key] for key in ("held_pages", "pages", "max_held_page_share")}
+
+
 def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> int:
     """Export the run: acts, the other layer, page rows, and the page accounting."""
     # Before anything is published, so a decision no review applied refuses cleanly.
     decisions = require_current_review_decisions(context)
     review_basis = review_decisions_basis(decisions, canaries)
+    systemic_basis = systemic_review_basis(context)
     applied = applied_decision_hashes(decisions)
     approvals = (
         {reference.sha256: (reference, record) for reference, record in stored}
@@ -1346,6 +1363,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             {act["act_id"]: act["act_key"] for act in projected_acts},
         ),
         **review_aggregate_arguments(review_basis),
+        **systemic_aggregate_argument(systemic_basis),
     )
     real_sealed = {
         ordinal for ordinal, page in real_census.items() if page.get("outcome") == "sealed"
@@ -1384,6 +1402,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                 "continuation_flags": continuation_flags,
                 "page_witness_chairs": sorted(declared_page_witness_chairs(context)),
                 **({} if review_basis is None else {"review_decisions": review_basis}),
+                **({} if systemic_basis is None else {"systemic_review": systemic_basis}),
             },
             ink_map_pages=ink_map_pages,
             not_measured_basis=page_not_measured_basis(

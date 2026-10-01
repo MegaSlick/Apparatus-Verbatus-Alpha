@@ -27,6 +27,7 @@ import tempfile
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -82,6 +83,7 @@ from common.contracts.uncertainty import utf8_round_trip
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import dimensions
 from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
+from common.review_policy import parse_share
 
 _atomic_replace = os.replace
 _unlink_at = os.unlink
@@ -2451,6 +2453,10 @@ _AGGREGATE_BASIS_FIELDS: Final = (
 )
 # Present only on a run whose Recensor applied operator review decisions.
 _REVIEW_DECISIONS_BASIS_FIELD: Final = "review_decisions"
+# Present only when the run's held share after the Recensor was above its
+# sealed limit and a person's advance passed it (`systemic_aggregate_argument`).
+_SYSTEMIC_BASIS_FIELD: Final = "systemic_review"
+_OPTIONAL_BASIS_FIELDS: Final = frozenset({_REVIEW_DECISIONS_BASIS_FIELD, _SYSTEMIC_BASIS_FIELD})
 
 
 def review_aggregate_arguments(basis: Any) -> dict[str, Any]:
@@ -2477,6 +2483,27 @@ def review_aggregate_arguments(basis: Any) -> dict[str, Any]:
     if len(holds) != len(basis["page_holds"]):
         raise SchemaRefusal("an Armarium aggregate's review decisions name a page twice")
     return {"review_clearances": basis["clearances"], "review_page_holds": holds}
+
+
+def systemic_aggregate_argument(basis: Any) -> dict[str, Any]:
+    """`run_aggregate`'s `systemic_review` from a basis's `systemic_review`; none when absent.
+
+    The record names a held share above its limit, checked exactly here, so a
+    package cannot carry a systemic reason its own counts do not support;
+    `run_aggregate` checks the record's shape.
+    """
+    if basis is None:
+        return {}
+    try:
+        limit = parse_share(basis["max_held_page_share"], "a systemic review's limit")
+        exceeds = Fraction(len(basis["held_pages"]), basis["pages"]) > limit
+    except (ContractError, KeyError, TypeError, ZeroDivisionError) as error:
+        raise SchemaRefusal("an Armarium aggregate's systemic review is malformed") from error
+    if not exceeds:
+        raise SchemaRefusal(
+            "an Armarium aggregate's systemic review names a held share within its limit"
+        )
+    return {"systemic_review": basis}
 
 
 def _validated_continuation_flags(flags: Any, categories: dict[str, str]) -> dict[str, list[str]]:
@@ -2539,11 +2566,12 @@ def _aggregate_from_basis(
     to act key); its `page_witness_chairs` are checked by
     `_validate_witness_accounting`.
     """
-    if not isinstance(basis, dict) or set(basis) - {_REVIEW_DECISIONS_BASIS_FIELD} != set(
+    if not isinstance(basis, dict) or set(basis) - _OPTIONAL_BASIS_FIELDS != set(
         _AGGREGATE_BASIS_FIELDS
     ):
         raise SchemaRefusal("an Armarium aggregate has no recognized accounting basis")
     review = review_aggregate_arguments(basis.get(_REVIEW_DECISIONS_BASIS_FIELD))
+    review.update(systemic_aggregate_argument(basis.get(_SYSTEMIC_BASIS_FIELD)))
     by_page: dict[int, list[str]] = {}
     for other in others:
         by_page.setdefault(other["page_ordinal"], []).append(other["category"])

@@ -453,6 +453,11 @@ UNPAIRED_CONTINUATION_REASON: Final = (
     "act {act} says it {says}, and no continuation link pairs it with a reading across "
     "that break; it is delivered as its own literal and may be only part of an act"
 )
+SYSTEMIC_REASON_PREFIX: Final = "systemic: "
+# What `run_aggregate` reads to name a systemic held share
+# (`common.page_review.held_share`): the held pages, the pages counted, and the
+# run's sealed limit.
+SYSTEMIC_REVIEW_FIELDS: Final = frozenset({"held_pages", "pages", "max_held_page_share"})
 CONTINUATION_FLAGS: Final = ("continues_from_previous_page", "continues_to_next_page")
 _CONTINUATION_SAYS: Final = {
     "continues_from_previous_page": "continues from the previous page",
@@ -552,6 +557,44 @@ REVIEW_CLEARANCE_FIELDS: Final = frozenset({"scope", "subject", "page", "decisio
 _CLEARING_DECISIONS: Final = {"unit": ("release", "exclude"), "page": ("no-missed-act",)}
 
 
+def systemic_reason(held_pages: Sequence[int], pages: int, limit: str) -> str:
+    """The reason a run whose held share is above its sealed limit carries, wherever it goes."""
+    return (
+        f"{SYSTEMIC_REASON_PREFIX}{len(held_pages)} of {pages} page(s) are held after the "
+        f"recensor, more than the sealed limit of {limit} (config/review.toml); so many holds "
+        "point to a problem with the run itself, not a few hard pages "
+        f"(held pages: {', '.join(str(page) for page in held_pages)})"
+    )
+
+
+def _systemic_review_reason(review: Mapping[str, Any]) -> str:
+    """The systemic reason of a `run_aggregate` `systemic_review` record, refused when malformed.
+
+    The pages are the alarm's own count of the run's reviewed pages, so a held
+    canary page outside the export's census is named as the alarm named it.
+    """
+    if not isinstance(review, Mapping) or set(review) != SYSTEMIC_REVIEW_FIELDS:
+        raise FatalAccounting(
+            f"a systemic review record is not the closed {sorted(SYSTEMIC_REVIEW_FIELDS)} record"
+        )
+    held, pages, limit = review["held_pages"], review["pages"], review["max_held_page_share"]
+    if (
+        not isinstance(held, list)
+        or not held
+        or not all(is_plain_int(page) and page > 0 for page in held)
+        or held != sorted(set(held))
+        or not is_plain_int(pages)
+        or not len(held) <= pages
+        or type(limit) is not str
+        or not limit
+    ):
+        raise FatalAccounting(
+            f"the systemic review record names held pages {held!r} of {pages!r} under "
+            f"{limit!r}, not page ordinals within a page count under a sealed limit"
+        )
+    return systemic_reason(held, pages, limit)
+
+
 def _clearance_reasons(
     rows: Sequence[Mapping[str, Any]],
     act_categories: Mapping[str, ArmariumCategory],
@@ -606,6 +649,7 @@ def run_aggregate(
     unpaired_continuations: Sequence[tuple[str, str]] = (),
     review_clearances: Sequence[Mapping[str, Any]] = (),
     review_page_holds: Mapping[int, Sequence[str]] | None = None,
+    systemic_review: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
@@ -652,7 +696,10 @@ def run_aggregate(
     machine check, so every clearance is a reason and a run whose every hold
     was cleared stays partial. `review_page_holds` maps each page still held
     once decisions are applied, reviewed or not, to its codes; it holds even
-    when every unit on it was excluded.
+    when every unit on it was excluded. `systemic_review` is given when more of
+    the run's pages were held after the Recensor than its sealed limit allows
+    and a person's advance passed them: the run reached export, and its
+    systemic reason travels with it.
     """
     reasons: list[str] = []
     by_category: dict[str, int] = {}
@@ -741,6 +788,8 @@ def run_aggregate(
                 f"the review page hold of page {ordinal} names {codes!r}, not a list of hold codes"
             )
         reasons.append(f"page {ordinal} is still held by {', '.join(sorted(codes))}")
+    if systemic_review is not None:
+        reasons.append(_systemic_review_reason(systemic_review))
 
     for act in sorted(act_categories):
         category = act_categories[act]

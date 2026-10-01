@@ -41,3 +41,46 @@ def test_a_systemic_hold_is_notified_as_one_through_the_notify_script(tmp_path):
         "held after the recensor, more than the sealed limit of 1/50"
     )
     assert "Phone notification: suppressed (test sink)." in messages
+
+
+def test_an_advance_past_a_systemic_hold_still_notifies_it_at_run_and_export(tmp_path):
+    """A person's advance passes the stop; the alarm still leads the run's and export's notices."""
+    from conftest import advance_held_recensor
+
+    sent: list[tuple[str, str]] = []
+    shell = notify_bridge.shell_notifier()
+
+    def notifier(event: str, message: str):
+        sent.append((event, message))
+        return shell(event, message)
+
+    surface = OperatorSurface(
+        ROOT, tmp_path / "state", present=lambda _line: None, notifier=notifier
+    )
+    with pytest.raises(OperatorError):
+        surface.run(run_id="systemic", scenario="page-review")
+    advance_held_recensor(tmp_path / "state" / "runs", "systemic")
+    sent.clear()
+    with pytest.raises(OperatorError) as held:
+        surface.run(run_id="systemic", scenario="page-review")
+    assert held.value.code is ErrorCode.RUN_HELD
+    share = (
+        "1 of 2 page(s) are held after the recensor, more than the sealed limit of 1/50 "
+        "(config/review.toml)"
+    )
+    [(event, message)] = sent
+    assert event == "decision"
+    assert message.startswith(
+        f"Verbatus run systemic has a systemic problem and needs a decision: {share}"
+    )
+    # The run's other hold reasons follow the alarm.
+    assert "act p2:1 is held-for-review" in message
+
+    sent.clear()
+    with pytest.raises(OperatorError) as partial:
+        surface.export(run_id="systemic")
+    assert partial.value.code is ErrorCode.EXPORT_PARTIAL
+    [(event, message)] = sent
+    assert event == "milestone"
+    assert "not complete: " in message
+    assert f"; the run has a systemic problem: {share}" in message

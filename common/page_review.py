@@ -28,6 +28,9 @@ from common.page_path import (
     UNPLACED,
 )
 from common.review_decisions import EXCLUDED, REVIEW_FIELD, decisions_digest
+from common.review_policy import SEALED_CONFIG_NAME as REVIEW_CONFIG_NAME
+from common.review_policy import load_review_policy, systemic
+from common.sealed_config import require_sealed_config
 from common.stage import (
     COUNTED_READING_CLASSES,
     NO_ACT_ON_PAGE_HOLD,
@@ -35,6 +38,7 @@ from common.stage import (
     boundary_advanced,
     exemplar_page_ids,
     latest_attempt,
+    run_sealed_config_digests,
     stage_manifest,
 )
 
@@ -524,13 +528,18 @@ def require_recensor_passed(tree) -> None:
 
 
 def held_pages_after_review(tree) -> tuple[list[int], int]:
-    """The pages the Recensor's current records hold, and how many pages it reviewed.
+    """The pages the Recensor's current records hold, and how many distinct pages it reviewed.
 
-    Every sealed page has at least one reviewed unit (a page with no reading
-    has its page row), so the reviewed pages are the run's pages. A page is
-    held when any unit on it is held, or when the current `review-decisions`
-    record still holds it (a page whose every unit was excluded keeps its
-    page holds). Read from the run tree alone, like `held_by_recensor`.
+    The count is the distinct page ordinals of the Recensor's current `review`
+    records, not the census: a page is counted when the Recensor reviewed a
+    unit on it (a page with no reading is reviewed through its page row). That
+    is the right denominator because only a reviewed page can be held after
+    review, so the share compares held pages with the pages that could have
+    been; a page the Recensor never reached (refused at the Door, say) is the
+    census's to report, not a page the review passed. A page is held when any
+    unit on it is held, or when the current `review-decisions` record still
+    holds it (a page whose every unit was excluded keeps its page holds). Read
+    from the run tree alone, like `held_by_recensor`.
     """
     reviews: dict[str, list[dict[str, Any]]] = {}
     decisions: list[dict[str, Any]] = []
@@ -733,3 +742,25 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
             }
         )
     return sorted(links, key=lambda link: (link["from_page_ordinal"], link["to_page_ordinal"]))
+
+
+def held_share(tree, review_config_path) -> dict[str, Any] | None:
+    """The run's held share after the Recensor, measured against its sealed review policy.
+
+    `{held_pages, pages, max_held_page_share, systemic}` (`held_pages_after_review`
+    and `common.review_policy.systemic`), or None for a run that sealed no review
+    policy, where the share was not checked. The policy at `review_config_path`
+    is refused unless its bytes are the ones the run sealed.
+    """
+    sealed = run_sealed_config_digests(tree.read_run())
+    if REVIEW_CONFIG_NAME not in sealed:
+        return None
+    policy = load_review_policy(review_config_path)
+    require_sealed_config(sealed, REVIEW_CONFIG_NAME, policy["config_sha256"])
+    held, pages = held_pages_after_review(tree)
+    return {
+        "held_pages": held,
+        "pages": pages,
+        "max_held_page_share": policy["max_held_page_share"],
+        "systemic": bool(pages) and systemic(len(held), pages, policy),
+    }

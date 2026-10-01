@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from common.contracts.errors import ContractError
+from common.contracts.outcomes import systemic_reason
 from common.sealed_config import read_sealed_toml
 
 DEFAULT_REVIEW_CONFIG_PATH: Final = Path(__file__).resolve().parents[1] / "config" / "review.toml"
@@ -30,17 +31,19 @@ def load_review_policy(path: str | Path = DEFAULT_REVIEW_CONFIG_PATH) -> dict[st
             "the review configuration has no [review] table holding exactly max_held_page_share"
         )
     text = review["max_held_page_share"]
-    match = _SHARE.fullmatch(text) if isinstance(text, str) else None
-    if match is None or int(match[1]) > int(match[2]):
-        raise ContractError(
-            f"the review configuration's max_held_page_share {text!r} is not a fraction "
-            '"N/D" with 0 < N <= D'
-        )
     return {
         "config_sha256": digest,
         "max_held_page_share": text,
-        "share": Fraction(int(match[1]), int(match[2])),
+        "share": parse_share(text, "the review configuration's max_held_page_share"),
     }
+
+
+def parse_share(text: Any, subject: str) -> Fraction:
+    """A sealed share `"N/D"` with 0 < N <= D, exactly; refused otherwise."""
+    match = _SHARE.fullmatch(text) if isinstance(text, str) else None
+    if match is None or int(match[1]) > int(match[2]):
+        raise ContractError(f'{subject} {text!r} is not a fraction "N/D" with 0 < N <= D')
+    return Fraction(int(match[1]), int(match[2]))
 
 
 def systemic(held_pages: int, pages: int, policy: dict[str, Any]) -> bool:
@@ -52,9 +55,4 @@ def systemic(held_pages: int, pages: int, policy: dict[str, Any]) -> bool:
 
 def alarm_line(run_id: str, held_pages: list[int], pages: int, policy: dict[str, Any]) -> str:
     """The one line a run's report and its notification carry when the alarm fires."""
-    return (
-        f"run {run_id}: systemic: {len(held_pages)} of {pages} page(s) are held after the "
-        f"recensor, more than the sealed limit of {policy['max_held_page_share']} "
-        f"(config/review.toml); so many holds point to a problem with the run itself, not a "
-        f"few hard pages (held pages: {', '.join(str(page) for page in held_pages)})"
-    )
+    return f"run {run_id}: {systemic_reason(held_pages, pages, policy['max_held_page_share'])}"
