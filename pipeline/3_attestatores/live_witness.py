@@ -2,7 +2,7 @@
 
 This module owns exactly the seam between an already-issued
 :class:`~operations.serving.client.ChairResponse` and the ``Attempt``-shaped
-facts `run.py::resolve_attempt` derives from a retained recordable response.
+facts `run.py::fixture_page_attempt` derives from a retained recordable response.
 It never wires a pass, never schedules a chair, and never imports ``run.py``.
 
 ``record_chair_request`` (one DAI detector record) and ``page_chair_request``
@@ -600,7 +600,7 @@ def _live_attempt_from_capture(
     """Turn one adapter's retained capture into a `LiveAttempt`, record or page alike.
 
     Shared by `live_attempt_from_response` and `captured_page_attempt`: both
-    mirror `resolve_attempt`'s three-way split -- ``read``/``genuinely-empty``
+    mirror `fixture_page_attempt`'s three-way split -- ``read``/``genuinely-empty``
     (confirmed only on a recognized natural stop), ``failed`` for an
     unconfirmed empty response, and ``failed`` for a parse failure -- and
     differ only in ``kind`` (used in the unconfirmed-blank reason),
@@ -656,7 +656,7 @@ def _malformed_response_attempt(response: ChairResponse, *, adapter: Any) -> Liv
 
     Retained (the raw bytes are already on disk via ``raw_response_ref``),
     never repaired, never re-requested -- the same "malformed" branch
-    `resolve_attempt` takes for a fixture-declared malformed response.
+    `fixture_page_attempt` takes for a fixture-declared malformed response.
     ``format_capabilities`` still names the adapter's own grammar
     (`witness_adapters.declared_format_capabilities`): what a chair's grammar can carry is a fact
     about the chair, not about whether this one body happened to parse.

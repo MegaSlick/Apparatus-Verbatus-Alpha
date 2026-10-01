@@ -1,18 +1,17 @@
-"""Attestatores refuses an unverified crop before a chair is asked to read it."""
+"""Attestatores refuses an unverified Designator proposal before any page record names it."""
 
 import copy
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
+from common import page_testimonia
 from common.chairs import ChairRegistry
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import DESIGNATOR
 from common.runtree.store import RunTree
-from conftest import load_stage
+from conftest import load_stage, run_through
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -29,24 +28,7 @@ class _Context:
 
 @pytest.fixture
 def real_region(tmp_path):
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "page-unbroken",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--run-id",
-            "attestatores-boundary",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
+    run_through(tmp_path / "runs", "attestatores-boundary", "happy", "designator")
     tree = RunTree(tmp_path / "runs", "attestatores-boundary")
     entry = next(
         entry for entry in tree.build_manifest(DESIGNATOR)["artifacts"] if entry["kind"] == "region"
@@ -54,16 +36,18 @@ def real_region(tmp_path):
     return _Context(tree), tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
 
 
-def test_attestatores_verifies_crop_lineage_before_a_witness_reads_it(real_region, monkeypatch):
-    context, region = real_region
-    monkeypatch.setattr(attestatores, "validate_serving_provenance", lambda *args, **kwargs: None)
+def test_attestatores_verifies_crop_lineage_before_a_page_record_names_it(real_region, monkeypatch):
+    context, _region = real_region
+    monkeypatch.setattr(
+        page_testimonia, "validate_serving_provenance", lambda *args, **kwargs: None
+    )
 
     def refuse(*args, **kwargs):
         raise ContractError("crop-lineage marker")
 
-    monkeypatch.setattr(attestatores, "verify_exemplar_crop_lineage", refuse)
-    with pytest.raises(ContractError, match="crop-lineage marker"):
-        attestatores.proposed_regions(context, region["subject_id"])
+    monkeypatch.setattr(page_testimonia, "verify_exemplar_crop_lineage", refuse)
+    with pytest.raises(SchemaRefusal, match="crop-lineage marker"):
+        attestatores.sealed_proposal_regions(context)
 
 
 def test_attestatores_names_a_designator_region_with_missing_provenance(real_region, monkeypatch):
@@ -80,4 +64,4 @@ def test_attestatores_names_a_designator_region_with_missing_provenance(real_reg
     monkeypatch.setattr(context.tree, "build_manifest", lambda stage: {"artifacts": [entry]})
 
     with pytest.raises(SchemaRefusal, match="model provenance is not an object"):
-        attestatores.proposed_regions(context, region["subject_id"])
+        attestatores.sealed_proposal_regions(context)

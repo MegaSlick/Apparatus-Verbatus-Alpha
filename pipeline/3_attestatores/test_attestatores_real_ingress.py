@@ -35,13 +35,11 @@ What is proven:
   witness (every witness runs its own full pass);
 - the shipped real catalogue serves every witness chair at every placement
   tier, so the mixed-posture guard never fires on it;
-- a full pass over a real submission completes: every act record and every
-  page record is published, page records name the Exemplar's own page subject,
-  no fixture declaration is read or reported, and the fixture accessor is never
-  touched (any touch would have refused the pass);
-- the continuation refusal names what the Designator must publish; the real
-  declaration set is empty in the exact shape the fixture reader builds; a
-  page ordinal the Exemplar never accounted for is a named refusal.
+- a full pass over a real submission completes: every page record is
+  published and names the Exemplar's own page subject, no fixture declaration
+  is read or reported, and the fixture accessor is never touched (any touch
+  would have refused the pass);
+- a page ordinal the Exemplar never accounted for is a named refusal.
 """
 
 from __future__ import annotations
@@ -71,7 +69,6 @@ from test_attestatores_live_pass import (  # noqa: E402
     CHANDRA_BODY,
     TIER,
     LiveWorld,
-    act_records,
     page_records,
     refusing_factory,
     write_live_catalogue,
@@ -244,8 +241,8 @@ class _RealDesignator:
     from the sealed page's own bytes, `region_id` binds the act to its
     transform, `raw_bounds` is the rectangle the act identity was minted from,
     and `provenance` is the structure chair's record naming a receipt this run
-    wrote -- so `proposed_regions`' lineage and provenance checks, which run
-    before any chair is asked, hold over it. The context carries `fixture=None`:
+    wrote -- so `sealed_proposal_regions`' lineage and provenance checks, which
+    run before any chair is asked, hold over it. The context carries `fixture=None`:
     a seal that needed a fixture to publish could not come from a real
     producer either.
     """
@@ -636,57 +633,25 @@ def test_every_witness_runs_its_full_pass_over_a_real_submission(served_run, tmp
     pages = exemplar_page_ids(context)
     assert sorted(pages) == [1, 2]
 
-    acts = act_records(tree)
-    assert set(acts) == {(key, chair) for _o, _b, key in ACTS for chair in WITNESS_CHAIRS}
-    for record in acts.values():
-        assert attestatores.served_live(context, record["payload"]["provenance"]), (
-            "a real act record's receipt answers for a live chair, not a fixture"
-        )
+    kinds = {entry["kind"] for entry in tree.build_manifest(ATTESTATORES)["artifacts"]}
+    assert "testimonium" not in kinds and "act-attachment" not in kinds
     page = page_records(tree)
     assert set(page) == {(ordinal, chair) for ordinal in (1, 2) for chair in WITNESS_CHAIRS}
     for (ordinal, _chair), record in page.items():
         assert record["subject_id"] == pages[ordinal], (
             "the page record names the Exemplar's own page"
         )
-        assert attestatores.served_live(context, record["payload"]["provenance"]), (
+        receipt = tree.read_run_receipt(record["payload"]["provenance"]["receipt_ref"])
+        assert not receipt["endpoint"].startswith("fixture://"), (
             "a real page record's receipt answers for a live chair, not a fixture"
         )
-    kinds = {entry["kind"] for entry in tree.build_manifest(ATTESTATORES)["artifacts"]}
     assert "stage-seal" in kinds
 
 
 # ============================ the replaced readers ============================
 
 
-def test_a_real_continuation_claim_with_no_readable_region_is_refused_by_name():
-    context = _real_context()
-    act = {
-        "act_id": "act-with-far-page",
-        "act_key": "structural:1:1",
-        "page_id": "page-1",
-        "page_ordinal": 1,
-        "has_continuation": True,
-        "outcome": "proposed",
-        "evidence": [],
-    }
-    refused = "the proposed region was refused before this chair ran: crop lineage"
-
-    with pytest.raises(FatalAccounting, match="Designator must publish the continuation region"):
-        attestatores.page_denominator(context, [act], {act["act_id"]: ([], refused)})
-
-
-def test_a_real_pass_declares_nothing_and_names_nothing_unread(capsys):
-    declared = attestatores.real_declarations(2)
-    assert declared == {
-        "ordinal": 2,
-        "failures": set(),
-        "empty": set(),
-        "not_run": set(),
-        "malformed": {},
-    }
-    fixture_shape = attestatores.declarations_for(SimpleNamespace(scenario="happy", fixture={}), 2)
-    assert declared == fixture_shape, "the two builders cannot drift on the declaration shape"
-
+def test_a_real_pass_names_nothing_unread(capsys):
     attestatores.refuse_unread_fixture_declarations(_real_context(), list(WITNESS_CHAIRS))
     assert capsys.readouterr().err == ""
 
@@ -734,16 +699,11 @@ def test_page_subject_reuses_a_supplied_index_rather_than_rewalking_the_exemplar
         attestatores.page_subject(context, 9, page_ids={1: "page-one"})
 
 
-def test_live_and_publish_passes_walk_the_exemplar_index_once_each(
-    served_run, tmp_path, monkeypatch
-):
-    """The full pass builds the Exemplar page index once per pass function.
+def test_a_pass_walks_the_exemplar_index_once(served_run, tmp_path, monkeypatch):
+    """The full pass builds the Exemplar page index once and threads it through.
 
-    Before the fix, `live_attempt_pass` and `publish_page_testimonia_and_attachments`
-    each rewalked the index on every `page_subject`/`presentation_for_page` call --
-    about 7 walks for this fixture's 2 pages and 2 page-scoped chairs. Now each
-    of the two pass functions walks it exactly once and threads the result
-    through, so a run over this fixture makes exactly 2 walks total.
+    Every `page_subject`/`presentation_for_page` call is handed the index, so a
+    pass never rewalks the validated Exemplar inventory per page and chair.
     """
     run_root = _copy(served_run.run_root, tmp_path)
     _designate(run_root)
@@ -766,10 +726,7 @@ def test_live_and_publish_passes_walk_the_exemplar_index_once_each(
     )
 
     assert exit_code == attestatores.EXIT_COMPLETE
-    assert len(calls) == 2, (
-        "one walk in live_attempt_pass and one in publish_page_testimonia_and_attachments, "
-        "not one per page_subject/presentation_for_page call site"
-    )
+    assert len(calls) == 1, "one walk per pass, not one per page_subject call site"
 
 
 def test_presentation_for_page_refuses_a_refused_page_by_name_rather_than_a_keyerror():
