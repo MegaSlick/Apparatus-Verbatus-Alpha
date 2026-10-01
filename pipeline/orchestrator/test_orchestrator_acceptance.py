@@ -879,8 +879,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema")
-                not in {"armarium-export-manifest.v7", "armarium-export-manifest.v8"}
+                or manifest.get("schema") != "armarium-export-manifest.v10"
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -1453,9 +1452,7 @@ def _acceptance_sqlite(
     return path.read_bytes()
 
 
-def _write_acceptance_bundle_tree(
-    root: Path, database_data: bytes, damage=None, *, manifest_schema="armarium-export-manifest.v7"
-) -> None:
+def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None) -> None:
     """Write a whole run tree around one bundle, optionally damaged from the inside.
 
     ``damage`` mutates the package manifest *after* it is written and before the tree
@@ -1467,7 +1464,7 @@ def _write_acceptance_bundle_tree(
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": manifest_schema,
+        "schema": "armarium-export-manifest.v10",
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())
@@ -1524,10 +1521,7 @@ def _write_acceptance_bundle_tree(
     (root / "7_armarium/manifest.json").write_bytes(canonical_bytes(stage_manifest))
 
 
-@pytest.mark.parametrize(
-    "manifest_schema", ["armarium-export-manifest.v7", "armarium-export-manifest.v8"]
-)
-def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path, manifest_schema):
+def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path):
     """Version-local database fields cannot rename a run; a literal row can."""
     database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
     version_local = _acceptance_sqlite(
@@ -1540,24 +1534,21 @@ def test_semantic_snapshot_digest_binds_sqlite_rows_not_library_header(tmp_path,
     original_root = tmp_path / "original"
     doctored_root = tmp_path / "doctored"
     changed_root = tmp_path / "changed"
-    _write_acceptance_bundle_tree(original_root, database, manifest_schema=manifest_schema)
-    _write_acceptance_bundle_tree(doctored_root, doctored, manifest_schema=manifest_schema)
+    _write_acceptance_bundle_tree(original_root, database)
+    _write_acceptance_bundle_tree(doctored_root, doctored)
     changed = _acceptance_sqlite(
         tmp_path / "changed.sqlite",
         "changed row",
         derived_from_canonical_sha256=digest_bytes(b"original row"),
     )
-    _write_acceptance_bundle_tree(changed_root, changed, manifest_schema=manifest_schema)
+    _write_acceptance_bundle_tree(changed_root, changed)
 
     assert snapshot(original_root) != snapshot(doctored_root)
     assert semantic_snapshot_digest(original_root) == semantic_snapshot_digest(doctored_root)
     assert semantic_snapshot_digest(original_root) != semantic_snapshot_digest(changed_root)
 
 
-@pytest.mark.parametrize(
-    "manifest_schema", ["armarium-export-manifest.v7", "armarium-export-manifest.v8"]
-)
-def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path, manifest_schema):
+def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path):
     """Integrity damage stays byte-bound instead of being normalized out of the pin.
 
     The two bundle-internal cases are the ones the reduction would otherwise *erase*:
@@ -1570,7 +1561,7 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path, 
     """
     database = _acceptance_sqlite(tmp_path / "database.sqlite", "original row")
     original_root = tmp_path / "original"
-    _write_acceptance_bundle_tree(original_root, database, manifest_schema=manifest_schema)
+    _write_acceptance_bundle_tree(original_root, database)
     original_semantic = semantic_snapshot_digest(original_root)
 
     manifest_hash_root = tmp_path / "manifest-self-hash"
@@ -1587,14 +1578,11 @@ def test_semantic_snapshot_refuses_damaged_persisted_integrity_fields(tmp_path, 
             {key: value for key, value in manifest.items() if key != "self_hash"}
         )
 
-    _write_acceptance_bundle_tree(
-        manifest_hash_root, database, damage=damage_manifest_hash, manifest_schema=manifest_schema
-    )
+    _write_acceptance_bundle_tree(manifest_hash_root, database, damage=damage_manifest_hash)
     _write_acceptance_bundle_tree(
         member_digest_root,
         database,
         damage=damage_database_member_digest,
-        manifest_schema=manifest_schema,
     )
     shutil.copytree(original_root, export_hash_root)
     export_path = export_hash_root / "7_armarium/artifacts/export/example.json"
