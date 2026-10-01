@@ -83,14 +83,18 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
     than a rectangle. `scan_ink_components` labels every ink pixel through
     here.
 
-    Labels row runs rather than pixels: a per-pixel union-find costs
-    `ink_pixels x radius^2` dictionary operations (383 s and 2.17 GB for one
-    photographed page at the sealed `gap_tolerance_px = 3`), while real ink is
-    horizontally contiguous, so a page of millions of pixels is a few hundred
-    thousand runs and the neighbourhood probe becomes an interval overlap test.
-    `test_structure.py` compares the result with the per-pixel oracle in
-    `pipeline/2_designator/_test_support.py`: same components, same bounds and
-    the same total order.
+    A row-run substitution over the retired per-pixel union-find
+    (kept in `common/test_background_components.py` as this one's oracle), made on
+    measurement: the per-pixel version cost `ink_pixels x radius^2` dictionary
+    operations, measured at 383 s and 2.17 GB for one photographed page at the
+    sealed `gap_tolerance_px = 3`. Real ink is horizontally contiguous, so a
+    page of millions of pixels is a few hundred thousand runs, turning the
+    per-pixel neighbourhood probe into an interval overlap test.
+
+    The contract is unchanged and proved, not asserted: same components, same
+    bounds, same `gap_tolerance_px` semantics, and the same total order (origin
+    `(top, left)`, ties broken by sorted `(x, y)` ink), with `test_background_components.py`
+    comparing the two implementations directly on every page shape.
     """
     return [
         component

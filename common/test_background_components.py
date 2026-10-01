@@ -1,51 +1,133 @@
-"""Tests for the ink connected-component structure pass.
+"""Tests for background inference and ink component labelling.
 
-Every page here is built directly, not through `proof/synthetic_pages.py`:
-these tests own their own minimal, exact pixel layouts so a brace-linked-acts
-or sub-threshold-mark case can be constructed at the single-pixel level
-without disturbing the shared walking-skeleton fixture other stages depend on.
+`common/background.py` infers a page's paper value and ink threshold, and
+`common/components.py` labels ink pixels into connected components; the Ink
+Map, the Designator and the Recensor's audit all read a page through them.
+Every page here is built directly at the single-pixel level. The retired
+per-pixel labeller below is the oracle the row-run labeller must match, and
+the Designator's conservation tests share it.
 """
 
 import itertools
 from pathlib import Path
 
-import grouping_config
 import pytest
-from _test_support import infer_background, label_components_reference
-from structure import (
+
+from common.background import (
     PRIMARY_MARGIN,
-    SECONDARY_MARGIN,
     BackgroundInferenceRefusal,
+    BackgroundPolicy,
     _derived_ink_margin,
     _ink_threshold,
     infer_background_evidence,
-    ink_pixels,
-    label_components,
-    primary_scan,
-    scan_ink_components,
-    secondary_scan,
+    load_background_config,
+    resolve_background_policy,
 )
-
+from common.components import Component, label_components
 from common.contracts.errors import ContractError
 
 BACKGROUND = 230
 INK = 40
+GAP_TOLERANCE_PX = 3
 
-
-# `infer_background` takes the sealed background-inference policy, resolved for the
-# page in front of it. These tests drive the *shipped* policy rather than a
-# convenient one, so a page here is inferred exactly as a run would infer it.
-_SHIPPED_GROUPING_CONFIG = (
-    Path(__file__).resolve().parents[2] / "config" / "designator_grouping.toml"
+# The shipped background policy, resolved per page, so a page here is inferred
+# exactly as a run would infer it.
+_SHIPPED_POLICY = load_background_config(
+    Path(__file__).resolve().parents[1] / "config" / "ink_map.toml"
 )
-_SHIPPED_POLICY = grouping_config.load_grouping_config(_SHIPPED_GROUPING_CONFIG)
 
 
-def shipped_background_policy(width: int, height: int):
-    return grouping_config.resolve_background_policy(_SHIPPED_POLICY, width, height)
+def shipped_background_policy(width: int, height: int) -> BackgroundPolicy:
+    return resolve_background_policy(_SHIPPED_POLICY, width, height)
 
 
-GAP_TOLERANCE_PX = 3  # structure.py's retired DEFAULT_GAP_TOLERANCE_PX
+def label_components_reference(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
+    """The retired per-pixel union-find labeller: the oracle `label_components` must match."""
+    if gap_tolerance_px < 0:
+        raise ContractError(f"gap tolerance {gap_tolerance_px} is negative")
+    if not pixels:
+        return []
+
+    parent: dict[tuple[int, int], tuple[int, int]] = {pixel: pixel for pixel in pixels}
+
+    def find(pixel: tuple[int, int]) -> tuple[int, int]:
+        root = pixel
+        while parent[root] != root:
+            root = parent[root]
+        while parent[pixel] != root:
+            parent[pixel], pixel = root, parent[pixel]
+        return root
+
+    def union(a: tuple[int, int], b: tuple[int, int]) -> None:
+        root_a, root_b = find(a), find(b)
+        if root_a != root_b:
+            parent[root_a] = root_b
+
+    # `gap_tolerance_px` counts empty pixels allowed *between* two ink pixels,
+    # so even a tolerance of 0 must still reach an immediately adjacent pixel
+    # (distance 1) -- the Chebyshev search radius is one more than the gap.
+    radius = gap_tolerance_px + 1
+    # Only the forward half of the neighbourhood (dy > 0, or dy == 0 and
+    # dx > 0): union is symmetric, so checking both halves would just union
+    # the same pair twice for every neighbouring ink pixel.
+    offsets = [
+        (dx, dy)
+        for dy in range(0, radius + 1)
+        for dx in range(-radius, radius + 1)
+        if (dy > 0) or (dy == 0 and dx > 0)
+    ]
+    for x, y in pixels:
+        for dx, dy in offsets:
+            neighbour = (x + dx, y + dy)
+            if neighbour in pixels:
+                union((x, y), neighbour)
+
+    members: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for pixel in pixels:
+        members.setdefault(find(pixel), []).append(pixel)
+
+    components: list[tuple[Component, tuple[tuple[int, int], ...]]] = []
+    for group in members.values():
+        xs = [x for x, _ in group]
+        ys = [y for _, y in group]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        components.append(
+            (
+                {
+                    "bounds": {"x": x0, "y": y0, "w": x1 - x0 + 1, "h": y1 - y0 + 1},
+                    "pixel_count": len(group),
+                },
+                # Breaks a tie between two components sharing the same
+                # (top, left) origin, deterministically, by the ink itself
+                # rather than by set/dict construction order.
+                tuple(sorted(group)),
+            )
+        )
+    components.sort(key=lambda entry: (entry[0]["bounds"]["y"], entry[0]["bounds"]["x"], entry[1]))
+    return [component for component, _members in components]
+
+
+def infer_background(
+    width: int, height: int, rows: list, *, background_policy: BackgroundPolicy
+) -> int:
+    evidence = infer_background_evidence(width, height, rows, background_policy=background_policy)
+    return evidence["background"]
+
+
+def ink_pixel_set(width: int, height: int, rows: list, *, background: int, margin: int) -> set:
+    """Every pixel at or below the threshold `_ink_threshold` gives, as (x, y) pairs."""
+    threshold = _ink_threshold(background, margin)
+    return {(x, y) for y in range(height) for x in range(width) if rows[y][x] <= threshold}
+
+
+def ink_components(
+    width: int, height: int, rows: list, *, background: int, margin: int, gap_tolerance_px: int
+) -> list[Component]:
+    return label_components(
+        ink_pixel_set(width, height, rows, background=background, margin=margin),
+        gap_tolerance_px=gap_tolerance_px,
+    )
 
 
 def blank_rows(width: int, height: int, background: int = BACKGROUND) -> list[bytearray]:
@@ -74,7 +156,7 @@ def paint_pixel(rows: list[bytearray], x: int, y: int, value: int) -> None:
 def test_a_blank_page_has_no_components():
     width, height = 40, 30
     assert (
-        scan_ink_components(
+        ink_components(
             width,
             height,
             blank_rows(width, height),
@@ -90,7 +172,7 @@ def test_one_solid_rectangle_is_one_component_with_exact_geometry():
     width, height = 40, 30
     rows = blank_rows(width, height)
     paint_rect(rows, 5, 5, 10, 6, INK)
-    components = scan_ink_components(
+    components = ink_components(
         width,
         height,
         rows,
@@ -107,7 +189,7 @@ def test_a_single_ink_pixel_is_its_own_one_by_one_component():
     width, height = 20, 20
     rows = blank_rows(width, height)
     paint_pixel(rows, 7, 9, INK)
-    components = scan_ink_components(
+    components = ink_components(
         width,
         height,
         rows,
@@ -125,7 +207,7 @@ def test_two_well_separated_rectangles_are_two_components():
     rows = blank_rows(width, height)
     paint_rect(rows, 2, 2, 8, 6, INK)
     paint_rect(rows, 40, 20, 8, 6, INK)
-    components = scan_ink_components(
+    components = ink_components(
         width,
         height,
         rows,
@@ -144,7 +226,7 @@ def test_components_are_returned_sorted_by_top_then_left():
     paint_rect(rows, 40, 40, 4, 4, INK)  # bottom-right
     paint_rect(rows, 2, 2, 4, 4, INK)  # top-left
     paint_rect(rows, 2, 40, 4, 4, INK)  # bottom-left
-    components = scan_ink_components(
+    components = ink_components(
         width,
         height,
         rows,
@@ -165,7 +247,7 @@ def test_a_gap_within_tolerance_merges_into_one_component():
     rows = blank_rows(width, height)
     paint_rect(rows, 2, 5, 5, 5, INK)
     paint_rect(rows, 9, 5, 5, 5, INK)  # 2px gap: columns 7,8 unpainted
-    components = scan_ink_components(
+    components = ink_components(
         width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN, gap_tolerance_px=3
     )
     assert len(components) == 1
@@ -177,7 +259,7 @@ def test_a_gap_beyond_tolerance_stays_two_components():
     rows = blank_rows(width, height)
     paint_rect(rows, 2, 5, 5, 5, INK)
     paint_rect(rows, 20, 5, 5, 5, INK)  # 13px gap, far beyond tolerance
-    components = scan_ink_components(
+    components = ink_components(
         width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN, gap_tolerance_px=3
     )
     assert len(components) == 2
@@ -192,7 +274,7 @@ def test_zero_gap_tolerance_still_requires_pixels_to_touch():
     rows = blank_rows(width, height)
     paint_rect(rows, 2, 5, 5, 5, INK)
     paint_rect(rows, 8, 5, 5, 5, INK)  # 1px gap: column 7 unpainted
-    components = scan_ink_components(
+    components = ink_components(
         width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN, gap_tolerance_px=0
     )
     assert len(components) == 2
@@ -208,7 +290,7 @@ def test_zero_gap_tolerance_still_connects_diagonal_neighbours():
     rows = blank_rows(width, height)
     paint_pixel(rows, 2, 2, INK)
     paint_pixel(rows, 3, 3, INK)  # touches (2, 2) only diagonally
-    components = scan_ink_components(
+    components = ink_components(
         width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN, gap_tolerance_px=0
     )
     assert len(components) == 1
@@ -261,53 +343,6 @@ def test_the_reference_labeller_refuses_what_the_production_one_refuses():
         label_components_reference({(0, 0)}, gap_tolerance_px=-1)
     with pytest.raises(ContractError, match="negative"):
         label_components({(0, 0)}, gap_tolerance_px=-1)
-
-
-# --- primary vs secondary sensitivity ----------------------------------------
-
-
-def test_secondary_scan_finds_a_faint_mark_primary_scan_misses():
-    width, height = 20, 20
-    rows = blank_rows(width, height)
-    faint = BACKGROUND - (SECONDARY_MARGIN + 1)  # inside secondary's threshold, outside primary's
-    assert faint > BACKGROUND - PRIMARY_MARGIN, (
-        "the fixture must actually miss the primary threshold"
-    )
-    paint_rect(rows, 5, 5, 3, 3, faint)
-    # PRIMARY_MARGIN is the floor under every margin a page can derive, so a
-    # mark missed at the floor is missed at every margin a run could hand it.
-    assert (
-        primary_scan(
-            width,
-            height,
-            rows,
-            background=BACKGROUND,
-            margin=PRIMARY_MARGIN,
-            gap_tolerance_px=GAP_TOLERANCE_PX,
-        )
-        == []
-    )
-    found = secondary_scan(
-        width, height, rows, background=BACKGROUND, gap_tolerance_px=GAP_TOLERANCE_PX
-    )
-    assert len(found) == 1
-    assert found[0]["bounds"] == {"x": 5, "y": 5, "w": 3, "h": 3}
-
-
-def test_primary_and_secondary_agree_on_clearly_inked_marks():
-    width, height = 20, 20
-    rows = blank_rows(width, height)
-    paint_rect(rows, 2, 2, 6, 6, INK)
-    assert primary_scan(
-        width,
-        height,
-        rows,
-        background=BACKGROUND,
-        margin=PRIMARY_MARGIN,
-        gap_tolerance_px=GAP_TOLERANCE_PX,
-    ) == secondary_scan(
-        width, height, rows, background=BACKGROUND, gap_tolerance_px=GAP_TOLERANCE_PX
-    )
 
 
 # --- infer_background ---------------------------------------------------------
@@ -392,110 +427,9 @@ def test_a_genuinely_blank_page_still_infers_its_paper_rather_than_being_refused
 # --- refusals -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("width,height", [(0, 10), (10, 0), (-1, 10)])
-def test_refuses_non_positive_dimensions(width, height):
-    with pytest.raises(ContractError, match=r"a -?\d+x\d+ page has no pixels to scan"):
-        scan_ink_components(
-            width,
-            height,
-            [],
-            background=BACKGROUND,
-            margin=PRIMARY_MARGIN,
-            gap_tolerance_px=GAP_TOLERANCE_PX,
-        )
-
-
-def test_refuses_a_scanline_count_that_does_not_match_height():
-    with pytest.raises(ContractError, match=r"expected 5 scanlines, got 3"):
-        scan_ink_components(
-            10,
-            5,
-            blank_rows(10, 3),
-            background=BACKGROUND,
-            margin=PRIMARY_MARGIN,
-            gap_tolerance_px=GAP_TOLERANCE_PX,
-        )
-
-
-def test_refuses_a_scanline_whose_width_does_not_match():
-    rows = blank_rows(10, 3)
-    rows[1] = bytearray([BACKGROUND] * 5)
-    with pytest.raises(ContractError, match=r"scanline 1 has width 5, expected 10"):
-        scan_ink_components(
-            10,
-            3,
-            rows,
-            background=BACKGROUND,
-            margin=PRIMARY_MARGIN,
-            gap_tolerance_px=GAP_TOLERANCE_PX,
-        )
-
-
-def test_refuses_a_background_outside_the_8_bit_range():
-    with pytest.raises(ContractError, match=r"background value 300 is not an 8-bit sample"):
-        scan_ink_components(
-            5,
-            5,
-            blank_rows(5, 5),
-            background=300,
-            margin=PRIMARY_MARGIN,
-            gap_tolerance_px=GAP_TOLERANCE_PX,
-        )
-
-
-def test_refuses_a_negative_margin():
-    with pytest.raises(ContractError, match=r"sensitivity margin -1 is negative"):
-        scan_ink_components(
-            5,
-            5,
-            blank_rows(5, 5),
-            background=BACKGROUND,
-            margin=-1,
-            gap_tolerance_px=GAP_TOLERANCE_PX,
-        )
-
-
-def test_refuses_a_negative_gap_tolerance():
-    with pytest.raises(ContractError, match=r"gap tolerance -1 is negative"):
-        scan_ink_components(
-            5,
-            5,
-            blank_rows(5, 5),
-            background=BACKGROUND,
-            margin=PRIMARY_MARGIN,
-            gap_tolerance_px=-1,
-        )
-
-
-def test_scan_ink_components_refuses_a_missing_gap_tolerance_keyword():
-    """No module default: a caller that forgets it fails loudly with
-    `TypeError` rather than running under an unreviewed value."""
-    with pytest.raises(TypeError):
-        scan_ink_components(5, 5, blank_rows(5, 5), background=BACKGROUND, margin=PRIMARY_MARGIN)
-
-
 def test_label_components_refuses_a_missing_gap_tolerance_keyword():
     with pytest.raises(TypeError):
         label_components({(0, 0)})
-
-
-def test_primary_scan_refuses_a_missing_gap_tolerance_keyword():
-    with pytest.raises(TypeError):
-        primary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND, margin=PRIMARY_MARGIN)
-
-
-def test_primary_scan_refuses_a_missing_margin_keyword():
-    """A caller that forgets the page's own margin fails loudly: a default
-    here would mean a page silently scanned at the floor while its record
-    published the margin it actually derived.
-    """
-    with pytest.raises(TypeError):
-        primary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND, gap_tolerance_px=3)
-
-
-def test_secondary_scan_refuses_a_missing_gap_tolerance_keyword():
-    with pytest.raises(TypeError):
-        secondary_scan(5, 5, blank_rows(5, 5), background=BACKGROUND)
 
 
 # --- the row-run substitution: equality against the retired implementation ----
@@ -513,11 +447,12 @@ def _both_labellers_agree(pixels, gap_tolerance_px: int) -> list:
 
 
 @pytest.mark.parametrize("gap_tolerance_px", [0, 1, 2, 3, 5, 8])
-@pytest.mark.parametrize("margin", [PRIMARY_MARGIN, SECONDARY_MARGIN])
+@pytest.mark.parametrize("margin", [PRIMARY_MARGIN, 2])
 def test_the_row_run_labeller_matches_the_reference_on_every_fixture_page(margin, gap_tolerance_px):
-    """Every walking-skeleton fixture page, at both declared sensitivities:
-    their Designator evidence is pinned byte-for-byte downstream, so a moved
-    component here would move the acceptance pins too.
+    """Every walking-skeleton fixture page, at the floor margin and at two
+    levels below paper, where nearly every mark is ink: their ink evidence is
+    pinned byte-for-byte downstream, so a moved component here would move the
+    acceptance pins too.
     """
     from common.imaging import grayscale_rows
     from proof.synthetic_pages import ALL_PAGES, render_page
@@ -527,7 +462,7 @@ def test_the_row_run_labeller_matches_the_reference_on_every_fixture_page(margin
         background = infer_background(
             width, height, rows, background_policy=shipped_background_policy(width, height)
         )
-        pixels = ink_pixels(width, height, rows, background=background, margin=margin)
+        pixels = ink_pixel_set(width, height, rows, background=background, margin=margin)
         _both_labellers_agree(pixels, gap_tolerance_px)
 
 
@@ -610,7 +545,7 @@ def test_the_row_run_labeller_matches_the_reference_on_known_components():
     paint_rect(rows, 20, 30, 12, 9, INK)  # mark C
 
     def bounds_at(gap: int) -> list:
-        pixels = ink_pixels(width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN)
+        pixels = ink_pixel_set(width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN)
         return [component["bounds"] for component in _both_labellers_agree(pixels, gap)]
 
     assert bounds_at(0) == [
@@ -765,7 +700,7 @@ def test_a_photographed_page_infers_its_paper_instead_of_refusing():
     assert dark_distribution["dark_pixel_count"] == sum(
         1 for row in rows for value in row if value <= dark_distribution["dark_at_or_below"]
     )
-    ink = ink_pixels(width, height, rows, background=205, margin=PRIMARY_MARGIN)
+    ink = ink_pixel_set(width, height, rows, background=205, margin=PRIMARY_MARGIN)
     assert (0, 0) in ink, "a corner of the surround must still be counted as ink"
     assert (width - 1, height - 1) in ink
     # `>=`, not `>`: this page's dark set and ink set coincide exactly. On a
@@ -803,7 +738,7 @@ def test_uniform_dark_population_is_published_without_a_frame_claim():
     assert dark_distribution is not None
     assert dark_distribution["dark_pixel_count"] == 4000
     assert dark_distribution["border_dark_bp"] == dark_distribution["interior_dark_bp"] == 4000
-    ink = ink_pixels(
+    ink = ink_pixel_set(
         width, height, rows, background=evidence["background"], margin=evidence["ink_margin"]
     )
     assert len(ink) == 4000
@@ -840,9 +775,9 @@ def test_an_ordinary_page_still_reports_the_modal_source_and_no_surround():
         "ink_margin": expected_margin,
     }
     assert expected_margin > PRIMARY_MARGIN, "this page must exercise the derivation, not the floor"
-    assert ink_pixels(
+    assert ink_pixel_set(
         width, height, rows, background=BACKGROUND, margin=expected_margin
-    ) == ink_pixels(width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN)
+    ) == ink_pixel_set(width, height, rows, background=BACKGROUND, margin=PRIMARY_MARGIN)
 
 
 # --- the ink margin the page derives for itself --------------------------------
@@ -927,7 +862,7 @@ def test_the_derived_threshold_never_falls_below_the_dark_distribution_level():
     dark_distribution = evidence["dark_distribution"]
     threshold = evidence["background"] - evidence["ink_margin"]
     assert dark_distribution["dark_at_or_below"] <= threshold
-    ink = ink_pixels(
+    ink = ink_pixel_set(
         width, height, rows, background=evidence["background"], margin=evidence["ink_margin"]
     )
     assert dark_distribution["dark_pixel_count"] <= len(ink)
@@ -960,10 +895,10 @@ def test_a_page_whose_paper_spreads_over_many_tones_counts_far_less_of_itself_as
     assert evidence["background"] == 205, "the premise: the paper population's peak"
     counted = width * height
     at_floor = len(
-        ink_pixels(width, height, rows, background=evidence["background"], margin=PRIMARY_MARGIN)
+        ink_pixel_set(width, height, rows, background=evidence["background"], margin=PRIMARY_MARGIN)
     )
     at_derived = len(
-        ink_pixels(
+        ink_pixel_set(
             width, height, rows, background=evidence["background"], margin=evidence["ink_margin"]
         )
     )

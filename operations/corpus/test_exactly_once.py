@@ -104,7 +104,6 @@ def page(
         "schema": "perlector-page-feed.v2",
         "page_id": "page-1",
         "page_ordinal": 1,
-        "reading_unit": "page",
         "page_size": {"w": 1000, "h": 1400},
         "switches": {"witness_units": "own"},
         "witnesses": [
@@ -202,7 +201,7 @@ def page(
             }
             for e in entries
         ],
-        "perlectios": [{"schema": "perlectio.v2", "n": e["n"], "text": e["text"]} for e in entries],
+        "perlectios": [{"schema": "perlectio.v3", "n": e["n"], "text": e["text"]} for e in entries],
         "accounting": accounting,
         "usage": {"prompt_tokens": 5100},
     }
@@ -602,7 +601,10 @@ def test_page_records_are_read_from_a_tree_and_grouped_by_page(monkeypatch):
         load_page_records(_Tree(records, {"call.json": call}))
     records[(PERLECTOR, "perlectio", "act-2")]["payload"]["schema"] = "perlectio.v2"
 
-    records[(PERLECTOR, "page-feed", "f")]["payload"] = {**built["feed"], "reading_unit": "act"}
+    records[(PERLECTOR, "page-feed", "f")]["payload"] = {
+        **built["feed"],
+        "schema": "perlector-page-feed.v1",
+    }
     with pytest.raises(Refusal, match="not-page-read"):
         load_page_records(_Tree(records, {"call.json": call}))
 

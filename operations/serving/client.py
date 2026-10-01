@@ -38,13 +38,11 @@ from common.contracts.serving import (
     CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
 )
 from common.decoding import (
-    VARIANCE_ARMS,
     chair_attempt_decoding,
     chair_decoding,
     decoded_wire_decimals,
     engine_effective_sampling,
     recorded_wire_decimals,
-    variance_arm_seed,
 )
 from common.sealed_config import table_seal
 
@@ -190,12 +188,6 @@ class ChairRequest:
     caller never names a sampling field, ``model``, ``stream``, ``seed`` or
     ``n``.
 
-    ``structure_attempt_ordinal`` is the Designator structure chair's coverage
-    recovery attempt, which selects that attempt's sealed sampling values;
-    ``variance_arm`` names the Perlector's sampling-variance arm, which selects
-    that arm's sealed seed. Each belongs to its one chair and is otherwise
-    ``None``.
-
     ``capacity`` is the caller's own
     ``common.request_capacity`` record for this request against the sealed row
     it is about to be sent to. The client neither computes nor checks it — only
@@ -221,8 +213,6 @@ class ChairRequest:
     generation_declared: Mapping[str, object]
     generation_sent: Mapping[str, object]
     capacity: Mapping[str, object] | None = None
-    structure_attempt_ordinal: int | None = None
-    variance_arm: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "messages", tuple(self.messages))
@@ -233,20 +223,6 @@ class ChairRequest:
             self, "generation_declared", MappingProxyType(dict(self.generation_declared))
         )
         object.__setattr__(self, "generation_sent", MappingProxyType(dict(self.generation_sent)))
-        if self.structure_attempt_ordinal is not None and (
-            not isinstance(self.structure_attempt_ordinal, int)
-            or isinstance(self.structure_attempt_ordinal, bool)
-            or self.structure_attempt_ordinal < 1
-        ):
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID",
-                "a Designator structure attempt ordinal must be a positive integer",
-            )
-        if self.variance_arm is not None and self.variance_arm not in VARIANCE_ARMS:
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID",
-                f"variance arm {self.variance_arm!r} is not one of {list(VARIANCE_ARMS)}",
-            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,11 +444,6 @@ class ChairClient:
                 "page-scoped chandra.v1 reading route",
             )
         _refuse_unbuildable_request(request)
-        if request.structure_attempt_ordinal is not None or request.variance_arm is not None:
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID",
-                "a Chandra native witness request follows only its own recipe's attempts",
-            )
         expected_wire = chandra_wire_fields()
         if request.generation_sent.get("chat_template_kwargs") != expected_wire[
             "chat_template_kwargs"
@@ -565,29 +536,11 @@ class ChairClient:
     def _sampling_and_seed(self, request: ChairRequest) -> tuple[dict[str, int | float], int]:
         """This request's sealed sampling values and seed, chosen by this client's chair."""
 
-        role = self._identity.role
-        if request.structure_attempt_ordinal is not None and role != "designator_structure":
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID",
-                "only the Designator structure chair has coverage recovery attempts",
-            )
-        if request.variance_arm is not None and role != "perlector":
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID",
-                "only the Perlector reads the sampling-variance arms",
-            )
         try:
-            sampling = chair_attempt_decoding(
-                self._decoding_policy, role, request.structure_attempt_ordinal or 1
-            )
-            seed = (
-                self.handle.profile.seed
-                if request.variance_arm is None
-                else variance_arm_seed(self._decoding_policy, request.variance_arm)
-            )
+            sampling = chair_decoding(self._decoding_policy, self._identity.role)
         except ContractError as error:
             raise ChairRequestRefusal("CHAIR_REQUEST_INVALID", str(error)) from error
-        return sampling, seed
+        return sampling, self.handle.profile.seed
 
     def _read(
         self,

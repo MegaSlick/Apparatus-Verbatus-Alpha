@@ -14,7 +14,7 @@ from typing import Any, Final
 
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.outcomes import OutcomeClass, classify
-from common.contracts.stages import DOOR, PERLECTOR, STAGES, RefusalReason
+from common.contracts.stages import DOOR, STAGES, RefusalReason
 from common.sealed_config import read_sealed_toml
 
 DEFAULT_HARD_FAILURE_CONFIG_PATH: Final = (
@@ -29,9 +29,6 @@ RULED_THRESHOLD: Final = 2
 # caller-selected file must not turn one checkpoint into unbounded memory or
 # policy-length-times-corpus work.
 MAX_HARD_FAILURE_KINDS: Final = 128
-PERLECTOR_INSTRUMENT_KINDS: Final = frozenset(
-    {"lectio-nuda", "lectio-prior", "primed-without-prior"}
-)
 DOOR_REFUSAL_REASONS: Final = frozenset(reason.value for reason in RefusalReason)
 
 
@@ -174,25 +171,12 @@ def tally_hard_failures(
         return reasons_seen[key]
 
     by_kind: dict[str, list[str]] = {}
-    instrument_by_kind: dict[str, list[str]] = {}
     subjects: set[tuple[str, str]] = set()
 
     def record(key: str, stage: str, candidates: list[dict[str, Any]]) -> None:
-        """Split one policy entry's matches into production and instrument arms.
-
-        A subject with both a production and an instrument failure appears in
-        both lists: the instrument arm neither excuses nor doubles the
-        production incident.
-        """
-        production: set[str] = set()
-        instrument: set[str] = set()
-        for entry in candidates:
-            is_instrument = stage == PERLECTOR and entry["kind"] in PERLECTOR_INSTRUMENT_KINDS
-            (instrument if is_instrument else production).add(entry["subject_id"])
-        by_kind[key] = sorted(production)
-        if instrument:
-            instrument_by_kind[key] = sorted(instrument)
-        subjects.update((stage, subject_id) for subject_id in production)
+        matched = {entry["subject_id"] for entry in candidates}
+        by_kind[key] = sorted(matched)
+        subjects.update((stage, subject_id) for subject_id in matched)
 
     for stage, outcome in sorted(policy["kinds"]):
         record(
@@ -218,9 +202,5 @@ def tally_hard_failures(
         "count": count,
         "breached": count > policy["threshold"],
         "by_kind": by_kind,
-        "instrument_by_kind": instrument_by_kind,
-        "instrument_count": len(
-            {subject for matches in instrument_by_kind.values() for subject in matches}
-        ),
         "subjects": sorted(f"{stage}:{subject_id}" for stage, subject_id in subjects),
     }

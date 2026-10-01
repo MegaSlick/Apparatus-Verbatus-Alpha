@@ -1,7 +1,6 @@
 """The Perlector's page path: each sealed page read whole, its answer made into act records.
 
-Under the sealed `reading_unit = "page"` (`protocol.py`) stage 4 does not read
-the Designator's acts. It reads every sealed Exemplar page in one call, shown
+Stage 4 reads every sealed Exemplar page in one call, shown
 the page image and every witness's page broken into that witness's own units,
 and the Perlector establishes the acts itself (`common/page_feed.py`,
 `common/page_prompt.py`, `common/page_answer.py`). Per page, in the order published:
@@ -11,7 +10,7 @@ and the Perlector establishes the acts itself (`common/page_feed.py`,
     page-reading    (subject page_id)  the answer as given: parsed, or held whole
     page-accounting (subject page_id)  rules a-i over the reading (`common/page_accounting.py`)
     act-region      (subject act_id)   one per entry of a parsed, valid answer
-    perlectio       (subject act_id)   `perlectio.v2`, one per entry
+    perlectio       (subject act_id)   `perlectio.v3`, one per entry
 
 Every feed is built and published before any page is read, so a live pass
 counts exactly the pages it will send before its chair starts.
@@ -28,10 +27,7 @@ included, so no page is silently absent; every sealed page has a feed and an
 accounting too, even one no witness testified to, one that shows nothing to
 read, or one read in a run whose Perlector chair is absent.
 
-Pass C, Lectio nuda and the primed-without-prior control read acts one at a
-time; they do not run here. A run sealed with a blind read or either sampling
-rate on refuses at stage open by name; a sealed audit policy is recorded on
-every `page-reading` as not run.
+The sealed Pass-C audit policy is recorded on every `page-reading` as not run.
 
 What the records derive rather than state -- an answer's problems, each
 entry's plan, the accounting's inputs -- is `common/page_path.py`, the one
@@ -78,7 +74,6 @@ from common.page_path import (
     PARSED,
     PERLECTIO_KIND,
     READ,
-    READING_UNIT,
     REFUSED_CAPACITY,
 )
 from common.page_testimonia import (
@@ -108,7 +103,7 @@ _PAGE_LOCAL_CALL_FAILURES: Final = (
 
 @dataclass(frozen=True)
 class StageHooks:
-    """The helpers of the act path's `run.py` the page path reads its evidence through."""
+    """The helpers of `run.py` the page path reads its evidence through."""
 
     provenance_for: Callable[..., dict[str, Any]]
     engine_call_inputs: Callable[..., list[dict[str, str]]]
@@ -127,33 +122,13 @@ class StageHooks:
 # --- stage open -------------------------------------------------------------------
 
 
-def refuse_unsupported_settings(context) -> None:
-    """Refuse, by name, a sealed setting the page path does not apply."""
-    if context.blind_read != "off":
-        raise ContractError(
-            f"the sealed blind_read is {context.blind_read!r}, but a run sealed with "
-            'reading_unit = "page" reads each page once, with no blind first pass; seal '
-            "blind_read = off for a page-read run"
-        )
-    for name, value in (
-        ("nuda_per_mille", context.nuda_per_mille),
-        ("perlector_instrument_per_mille", context.perlector_instrument_per_mille),
-    ):
-        if value:
-            raise ContractError(
-                f"the sealed {name} is {value}, but Lectio nuda and the primed-without-prior "
-                'control read acts one at a time and do not run under reading_unit = "page"; '
-                f"seal {name} = 0 for a page-read run"
-            )
-
-
 def audit_not_run(audit_policy: dict[str, Any], audit_sha256: str) -> dict[str, Any]:
     """What every `page-reading` says about the sealed Pass-C audit: it did not run."""
     return {
         "state": "not-run",
         "round_cap": audit_policy["round_cap"],
         "policy_sha256": audit_sha256,
-        "reason": "Pass C flags and re-proves acts read one at a time; the page path does "
+        "reason": "Pass C flags and re-proves spans of a reading; a whole-page reading does "
         "not run it",
     }
 
@@ -434,7 +409,7 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
         else:
             engine_call = result["engine_call"]
             finish_reason, stop_reason = result["finish_reason"], result["stop_reason"]
-            inputs += hooks.engine_call_inputs(context, engine_call, variance_arm=None)
+            inputs += hooks.engine_call_inputs(context, engine_call)
             parse_state, answer, problems = page_path.read_reply(
                 result["content"], stop_reason, page.feed, state.accounting_policy
             )
@@ -443,7 +418,6 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
         "schema": PAGE_READING_SCHEMA,
         "page_id": page.page_id,
         "page_ordinal": page.ordinal,
-        "reading_unit": READING_UNIT,
         "feed_ref": page.feed_ref,
         "request_digest": (
             page_path.request_digest(page.text, page.image_sha256s) if attempted else None
@@ -495,7 +469,7 @@ def _check_adopted(state: _PagePass, page: _Page, record: dict[str, Any]) -> Non
         )
     if payload.get("engine_call") is not None:
         # The retained call record is held to the sealed row it was sent under.
-        state.hooks.engine_call_inputs(state.context, payload["engine_call"], variance_arm=None)
+        state.hooks.engine_call_inputs(state.context, payload["engine_call"])
         if payload.get("sampling") != page_path.page_sampling(
             state.run.decoding_policy, state.run.chair.role
         ):
@@ -558,9 +532,7 @@ def publish_act_records(
         "relative_path": page.page_record["payload"]["image_path"],
         "sha256": page.page_record["payload"]["source_sha256"],
     }
-    engine_inputs = state.hooks.engine_call_inputs(
-        context, payload["engine_call"], variance_arm=None
-    )
+    engine_inputs = state.hooks.engine_call_inputs(context, payload["engine_call"])
     attempt = page_path.page_reading_attempt(page.page_id)
     for plan in plans:
         act, union, act_id = plan["act"], plan["union_box_px"], plan["act_id"]
@@ -574,7 +546,6 @@ def publish_act_records(
             "schema": ACT_REGION_SCHEMA,
             "page_id": page.page_id,
             "page_ordinal": page.ordinal,
-            "reading_unit": READING_UNIT,
             "n": act["n"],
             "kind": act["kind"],
             "label": act.get("label"),
@@ -763,7 +734,6 @@ def _pages_left(state: _PagePass, prepared: list[_Page]) -> int:
 def read_the_pages(run, hooks: StageHooks) -> None:
     """Read every sealed Exemplar page once and publish its records, in page order."""
     context = run.context
-    refuse_unsupported_settings(context)
     pages = exemplar_page_ids(context)
     if not pages:
         raise ContractError("the Exemplar sealed no page, so the page path has nothing to read")
@@ -772,7 +742,7 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         hooks=hooks,
         audit=audit_not_run(run.audit_policy, run.audit_sha256),
         page_chairs=declared_page_witness_chairs(context),
-        testimonia=current_page_testimonia(context, run.all_proposal_regions),
+        testimonia=current_page_testimonia(context),
         surya=page_path.sealed_surya_census(
             context, stage_manifest(context, DESIGNATOR)["artifacts"]
         ),

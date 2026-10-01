@@ -10,10 +10,8 @@ from typing import Any, Final
 
 from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
-from common.contracts.prior_draft import is_unmeasured_comparison
 
 _FIELDS = frozenset({"uncertain_spans", "gaps", "self_revisions", "assessment", "lectio_kind"})
-_AUDIT_FIELDS = _FIELDS - {"lectio_kind"}
 ASSESSMENT_STATES: Final = frozenset({"assessed", "not-assessed", "malformed"})
 _ASSESSMENT_FIELDS = frozenset({"state", "problem"})
 CONFIDENCE_LEVELS: Final = frozenset({"low", "medium", "high"})
@@ -33,65 +31,15 @@ def is_trailing_offset(text: str, offset: int) -> bool:
     )
 
 
-# How the one reading was made. A page reading (`page-read`) is its own kind: its
-# reader read a whole page with the witnesses beside it and no Pass-A draft, so,
-# like a draft-withheld act reading, its self-revisions were not measured.
+# How the one reading was made: a whole page read with the witnesses beside it and
+# no prior draft, so its self-revisions were not measured (`None`).
 PAGE_READ_LECTIO: Final = "page-read"
-LECTIO_KINDS: Final = frozenset({"primed-with-prior", "primed-draft-withheld", PAGE_READ_LECTIO})
-_REVISIONS_NOT_MEASURED: Final = frozenset({"primed-draft-withheld", PAGE_READ_LECTIO})
 
 _GAP_EVIDENCE_FIELDS = frozenset({"chair", "testimonium_id", "reference", "variant"})
-_SOURCE_REVISION_FIELDS = frozenset({"reading_span", "testimonium_span"})
-
-
-def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return the one exportable uncertainty representation from a Perlectio."""
-    if not isinstance(payload, dict):
-        raise SchemaRefusal("canonical uncertainty requires an object Perlectio payload")
-    source_revisions = payload.get("self_revision")
-    # A fed draft whose comparison ran out of its sealed step budget carries the
-    # explicit non-verdict; its canonical self-revisions are not measured (null).
-    unmeasured = is_unmeasured_comparison(source_revisions)
-    if not unmeasured and not isinstance(source_revisions, list):
-        raise SchemaRefusal("Perlectio self_revision is not a list or a fed draft's non-verdict")
-    lectio_kind = payload.get("lectio_kind")
-    if lectio_kind not in ("primed-with-prior", "primed-draft-withheld"):
-        raise SchemaRefusal(f"Perlectio has unknown lectio kind {lectio_kind!r}")
-    if lectio_kind == "primed-draft-withheld" and source_revisions:
-        raise SchemaRefusal("a draft-withheld Perlectio cannot claim self-revisions")
-    revisions = []
-    for index, item in enumerate([] if unmeasured else source_revisions):
-        if not isinstance(item, dict) or set(item) != _SOURCE_REVISION_FIELDS:
-            raise SchemaRefusal(
-                f"self_revision[{index}] is not the closed source schema canonicalization expects"
-            )
-        revisions.append(
-            {"reading_span": item["reading_span"], "prior_span": item["testimonium_span"]}
-        )
-    assessment = payload.get("uncertainty_assessment")
-    if not isinstance(assessment, dict):
-        raise SchemaRefusal(
-            "Perlectio carries no uncertainty_assessment; a reading sealed before the reader's "
-            "doubt report was recorded cannot be projected -- re-read it in a run under the "
-            "current contract"
-        )
-    # Of the record as written: the projection below would drop a third field.
-    validate_assessment_record(assessment, "the Perlectio's uncertainty_assessment")
-    layer = {
-        "uncertain_spans": payload.get("uncertain_spans"),
-        "gaps": payload.get("gaps"),
-        "self_revisions": (
-            None if lectio_kind == "primed-draft-withheld" or unmeasured else revisions
-        ),
-        "assessment": {"state": assessment["state"], "problem": assessment["problem"]},
-        "lectio_kind": lectio_kind,
-    }
-    validate(layer, payload.get("text"))
-    return layer
 
 
 def from_page_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
-    """The exportable uncertainty layer of a page reading's `perlectio.v2`.
+    """The exportable uncertainty layer of a page reading's `perlectio.v3`.
 
     Its lectio kind is `page-read`, whose self-revisions were not measured (`None`).
     """
@@ -126,12 +74,7 @@ def from_page_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
 def validate_assessment_record(assessment: Any, subject: str = "canonical uncertainty") -> dict:
     """The closed `{state, problem}` doubt record, refused by name or returned.
 
-    One function because three callers need the same answer: this module's
-    `validate`, `from_perlectio` before it projects two keys out of the record,
-    and `common/perlector_audit.validate_chain` before it reads the state. Any
-    one of them asking less would let a record saying `assessed` while carrying
-    a problem choose the relaxed span rule in one place and be refused in
-    another.
+    One function, so every reader of an assessment asks the same question.
     """
     if not isinstance(assessment, dict) or set(assessment) != _ASSESSMENT_FIELDS:
         raise SchemaRefusal(f"{subject} has no closed assessment record")
@@ -151,34 +94,17 @@ def validate_assessment_record(assessment: Any, subject: str = "canonical uncert
 
 def validate(layer: Any, text: Any) -> dict[str, Any]:
     """Refuse uncertainty that cannot anchor exactly to the supplied text."""
-    return _validate(layer, text, _FIELDS)
-
-
-def validate_audit_projection(layer: Any, text: Any) -> dict[str, Any]:
-    """Check an audit projection before prior-draft evidence is bound."""
-    return _validate(layer, text, _AUDIT_FIELDS)
-
-
-def _validate(layer: Any, text: Any, fields: frozenset[str]) -> dict[str, Any]:
     if not isinstance(text, str):
         raise SchemaRefusal("uncertainty offsets require exactly one string text field")
-    if not isinstance(layer, dict) or set(layer) != fields:
+    if not isinstance(layer, dict) or set(layer) != _FIELDS:
         raise SchemaRefusal("uncertainty is not its closed canonical schema")
     uncertain = layer["uncertain_spans"]
     gaps = layer["gaps"]
-    revisions = layer["self_revisions"]
     validate_assessment_record(layer["assessment"])
-    kind = layer.get("lectio_kind")
-    if "lectio_kind" in layer and (not isinstance(kind, str) or kind not in LECTIO_KINDS):
+    if layer["lectio_kind"] != PAGE_READ_LECTIO:
         raise SchemaRefusal("canonical uncertainty names an unknown lectio kind")
-    if kind in _REVISIONS_NOT_MEASURED and revisions is not None:
-        raise SchemaRefusal(f"a {kind} reading's self-revisions are not measured")
-    # Null is "not measured": always for a withheld draft or a page reading, and
-    # for a fed one whose comparison ran out of its sealed step budget. Without a
-    # lectio kind (an audit projection) there is no draft to have measured
-    # against, so a list is required.
-    if not isinstance(revisions, list) and not (revisions is None and kind is not None):
-        raise SchemaRefusal("canonical uncertainty self-revisions must be a list when measured")
+    if layer["self_revisions"] is not None:
+        raise SchemaRefusal("a page reading's self-revisions are not measured")
     if not isinstance(uncertain, list) or not isinstance(gaps, list):
         raise SchemaRefusal("canonical uncertainty members must all be lists")
     for index, span in enumerate(uncertain):
@@ -258,21 +184,6 @@ def _validate(layer: Any, text: Any, fields: frozenset[str]) -> dict[str, Any]:
                     f"gaps[{index}] is declared {gap['position']!r} over an empty text; the "
                     "only position that means anything where nothing was read is 'whole-act'"
                 )
-    for index, revision in enumerate(revisions or []):
-        if not isinstance(revision, dict) or set(revision) != {"reading_span", "prior_span"}:
-            raise SchemaRefusal(f"self_revisions[{index}] is not the canonical revision schema")
-        reading = revision["reading_span"]
-        if not isinstance(reading, dict) or set(reading) != {"start", "end"}:
-            raise SchemaRefusal(f"self_revisions[{index}].reading_span has no exact offset range")
-        _range(reading, text, f"self_revisions[{index}].reading_span", nonempty=False)
-        prior = revision["prior_span"]
-        if not isinstance(prior, dict) or set(prior) != {"start", "end"}:
-            raise SchemaRefusal(f"self_revisions[{index}].prior_span is malformed")
-        _integers(prior, f"self_revisions[{index}].prior_span")
-        if prior["start"] < 0:
-            raise SchemaRefusal(f"self_revisions[{index}].prior_span has a negative offset")
-        if prior["start"] > prior["end"]:
-            raise SchemaRefusal(f"self_revisions[{index}].prior_span is reversed")
     return layer
 
 

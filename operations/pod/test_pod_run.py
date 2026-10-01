@@ -86,7 +86,6 @@ class PreflightedActions(FakeActions):
                 "smoke_receipts": [
                     {"chair": role, "valid": True}
                     for role in (
-                        "designator_structure",
                         "attestator_1",
                         "attestator_2",
                         "attestator_3",
@@ -401,7 +400,6 @@ def test_small_models_selects_cheap_stages_and_returns_after_selection(tmp_path:
         "attestator_1",
         "attestator_2",
         "attestator_3",
-        "designator_structure",
         "designator_surya",
         "secondary_proposer",
     ]
@@ -587,7 +585,6 @@ def test_attestatores_preflight_roles_follow_the_configured_roster(
     roles = json.loads(capsys.readouterr().out)["bootstrap"]["preflight_roles"]
     assert roles == [
         "attestator_7",
-        "designator_structure",
         "designator_surya",
         "secondary_proposer",
     ]
@@ -2657,43 +2654,3 @@ def test_a_descendant_holding_the_pipe_cannot_stop_the_runner_from_returning(
     assert completed.returncode == 0
     assert "still attached" in completed.transcript_failure
     assert "parent" in transcript.read_text(encoding="utf-8")
-
-
-@pytest.mark.parametrize("blind_read", ["fed", "saved"])
-def test_blind_read_reaches_orchestrator_and_report(tmp_path: Path, blind_read: str) -> None:
-    ws = _prepared(tmp_path)
-    clock = Clock()
-    runner = RecordedRunner()
-
-    code = main(
-        _run_argv(ws, extra=("--blind-read", blind_read)),
-        environ=_environ(clock, lifetime=4.0),
-        now=clock.now,
-        sleeper=clock.sleep,
-        actions_factory=lambda plan: PreflightedActions(),
-        runner=runner,
-    )
-
-    assert code == EXIT_COMPLETE
-    argv = runner.calls[0][0]
-    assert argv[argv.index("--blind-read") + 1] == blind_read
-    assert _report(ws)["plan"]["blind_read"] == blind_read
-
-
-def test_blind_read_defaults_to_off_in_the_pod_run_plan(tmp_path: Path) -> None:
-    ws = _prepared(tmp_path)
-    clock = Clock()
-    runner = RecordedRunner()
-
-    code = main(
-        _run_argv(ws),
-        environ=_environ(clock, lifetime=4.0),
-        now=clock.now,
-        sleeper=clock.sleep,
-        actions_factory=lambda plan: PreflightedActions(),
-        runner=runner,
-    )
-
-    assert code == EXIT_COMPLETE
-    assert "--blind-read" not in runner.calls[0][0]
-    assert _report(ws)["plan"]["blind_read"] == "off"

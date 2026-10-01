@@ -1,18 +1,15 @@
 """One page, one paper value: the background inference every stage that reads ink runs.
 
-The Designator, the Ink Map and the Recensor threshold the same pixels, and all
-three take paper from this inference over the page's own two grey-level
-population modes, never from the raw histogram mode: on a photographed opening
-that mode is the bezel, near zero, and an audit thresholded below it counts no
-ink over a page full of writing, so the cross-stage containment pin would hold
-over an empty set.
+Every stage that thresholds ink infers paper here, from a page's own two
+grey-level population modes rather than its raw histogram mode: on a
+photographed opening the raw mode is the bezel, near-zero, and an audit taken
+below it counts no ink over a page full of writing.
 
-All three stages get the same background, the same derived ink margin, and the
-same refusal by name. What is shared is the
-background, not the sensitivity: each caller keeps its own margin below it
-(the Designator's derived margin, its `SECONDARY_MARGIN = 2`, the audit's
-`MINIMUM_CONTRAST_BELOW_BACKGROUND = 40`) so the three numbers stay comparable
-without the audit restating the stage it audits.
+So every caller gets the same background, the same derived ink margin, and the
+same refusal by name. What is shared is the background, not the sensitivity:
+each caller keeps its own margin below it (the derived margin, the audit's
+`MINIMUM_CONTRAST_BELOW_BACKGROUND = 40`) so the numbers stay comparable
+without the audit restating the scan it audits.
 
 This module may not import a stage (`pipeline/test_stage_import_boundaries.py`):
 it reads the sealed policy's own bytes and takes everything else as arguments.
@@ -29,23 +26,13 @@ from common.sealed_config import read_sealed_toml
 # Fraction points below a page's inferred background value, deducted from it to
 # get the level at or below which a pixel counts as ink.
 #
-# The floor under the margin each page derives for itself (`_derived_ink_margin`),
-# so it is the scan margin of every page whose two modes are too close to derive
-# a larger one, and the level `_settle_background_evidence`'s plausibility probe
-# is measured at, since it is the one level every page shares. Lives here
-# rather than in `structure.py` because all three ink-thresholding stages
-# reach it through this module, and because the AST pin in
-# `common/test_designator_recensor_ink_calibration.py` reads it as a source
-# literal against the sealed `max_ink_bp` measured at this level.
+# Not the margin any scan runs at: it is the *floor* under the margin each page
+# derives for itself (`_derived_ink_margin`), and the level
+# `_settle_background_evidence`'s plausibility probe is measured at, since the
+# floor is the most permissive threshold a scan can ever apply.
+# `common/test_ink_calibration.py` pins it as a source literal against the
+# sealed `max_ink_bp` measured at this level.
 PRIMARY_MARGIN: Final = 20
-
-# Deliberately not derived or configured: a fixed 2 below background is
-# smaller than any derived margin, so the Designator's secondary scan and
-# conservation, and the Perlector's page-fallback reader, are strictly more
-# sensitive than the primary scan on every page, never the reverse. A derived
-# value could invert that on some page, trading a visible over-count for a
-# possible silent loss.
-SECONDARY_MARGIN: Final = 2
 
 # The denominator of every basis-point fraction this module is handed. The
 # sealed policy (`config/ink_map.toml`) states its fractions in basis points;
@@ -311,11 +298,6 @@ def infer_background_evidence(
     (found on real material, proxy `da9e07ec...`; `_derived_ink_margin` can
     only place a threshold for one dominant population). A per-region
     background is the repair, and a different unit.
-
-    Conservation separately reconciles at the more sensitive, non-derived
-    `SECONDARY_MARGIN`; a page `_ink_threshold` refuses at that margin is
-    likewise still cut and read, and holds the run rather than reporting an
-    unmade measurement.
     """
     if width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to infer a background from")
@@ -449,11 +431,10 @@ def _settle_background_evidence(
     return evidence
 
 
-#: Names this policy refuses wherever they appear: `PRIMARY_MARGIN` and
-#: `SECONDARY_MARGIN`, absolute 8-bit offsets an AST pin in
-#: `common/test_designator_recensor_ink_calibration.py` reads as source
-#: literals, which a per-run config value would make unenforceable statically.
-FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
+#: Names this policy refuses wherever they appear: `PRIMARY_MARGIN` is an
+#: absolute 8-bit offset `common/test_ink_calibration.py` reads as a source
+#: literal, which a per-run config value would make unenforceable statically.
+FORBIDDEN_NAMES: Final = ("primary_margin",)
 
 
 def refuse_forbidden_names(fields: dict, where: str) -> None:
@@ -462,8 +443,8 @@ def refuse_forbidden_names(fields: dict, where: str) -> None:
     if found:
         raise ContractError(
             f"the sealed policy table {where} carries forbidden field(s) {found}; "
-            "primary_margin/secondary_margin are absolute 8-bit ink-intensity offsets pinned "
-            "as module constants in common/background.py and may never become a per-run "
+            "primary_margin is an absolute 8-bit ink-intensity offset pinned "
+            "as a module constant in common/background.py and may never become a per-run "
             "config value. What is sealed instead is the ink map's [background] ink_margin_bp, "
             "the fraction of a page's own two-mode distance that derives its margin: a "
             "population fraction, which scales with the page, and not an offset"
@@ -610,9 +591,7 @@ def round_half_up_bp(dimension: int, bp: int) -> int:
     Pure integer arithmetic, never a float, so the amount actually applied is
     deterministic and independent of Python's float rounding rules.
 
-    This is the project's one basis-point rounding rule;
-    `pipeline/2_designator/geometry._pad_amount` delegates here, so a page's
-    band and a page's padding cannot come to round differently.
+    This is the project's one basis-point rounding rule.
     """
     return (dimension * bp + BASIS_POINTS // 2) // BASIS_POINTS
 
@@ -722,8 +701,7 @@ def load_background_config(
 def resolve_background_policy(config: dict[str, Any], width: int, height: int) -> BackgroundPolicy:
     """One page's own resolved background-inference policy.
 
-    Background inference runs before any threshold touches any geometry, so it
-    is resolved apart from the Designator's grouping thresholds. `config` is
+    Background inference runs before any threshold touches any geometry. `config` is
     anything carrying the sealed block under `background`, as
     `load_background_config`'s result does.
     """

@@ -43,7 +43,7 @@ recipes, or chair roster have changed is refused before any write: that is a
 different run wearing an old name.
 
 It deliberately does not predeclare acts. Pages are given; acts are discovered, and
-the Designator's proposal seal is the downstream expected-act authority.
+the Perlector's whole-page reading names them.
 
 ## Run receipts
 

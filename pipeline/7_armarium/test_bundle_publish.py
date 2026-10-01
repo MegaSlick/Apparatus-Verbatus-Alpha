@@ -72,7 +72,7 @@ def _publish(run_root: Path, run_id: str, out: Path, **extra) -> subprocess.Comp
 @pytest.fixture(scope="module")
 def happy_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("bundle-publish-happy")
-    result = _orchestrate(root, "r", "happy")
+    result = _orchestrate(root, "r", "page-unbroken")
     assert result.returncode == 0, result.stderr
     return root
 
@@ -80,7 +80,7 @@ def happy_run(tmp_path_factory):
 @pytest.fixture(scope="module")
 def review_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("bundle-publish-review")
-    result = _orchestrate(root, "r", "review")
+    result = _orchestrate(root, "r", "page-review")
     assert result.returncode == 3, result.stderr
     return root
 
@@ -291,7 +291,7 @@ def test_an_export_payload_naming_neither_identity_is_refused_by_name(tmp_path, 
 def test_a_partial_run_publishes_and_says_it_is_partial(tmp_path, review_run):
     """A held act must not stop the product leaving, and must not be hidden in it."""
     out = tmp_path / "delivery"
-    result = _publish(review_run, "r", out, scenario="review")
+    result = _publish(review_run, "r", out, scenario="page-review")
     assert result.returncode == 0, result.stderr
     assert "partial" in result.stdout
     assert (out / "armarium-export.zip").is_file()
@@ -342,7 +342,7 @@ def test_a_nonexistence_mkdir_error_reports_the_os_reason(tmp_path, happy_run, m
 def test_publication_leaves_nothing_behind_when_the_run_has_no_export(tmp_path):
     """Half a delivery is worse than none: the destination must simply not appear."""
     root = tmp_path / "runs"
-    assert _orchestrate(root, "r", "happy").returncode == 0
+    assert _orchestrate(root, "r", "page-unbroken").returncode == 0
     export = next((root / "r" / "7_armarium" / "artifacts" / "export").glob("*.json"))
     export.unlink()
 
@@ -531,7 +531,7 @@ def test_a_sealed_export_remains_publishable_after_its_config_file_changes(tmp_p
     formats = tmp_path / "formats.toml"
     shutil.copyfile(ROOT / "config" / "formats.toml", formats)
     root = tmp_path / "runs"
-    result = _orchestrate(root, "sealed-config", "happy", formats_config=formats)
+    result = _orchestrate(root, "sealed-config", "page-unbroken", formats_config=formats)
     assert result.returncode == 0, result.stderr
 
     formats.write_text(formats.read_text(encoding="utf-8") + "\n# edited after sealing\n")

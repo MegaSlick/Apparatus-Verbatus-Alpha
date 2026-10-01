@@ -15,10 +15,7 @@ from common.stage import run_config_bindings, run_sealed_config_digests
 CONFIG = Path(__file__).resolve().parents[1] / "config"
 SEALED_FILES = {
     "pdf_render_config_path": "pdf_render.toml",
-    "designator_padding_config_path": "designator_padding.toml",
     "designator_geometry_config_path": "designator_geometry.toml",
-    "designator_grouping_config_path": "designator_grouping.toml",
-    "alignment_config_path": "alignment.toml",
     "page_accounting_config_path": "page_accounting.toml",
     "armarium_formats_config_path": "formats.toml",
     "recovery_config_path": "recovery.toml",

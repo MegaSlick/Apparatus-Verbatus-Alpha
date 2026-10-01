@@ -46,8 +46,8 @@ def test_run_config_bindings_refuses_a_witness_context_missing_a_configured_chai
         )
 
 
-def _context(tmp_path) -> tuple[StageContext, ChairIdentity]:
-    registry = ChairRegistry.from_toml(MODELS_CONFIG)
+def _context(tmp_path, models_config=MODELS_CONFIG) -> tuple[StageContext, ChairIdentity]:
+    registry = ChairRegistry.from_toml(models_config)
     bindings = run_config_bindings(registry.config, {"fixture": "none"}, "test")
     tree = RunTree.create(
         tmp_path,
@@ -81,8 +81,8 @@ def test_context_refuses_a_publish_after_its_completion_seal(tmp_path):
 
     with pytest.raises(SchemaRefusal, match="completion boundary"):
         context.publish(
-            kind="testimonium",
-            subject_id="act-after-seal",
+            kind="page-testimonium",
+            subject_id="page-after-seal",
             outcome="read",
             payload={},
         )
@@ -111,7 +111,7 @@ def _served_provenance(
 
 
 def _declared_absence(context: StageContext) -> tuple[AbsentChair, dict[str, object]]:
-    absent = context.registry.resolve("secondary_proposer")
+    absent = context.registry.resolve("attestator_3")
     assert isinstance(absent, AbsentChair)
     return absent, {
         "chair": absent.role,
@@ -429,8 +429,10 @@ def test_provenance_must_be_an_object_with_a_named_known_chair_state(tmp_path):
         )
 
 
-def test_an_absent_chair_can_make_only_its_declared_non_serving_claim(tmp_path):
-    context, identity = _context(tmp_path)
+def test_an_absent_chair_can_make_only_its_declared_non_serving_claim(
+    tmp_path, absent_third_chair_config
+):
+    context, identity = _context(tmp_path, absent_third_chair_config)
     absent, provenance = _declared_absence(context)
 
     assert (

@@ -9,7 +9,7 @@ calls any `RunTree` writer at all —
 `test_compare.py` asserts this with `ReadOnlyRunTree`, a wrapper that delegates
 every read and refuses every write it names, by name, rather than a `RunTree`
 subclass), it selects nothing about the *reading* (the pipeline already decided
-what it proposed; this only pairs a proposal with a reference box after the
+what it read; this only pairs a pipeline act with a reference box after the
 fact), and it drops nothing on either side: every unmatched reference act is
 reported as a MISS and every unmatched pipeline act is reported, not scored.
 
@@ -19,18 +19,13 @@ records/page, maximum 30) -- not the earlier 2.5-3.5 estimate,
 which this package had already replaced with a measurement before this cap
 was chosen (see `_best_assignment`).
 
-**IoU assignment.** For one page, every sealed proposal region's *raw* bounds
-(`origin: "proposal"`, `2_designator`'s own structural crop rectangle from
-`payload["raw_bounds"]` — the detected rectangle, before any padding is applied)
-is matched against `reference.py`'s reference acts by IoU, maximising the
-assignment's total IoU under one predeclared threshold
+**IoU assignment.** For one page, every pipeline act's bounds -- the Perlector's
+act-regions, each the rectangle a page reading established its act over
+(`load_pipeline_reading_acts`) -- are matched against `reference.py`'s reference
+acts by IoU, maximising the assignment's total IoU under one predeclared threshold
 (`PREDECLARED_IOU_THRESHOLD`) — a pair below threshold is not an eligible edge at
 all, so the optimum can never be dragged down by a near-miss it should have
-refused. `payload["transform"]["bounds"]` (the final, possibly padded, capture
-rectangle) is deliberately not what is scored here: `config/designator_padding.toml`'s
-margins are uncalibrated for this corpus, and scoring detection against a padded
-box would spend part of the miss budget on that padding config rather than on
-whether the act was found. IoU stays exact throughout: `x,y,w,h` are always
+refused. IoU stays exact throughout: `x,y,w,h` are always
 integers, so intersection and union areas are integers and every comparison is an
 exact `Fraction`, never a float — nothing here is a canonical artifact until the
 final record is built, and that record stores areas, not the ratio, because
@@ -63,7 +58,7 @@ from typing import Any, Mapping
 
 from common.contracts.canonical import is_sha256, self_hash, verify_self_hash
 from common.contracts.identities import is_well_formed
-from common.contracts.stages import DESIGNATOR, EXEMPLAR
+from common.contracts.stages import EXEMPLAR, PERLECTOR
 from common.runtree.store import RunTree
 from operations.spike_perlector.models import OutputStatus
 from operations.spike_perlector.normalization import GRAPHEMIC_V1, NormalizationProfile
@@ -319,7 +314,7 @@ def load_exemplar_page_shas(tree: RunTree) -> dict[int, str]:
     Door refusal inside an otherwise ordinary run is not a malformed page, it
     is a page with no digest by design -- and every field on what survives is
     checked by name, never left to leave this function as a bare `KeyError`,
-    the way `load_pipeline_proposal_acts`'s docstring says every other read in
+    the way `load_pipeline_reading_acts`'s docstring says every other read in
     this package refuses.
     """
     shas: dict[int, str] = {}
@@ -352,41 +347,37 @@ def load_exemplar_page_shas(tree: RunTree) -> dict[int, str]:
     return shas
 
 
-def load_pipeline_proposal_acts(tree: RunTree) -> list[dict[str, Any]]:
-    """Every sealed Designator proposal region, read-only, grouped with its page sha256.
+def load_pipeline_reading_acts(tree: RunTree) -> list[dict[str, Any]]:
+    """Every sealed Perlector `act-region` of a placed `act` reading, with its page sha256.
 
-    Only `origin: "proposal"` regions -- a recovery crop's bounds are a Recensor
-    request, not a detected act, and the matrix runs over sealed proposal
-    regions only. Returns
-    `[{"act_id", "bounds", "page_sha256"}, ...]`.
-
-    This reads a tree it did not produce, so a proposal region's shape is
-    checked, not assumed: a region sealed by an earlier revision that carries
-    no usable `transform.source_page_ordinal` or `raw_bounds` is refused by
-    name (`malformed-record`) rather than left to leave this function as a bare
-    `KeyError`, the way every other read in this package refuses.
+    These are the rectangles a page reading established its acts over, each
+    keyed by the act id the export names. `other` readings are not acts, and an
+    unplaced reading (`act_class` `reading-unplaced`) has no rectangle; both are
+    left out and counted by `count_excluded_reading_regions`. Returns
+    `[{"act_id", "bounds", "page_sha256"}, ...]`, which `compare_page` takes
+    unchanged. A region with no integer page
+    ordinal or no page the Exemplar sealed is refused by name.
     """
     page_shas = load_exemplar_page_shas(tree)
     acts: list[dict[str, Any]] = []
-    manifest = tree.build_manifest(DESIGNATOR)
-    for entry in manifest["artifacts"]:
-        if entry["kind"] != "region":
+    for entry in tree.build_manifest(PERLECTOR)["artifacts"]:
+        if entry["kind"] != "act-region":
             continue
-        record = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+        record = tree.read_artifact(PERLECTOR, "act-region", entry["artifact_id"])
         payload = record["payload"]
-        if payload.get("origin") != "proposal":
+        if payload.get("kind") != "act" or payload.get("act_class") != "reading":
             continue
         transform = payload.get("transform")
         ordinal = transform.get("source_page_ordinal") if isinstance(transform, dict) else None
         if not isinstance(ordinal, int) or isinstance(ordinal, bool):
             raise Refusal(
-                f"malformed-record: region {record['subject_id']!r} carries no integer "
+                f"malformed-record: act-region {record['subject_id']!r} carries no integer "
                 "transform.source_page_ordinal, so its page cannot be resolved"
             )
         page_sha256 = page_shas.get(ordinal)
         if page_sha256 is None:
             raise Refusal(
-                f"unresolvable-page-ordinal: region {record['subject_id']!r} names "
+                f"unresolvable-page-ordinal: act-region {record['subject_id']!r} names "
                 f"source page ordinal {ordinal}, which no sealed Exemplar page carries"
             )
         acts.append(
@@ -394,7 +385,8 @@ def load_pipeline_proposal_acts(tree: RunTree) -> list[dict[str, Any]]:
                 "act_id": record["subject_id"],
                 "bounds": dict(
                     _bounds(
-                        payload.get("raw_bounds"), f"region {record['subject_id']!r} raw_bounds"
+                        transform.get("bounds"),
+                        f"act-region {record['subject_id']!r} transform.bounds",
                     )
                 ),
                 "page_sha256": page_sha256,
@@ -403,30 +395,26 @@ def load_pipeline_proposal_acts(tree: RunTree) -> list[dict[str, Any]]:
     return acts
 
 
-def count_excluded_designator_artifacts(tree: RunTree) -> dict[str, dict[str, int]]:
-    """Counts of Designator artifacts `load_pipeline_proposal_acts`'s filter dropped.
+def count_excluded_reading_regions(tree: RunTree) -> dict[str, dict[str, int]]:
+    """Counts of Perlector act-regions `load_pipeline_reading_acts` left out.
 
-    Two lenses on the same manifest: `by_kind` counts every artifact whose kind is
-    not `region` at all (e.g. a secondary-proposer `rescue-crop`), and `by_origin`
-    counts every sealed region whose `origin` is not `"proposal"` (e.g.
-    `"recovery"`). Read-only, and applies the identical filter
-    `load_pipeline_proposal_acts` applies, so the excluded and included counts are
-    always counting the same manifest -- this exists so a `reference-comparison.v1`
-    record can say how much of the run it declined to look at, rather than
-    dropping that population silently.
+    A comparison record carries these counts, so it can
+    say how much of the run it declined to look at: `by_kind` counts regions of
+    a reading that is not an act (`other`), and `by_origin` counts act regions
+    by an `act_class` other than `reading` (an unplaced reading).
     """
     by_kind: dict[str, int] = {}
     by_origin: dict[str, int] = {}
-    manifest = tree.build_manifest(DESIGNATOR)
-    for entry in manifest["artifacts"]:
-        kind = entry["kind"]
-        if kind != "region":
-            by_kind[kind] = by_kind.get(kind, 0) + 1
+    for entry in tree.build_manifest(PERLECTOR)["artifacts"]:
+        if entry["kind"] != "act-region":
             continue
-        record = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        origin = record["payload"].get("origin", "<missing>")
-        if origin != "proposal":
-            by_origin[origin] = by_origin.get(origin, 0) + 1
+        payload = tree.read_artifact(PERLECTOR, "act-region", entry["artifact_id"])["payload"]
+        kind = payload.get("kind", "<missing>")
+        act_class = payload.get("act_class", "<missing>")
+        if kind != "act":
+            by_kind[kind] = by_kind.get(kind, 0) + 1
+        elif act_class != "reading":
+            by_origin[act_class] = by_origin.get(act_class, 0) + 1
     return {"by_kind": by_kind, "by_origin": by_origin}
 
 
@@ -662,7 +650,7 @@ def compare_page(
 ) -> dict[str, Any]:
     """Build one `reference-comparison.v1` for a single page.
 
-    `pipeline_acts` is exactly `load_pipeline_proposal_acts`'s output shape --
+    `pipeline_acts` is exactly `load_pipeline_reading_acts`'s output shape --
     `{"act_id", "bounds", "page_sha256"}` -- so a run tree's own loader output can
     be handed to this function directly, with no reshaping in between. Every act
     is refused by name (`wrong-page`) unless its `page_sha256` matches
@@ -681,8 +669,9 @@ def compare_page(
     never compares IoU in binary floating point, so a caller-supplied float
     threshold must not silently reach that comparison.
 
-    `excluded_region_counts` is this call's own `count_excluded_designator_artifacts`
-    result, when the caller read `pipeline_acts` from a run tree -- carried into
+    `excluded_region_counts` is the excluded count matching the loader the caller
+    read `pipeline_acts` with (`count_excluded_reading_regions`), when it read
+    them from a run tree -- carried into
     the record so a reader can see how much of the run this comparison declined to
     look at. Defaults to an explicit all-zero shape (never omitted from the
     record) for callers exercising this function without a run tree.
@@ -862,8 +851,8 @@ __all__ = [
     "COMPARE_REFUSAL_REASONS",
     "ReadOnlyRunTree",
     "load_exemplar_page_shas",
-    "load_pipeline_proposal_acts",
-    "count_excluded_designator_artifacts",
+    "load_pipeline_reading_acts",
+    "count_excluded_reading_regions",
     "compare_page",
     "compare_page_geometry",
     "validate_comparison",

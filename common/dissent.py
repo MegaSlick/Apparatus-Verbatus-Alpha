@@ -37,7 +37,6 @@ from typing import Any, Final
 from common.alignment import AlignmentStepLimit, StepCountedMatcher, markup_text_view
 from common.contracts.errors import SchemaRefusal
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES
-from common.contracts.prior_draft import unmeasured_comparison
 
 # `SequenceMatcher`'s alignment cost is not simply the product of the two
 # lengths: a reading and a report that differ in many scattered places --
@@ -50,6 +49,19 @@ from common.contracts.prior_draft import unmeasured_comparison
 # `[dissent] max_comparison_steps` in `config/alignment.toml`, which every
 # caller passes in, does that.
 MAX_COMPARISON_CHARACTER_PAIRS: Final = 100_000_000
+
+# A comparison stopped by its sealed step budget. Named so the record says the
+# instrument stopped, not that the reading and the witness were found to agree.
+COMPARISON_STEP_LIMIT_REASON: Final = "comparison-step-limit"
+
+
+def unmeasured_comparison(max_comparison_steps: int) -> dict[str, Any]:
+    """The explicit non-verdict of a comparison that would pass its step budget."""
+    return {
+        "measured": False,
+        "reason": COMPARISON_STEP_LIMIT_REASON,
+        "max_comparison_steps": max_comparison_steps,
+    }
 
 
 def comparison_view(text: str) -> dict[str, object]:
@@ -131,8 +143,7 @@ def is_comparable(record: dict[str, Any]) -> bool:
     act-scoped one. A chair with one rejoins the instrument through that safe
     view; one without -- a page witness whose alignment failed -- stays
     honestly unknown with its reason recorded rather than folded into a
-    coverage count. An act-scoped chair always gets the bracket view
-    (`run.py::comparison_views`), so a future chair whose notation is not
+    coverage count. A chair given the bracket view whose notation is not
     brackets would rejoin as comparable anyway, its own markers surviving as
     false disagreement; nothing here reads a notation field to catch that.
     """

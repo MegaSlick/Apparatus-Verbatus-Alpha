@@ -10,7 +10,6 @@ import gc
 import inspect
 import json
 import os
-import re
 import struct
 import subprocess
 import sys
@@ -55,8 +54,6 @@ from common.runtree.store import RunTree
 from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, read_sealed_toml
 from common.stage import (
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
-    DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
-    DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_FATAL,
     StageContext,
@@ -107,14 +104,8 @@ def _sealed_binding_digests() -> dict[str, str]:
             minimum_dpi=door.pdf_render.MIN_RENDER_DPI
         ).config_sha256,
         "data_handling_config_sha256": gate.load_policy_binding().config_sha256,
-        "designator_padding_config_sha256": read_sealed_toml(
-            DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH, "Designator padding configuration"
-        )[1],
         "designator_geometry_config_sha256": read_sealed_toml(
             DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH, "Designator geometry configuration"
-        )[1],
-        "designator_grouping_config_sha256": read_sealed_toml(
-            DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH, "Designator grouping configuration"
         )[1],
     }
 
@@ -2254,9 +2245,11 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
         capture_output=True,
         text=True,
     )
+    # The ledger reconciles before anything else is asked: the refusal that
+    # follows is the fixture detector's, which a real submission never answers.
     assert boundary.returncode == 2
-    assert "reconciled the Exemplar filename ledger" in boundary.stderr
-    assert "no proposals or holds were fabricated" in boundary.stderr
+    assert "a fixture row answers only a synthetic run" in boundary.stderr
+    assert "ledger" not in boundary.stderr
     assert tree.build_manifest(DESIGNATOR) == before_designator
 
 
@@ -3309,16 +3302,16 @@ def test_a_container_that_cannot_be_counted_still_occupies_exactly_one_ordinal(t
     assert reason_code(payload["reason"]) is RefusalReason.CORRUPT
 
 
-def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypatch):
-    """`_real_bindings`'s `sealed_config_digests` names every point-of-use digest
-    exactly as `run_config_bindings` (the fixture path) does.
+def test_real_bindings_seal_designator_geometry_alongside_the_shard_knob(monkeypatch):
+    """`_real_bindings`'s `sealed_config_digests` names each point-of-use
+    configuration exactly as `run_config_bindings` (the fixture path) does, not
+    only `corpus-frame-shard`.
 
-    Folding a config's bytes into `config_digest` is not enough: a real Designator
-    run reaching `context.require_sealed_config("designator-padding", ...)`
-    (`pipeline/2_designator/run.py`) needs the named entry, or it refuses every
-    time with "this context sealed no digest for the designator-padding
-    configuration". The fixture and real paths must expose the same
-    `sealed_config_digests` shape.
+    A config whose bytes are folded into the overall `config_digest` but whose
+    NAMED point-of-use-recheck entry is missing makes a real run reaching
+    `context.require_sealed_config(...)` refuse every time with "this context
+    sealed no digest for the ... configuration". The fixture and real paths must
+    expose the same `sealed_config_digests` shape.
     """
 
     models = _fixture_models()
@@ -3331,9 +3324,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
     supplied = _sealed_binding_digests()
-    padding_digest = supplied["designator_padding_config_sha256"]
     geometry_digest = supplied["designator_geometry_config_sha256"]
-    grouping_digest = supplied["designator_grouping_config_sha256"]
     recovery = door.load_recovery_policy()
     bindings = door._real_bindings(
         models,
@@ -3345,22 +3336,11 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         **supplied,
     )
     sealed = bindings["sealed_config_digests"]
-    assert sealed.get("designator-padding") == padding_digest, (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'designator-padding' entry bound to the exact digest passed in; the fixture "
-        "path's run_config_bindings() already seals this name"
-    )
     assert sealed.get("designator-geometry") == geometry_digest, (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'designator-geometry' entry bound to the exact digest passed in; the Designator's "
         "point-of-use recheck (pipeline/2_designator/run.py) requires this name on every "
         "run, so a real run without it refuses unconditionally"
-    )
-    assert sealed.get("designator-grouping") == grouping_digest, (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'designator-grouping' entry bound to the exact digest passed in; the structure "
-        "pass resolves its thresholds from these bytes one step before the crop, so a "
-        "real run without the name refuses unconditionally"
     )
     assert "corpus-frame-shard" in sealed, (
         "the pre-existing corpus-frame-shard entry must survive, not be replaced"
@@ -3368,9 +3348,9 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     # The sealing family. Each of these has a point
     # of use on the real route: the door renders with the PDF policy it parsed, the
     # storage-root gate ran under the data-handling policy it loaded, and the
-    # Designator recovery pass and the orchestrator's dispatch both work from the
-    # recovery budget. A real run whose door sealed none of them would refuse at
-    # the point of use with "sealed no digest".
+    # Recensor and the orchestrator's dispatch both work from the recovery budget.
+    # A real run whose door sealed none of them would refuse at the point of use
+    # with "sealed no digest".
     assert sealed.get("pdf-render") == supplied["pdf_render_config_sha256"], (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'pdf-render' entry bound to the digest of the bytes the settings were parsed "
@@ -3378,8 +3358,8 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     )
     assert sealed.get("recovery") == recovery["config_sha256"], (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'recovery' entry; the Recensor, the Designator recovery pass and the "
-        "orchestrator all require this name at their point of use"
+        "'recovery' entry; the Recensor and the orchestrator require this name at "
+        "their point of use"
     )
     assert sealed.get("data-handling") == supplied["data_handling_config_sha256"], (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
@@ -3412,15 +3392,10 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         witness_context_declaration_sha256=read_sealed_toml(
             door.DEFAULT_WITNESS_CONTEXT_CONFIG_PATH, "witness context"
         )[1],
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-        perlector_instrument_per_mille=0,
-        perlector_instrument_approval_ref="",
-        blind_read="off",
     )
     assert sealed.get("run-policy") == expected_policy, (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'run-policy' entry over the seven run-level reading knobs; without it "
+        "'run-policy' entry over the run-level reading knobs; without it "
         "`--witness-context blinded` on a resumed real run reaches the Perlector unchecked"
     )
     blinded = door._real_bindings(
@@ -3447,8 +3422,8 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     assert unchanged["config_digest"] == bindings["config_digest"]
 
 
-def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config(tmp_path):
-    """The sealed grouping name must be able to fail, and to say which fault it is.
+def test_a_rewritten_geometry_policy_is_refused_by_name_by_require_sealed_config(tmp_path):
+    """The sealed geometry name must be able to fail, and to say which fault it is.
 
     A name in `sealed_config_digests` earns its place by having a point of use
     that requires it; a name nothing can refuse against "would read as a closed
@@ -3485,10 +3460,10 @@ def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config
     sealed = run_sealed_config_digests(
         {"sealed_config_digests": bindings["sealed_config_digests"], SEAL_METHOD_FIELD: SEAL_METHOD}
     )
-    bound = supplied["designator_grouping_config_sha256"]
+    bound = supplied["designator_geometry_config_sha256"]
 
     # The run as sealed: the bytes the Designator re-reads are the bound bytes.
-    require_sealed_config(sealed, "designator-grouping", bound)
+    require_sealed_config(sealed, "designator-geometry", bound)
 
     # The fixture path's own `sealed_config_digests` names the same bytes under
     # the same name — a different function on a different route from the real
@@ -3503,30 +3478,27 @@ def test_a_rewritten_grouping_policy_is_refused_by_name_by_require_sealed_config
         load_fixture(str(ROOT / "proof")),
         "happy",
     )
-    assert fixture_bindings["sealed_config_digests"]["designator-grouping"] == bound
+    assert fixture_bindings["sealed_config_digests"]["designator-geometry"] == bound
 
-    edited = tmp_path / "designator_grouping.toml"
+    edited = tmp_path / "designator_geometry.toml"
     edited.write_text(
-        re.sub(
-            r"(?m)^(\w+ = )(\d+)$",
-            lambda value: f"{value[1]}{int(value[2]) + 1}",
-            DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH.read_text(encoding="utf-8"),
-            count=1,
+        DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH.read_text(encoding="utf-8").replace(
+            'caveat = "', 'caveat = "Edited. ', 1
         ),
         encoding="utf-8",
     )
-    rewritten = read_sealed_toml(edited, "Designator grouping configuration")[1]
+    rewritten = read_sealed_toml(edited, "Designator geometry configuration")[1]
     assert rewritten != bound, "the edited policy must actually differ, or this proves nothing"
-    with pytest.raises(ContractError, match="designator-grouping configuration changed") as drift:
-        require_sealed_config(sealed, "designator-grouping", rewritten)
+    with pytest.raises(ContractError, match="designator-geometry configuration changed") as drift:
+        require_sealed_config(sealed, "designator-geometry", rewritten)
     assert bound in str(drift.value) and rewritten in str(drift.value), (
         "the drift refusal must name both digests, so an operator can tell which file on "
         f"disk is the one the run was bound to: {drift.value}"
     )
 
-    unsealed = {name: digest for name, digest in sealed.items() if name != "designator-grouping"}
-    with pytest.raises(ContractError, match="sealed no digest for the designator-grouping") as gap:
-        require_sealed_config(unsealed, "designator-grouping", bound)
+    unsealed = {name: digest for name, digest in sealed.items() if name != "designator-geometry"}
+    with pytest.raises(ContractError, match="sealed no digest for the designator-geometry") as gap:
+        require_sealed_config(unsealed, "designator-geometry", bound)
     assert "changed between" not in str(gap.value), (
         "a binding step that never sealed this name is a different fault from a file that "
         f"moved under a run that did, and must not be reported as drift: {gap.value}"
@@ -3579,31 +3551,6 @@ def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry(
         == 0
     )
     assert order == ["require_triage_modes", "expand_sources"]
-
-
-def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
-    """The real ingress path shares the fixture path's approval refusal."""
-
-    models = _fixture_models()
-
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
-    )
-    with pytest.raises(ContractError, match="is not an approval record"):
-        door._real_bindings(
-            models,
-            ledger,
-            POLICY,
-            settings,
-            door.load_recovery_policy(),
-            door.load_hard_failure_policy(),
-            **_sealed_binding_digests(),
-            perlector_instrument_per_mille=1,
-        )
 
 
 @pytest.mark.parametrize(

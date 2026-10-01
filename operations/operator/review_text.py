@@ -13,9 +13,7 @@ out, since this is the surface where a run tree's own bytes meet a screen.
 
 from __future__ import annotations
 
-from typing import Any, Final
-
-from common.contracts.prior_draft import is_unmeasured_comparison
+from typing import Any
 
 
 class ProjectionShapeError(ValueError):
@@ -180,30 +178,19 @@ def _uncertainty_alternatives(span: dict[str, Any], label: str) -> list[str]:
 _UNCERTAINTY_STATES = ("assessed", "not-assessed", "malformed")
 
 
-# Stands for a `self_revisions` key the layer does not carry, which a null would hide.
-_FIELD_ABSENT: Final = object()
-
-
 def _uncertainty_lines(
     assessment: Any,
     *,
     spans: Any,
     gaps: Any,
     revisions: Any,
-    lectio_kind: Any,
     text: Any,
     label: str,
     assessment_key: str,
     attributable: bool,
     outcome: Any,
-    canonical: bool,
 ) -> list[str]:
     """The reader's own doubt report, rendered the same way wherever it is carried.
-
-    `canonical` says the layer is the canonical one, where a fed reading's null
-    `self_revisions` has one meaning: its comparison ran out of the sealed step
-    budget. On the Perlectio row that stop is the explicit non-verdict. On either,
-    a missing field is only a field not recorded.
 
     `outcome` is the record's own word for whether a reading exists: only a
     `not-run` record carries no text, and any other outcome with no string
@@ -218,9 +205,8 @@ def _uncertainty_lines(
     Where the layer is a union of the audit's projection and the reader's
     report, this surface cannot tell which entry is whose, and says so
     rather than crediting the reader with both. Only a record with no audit
-    behind it is attributable, and every Perlectio carries an audit, so that
-    form is unreachable today -- true only while `audit` stays in the
-    Perlectio's closed field set (`pipeline/4_perlector/run.py::_PERLECTIO_FIELDS`).
+    behind it is attributable; a page reading carries no audit, so its layer
+    is the reader's own.
     """
     if assessment is not None and not isinstance(assessment, dict):
         raise ProjectionShapeError(
@@ -230,25 +216,7 @@ def _uncertainty_lines(
     # malformed layer beside a missing assessment is still looked at.
     spans = _uncertainty_entries(spans, f"{label}.uncertain_spans")
     gaps = _uncertainty_entries(gaps, f"{label}.gaps")
-    withheld = lectio_kind == "primed-draft-withheld"
-    fed = lectio_kind == "primed-with-prior"
-    absent = revisions is _FIELD_ABSENT
-    if absent:
-        revisions = None
-    budget_stopped = fed and (
-        is_unmeasured_comparison(revisions) or (canonical and not absent and revisions is None)
-    )
-    unrecorded = fed and revisions is None and (absent or not canonical)
-    if withheld:
-        if revisions is not None:
-            raise ProjectionShapeError(
-                f"{label}.self_revisions", None, revisions, expected="null for a withheld draft"
-            )
-        revisions = []
-    elif budget_stopped or unrecorded:
-        revisions = []
-    else:
-        revisions = _uncertainty_entries(revisions, f"{label}.self_revisions")
+    revisions = _uncertainty_entries(revisions, f"{label}.self_revisions")
     alternatives = [
         _uncertainty_alternatives(span, f"{label}.uncertain_spans[{index}].alternatives")
         for index, span in enumerate(spans)
@@ -296,14 +264,6 @@ def _uncertainty_lines(
         lines = [f"    doubts: {named} — {_one_line(assessment.get('problem'), limit=300)}"]
         if spans or gaps:
             lines.append(f"      published beside that state, not by the reader: {counted}")
-    if withheld:
-        lines.append("      self-revisions not measured (primed-draft-withheld)")
-    elif budget_stopped:
-        lines.append(
-            "      self-revisions not measured (the comparison ran out of its step budget)"
-        )
-    elif unrecorded:
-        lines.append("      self-revisions not recorded (the reading carries no such field)")
     folded = _uncertainty_folds(spans)
     folded_source = [spans.index(span) for span, _ in folded]
     if len(folded) != len(spans):
@@ -417,18 +377,15 @@ def render(projection: dict[str, Any]) -> list[str]:
 
     holds = _rows(projection, "holds")
     lines.append("")
-    # Distinct acts, not hold records: one act held by the Designator and
-    # reviewed as held by the Recensor is two rows below and one act to
-    # resolve. `.get()`, not a subscript, like every other read in this
-    # function, so a malformed row is a `ProjectionShapeError`, never an
-    # uncaught exception.
+    # Distinct acts, not hold records. `.get()`, not a subscript, like every
+    # other read in this function, so a malformed row is a
+    # `ProjectionShapeError`, never an uncaught exception.
     held_acts = len({hold.get("act_id") for hold in holds})
     lines.append(f"Held or unresolved acts ({held_acts})")
     for hold in holds:
         examination = hold.get("audit_examination")
         audit_note = f"; audit examination {inert(examination)}" if examination else ""
-        # Unlabelled, two rows for one act (Designator held, Recensor
-        # reviewed) would read as two acts.
+        # The label names which record says the act is unresolved.
         label = hold.get("label")
         which = f" [{inert(label)}]" if label else ""
         lines.append(
@@ -494,7 +451,6 @@ def render(projection: dict[str, Any]) -> list[str]:
                     spans=reading.get("uncertain_spans"),
                     gaps=reading.get("gaps"),
                     revisions=reading.get("self_revision"),
-                    lectio_kind=reading.get("lectio_kind"),
                     text=reading.get("text"),
                     label="acts[].row.reading",
                     assessment_key="uncertainty_assessment",
@@ -503,7 +459,6 @@ def render(projection: dict[str, Any]) -> list[str]:
                     # says which instrument wrote it.
                     attributable=not isinstance(reading.get("audit"), dict),
                     outcome=reading.get("outcome"),
-                    canonical=False,
                 )
             )
         elif isinstance(row.get("text"), str):
@@ -517,8 +472,7 @@ def render(projection: dict[str, Any]) -> list[str]:
                     uncertainty.get("assessment"),
                     spans=uncertainty.get("uncertain_spans"),
                     gaps=uncertainty.get("gaps"),
-                    revisions=uncertainty.get("self_revisions", _FIELD_ABSENT),
-                    lectio_kind=uncertainty.get("lectio_kind"),
+                    revisions=uncertainty.get("self_revisions"),
                     text=row.get("text"),
                     label="acts[].row.uncertainty",
                     assessment_key="assessment",
@@ -529,7 +483,6 @@ def render(projection: dict[str, Any]) -> list[str]:
                     # A delivered act was read by definition; its text is the
                     # string this branch was entered on.
                     outcome="read",
-                    canonical=True,
                 )
             )
         review = _object(row, "review", "acts[].row.review")

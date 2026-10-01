@@ -203,15 +203,15 @@ def _decoded_images(request: ChairRequest) -> list[bytes]:
 # =========================== request builders ================================
 
 
-def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_split():
+def test_record_chair_request_builds_the_dai_two_message_framing_and_generation_split():
     context = _Context(tree=_FakeTree())
     image_bytes = _png(40, 30)
     presentation = _presentation(kind="region", image_bytes=image_bytes)
     context.tree.seed(presentation["image_path"], image_bytes)
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
 
-    act_request = live_witness.act_chair_request(context, adapter, presentation, profile=_dai_row())
-    request = act_request.request
+    built = live_witness.record_chair_request(context, adapter, presentation, profile=_dai_row())
+    request = built.request
 
     assert request.kind == "chat-completions"
     assert request.image_sha256s == (digest_bytes(image_bytes),)
@@ -227,14 +227,14 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
     assert user["content"][0]["type"] == "image_url"
     assert user["content"][1] == {"type": "text", "text": feeding.dai_prompt()["user"]}
     # `presented`/`prompt` are carried forward so `live_attempt_from_response`
-    # never has to run `adapter.present` a second time for this same act.
-    assert act_request.presented == presentation
-    assert act_request.prompt == feeding.dai_prompt()
-    assert act_request.generation_accounting == feeding.dai_generation_accounting()
+    # never has to run `adapter.present` a second time for this same record.
+    assert built.presented == presentation
+    assert built.prompt == feeding.dai_prompt()
+    assert built.generation_accounting == feeding.dai_generation_accounting()
 
     declared = feeding.dai_generation()
     assert request.generation_declared == declared
-    capacity = act_request.capacity
+    capacity = built.capacity
     # Sampling values are the sealed table's, added by the client, never the builder's.
     assert dict(request.generation_sent) == {
         # DAI's own model card runs it at `max_new_tokens=1024`, and this crop
@@ -256,14 +256,14 @@ def test_act_chair_request_builds_the_dai_two_message_framing_and_generation_spl
         assert forbidden not in request.generation_sent
 
 
-def test_act_chair_request_refuses_a_presented_image_that_does_not_match_its_own_digest():
+def test_record_chair_request_refuses_a_presented_image_that_does_not_match_its_own_digest():
     context = _Context(tree=_FakeTree())
     presentation = _presentation(kind="region", image_bytes=_png(40, 30))
     context.tree.seed(presentation["image_path"], _png(41, 30))
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
 
     with pytest.raises(SchemaRefusal):
-        live_witness.act_chair_request(context, adapter, presentation, profile=_dai_row())
+        live_witness.record_chair_request(context, adapter, presentation, profile=_dai_row())
 
 
 def _churro_page_request(profile: Any):
@@ -368,7 +368,7 @@ def test_the_declared_bound_is_sent_only_where_it_is_what_binds(chair):
     exactly on it.
 
     Sending no bound at all lets the engine set the budget to
-    `max_model_len - prompt` -- some 7,700 tokens for a DAI act crop whose own
+    `max_model_len - prompt` -- some 7,700 tokens for a DAI record crop whose own
     publisher runs it at 1,024.
     """
 
@@ -560,20 +560,18 @@ def test_a_real_page_is_refused_before_anything_is_sent_and_the_refusal_names_th
     assert admitted.capacity["fits"] is True
 
 
-def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
-    """DAI is act-scoped, and a page-fallback act's crop is the whole page.
+def test_a_page_sized_record_crop_is_refused_at_the_same_row():
+    """A DAI record crop as large as the whole page is refused at the same row.
 
-    The measured case from the token study: a fallback band's presented crop
-    was 1,291x1,826, costing 2,990 image tokens against DAI's own
-    `max_pixels` (12,845,056, the vendor processor's own), which a 2,048-token
-    row cannot hold beside an 84-token prompt even with the *smaller*
-    single-act answer budget reserved. ``adapter.present`` is
-    stubbed to hand the presentation back unchanged, so this drill exercises
-    `request_capacity_or_refuse`'s own arithmetic on a fixed image size, not
-    the resize rule, and the
-    1,291x1,826 probe stays valid for that. The image cost alone is what
-    settles it -- which is why an act chair reserving one act's answer rather
-    than a page's does not let a page-fallback act through.
+    The measured case from the token study: a 1,291x1,826 crop costs 2,990
+    image tokens against DAI's own `max_pixels` (12,845,056, the vendor
+    processor's own), which a 2,048-token row cannot hold beside an 84-token
+    prompt even with the *smaller* one-record answer budget reserved.
+    ``adapter.present`` is stubbed to hand the presentation back unchanged, so
+    this drill exercises `request_capacity_or_refuse`'s own arithmetic on a
+    fixed image size, not the resize rule. The image cost alone is what
+    settles it -- which is why reserving one record's answer rather than a
+    page's does not let a page-sized record through.
     """
 
     context = _Context(tree=_FakeTree())
@@ -586,7 +584,7 @@ def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
     row = dataclasses.replace(_dai_row("generic-24gb"), max_model_len=2048)
 
     with pytest.raises(RequestCapacityRefusal) as error:
-        live_witness.act_chair_request(context, adapter, presentation, profile=row)
+        live_witness.record_chair_request(context, adapter, presentation, profile=row)
     record = error.value.capacity
     assert record["image_prompt_tokens"] == 2990
     assert record["need"] == 2990 + 84 + 230
@@ -594,7 +592,7 @@ def test_a_page_fallback_act_crop_is_refused_at_the_same_row():
     assert _dai_row("generic-24gb").max_model_len == 8192
 
 
-def test_an_ordinary_act_crop_still_fits_the_smallest_row():
+def test_an_ordinary_record_crop_still_fits_the_smallest_row():
 
     context = _Context(tree=_FakeTree())
     image_bytes = _png(1500, 353)
@@ -602,7 +600,7 @@ def test_an_ordinary_act_crop_still_fits_the_smallest_row():
     context.tree.seed(presentation["image_path"], image_bytes)
     adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt)
 
-    built = live_witness.act_chair_request(
+    built = live_witness.record_chair_request(
         context, adapter, presentation, profile=_dai_row("generic-24gb")
     )
     assert built.capacity["image_prompt_tokens"] == 702
@@ -759,7 +757,7 @@ def test_every_live_witness_builder_puts_the_image_part_before_the_text_part():
 
     act_presentation = _presentation(kind="region", image_bytes=image_bytes)
     context.tree.seed(act_presentation["image_path"], image_bytes)
-    dai = live_witness.act_chair_request(
+    dai = live_witness.record_chair_request(
         context,
         SimpleNamespace(present=lambda ctx, pres: pres, prompt=feeding.dai_prompt),
         act_presentation,
@@ -925,7 +923,7 @@ def _identity(role: str = "attestator_1", recipe: str = "recipe-1") -> ChairIden
         serving_recipe=recipe,
         license_note="test identity only",
         witness_adapter="dai.v1",
-        witness_scope="act",
+        witness_scope="page",
     )
 
 
@@ -1059,7 +1057,7 @@ def _stub_adapter(*, retain_result: dict[str, Any], prompt: dict[str, Any] | Non
 
 
 def _dai_presentation(*, width: int = 3_000, height: int = 1_001) -> dict[str, Any]:
-    """A DAI act presentation shaped to force a resize (`feeding.dai_dimensions`
+    """A DAI record presentation shaped to force a resize (`feeding.dai_dimensions`
     maps 3000x1001 to 1500x500, per `test_feeding.py`), so `source_image_ref`
     and `model_image_ref` are never required to collide in these stub-adapter
     tests -- the identity-transform gap the module docstring names is
@@ -1104,8 +1102,8 @@ def _dai_presented(*, image_bytes: bytes = b"dai-model-image") -> dict[str, Any]
     }
 
 
-def _dai_identity_view_kwargs(*, crop_bytes: bytes = b"the designator's own act crop"):
-    """A DAI act small enough that no resize runs -- the case U8 unblocks.
+def _dai_identity_view_kwargs(*, crop_bytes: bytes = b"the designator's own record crop"):
+    """A DAI record small enough that no resize runs.
 
     `feeding.dai_dimensions(100, 50)` is `(100, 50)`, so the adapter's crop is
     the Designator's crop, byte for byte. The two references therefore carry
@@ -1113,7 +1111,7 @@ def _dai_identity_view_kwargs(*, crop_bytes: bytes = b"the designator's own act 
     store means by "the same retained blob": every image a witness is shown is
     inventoried under `3_attestatores/`, while the proposal crop it was cut
     from lives under `2_designator/`. Held to the whole reference dict, as
-    `dai_model_view` once was, this act was refused after its response had
+    `dai_model_view` once was, this record was refused after its response had
     already come back.
     """
 
@@ -1280,7 +1278,7 @@ def test_format_capabilities_for_refuses_a_malformed_adapter_declaration(bad_dec
     """A declaration that is not the two-key boolean object this seam knows is
     this seam's own bug -- an adapter is code in this tree, not a vendor
     response -- and is refused here, before an immutable Testimonium can carry
-    it, rather than only later at `run.py::validate_tallied_testimonium`."""
+    it, rather than only later at the attempt tally."""
 
     adapter = SimpleNamespace(format_capabilities=bad_declaration)
     with pytest.raises(SchemaRefusal, match="format_capabilities"):
@@ -1347,8 +1345,8 @@ def test_live_attempt_from_response_genuinely_empty_on_a_confirmed_blank(tmp_pat
 def test_live_attempt_from_response_cut_off_empty_is_failed_not_confirmed_blank(tmp_path: Path):
     # ARCHITECTURE's "truncation is a refused reading, never an
     # output": an empty response the engine itself cut off at its token bound
-    # is not evidence of a genuinely blank act, on the act path exactly as on
-    # the page path.
+    # is not evidence of a genuinely blank record, on DAI's record reading
+    # exactly as on a whole-page reading.
     response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content="", finish_reason="length"))
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": ""}})
 
@@ -1363,7 +1361,7 @@ def test_live_attempt_from_response_cut_off_empty_is_failed_not_confirmed_blank(
     )
 
     assert attempt.outcome == "failed"
-    assert "not a confirmed blank act" in attempt.reason
+    assert "not a confirmed blank record" in attempt.reason
     assert attempt.health["truncated"] is True
 
 
@@ -1371,7 +1369,7 @@ def test_live_attempt_from_response_unreported_empty_is_failed_not_confirmed_bla
     tmp_path: Path,
 ):
     # An empty response whose stop boundary was never reported at all is no
-    # more a confirmed blank act than one the engine admits it cut off.
+    # more a confirmed blank record than one the engine admits it cut off.
     response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content="", finish_reason=ABSENT))
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": ""}})
 
@@ -1386,7 +1384,7 @@ def test_live_attempt_from_response_unreported_empty_is_failed_not_confirmed_bla
     )
 
     assert attempt.outcome == "failed"
-    assert "not a confirmed blank act" in attempt.reason
+    assert "not a confirmed blank record" in attempt.reason
     assert attempt.health["truncated"] is None
     assert attempt.health["truncation_basis"] == "not-recorded"
 
@@ -1484,7 +1482,7 @@ def test_live_attempt_from_response_failed_on_a_parser_failure(tmp_path: Path):
     assert blob_store.has(response.response_sha256)  # raw blob retained even on failure
 
 
-@pytest.mark.parametrize("path", ["act", "page"])
+@pytest.mark.parametrize("path", ["record", "page"])
 def test_cut_off_and_parser_failure_name_both_on_each_witness_path(tmp_path: Path, path: str):
     response, _, _ = _read_one(
         tmp_path, script=ScriptedAnswer(content="<output>unclosed", finish_reason="length")
@@ -1493,7 +1491,7 @@ def test_cut_off_and_parser_failure_name_both_on_each_witness_path(tmp_path: Pat
         retain_result={"parse": {"state": "failed", "reason": "unterminated output element"}}
     )
     context = _Context(tree=_FakeTree())
-    if path == "act":
+    if path == "record":
         attempt = live_witness.live_attempt_from_response(
             context,
             adapter,
@@ -1518,7 +1516,7 @@ def test_cut_off_and_parser_failure_name_both_on_each_witness_path(tmp_path: Pat
 def test_live_attempt_from_response_parser_failure_without_cut_off_keeps_verbatim_reason(
     tmp_path: Path,
 ):
-    # Without a recognized cut-off, the act path's parse-failure reason and
+    # Without a recognized cut-off, DAI's record parse-failure reason and
     # content-health basis stay exactly the parse reason -- no truncation
     # language gets folded in when the provider never reported one.
     response, _, _ = _read_one(
@@ -1620,16 +1618,13 @@ def test_live_attempt_from_response_real_dai_adapter_round_trip(tmp_path: Path):
     assert blob_store.has(response.response_sha256)
 
 
-def test_a_no_resize_dai_act_is_carried_rather_than_refused_after_its_answer(tmp_path: Path):
-    """U8, the contract's second owed gap: the identity transform, closed.
+def test_a_no_resize_dai_record_is_carried_rather_than_refused_after_its_answer(tmp_path: Path):
+    """The identity transform: no resize, carried rather than refused.
 
-    Every act crop in the reference fixture is small enough that DAI needs no
-    resize, so this was not an edge case -- it was the ordinary DAI act, and
-    it was refused *after* the chair had already answered it, by
-    `dai_model_view`'s identity rule comparing whole reference dicts across two
-    stages' blob namespaces. The invariant that mattered (the model was shown
-    exactly the source bytes) is kept, and checked here on the digest the two
-    references share.
+    Every record crop in the reference fixture is small enough that DAI needs
+    no resize, so this is the ordinary DAI record. `dai_model_view`'s identity
+    rule compares the digest the two references share across two stages' blob
+    namespaces, so the model was shown exactly the source bytes.
     """
 
     response, _, _ = _read_one(
@@ -1662,7 +1657,7 @@ def test_a_no_resize_dai_act_is_carried_rather_than_refused_after_its_answer(tmp
     assert view["model_image_ref"]["relative_path"].startswith("3_attestatores/")
 
 
-def test_a_no_resize_dai_act_whose_model_image_is_other_bytes_is_still_refused(tmp_path: Path):
+def test_a_no_resize_dai_record_whose_model_image_is_other_bytes_is_still_refused(tmp_path: Path):
     """The invariant the digest comparison keeps: same bytes, or refusal.
 
     Relaxing the identity rule from "the same reference" to "the same content"
@@ -1695,7 +1690,7 @@ def test_a_no_resize_dai_act_whose_model_image_is_other_bytes_is_still_refused(t
         )
 
 
-def test_a_live_act_says_which_kind_of_bytes_it_retained(tmp_path: Path):
+def test_a_live_record_says_which_kind_of_bytes_it_retained(tmp_path: Path):
     """`raw_response_ref` names which kind of bytes it holds.
 
     It means the adapter's own output on every branch where a
@@ -1764,7 +1759,7 @@ def test_both_live_retention_call_sites_declare_the_served_posture(tmp_path: Pat
     fixture posture wants and what every offline call site relies on -- so a
     live call site that forgot to pass it would restore exactly the acceptance
     this guards against, silently and with every other test still green. Both
-    live sites are pinned here, page-scoped and act-scoped.
+    live sites are pinned here, the whole page and the DAI record.
     """
     response, _, _ = _read_one(
         tmp_path, script=ScriptedAnswer(content="<output>page text</output>", finish_reason="stop")

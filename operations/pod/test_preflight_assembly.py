@@ -439,14 +439,14 @@ def test_two_served_chairs_are_named_in_the_assembly_note(fixture_page: Path) ->
 
     report = runner(
         fixture_page,
-        roles=("attestator_3", "designator_structure"),
+        roles=("attestator_3", "attestator_1"),
         reader=Reader(served=True),
     ).run(measured_profile())
 
     assert report.assembly_proven is True
     assert report.to_record()["assembly_note"] == (
-        f"real assembly measured on {MEASURED_CARD}: attestator_3 via vllm 0.30.0, "
-        "designator_structure via vllm 0.30.0 smoke-read the golden page through a "
+        f"real assembly measured on {MEASURED_CARD}: attestator_1 via vllm 0.30.0, "
+        "attestator_3 via vllm 0.30.0 smoke-read the golden page through a "
         "served engine"
     )
 

@@ -1,9 +1,9 @@
 """The Perlector's page path: what its records derive, for the stage that writes them and every reader.
 
-Under `reading_unit = "page"` stage 4 (`pipeline/4_perlector/page_run.py`)
+Stage 4 (`pipeline/4_perlector/page_run.py`)
 reads each sealed page whole and publishes, per page, a `page-feed`, a
 `page-reading`, a `page-accounting` and, for each entry of a read answer, one
-`act-region` and one `perlectio.v2`. Everything those records hold that is
+`act-region` and one `perlectio.v3`. Everything those records hold that is
 derived rather than given is derived here, once:
 
 - `answer_problems`: what holds a parsed answer whole against its feed;
@@ -58,8 +58,6 @@ from common.residual_ink import (
 if TYPE_CHECKING:
     from common.stage import ServingReader
 
-READING_UNIT: Final = "page"
-
 # The record kinds and schemas of the page path.
 PAGE_FEED_KIND: Final = "page-feed"
 PAGE_READING_KIND: Final = "page-reading"
@@ -68,7 +66,7 @@ ACT_REGION_KIND: Final = "act-region"
 PERLECTIO_KIND: Final = "perlectio"
 PAGE_READING_SCHEMA: Final = "perlector-page-reading.v2"
 ACT_REGION_SCHEMA: Final = "perlector-act-region.v2"
-PERLECTIO_SCHEMA: Final = "perlectio.v2"
+PERLECTIO_SCHEMA: Final = "perlectio.v3"
 # Every kind the page path publishes, and no act-read run does.
 PAGE_PATH_KINDS: Final = frozenset(
     {PAGE_FEED_KIND, PAGE_READING_KIND, PAGE_ACCOUNTING_KIND, ACT_REGION_KIND}
@@ -849,7 +847,7 @@ def expected_perlectio(
     page_holds: list[str],
     reading: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Every field of an entry's `perlectio.v2` but its dissent, from its plan and page records.
+    """Every field of an entry's `perlectio.v3` but its dissent, from its plan and page records.
 
     `refs` names the entry's `act_region_ref` and the page's
     `page_reading_ref`, `page_accounting_ref` and `feed_ref`; `reading` is the
@@ -863,7 +861,6 @@ def expected_perlectio(
         "schema": PERLECTIO_SCHEMA,
         "page_id": page_id,
         "page_ordinal": ordinal,
-        "reading_unit": READING_UNIT,
         "act_region_ref": refs["act_region_ref"],
         "page_reading_ref": refs["page_reading_ref"],
         "page_accounting_ref": refs["page_accounting_ref"],

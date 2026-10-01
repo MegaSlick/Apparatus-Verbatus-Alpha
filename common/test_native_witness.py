@@ -26,16 +26,13 @@ from common.native_witness import (
     detect_churro_repetition,
     detect_repetition,
     parse_churro_response,
-    partition_disagreement,
-    unpresented_region_ids,
     validate_capture_text_view,
     validate_native_capture,
     validate_native_witness_geometry,
+    validate_page_edge_overshoots,
     validate_page_testimonium_payload,
-    validate_partition_disagreement,
     validate_presented,
     validate_presented_page_binding,
-    validate_reportable_observations,
     validate_retained_response_refs,
     validate_vendor_identity,
     verify_native_capture_bytes,
@@ -473,36 +470,6 @@ def test_an_adapter_crop_cannot_skip_re_derivation_by_withholding_its_page_bytes
         )
 
 
-def test_unpresented_regions_are_derived_from_containment_for_every_presentation_kind():
-    regions = [
-        {
-            "payload": {
-                "region_id": "r1",
-                "transform": {
-                    "source_page_id": "page-1",
-                    "bounds": {"x": 10, "y": 10, "w": 20, "h": 20},
-                },
-            }
-        },
-        {
-            "payload": {
-                "region_id": "r2",
-                "transform": {
-                    "source_page_id": "page-2",
-                    "bounds": {"x": 0, "y": 0, "w": 20, "h": 20},
-                },
-            }
-        },
-    ]
-    presented = payload()["presented"]
-    presented["kind"] = "adapter-crop"
-    presented["transform"].update(
-        {"operation": "crop", "bounds": {"x": 0, "y": 0, "w": 40, "h": 40}}
-    )
-    assert unpresented_region_ids(presented, regions) == ["r2"]
-    assert unpresented_region_ids({}, regions) == []
-
-
 def test_a_preference_refusal_names_the_testimonium_not_the_corpus_register():
     """The rule is shared; the subject of the refusal is not.
 
@@ -517,50 +484,21 @@ def test_a_preference_refusal_names_the_testimonium_not_the_corpus_register():
         validate_native_witness_geometry(value)
 
 
-@pytest.mark.parametrize(
-    "region_payload",
-    (
-        {"transform": {"source_page_id": "page-1", "bounds": {"x": 0, "y": 0, "w": 5, "h": 5}}},
-        {
-            "region_id": "",
-            "transform": {"source_page_id": "page-1", "bounds": {"x": 0, "y": 0, "w": 5, "h": 5}},
-        },
-        {"region_id": "r1", "transform": {"source_page_id": "page-1"}},
-    ),
-)
-def test_a_proposal_region_with_no_comparable_identity_is_refused(region_payload):
-    """Silence here would drop a crop from the disclosure list without a word.
-
-    The list says which bound crops one presentation does not speak for. A
-    region that cannot be compared must refuse, never be quietly omitted and
-    read downstream as a crop the presentation covered.
-    """
-    with pytest.raises(SchemaRefusal, match="no page-space identity to compare"):
-        unpresented_region_ids(payload()["presented"], [{"payload": region_payload}])
-
-
-def test_page_payload_closure_is_shared_with_the_consumer_and_refuses_unhashable_roles():
+def test_page_payload_closure_is_shared_with_the_consumer_and_refuses_a_bool_page():
     value = payload()
     value.update(
         {
             "chair": "attestator_1",
-            "act_key": "page-1",
             "attempt_ordinal": 1,
-            "regions": [],
             "provenance": {},
             "format_capabilities": {},
             "witness_reported": None,
             "content_health": {},
-            "unpresented_regions": [],
             "scope": "page",
-            "page_ordinal": 1,
-            "page_role": [],
-            "unjoined_act_attempts": [],
+            "page_ordinal": True,
         }
     )
-    value["partition_disagreement"] = partition_disagreement(
-        {"artifact_id": "page-testimony", "payload": value}, []
-    )
+    value["page_edge_overshoots"] = []
     with pytest.raises(SchemaRefusal, match="invalid page scope facts"):
         validate_page_testimonium_payload(value)
 
@@ -657,9 +595,7 @@ def _page_with_churro_capture() -> dict:
     value.update(
         {
             "chair": "attestator_1",
-            "act_key": "page-1",
             "attempt_ordinal": 1,
-            "regions": [],
             "provenance": {},
             "format_capabilities": {},
             "witness_reported": None,
@@ -673,11 +609,8 @@ def _page_with_churro_capture() -> dict:
                 "characters": len(text),
                 "truncation_basis": "trusted-response-boundary",
             },
-            "unpresented_regions": [],
             "scope": "page",
             "page_ordinal": 1,
-            "page_role": "primary",
-            "unjoined_act_attempts": [],
             "native_capture": {
                 "schema": "attestatores-model-view.v1",
                 "adapter": "churro.v1",
@@ -980,18 +913,13 @@ def _page_payload(**changes):
     value.update(
         {
             "chair": "attestator_1",
-            "act_key": "page-1",
             "attempt_ordinal": 1,
-            "regions": [],
             "provenance": {},
             "format_capabilities": {},
             "witness_reported": None,
             "content_health": {},
-            "unpresented_regions": [],
             "scope": "page",
             "page_ordinal": 1,
-            "page_role": "primary",
-            "unjoined_act_attempts": [],
         }
     )
     value.update(changes)
@@ -1028,12 +956,7 @@ def test_a_page_edge_finding_refuses_a_malformed_retained_reference_by_name(refe
             "sealed_page_bounds": {"x": 0, "y": 0, "w": 200, "h": 260},
         }
     ]
-    value = _page_payload(raw_response_refs=[reference])
-    value["partition_disagreement"] = partition_disagreement(
-        {"artifact_id": "page-testimonium", "payload": value},
-        [],
-        page_edge_overshoots=overshoots,
-    )
+    value = _page_payload(raw_response_refs=[reference], page_edge_overshoots=overshoots)
 
     with pytest.raises(SchemaRefusal, match="malformed retained response reference"):
         validate_page_testimonium_payload(
@@ -1109,182 +1032,53 @@ def test_an_unpresented_page_record_still_needs_a_real_page_ordinal():
         validate_page_testimonium_payload(value)
 
 
+def test_page_testimonium_keeps_page_edge_findings_optional_in_the_record_shape():
+    """Optional means both shapes pass, so both shapes are asserted here."""
+    without_findings = _page_payload()
+    assert "page_edge_overshoots" not in without_findings
+    assert validate_page_testimonium_payload(without_findings) is without_findings
+
+    with_findings = _page_payload(page_edge_overshoots=[])
+    assert validate_page_testimonium_payload(with_findings) is with_findings
+
+
+def test_a_page_never_presented_names_no_page_edge_finding():
+    value = _page_payload(presented={}, observed=[], page_edge_overshoots=[])
+
+    with pytest.raises(SchemaRefusal, match="no presentation names page-edge findings"):
+        validate_page_testimonium_payload(value)
+
+
+def _overshoot(**changes):
+    finding = {
+        "kind": "page-edge-overshoot",
+        "response_sha256": "a" * 64,
+        "ordinal": 0,
+        "bounds": {"x": 0, "y": 0, "w": 201, "h": 260},
+        "sealed_page_bounds": {"x": 0, "y": 0, "w": 200, "h": 260},
+    }
+    finding.update(changes)
+    return finding
+
+
+def test_a_page_edge_finding_is_retained_as_reported():
+    findings = [_overshoot(), _overshoot(ordinal=1)]
+    assert validate_page_edge_overshoots(findings) is findings
+
+
 @pytest.mark.parametrize(
-    ("observed", "message"),
+    ("findings", "message"),
     (
-        ("not-a-list", "not a list"),
-        ([["ordinal", 0]], "not an object"),
-        ([{"bounds_source": "native", "bounds": {"x": 0, "y": 0, "w": 1, "h": 1}}], "ordinal"),
-        ([{"ordinal": True, "bounds_source": "native", "bounds": {}}], "ordinal"),
-        ([{"ordinal": 0, "bounds_source": "vendor-guess", "bounds": {}}], "unknown bounds_source"),
-        ([{"ordinal": 0, "bounds_source": "native"}], "page-pixel box"),
-        (
-            [{"ordinal": 0, "bounds_source": "derived", "bounds": {"x": 0, "y": 0}}],
-            "page-pixel box",
-        ),
+        ("not-a-list", "malformed page-edge findings"),
+        ([{**_overshoot(), "extra": 1}], "outside its closed schema"),
+        ([_overshoot(ordinal=-1)], "invalid identity"),
+        ([_overshoot(bounds={"x": 0, "y": 0, "w": 200, "h": 260})], "out-of-page box"),
+        ([_overshoot(), _overshoot()], "one page-edge finding twice"),
     ),
 )
-def test_a_coverage_consumer_names_malformed_observations_instead_of_indexing_them(
-    observed, message
-):
-    """A raw KeyError from the stage that decides recovery names no cause."""
+def test_a_malformed_page_edge_finding_is_refused_by_name(findings, message):
     with pytest.raises(SchemaRefusal, match=message):
-        validate_reportable_observations(observed)
-
-
-def test_a_presented_echo_is_not_required_to_carry_a_box_a_consumer_never_reads():
-    """Only reported geometry is measured; the echo is excluded before its box."""
-    echo = [{"ordinal": 0, "bounds_source": "presented"}]
-
-    assert validate_reportable_observations(echo) is echo
-
-
-def test_partition_disagreement_retains_all_ambiguous_geometry_without_a_winner():
-    testimony = {
-        "artifact_id": "page-testimony",
-        "payload": {
-            "presented": {"source_page_id": "page-1"},
-            "observed": [
-                {
-                    "ordinal": 0,
-                    "bounds": {"x": 8, "y": 0, "w": 12, "h": 10},
-                    "bounds_source": "native",
-                }
-            ],
-        },
-    }
-    proposals = [
-        {
-            "payload": {
-                "origin": "proposal",
-                "transform": {
-                    "source_page_id": "page-1",
-                    "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
-                },
-            }
-        },
-        {
-            "payload": {
-                "origin": "proposal",
-                "transform": {
-                    "source_page_id": "page-1",
-                    "bounds": {"x": 10, "y": 0, "w": 10, "h": 10},
-                },
-            }
-        },
-    ]
-    disagreement = partition_disagreement(testimony, proposals)
-    assert disagreement["ambiguous"] is True
-    assert len(disagreement["boundary_deltas"]) == 2
-    assert disagreement["ambiguous_pairings"] == disagreement["boundary_deltas"]
-    assert disagreement["unclaimed_observations"] == []
-    assert disagreement["overlap_rule"] == {"rule": "positive-area", "status": "unmeasured"}
-
-
-def test_partition_disagreement_ties_from_the_proposal_side_too():
-    """Ambiguity is symmetric when multiple observations claim one proposal."""
-    testimony = {
-        "artifact_id": "page-testimony",
-        "payload": {
-            "presented": {"source_page_id": "page-1"},
-            "observed": [
-                {
-                    "ordinal": 0,
-                    "bounds": {"x": 0, "y": 0, "w": 6, "h": 10},
-                    "bounds_source": "native",
-                },
-                {
-                    "ordinal": 1,
-                    "bounds": {"x": 4, "y": 0, "w": 6, "h": 10},
-                    "bounds_source": "native",
-                },
-            ],
-        },
-    }
-    proposals = [
-        {
-            "payload": {
-                "origin": "proposal",
-                "transform": {
-                    "source_page_id": "page-1",
-                    "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
-                },
-            }
-        }
-    ]
-    disagreement = partition_disagreement(testimony, proposals)
-    assert disagreement["ambiguous"] is True
-    assert len(disagreement["boundary_deltas"]) == 2
-    assert disagreement["ambiguous_pairings"] == disagreement["boundary_deltas"]
-    assert {pairing["observed_ordinal"] for pairing in disagreement["ambiguous_pairings"]} == {0, 1}
-
-
-def test_page_testimonium_keeps_partition_facts_optional_in_the_record_shape():
-    """Optional means both shapes pass, so both shapes are asserted here."""
-    without_partition = _page_payload()
-    assert "partition_disagreement" not in without_partition
-    assert validate_page_testimonium_payload(without_partition) is without_partition
-
-    with_partition = _page_payload()
-    with_partition["partition_disagreement"] = partition_disagreement(
-        {"artifact_id": "page-testimony", "payload": with_partition}, []
-    )
-    assert validate_page_testimonium_payload(with_partition) is with_partition
-
-
-def test_partition_disagreement_is_rederived_before_its_findings_can_trigger_recovery():
-    testimony = {
-        "artifact_id": "page-testimony",
-        "payload": {
-            "presented": {"source_page_id": "page-1"},
-            "observed": [
-                {
-                    "ordinal": 0,
-                    "bounds": {"x": 0, "y": 0, "w": 10, "h": 10},
-                    "bounds_source": "native",
-                }
-            ],
-        },
-    }
-    disagreement = partition_disagreement(testimony, [])
-    validate_partition_disagreement(
-        disagreement,
-        observed=testimony["payload"]["observed"],
-        source_page_id="page-1",
-        testimonium_id="page-testimony",
-        proposal_boxes=[],
-    )
-
-    malformed = copy.deepcopy(disagreement)
-    malformed["unclaimed_observations"][0]["ordinal"] = 1
-    with pytest.raises(SchemaRefusal, match="malformed unclaimed observation"):
-        validate_partition_disagreement(
-            malformed,
-            observed=testimony["payload"]["observed"],
-            source_page_id="page-1",
-            testimonium_id="page-testimony",
-            proposal_boxes=[],
-        )
-
-    contradictory = copy.deepcopy(disagreement)
-    contradictory["observed_boxes"] = []
-    with pytest.raises(SchemaRefusal, match="contradicts its observed geometry"):
-        validate_partition_disagreement(
-            contradictory,
-            observed=testimony["payload"]["observed"],
-            source_page_id="page-1",
-            testimonium_id="page-testimony",
-            proposal_boxes=[],
-        )
-
-    with pytest.raises(SchemaRefusal, match="sealed proposals"):
-        validate_partition_disagreement(
-            disagreement,
-            observed=testimony["payload"]["observed"],
-            source_page_id="page-1",
-            testimonium_id="page-testimony",
-            proposal_boxes=[{"x": 20, "y": 20, "w": 5, "h": 5}],
-        )
+        validate_page_edge_overshoots(findings)
 
 
 def _resized_presentation():

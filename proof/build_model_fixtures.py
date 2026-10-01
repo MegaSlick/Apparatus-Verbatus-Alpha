@@ -40,9 +40,9 @@ FIXTURE_CHAIRS = (
     "attestator_1",
     "attestator_2",
     "attestator_3",
-    "designator_structure",
     "designator_surya",
     "perlector",
+    "secondary_proposer",
 )
 
 

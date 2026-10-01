@@ -1,7 +1,7 @@
 """The Armarium on a page-read run: acts, the other layer, page rows and page accounting.
 
 The trees are the fixture's `happy`, `page-review`, `page-other` and
-`page-no-act` scenarios read with `reading_unit = "page"` and reviewed by the
+`page-no-act` scenarios read by page and reviewed by the
 real Recensor. A reader that answered a page otherwise
 is a scenario of its own (`proof/build_fixture.py`, `PAGE_ANSWER_VARIANTS`),
 since every later stage reads the answer again from what the reader said. A
@@ -26,7 +26,7 @@ from zipfile import ZipFile
 import pytest
 from armarium_export import (
     EXPORT_MANIFEST_NAME,
-    PAGE_NOT_MEASURED_INSTRUMENTS,
+    NOT_MEASURED_INSTRUMENTS,
     _zip_bytes,
     verify_delivered_bundle,
     verify_export_bundle,
@@ -175,7 +175,7 @@ def _unit_types(manifest: dict) -> dict:
 def test_a_page_read_run_exports_its_acts_and_other_readings_complete(complete):
     manifest, members = complete["manifest"], complete["members"]
     claims = manifest["claims"]
-    assert manifest["schema"] == "armarium-export-manifest.v9"
+    assert manifest["schema"] == "armarium-export-manifest.v10"
     assert claims["status"] == "complete" and manifest["aggregate"]["status"] == "complete"
     partition = claims["act_partition"]
     assert partition["denominator"] == "page-read reading acts"
@@ -208,12 +208,11 @@ def test_the_page_accounting_and_what_was_not_measured_are_claimed(complete):
     assert accounting["pages"][0]["rules"] == dict.fromkeys("abcdefghi", "pass")
     assert len(accounting["policy_sha256s"]) == 1
     entries = {entry["instrument"]: entry for entry in claims["not_measured"]["entries"]}
-    assert list(entries) == list(PAGE_NOT_MEASURED_INSTRUMENTS)
+    assert list(entries) == list(NOT_MEASURED_INSTRUMENTS)
     assert entries["page-accounting-thresholds"]["status"] == "not-measured"
     assert entries["page-accounting-thresholds"]["detail"]["calibrated_for_this_corpus"] is False
     assert entries["perlector-pass-c"]["status"] == "declared-unproduced"
     assert entries["perlector-pass-c"]["detail"]["pages_audit_not_run"] == 2
-    assert entries["lectio-nuda"]["status"] == "declared-unproduced"
 
 
 def test_the_same_established_reading_appears_identically_in_every_format(complete):
@@ -721,4 +720,4 @@ def test_the_exported_threshold_list_refuses_a_threshold_that_is_not_an_integer(
     monkeypatch.setattr(armarium, "require_page_accounting_policy", lambda _context, _path: policy)
     context = SimpleNamespace(page_accounting_config_path=None)
     with pytest.raises(FatalAccounting, match="band_slack is True, not an integer"):
-        armarium.page_not_measured_basis(context, {}, [], {})
+        armarium.page_not_measured_basis(context, {}, [])

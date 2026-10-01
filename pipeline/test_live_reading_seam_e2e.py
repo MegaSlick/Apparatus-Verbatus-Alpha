@@ -1,62 +1,26 @@
-"""The whole live reading seam over one run tree, from the Door to the export.
+"""The live reading seam over one run tree, from the Door to the export.
 
-Every other suite in this section proves one stage's own wiring. This one
-proves the seam *between* them: a run tree carried to the Designator by the
-real stage programs, read by an Attestatores roster whose three chairs really
-served, then by a Perlector chair that really served, and then carried on
-through the Recensor, Archetypus and Armarium — which have never before been
-asked to consume a live tree — to a terminal export.
+A run tree is carried to the Designator by the real stage programs, read by an
+Attestatores roster whose three chairs really served, then by a Perlector chair
+that really served, page by page, and carried on through the Recensor,
+Archetypus and Armarium to a terminal export.
 
 Nothing here starts a pod, opens a socket, loads a model or reaches a network.
 The chairs answer through `operations/serving/fakes.py`: a scripted
 `FakeEndpoint` behind a real `ServingManager`, a real `ChairClient`, and each
 stage's own `main`. What makes the run live is the sealed serving-recipe row
-kind, exactly as it would be on a card — the tmp catalogue below marks the
-three witness chairs and the Perlector `kind = "vllm"` at every tier
-`config/pod_placement.toml` defines, and the Designator, which has no live
-reader, keeps its fixture rows.
+kind: the tmp catalogue below marks the three witness chairs and the Perlector
+`kind = "vllm"` at every tier `config/pod_placement.toml` defines, and the
+Designator's chairs keep their fixture rows.
 
-**The roster is the committed one, complete.** All three witness chairs go
-live, through all three witness scopes and adapters (`chandra.v1` page,
-`dai.v1` act, `churro.v1` page), and so does the Perlector. If a chair ever
-stops being able to go live, this module is where that shows up as a named
-refusal rather than as a quietly shortened roster.
+The page chairs answer once per page and DAI once per record its detector
+found; the Perlector answers each page with the fixture's scripted `happy` page
+answer. The driver and chair worlds here are shared with
+`pipeline/test_dai_detector_records_e2e.py` and
+`pipeline/test_structure_chair_e2e.py`.
 
-**What this scripted run produces is a delivered export, and that is measured
-here rather than asserted around.** Every act is read, every reading names the
-bytes its engine sent, and the run seals a terminal export. It was once held
-twice over: two witnesses of a floor of three counted, because Churro publishes
-no geometry and so never attached to an act; and, unasserted, testimony content
-coverage held every page, because an unattached witness's whole page text is
-uncovered. Churro still publishes no geometry — that is its vendor's design, not
-a gap to be prompted around — and it now attaches on the `anchor-line` basis:
-its page text is aligned to the act's own anchor line, which places the act's
-slice inside it. So three of three count, and this fixture's page text — which
-is exactly its two acts — is fully covered by those acts' aligned spans. Both
-causes are asserted separately below, by name, so that either returning says
-which.
-
-**What the third witness costs, said here because the floor depends on it.**
-A chair attached by `anchor-line` counts at this act only because ANOTHER
-chair's response located its text. That is placement, not selection — nothing
-compares the two readings or prefers one — but it
-means "three witnesses" here is two independent readings and one dependent
-placement, and any later claim about witness independence has to say so.
-
-**A delivered offline e2e is not a proven pipeline.** One
-scripted run over a synthetic fixture reaches `delivered`; nothing
-follows about a real page. A real register carries headers, folio numbers and
-marginalia no proposal covers, Churro will transcribe them, and that page will
-hold on content coverage — the rule working, not a regression.
-
-The last test is the counterweight: the identical driver, in fixture mode,
-against the tree `pipeline/orchestrator/run.py` produces for itself. They must
-be byte-identical — which is what says the live seam, the `--placement-tier`
-flag, and calling two stages in-process rather than as subprocesses have moved
-no fixture byte. It is compared against the tree that orchestration produces in
-this same test rather than against a copied digest constant: a pin nobody
-recomputes would go stale silently, and the acceptance suite already owns the
-constant.
+**A delivered offline e2e is not a proven pipeline.** One scripted run over a
+synthetic fixture reaches an export; nothing follows about a real page.
 """
 
 from __future__ import annotations
@@ -66,6 +30,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -88,21 +53,12 @@ for _stage_directory in (ATTESTATORES_DIR, PERLECTOR_DIR):
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
-    ANCHOR_LINE_RUN_FLOOR,
     ArmariumCategory,
-    witness_coverage,
 )
-from common.contracts.serving import (  # noqa: E402
-    CHAIR_CALL_RECORD_SCHEMA,
-    CHANDRA_NATIVE_CALL_RECORD_SCHEMA,
-    STOP_REASON_UNREPORTED,
-)
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR  # noqa: E402
+from common.contracts.stages import ATTESTATORES, PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
-from common.native_witness import reported_geometry_overlaps  # noqa: E402
-from common.perlector_audit import RESPONSE_SCHEMA as AUDIT_RESPONSE_SCHEMA  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
-from common.stage import EXIT_COMPLETE, EXIT_HELD, StageContext, verify_final_seal  # noqa: E402
+from common.stage import EXIT_COMPLETE, EXIT_HELD, verify_final_seal  # noqa: E402
 from operations.serving.assembly import retain_chair_bytes  # noqa: E402
 from operations.serving.client import ChairClient  # noqa: E402
 from operations.serving.config import (  # noqa: E402
@@ -112,12 +68,10 @@ from operations.serving.config import (  # noqa: E402
     profile_preflight_digest,
 )
 from operations.serving.fakes import (  # noqa: E402
-    ABSENT,
     FakeEndpoint,
     FakeLauncher,
     FakePackages,
     ScriptedAnswer,
-    scripted_input_too_long,
     shipped_decoding_policy,
 )
 from operations.serving.http import chat_image_bytes_all  # noqa: E402
@@ -125,13 +79,11 @@ from operations.serving.manager import ServingManager, StageContextReceiptPublis
 from operations.serving.residency import FileResidencyLease  # noqa: E402
 
 RUN_ID = "r"
-FIXTURE_ID = "synthetic-two-page-v0"
 FIXTURE_ROOT = ROOT / "proof"
 TIER = "generic-48gb"
 TIERS = ("generic-24gb", "generic-48gb", "generic-80gb-plus")
 WITNESS_CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
 LIVE_CHAIRS = (*WITNESS_CHAIRS, "perlector")
-ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 CHAIN_TO_DESIGNATOR = programs_through("designator")
 TAIL_FROM_RECENSOR = (
     "pipeline/5_recensor/run.py",
@@ -160,27 +112,13 @@ CHANDRA_PAGE_ONE = (
 # is kept rather than dropped. The grammar names it (`malformed-bbox`, reason
 # "no data-bbox attribute") instead of substituting the [0,0,1,1] rectangle the
 # vendor's own parser would have.
-#
-# The geometry form on a continuation page is accepted:
-# `pipeline/4_perlector/run.py::act_attachment_view` requires a page witness's
-# `attached` to equal its geometric overlap with the act's sealed regions on
-# that page, and does not separately refuse an attached continuation entry.
-# What a continuation page genuinely lacks is an ANCHOR, and that is what
-# this rule says.
-# `pipeline/4_perlector/test_live_perlector.py::test_a_page_witness_attached_by_geometry_on_a_continuation_page_is_readable`
-# pins the geometry form, and
-# `pipeline/3_attestatores/test_attestatores_live_pass.py` pins it at the
-# Attestatores' own boundary.
 CHANDRA_PAGE_TWO = '<div data-label="Text">SYNTHETIC ACT TWO delta epsilon zeta eta</div>'
 # Churro answers page 1 in the vendor's own `HistoricalDocument` grammar -- the
 # shape `churro.prompt` asks for, read by `common/churro_document.py`. It
 # carries no geometry, and nothing in the grammar could: `Page`, `Header`,
 # `Body`, `Footer` and `Line`, and not one coordinate in the guide or the XSD.
-# The JSON coordinate channel this repository asked for until U10 is retired
-# with the modified-carry prompt that asked for it, so this chair reports the
-# `bounds_source="presented"` echo that routing and coverage exclude, and
-# attaching it is the Perlector's `anchor-line` basis (U12), not geometry it
-# does not have.
+# The chair reports the `bounds_source="presented"` echo that routing and
+# coverage exclude.
 CHURRO_PAGE_ONE = (
     "<HistoricalDocument><Page><Body>"
     "<Line>SYNTHETIC ACT ONE alpha beta gamma</Line>"
@@ -193,24 +131,10 @@ CHURRO_PAGE_ONE = (
 # module covers two of Churro's three legal shapes across its two pages,
 # exactly as it already does for Chandra's two forms.
 CHURRO_PAGE_TWO = "<output>SYNTHETIC ACT TWO delta epsilon zeta eta</output>"
-# The same chair answering with a page that is not this page: fifty-five
-# characters with nothing in common with the ink. Aligned against this
-# fixture's anchor it still shares
-# characters with both acts: 'e' and 'm', one at a time, inside a1's
-# thirty-four-character anchor line, and eleven characters in runs of at most two
-# inside a2's. That was enough to attach it on `anchor-line`, call it comparable,
-# and read the floor as three of three for a witness that placed nothing. It is
-# scripted here so the seam owns the counterfactual rather than the unit tests
-# alone.
-CHURRO_PAGE_ONE_UNRELATED = (
-    "<output>Lorem ipsum dolor sit amet, consectetur adipiscing elit</output>"
-)
 DAI_ACT_ONE = "SYNTHETIC ACT ONE alpha beta gamma"
 DAI_ACT_TWO = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-# Long enough that `truncation.is_length_suspicious` never fires on this
-# fixture's regions under the sealed `[truncation]` floor: these tests are about
-# the engine's own stop word, and a reading the length heuristic independently
-# called suspicious would prove something else.
+DAI_CONTINUATION = "zeta eta"
+# The act reading `ReaderWorld` answers with, for the structure-chair harness.
 READING = "SYNTHETIC LIVE READING alpha beta gamma delta epsilon zeta eta theta iota kappa"
 
 
@@ -257,8 +181,8 @@ def _vllm_row(*, recipe: str, chair: str, tier: str, port: int) -> dict[str, Any
         # Chandra's row moved next, for the same reason once more: the chair is
         # asked in its vendor's own `OCR_LAYOUT_PROMPT` rather than this
         # repository's retired instruction, re-measured at 593 against 256, so
-        # its need is 1 + 593 + 1,645 = 2,239 (U14's re-measured answer, shared
-        # with `designator_structure`) where the row left 2,048. The shipped
+        # its need is 1 + 593 + 1,645 = 2,239 (U14's re-measured answer) where
+        # the row left 2,048. The shipped
         # catalogue states 18,000 for it (U15) at every tier. DAI keeps 2,048:
         # its act crop needs 1 + 84 + 230 and fits with room to spare, and raising a row nothing refuses would
         # remove the one chair this stand-in still proves the arithmetic
@@ -321,12 +245,9 @@ def _toml_profile(row: dict[str, Any]) -> str:
 def write_live_catalogue(path: Path, registry) -> Path:
     """Every chair this seam can serve, live, at every tier the placement file names.
 
-    The Designator keeps its fixture rows, and its Surya detector with it
-    (fixture rows answer only a fixture pass): this module's subject is the reading
-    seam, and a live row for `designator_structure` would start its structure
-    pass instead (`pipeline/2_designator/structure_pass.py`, exercised end to end
-    in `pipeline/test_structure_chair_e2e.py`). Every other configured
-    chair is live at all three tiers, which is also what
+    The Designator's two detectors keep their fixture rows (a fixture row answers
+    only a synthetic run): this module's subject is the reading seam. Every other
+    configured chair is live at all three tiers, which is also what
     `verify_recipes_cover_chairs` requires of any catalogue a real run seals.
     """
     rows: list[dict[str, Any]] = [
@@ -338,8 +259,8 @@ def write_live_catalogue(path: Path, registry) -> Path:
             "description": "offline walking-skeleton fixture row",
         }
         for chair, recipe in (
-            ("designator_structure", "fake-designator-v0"),
             ("designator_surya", "fake-surya-v0"),
+            ("secondary_proposer", "fake-secondary-proposer-v0"),
         )
         for tier in TIERS
     ]
@@ -392,12 +313,8 @@ def stage_argv(run_root: Path, catalogue: Path, *, placement_tier: str | None) -
         str(catalogue),
         "--pdf-render-config",
         str(config / "pdf_render.toml"),
-        "--designator-padding-config",
-        str(config / "designator_padding.toml"),
         "--designator-geometry-config",
         str(config / "designator_geometry.toml"),
-        "--alignment-config",
-        str(config / "alignment.toml"),
         "--formats-config",
         str(config / "formats.toml"),
         "--recovery-config",
@@ -412,20 +329,10 @@ def stage_argv(run_root: Path, catalogue: Path, *, placement_tier: str | None) -
         "named",
         "--witness-context-config",
         str(config / "witness_context.toml"),
-        "--nuda-per-mille",
-        "0",
-        "--nuda-approval-ref",
-        "",
-        "--perlector-instrument-per-mille",
-        "0",
-        "--perlector-instrument-approval-ref",
-        "",
         "--perlector-protocol-config",
         str(config / "perlector_protocol.toml"),
         "--perlector-audit-config",
         str(config / "perlector_audit.toml"),
-        "--blind-read",
-        "off",
     ]
     return argv
 
@@ -515,48 +422,13 @@ class RecordingEndpoint(FakeEndpoint):
         return response
 
 
-_REPROOF_RESPONSE_MARKER = "Required response object, shown with unchanged replacements:\n"
-
-
-def _unchanged_reproof_response(body: bytes | None) -> str | None:
-    """Extract the unchanged exact-edit envelope from a rendered audit prompt."""
-    if body is None:
-        return None
-    request = json.loads(body)
-    for message in request.get("messages", []):
-        content = message.get("content", [])
-        parts = [{"type": "text", "text": content}] if isinstance(content, str) else content
-        for part in parts:
-            text = part.get("text") if isinstance(part, dict) else None
-            if isinstance(text, str) and _REPROOF_RESPONSE_MARKER in text:
-                response = text.rsplit(_REPROOF_RESPONSE_MARKER, 1)[1]
-                parsed = json.loads(response)
-                assert parsed["schema"] == AUDIT_RESPONSE_SCHEMA
-                return response
-    return None
-
-
 class VaryingReadingEndpoint(RecordingEndpoint):
-    """A reader endpoint whose answer content is derived from the pixels it was sent.
+    """A reader endpoint whose answer is derived from the pixels it was sent.
 
-    A fixed scripted answer, replayed for every reading POST, cannot say
-    whether a Perlectio is bound to *its own* engine response or to any
-    canonical one: sixty identical replies make every response blob
-    identical too. Hashing the images the request actually carries into the
-    content instead ties each answer to the act whose pixels asked for it,
-    while answering the same for the Pass A / Pass B calls of that one act.
-    Audit re-proof calls instead return the exact unchanged edit envelope the
-    production renderer included in that request.
-
-    **Why the delivered images and not the whole body.** Pass A and Pass B do
-    render the same request, but the audit re-proof does not: it appends every
-    reproof prompt to the same dossier (`live_reader.read`), so a whole-body
-    hash answers the re-proof with different text. That is not a re-proof this
-    seam may serve. The audit response must name exact requested locations and
-    original text; a changed tail digest would instead depend on the witness
-    text used to locate its flag. The delivered pixels are
-    the act's own bytes and are identical across its ordinary reading passes,
-    which is the property this endpoint needed all along.
+    A fixed scripted answer replayed for every page cannot show that a
+    Perlectio is bound to its own engine response: identical replies make every
+    response blob identical. Hashing the delivered images into the content ties
+    each answer to the page whose pixels asked for it.
     """
 
     def __init__(
@@ -575,19 +447,13 @@ class VaryingReadingEndpoint(RecordingEndpoint):
             if self._refusal is not None:
                 self.script(self._refusal)
                 return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
-            reproof_response = _unchanged_reproof_response(body)
             images = chat_image_bytes_all(json.loads(body)) if body is not None else []
             digest = hashlib.sha256(b"".join(images)).hexdigest()[:12] if images else "no-pixels"
             # Brackets keep the final character stable across reading passes;
             # a bare hex digest would sometimes end in the same character as
             # a scripted witness and move the testimony-diff flag's end.
-            content = reproof_response or f"{READING} [{digest}]"
-            assert reproof_response is not None or content.startswith(READING)
             self.script(
-                ScriptedAnswer(
-                    content=content,
-                    finish_reason="stop" if reproof_response is not None else self._finish_reason,
-                )
+                ScriptedAnswer(content=f"{READING} [{digest}]", finish_reason=self._finish_reason)
             )
         return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
 
@@ -607,10 +473,9 @@ class _TreeBlobs:
 def witness_scripts() -> dict[str, list[ScriptedAnswer]]:
     """One answer per unit of each chair's own sealed scope.
 
-    Two pages carry this fixture's two acts, so a page-scoped chair answers
-    twice and the act-scoped chair answers twice as well — the same corpus read
-    through two different scopes. A script whose length disagreed with that is
-    the first thing that would notice a scope regression.
+    The two page chairs answer once per page. DAI is page-scoped and asked once
+    per record its detector found, in the detector's order: the fixture's three
+    records are a1, a2 and a2's continuation on page 2.
     """
     return {
         "attestator_1": [
@@ -618,8 +483,8 @@ def witness_scripts() -> dict[str, list[ScriptedAnswer]]:
             ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
         ],
         "attestator_2": [
-            ScriptedAnswer(content=DAI_ACT_ONE, finish_reason="stop"),
-            ScriptedAnswer(content=DAI_ACT_TWO, finish_reason="stop"),
+            ScriptedAnswer(content=answer, finish_reason="stop")
+            for answer in (DAI_ACT_ONE, DAI_ACT_TWO, DAI_CONTINUATION)
         ],
         "attestator_3": [
             ScriptedAnswer(content=CHURRO_PAGE_ONE, finish_reason="stop"),
@@ -737,44 +602,6 @@ class ReaderWorld:
         )
 
 
-# ------------------------------ reading the tree ------------------------------
-
-
-def act_records(tree: RunTree) -> dict[tuple[str, str], dict[str, Any]]:
-    records: dict[tuple[str, str], dict[str, Any]] = {}
-    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "testimonium":
-            continue
-        record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        key = (record["subject_id"], record["payload"]["chair"])
-        assert key not in records, (
-            f"act_records saw two Testimonia for {key}: "
-            f"{records.get(key, {}).get('artifact_id')} "
-            f"(ordinal {records.get(key, {}).get('payload', {}).get('attempt_ordinal')}) "
-            f"vs {record.get('artifact_id')} "
-            f"(ordinal {record['payload'].get('attempt_ordinal')}) -- these trees are a "
-            "single ordinal-1 pass, so a second record here is either a duplicate "
-            "publication or an unintended second attempt, and manifest hash order "
-            "must not silently pick one over the other"
-        )
-        records[key] = record
-    return records
-
-
-def published_readings(run_root: Path) -> list[dict[str, Any]]:
-    """Every Perlectio on disk that records an attempted reading.
-
-    Read from the artifact files rather than through a manifest: a pass that
-    stopped never wrote one, and these tests must see exactly what a stopped
-    pass did and did not publish.
-    """
-    directory = run_root / RUN_ID / "4_perlector" / "artifacts" / "perlectio"
-    if not directory.exists():
-        return []
-    records = [json.loads(path.read_text(encoding="utf-8")) for path in directory.glob("*.json")]
-    return [record for record in records if record["outcome"] != "not-run"]
-
-
 # --------------------------------- the fixtures -------------------------------
 
 
@@ -795,12 +622,6 @@ def designated(tmp_path_factory) -> SimpleNamespace:
     return SimpleNamespace(
         work=work, catalogue=catalogue, run_root=run_root, decoding_sha256=decoding_sha256
     )
-
-
-def fresh_tree(designated: SimpleNamespace, tmp_path: Path, name: str = "runs") -> Path:
-    run_root = tmp_path / name
-    shutil.copytree(designated.run_root, run_root)
-    return run_root
 
 
 def read_by_live_witnesses(
@@ -827,831 +648,120 @@ def witnessed(designated) -> SimpleNamespace:
     return SimpleNamespace(run_root=run_root, world=world)
 
 
-@pytest.fixture(scope="module")
-def live_seam(designated, witnessed, tmp_path_factory) -> SimpleNamespace:
-    """The whole seam: live witnesses, a live reader, and the tail to the export.
+# ============================ the live page seam ==============================
 
-    Run once for the several claims below, because each of them is about a
-    different part of the same single run — reproducing the run per assertion
-    would say nothing more and cost four more model-free passes.
+PAGE_ANSWERS = {
+    row["page_ordinal"]: row["answer"]
+    for row in tomllib.loads((FIXTURE_ROOT / "skeleton_fixture.toml").read_text(encoding="utf-8"))[
+        "page_answer"
+    ]
+    if row["scenario"] == "happy"
+}
+
+
+class PageReaderWorld:
+    """The Perlector's single resident chair, answering each page with its scripted answer."""
+
+    def __init__(self, catalogue: Path, work: Path) -> None:
+        self.catalogue = catalogue
+        self.work = work
+        self.work.mkdir(parents=True, exist_ok=True)
+        self.endpoint: RecordingEndpoint | None = None
+
+    def factory(self, context, identity, tier: str) -> ChairClient:
+        policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
+        endpoint = RecordingEndpoint(
+            served_model_id=f"served-{identity.role}",
+            blob_store=_TreeBlobs(context, PERLECTOR),
+            assert_retained_before_next_request=True,
+        )
+        endpoint.script(
+            *(
+                ScriptedAnswer(content=PAGE_ANSWERS[ordinal], finish_reason="stop")
+                for ordinal in (1, 2)
+            )
+        )
+        self.endpoint = endpoint
+        manager = ServingManager(
+            registry=context.registry,
+            recipes=load_serving_recipes(self.catalogue),
+            config_inputs=ServingConfigInputs.from_record(dict(context.serving_config_inputs)),
+            launcher=FakeLauncher(endpoint),
+            http=endpoint,
+            receipt_publisher=StageContextReceiptPublisher(context),
+            log_root=self.work / "serving-logs",
+            package_inspector=FakePackages({"vllm": "0.test"}),
+            residency_lease=FileResidencyLease(self.work / "pod-gpu.lock"),
+            producer="pipeline/4_perlector/run.py",
+        )
+        return ChairClient(
+            manager=manager,
+            identity=identity,
+            tier=tier,
+            retain=lambda data: retain_chair_bytes(context, data),
+            decoding_config_sha256=decoding_sha256,
+            decoding_policy=policy,
+            read_receipt=context.tree.read_run_receipt,
+        )
+
+
+def test_a_live_page_read_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(
+    designated, witnessed, tmp_path
+):
+    """Live witnesses and a live page reader, then the stages after them, to an export.
+
+    The Recensor, Archetypus and Armarium read records carrying `engine_call` and
+    serving receipts, which no fixture record has; running them here is what says
+    a live run reaches an export at all. The fixture's `happy` pages carry an act
+    across their break, so every reading is delivered and the run is partial for
+    exactly that labelled reconstruction.
     """
-    work = tmp_path_factory.mktemp("live-seam-complete")
-    run_root = work / "runs"
+    run_root = tmp_path / "runs"
     shutil.copytree(witnessed.run_root, run_root)
-    reader = ReaderWorld(designated.catalogue, work / "reader", finish_reason="stop")
-    exit_code = run_in_process(
-        perlector,
-        run_root,
-        designated.catalogue,
-        placement_tier=TIER,
-        serving_factory=reader.factory,
+    reader = PageReaderWorld(designated.catalogue, tmp_path / "reader")
+    assert (
+        run_in_process(
+            perlector,
+            run_root,
+            designated.catalogue,
+            placement_tier=TIER,
+            serving_factory=reader.factory,
+        )
+        == EXIT_COMPLETE
     )
-    assert exit_code == EXIT_COMPLETE
+    # One chat request per sealed page, each answered once.
+    assert len([request for request in reader.endpoint.requests if "messages" in request]) == 2
     tail = {
         program: invoke_stage(program, run_root, designated.catalogue, placement_tier=TIER)
         for program in TAIL_FROM_RECENSOR
     }
-    return SimpleNamespace(
-        run_root=run_root,
-        reader=reader,
-        witnesses=witnessed.world,
-        tail=tail,
-        catalogue=designated.catalogue,
-    )
-
-
-# =============================== the live seam ================================
-
-
-def test_every_act_reaches_a_perlectio_bound_to_the_bytes_the_engine_sent(live_seam):
-    """The claim the whole seam exists for, checked from both ends.
-
-    Every act the witnesses reported on is read, and each reading's
-    `engine_call` names a blob in this run's own store whose bytes are exactly
-    what the endpoint put on the wire — not merely a blob that exists, and not
-    merely a digest that matches itself.
-    """
-    tree = RunTree(live_seam.run_root, RUN_ID)
-    acts = {act_id for act_id, _chair in act_records(tree)}
-    readings = published_readings(live_seam.run_root)
-    assert acts, "the live witness pass reported on no act at all"
-    assert {record["subject_id"] for record in readings} == acts
-
-    served = live_seam.reader.endpoint.served
-    assert served, "the live Perlector pass sent no reading request"
-    response_digests = set()
-    for record in readings:
-        call = record["payload"]["engine_call"]
-        retained = tree.read_bytes(call["raw_response_ref"]["relative_path"])
-        assert retained in served, (
-            "a Perlectio names retained bytes the engine never sent; the reading "
-            "cannot be traced back to the response that produced it"
-        )
-        assert call["raw_response_ref"]["sha256"] == call["response_sha256"]
-        assert json.loads(retained)["choices"][0]["message"]["content"].startswith(READING)
-        # And the envelope binds both blobs as direct inputs, so an ordinary
-        # artifact read re-hashes them rather than trusting a nested reference.
-        bound = {reference["relative_path"] for reference in record["inputs"]}
-        assert call["raw_response_ref"]["relative_path"] in bound
-        assert call["call_record_ref"]["relative_path"] in bound
-        response_digests.add(call["raw_response_ref"]["sha256"])
-    # The endpoint's answer is derived from each request's own body
-    # (`VaryingReadingEndpoint`), so two acts binding to the same response
-    # digest would mean one act's Perlectio was proven against another
-    # act's bytes, or against a canonical answer neither act actually sent.
-    assert len(response_digests) == len(readings), (
-        "two acts' Perlectios name the same response blob; per-act binding is "
-        "asserted, not measured"
-    )
-
-
-def test_the_whole_live_roster_answered_through_its_own_scope(live_seam):
-    """Three witness chairs, three adapters, three scopes — none dropped.
-
-    A roster that quietly shrank to the chairs that happen to work is the
-    failure this assertion exists to make impossible: every configured witness
-    chair must have an act record naming the serving call that produced it.
-    """
-    tree = RunTree(live_seam.run_root, RUN_ID)
-    records = act_records(tree)
-    # One residency each, in the deterministic chair-outer order the schedule
-    # builds: a second load of an unloaded chair is what `SingleChairResidency`
-    # refuses, and a chair never loaded is a chair that never answered.
-    assert live_seam.witnesses.loads == sorted(WITNESS_CHAIRS)
-    assert {chair for _act, chair in records} == set(WITNESS_CHAIRS)
-    for (act_id, chair), record in records.items():
-        payload = record["payload"]
-        assert "serving_call_ref" in payload, (
-            f"{chair}'s record for {act_id} names no serving call, so nothing says a "
-            "chair was ever asked; a live pass may not publish a declared answer"
-        )
-        call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
-        # Attestator 1 reads its page along Chandra's own native recipe.
-        assert call["schema"] == (
-            CHANDRA_NATIVE_CALL_RECORD_SCHEMA
-            if chair == "attestator_1"
-            else CHAIR_CALL_RECORD_SCHEMA
-        )
-        assert call["chair"] == chair
-        # The witness half of "every reading names the exact bytes its engine
-        # sent": chain record -> adapter output -> wire content -> served
-        # bytes, so `WitnessWorld.served` is actually exercised rather than
-        # left as dead scaffolding.
-        wire = tree.read_bytes(call["raw_response_ref"]["relative_path"])
-        assert wire in live_seam.witnesses.served(chair)
-        assert call["response_sha256"] == call["raw_response_ref"]["sha256"]
-        assert json.loads(wire)["choices"][0]["message"]["content"].encode() == tree.read_bytes(
-            payload["raw_response_ref"]["relative_path"]
-        )
-
-
-def test_every_finish_reason_travels_verbatim_from_the_wire_to_both_records(live_seam):
-    """One engine word, recorded unchanged by two stages that mean it differently.
-
-    The witness turns `"stop"` into `truncated: false` on a trusted boundary
-    and the Perlector turns it into a complete reading, but neither rewrites
-    the word itself: the call record on both sides carries what the engine
-    said.
-    """
-    tree = RunTree(live_seam.run_root, RUN_ID)
-    for (act_id, chair), record in act_records(tree).items():
-        payload = record["payload"]
-        call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
-        assert call["finish_reason"] == "stop", (act_id, chair)
-        assert payload["native_capture"]["transport_stop_reason"] == "stop"
-    for record in published_readings(live_seam.run_root):
-        assert record["payload"]["engine_call"]["finish_reason"] == "stop"
-        assert record["payload"]["truncation"]["signals"]["stop_reason_declared"] == "stop"
-        assert record["outcome"] == "read"
-
-
-def test_the_receipts_on_provenance_are_the_receipts_the_chairs_really_published(live_seam):
-    """The record protects the past, so it names the real moment.
-
-    A fixture posture writes a declared `fixture://` receipt. Every record this
-    run wrote must instead name the receipt its own client re-read through the
-    tree at start — for the witnesses and for the reader alike.
-    """
-    tree = RunTree(live_seam.run_root, RUN_ID)
-    for (act_id, chair), record in act_records(tree).items():
-        receipt = tree.read_run_receipt(record["payload"]["provenance"]["receipt_ref"])
-        assert receipt["chair"] == chair, act_id
-        assert receipt["engine"] == "vllm"
-        assert not receipt["endpoint"].startswith("fixture://")
-    for record in published_readings(live_seam.run_root):
-        receipt = tree.read_run_receipt(record["payload"]["provenance"]["receipt_ref"])
-        assert receipt["chair"] == "perlector"
-        assert receipt["engine"] == "vllm"
-        assert not receipt["endpoint"].startswith("fixture://")
-
-
-def _reviews(live_seam) -> list[dict[str, Any]]:
-    """Every Recensor review this run sealed, read straight off disk."""
-    return [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted(
-            (live_seam.run_root / RUN_ID / "5_recensor" / "artifacts" / "review").glob("*.json")
-        )
-    ]
-
-
-def _assert_the_continuation_page_is_unmeasured_by_name(reviews: list[dict[str, Any]]) -> None:
-    """Ruling on Unit 12 F2, asserted on a live tree.
-
-    Page 2 carries a2's continuation region and both page witnesses transcribe
-    its whole text. No attachment on it can ever be `aligned` -- the Perlector
-    declares every row there `continuation-page-no-act-anchor`, because the act
-    anchor is derived from the act's own primary page -- so the diff has no span
-    union to take. Before the ruling that produced `shortfall: True` on a page
-    whose finding no act's review read: dropped in silence under a DELIVERED
-    export. It is now recorded as unmeasured, by name, with the observation
-    kept, on the act that spans the page. The counterfactual below drops the row
-    again and requires this to fail.
-    """
-    # A list, not a lookup keyed by act and page: a second row for one act's
-    # page is an accounting failure, and a dict comprehension would collapse it
-    # into the row this helper then reads. The counterfactual below removes a
-    # row; nothing here may quietly absorb an added one.
-    rows = [
-        ((review["payload"]["act_key"], row["page_ordinal"]), row)
-        for review in reviews
-        for row in review["payload"]["testimony_content_coverage_continuation"]
-    ]
-    assert [key for key, _row in rows] == [("a2", 2)], sorted(key for key, _row in rows)
-    row = rows[0][1]
-    assert row["shortfall"] is None, row
-    assert sorted(row["by_chair"]) == ["attestator_1", "attestator_3"], row
-    for chair, measured in sorted(row["by_chair"].items()):
-        assert measured["attached_spans"] == [], chair
-        assert measured["uncovered_non_whitespace"]["count"] == 34, chair
-        assert f"chair {chair!r} saw 34 uncovered non-whitespace" in row["reason"], chair
-    assert "continuation-page-no-act-anchor" in row["reason"], row["reason"]
-    assert "page 2's testimony content coverage is unmeasured" in row["reason"], row["reason"]
-
-
-def test_the_run_carries_on_through_the_recensor_to_a_sealed_terminal_export(live_seam):
-    """The stages after the seam have never met a live tree before this one.
-
-    The Recensor, Archetypus and Armarium read records carrying `engine_call`,
-    `native_capture`, `serving_call_ref` and `raw_response_kind` — fields no
-    fixture record has. Running them here is what says a live run reaches an
-    export at all, rather than reaching the Perlector and stopping.
-
-    It reaches a **delivered** one, with a geometry-free third witness. U10 put
-    the Churro chair back on its vendor's own system: the registry's system
-    string, the `HistoricalDocument` grammar, and no geometry, because the
-    grammar has no coordinate vocabulary and Churro-3B carries none either. Unit
-    12 had asked this chair for block rectangles in a modified carry of a prompt
-    the model was never trained on, and those rectangles were what attached it.
-    With them retired the chair reads and aligns but overlaps no proposal
-    rectangle; it attaches on the `anchor-line` basis, because its page text
-    aligned to the act's own anchor line and that alignment locates this act's
-    slice inside it — so three of a floor of three count and no act is
-    under-witnessed. Two independent things had to be true for `reasons == []`,
-    and the assertion is written so that either failing says which: the witness
-    floor, and testimony content coverage, which holds a page whenever a witness
-    transcribed non-whitespace text no aligned act attachment covers. That second
-    hold fired on every live export before attachment reached this chair —
-    unattached, so its whole page text was uncovered — and nothing asserted it,
-    which is why it is now asserted BY NAME below rather than left to
-    `reasons == []` to imply.
-
-    **A delivered offline e2e is not a proven pipeline.** The claim is that
-    one scripted run over a fixture whose page text is exactly its two acts
-    reaches `delivered`, and nothing more. A real register page carries
-    headers, folio numbers and marginalia the Designator did not propose;
-    Churro will transcribe them; that page will hold on content coverage, and
-    that is coverage working as intended, not a regression.
-    """
-    assert live_seam.tail == {
+    assert tail == {
         "pipeline/5_recensor/run.py": EXIT_COMPLETE,
         "pipeline/6_archetypus/run.py": EXIT_COMPLETE,
-        "pipeline/7_armarium/run.py": EXIT_COMPLETE,
+        "pipeline/7_armarium/run.py": EXIT_HELD,
     }
-    export = verify_final_seal(RunTree(live_seam.run_root, RUN_ID))
-    aggregate = export["payload"]["aggregate"]
-    # The two halves, each named, before the aggregate that depends on both. A
-    # bare `reasons == []` would fail identically whichever one broke.
-    for review in _reviews(live_seam):
-        coverage = review["payload"]["coverage"]
-        assert coverage["under_witnessed"] is False, coverage
-        content = review["payload"]["testimony_content_coverage"]
-        assert content["shortfall"] is False, content
-        for chair, measured in content["by_chair"].items():
-            assert measured["uncovered_non_whitespace"]["count"] == 0, (chair, measured)
-    # The third named half, since the F2 ruling: the page neither act is
-    # primary on. Delivered, and visibly unmeasured rather than silently clean.
-    _assert_the_continuation_page_is_unmeasured_by_name(_reviews(live_seam))
-    assert len(export["payload"]["delivered"]) == 2, export["payload"]["delivered"]
-    delivered = {item["act_key"]: item for item in export["payload"]["delivered"]}
-    assert len(delivered) == 2
-    assert sorted(delivered) == ["a1", "a2"]
-    assert delivered["a1"]["testimony_content_coverage_continuation"] == []
-    assert [
-        (row["page_ordinal"], row["shortfall"])
-        for row in delivered["a2"]["testimony_content_coverage_continuation"]
-    ] == [(2, None)]
-    assert sorted(aggregate["reasons"]) == []
-    assert export["outcome"] == ArmariumCategory.DELIVERED.value
-    assert aggregate["status"] == "complete"
-    assert {record["outcome"] for record in published_readings(live_seam.run_root)} == {"read"}
-
-
-def test_the_witness_coverage_a_live_run_reaches_is_named_chair_by_chair(live_seam):
-    """Which chair counts live, and exactly on what evidence — no silent roster.
-
-    The whole roster is served and every chair reads. Chandra's page response
-    parses under the vendor layout grammar its prompt asks for, its own block
-    geometry overlaps the acts, and the live alignment anchor is derived from
-    that same response. DAI is shown one act crop, so its basis is
-    `presented-region`.
-
-    **Churro reports no geometry at all, by vendor design.** Its answer is the
-    `HistoricalDocument` grammar, which has `Page`, `Header`, `Body`, `Footer`
-    and `Line` and not one coordinate anywhere, so its only observation is the
-    `bounds_source="presented"` echo routing and coverage exclude, and it reaches
-    these acts on the `anchor-line` basis instead. The two page witnesses'
-    observations are asserted to differ in kind for exactly that reason: one
-    chair's boxes are never attributed to another, and nothing selects among them.
-
-    **What the third witness costs, said here because the floor depends on it.**
-    Churro is attached AND comparable only because Chandra's response located
-    its text: `anchor-line` needs an alignment whose `anchor_basis` is
-    `act-anchor`, and that anchor is derived from the other page witness. The
-    anchor is a text-locating instrument, not a preference — but "three
-    independent witnesses" here means two independent readings and one dependent
-    placement, and any later claim about witness independence has to say so.
-    """
-    tree = RunTree(live_seam.run_root, RUN_ID)
-    records = act_records(tree)
-    for (act_id, chair), record in records.items():
-        assert record["outcome"] == "read", (act_id, chair)
-    page_text = "SYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta"
-    # `act_records` keys by the sealed act identity, not the fixture's key; both
-    # acts are primary on page 1, so both act views carry that page's reading.
-    # Both page witnesses deliver the same page text; only Chandra reports where
-    # on the page it saw it.
-    observations_by_chair = {}
-    for chair, sources in (
-        ("attestator_1", ["native", "native"]),
-        ("attestator_3", ["presented"]),
-    ):
-        views = [record["payload"] for (_act, seat), record in records.items() if seat == chair]
-        assert len(views) == 2, chair
-        for view in views:
-            assert view["payload"] == page_text, chair
-            assert [box["bounds_source"] for box in view["observed"]] == sources, chair
-        observations_by_chair[chair] = views[0]["observed"]
-    # The load-bearing half of "no chair's geometry is attributed to another":
-    # the geometry-free chair contributes no reported box at all, so there is
-    # nothing of Chandra's for it to be wearing.
-    assert [box["bounds_source"] for box in observations_by_chair["attestator_3"]] == ["presented"]
-    # A `!=` on the two full observation lists would pass on the length and
-    # bounds_source difference alone, whatever geometry either side carried --
-    # proving nothing about which chair a rectangle got attributed to. Compare
-    # the geometry itself, one rectangle at a time.
-    chandra_boxes = [box["bounds"] for box in observations_by_chair["attestator_1"]]
-    churro_boxes = [box["bounds"] for box in observations_by_chair["attestator_3"]]
-    assert not [box for box in churro_boxes if box in chandra_boxes], (
-        f"a Chandra rectangle appears among Churro's observations: "
-        f"{churro_boxes!r} against {chandra_boxes!r}"
-    )
-
-    attachments = {}
-    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] == "act-attachment":
-            record = tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
-            attachments[record["subject_id"]] = {
-                item["chair"]: item
-                for item in record["payload"]["attachments"]
-                # A page witness has one entry per contributing page; the
-                # primary page's entry is the one that holds the comparison view.
-                if item["page_ordinal"] in (None, 1)
-            }
-            for item in record["payload"]["attachments"]:
-                if item["page_ordinal"] == 2:
-                    # a2's continuation page. Chandra answers it in the
-                    # page-text form and Churro in the retired `<output>`
-                    # envelope, so neither reports geometry there; and the
-                    # anchor-line basis cannot reach a continuation page either,
-                    # because the anchor is derived from the act's own primary
-                    # page and the alignment there is forced unaligned before
-                    # geometry is consulted. Neither attaches.
-                    assert item["attached"] is False
-                    assert item["attachment_basis"] == "unattached"
-                    assert item["alignment"] == {
-                        "status": "unaligned",
-                        "reason": "continuation-page-no-act-anchor",
-                    }
-    assert attachments
-    for act_id, by_chair in attachments.items():
-        chandra, dai, churro = (by_chair[chair] for chair in WITNESS_CHAIRS)
-        assert chandra["attached"] and chandra["comparable"], act_id
-        assert chandra["attachment_basis"] == "geometric-overlap", act_id
-        assert chandra["alignment"]["status"] == "aligned"
-        assert chandra["alignment"]["anchor_basis"] == "act-anchor"
-        assert chandra["alignment"]["anchor_chair"] == "attestator_1"
-        assert dai["attached"] and dai["comparable"], act_id
-        assert dai["attachment_basis"] == "presented-region", act_id
-        # The geometry-free witness: attached, comparable, and the record says
-        # on what — an anchor line another chair's response located, never
-        # geometry it did not report.
-        assert churro["attached"] and churro["comparable"], act_id
-        assert churro["attachment_basis"] == "anchor-line", act_id
-        assert churro["alignment"]["status"] == "aligned", act_id
-        assert churro["alignment"]["anchor_basis"] == "act-anchor", act_id
-        assert churro["alignment"]["anchor_chair"] == "attestator_1", act_id
-        assert churro["span"]["end"] > churro["span"]["start"], act_id
-
-    reviews = _reviews(live_seam)
-    assert reviews
-    for review in reviews:
-        coverage = review["payload"]["coverage"]
-        assert review["outcome"] == "accepted"
-        assert coverage["configured"] == 3
-        assert coverage["floor"] == 3
-        # Every chair read, and all three attach: Chandra by its own geometry,
-        # DAI by its presented region, Churro by the anchor line another chair's
-        # response located. No shortfall of any kind.
-        assert coverage["by_outcome"] == {"read": 3}
-        assert coverage["shortfalls"] == {
-            "failed": 0,
-            "truncated": 0,
-            "unaligned": 0,
-            "unmeasured": 0,
-        }
-
-
-def test_a_geometry_free_page_witness_attaches_is_comparable_and_meets_the_floor(live_seam):
-    """The one claim U12 exists for, on a live tree, with its counterfactual.
-
-    A witness whose published grammar carries no coordinates -- Churro's, by
-    vendor design -- can never overlap a proposal rectangle. While attachment
-    was derived from geometry alone that chair was unattached at every act, so
-    every act stood at two of a floor of three and the run held on a witness
-    shortfall that had not happened (HOSTILE_REVIEW_2026-09-06 §2 B).
-
-    Three separate facts, asserted separately so that whichever regresses says
-    which: the chair reports NO geometry a derivation may read (only the
-    excluded `presented` echo); it is nevertheless attached and comparable on
-    the `anchor-line` basis with a span whose own measurement shows this act's
-    anchor line matched, not merely coincided with; and the act's own witness
-    coverage counts three of three. The chair that answers with a page that is
-    not this page is the sibling test below, and it counts two of three.
-
-    The counterfactual is the last block, and it is what stops this from being a
-    test that cannot fail: the old rule is re-run here over this tree's own
-    retained evidence, and it must still say `unattached` for this chair. If a
-    future fixture gave Churro geometry, that block fails and this module stops
-    claiming to prove the geometry-free path.
-    """
-    tree = RunTree(live_seam.run_root, RUN_ID)
-    proposal_bounds: dict[int, list[dict[str, int]]] = {}
-    for entry in tree.build_manifest(DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "region":
-            continue
-        transform = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])["payload"][
-            "transform"
-        ]
-        proposal_bounds.setdefault(transform["source_page_ordinal"], []).append(transform["bounds"])
-    assert proposal_bounds, "no sealed Designator regions to derive attachment against"
-
-    page_payloads = {}
-    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "page-testimonium":
-            continue
-        record = tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
-        page_payloads[(record["payload"]["page_ordinal"], record["payload"]["chair"])] = record
-
-    churro_pages = [
-        record for (_ordinal, chair), record in page_payloads.items() if chair == "attestator_3"
-    ]
-    assert len(churro_pages) == 2
-    for record in churro_pages:
-        assert [box["bounds_source"] for box in record["payload"]["observed"]] == ["presented"]
-
-    checked = 0
-    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "act-attachment":
-            continue
-        record = tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
-        for item in record["payload"]["attachments"]:
-            if item["chair"] != "attestator_3" or item["page_ordinal"] != 1:
-                continue
-            checked += 1
-            assert item["attached"] is True, record["subject_id"]
-            assert item["comparable"] is True, record["subject_id"]
-            assert item["attachment_basis"] == "anchor-line", record["subject_id"]
-            assert item["alignment"]["anchor_basis"] == "act-anchor", record["subject_id"]
-            assert item["span"]["end"] > item["span"]["start"], record["subject_id"]
-            # What the span is worth, measured: this chair transcribed the whole
-            # of the act's anchor line, so the run is the line and the floor is
-            # nowhere near binding. The sibling test below is the same assertion
-            # from the other side.
-            match = item["alignment"]["anchor_line_match"]
-            assert match["longest_matched_run"] >= ANCHOR_LINE_RUN_FLOOR, record["subject_id"]
-            assert match["matched_characters"] == match["anchor_characters"], record["subject_id"]
-            # The counterfactual, over this act's own sealed evidence: geometry
-            # alone attaches nothing here.
-            page = page_payloads[(1, "attestator_3")]
-            assert not any(
-                reported_geometry_overlaps(page["payload"]["observed"], bounds)
-                for bounds in proposal_bounds[1]
-            ), record["subject_id"]
-    assert checked == 2, checked
-
-    for review in _reviews(live_seam):
-        coverage = review["payload"]["coverage"]
-        assert coverage["floor"] == 3
-        assert coverage["under_witnessed"] is False, coverage
-
-
-def test_a_page_witness_whose_text_is_not_this_page_attaches_to_nothing(designated, tmp_path):
-    """The counterfactual for the basis above: `anchor-line` is not free.
-
-    The chair answers in its own trained envelope with a body that has nothing
-    to do with the ink. That body still ALIGNS -- `align_to_anchor` keeps every
-    matching block of one character, so a few letters of Lorem ipsum land inside
-    act one's anchor range and the hull across them is a positive span. Until
-    this unit's correction that was the whole of the test: the record attached on
-    `anchor-line`, called itself comparable, and put a third chair on a floor of
-    three for having placed two characters (hostile review of Unit 12, must-fix
-    1).
-
-    So the alignment is kept -- it is evidence, and evidence is never discarded
-    -- while the measurement beside it says what it is worth, and
-    the attachment does not happen. The act is then honestly one witness short,
-    which is a visible partial rather than a silent overcount.
-
-    The other two chairs are asserted attached in the same breath: if the
-    fixture ever stopped attaching anybody, this test would pass for the wrong
-    reason.
-    """
-    run_root = fresh_tree(designated, tmp_path, name="unrelated-page-runs")
-    scripts = {
-        **witness_scripts(),
-        "attestator_3": [
-            ScriptedAnswer(content=CHURRO_PAGE_ONE_UNRELATED, finish_reason="stop"),
-            ScriptedAnswer(content=CHURRO_PAGE_TWO, finish_reason="stop"),
-        ],
-    }
-    read_by_live_witnesses(designated, run_root, tmp_path / "unrelated-witness-world", scripts)
 
     tree = RunTree(run_root, RUN_ID)
-    outcomes_by_act: dict[str, dict[str, str]] = {}
-    for (act_id, chair), record in act_records(tree).items():
-        outcomes_by_act.setdefault(act_id, {})[chair] = record["outcome"]
-
-    checked = 0
-    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "act-attachment":
-            continue
-        record = tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
-        act_id = record["subject_id"]
-        primary = {
-            item["chair"]: item
-            for item in record["payload"]["attachments"]
-            if item["page_ordinal"] in (None, 1)
-        }
-        churro = primary["attestator_3"]
-        assert churro["attached"] is False, act_id
-        assert churro["comparable"] is False, act_id
-        assert churro["attachment_basis"] == "unattached", act_id
-        assert churro["span"] is None, act_id
-        # The alignment is retained, and it is retained as what it was: a real
-        # aligned result whose own measurement refuses to call the act's anchor
-        # line located.
-        alignment = churro["alignment"]
-        assert alignment["status"] == "aligned", act_id
-        assert alignment["anchor_basis"] == "act-anchor", act_id
-        assert alignment["witness_span"]["end"] > alignment["witness_span"]["start"], act_id
-        match = alignment["anchor_line_match"]
-        assert match["anchor_characters"] > 0, act_id
-        assert 0 < match["matched_characters"] < match["anchor_characters"], act_id
-        assert match["longest_matched_run"] < ANCHOR_LINE_RUN_FLOOR, act_id
-        # Not vacuous: the two chairs that really did read this page still count.
-        for chair, basis in (
-            ("attestator_1", "geometric-overlap"),
-            ("attestator_2", "presented-region"),
-        ):
-            assert primary[chair]["attached"] is True, (act_id, chair)
-            assert primary[chair]["attachment_basis"] == basis, (act_id, chair)
-        # The floor arithmetic itself, through the function the Recensor calls
-        # on exactly these facts.
-        coverage = witness_coverage(outcomes_by_act[act_id], 3, attachments=primary)
-        assert coverage["floor"] == 3, act_id
-        assert coverage["under_witnessed"] is True, coverage
-        assert coverage["page_granularity_only"] == 1, coverage
-        assert coverage["shortfalls"]["unaligned"] == 1, coverage
-        checked += 1
-    assert checked == 2, checked
-
-
-def test_an_engine_that_reported_no_stop_word_is_recorded_as_unreported_and_held(
-    designated, tmp_path
-):
-    """The absence is measured, never filled in.
-
-    The witness publishes an unknown truncation over a boundary nobody
-    observed, and the Perlector holds the reading as `unknown` rather than
-    calling it complete. `unreported` is this system's own word for the silence
-    and never a stop word the engine did not say — the call record on both
-    sides carries `null`.
-    """
-    run_root = fresh_tree(designated, tmp_path)
-    silent = {
-        chair: [
-            ScriptedAnswer(content=answer.content, finish_reason=ABSENT)
-            for answer in witness_scripts()[chair]
-        ]
-        for chair in WITNESS_CHAIRS
+    readings = {
+        record["subject_id"]: record
+        for record in (
+            tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
+            for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+            if entry["kind"] == "perlectio"
+        )
     }
-    read_by_live_witnesses(designated, run_root, tmp_path / "witness-world", silent)
+    assert {record["outcome"] for record in readings.values()} == {"read"}
+    assert all(record["payload"]["engine_call"] is not None for record in readings.values())
 
-    tree = RunTree(run_root, RUN_ID)
-    for (act_id, chair), record in act_records(tree).items():
-        payload = record["payload"]
-        call = json.loads(tree.read_bytes(payload["serving_call_ref"]["relative_path"]))
-        assert call["finish_reason"] is None, (act_id, chair)
-        assert payload["native_capture"]["transport_stop_reason"] == STOP_REASON_UNREPORTED
-        assert payload["content_health"]["truncated"] is None
-
-    reader = ReaderWorld(designated.catalogue, tmp_path / "reader", finish_reason=ABSENT)
-    assert (
-        run_in_process(
-            perlector,
-            run_root,
-            designated.catalogue,
-            placement_tier=TIER,
-            serving_factory=reader.factory,
-        )
-        == EXIT_COMPLETE
-    )
-    readings = published_readings(run_root)
-    assert len(readings) == 2
-    for record in readings:
-        assert record["outcome"] == "truncated"
-        assert record["payload"]["truncation"]["classification"] == "unknown"
-        assert record["payload"]["truncation"]["signals"]["stop_reason_declared"] is None
-        assert record["payload"]["engine_call"]["finish_reason"] is None
-
-
-def test_an_engine_word_this_pipeline_never_measured_fails_each_act_with_retained_evidence(
-    designated, witnessed, tmp_path
-):
-    """`"abort"` is neither a completion nor a cut-off, so it is refused by name.
-
-    Nothing is lost: each refusal is retained and published on that act, then
-    the pass continues so later acts keep their own outcomes and evidence.
-    """
-    run_root = tmp_path / "runs"
-    shutil.copytree(witnessed.run_root, run_root)
-    reader = ReaderWorld(designated.catalogue, tmp_path / "reader", finish_reason="abort")
-    assert (
-        run_in_process(
-            perlector,
-            run_root,
-            designated.catalogue,
-            placement_tier=TIER,
-            serving_factory=reader.factory,
-        )
-        == EXIT_COMPLETE
-    )
-    readings = published_readings(run_root)
-    assert len(readings) == 2
-    tree = RunTree(run_root, RUN_ID)
-    for record in readings:
-        assert record["outcome"] == "failed"
-        failure = record["payload"]["failure"]
-        assert failure["kind"] == "engine-signal"
-        assert failure["code"] == "ENGINE_FINISH_REASON_UNRECOGNIZED"
-        assert failure["response_completion"] == "complete"
-        assert failure["raw_response_ref"] in record["inputs"]
-        assert failure["call_record_ref"] in record["inputs"]
-        assert "text" not in record["payload"]
-        raw = tree.read_bytes(failure["raw_response_ref"]["relative_path"])
-        assert raw in reader.endpoint.served
-    blobs = run_root / RUN_ID / "4_perlector" / "blobs" / "sha256"
-    retained = [path.read_bytes() for path in blobs.glob("*")] if blobs.exists() else []
-    assert any(b'"abort"' in body for body in retained), "the refusing response was not retained"
-    # A blob merely containing the word is satisfied by the chair-call-record
-    # too, which also carries `"finish_reason":"abort"`. Pin the exact raw
-    # response bytes the endpoint served, by their own digest, so this proves
-    # the response itself was retained before it was parsed -- not only that
-    # a record describing it was.
-    assert all(
-        (blobs / record["payload"]["failure"]["raw_response_ref"]["sha256"]).exists()
-        for record in readings
-    )
-
-
-def test_an_engine_prompt_too_long_400_is_a_retained_failed_perlectio_held_downstream(
-    designated, witnessed, tmp_path
-):
-    """The engine is the true gate: its context-length 400 is a visible failed act.
-
-    The body is the shape observed from vLLM 0.27.1. Each act
-    gets one request, no retry; its Perlectio is `failed`, names the retained
-    refusing bytes, the stage completes, and the Recensor holds every act for
-    review rather than delivering or dropping it.
-    """
-    run_root = tmp_path / "runs"
-    shutil.copytree(witnessed.run_root, run_root)
-    refusal = scripted_input_too_long(max_model_len=32768, input_tokens=34741)
-    reader = ReaderWorld(
-        designated.catalogue, tmp_path / "reader", finish_reason="stop", refusal=refusal
-    )
-    assert (
-        run_in_process(
-            perlector,
-            run_root,
-            designated.catalogue,
-            placement_tier=TIER,
-            serving_factory=reader.factory,
-        )
-        == EXIT_COMPLETE
-    )
-    readings = published_readings(run_root)
-    assert len(readings) == 2
-    # One request per act: a refusal is never retried.
-    assert reader.endpoint.served.count(refusal.body) == len(readings)
-    blobs = run_root / RUN_ID / "4_perlector" / "blobs" / "sha256"
-    for record in readings:
-        assert record["outcome"] == "failed"
-        failure = record["payload"]["failure"]
-        assert failure["code"] == "CHAIR_RESPONSE_HTTP_ERROR"
-        assert failure["kind"] == "chair-response"
-        assert failure["raw_response_ref"] in record["inputs"]
-        retained = (blobs / failure["raw_response_ref"]["sha256"]).read_bytes()
-        assert retained == refusal.body
-        assert b"exceeds model's maximum context length (32768)" in retained
-    tail = {
-        program: invoke_stage(program, run_root, designated.catalogue, placement_tier=TIER)
-        for program in TAIL_FROM_RECENSOR
-    }
-    reviews = [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted(
-            (run_root / RUN_ID / "5_recensor" / "artifacts" / "review").glob("*.json")
-        )
-    ]
-    assert len(reviews) == len(readings), tail
-    for review in reviews:
-        assert review["outcome"] == "held-for-review", review["outcome"]
-    export = verify_final_seal(RunTree(run_root, RUN_ID))
-    assert export["payload"]["delivered"] == []
-
-
-# ============================ the fixture path, unmoved =======================
-
-
-class _StoppedMidPass(Exception):
-    """A pass that dies the moment its first main-pass result is on record."""
-
-
-def test_a_pass_stopped_mid_reading_resumes_without_asking_again_and_the_tail_accepts_it(
-    witnessed, designated, tmp_path, monkeypatch
-):
-    """A resumed live Perlector tree is one the Recensor, Archetypus and Armarium accept.
-
-    The first pass stops once act one's `semi-final` is written; the second adopts every
-    main-pass result on record, asks the chair only for what was never sent, and the
-    tail carries the run to a delivered export as it does an uninterrupted one.
-    """
-    run_root = tmp_path / "runs"
-    shutil.copytree(witnessed.run_root, run_root)
-    publish = StageContext.publish
-
-    def publish_then_stop(self, **kwargs):
-        result = publish(self, **kwargs)
-        if kwargs["kind"] == perlector.SEMI_FINAL_KIND:
-            raise _StoppedMidPass
-        return result
-
-    with monkeypatch.context() as patch:
-        patch.setattr(StageContext, "publish", publish_then_stop)
-        with pytest.raises(_StoppedMidPass):
-            run_in_process(
-                perlector,
-                run_root,
-                designated.catalogue,
-                placement_tier=TIER,
-                serving_factory=ReaderWorld(
-                    designated.catalogue, tmp_path / "first", finish_reason="stop"
-                ).factory,
-            )
-    stage = run_root / RUN_ID / "4_perlector" / "artifacts"
-    adopted = len(list((stage / perlector.SEMI_FINAL_KIND).glob("*.json")))
-    assert adopted and published_readings(run_root) == []
-
-    reader = ReaderWorld(designated.catalogue, tmp_path / "second", finish_reason="stop")
-    assert (
-        run_in_process(
-            perlector,
-            run_root,
-            designated.catalogue,
-            placement_tier=TIER,
-            serving_factory=reader.factory,
-        )
-        == EXIT_COMPLETE
-    )
-    main_pass = [
-        request
-        for request in reader.endpoint.requests
-        if _unchanged_reproof_response(json.dumps(request).encode()) is None
-    ]
-    assert len(main_pass) == 2 - adopted
-    assert {
-        program: invoke_stage(program, run_root, designated.catalogue, placement_tier=TIER)
-        for program in TAIL_FROM_RECENSOR
-    } == dict.fromkeys(TAIL_FROM_RECENSOR, EXIT_COMPLETE)
-    export = verify_final_seal(RunTree(run_root, RUN_ID))
-    assert export["outcome"] == ArmariumCategory.DELIVERED.value
-    assert sorted(item["act_key"] for item in export["payload"]["delivered"]) == ["a1", "a2"]
-
-
-def test_the_identical_driver_in_fixture_mode_reproduces_the_orchestrated_tree(tmp_path):
-    """Nothing this section added moves a fixture byte.
-
-    The same driver as above — the stage programs as subprocesses either side,
-    both stage `main`s called in this process, `--placement-tier` supplied —
-    but pointed at the committed catalogue, whose rows say `fixture` for every
-    chair. The comparison is against the tree `pipeline/orchestrator/run.py`
-    builds for itself in this same test, so the claim is checked against a tree
-    measured now rather than against a digest constant that could go stale
-    unnoticed; the acceptance suite owns that constant and re-measures it
-    against this same fixture.
-    """
-    committed = ROOT / "config" / "serving_recipes.toml"
-    orchestrated = tmp_path / "orchestrated"
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ORCHESTRATOR),
-            "--fixture",
-            FIXTURE_ID,
-            "--scenario",
-            "happy",
-            "--run-id",
-            RUN_ID,
-            "--run-root",
-            str(orchestrated),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == EXIT_COMPLETE, result.stderr
-
-    driven = tmp_path / "driven"
-    for program in CHAIN_TO_DESIGNATOR:
-        assert invoke_stage(program, driven, committed, placement_tier=TIER) == EXIT_COMPLETE
-    for module in (attestatores, perlector):
-        assert (
-            run_in_process(module, driven, committed, placement_tier=TIER, serving_factory=None)
-            == EXIT_COMPLETE
-        )
-    for program in TAIL_FROM_RECENSOR:
-        assert invoke_stage(program, driven, committed, placement_tier=TIER) == EXIT_COMPLETE
-
-    assert snapshot(driven) == snapshot(orchestrated)
+    export = verify_final_seal(tree)
+    payload = export["payload"]
+    assert sorted(item["act_key"] for item in payload["delivered"]) == ["p1:1", "p1:2", "p2:1"]
+    assert payload["non_delivered"] == []
+    for item in payload["delivered"]:
+        assert item["text"] == readings[item["act_id"]]["payload"]["text"]
+        assert item["witnesses"], item["act_key"]
+    aggregate = payload["aggregate"]
+    assert aggregate["status"] == "partial"
+    (reason,) = aggregate["reasons"]
+    assert reason.startswith("continuation join join-1-2-0 (reconstructed)")
+    assert export["outcome"] == ArmariumCategory.HELD_FOR_REVIEW.value

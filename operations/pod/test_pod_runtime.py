@@ -6572,7 +6572,6 @@ def test_missing_utilization_is_a_red_measurement_failure() -> None:
     assert all(
         any(issue.code == "utilization-missing" and issue.chair == role for issue in report.issues)
         for role in {
-            "designator_structure",
             "attestator_1",
             "attestator_2",
             "attestator_3",

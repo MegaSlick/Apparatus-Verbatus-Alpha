@@ -42,22 +42,16 @@ threshold = 2
 #
 # `(perlector, truncated)` is REMOVED for exactly this reason. ARCHITECTURE's
 # "truncation is a failure, not an output" is true and is honoured -- a
-# truncated Perlectio never completes its act (`common/contracts/outcomes.py`
-# classifies it FAILED at the per-act level, and the Recensor holds it) -- but
-# that is a question about ONE reading, not about whether the RUN is going
-# wrong. A page with an unusually long entry (a marriage record with many
-# witnesses, a lengthy marginal note) will truncate routinely in real parish
+# truncated entry of a page reading is held, never delivered -- but that is a
+# question about ONE reading, not about whether the RUN is going wrong. A page
+# with an unusually long entry (a marriage record with many witnesses, a
+# lengthy marginal note) will truncate routinely in real parish
 # registers; folding that into a 2-failure early-warning cap would trip it on
 # ordinary document variance and defeat the cap's purpose. `(perlector, failed)`
-# is KEPT, but the mapping is not yet certain: pipeline/4_perlector/run.py is a
-# built stage (dossiers, Lectio nuda, dissent recording, the truncation
-# instrument), but its only reader is still the fixture
-# (pipeline/4_perlector/reader.py, FixtureReader) -- so nothing in the shipped
-# code yet says whether a real `failed` outcome will mean "an exception escaped
-# the read path" (the old pipeline's HARD_GENERATE_EXCEPTION, genuinely hard) or
-# "the model answered badly after every retry" (the old pipeline's
-# SOFT_READ_FAILED, a tough page, genuinely soft). Kept as hard conservatively;
-# revisit when a real reader gives `failed` a real trigger.
+# is KEPT as a reserved member of the Perlector's vocabulary. The page path
+# publishes a failed engine call as a `held` page-reading whose parse state is
+# `call-failed` and whose failure facts name the call, not as a `failed`
+# outcome, so no page reading counts toward it today.
 #
 # `(door, refused, reason="corrupt")` and `(door, refused, reason="unreadable")`
 # are ADDED. `pipeline/1_exemplar/admission.py`'s closed `RefusalReason`

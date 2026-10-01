@@ -1,8 +1,8 @@
 """DAI reading the records its own detector found, from the Door to its page Testimonium.
 
-The roster is the page-read roster (`conftest.page_models_config`): DAI
-(`attestator_2`) is page-scoped and `secondary_proposer`, DAI's own project's
-record detector, is configured on a fixture row. The Door, Exemplar and Ink Map
+The roster is the committed one: DAI (`attestator_2`) is page-scoped and
+`secondary_proposer`, DAI's own project's record detector, is configured on a
+fixture row. The Door, Exemplar and Ink Map
 run as real programs; the Designator runs its own `main` in process, with the
 detector's boxes declared on its stage context in place of the shipped
 fixture's; the Attestatores run live through `operations/serving/fakes.py`, as in
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import load_stage, page_models_config, programs_through
+from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[1]
 DESIGNATOR_DIR = ROOT / "pipeline" / "2_designator"
@@ -63,6 +63,7 @@ from operations.serving.fakes import ScriptedAnswer  # noqa: E402
 designator = load_stage("2_designator")
 
 RUN_ID = "r"
+MODELS = ROOT / "config" / "models.toml"
 DAI = "attestator_2"
 # Page 1 holds a1 at (20, 20, 160, 80) and a2 at (20, 120, 160, 100); page 2
 # holds a2's continuation at (20, 20, 160, 60). The detector finds a2's record
@@ -79,11 +80,6 @@ DETECTIONS = (
 DAI_CONTINUATION = "zeta eta"
 
 
-def _config(work: Path) -> Path:
-    """The page-read roster: DAI page-scoped, its detector on a fixture row."""
-    return page_models_config(work / "config")
-
-
 def _catalogue(path: Path, models: Path) -> Path:
     """Fixture rows for the Designator's three chairs, live rows for the witnesses."""
     registry = ChairRegistry.from_toml(str(models))
@@ -96,7 +92,6 @@ def _catalogue(path: Path, models: Path) -> Path:
             "description": "offline walking-skeleton fixture row",
         }
         for chair, recipe in (
-            ("designator_structure", "fake-designator-v0"),
             ("secondary_proposer", "fake-secondary-proposer-v0"),
             ("designator_surya", "fake-surya-v0"),
         )
@@ -148,7 +143,7 @@ def _witness(work: Path, detections, dai_answers: list[str], *, cap_stated: bool
     `cap_stated=False` drops `max_det` from the detector's run facts, so it
     states no cap.
     """
-    models = _config(work)
+    models = MODELS
     catalogue = _catalogue(work / "serving_recipes.toml", models)
     run_root = work / "runs"
     for program in programs_through("ink-map"):
@@ -254,69 +249,19 @@ def test_dai_is_asked_once_per_detector_record_and_shown_that_records_crop(witne
         # DAI reports no geometry: each box echoes the crop that unit was shown.
         assert {item["bounds_source"] for item in payload["observed"]} == {"presented"}
 
-    # Page 1's text joins in act order although the detector found a2's record first.
+    # Page 1's text joins in the detector's own order: it found a2's record first.
     page_one = next(
         record
         for record in _records(tree, ATTESTATORES, "page-testimonium")
         if record["payload"]["chair"] == DAI and record["payload"]["page_ordinal"] == 1
     )
     assert page_one["outcome"] == "read"
-    assert page_one["payload"]["payload"] == f"{DAI_ACT_ONE}\n{DAI_ACT_TWO}"
+    assert page_one["payload"]["payload"] == f"{DAI_ACT_TWO}\n{DAI_ACT_ONE}"
     spans = [item["span"] for item in page_one["payload"]["observed"]]
     assert spans == [
-        {"start": len(DAI_ACT_ONE) + 1, "end": len(DAI_ACT_ONE) + 1 + len(DAI_ACT_TWO)},
-        {"start": 0, "end": len(DAI_ACT_ONE)},
+        {"start": 0, "end": len(DAI_ACT_TWO)},
+        {"start": len(DAI_ACT_TWO) + 1, "end": len(DAI_ACT_TWO) + 1 + len(DAI_ACT_ONE)},
     ]
-
-
-def test_each_acts_owned_records_are_recorded_but_attach_nothing(witnessed):
-    """Each act's DAI alignment on its own page spans exactly the records it owns.
-
-    The alignment is recorded, and it attaches nothing: DAI's boxes are the
-    crops it was shown, not geometry it reported, and an ownership alignment is
-    not a located anchor line. A continuation page carries no act anchor for
-    any page witness, DAI included.
-    """
-    tree, _world = witnessed
-    placed = {
-        record["payload"]["act_key"]: {
-            entry["page_ordinal"]: (
-                entry["attached"],
-                entry["attachment_basis"],
-                entry["span"],
-                entry["alignment"].get("witness_span"),
-                entry["alignment"].get("anchor_basis") or entry["alignment"].get("reason"),
-                [line["bbox"] for line in entry["alignment"].get("line_geometry", [])],
-            )
-            for entry in record["payload"]["attachments"]
-            if entry["chair"] == DAI
-        }
-        for record in _records(tree, ATTESTATORES, "act-attachment")
-    }
-    two_start = len(DAI_ACT_ONE) + 1
-    assert placed == {
-        "a1": {
-            1: (
-                False,
-                "unattached",
-                None,
-                {"start": 0, "end": len(DAI_ACT_ONE)},
-                "detector-record",
-                [{"x": 25, "y": 25, "w": 151, "h": 71}],
-            ),
-        },
-        "a2": {
-            1: (
-                False,
-                "unattached",
-                None,
-                {"start": two_start, "end": two_start + len(DAI_ACT_TWO)},
-                "detector-record",
-                [{"x": 25, "y": 130, "w": 151, "h": 81}],
-            ),
-            2: (False, "unattached", None, None, "continuation-page-no-act-anchor", []),
-        },
-    }
 
 
 def test_a_page_whose_records_enclose_no_crop_is_not_run_with_its_census_count(tmp_path):
@@ -383,21 +328,18 @@ def test_a_page_the_detector_found_nothing_on_below_its_cap_is_dais_blank_testim
     assert bound["relative_path"].endswith(census["artifact_id"] + ".json")
 
 
-def test_an_act_on_a_page_dai_saw_nothing_on_is_not_run_for_dai_and_names_no_receipt(tmp_path):
-    """Blank testimony is the page's: DAI was never asked about either act's crop on page 1."""
+def test_a_page_dai_saw_nothing_on_is_never_asked_and_names_no_receipt(tmp_path):
+    """Blank testimony is the page's: DAI is asked only about the page its detector
+    found a record on, and the blank page names no serving moment."""
     tree, world = _witness(tmp_path, DETECTIONS[2:], [DAI_CONTINUATION])
-    assert _dai_page(tree, 1)["outcome"] == "genuinely-empty"
-    views = [
-        record
-        for record in _records(tree, ATTESTATORES, "testimonium")
-        if record["payload"]["chair"] == DAI
+    page_one = _dai_page(tree, 1)
+    assert page_one["outcome"] == "genuinely-empty"
+    assert page_one["payload"]["provenance"]["receipt_ref"] is None
+    assert "unit_call_refs" not in page_one["payload"]
+    readings = [json.loads(body)["choices"][0] for body in world.served(DAI)]
+    assert [answer["message"]["content"] for answer in readings if "finish_reason" in answer] == [
+        DAI_CONTINUATION
     ]
-    assert len(views) == 2
-    for view in views:
-        assert view["outcome"] == "not-run"
-        assert view["payload"]["reason"] == attestatores.BLANK_DETECTOR_ACT_REASON
-        assert view["payload"]["provenance"]["receipt_ref"] is None
-        assert view["inputs"] == []
 
 
 def test_a_detector_that_states_no_cap_leaves_dai_not_run_on_a_page_it_found_nothing_on(
@@ -428,17 +370,18 @@ def test_each_unit_call_is_bound_and_held_to_the_sealed_sampling_on_resume(tmp_p
         assert all(reference in record["inputs"] for reference in references)
 
     checked = []
-    real = attestatores.verify_unit_call_sampling
+    real = attestatores.verify_page_call_sampling
 
     def recording(context, payload, chair):
-        checked.append((context, payload["page_ordinal"]))
+        if chair == DAI:
+            checked.append((context, payload["page_ordinal"]))
         return real(context, payload, chair)
 
-    monkeypatch.setattr(attestatores, "verify_unit_call_sampling", recording)
+    monkeypatch.setattr(attestatores, "verify_page_call_sampling", recording)
     resumed = WitnessWorld(world.catalogue, world.decoding_sha256, tmp_path / "resume", {})
-    argv = _argv(tmp_path / "runs", world.catalogue, tmp_path / "config" / "models.toml", TIER)
+    argv = _argv(tmp_path / "runs", world.catalogue, MODELS, TIER)
     assert _run_main(attestatores, argv, serving_factory=resumed.factory) == EXIT_COMPLETE
-    assert sorted(ordinal for _context, ordinal in checked) == [1, 2]
+    assert {ordinal for _context, ordinal in checked} == {1, 2}
 
     context = checked[0][0]
     payload = copy.deepcopy(pages[0]["payload"])

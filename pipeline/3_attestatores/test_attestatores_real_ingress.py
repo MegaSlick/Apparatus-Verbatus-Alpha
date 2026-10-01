@@ -5,18 +5,12 @@ where every witness is served runs its full pass over a real submission.
 The run tree is real to the Ink Map's seal -- the Door, the Exemplar and the Ink
 Map run as programs over a genuine real submission, made of the synthetic
 fixture's own two pages copied into an approved storage root -- and the
-Designator's records are then **hand-built** on top, because no real Designator
-exists: its own program refuses on real ingress by design. The hand-built
-records are shaped exactly as `pipeline/2_designator/run.py::cut_minted_region`
-publishes them (a crop really cut from the sealed page, an identity that binds
-its transform, provenance naming a receipt this run wrote), so the lineage and
-provenance checks this stage runs before any chair is asked hold over them as
-they would over the real producer's output. Since D3 a real structural proposal
-also owes the served structure chair's own records -- the page's
-`structure-answer`, the `structure-status` that names it, and the `engine_call`
-on the seal's provenance -- so `_RealDesignator.scan` builds that chain too,
-through the same builder `common/test_stage_structure_proposals.py` publishes
-it with.
+Designator's record-detector census is then **hand-built** on top, shaped
+exactly as `pipeline/2_designator/run.py::_publish_detector_records` publishes
+it (a crop really cut from the sealed page, an identity that binds its
+transform, provenance naming a receipt this run wrote), so the checks this stage
+runs before any chair is asked hold over it as they would over the real
+producer's output.
 
 Every chair here is `operations/serving/fakes.py`: nothing starts a pod,
 contacts a provider or loads a model. The fakes stand behind a real
@@ -35,13 +29,11 @@ What is proven:
   witness (every witness runs its own full pass);
 - the shipped real catalogue serves every witness chair at every placement
   tier, so the mixed-posture guard never fires on it;
-- a full pass over a real submission completes: every act record and every
-  page record is published, page records name the Exemplar's own page subject,
-  no fixture declaration is read or reported, and the fixture accessor is never
-  touched (any touch would have refused the pass);
-- the continuation refusal names what the Designator must publish; the real
-  declaration set is empty in the exact shape the fixture reader builds; a
-  page ordinal the Exemplar never accounted for is a named refusal.
+- a full pass over a real submission completes: every page record is
+  published and names the Exemplar's own page subject, no fixture declaration
+  is read or reported, and the fixture accessor is never touched (any touch
+  would have refused the pass);
+- a page ordinal the Exemplar never accounted for is a named refusal.
 """
 
 from __future__ import annotations
@@ -71,7 +63,6 @@ from test_attestatores_live_pass import (  # noqa: E402
     CHANDRA_BODY,
     TIER,
     LiveWorld,
-    act_records,
     page_records,
     refusing_factory,
     write_live_catalogue,
@@ -80,13 +71,11 @@ from test_attestatores_live_pass import (  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import real_ingress_record  # noqa: E402
-from common.contracts.canonical import digest_of, self_hash  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting  # noqa: E402
-from common.contracts.identities import act_id as derive_act_id  # noqa: E402
-from common.contracts.identities import attempt_id, region_id  # noqa: E402
+from common.contracts.identities import region_id  # noqa: E402
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, INK_MAP  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
-from common.imaging import crop_png  # noqa: E402
+from common.exemplar_boundary import cut_exemplar_crop  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     REAL_SCENARIO,
@@ -96,7 +85,6 @@ from common.stage import (  # noqa: E402
     fixture_serving_details,
     open_stage_context,
 )
-from common.test_stage_structure_proposals import _StructureDesignator  # noqa: E402
 from operations.serving.config import load_serving_recipes  # noqa: E402
 from operations.serving.fakes import ScriptedAnswer  # noqa: E402
 from operations.submit import gate, submit  # noqa: E402
@@ -111,10 +99,10 @@ FIXTURE_PAGES = ROOT / "proof" / "fixtures" / "synthetic-two-page-v0"
 RUN_ID = "real-attestatores"
 WITNESS_CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
 
-# Three structural acts over the two submitted 200x260 pages: two on page 1,
-# one on page 2. The page-scoped chairs therefore answer twice and the
-# act-scoped chair three times; a script whose length disagreed would be the
-# first thing to notice a scope regression.
+# Three detector records over the two submitted 200x260 pages: two on page 1,
+# one on page 2. Chandra and Churro therefore answer once per page, and DAI once
+# per detector record, three times; a script whose length disagreed would be the
+# first thing to notice a unit regression.
 ACTS: tuple[tuple[int, dict[str, int], str], ...] = (
     (1, {"x": 10, "y": 10, "w": 180, "h": 100}, "structural:1:1"),
     (1, {"x": 10, "y": 130, "w": 180, "h": 100}, "structural:1:2"),
@@ -221,7 +209,7 @@ def _argv(run_root: Path, catalogue: Path, *extra: str) -> list[str]:
 
 
 def _open(run_root: Path, catalogue: Path, stage: str, *extra: str) -> StageContext:
-    parser = attestatores.stage_parser("real-ingress stage context", accepts_chair=True)
+    parser = attestatores.stage_parser("real-ingress stage context")
     return open_stage_context(parser.parse_args(_argv(run_root, catalogue, *extra)), stage)
 
 
@@ -237,16 +225,10 @@ def _run_main(run_root: Path, catalogue: Path, *, factory, extra: tuple[str, ...
 
 
 class _RealDesignator:
-    """The Designator's records over a real run, hand-built.
+    """The Designator's record-detector census over a real run, hand-built.
 
-    Shaped as `cut_minted_region` publishes a proposal region: the crop is cut
-    from the sealed page's own bytes, `region_id` binds the act to its
-    transform, `raw_bounds` is the rectangle the act identity was minted from,
-    and `provenance` is the structure chair's record naming a receipt this run
-    wrote -- so `proposed_regions`' lineage and provenance checks, which run
-    before any chair is asked, hold over it. The context carries `fixture=None`:
-    a seal that needed a fixture to publish could not come from a real
-    producer either.
+    The context carries `fixture=None`: a seal that needed a fixture to publish
+    could not come from a real producer either.
     """
 
     def __init__(self, root: Path):
@@ -273,9 +255,12 @@ class _RealDesignator:
             )
             if record["outcome"] == "sealed"
         }
-        resolved = registry.resolve("designator_structure")
+        self.detector_provenance = self._served_provenance(registry, "secondary_proposer")
+
+    def _served_provenance(self, registry: ChairRegistry, chair: str) -> dict[str, Any]:
+        resolved = registry.resolve(chair)
         assert isinstance(resolved, ChairIdentity)
-        self.provenance = {
+        return {
             "chair": resolved.role,
             "chair_state": "configured",
             "resolved_identity": resolved.to_record(),
@@ -288,121 +273,77 @@ class _RealDesignator:
             ),
             "adapter_revision": self.context.adapter_revision,
         }
-        # Built lazily by `scan`: standing one up writes a serving receipt the
-        # moment it exists, and the tests that never seal a proposal never need
-        # the served chain at all.
-        self._served: _StructureDesignator | None = None
-        self.rows: list[dict[str, Any]] = []
 
-    def scan(self, ordinal: int, rectangles: list[dict[str, int]]) -> None:
-        """One page's served-chair records: its retained answer, then its status.
+    def detect(self, ordinal: int, rectangles: list[dict[str, int]]) -> None:
+        """DAI's record detector census for one page: one cut record per rectangle.
 
-        A real submission's structural proposal is checked back through the
-        page's own `structure-status` to the `structure-answer` the chair
-        returned, and a seal whose provenance names no `engine_call` is
-        refused by name before any rectangle is recomputed -- so a hand-built
-        real tree that proposes anything owes those records too.
-
-        Composed from `test_stage_structure_proposals._StructureDesignator`,
-        the same builder `common/test_stage_real_ingress.py` uses, rather than
-        re-deriving the answer/status/call-record chain here: one description
-        of the served route, in one place. Only the chain is borrowed. The
-        regions stay `propose`'s own, because this stage's witnesses read the
-        crop bytes it cuts from the sealed page, and the act keys stay
-        `ACTS`' own structural keys.
+        Shaped as the Designator's `_publish_detector_records` publishes it, so
+        the Attestatores' own crop re-derivation holds over every record crop.
         """
-        if self._served is None:
-            self._served = _StructureDesignator(
-                self.root, RUN_ID, scenario=REAL_SCENARIO, fixture=None
-            )
-        self._served.status(ordinal, self._served.answer(ordinal, rectangles))
-
-    def propose(self, ordinal: int, bounds: dict[str, int], key: str) -> str:
         page = self.pages[ordinal]
         page_id = page["subject_id"]
-        act = derive_act_id(page_id, "proposal", bounds)
-        image_path = page["payload"]["image_path"]
-        crop = crop_png(self.tree.read_bytes(image_path), bounds)
-        digest, stored = self.tree.put_blob(DESIGNATOR, crop)
-        transform = {
-            "operation": "crop",
-            "source_page_ordinal": ordinal,
-            "source_page_id": page_id,
-            "bounds": bounds,
-        }
-        published = self.context.publish(
-            kind="region",
-            subject_id=act,
+        page_bytes = self.tree.read_bytes(page["payload"]["image_path"])
+        page_ref = self.context.input_ref(page["payload"]["image_path"])
+        subjects = []
+        for index, bounds in enumerate(rectangles):
+            subject = f"{page_id}-detector-{index}"
+            crop = cut_exemplar_crop(self.context.retain, page_bytes, ordinal, page_id, bounds)
+            region = self.context.publish(
+                kind="detector-region",
+                subject_id=subject,
+                outcome="proposed",
+                inputs=[page_ref],
+                payload={
+                    "region_id": region_id(subject, crop["transform"]),
+                    "record_key": subject,
+                    "origin": "detector",
+                    **crop,
+                    "raw_bounds": bounds,
+                    "padding": None,
+                    "provenance": self.detector_provenance,
+                },
+            )
+            region_ref = self.context.input_ref(region.relative_path)
+            self.context.publish(
+                kind="detector-record",
+                subject_id=subject,
+                outcome="proposed",
+                inputs=[page_ref, region_ref],
+                payload={
+                    "page_ordinal": ordinal,
+                    "detector_ordinal": index,
+                    "bounds": bounds,
+                    "cut": True,
+                    "region_ref": region_ref,
+                    "provenance": self.detector_provenance,
+                },
+            )
+            subjects.append(subject)
+        self.context.publish(
+            kind="detector-page",
+            subject_id=page_id,
             outcome="proposed",
-            attempt=attempt_id(act, "crop", 1),
-            inputs=[self.context.input_ref(image_path)],
+            inputs=[page_ref],
             payload={
-                "region_id": region_id(act, transform),
-                "act_key": key,
-                "attempt_ordinal": 1,
-                "origin": "proposal",
-                "transform": transform,
-                "transform_digest": digest_of(transform),
-                "raw_bounds": bounds,
-                "padding": None,
-                "image_path": stored.relative_path,
-                "image_sha256": digest,
-                "provenance": self.provenance,
+                "page_ordinal": ordinal,
+                "detection_count": len(subjects),
+                "record_subjects": subjects,
+                "provenance": self.detector_provenance,
             },
         )
-        self.rows.append(
-            {
-                "act_id": act,
-                "act_key": key,
-                "page_id": page_id,
-                "page_ordinal": ordinal,
-                "has_continuation": False,
-                "outcome": "proposed",
-                "evidence": [self.context.input_ref(published.relative_path)],
-            }
-        )
-        return act
 
     def seal(self) -> None:
-        # `_structure_chair_call` reads the served call from the *seal*, not
-        # from any one row, so once a page has been scanned the seal carries the
-        # served designator's own provenance -- engine_call included -- rather
-        # than the bare marker that predates the structure chair entirely.
-        provenance: dict[str, Any] = (
-            self._served.provenance()
-            if self._served is not None
-            else {"kind": "hand-built proposal seal"}
-        )
-        payload: dict[str, Any] = {
-            "expected_acts": self.rows,
-            "count": len(self.rows),
-            "provenance": provenance,
-        }
-        payload["self_hash"] = self_hash(payload)
-        self.context.publish(
-            kind="proposal-seal",
-            subject_id="proposal-seal",
-            outcome="proposed",
-            inputs=[reference for row in self.rows for reference in row["evidence"]],
-            payload=payload,
-        )
         self.context.seal_boundary()
         self.context.finish()
 
 
 def _designate(run_root: Path) -> _RealDesignator:
     designator = _RealDesignator(run_root)
-    # Every rectangle a page carries, listed on that page's one answer before
-    # anything is proposed from it: the answer's own `act_count` must reconcile
-    # with the acts it lists, and a rectangle it does not list may not be
-    # attributed to the chair.
     by_page: dict[int, list[dict[str, int]]] = {}
     for ordinal, bounds, _key in ACTS:
         by_page.setdefault(ordinal, []).append(bounds)
     for ordinal in sorted(by_page):
-        designator.scan(ordinal, by_page[ordinal])
-    for ordinal, bounds, key in ACTS:
-        designator.propose(ordinal, bounds, key)
+        designator.detect(ordinal, by_page[ordinal])
     designator.seal()
     return designator
 
@@ -564,7 +505,7 @@ def test_every_witness_runs_its_full_pass_over_a_real_submission(served_run, tmp
     assert "does not read" not in capsys.readouterr().err, "no fixture rows exist to pass over"
     assert world.loads == list(WITNESS_CHAIRS), "one residency per chair, chair-outer"
     assert len(world.requests("attestator_1")) == 2, "a page-scoped chair is asked once per page"
-    assert len(world.requests("attestator_2")) == 3, "an act-scoped chair is asked once per act"
+    assert len(world.requests("attestator_2")) == 3, "DAI is asked once per detector record"
     assert len(world.requests("attestator_3")) == 2
 
     tree = RunTree(run_root, RUN_ID)
@@ -572,62 +513,25 @@ def test_every_witness_runs_its_full_pass_over_a_real_submission(served_run, tmp
     pages = exemplar_page_ids(context)
     assert sorted(pages) == [1, 2]
 
-    acts = act_records(tree)
-    assert set(acts) == {(key, chair) for _o, _b, key in ACTS for chair in WITNESS_CHAIRS}
-    for record in acts.values():
-        assert attestatores.served_live(context, record["payload"]["provenance"]), (
-            "a real act record's receipt answers for a live chair, not a fixture"
-        )
+    kinds = {entry["kind"] for entry in tree.build_manifest(ATTESTATORES)["artifacts"]}
+    assert "testimonium" not in kinds and "act-attachment" not in kinds
     page = page_records(tree)
-    assert set(page) == {
-        (1, "attestator_1"),
-        (1, "attestator_3"),
-        (2, "attestator_1"),
-        (2, "attestator_3"),
-    }
+    assert set(page) == {(ordinal, chair) for ordinal in (1, 2) for chair in WITNESS_CHAIRS}
     for (ordinal, _chair), record in page.items():
         assert record["subject_id"] == pages[ordinal], (
             "the page record names the Exemplar's own page"
         )
-        assert attestatores.served_live(context, record["payload"]["provenance"]), (
+        receipt = tree.read_run_receipt(record["payload"]["provenance"]["receipt_ref"])
+        assert not receipt["endpoint"].startswith("fixture://"), (
             "a real page record's receipt answers for a live chair, not a fixture"
         )
-    kinds = {entry["kind"] for entry in tree.build_manifest(ATTESTATORES)["artifacts"]}
     assert "stage-seal" in kinds
 
 
 # ============================ the replaced readers ============================
 
 
-def test_a_real_continuation_claim_with_no_readable_region_is_refused_by_name():
-    context = _real_context()
-    act = {
-        "act_id": "act-with-far-page",
-        "act_key": "structural:1:1",
-        "page_id": "page-1",
-        "page_ordinal": 1,
-        "has_continuation": True,
-        "outcome": "proposed",
-        "evidence": [],
-    }
-    refused = "the proposed region was refused before this chair ran: crop lineage"
-
-    with pytest.raises(FatalAccounting, match="Designator must publish the continuation region"):
-        attestatores.page_denominator(context, [act], {act["act_id"]: ([], refused)})
-
-
-def test_a_real_pass_declares_nothing_and_names_nothing_unread(capsys):
-    declared = attestatores.real_declarations(2)
-    assert declared == {
-        "ordinal": 2,
-        "failures": set(),
-        "empty": set(),
-        "not_run": set(),
-        "malformed": {},
-    }
-    fixture_shape = attestatores.declarations_for(SimpleNamespace(scenario="happy", fixture={}), 2)
-    assert declared == fixture_shape, "the two builders cannot drift on the declaration shape"
-
+def test_a_real_pass_names_nothing_unread(capsys):
     attestatores.refuse_unread_fixture_declarations(_real_context(), list(WITNESS_CHAIRS))
     assert capsys.readouterr().err == ""
 
@@ -675,16 +579,11 @@ def test_page_subject_reuses_a_supplied_index_rather_than_rewalking_the_exemplar
         attestatores.page_subject(context, 9, page_ids={1: "page-one"})
 
 
-def test_live_and_publish_passes_walk_the_exemplar_index_once_each(
-    served_run, tmp_path, monkeypatch
-):
-    """The full pass builds the Exemplar page index once per pass function.
+def test_a_pass_walks_the_exemplar_index_once(served_run, tmp_path, monkeypatch):
+    """The full pass builds the Exemplar page index once and threads it through.
 
-    Before the fix, `live_attempt_pass` and `publish_page_testimonia_and_attachments`
-    each rewalked the index on every `page_subject`/`presentation_for_page` call --
-    about 7 walks for this fixture's 2 pages and 2 page-scoped chairs. Now each
-    of the two pass functions walks it exactly once and threads the result
-    through, so a run over this fixture makes exactly 2 walks total.
+    Every `page_subject`/`presentation_for_page` call is handed the index, so a
+    pass never rewalks the validated Exemplar inventory per page and chair.
     """
     run_root = _copy(served_run.run_root, tmp_path)
     _designate(run_root)
@@ -707,10 +606,7 @@ def test_live_and_publish_passes_walk_the_exemplar_index_once_each(
     )
 
     assert exit_code == attestatores.EXIT_COMPLETE
-    assert len(calls) == 2, (
-        "one walk in live_attempt_pass and one in publish_page_testimonia_and_attachments, "
-        "not one per page_subject/presentation_for_page call site"
-    )
+    assert len(calls) == 1, "one walk per pass, not one per page_subject call site"
 
 
 def test_presentation_for_page_refuses_a_refused_page_by_name_rather_than_a_keyerror():

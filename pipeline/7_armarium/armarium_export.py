@@ -53,7 +53,6 @@ from common.contracts.outcomes import (
     CONTINUATION_FLAGS,
     NO_ACT_PAGE_HELD_REASON,
     PAGE_READ_SILENT_PAGE_REASON,
-    SILENT_PAGE_REASON,
     TEXT_STATUSES,
     ArmariumCategory,
     derive_record_text_status,
@@ -61,7 +60,7 @@ from common.contracts.outcomes import (
     run_aggregate,
 )
 from common.contracts.stages import ARMARIUM
-from common.contracts.uncertainty import PAGE_READ_LECTIO, utf8_round_trip
+from common.contracts.uncertainty import utf8_round_trip
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import dimensions
 from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
@@ -73,22 +72,14 @@ EXPORT_MANIFEST_NAME: Final = "EXPORT_MANIFEST.json"
 # Shared by run.py and bundle.py so the recorded name and the written file agree.
 ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # Every change to the manifest's closed shape moves the id, so an older reader
-# refuses a new field instead of silently presenting a bundle without it.
-EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v7"
-# A clustered run's manifest counts logical acts, not proposal-seal rows, so it
-# carries its own id and a reader cannot mistake one count for the other.
-EXPORT_MANIFEST_CLUSTERED_SCHEMA: Final = "armarium-export-manifest.v8"
-# A page-read run counts the readings the Perlector established on each page it
-# read whole (`common.stage.reading_acts`), not proposal-seal rows, and carries two
-# claims the other shapes lack: its `other` readings, a labelled layer beside the
-# acts, and each page's accounting. Its own id keeps a reader from mistaking one
-# denominator for another.
-EXPORT_MANIFEST_PAGE_SCHEMA: Final = "armarium-export-manifest.v9"
-READING_UNIT_ACT: Final = "act"
-READING_UNIT_PAGE: Final = "page"
+# refuses a new field instead of silently presenting a bundle without it. The
+# manifest counts the readings the Perlector established on each page it read
+# whole (`common.stage.reading_acts`), and carries its `other` readings, a
+# labelled layer beside the acts, and each page's accounting.
+EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v10"
 # The act row and SQLite ids move with the row shape, so a consumer keying on the
 # id never reads an old shape out of a new row.
-ACT_RECORD_SCHEMA: Final = "armarium-act.v3"
+ACT_RECORD_SCHEMA: Final = "armarium-act.v4"
 _ACT_RECORD_FIELDS: Final = frozenset(
     {
         "schema",
@@ -117,22 +108,10 @@ _ACT_RECORD_FIELDS: Final = frozenset(
 _REVIEW_ITEM_FIELDS: Final = frozenset(
     {"schema", "act_id", "act_key", "category", "reason", "evidence_refs"}
 )
-_SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v3"
-_SQLITE_USER_VERSION: Final = 3
-# A page-read run's act rows carry the `page-read` lectio kind in their
-# uncertainty layer, a value the v3 shapes do not name, so both ids move there.
-ACT_RECORD_PAGE_SCHEMA: Final = "armarium-act.v4"
-_SQLITE_PAGE_SCHEMA: Final = "armarium-acts-sqlite.v4"
-_SQLITE_PAGE_USER_VERSION: Final = 4
-# (act row id, SQLite schema id, SQLite user_version) for each reading unit.
-_ACT_PRODUCT_IDS: Final = {
-    READING_UNIT_ACT: (ACT_RECORD_SCHEMA, _SQLITE_SCHEMA, _SQLITE_USER_VERSION),
-    READING_UNIT_PAGE: (ACT_RECORD_PAGE_SCHEMA, _SQLITE_PAGE_SCHEMA, _SQLITE_PAGE_USER_VERSION),
-}
+_SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v4"
+_SQLITE_USER_VERSION: Final = 4
 # Field sets are checked exactly, so each shape change needs a new id.
-SOURCES_SCHEMA: Final = "armarium-sources.v3"
-# v3 plus the page path's `other_outcomes`, `other_citations` and `page_accounting`.
-SOURCES_PAGE_SCHEMA: Final = "armarium-sources.v4"
+SOURCES_SCHEMA: Final = "armarium-sources.v4"
 # The `other` readings of a page-read run travel in their own member, never in
 # `acts.jsonl`: that file is one row per counted act, and its row count is the act
 # partition a consumer reconciles against.
@@ -223,18 +202,21 @@ _SEMANTIC_ANNOTATIONS_CLAIM: Final = "semantic-annotations-not-produced"
 _TRANSCRIPTION_ANNOTATIONS_CARRIED: Final = "archetypus-sealed-uncertain-and-illegible-marks"
 _TRANSCRIPTION_ANNOTATIONS_NOT_APPLICABLE: Final = "not-applicable"
 _LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
-# Proposal act keys are `proposal:<page>:<block>` with unpadded ordinals, so a
-# string sort puts block 10 before block 2. Other keys (`logical:<id>`, fixtures)
-# sort as strings after them.
-_PROPOSAL_ACT_KEY_PATTERN: Final = re.compile(r"^proposal:(\d+):(\d+)$")
+# Reading keys are `p<page>:<n>` with unpadded ordinals, so a string sort puts
+# page 10 before page 2. A page's row with no reading (`p<page>:blank`) follows
+# its numbered readings; any other key sorts as a string after every page.
+_READING_ACT_KEY_PATTERN: Final = re.compile(r"^p(\d+):(?:(\d+)|([a-z]+))$")
 
 
-def act_key_sort_key(act_key: str) -> tuple[int, int, int] | tuple[int, str, int]:
-    """Reading order for an act key: (page ordinal, block ordinal) when parseable."""
-    match = _PROPOSAL_ACT_KEY_PATTERN.match(act_key)
+def act_key_sort_key(act_key: str) -> tuple:
+    """Reading order for an act key: page ordinal, then reading ordinal."""
+    match = _READING_ACT_KEY_PATTERN.match(act_key)
     if match is None:
-        return (1, act_key, 0)
-    return (0, int(match.group(1)), int(match.group(2)))
+        return (1, act_key)
+    page, ordinal, word = match.groups()
+    if ordinal is not None:
+        return (0, int(page), 0, int(ordinal))
+    return (0, int(page), 1, word)
 
 
 _PIXEL_REFERENCE_CLAIM: Final = "reference validity only; pixel resolution requires source access"
@@ -256,11 +238,7 @@ _CONTAINER_GRANULARITY_LIMIT: Final = (
     "than one unit for the submitted file; the file's own single terminal category is not "
     "represented and cannot be counted off this ledger"
 )
-_ACT_PARTITION_DENOMINATOR: Final = "proposal-seal expected acts"
-# A logical act over two captures is two proposal-seal rows but one terminal
-# category, so a clustered run names its denominator separately.
-_LOGICAL_ACT_PARTITION_DENOMINATOR: Final = "physical-act-partition logical acts"
-_PAGE_READ_ACT_PARTITION_DENOMINATOR: Final = "page-read reading acts"
+_ACT_PARTITION_DENOMINATOR: Final = "page-read reading acts"
 _PAGE_CENSUS_DENOMINATOR: Final = "run.json source-page/frame rows"
 _SALVAGE_PROMOTION_CLAIM: Final = (
     "recorded approval then pipeline re-entry; never export-time act promotion"
@@ -332,19 +310,13 @@ class ArmariumProjection:
     salvage_items: tuple[dict[str, Any], ...] | None = None
     # The held set is derived from these rows, never stored beside them.
     ink_map_pages: tuple[dict[str, Any], ...] = ()
-    # A clustered run's proposal-seal row count. There `expected_acts` counts
-    # logical acts, so the seal's own count travels beside it for a reader to
-    # reconcile against the seal. `None` for an image-local
-    # run, where the two counts are equal.
-    local_proposal_rows: int | None = None
     # `None` means the basis is missing, not that everything was measured;
     # `_validate_projection` refuses it.
     not_measured_basis: dict[str, Any] | None = None
     continuation_joins: tuple[dict[str, Any], ...] = ()
-    # `page` for a run whose Perlector read whole pages. Its `other` readings are
-    # a separate layer, shaped as acts plus `page_ordinal`, never in `acts`; its
-    # page accounting rows are text-free, one per real sealed page.
-    reading_unit: str = READING_UNIT_ACT
+    # The `other` readings are a separate layer, shaped as acts plus
+    # `page_ordinal`, never in `acts`; the page accounting rows are text-free,
+    # one per real sealed page.
     other_readings: tuple[dict[str, Any], ...] = ()
     page_accounting: tuple[dict[str, Any], ...] = ()
 
@@ -470,16 +442,6 @@ def continuation_join_row(
     }
 
 
-def _self_revisions(layer: dict[str, Any]) -> list | None:
-    """The layer's self-revisions, refused when absent: a missing key is not zero revisions."""
-    if "self_revisions" not in layer:
-        raise SchemaRefusal(
-            "a delivered act's uncertainty layer carries no self_revisions field; an absent "
-            "measurement may not be counted as no revisions"
-        )
-    return layer["self_revisions"]
-
-
 def _doubt(layer: Any) -> dict[str, int | str | None]:
     """How much doubt a literal carries, so a join never reads cleaner than its halves."""
     layer = layer if isinstance(layer, dict) else {}
@@ -487,14 +449,8 @@ def _doubt(layer: Any) -> dict[str, int | str | None]:
     result = {
         "uncertain_spans": len(layer.get("uncertain_spans") or []),
         "gaps": len(layer.get("gaps") or []),
-        # Null when not measured: a withheld draft, or a fed one whose comparison
-        # ran out of its sealed step budget. Never counted as no revisions.
-        "self_revisions": (
-            None
-            if layer.get("lectio_kind") in ("primed-draft-withheld", PAGE_READ_LECTIO)
-            or _self_revisions(layer) is None
-            else len(_self_revisions(layer))
-        ),
+        # A page reading's self-revisions are not measured.
+        "self_revisions": None,
         "assessment": assessment.get("state") if isinstance(assessment, dict) else None,
     }
     result["lectio_kind"] = layer["lectio_kind"]
@@ -610,9 +566,8 @@ def build_armarium_bundle(
             else None
         ),
     )
-    page_path = projection.reading_unit == READING_UNIT_PAGE
     sources_record: dict[str, Any] = {
-        "schema": SOURCES_PAGE_SCHEMA if page_path else SOURCES_SCHEMA,
+        "schema": SOURCES_SCHEMA,
         "pages": source_rows,
         "regions": _source_regions(projection.acts + projection.other_readings),
         "act_citations": _act_citations(projection.acts),
@@ -623,20 +578,10 @@ def build_armarium_bundle(
         "salvage_regions": _salvage_regions(projection.salvage_items),
         # Lets a clean-machine verifier derive the page-level hold itself.
         "ink_map_pages": list(projection.ink_map_pages),
+        "other_outcomes": _other_outcomes(projection.other_readings),
+        "other_citations": _act_citations(projection.other_readings),
+        "page_accounting": list(projection.page_accounting),
     }
-    if page_path:
-        sources_record["other_outcomes"] = _other_outcomes(projection.other_readings)
-        sources_record["other_citations"] = _act_citations(projection.other_readings)
-        sources_record["page_accounting"] = list(projection.page_accounting)
-    memberships = _logical_membership_map(projection.acts)
-    if memberships:
-        # Source evidence for the clustered claim, so a rebuilt package cannot
-        # report fewer seal rows than the run produced. An image-local bundle
-        # omits the key.
-        sources_record["logical_accounting"] = {
-            "local_proposal_rows": projection.local_proposal_rows,
-            "memberships": memberships,
-        }
     if projection.continuation_joins:
         sources_record["continuation_joins"] = _mark_retained_references(
             list(projection.continuation_joins)
@@ -664,17 +609,14 @@ def build_armarium_bundle(
             )
         )
     if "acts-database" in formats.formats:
-        members["acts.sqlite"] = _acts_database_bytes(projection.acts, projection.reading_unit)
+        members["acts.sqlite"] = _acts_database_bytes(projection.acts)
     if "jsonl" in formats.formats:
-        members["acts.jsonl"] = _jsonl_bytes(
-            _act_json_records(projection.acts, projection.reading_unit)
-        )
+        members["acts.jsonl"] = _jsonl_bytes(_act_json_records(projection.acts))
         if reconstructions:
             members["reconstructions.jsonl"] = _jsonl_bytes(reconstructions)
-        if page_path:
-            members[OTHER_READINGS_MEMBER] = _jsonl_bytes(
-                _other_json_records(projection.other_readings)
-            )
+        members[OTHER_READINGS_MEMBER] = _jsonl_bytes(
+            _other_json_records(projection.other_readings)
+        )
     if "review-items" in formats.formats:
         members["review-items.jsonl"] = _jsonl_bytes(_review_records(projection.acts))
     if "salvage-tier" in formats.formats:
@@ -738,11 +680,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
         manifest = json.loads((root / EXPORT_MANIFEST_NAME).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError, RecursionError) as error:
         raise SchemaRefusal("EXPORT_MANIFEST.json is not readable canonical JSON") from error
-    if not isinstance(manifest, dict) or manifest.get("schema") not in {
-        EXPORT_MANIFEST_SCHEMA,
-        EXPORT_MANIFEST_CLUSTERED_SCHEMA,
-        EXPORT_MANIFEST_PAGE_SCHEMA,
-    }:
+    if not isinstance(manifest, dict) or manifest.get("schema") != EXPORT_MANIFEST_SCHEMA:
         raise SchemaRefusal("the package has no recognized EXPORT_MANIFEST schema")
     if manifest.get("self_hash") != self_hash(manifest):
         raise SchemaRefusal("EXPORT_MANIFEST.json fails its self-hash")
@@ -784,10 +722,6 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
 
     formats = _manifest_formats(manifest)
     sources = _load_sources(root)
-    if sources["reading_unit"] != manifest_reading_unit(manifest):
-        raise SchemaRefusal(
-            "the package sources and manifest disagree about what one reading covered"
-        )
     _verify_source_references(sources["pages"], root)
     _verify_region_references(sources, root)
     _verify_salvage_region_references(sources, root)
@@ -803,8 +737,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_uncertainty_claim(manifest)
     _verify_exact_product_members(formats, sources, actual_names)
     search_fold_verification = _verify_product_accounting(root, manifest, formats, sources)
-    if sources["reading_unit"] == READING_UNIT_PAGE:
-        _verify_page_layers(root, manifest, formats, sources)
+    _verify_page_layers(root, manifest, formats, sources)
     _verify_continuation_joins(root, formats, sources)
     verification = {}
     if search_fold_verification is not None:
@@ -995,48 +928,17 @@ NOT_MEASURED_SCHEMA: Final = "armarium-not-measured.v1"
 NOT_MEASURED_BASIS_SCHEMA: Final = "armarium-not-measured-basis.v1"
 # Every instrument is emitted on every bundle, so an absent row never reads as a
 # measured one.
-_TESTIMONY_COVERAGE: Final = "page-testimony-content-coverage"
-_PAGE_INK_CONSERVATION: Final = "page-ink-conservation"
-_ACT_VISIBILITY_SURVEY: Final = "act-visibility-survey"
 _PERLECTOR_UNCERTAIN_SPANS: Final = "perlector-uncertain-spans"
 _GEOMETRY_CALIBRATION: Final = "designator-geometry-calibration"
-# The comparisons a sealed bound stopped: a delivered reading's self-revision
-# and dissent rows past the dissent budget, and page witness alignments the
-# aligner stopped on one of its own bounds.
-_COMPARISON_BOUNDS: Final = "comparison-bounds"
-NOT_MEASURED_INSTRUMENTS: Final = (
-    _TESTIMONY_COVERAGE,
-    _PAGE_INK_CONSERVATION,
-    _ACT_VISIBILITY_SURVEY,
-    _PERLECTOR_UNCERTAIN_SPANS,
-    _GEOMETRY_CALIBRATION,
-    _COMPARISON_BOUNDS,
-)
-# A page-read run has no act attachments, conservation records or capture
-# survey for the first three to read; the page accounting measures what they
-# did, and its thresholds, and the two readings the page path does not make,
-# are disclosed instead.
+# The page accounting's own thresholds, and Pass C over each page reading.
 _PAGE_ACCOUNTING_THRESHOLDS: Final = "page-accounting-thresholds"
 _PASS_C: Final = "perlector-pass-c"
-_LECTIO_NUDA: Final = "lectio-nuda"
-PAGE_NOT_MEASURED_INSTRUMENTS: Final = (
+NOT_MEASURED_INSTRUMENTS: Final = (
     _PERLECTOR_UNCERTAIN_SPANS,
     _GEOMETRY_CALIBRATION,
     _PAGE_ACCOUNTING_THRESHOLDS,
     _PASS_C,
-    _LECTIO_NUDA,
 )
-
-
-def not_measured_instruments(reading_unit: str) -> tuple[str, ...]:
-    """The closed instrument list a bundle of this reading unit names, in order."""
-    if reading_unit == READING_UNIT_PAGE:
-        return PAGE_NOT_MEASURED_INSTRUMENTS
-    if reading_unit == READING_UNIT_ACT:
-        return NOT_MEASURED_INSTRUMENTS
-    raise SchemaRefusal(
-        f"no not-measured instruments are defined for reading unit {reading_unit!r}"
-    )
 
 
 # `declared-unproduced` means no stage in this build publishes the instrument, so
@@ -1046,17 +948,6 @@ _NOT_MEASURED_STATUSES: Final = frozenset({"measured", "not-measured", "declared
 _NOT_MEASURED_ENTRY_FIELDS: Final = frozenset({"instrument", "status", "detail", "recorded_in"})
 _NOT_MEASURED_FIELDS: Final = frozenset({"schema", "count", "entries"})
 _NOT_MEASURED_DETAIL_FIELDS: Final = {
-    _TESTIMONY_COVERAGE: frozenset({"acts_total", "acts_unmeasured", "reasons"}),
-    _PAGE_INK_CONSERVATION: frozenset({"pages_sealed", "pages_not_reconciled", "reasons"}),
-    _ACT_VISIBILITY_SURVEY: frozenset(
-        {
-            "acts_total",
-            "acts_with_capture_presentation",
-            "capture_rows",
-            "rows_with_named_absence",
-            "absence_codes",
-        }
-    ),
     _PERLECTOR_UNCERTAIN_SPANS: frozenset(
         {
             "sealed_audit_round_cap",
@@ -1067,55 +958,24 @@ _NOT_MEASURED_DETAIL_FIELDS: Final = {
         }
     ),
     _GEOMETRY_CALIBRATION: frozenset({"configurations"}),
-    _COMPARISON_BOUNDS: frozenset(
-        {
-            "delivered_self_revisions_stopped",
-            "delivered_dissent_rows_stopped",
-            "act_witness_chairs_unmeasured",
-            "delivered_acts",
-        }
-    ),
     _PAGE_ACCOUNTING_THRESHOLDS: frozenset(
         {"policy_sha256", "thresholds", "calibrated_for_this_corpus", "sample_count"}
     ),
     _PASS_C: frozenset({"pages_read", "pages_audit_not_run", "sealed_audit_round_cap"}),
-    _LECTIO_NUDA: frozenset({"sealed_nuda_per_mille", "lectio_nuda_records"}),
 }
-_COMPARISON_BOUNDS_ROW_FIELDS: Final = frozenset(
-    {"act_key", "self_revision_stopped", "dissent_chairs_stopped"}
-)
 _GEOMETRY_CALIBRATION_ROW_FIELDS: Final = frozenset(
     {"configuration", "calibrated_for_this_corpus", "sample_count"}
 )
 # Where a reader checks each row against the evidence.
 _NOT_MEASURED_RECORDED_IN: Final = {
-    _TESTIMONY_COVERAGE: (
-        "each act's Recensor review, fields `testimony_content_coverage` and "
-        "`testimony_content_coverage_continuation`, in the retained run"
-    ),
-    _PAGE_INK_CONSERVATION: (
-        "the Designator's per-page conservation records, field `ink_measurable`, in the "
-        "retained run"
-    ),
-    _ACT_VISIBILITY_SURVEY: (
-        "each act's Recensor review, field `cross_capture_coverage`, whose capture rows "
-        "carry the named absence codes, in the retained run"
-    ),
     _PERLECTOR_UNCERTAIN_SPANS: (
         "the sealed Perlector audit policy's `round_cap` and each act's uncertainty layer, "
         "carried beside the act record in this bundle"
     ),
     _GEOMETRY_CALIBRATION: (
-        "the `provenance` blocks of the sealed Designator padding, geometry and grouping "
-        "configurations and of the Perlector protocol's `[truncation]` table, whose digests "
+        "the `provenance` blocks of the sealed Designator geometry configuration and of the "
+        "Perlector protocol's `[truncation]` table, whose digests "
         "this run's `config_digest` binds"
-    ),
-    _COMPARISON_BOUNDS: (
-        "each delivered act's established Perlectio, fields `self_revision` (the "
-        "`comparison-step-limit` non-verdict) and `dissent` (rows carrying "
-        "`max_comparison_steps`), in the retained run; each delivered act's exported "
-        "witness rows, field `dissent_stopped`, in this bundle; and the `unmeasured` "
-        "shortfall of each act's coverage record in this bundle's aggregate basis"
     ),
     _PAGE_ACCOUNTING_THRESHOLDS: (
         "the sealed `config/page_accounting.toml`, whose digest this run's `config_digest` "
@@ -1125,19 +985,13 @@ _NOT_MEASURED_RECORDED_IN: Final = {
         "each page's `page-reading` record, field `audit`, and the sealed Perlector audit "
         "policy's `round_cap`, in the retained run"
     ),
-    _LECTIO_NUDA: (
-        "the sealed Perlector protocol's `nuda_per_mille` and the Perlector's `lectio-nuda` "
-        "records, in the retained run"
-    ),
 }
 # In canonical order. `perlector-protocol` is not Designator geometry, but its
 # truncation length floor is an uncalibrated threshold and this is where an
 # export discloses those. The instrument name is already on every bundle, so
 # extend the list rather than rename it.
 _GEOMETRY_CONFIGURATION_NAMES: Final = (
-    "designator-padding",
     "designator-geometry",
-    "designator-grouping",
     "perlector-protocol",
 )
 
@@ -1178,35 +1032,13 @@ _MANIFEST_CLAIM_FIELDS: Final = frozenset(
         "salvage",
         "ink_map",
         "not_measured",
+        "other_readings",
+        "page_accounting",
     }
 )
-_ACT_PARTITION_CLAIM_FIELDS: Final = {
-    _ACT_PARTITION_DENOMINATOR: frozenset(
-        {"denominator", "expected_count", "counted", "reconciles", "categories", "act_keys"}
-    ),
-    _PAGE_READ_ACT_PARTITION_DENOMINATOR: frozenset(
-        {"denominator", "expected_count", "counted", "reconciles", "categories", "act_keys"}
-    ),
-    _LOGICAL_ACT_PARTITION_DENOMINATOR: frozenset(
-        {
-            "denominator",
-            "expected_count",
-            "counted",
-            "reconciles",
-            "categories",
-            "act_keys",
-            "local_proposal_rows",
-            "logical_membership",
-        }
-    ),
-}
-_PAGE_MANIFEST_CLAIM_FIELDS: Final = _MANIFEST_CLAIM_FIELDS | {"other_readings", "page_accounting"}
-# Which manifest schema each act-partition denominator travels under.
-_SCHEMA_FOR_DENOMINATOR: Final = {
-    _ACT_PARTITION_DENOMINATOR: EXPORT_MANIFEST_SCHEMA,
-    _LOGICAL_ACT_PARTITION_DENOMINATOR: EXPORT_MANIFEST_CLUSTERED_SCHEMA,
-    _PAGE_READ_ACT_PARTITION_DENOMINATOR: EXPORT_MANIFEST_PAGE_SCHEMA,
-}
+_ACT_PARTITION_CLAIM_FIELDS: Final = frozenset(
+    {"denominator", "expected_count", "counted", "reconciles", "categories", "act_keys"}
+)
 _CLAIM_SUBFIELDS: Final = {
     "submission_inventory": frozenset(
         {
@@ -1282,59 +1114,7 @@ def _validate_not_measured_detail(
 ) -> dict[str, Any]:
     """Validate the detail before either deriving or verifying its status."""
     detail = _require_exact_fields(value, _NOT_MEASURED_DETAIL_FIELDS[instrument], subject=subject)
-    if instrument == _TESTIMONY_COVERAGE:
-        acts_total = _require_non_negative_integer(
-            detail["acts_total"], subject=f"{subject} acts_total"
-        )
-        acts_unmeasured = _require_distinct_strings(
-            detail["acts_unmeasured"], subject=f"{subject} acts_unmeasured"
-        )
-        _require_distinct_strings(detail["reasons"], subject=f"{subject} reasons")
-        if len(acts_unmeasured) > acts_total:
-            raise SchemaRefusal(f"{subject} names more unmeasured acts than total acts")
-    elif instrument == _PAGE_INK_CONSERVATION:
-        pages_sealed = _require_non_negative_integer(
-            detail["pages_sealed"], subject=f"{subject} pages_sealed"
-        )
-        pages = detail["pages_not_reconciled"]
-        if (
-            not isinstance(pages, list)
-            or any(not is_plain_int(page) or page <= 0 for page in pages)
-            or len(pages) != len(set(pages))
-        ):
-            raise SchemaRefusal(
-                f"{subject} pages_not_reconciled is not a list of distinct positive page ordinals"
-            )
-        _require_distinct_strings(detail["reasons"], subject=f"{subject} reasons")
-        if len(pages) > pages_sealed:
-            raise SchemaRefusal(f"{subject} names more unreconciled pages than sealed pages")
-    elif instrument == _ACT_VISIBILITY_SURVEY:
-        acts_total = _require_non_negative_integer(
-            detail["acts_total"], subject=f"{subject} acts_total"
-        )
-        acts_presented = _require_non_negative_integer(
-            detail["acts_with_capture_presentation"],
-            subject=f"{subject} acts_with_capture_presentation",
-        )
-        capture_rows = _require_non_negative_integer(
-            detail["capture_rows"], subject=f"{subject} capture_rows"
-        )
-        absent_rows = _require_non_negative_integer(
-            detail["rows_with_named_absence"],
-            subject=f"{subject} rows_with_named_absence",
-        )
-        absence_codes = _require_distinct_strings(
-            detail["absence_codes"], subject=f"{subject} absence_codes"
-        )
-        if acts_presented > acts_total:
-            raise SchemaRefusal(f"{subject} names more presented acts than total acts")
-        if absent_rows > capture_rows:
-            raise SchemaRefusal(f"{subject} names more absent rows than capture rows")
-        if bool(absence_codes) != bool(absent_rows):
-            raise SchemaRefusal(
-                f"{subject} absence codes do not reconcile with its named-absence row count"
-            )
-    elif instrument == _PERLECTOR_UNCERTAIN_SPANS:
+    if instrument == _PERLECTOR_UNCERTAIN_SPANS:
         for field in (
             "sealed_audit_round_cap",
             "acts_delivered",
@@ -1359,36 +1139,6 @@ def _validate_not_measured_detail(
             raise SchemaRefusal(
                 f"{subject} names more acts with uncertain spans than delivered acts"
             )
-    elif instrument == _COMPARISON_BOUNDS:
-        for field in (
-            "delivered_self_revisions_stopped",
-            "delivered_dissent_rows_stopped",
-            "act_witness_chairs_unmeasured",
-        ):
-            _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
-        rows = detail["delivered_acts"]
-        if not isinstance(rows, list):
-            raise SchemaRefusal(f"{subject} delivered_acts is not a list")
-        for row in rows:
-            row = _require_exact_fields(
-                row, _COMPARISON_BOUNDS_ROW_FIELDS, subject=f"a row in {subject}"
-            )
-            if not _is_nonempty_str(row["act_key"]) or not isinstance(
-                row["self_revision_stopped"], bool
-            ):
-                raise SchemaRefusal(f"a row in {subject} has untyped values")
-            _require_distinct_strings(
-                row["dissent_chairs_stopped"], subject=f"a row in {subject} dissent_chairs_stopped"
-            )
-        keys = [row["act_key"] for row in rows]
-        if keys != sorted(set(keys)):
-            raise SchemaRefusal(f"{subject} does not name each delivered act once, in order")
-        if detail["delivered_self_revisions_stopped"] != sum(
-            row["self_revision_stopped"] for row in rows
-        ) or detail["delivered_dissent_rows_stopped"] != sum(
-            len(row["dissent_chairs_stopped"]) for row in rows
-        ):
-            raise SchemaRefusal(f"{subject} counts do not fall out of its own delivered-act rows")
     elif instrument == _PAGE_ACCOUNTING_THRESHOLDS:
         _require_sha256(detail["policy_sha256"], f"{subject} policy_sha256")
         thresholds = detail["thresholds"]
@@ -1421,9 +1171,6 @@ def _validate_not_measured_detail(
             _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
         if detail["pages_audit_not_run"] > detail["pages_read"]:
             raise SchemaRefusal(f"{subject} names more unaudited pages than pages read")
-    elif instrument == _LECTIO_NUDA:
-        for field in ("sealed_nuda_per_mille", "lectio_nuda_records"):
-            _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
     elif instrument == _GEOMETRY_CALIBRATION:
         configurations = detail["configurations"]
         if not isinstance(configurations, list) or len(configurations) != len(
@@ -1469,37 +1216,19 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     """
     _require_exact_fields(manifest, _MANIFEST_FIELDS, subject="EXPORT_MANIFEST.json")
     _verify_manifest_run_binding(manifest.get("run"))
-    reading_unit = manifest_reading_unit(manifest)
     claims = _require_exact_fields(
-        manifest["claims"],
-        _PAGE_MANIFEST_CLAIM_FIELDS
-        if reading_unit == READING_UNIT_PAGE
-        else _MANIFEST_CLAIM_FIELDS,
-        subject="the manifest claims block",
+        manifest["claims"], _MANIFEST_CLAIM_FIELDS, subject="the manifest claims block"
     )
     for name, fields in _CLAIM_SUBFIELDS.items():
         _require_exact_fields(claims[name], fields, subject=f"the manifest {name} claim")
     act_partition = claims["act_partition"]
     if not isinstance(act_partition, dict):
         raise SchemaRefusal("the manifest act_partition claim is not an object")
-    declared_denominator = act_partition.get("denominator")
-    # Package JSON can put an unhashable value here; check the type before the
-    # lookup so it is refused rather than raising TypeError.
-    act_partition_fields = (
-        _ACT_PARTITION_CLAIM_FIELDS.get(declared_denominator)
-        if isinstance(declared_denominator, str)
-        else None
-    )
-    if act_partition_fields is None:
-        raise SchemaRefusal("the manifest act denominator is not this build's fixed claim")
     _require_exact_fields(
-        act_partition, act_partition_fields, subject="the manifest act_partition claim"
+        act_partition, _ACT_PARTITION_CLAIM_FIELDS, subject="the manifest act_partition claim"
     )
-    if manifest.get("schema") != _SCHEMA_FOR_DENOMINATOR[act_partition["denominator"]]:
-        raise SchemaRefusal(
-            "the manifest schema version does not match its act-partition claim shape; a "
-            "clustered claim travels only under the clustered schema id, and vice versa"
-        )
+    if act_partition["denominator"] != _ACT_PARTITION_DENOMINATOR:
+        raise SchemaRefusal("the manifest act denominator is not this build's fixed claim")
     salvage = claims["salvage"]
     if not isinstance(salvage, dict):
         raise SchemaRefusal("the manifest salvage claim is not an object")
@@ -1519,17 +1248,7 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
         )
     if claims["page_census"]["denominator"] != _PAGE_CENSUS_DENOMINATOR:
         raise SchemaRefusal("the manifest page denominator is not this build's fixed claim")
-    _verify_not_measured_block(claims["not_measured"], not_measured_instruments(reading_unit))
-
-
-def manifest_reading_unit(manifest: dict[str, Any]) -> str:
-    """What one reading of this bundle's run covered, from its schema id alone."""
-    schema = manifest.get("schema")
-    if schema == EXPORT_MANIFEST_PAGE_SCHEMA:
-        return READING_UNIT_PAGE
-    if schema in (EXPORT_MANIFEST_SCHEMA, EXPORT_MANIFEST_CLUSTERED_SCHEMA):
-        return READING_UNIT_ACT
-    raise SchemaRefusal("the package has no recognized EXPORT_MANIFEST schema")
+    _verify_not_measured_block(claims["not_measured"])
 
 
 def _verify_manifest_run_binding(raw_run: object) -> None:
@@ -1568,7 +1287,7 @@ def _verify_manifest_run_binding(raw_run: object) -> None:
         _require_sha256(run["submission_id"], "the manifest run binding submission identity")
 
 
-def _verify_not_measured_block(block: object, instruments: tuple[str, ...]) -> None:
+def _verify_not_measured_block(block: object) -> None:
     """Every instrument once, in order, each status re-derived from its detail."""
     not_measured = _require_exact_fields(
         block, _NOT_MEASURED_FIELDS, subject="the manifest not_measured block"
@@ -1609,10 +1328,10 @@ def _verify_not_measured_block(block: object, instruments: tuple[str, ...]) -> N
                 "canonical evidence location"
             )
         named.append(instrument)
-    if named != list(instruments):
+    if named != list(NOT_MEASURED_INSTRUMENTS):
         raise SchemaRefusal(
             "the manifest not_measured block does not name this build's instruments exactly "
-            f"once each, in order: expected {list(instruments)}, got {named}"
+            f"once each, in order: expected {list(NOT_MEASURED_INSTRUMENTS)}, got {named}"
         )
     expected_count = sum(1 for row in rows if row["status"] != "measured")
     _require_non_negative_integer(not_measured["count"], subject="the manifest not_measured count")
@@ -1758,8 +1477,7 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
             tail_act_ids=sides[1],
             delivered_texts={act_id: literal[0] for act_id, literal in literals.items()},
             selected_formats=formats.formats,
-            flags_disagree=sources["reading_unit"] == READING_UNIT_PAGE
-            and join["not_reconstructed_reason"] == _FLAGS_DISAGREE,
+            flags_disagree=join["not_reconstructed_reason"] == _FLAGS_DISAGREE,
         )
         if expected != join:
             raise SchemaRefusal(
@@ -1977,31 +1695,11 @@ def edge_hold_pages_from_rows(rows: list[dict[str, Any]]) -> tuple[int, ...]:
     )
 
 
-def _logical_membership_map(acts) -> dict[str, dict[str, list[Any]]]:
-    """One shape for the manifest claim and its `sources.json` evidence, so
-    verification can compare them by equality."""
-    return {
-        act["act_id"]: {
-            "member_local_act_ids": list(act["logical_membership"]["member_local_act_ids"]),
-            "member_act_keys": list(act["logical_membership"]["member_act_keys"]),
-            "member_source_page_ordinals": list(
-                act["logical_membership"]["member_source_page_ordinals"]
-            ),
-        }
-        for act in sorted(acts, key=lambda item: item["act_id"])
-        if "logical_membership" in act
-    }
-
-
 def _act_partition_claim(
     projection: ArmariumProjection, categories: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    """The act denominator, under the name of the thing that was actually counted.
-
-    A clustered run counts logical acts and carries the seal's row count and the
-    membership beside it, so a reader can reconcile the bundle with the seal.
-    """
-    claim = {
+    """The act denominator, under the name of the thing that was actually counted."""
+    return {
         "denominator": _ACT_PARTITION_DENOMINATOR,
         "expected_count": projection.expected_acts,
         "counted": len(projection.acts),
@@ -2012,137 +1710,9 @@ def _act_partition_claim(
             for act in sorted(projection.acts, key=lambda item: item["act_id"])
         },
     }
-    if projection.reading_unit == READING_UNIT_PAGE:
-        claim["denominator"] = _PAGE_READ_ACT_PARTITION_DENOMINATOR
-        return claim
-    logical_rows = [act for act in projection.acts if "logical_membership" in act]
-    if not logical_rows:
-        return claim
-    claim["denominator"] = _LOGICAL_ACT_PARTITION_DENOMINATOR
-    claim["local_proposal_rows"] = projection.local_proposal_rows
-    claim["logical_membership"] = _logical_membership_map(projection.acts)
-    return claim
 
 
-_LOGICAL_MEMBERSHIP_FIELDS: Final = frozenset(
-    {
-        "member_local_act_ids",
-        "member_act_keys",
-        "member_source_page_ordinals",
-        "physical_page_components",
-    }
-)
-
-
-def _validate_logical_act_conservation(
-    projection: ArmariumProjection, act_ids: set[str], act_keys: set[str]
-) -> None:
-    """Every local proposal row is counted once: under a logical act, or alone.
-
-    Refuses a logical act exported beside its own members (the same ink counted
-    twice), and a member that reached no logical act, which would vanish because
-    the logical denominator is smaller than the seal's row count.
-    """
-    logical_rows = [act for act in projection.acts if "logical_membership" in act]
-    if not logical_rows:
-        if projection.local_proposal_rows is not None:
-            raise SchemaRefusal(
-                "an Armarium projection declares a proposal-seal row count but carries no "
-                "logical act; the two denominators are one number in an image-local run"
-            )
-        return
-    member_ids_seen: set[str] = set()
-    member_keys_seen: set[str] = set()
-    for act in logical_rows:
-        membership = act["logical_membership"]
-        if not isinstance(membership, dict) or set(membership) != _LOGICAL_MEMBERSHIP_FIELDS:
-            raise SchemaRefusal("an Armarium projection logical act has no closed membership")
-        ids = membership["member_local_act_ids"]
-        keys = membership["member_act_keys"]
-        ordinals = membership["member_source_page_ordinals"]
-        components = membership["physical_page_components"]
-        if (
-            not isinstance(ids, list)
-            or not ids
-            or any(not _is_line_safe_identity(member_id) for member_id in ids)
-            or ids != sorted(set(ids))
-            or not isinstance(keys, list)
-            or len(keys) != len(ids)
-            or any(not _is_line_safe_identity(member_key) for member_key in keys)
-            or keys != sorted(set(keys))
-            or not isinstance(ordinals, list)
-            or not ordinals
-            or any(not _is_count(ordinal) for ordinal in ordinals)
-            or ordinals != sorted(set(ordinals))
-            or not isinstance(components, list)
-            or not components
-        ):
-            raise SchemaRefusal(
-                "an Armarium projection logical act has malformed member ids, keys, source "
-                "page ordinals, or physical-page components; the projection is refused "
-                "because its local proposal accounting cannot be reconstructed"
-            )
-        colliding = sorted((set(ids) & act_ids) | (set(keys) & act_keys))
-        if colliding:
-            raise SchemaRefusal(
-                f"an Armarium projection exports member local act(s) {colliding} beside the "
-                "logical act they belong to; one logical act leaves as one act row, never "
-                "again as its own members"
-            )
-        repeated_members = sorted((set(ids) & member_ids_seen) | (set(keys) & member_keys_seen))
-        if repeated_members:
-            raise SchemaRefusal(
-                f"an Armarium projection repeats local member id/key(s) {repeated_members} "
-                "across logical acts; the projection is refused because a proposal row "
-                "belongs to exactly one logical act"
-            )
-        member_ids_seen.update(ids)
-        member_keys_seen.update(keys)
-        # A logical act's page attribution must cover every page its members were
-        # cut on, or a missing page looks silent or covered by a sibling. A
-        # superset is allowed: a continuation can reach a page no member was cut
-        # on. The ledger builds page categories from this, so absence is refused.
-        attributed = (projection.aggregate_basis.get("act_pages") or {}).get(act["act_key"])
-        if attributed is None:
-            raise SchemaRefusal(
-                f"logical act {act['act_id']} has no page attribution in the aggregate "
-                "basis; its member pages cannot enter the run's page accounting"
-            )
-        # The basis is not validated until `_aggregate_from_basis`, so check types
-        # before `set()`: a string would dedupe into its characters.
-        if not isinstance(attributed, list) or any(
-            not is_plain_int(ordinal) for ordinal in attributed
-        ):
-            raise SchemaRefusal(
-                f"logical act {act['act_id']} has a page attribution that is not a list of "
-                "page ordinals; the projection is refused because its member pages cannot be "
-                "counted against a malformed attribution"
-            )
-        uncovered = sorted(set(ordinals) - set(attributed))
-        if uncovered:
-            raise SchemaRefusal(
-                f"logical act {act['act_id']} has member acts marked out on page(s) {uncovered} "
-                "that its own page attribution does not name; a member capture's page may not "
-                "drop out of the run's page coverage check"
-            )
-    declared = projection.local_proposal_rows
-    if not is_plain_int(declared):
-        raise SchemaRefusal(
-            "an Armarium projection carries a logical act but does not say how many "
-            "proposal-seal rows its act denominator stands for"
-        )
-    accounted = len(member_ids_seen) + (len(projection.acts) - len(logical_rows))
-    if accounted != declared:
-        raise SchemaRefusal(
-            f"an Armarium projection accounts for {accounted} local proposal row(s) against a "
-            f"declared {declared}; every seal row is carried under exactly one logical act or "
-            "as an act of its own"
-        )
-
-
-def _validate_not_measured_basis(
-    basis: object, reading_unit: str = READING_UNIT_ACT
-) -> dict[str, Any]:
+def _validate_not_measured_basis(basis: object) -> dict[str, Any]:
     """Refuse a not-measured basis that is not this build's closed shape.
 
     Checked before any product byte is written, against the claim's own detail
@@ -2154,12 +1724,11 @@ def _validate_not_measured_basis(
             "`not_measured` block is derived from the run's own records and may not be "
             "built from nothing"
         )
-    instruments = not_measured_instruments(reading_unit)
-    expected = frozenset({"schema", *instruments})
+    expected = frozenset({"schema", *NOT_MEASURED_INSTRUMENTS})
     record = _require_exact_fields(basis, expected, subject="an Armarium not-measured basis")
     if record["schema"] != NOT_MEASURED_BASIS_SCHEMA:
         raise SchemaRefusal("an Armarium not-measured basis is not this build's schema")
-    for instrument in instruments:
+    for instrument in NOT_MEASURED_INSTRUMENTS:
         _validate_not_measured_detail(
             instrument,
             record[instrument],
@@ -2168,38 +1737,8 @@ def _validate_not_measured_basis(
     return record
 
 
-def _require_not_measured_denominators(
-    details: dict[str, dict[str, Any]], *, acts_total: int, sealed_pages: int, subject: str
-) -> None:
-    """Bind the three page/act denominators to the population actually exported."""
-    if details[_TESTIMONY_COVERAGE]["acts_total"] != acts_total:
-        raise SchemaRefusal(
-            f"{subject} testimony-content denominator does not equal its complete act population"
-        )
-    if details[_ACT_VISIBILITY_SURVEY]["acts_total"] != acts_total:
-        raise SchemaRefusal(
-            f"{subject} visibility-survey denominator does not equal its complete act population"
-        )
-    if details[_PAGE_INK_CONSERVATION]["pages_sealed"] != sealed_pages:
-        raise SchemaRefusal(
-            f"{subject} conservation denominator does not equal its sealed page census"
-        )
-
-
 def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
     """One instrument's status, read off what this run actually recorded."""
-    if instrument == _TESTIMONY_COVERAGE:
-        return "not-measured" if detail["acts_unmeasured"] else "measured"
-    if instrument == _PAGE_INK_CONSERVATION:
-        return "not-measured" if detail["pages_not_reconciled"] else "measured"
-    if instrument == _ACT_VISIBILITY_SURVEY:
-        # No capture rows, or every row a named absence, means the survey had no
-        # input: no stage yet publishes the Designator occlusion records it reads.
-        if detail["capture_rows"] == 0:
-            return "declared-unproduced"
-        if detail["rows_with_named_absence"] == detail["capture_rows"]:
-            return "declared-unproduced"
-        return "not-measured" if detail["rows_with_named_absence"] else "measured"
     if instrument == _PERLECTOR_UNCERTAIN_SPANS:
         # An empty span list under `not-assessed` is an absence, not confidence.
         if detail["acts_assessed"] == detail["acts_delivered"] != 0:
@@ -2216,13 +1755,6 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
             and all(row["calibrated_for_this_corpus"] for row in detail["configurations"])
             else "not-measured"
         )
-    if instrument == _COMPARISON_BOUNDS:
-        stopped = (
-            detail["delivered_self_revisions_stopped"]
-            + detail["delivered_dissent_rows_stopped"]
-            + detail["act_witness_chairs_unmeasured"]
-        )
-        return "not-measured" if stopped else "measured"
     if instrument == _PAGE_ACCOUNTING_THRESHOLDS:
         return "measured" if detail["calibrated_for_this_corpus"] else "not-measured"
     if instrument == _PASS_C:
@@ -2233,98 +1765,12 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
         if detail["pages_audit_not_run"] == detail["pages_read"]:
             return "declared-unproduced"
         return "not-measured"
-    if instrument == _LECTIO_NUDA:
-        return "measured" if detail["lectio_nuda_records"] else "declared-unproduced"
     raise SchemaRefusal(f"no not-measured status rule exists for {instrument!r}")
-
-
-def _unmeasured_act_witness_chairs(coverage_records: Any, subject: str) -> int:
-    """Chairs per act the aligner left unmeasured, summed over every act's coverage."""
-    if not isinstance(coverage_records, dict):
-        raise SchemaRefusal(f"{subject} has no coverage records to count unmeasured alignments")
-    try:
-        counts = [record["shortfalls"]["unmeasured"] for record in coverage_records.values()]
-    except (KeyError, TypeError) as error:
-        raise SchemaRefusal(
-            f"{subject} has a coverage record with no `unmeasured` shortfall count"
-        ) from error
-    if not all(_is_count(count) for count in counts):
-        raise SchemaRefusal(f"{subject} has a non-count `unmeasured` shortfall")
-    return sum(counts)
-
-
-def _fed_self_revision_stopped(uncertainty: Any) -> bool:
-    """A fed reading whose canonical self-revisions are null ran out of the budget."""
-    return (
-        isinstance(uncertainty, dict)
-        and uncertainty.get("lectio_kind") == "primed-with-prior"
-        and "self_revisions" in uncertainty
-        and uncertainty["self_revisions"] is None
-    )
-
-
-def _dissent_stopped_chairs(witnesses: Any, subject: str) -> list[str]:
-    """The chairs whose exported witness row says the budget stopped its dissent."""
-    if not isinstance(witnesses, list):
-        raise SchemaRefusal(f"{subject} has no exported witness rows")
-    stopped = []
-    for witness in witnesses:
-        if not isinstance(witness, dict) or not isinstance(witness.get("dissent_stopped"), bool):
-            raise SchemaRefusal(
-                f"{subject} has an exported witness row that does not say whether the budget "
-                "stopped its dissent"
-            )
-        if witness["dissent_stopped"]:
-            stopped.append(witness.get("chair"))
-    return sorted(stopped)
-
-
-def _require_comparison_bounds_reconcile(
-    detail: dict[str, Any],
-    *,
-    delivered_witnesses: dict[str, Any],
-    coverage_records: Any,
-    self_revision_stopped: dict[str, dict[str, bool]],
-    subject: str,
-) -> None:
-    """Recompute the comparison-bounds counts from the evidence beside them.
-
-    `delivered_witnesses` maps each delivered act key to its exported witness
-    rows, each carrying `dissent_stopped`. `self_revision_stopped` maps each
-    product that carries the uncertainty layer to, per delivered act key,
-    whether that layer records the budget stop.
-    """
-    rows = {row["act_key"]: row for row in detail["delivered_acts"]}
-    if set(rows) != set(delivered_witnesses):
-        raise SchemaRefusal(f"{subject} does not name exactly the delivered acts")
-    for act_key, row in rows.items():
-        exported = _dissent_stopped_chairs(
-            delivered_witnesses[act_key], f"delivered act {act_key!r}"
-        )
-        if row["dissent_chairs_stopped"] != exported:
-            raise SchemaRefusal(
-                f"{subject} names stopped dissent rows {row['dissent_chairs_stopped']} for act "
-                f"{act_key!r}, and its exported witness rows say {exported}"
-            )
-        for product, stops in self_revision_stopped.items():
-            if row["self_revision_stopped"] != stops[act_key]:
-                raise SchemaRefusal(
-                    f"{subject} says act {act_key!r}'s self-revision "
-                    f"{'was' if row['self_revision_stopped'] else 'was not'} stopped by the "
-                    f"budget, and its uncertainty layer in the {product} says otherwise"
-                )
-    if detail["act_witness_chairs_unmeasured"] != _unmeasured_act_witness_chairs(
-        coverage_records, subject
-    ):
-        raise SchemaRefusal(
-            f"{subject} unmeasured witness alignments do not equal the unmeasured shortfalls "
-            "of its own coverage records"
-        )
 
 
 def _not_measured_claim(projection: ArmariumProjection) -> dict[str, Any]:
     """The export's own account of what this run did not measure."""
-    basis = _validate_not_measured_basis(projection.not_measured_basis, projection.reading_unit)
+    basis = _validate_not_measured_basis(projection.not_measured_basis)
     entries = [
         {
             "instrument": instrument,
@@ -2332,7 +1778,7 @@ def _not_measured_claim(projection: ArmariumProjection) -> dict[str, Any]:
             "detail": copy.deepcopy(basis[instrument]),
             "recorded_in": _NOT_MEASURED_RECORDED_IN[instrument],
         }
-        for instrument in not_measured_instruments(projection.reading_unit)
+        for instrument in NOT_MEASURED_INSTRUMENTS
     ]
     return {
         "schema": NOT_MEASURED_SCHEMA,
@@ -2367,23 +1813,13 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         raise SchemaRefusal(
             "an Armarium projection does not contain one record for every expected act"
         )
-    page_path = projection.reading_unit == READING_UNIT_PAGE
-    if projection.reading_unit not in (READING_UNIT_ACT, READING_UNIT_PAGE):
-        raise SchemaRefusal(f"an Armarium projection reads {projection.reading_unit!r}")
-    if not page_path and (projection.other_readings or projection.page_accounting):
-        raise SchemaRefusal(
-            "an act-read Armarium projection carries page-path other readings or page accounting"
-        )
     _validate_witness_accounting(
         projection.witness_chairs,
         projection.witness_floor,
         projection.aggregate_basis,
         projection.acts + projection.other_readings,
-        page_path=page_path,
     )
-    not_measured_basis = _validate_not_measured_basis(
-        projection.not_measured_basis, projection.reading_unit
-    )
+    not_measured_basis = _validate_not_measured_basis(projection.not_measured_basis)
     ink_map_rows = _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
     edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
     sealed = {
@@ -2396,13 +1832,6 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             "an Armarium projection's ink-map denominator is not exactly its sealed page census. "
             "At least one sealed page finding would be lost or one unsealed page would be counted. "
             "Rebuild the projection from the reconciled stage inventories."
-        )
-    if not page_path:
-        _require_not_measured_denominators(
-            not_measured_basis,
-            acts_total=len(projection.acts),
-            sealed_pages=len(sealed),
-            subject="an Armarium projection's not-measured basis",
         )
     for source in projection.source_manifest:
         if not isinstance(source, dict):
@@ -2427,28 +1856,11 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         act_ids.add(act_id)
         act_keys.add(act_key)
         _validate_projection_act(act)
-    if page_path:
-        _validate_page_projection(projection, act_ids | act_keys, sealed)
-        if not_measured_basis[_PASS_C]["pages_read"] != len(sealed):
-            raise SchemaRefusal(
-                "an Armarium projection's Pass C basis does not count exactly its real sealed "
-                "pages as read"
-            )
-    else:
-        delivered_acts = [
-            act for act in projection.acts if act["category"] == ArmariumCategory.DELIVERED.value
-        ]
-        _require_comparison_bounds_reconcile(
-            not_measured_basis[_COMPARISON_BOUNDS],
-            delivered_witnesses={act["act_key"]: act["witnesses"] for act in delivered_acts},
-            coverage_records=projection.aggregate_basis.get("coverage_records"),
-            self_revision_stopped={
-                "projection": {
-                    act["act_key"]: _fed_self_revision_stopped(act.get("uncertainty"))
-                    for act in delivered_acts
-                }
-            },
-            subject="an Armarium projection's comparison-bounds basis",
+    _validate_page_projection(projection, act_ids | act_keys, sealed)
+    if not_measured_basis[_PASS_C]["pages_read"] != len(sealed):
+        raise SchemaRefusal(
+            "an Armarium projection's Pass C basis does not count exactly its real sealed "
+            "pages as read"
         )
     perlector_basis = not_measured_basis[_PERLECTOR_UNCERTAIN_SPANS]
     delivered_counts = _delivered_doubt_counts(projection.acts)
@@ -2457,7 +1869,6 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             "an Armarium projection's Perlector uncertainty basis does not exactly reconcile "
             "with its delivered act projection"
         )
-    _validate_logical_act_conservation(projection, act_ids, act_keys)
     # The run's verdict is computed from the basis, so its damage record must
     # match the delivered acts key for key.
     recorded_basis_status = projection.aggregate_basis.get("act_text_status")
@@ -2477,7 +1888,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         projection.aggregate_basis,
         edge_hold_pages,
         list(projection.continuation_joins),
-        others=list(projection.other_readings) if page_path else None,
+        others=list(projection.other_readings),
         act_keys={act["act_id"]: act["act_key"] for act in projection.acts},
     )
     if canonical_text(projection.aggregate) != canonical_text(expected_aggregate):
@@ -2712,15 +2123,12 @@ def _validate_witness_accounting(
     witness_floor: Any,
     aggregate_basis: Any,
     acts: tuple[dict[str, Any], ...] | None = None,
-    *,
-    page_path: bool = False,
 ) -> None:
     """Keep the exported roster, coverage counts, and per-act witnesses one fact.
 
-    On the page path only the page-scoped witnesses read a page: the basis
-    names them (`page_witness_chairs`, part of the roster), each coverage
-    record counts exactly them, and a reading's witnesses are a non-empty part
-    of them.
+    Only the page-scoped witnesses read a page: the basis names them
+    (`page_witness_chairs`, part of the roster), each coverage record counts
+    exactly them, and a reading's witnesses are a non-empty part of them.
     """
     if (
         not isinstance(witness_chairs, (list, tuple))
@@ -2730,23 +2138,19 @@ def _validate_witness_accounting(
         raise SchemaRefusal("Armarium witness chairs are not a unique named roster")
     if not _is_count(witness_floor) or witness_floor > len(witness_chairs):
         raise SchemaRefusal("Armarium witness floor does not fit its named roster")
-    counted = witness_chairs
-    if page_path:
-        counted = (
-            aggregate_basis.get("page_witness_chairs")
-            if isinstance(aggregate_basis, dict)
-            else None
+    counted = (
+        aggregate_basis.get("page_witness_chairs") if isinstance(aggregate_basis, dict) else None
+    )
+    if (
+        not isinstance(counted, list)
+        or not counted
+        or any(not _is_nonempty_str(chair) for chair in counted)
+        or counted != sorted(set(counted))
+        or not set(counted) <= set(witness_chairs)
+    ):
+        raise SchemaRefusal(
+            "Armarium page witness chairs are not a sorted, unique part of the roster"
         )
-        if (
-            not isinstance(counted, list)
-            or not counted
-            or any(not _is_nonempty_str(chair) for chair in counted)
-            or counted != sorted(set(counted))
-            or not set(counted) <= set(witness_chairs)
-        ):
-            raise SchemaRefusal(
-                "Armarium page witness chairs are not a sorted, unique part of the roster"
-            )
     coverage = (
         aggregate_basis.get("coverage_records") if isinstance(aggregate_basis, dict) else None
     )
@@ -2773,7 +2177,8 @@ def _validate_witness_accounting(
         chairs = [item.get("chair") for item in witnesses if isinstance(item, dict)]
         if (
             len(chairs) != len(witnesses)
-            or (not chairs or not set(chairs) <= expected if page_path else set(chairs) != expected)
+            or not chairs
+            or not set(chairs) <= expected
             or len(set(chairs)) != len(chairs)
         ):
             raise SchemaRefusal("a delivered act's witness provenance disagrees with the roster")
@@ -2784,11 +2189,13 @@ _AGGREGATE_BASIS_FIELDS: Final = (
     "unaddressed_chairs",
     "act_pages",
     "act_text_status",
+    "continuation_flags",
+    "page_witness_chairs",
 )
 
 
 def _validated_continuation_flags(flags: Any, categories: dict[str, str]) -> dict[str, list[str]]:
-    """A page-read basis's continuation flags: delivered acts, each its raised flags in order."""
+    """The basis's continuation flags: delivered acts, each its raised flags in order."""
     if not isinstance(flags, dict) or any(
         not _is_nonempty_str(act_key)
         or categories.get(act_key) != ArmariumCategory.DELIVERED.value
@@ -2834,42 +2241,29 @@ def _aggregate_from_basis(
     categories: dict[str, str],
     pages: tuple[dict[str, Any], ...] | list[dict[str, Any]],
     basis: Any,
-    edge_hold_pages: tuple[int, ...] = (),
-    continuation_joins: list[dict[str, Any]] | None = None,
+    edge_hold_pages: tuple[int, ...],
+    continuation_joins: list[dict[str, Any]] | None,
     *,
-    others: list[dict[str, Any]] | None = None,
-    act_keys: dict[str, str] | None = None,
+    others: list[dict[str, Any]],
+    act_keys: dict[str, str],
 ) -> dict[str, Any]:
     """Recompute an Armarium aggregate from its retained, non-text inputs.
 
-    `others` is a page-read run's other layer (`{page_ordinal, category}` rows),
-    `None` on the act path; a page-read basis also carries `continuation_flags`,
-    read against the joins through `act_keys` (act id to act key), and
-    `page_witness_chairs`, which `_validate_witness_accounting` checks.
+    `others` is the other layer (`{page_ordinal, category}` rows). The basis's
+    `continuation_flags` are read against the joins through `act_keys` (act id
+    to act key); its `page_witness_chairs` are checked by
+    `_validate_witness_accounting`.
     """
-    page_read = others is not None
-    fields = set(_AGGREGATE_BASIS_FIELDS) | (
-        {"continuation_flags", "page_witness_chairs"} if page_read else set()
-    )
-    if not isinstance(basis, dict) or set(basis) != fields:
+    if not isinstance(basis, dict) or set(basis) != set(_AGGREGATE_BASIS_FIELDS):
         raise SchemaRefusal("an Armarium aggregate has no recognized accounting basis")
-    page_terms: dict[str, Any] = {}
-    if page_read:
-        by_page: dict[int, list[str]] = {}
-        for other in others:
-            by_page.setdefault(other["page_ordinal"], []).append(other["category"])
-        flags = _validated_continuation_flags(basis["continuation_flags"], categories)
-        try:
-            unpaired = unpaired_continuations(flags, continuation_joins or [], act_keys or {})
-        except (KeyError, TypeError) as error:
-            raise SchemaRefusal(
-                "an Armarium aggregate's joins cannot be read for pairing"
-            ) from error
-        page_terms = {
-            "page_read": True,
-            "other_categories_by_page": by_page,
-            "unpaired_continuations": unpaired,
-        }
+    by_page: dict[int, list[str]] = {}
+    for other in others:
+        by_page.setdefault(other["page_ordinal"], []).append(other["category"])
+    flags = _validated_continuation_flags(basis["continuation_flags"], categories)
+    try:
+        unpaired = unpaired_continuations(flags, continuation_joins or [], act_keys)
+    except (KeyError, TypeError) as error:
+        raise SchemaRefusal("an Armarium aggregate's joins cannot be read for pairing") from error
     coverage, chairs, act_pages, act_text_status = (
         basis.get("coverage_records"),
         basis.get("unaddressed_chairs"),
@@ -2902,7 +2296,9 @@ def _aggregate_from_basis(
             act_text_status=act_text_status,
             edge_hold_pages=edge_hold_pages,
             continuation_joins=continuation_joins,
-            **page_terms,
+            page_read=True,
+            other_categories_by_page=by_page,
+            unpaired_continuations=unpaired,
         )
     # The basis may come from an untrusted package and `run_aggregate` reads
     # coverage-record keys nothing above checks. The cause stays chained.
@@ -3164,8 +2560,8 @@ def _text_bundle_members(
     for act in acts:
         if act["category"] != ArmariumCategory.DELIVERED.value:
             continue
-        # A logical act may cite captures in several folders; its text goes into
-        # each rather than letting region order pick one.
+        # An act may cite regions from several folders; its text goes into each
+        # rather than letting region order pick one.
         source_folders = sorted(
             {
                 _source_folder_for_declared_path(region["declared_path"])
@@ -3580,10 +2976,7 @@ def _text_member_path(folder: str) -> str:
     return f"text/_source_folder/{folder}/readings.txt"
 
 
-def _acts_database_bytes(
-    acts: tuple[dict[str, Any], ...], reading_unit: str = READING_UNIT_ACT
-) -> bytes:
-    _row_schema, sqlite_schema, user_version = _ACT_PRODUCT_IDS[reading_unit]
+def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
     with tempfile.TemporaryDirectory(prefix="armarium-sqlite-") as directory:
         path = f"{directory}/acts.sqlite"
         connection = sqlite3.connect(path)
@@ -3592,13 +2985,13 @@ def _acts_database_bytes(
             connection.execute("PRAGMA journal_mode=OFF")
             connection.execute("PRAGMA synchronous=OFF")
             # Moves with `_SQLITE_SCHEMA`.
-            connection.execute(f"PRAGMA user_version={user_version}")
+            connection.execute(f"PRAGMA user_version={_SQLITE_USER_VERSION}")
             connection.executescript(_ACTS_DATABASE_DDL)
             metadata = {
                 "canonical_text_encoding": CANONICAL_TEXT_ENCODING,
                 "canonical_text_field": CANONICAL_TEXT_FIELD,
                 "normalizer_revision": TEXTNORM_REVISION,
-                "schema": sqlite_schema,
+                "schema": _SQLITE_SCHEMA,
                 "unidata_version": unicodedata.unidata_version,
             }
             connection.executemany(
@@ -3677,16 +3070,13 @@ def _acts_database_bytes(
         return Path(path).read_bytes()
 
 
-def _act_json_records(
-    acts: tuple[dict[str, Any], ...], reading_unit: str = READING_UNIT_ACT
-) -> list[dict[str, Any]]:
-    row_schema = _ACT_PRODUCT_IDS[reading_unit][0]
+def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
         literal = act[CANONICAL_TEXT_FIELD]
         records.append(
             {
-                "schema": row_schema,
+                "schema": ACT_RECORD_SCHEMA,
                 "act_id": act["act_id"],
                 "act_key": act["act_key"],
                 "category": act["category"],
@@ -4184,9 +3574,10 @@ def _verify_acts_database_identity(connection: sqlite3.Connection) -> None:
         raise SchemaRefusal("the acts database has no readable schema") from error
     if any(kinds.get(name) != "table" for name in _STORED_ACTS_TABLES):
         raise SchemaRefusal("the acts database does not carry acts and act_search as stored tables")
-    if kinds.get("acts_fts") != "table" or (schema, user_version) not in {
-        ((sqlite_schema,), (version,)) for _row, sqlite_schema, version in _ACT_PRODUCT_IDS.values()
-    }:
+    if kinds.get("acts_fts") != "table" or (schema, user_version) != (
+        (_SQLITE_SCHEMA,),
+        (_SQLITE_USER_VERSION,),
+    ):
         raise SchemaRefusal("the acts database has no recognized SQLite product identity")
     _verify_acts_schema(connection)
 
@@ -4282,7 +3673,7 @@ def _page_ledger_category(
     act_categories: list[str],
     *,
     edge_hold: bool = False,
-    other_categories: list[str] | None = None,
+    other_categories: list[str],
 ) -> tuple[str, str | None]:
     """One sealed page's terminal category, derived from the acts cut on it.
 
@@ -4295,10 +3686,9 @@ def _page_ledger_category(
             ArmariumCategory.HELD_FOR_REVIEW.value,
             f"unclaimed-edge-ink: page {ordinal} carries unreleased ink-map evidence",
         )
-    if not act_categories and other_categories is not None:
-        # A page-read page: every page it read has a row, so one with no act row
-        # holds only other readings, and it is a confirmed no-act page once all
-        # are delivered.
+    if not act_categories:
+        # Every page read has a row, so one with no act row holds only other
+        # readings, and it is a confirmed no-act page once all are delivered.
         if not other_categories:
             return ArmariumCategory.HELD_FOR_REVIEW.value, PAGE_READ_SILENT_PAGE_REASON.format(
                 ordinal=ordinal
@@ -4310,8 +3700,6 @@ def _page_ledger_category(
         return ArmariumCategory.HELD_FOR_REVIEW.value, NO_ACT_PAGE_HELD_REASON.format(
             ordinal=ordinal, categories=", ".join(sorted(set(other_categories)))
         )
-    if not act_categories:
-        return ArmariumCategory.HELD_FOR_REVIEW.value, SILENT_PAGE_REASON.format(ordinal=ordinal)
     distinct = sorted(set(act_categories))
     if ArmariumCategory.DELIVERED.value in distinct:
         return ArmariumCategory.DELIVERED.value, None
@@ -4343,16 +3731,16 @@ def _terminal_ledger(
     pages: list[dict[str, Any]],
     act_pages: dict[str, Any],
     aggregate: dict[str, Any],
-    edge_hold_pages: tuple[int, ...] = (),
-    other_outcomes: list[dict[str, Any]] | None = None,
+    edge_hold_pages: tuple[int, ...],
+    other_outcomes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """The honesty ledger: one closed category for every unit the run accounted for.
 
     Every source, sealed page and act lands in exactly one of the five categories
     (a total partition); anything else stops the export. A source inherits its
     page's category. The three unit types describe overlapping material, so
-    `by_unit_type` shows that category totals count units, not acts. A page-read
-    run's other readings are a fourth unit type (`other`), never acts: a held one
+    `by_unit_type` shows that category totals count units, not acts. The other
+    readings are a fourth unit type (`other`), never acts: a held one
     keeps the run partial, and they decide a page's category only on a page with
     no act, which is a confirmed no-act page once every one is delivered.
     """
@@ -4384,7 +3772,7 @@ def _terminal_ledger(
             acts_on_page.setdefault(ordinal, []).append(category)
 
     others_on_page: dict[int, list[str]] = {}
-    for record in other_outcomes or []:
+    for record in other_outcomes:
         others_on_page.setdefault(record["page_ordinal"], []).append(record["category"])
     page_units: list[dict[str, Any]] = []
     source_units: list[dict[str, Any]] = []
@@ -4395,9 +3783,7 @@ def _terminal_ledger(
                 ordinal,
                 acts_on_page.get(ordinal, []),
                 edge_hold=ordinal in edge_hold_pages,
-                other_categories=None
-                if other_outcomes is None
-                else others_on_page.get(ordinal, []),
+                other_categories=others_on_page.get(ordinal, []),
             )
             page_units.append(_page_ledger_unit("page", page, category, reason))
         else:
@@ -4423,14 +3809,12 @@ def _terminal_ledger(
             "reason": record["reason"],
             "act_key": record["act_key"],
         }
-        for record in sorted(other_outcomes or [], key=lambda item: item["act_id"])
+        for record in sorted(other_outcomes, key=lambda item: item["act_id"])
     ]
 
     units = source_units + page_units + act_units + other_units
     by_category = {category: 0 for category in sorted(_KNOWN_CATEGORIES)}
-    by_unit_type = {"source": 0, "page": 0, "act": 0}
-    if other_outcomes is not None:
-        by_unit_type["other"] = 0
+    by_unit_type = {"source": 0, "page": 0, "act": 0, "other": 0}
     seen: set[str] = set()
     for unit in units:
         if unit["category"] not in _KNOWN_CATEGORIES:
@@ -4503,8 +3887,7 @@ def _export_manifest(
     ink_map_rows = _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
     edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
     unmeasurable_ink_map_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
-    page_path = projection.reading_unit == READING_UNIT_PAGE
-    other_outcomes = _other_outcomes(projection.other_readings) if page_path else None
+    other_outcomes = _other_outcomes(projection.other_readings)
     ledger = _terminal_ledger(
         _act_outcomes(projection.acts),
         list(projection.pages),
@@ -4515,14 +3898,8 @@ def _export_manifest(
         edge_hold_pages,
         other_outcomes,
     )
-    if page_path:
-        schema = EXPORT_MANIFEST_PAGE_SCHEMA
-    elif any("logical_membership" in act for act in projection.acts):
-        schema = EXPORT_MANIFEST_CLUSTERED_SCHEMA
-    else:
-        schema = EXPORT_MANIFEST_SCHEMA
     manifest: dict[str, Any] = {
-        "schema": schema,
+        "schema": EXPORT_MANIFEST_SCHEMA,
         "canonical_text": _canonical_text_claim(formats.formats),
         "run": _manifest_run_binding(projection),
         "formats": formats.to_record(),
@@ -4581,16 +3958,10 @@ def _export_manifest(
                 "promotion": _SALVAGE_PROMOTION_CLAIM,
             },
             "not_measured": _not_measured_claim(projection),
-            **(
-                {
-                    "other_readings": _other_readings_claim(other_outcomes, formats.formats),
-                    "page_accounting": _page_accounting_claim(
-                        list(projection.page_accounting),
-                        {row["ordinal"] for row in projection.page_accounting},
-                    ),
-                }
-                if page_path
-                else {}
+            "other_readings": _other_readings_claim(other_outcomes, formats.formats),
+            "page_accounting": _page_accounting_claim(
+                list(projection.page_accounting),
+                {row["ordinal"] for row in projection.page_accounting},
             ),
         },
         "aggregate": projection.aggregate,
@@ -4630,6 +4001,9 @@ _SOURCES_LIST_FIELDS: Final = (
     "act_citations",
     "act_outcomes",
     "salvage_regions",
+    "other_outcomes",
+    "other_citations",
+    "page_accounting",
 )
 _SOURCES_FIELDS: Final = (
     "pages",
@@ -4641,10 +4015,10 @@ _SOURCES_FIELDS: Final = (
     "witness_chairs",
     "witness_floor",
     "salvage_regions",
+    "other_outcomes",
+    "other_citations",
+    "page_accounting",
 )
-
-
-_SOURCES_PAGE_FIELDS: Final = ("other_outcomes", "other_citations", "page_accounting")
 
 
 def _load_sources(root) -> dict[str, Any]:
@@ -4656,19 +4030,11 @@ def _load_sources(root) -> dict[str, Any]:
         ) from error
     except (OSError, UnicodeDecodeError, ValueError) as error:
         raise SchemaRefusal("the package sources citation is unreadable") from error
-    if not isinstance(record, dict) or record.get("schema") not in (
-        SOURCES_SCHEMA,
-        SOURCES_PAGE_SCHEMA,
-    ):
+    if not isinstance(record, dict) or record.get("schema") != SOURCES_SCHEMA:
         raise SchemaRefusal("the package sources citation has no recognized schema")
-    page_path = record["schema"] == SOURCES_PAGE_SCHEMA
-    fields = (*_SOURCES_FIELDS, *(_SOURCES_PAGE_FIELDS if page_path else ()))
-    if set(record) - {"logical_accounting", "continuation_joins"} != {"schema", *fields}:
+    if set(record) - {"continuation_joins"} != {"schema", *_SOURCES_FIELDS}:
         raise SchemaRefusal("the package sources citation has an unrecognized field set")
-    sources = {field: record[field] for field in fields}
-    sources["reading_unit"] = READING_UNIT_PAGE if page_path else READING_UNIT_ACT
-    if page_path and any(not isinstance(sources[field], list) for field in _SOURCES_PAGE_FIELDS):
-        raise SchemaRefusal("the package sources citation has no page-path lists")
+    sources = {field: record[field] for field in _SOURCES_FIELDS}
     sources["ink_map_pages"] = _validate_ink_map_pages(
         sources["ink_map_pages"], "the package sources citation"
     )
@@ -4676,7 +4042,6 @@ def _load_sources(root) -> dict[str, Any]:
         not isinstance(sources[field], list) for field in _SOURCES_LIST_FIELDS
     ):
         raise SchemaRefusal("the package sources citation has no page and region lists")
-    sources["logical_accounting"] = record.get("logical_accounting")
     sources["continuation_joins"] = record.get("continuation_joins")
     if "continuation_joins" in record and not (
         isinstance(sources["continuation_joins"], list) and sources["continuation_joins"]
@@ -4774,7 +4139,7 @@ def _verify_exact_product_members(
         for join in sources["continuation_joins"] or []
     ):
         expected.add("reconstructions.jsonl")
-    if "jsonl" in formats.formats and sources["reading_unit"] == READING_UNIT_PAGE:
+    if "jsonl" in formats.formats:
         expected.add(OTHER_READINGS_MEMBER)
     expected.update(_embedded_member_paths(sources))
     if actual_names != expected:
@@ -4852,110 +4217,6 @@ def _manifest_act_keys(manifest: dict[str, Any], categories: dict[str, str]) -> 
     return keys
 
 
-def _verify_logical_partition_claim(
-    manifest: dict[str, Any],
-    categories: dict[str, str],
-    act_keys: dict[str, str],
-    sources: dict[str, Any],
-) -> None:
-    """Re-derive the clustered act-partition claim from its source evidence.
-
-    Recomputed from `logical_accounting` rather than read from the manifest, so a
-    claim that disagrees with the package's own accounting is refused.
-    """
-    claim = manifest["claims"]["act_partition"]
-    accounting = sources.get("logical_accounting")
-    if claim["denominator"] != _LOGICAL_ACT_PARTITION_DENOMINATOR:
-        if accounting is not None:
-            raise SchemaRefusal(
-                "the package carries logical accounting beside an image-local act claim; the "
-                "two denominators are one number in an image-local run"
-            )
-        return
-    if not isinstance(accounting, dict) or set(accounting) != {
-        "local_proposal_rows",
-        "memberships",
-    }:
-        raise SchemaRefusal(
-            "a clustered package has no logical accounting in its source graph, so its "
-            "proposal-seal row claim cannot be verified on a clean machine"
-        )
-    declared = accounting["local_proposal_rows"]
-    memberships = accounting["memberships"]
-    if not _is_count(declared) or not isinstance(memberships, dict) or not memberships:
-        raise SchemaRefusal("the package logical accounting is malformed")
-    member_ids_seen: set[str] = set()
-    member_keys_seen: set[str] = set()
-    for act_id, membership in memberships.items():
-        if not isinstance(act_id, str) or act_id not in categories:
-            raise SchemaRefusal(
-                "the package logical accounting names an act outside the exported partition"
-            )
-        if not isinstance(membership, dict) or set(membership) != {
-            "member_local_act_ids",
-            "member_act_keys",
-            "member_source_page_ordinals",
-        }:
-            raise SchemaRefusal("a package logical membership row is not its closed shape")
-        ids = membership["member_local_act_ids"]
-        keys = membership["member_act_keys"]
-        ordinals = membership["member_source_page_ordinals"]
-        if (
-            not isinstance(ids, list)
-            or not ids
-            or not all(_is_nonempty_str(member) for member in ids)
-            or ids != sorted(set(ids))
-            or not isinstance(keys, list)
-            or len(keys) != len(ids)
-            or not all(_is_nonempty_str(member) for member in keys)
-            or keys != sorted(set(keys))
-            or not isinstance(ordinals, list)
-            or not ordinals
-            or not all(_is_count(ordinal) for ordinal in ordinals)
-            or ordinals != sorted(set(ordinals))
-        ):
-            raise SchemaRefusal("a package logical membership row is not canonical")
-        # Keys as well as ids: a repeated key with distinct ids balances the counts
-        # while one proposal row leaves twice.
-        repeated = (set(ids) & member_ids_seen) | (set(keys) & member_keys_seen)
-        if repeated or set(ids) & set(categories) or set(keys) & set(act_keys.values()):
-            raise SchemaRefusal(
-                "the package logical accounting repeats a member or exports one beside its "
-                "own logical act"
-            )
-        member_ids_seen.update(ids)
-        member_keys_seen.update(keys)
-        # As in the producer: the attribution must cover every member page.
-        basis = sources.get("aggregate_basis")
-        attributed = (
-            (basis.get("act_pages") or {}).get(act_keys[act_id])
-            if isinstance(basis, dict)
-            else None
-        )
-        if (
-            not isinstance(attributed, list)
-            or not all(is_plain_int(ordinal) for ordinal in attributed)
-            or not set(ordinals) <= set(attributed)
-        ):
-            raise SchemaRefusal(
-                f"the package logical accounting for {act_id} names member page ordinal(s) "
-                "its own page attribution does not carry; a member capture's page may not "
-                "drop out of the run's page coverage"
-            )
-    accounted = len(member_ids_seen) + (len(categories) - len(memberships))
-    if accounted != declared:
-        raise SchemaRefusal(
-            f"the package accounts for {accounted} proposal-seal row(s) against a declared "
-            f"{declared}; a seal row has been lost or invented between the run and the bundle"
-        )
-    if claim["local_proposal_rows"] != declared or claim["logical_membership"] != memberships:
-        raise SchemaRefusal(
-            "the exported clustered act claim does not match the package's own logical "
-            "accounting; the manifest and source graph disagree about the seal rows this "
-            "bundle stands for"
-        )
-
-
 def _verify_honest_status_claims(
     manifest: dict[str, Any], categories: dict[str, str], sources: dict[str, list[dict[str, Any]]]
 ) -> None:
@@ -4975,7 +4236,6 @@ def _verify_honest_status_claims(
         sources.get("witness_chairs"),
         sources.get("witness_floor"),
         sources.get("aggregate_basis"),
-        page_path=sources["reading_unit"] == READING_UNIT_PAGE,
     )
     submission = claims.get("submission_inventory")
     if (
@@ -5029,7 +4289,6 @@ def _verify_honest_status_claims(
     if status == "complete" and reasons:
         raise SchemaRefusal("a complete exported aggregate carries unresolved reasons")
     act_keys = _manifest_act_keys(manifest, categories)
-    _verify_logical_partition_claim(manifest, categories, act_keys, sources)
     manifest_basis = manifest.get("aggregate_basis")
     if canonical_text(manifest_basis) != canonical_text(sources["aggregate_basis"]):
         raise SchemaRefusal("the exported aggregate basis disagrees with its source accounting")
@@ -5039,9 +4298,7 @@ def _verify_honest_status_claims(
         sources["aggregate_basis"],
         derived_edge_holds,
         sources["continuation_joins"],
-        others=list(_other_outcome_sources(sources).values())
-        if sources["reading_unit"] == READING_UNIT_PAGE
-        else None,
+        others=list(_other_outcome_sources(sources).values()),
         act_keys=act_keys,
     )
     if canonical_text(aggregate) != canonical_text(expected_aggregate):
@@ -5055,9 +4312,7 @@ def _verify_honest_status_claims(
         else None,
         aggregate,
         derived_edge_holds,
-        list(_other_outcome_sources(sources).values())
-        if sources["reading_unit"] == READING_UNIT_PAGE
-        else None,
+        list(_other_outcome_sources(sources).values()),
     )
     if canonical_text(claims.get("terminal_ledger")) != canonical_text(expected_ledger):
         raise SchemaRefusal("the exported terminal ledger does not match its measured accounting")
@@ -5422,13 +4677,12 @@ def _verify_page_layers(
 
 
 def _jsonl_act_records(
-    path: Path, source_graph_regions: list[dict[str, Any]], reading_unit: str = READING_UNIT_ACT
+    path: Path, source_graph_regions: list[dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
     """Validate JSONL's one-record-per-act projection and return its categories."""
-    row_schema = _ACT_PRODUCT_IDS[reading_unit][0]
     records: dict[str, dict[str, Any]] = {}
     for record in _jsonl_rows(path, "acts JSONL", "an acts JSONL row"):
-        if not isinstance(record, dict) or record.get("schema") != row_schema:
+        if not isinstance(record, dict) or record.get("schema") != ACT_RECORD_SCHEMA:
             raise SchemaRefusal("an acts JSONL row has no recognized schema")
         if set(record) != _ACT_RECORD_FIELDS:
             raise SchemaRefusal("an acts JSONL row has an unrecognized field set")
@@ -5487,7 +4741,6 @@ def _jsonl_act_records(
             "source_regions": record.get("source_regions"),
             "reason": reason,
             "text_status": record.get("text_status"),
-            "uncertainty": record.get("uncertainty"),
         }
     return records
 
@@ -5646,7 +4899,6 @@ def _database_act_records(
             "source_regions": decoded[1],
             "reason": reason,
             "text_status": text_status,
-            "uncertainty": _database_json_layer(uncertainty_json, "uncertainty"),
         }
     return records, literals
 
@@ -5921,14 +5173,6 @@ def _verify_product_accounting(
         outcomes[act_id]["act_key"] != act_keys[act_id] for act_id in outcomes
     ):
         raise SchemaRefusal("source act outcomes do not reconcile to the manifest act partition")
-    not_measured = manifest["claims"]["not_measured"]
-    if sources["reading_unit"] == READING_UNIT_ACT:
-        _require_not_measured_denominators(
-            {entry["instrument"]: entry["detail"] for entry in not_measured["entries"]},
-            acts_total=len(outcomes),
-            sealed_pages=sum(page["outcome"] == "sealed" for page in sources["pages"]),
-            subject="the manifest not-measured claim",
-        )
     citations = _act_citation_sources(sources)
     if set(citations) != delivered or any(
         citations[act_id]["act_key"] != act_keys[act_id] for act_id in citations
@@ -5960,10 +5204,8 @@ def _verify_product_accounting(
             "SELECT value FROM export_metadata WHERE key = 'schema'",
             "the acts database has no readable schema",
         )
-        if database_schema != [(_ACT_PRODUCT_IDS[sources["reading_unit"]][1],)]:
-            raise SchemaRefusal(
-                "the acts database's schema is not the one this package's reading unit writes"
-            )
+        if database_schema != [(_SQLITE_SCHEMA,)]:
+            raise SchemaRefusal("the acts database's schema is not the one this build writes")
         database_records, database_literals = _database_act_records(
             root / "acts.sqlite", sources["regions"]
         )
@@ -5978,37 +5220,12 @@ def _verify_product_accounting(
         search_fold_verification = _verify_search_fold_claim(
             root / "acts.sqlite", database_literals
         )
-    fed_stops: dict[str, dict[str, bool]] = {}
-    if "acts-database" in formats.formats:
-        fed_stops["acts database"] = {
-            act_keys[act_id]: _fed_self_revision_stopped(database_records[act_id]["uncertainty"])
-            for act_id in delivered
-        }
     if "jsonl" in formats.formats:
-        jsonl_records = _jsonl_act_records(
-            root / "acts.jsonl", sources["regions"], sources["reading_unit"]
-        )
+        jsonl_records = _jsonl_act_records(root / "acts.jsonl", sources["regions"])
         if _product_categories(jsonl_records) != expected:
             raise SchemaRefusal("the acts JSONL does not reconcile to the manifest act partition")
         _verify_exact_product_outcomes(jsonl_records, outcomes, subject="acts JSONL")
         _verify_exact_delivered_citations(jsonl_records, citations, act_keys, subject="acts JSONL")
-        fed_stops["acts JSONL"] = {
-            act_keys[act_id]: _fed_self_revision_stopped(jsonl_records[act_id]["uncertainty"])
-            for act_id in delivered
-        }
-    if sources["reading_unit"] == READING_UNIT_ACT:
-        _require_comparison_bounds_reconcile(
-            {entry["instrument"]: entry["detail"] for entry in not_measured["entries"]}[
-                _COMPARISON_BOUNDS
-            ],
-            delivered_witnesses={
-                act_keys[act_id]: citations[act_id]["evidence"].get("witnesses")
-                for act_id in delivered
-            },
-            coverage_records=sources["aggregate_basis"].get("coverage_records"),
-            self_revision_stopped=fed_stops,
-            subject="the manifest comparison-bounds claim",
-        )
     if "review-items" in formats.formats:
         expected_review = {
             act_id for act_id, category in expected.items() if category in _REVIEW_CATEGORIES

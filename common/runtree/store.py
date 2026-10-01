@@ -22,8 +22,8 @@ responsible for:
 
 `run.json` is the immutable authority for what this run *is*: its source pages,
 its configured witness chairs, its configuration digest, its adapter recipes. It
-deliberately does not predeclare acts — the Designator's proposal seal is the
-downstream expected-act authority, because acts are discovered and pages are given.
+deliberately does not predeclare acts — the Perlector's page readings count them,
+because acts are discovered and pages are given.
 
 Reusing a run id whose source, configuration, or adapter recipes have changed fails
 before any write. That is the difference between a resumed run and a corrupted one.
@@ -496,11 +496,11 @@ class RunTree:
         denominators from it.
 
         A replace, not a compare-and-swap: of two racing Recensor passes the last
-        write wins.  The race is bounded, not fixed.  `expected_act_count` is
-        sealed by the Designator before the Recensor runs, so a write changing it
-        is refused.  A stale write can under-state completeness but never claim
-        it, because the reviews it cites are append-only and an act's class only
-        moves toward resolution.  Concurrent Recensor passes are still unsafe.
+        write wins.  The race is bounded, not fixed.  `expected_unit_count` is
+        sealed by the Perlector's page readings before the Recensor runs, so a
+        write changing it is refused.  A stale write can under-state completeness
+        but never claim it, because the reviews it cites are append-only and a
+        unit's class only moves toward resolution.  Concurrent Recensor passes are still unsafe.
         """
         from common.recensor_receipt import expected_count, validate_recensor_partition_receipt
 
@@ -518,9 +518,9 @@ class RunTree:
                 and expected_count(existing) != expected_count(checked)
             ):
                 raise SchemaRefusal(
-                    "Recensor partition receipt would change its expected_act_count from "
+                    "Recensor partition receipt would change its expected_unit_count from "
                     f"{expected_count(existing)} to {expected_count(checked)} under "
-                    "the same run authority; the act or unit denominator is sealed once and "
+                    "the same run authority; the unit denominator is sealed once and "
                     "cannot legitimately differ between two passes over the same run"
                 )
         target.parent.mkdir(parents=True, exist_ok=True)

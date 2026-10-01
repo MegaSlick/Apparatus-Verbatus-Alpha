@@ -28,7 +28,6 @@ from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Any, Final
 
-from .canonical import is_plain_int
 from .errors import ApprovalRefusal, FatalAccounting, SchemaRefusal
 from .stages import (
     ARCHETYPUS,
@@ -75,108 +74,6 @@ LEGACY_GRANULARITY_BASIS: Final = "legacy-class-only"
 ATTACHMENT_BASES: Final = frozenset(
     {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
 )
-# The shortest contiguous run of the act's anchor line a witness must match for
-# the alignment to have LOCATED that line.  Measured against `align_to_anchor` on
-# a 145-character register line (reproduced by `test_contracts_algebra.py::
-# test_the_anchor_line_run_floor_sits_between_coincidence_and_a_real_reading`):
-# unrelated prose reaches 1, random text over the anchor's alphabet 3 to 5,
-# another act in the same formula 7, and a genuine reading 145, 25 and 14 at 0%,
-# 10% and 20% character error (8 to 10 at 30% to 50%, one sample each).  Total
-# matched coverage does not separate these; the longest run does.  It cannot
-# tell a misread line from another act's line in the same formula, and nothing
-# character-level can; it refuses coincidence.
-ANCHOR_LINE_RUN_FLOOR: Final = 8
-
-
-def anchor_line_located(alignment: Any) -> bool:
-    """Whether a page alignment placed THIS act's own anchor line in the witness text.
-
-    Not "the alignment succeeded". Four separate things have to hold, and each
-    of them is a different way the same record can be honest and still place
-    nothing here:
-
-    * `status == "aligned"` -- an unaligned record carries a reason and no span.
-      A continuation page is forced to `continuation-page-no-act-anchor` before
-      geometry is ever consulted (`pipeline/3_attestatores/run.py`), so this
-      basis can never arise on a page the act is not primary on, which is
-      correct: the anchor is derived from the act's own primary page.
-    * `anchor_basis == "act-anchor"` -- `no-page-anchor` and
-      `act-line-not-located` are aligned records that say, in the producer's own
-      vocabulary, that no line for this act was located. They exist for the
-      trivial attach a genuinely empty page reading gets.
-    * a positive-length `witness_span` -- the same trivial attach carries
-      `{"start": 0, "end": 0}`. A zero-length slice is not text this act was
-      placed in, and counting it would put a chair on the witness floor for a
-      reading that placed nothing.
-    * an `anchor_line_match` whose longest contiguous run reaches
-      `ANCHOR_LINE_RUN_FLOOR` (or the whole anchor line, where the line is
-      shorter than the floor).
-
-    The fourth gives the third its meaning: `align_to_anchor` keeps matching
-    blocks of size one, so any two coinciding characters make a positive span.
-
-    Defensive about shape rather than validating it: this is read from
-    untrusted retained evidence at three seams, and each of those seams
-    validates the alignment's full closed shape itself. What this must never do
-    is raise a bare `TypeError`/`KeyError` out of a derivation whose answer is
-    then compared against a producer's boolean.
-    """
-    if not isinstance(alignment, Mapping) or alignment.get("status") != "aligned":
-        return False
-    if alignment.get("anchor_basis") != "act-anchor":
-        return False
-    span = alignment.get("witness_span")
-    if not isinstance(span, Mapping):
-        return False
-    start, end = span.get("start"), span.get("end")
-    if not all(is_plain_int(bound) for bound in (start, end)):
-        return False
-    if end <= start:
-        return False
-    match = alignment.get("anchor_line_match")
-    if not isinstance(match, Mapping):
-        return False
-    anchor_characters = match.get("anchor_characters")
-    matched = match.get("matched_characters")
-    longest = match.get("longest_matched_run")
-    if not all(is_plain_int(value) for value in (anchor_characters, matched, longest)):
-        return False
-    # An incoherent measurement refuses rather than clamps.
-    if not 0 <= longest <= matched <= anchor_characters or anchor_characters <= 0:
-        return False
-    return longest >= min(ANCHOR_LINE_RUN_FLOOR, anchor_characters)
-
-
-def page_attachment_basis(*, reading: bool, geometry_overlaps: bool, alignment: Any) -> str:
-    """Which evidence attaches one page witness's reading to one act.
-
-    The one derivation, called by the producer (`pipeline/3_attestatores/run.py`)
-    and re-derived by both readers (the Perlector's `act_attachment_view` and the
-    Recensor's `act_attachment_facts`), so one rule cannot drift into three.
-
-    Geometry first: a chair that reported ink over the act's proposal attached on
-    its own evidence, and `anchor-line` would understate that.
-
-    The anchor line exists for page witnesses whose grammar carries no geometry
-    (Churro's `HistoricalDocument`), which could otherwise never attach.  Not a
-    picker: the anchor, from another chair's response, decides only
-    whether this chair's text was placed in this act, never whose reading is
-    right.  It does cost independence, and the live seam says so.  It also costs
-    forgery resistance: the readers take the recorded alignment as evidence, so a
-    forged attachment needs only a forged alignment, still behind the
-    Attestatores seal (`pipeline/4_perlector/test_comparability_seam.py`).  The
-    fix is a reader that re-derives the alignment, which needs text neither
-    reader holds.
-    """
-    if not reading:
-        return "unattached"
-    if geometry_overlaps:
-        return "geometric-overlap"
-    if anchor_line_located(alignment):
-        return "anchor-line"
-    return "unattached"
-
-
 # --- The vocabularies: outcome -> class, one closed set per stage ---------------
 
 VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {

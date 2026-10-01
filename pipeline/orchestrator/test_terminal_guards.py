@@ -18,9 +18,9 @@ from common.background import load_background_config, resolve_background_policy
 from common.chairs.registry import ChairRegistry
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ApprovalRefusal, ContractError, FatalAccounting
+from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
-from common.contracts.stages import ARMARIUM, DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, DOOR, EXEMPLAR, INK_MAP
 from common.residual_ink import (
     ink_map_page,
     load_coverage_audit_config,
@@ -29,7 +29,6 @@ from common.residual_ink import (
 from common.runtree.store import RunTree
 from common.sealed_config import read_sealed_toml
 from common.stage import (
-    EXIT_COMPLETE,
     EXIT_FATAL,
     EXIT_HELD,
     StageContext,
@@ -100,7 +99,7 @@ class _RecordingContext:
         )
         self.blobs: dict[str, bytes] = {}
         # The sealed configuration paths the export reads for its
-        # `claims.not_measured` block: the three Designator geometry files whose
+        # `claims.not_measured` block: the Designator geometry file whose
         # `provenance` says whether their numbers were ever calibrated, and the
         # Perlector audit policy whose `round_cap` decides whether an uncertain
         # span was reachable at all. The shipped files, because this synthetic
@@ -108,9 +107,7 @@ class _RecordingContext:
         # invented paths would make the block's own honesty untestable here.
         config = ROOT / "config"
         self.args = SimpleNamespace(
-            designator_padding_config=config / "designator_padding.toml",
             designator_geometry_config=config / "designator_geometry.toml",
-            designator_grouping_config=config / "designator_grouping.toml",
             ink_map_config=config / "ink_map.toml",
             perlector_protocol_config=config / "perlector_protocol.toml",
             alignment_config=config / "alignment.toml",
@@ -123,13 +120,7 @@ class _RecordingContext:
         # double refuse drift or an unsealed name instead of bypassing that
         # boundary.
         self.sealed_config_digests = {
-            "designator-padding": read_sealed_toml(self.args.designator_padding_config, "config")[
-                1
-            ],
             "designator-geometry": read_sealed_toml(self.args.designator_geometry_config, "config")[
-                1
-            ],
-            "designator-grouping": read_sealed_toml(self.args.designator_grouping_config, "config")[
                 1
             ],
             "ink-map": read_sealed_toml(self.args.ink_map_config, "config")[1],
@@ -169,20 +160,12 @@ class _RecordingContext:
             self.blobs[relative_path] = data
             return digest_bytes(data), SimpleNamespace(relative_path=relative_path)
 
-        # Unit 14B: the export's page-level hold is derived from one Ink Map
-        # row per sealed page, and the stage reads them with no capability
-        # sniff -- a guard that silently yielded "no holds" beside a hold gate
-        # is exactly the shape that becomes reachable later without anyone
-        # noticing. This double therefore answers the manifest
-        # walk the real tree answers: one `mapped` page 1 finding, carrying
-        # real `ink-runs.v2`-shaped evidence rather than a placeholder, and no
-        # Designator regions to release anything with.
-        self.conservation_records = {
-            "page-1": {
-                "artifact_id": "page-1",
-                "payload": {"page_ordinal": 1, "ink_measurable": True},
-            }
-        }
+        # The export's page-level hold is derived from one Ink Map row per
+        # sealed page, and the stage reads them with no capability sniff. This
+        # double therefore answers the manifest walk the real tree answers: one
+        # `mapped` page 1 finding, carrying real `ink-runs.v2`-shaped evidence
+        # rather than a placeholder, and no reading regions to release anything
+        # with.
         self.ink_map_records = {
             "page-1": {
                 "artifact_id": "page-1",
@@ -201,13 +184,6 @@ class _RecordingContext:
         }
 
         def build_manifest(stage: str) -> dict:
-            if stage == DESIGNATOR:
-                return {
-                    "artifacts": [
-                        {"kind": "conservation", "artifact_id": artifact_id}
-                        for artifact_id in self.conservation_records
-                    ]
-                }
             if stage != INK_MAP:
                 # An empty manifest is the truthful answer, not a swallowed
                 # lookup: the code under test polls this method for stages this
@@ -225,8 +201,6 @@ class _RecordingContext:
             }
 
         def read_artifact(stage: str, kind: str, artifact_id: str) -> dict:
-            if stage == DESIGNATOR and kind == "conservation":
-                return self.conservation_records[artifact_id]
             if stage != INK_MAP or kind != "ink-map":
                 raise AssertionError(f"the stage read an unstored artifact: {stage}/{kind}")
             return self.ink_map_records[artifact_id]
@@ -280,7 +254,7 @@ def _sealed_page_census(context: _RecordingContext) -> dict[int, dict]:
 
 def test_recording_context_validates_a_config_before_recording_it() -> None:
     context = _RecordingContext()
-    name = "designator-grouping"
+    name = "designator-geometry"
     digest = context.sealed_config_digests[name]
 
     context.require_sealed_config(name, digest)
@@ -381,137 +355,64 @@ def test_exemplar_never_seals_a_corpus_with_only_refused_sources(tmp_path):
     assert not [entry for entry in artifacts if entry["kind"] == "seal"]
 
 
-def test_archetypus_refuses_to_resurrect_a_designator_held_act(monkeypatch):
-    """A synthetic accepted review cannot establish a seal-held act."""
-    archetypus = load_stage("6_archetypus")
-    context = _RecordingContext()
-    held = {
-        "act_id": "act_held",
-        "act_key": "held",
-        "page_id": "pg_held",
-        "page_ordinal": 1,
-        "outcome": "held",
+def _reading_row(act_id: str, act_key: str, page_ordinal: int) -> dict:
+    """One counted page-read row, as `reading_acts` writes it."""
+    return {
+        "act_id": act_id,
+        "act_key": act_key,
+        "kind": "act",
+        "class": "reading",
+        "page_ordinal": page_ordinal,
+        "hold_codes": [],
+        "region_ref": None,
+        "perlectio_ref": {
+            "relative_path": f"synthetic/perlectio/{act_id}.json",
+            "sha256": "c" * 64,
+        },
     }
-    accepted_review = {"artifact_id": "art_accepted", "outcome": "accepted"}
-
-    monkeypatch.setattr(archetypus, "stage_parser", lambda _description: _parser_stub())
-    monkeypatch.setattr(archetypus, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(archetypus, "expected_acts", lambda _context: [held])
-    monkeypatch.setattr(archetypus, "final_review", lambda _context, _act_id: accepted_review)
-    # These seams make the counterfactual complete if the guard is removed: the
-    # stage would publish an Archetypus and exit 0, not merely trip an unrelated
-    # fake-context attribute error.
-    monkeypatch.setattr(
-        archetypus,
-        "reviewed_reading",
-        lambda _context, _review, _act_id: (
-            {"outcome": "read", "payload": {"text": "synthetic established text"}},
-            {"relative_path": "synthetic/perlectio.json", "sha256": "c" * 64},
-        ),
-    )
-    monkeypatch.setattr(archetypus, "reading_basis_regions", lambda _record, _what: [])
-    monkeypatch.setattr(archetypus, "validate_serving_provenance", lambda *_args, **_kwargs: None)
-
-    with pytest.raises(FatalAccounting, match="may not resurrect a held act"):
-        archetypus.main()
-    assert context.published == []
-    assert not context.finished
 
 
-def test_armarium_refuses_when_a_terminal_proposal_seal_disagrees_with_export(monkeypatch):
-    """A delivered category may not override a held Designator seal entry."""
-    armarium = load_stage("7_armarium")
-    context = _RecordingContext()
-    held = {
-        "act_id": "act_held",
-        "act_key": "held",
-        "page_id": "pg_held",
-        "page_ordinal": 1,
-        "outcome": "held",
-    }
-    accepted_review = _accepted_review()
+def _stub_page_export(monkeypatch, armarium, context, rows: list[dict], category) -> None:
+    """Reach the page export's terminal accounting with `rows`, each reviewed into `category`.
 
+    The page census, the denominator, the reviews and each row's category are
+    stubbed; the projection, the run aggregate and the export record are the
+    stage's own.
+    """
+    review = {**_accepted_review(), "payload": {**_accepted_review()["payload"], "notes": []}}
+    ordinals = sorted({row["page_ordinal"] for row in rows})
     monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
     monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(armarium, "page_census", _sealed_page_census)
-    monkeypatch.setattr(armarium, "pages_marked_out", lambda _context, _cache: {"act_held": [1]})
-    monkeypatch.setattr(armarium, "expected_acts", lambda _context: [held])
     monkeypatch.setattr(
         armarium,
-        "categorize",
-        lambda _context, _act_id, _cache: (ArmariumCategory.DELIVERED, accepted_review, None),
+        "page_census",
+        lambda _context: {
+            ordinal: {"outcome": "sealed", "_pixel_dimensions": context.sealed_page_dimensions}
+            for ordinal in ordinals
+        },
+    )
+    monkeypatch.setattr(
+        armarium, "reading_denominator", lambda _context: {"pages": {}, "acts": rows}
     )
     monkeypatch.setattr(
         armarium,
-        "run_aggregate",
-        lambda *_args, **_kwargs: {"status": "complete", "reasons": []},
+        "current_page_reviews",
+        lambda _context, _rows: {row["act_id"]: review for row in rows},
     )
+    monkeypatch.setattr(armarium, "continuation_links", lambda *_args: [])
+    monkeypatch.setattr(armarium, "current_page_testimonia", lambda *_args: {})
+    monkeypatch.setattr(armarium, "_page_category", lambda *_args: (category, None))
     monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
-
-    with pytest.raises(FatalAccounting, match="seal and the export may not disagree"):
-        armarium.main()
-    assert context.published == []
-    assert not context.finished
-
-
-def test_the_synthetic_terminal_guard_context_can_complete_when_no_contradiction_exists(
-    monkeypatch,
-):
-    """Control: the Armarium test's fake context is not a permanently failing stub."""
-    armarium = load_stage("7_armarium")
-    context = _RecordingContext()
-    proposed = {
-        "act_id": "act_proposed",
-        "act_key": "proposed",
-        "page_id": "pg_proposed",
-        "page_ordinal": 1,
-        "outcome": "proposed",
-    }
-    accepted_review = _accepted_review()
-
-    monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
-    monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(armarium, "page_census", _sealed_page_census)
-    monkeypatch.setattr(
-        armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
-    )
-    monkeypatch.setattr(armarium, "expected_acts", lambda _context: [proposed])
+    monkeypatch.setattr(armarium, "declared_page_witness_chairs", lambda _context: set())
     monkeypatch.setattr(
         armarium,
-        "categorize",
-        lambda _context, _act_id, _cache: (ArmariumCategory.HELD_FOR_REVIEW, accepted_review, None),
+        "page_not_measured_basis",
+        lambda _context, pages, *_args: {"pages_sealed": len(pages)},
     )
-    monkeypatch.setattr(
-        armarium,
-        "run_aggregate",
-        lambda *_args, **_kwargs: {"status": "complete", "reasons": []},
-    )
-    monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
-    monkeypatch.setattr(
-        armarium,
-        "build_armarium_bundle",
-        # Coherent with the `run_aggregate` stub above: the real code folds the
-        # aggregate's reasons into the ledger, so a `run_aggregate` of "complete"
-        # beside a manifest `claims.status` of "partial" is a combination the real
-        # code makes impossible. This control test only checks that the fake
-        # context can complete at all, so nothing was ever proved by the mismatch
-        # -- but an incoherent stub reads as a real case to a later reader.
-        lambda *_args: SimpleNamespace(
-            data=b"synthetic bundle",
-            manifest={"self_hash": "c" * 64, "claims": {"status": "complete"}},
-        ),
-    )
-
-    assert armarium.main() == EXIT_COMPLETE
-    assert context.finished
-    assert [record["kind"] for record in context.published] == ["manifest-entry", "export"]
-    bundle_record = context.published[-1]["payload"]["bundle"]
-    expected_digest = digest_bytes(b"synthetic bundle")
-    assert bundle_record["sha256"] == expected_digest
-    assert bundle_record["reference"]["sha256"] == expected_digest
+    monkeypatch.setattr(armarium, "page_accounting_rows", lambda *_args: [])
 
 
-def test_only_sealed_canary_acts_leave_the_bundle_and_real_canary_named_paths_stay(
+def test_only_sealed_canary_readings_leave_the_bundle_and_real_canary_named_paths_stay(
     monkeypatch,
 ):
     armarium = load_stage("7_armarium")
@@ -523,35 +424,10 @@ def test_only_sealed_canary_acts_leave_the_bundle_and_real_canary_named_paths_st
             {"ordinal": 2, "relative_path": "bird.jpg", "ledger_sha256": "c" * 64},
         ],
     }
-    context.conservation_records["page-2"] = {
-        "artifact_id": "page-2",
-        "payload": {"page_ordinal": 2, "ink_measurable": True},
-    }
-    acts = [
-        {"act_id": "real", "act_key": "a1", "page_ordinal": 1, "outcome": "proposed"},
-        {"act_id": "bird", "act_key": "a2", "page_ordinal": 2, "outcome": "proposed"},
-    ]
-    projections = []
-    monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
-    monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(
-        armarium,
-        "page_census",
-        lambda _context: {
-            **_sealed_page_census(context),
-            2: {"outcome": "sealed", "_pixel_dimensions": context.sealed_page_dimensions},
-        },
-    )
-    monkeypatch.setattr(armarium, "pages_marked_out", lambda *_args: {"real": [1], "bird": []})
-    monkeypatch.setattr(armarium, "expected_acts", lambda _context: acts)
-    monkeypatch.setattr(
-        armarium,
-        "categorize",
-        lambda *_args: (ArmariumCategory.HELD_FOR_REVIEW, _accepted_review(), None),
-    )
+    rows = [_reading_row("real", "p1:1", 1), _reading_row("bird", "p2:1", 2)]
+    _stub_page_export(monkeypatch, armarium, context, rows, ArmariumCategory.HELD_FOR_REVIEW)
     monkeypatch.setattr(armarium, "ink_map_page_rows", lambda *_args: [])
-    monkeypatch.setattr(armarium, "continuation_joins", lambda *_args: [])
-    monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
+    projections = []
 
     def bundle(projection, *_args):
         projections.append(projection)
@@ -566,91 +442,44 @@ def test_only_sealed_canary_acts_leave_the_bundle_and_real_canary_named_paths_st
     assert [row["act_id"] for row in projection.acts] == ["real"]
     assert [row["ordinal"] for row in projection.pages] == [1]
     assert projection.aggregate["by_category"] == {"held-for-review": 1}
-    assert projection.not_measured_basis["page-ink-conservation"]["pages_sealed"] == 1
+    assert projection.not_measured_basis == {"pages_sealed": 0}
     assert [row["relative_path"] for row in projection.source_manifest] == ["canary/x.jpg"]
     export = next(row["payload"] for row in context.published if row["kind"] == "export")
     assert export["canary"] == {
         "ordinals": [2],
         "acts": [
-            {"act_id": "bird", "act_key": "a2", "category": "held-for-review", "page_ordinals": [2]}
+            {
+                "act_id": "bird",
+                "act_key": "p2:1",
+                "category": "held-for-review",
+                "page_ordinals": [2],
+            }
         ],
     }
+    assert [row["act_id"] for row in export["non_delivered"]] == ["real"]
     assert [row["subject_id"] for row in context.published if row["kind"] == "manifest-entry"] == [
         "real",
         "bird",
     ]
 
 
-def test_an_act_touching_real_and_canary_pages_is_fatal(monkeypatch):
-    armarium = load_stage("7_armarium")
-    context = _RecordingContext()
-    context.run = {
-        "sealed_config_digests": {"canary-ledger": "c" * 64},
-        "source_manifest": [
-            {"ordinal": 1, "ledger_sha256": "a" * 64},
-            {"ordinal": 2, "ledger_sha256": "c" * 64},
-        ],
-    }
-    monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
-    monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(
-        armarium,
-        "page_census",
-        lambda _context: {1: {"outcome": "sealed"}, 2: {"outcome": "sealed"}},
-    )
-    monkeypatch.setattr(armarium, "pages_marked_out", lambda *_args: {"mixed": [2]})
-    monkeypatch.setattr(
-        armarium,
-        "expected_acts",
-        lambda _context: [
-            {"act_id": "mixed", "act_key": "a1", "page_ordinal": 1, "outcome": "proposed"}
-        ],
-    )
-    with pytest.raises(FatalAccounting, match="both canary and real pages"):
-        armarium.main()
-    assert context.published == []
-
-
 def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(monkeypatch):
     """A bundle whose own face says `partial` may not leave under an exit code of 0.
 
-    Unlike the control above, this combination is *not* incoherent: the ledger folds
-    the aggregate's reasons into its own, so it can only ever be the more partial of
-    the two -- and it is, for a sealed page whose acts all completed but disagree
-    about which completed category (proved whole through the real projection in
-    `test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles`).
-    Reaching it through `main` needs the stub, because both categories it requires
-    come from upstream outcomes no stage emits yet.
+    The ledger folds the aggregate's reasons into its own, so it can only ever
+    be the more partial of the two, and the export's outcome and exit follow
+    the ledger. The aggregate is stubbed `complete` to reach that case through
+    `main`.
     """
     armarium = load_stage("7_armarium")
     context = _RecordingContext()
-    proposed = {
-        "act_id": "act_proposed",
-        "act_key": "proposed",
-        "page_id": "pg_proposed",
-        "page_ordinal": 1,
-        "outcome": "proposed",
-    }
-    accepted_review = _accepted_review()
-
-    monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
-    monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(armarium, "page_census", _sealed_page_census)
-    monkeypatch.setattr(
-        armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
-    )
-    monkeypatch.setattr(armarium, "expected_acts", lambda _context: [proposed])
-    monkeypatch.setattr(
-        armarium,
-        "categorize",
-        lambda _context, _act_id, _cache: (ArmariumCategory.CONFIRMED_BLANK, accepted_review, None),
-    )
+    rows = [_reading_row("act_blank", "p1:1", 1)]
+    _stub_page_export(monkeypatch, armarium, context, rows, ArmariumCategory.CONFIRMED_BLANK)
     monkeypatch.setattr(
         armarium,
         "run_aggregate",
         lambda *_args, **_kwargs: {"status": "complete", "reasons": []},
     )
-    monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
     monkeypatch.setattr(
         armarium,
         "build_armarium_bundle",
@@ -664,49 +493,59 @@ def test_the_stage_reports_the_ledger_status_when_the_run_aggregate_reconciles(m
     )
 
     assert armarium.main() == EXIT_HELD
+    assert context.finished
     export = next(record for record in context.published if record["kind"] == "export")
     assert export["outcome"] == ArmariumCategory.HELD_FOR_REVIEW.value
     assert export["payload"]["bundle"]["claims_status"] == "partial"
     # The aggregate remains its own separate measurement, published unchanged.
     assert export["payload"]["aggregate"]["status"] == "complete"
+    expected_digest = digest_bytes(b"synthetic bundle")
+    assert export["payload"]["bundle"]["sha256"] == expected_digest
+    assert export["payload"]["bundle"]["reference"]["sha256"] == expected_digest
 
 
-def test_a_delivered_act_with_no_established_record_stops_the_export(monkeypatch):
-    """A delivered act with no established record is a fatal imbalance, not a run.
+class _ArchetypusTree:
+    def __init__(self, records: dict[str, dict]):
+        self.records = records
 
-    This fake reports `delivered` with no Archetypus record. The projection has
-    no reading to substitute for it, so the category and the evidence
-    disagreeing is a fatal imbalance rather than a row with an empty text field.
+    def read_artifact(self, _stage, _kind, identity):
+        return self.records[identity]
+
+
+@pytest.mark.parametrize(
+    ("outcome", "established", "refusal"),
+    [
+        ("accepted", 0, "carries 0 Archetypus records"),
+        ("accepted", 2, "carries 2 Archetypus records"),
+        ("held-for-review", 1, "carries an Archetypus record anyway"),
+    ],
+)
+def test_a_reading_exports_only_with_exactly_the_established_record_its_review_allows(
+    outcome, established, refusal
+):
+    """An accepted reading exports its one established record; nothing else may stand in.
+
+    With no record there is no text to deliver, with two there is no rule for
+    choosing one, and a reading the Recensor did not accept may not carry one.
     """
     armarium = load_stage("7_armarium")
-    context = _RecordingContext()
-    proposed = {
-        "act_id": "act_proposed",
-        "act_key": "proposed",
-        "page_id": "pg_proposed",
-        "page_ordinal": 1,
-        "outcome": "proposed",
+    records = {
+        f"art_{n}": {"artifact_id": f"art_{n}", "outcome": "established", "payload": {}}
+        for n in range(established)
     }
-    accepted_review = _accepted_review()
-
-    monkeypatch.setattr(armarium, "stage_parser", lambda _description: _parser_stub())
-    monkeypatch.setattr(armarium, "open_stage_context", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(armarium, "page_census", _sealed_page_census)
-    monkeypatch.setattr(
-        armarium, "pages_marked_out", lambda _context, _cache: {"act_proposed": [1]}
-    )
-    monkeypatch.setattr(armarium, "expected_acts", lambda _context: [proposed])
-    monkeypatch.setattr(
-        armarium,
-        "categorize",
-        lambda _context, _act_id, _cache: (ArmariumCategory.DELIVERED, accepted_review, None),
-    )
-    monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
-
-    with pytest.raises(FatalAccounting, match="no literal Archetypus text"):
-        armarium.main()
-    assert not context.finished
-    assert not any(record["kind"] == "export" for record in context.published)
+    context = SimpleNamespace(tree=_ArchetypusTree(records))
+    cache = {
+        ARCHETYPUS: {
+            "artifacts": [
+                {"kind": "archetypus", "subject_id": "act_read", "artifact_id": identity}
+                for identity in records
+            ]
+        }
+    }
+    row = {**_reading_row("act_read", "p1:1", 1), "disposition": "read"}
+    review = {"outcome": outcome, "payload": {"release": None}}
+    with pytest.raises(FatalAccounting, match=refusal):
+        armarium._page_category(context, row, review, cache)
 
 
 def test_the_orchestrator_reports_the_armariums_own_terminal_outcome():
@@ -751,9 +590,3 @@ def test_the_orchestrator_reports_the_armariums_own_terminal_outcome():
         }
     )
     assert (status, lines) == ("partial", ["act a2 is held-for-review"])
-
-
-def test_armarium_refuses_the_currently_unsupported_exclusion_path():
-    armarium = load_stage("7_armarium")
-    with pytest.raises(ApprovalRefusal, match="approval-record reference"):
-        armarium.exclusion_approval_ref({}, ArmariumCategory.EXCLUDED_WITH_APPROVAL)

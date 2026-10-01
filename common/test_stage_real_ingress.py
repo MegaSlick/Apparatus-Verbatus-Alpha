@@ -2,17 +2,8 @@
 
 The run tree is real to the Ink Map's seal -- the Door, the Exemplar and the Ink
 Map run as programs over a genuine real submission, made of the synthetic
-fixture's own two pages copied into an approved storage root -- and the
-Designator's records are then **hand-built** on top. Hand-built to keep these
-unit tests on the *consumer* side of the boundary: they hold `common/stage.py`
-to the real-ingress contract itself, over records this module controls, without
-standing up a served structure chair to produce them. The real structural pass
-is no longer roadmap work — `pipeline/2_designator/run.py`'s `live_initial_pass`
-asks a served chair for every sealed page, and
-`pipeline/test_structure_chair_e2e.py` drives it end to end — so what is
-hand-built here is a fixture for the consumer, not a stand-in for a producer
-that does not exist. Nothing here fabricates a Designator inside the stage
-program; the stage program is not invoked at all.
+fixture's own two pages copied into an approved storage root. These unit tests
+hold `common/stage.py` to the real-ingress contract itself.
 
 What is proven, unit by unit:
 
@@ -21,9 +12,6 @@ What is proven, unit by unit:
   accessor, and `REAL_SCENARIO` regardless of `--scenario`;
 - `_refuse_incompatible_real_reuse` names the sealed policy that moved, fires
   before the predecessor-seal refusal, and writes nothing;
-- `expected_acts` on a real run skips the fixture floor by name and recomputes a
-  structural row against the producer's own `raw_bounds`, refusing altered
-  bounds, unevidenced rows and ambiguous evidence;
 - `exemplar_page_ids` agrees with the fixture declaration on the happy fixture
   run and with the sealed bytes on the real run.
 """
@@ -35,7 +23,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -43,28 +30,20 @@ from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import (
     ContractError,
-    FatalAccounting,
     IncompatibleReuse,
     SchemaRefusal,
 )
-from common.contracts.identities import act_id as derive_act_id
-from common.contracts.identities import attempt_id
 from common.contracts.identities import page_id as derive_page_id
-from common.contracts.prior_draft import BLIND_READ_MODES
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, INK_MAP
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH
 from common.fixture_identity import page_identity
-from common.imaging import dimensions
 from common.runtree.store import RunTree
 from common.stage import (
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     REAL_SCENARIO,
     StageContext,
-    _designator_records_by_subject,
-    adapter_recipe_for,
     canary_ordinals,
     exemplar_page_ids,
-    expected_acts,
     load_fixture,
     open_context,
     open_stage_context,
@@ -72,7 +51,6 @@ from common.stage import (
     stage_parser,
     submission_identity,
 )
-from common.test_stage_structure_proposals import _StructureDesignator
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,9 +76,8 @@ def _run_program(program: Path, *argv: str) -> None:
 def real_template(tmp_path_factory) -> tuple[Path, Path]:
     """One real submission, carried by the real programs to the Ink Map's seal.
 
-    Stopping at the Ink Map is the point, not an economy: the Designator is the
-    stage whose records are built by hand below, and its own program refuses on
-    real ingress by design. Returns the run root and the submission ledger.
+    Stopping at the Ink Map is the point: the contexts below open the stages
+    after it. Returns the run root and the submission ledger.
     """
     base = tmp_path_factory.mktemp("real-ingress-template")
     approved = base / "approved-storage"
@@ -200,741 +177,24 @@ def _snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
-# Sentinel: "publish the ordinary transform", as against an explicit `None`.
-_WELL_FORMED = object()
-
-
-def _row(
-    act: str, key: str, page: str, ordinal: int, outcome: str, evidence: list[dict]
-) -> dict[str, Any]:
-    return {
-        "act_id": act,
-        "act_key": key,
-        "page_id": page,
-        "page_ordinal": ordinal,
-        "has_continuation": False,
-        "outcome": outcome,
-        "evidence": evidence,
-    }
-
-
-class _Designator:
-    """The Designator's records over a real run, built by hand.
-
-    The context carries `fixture=None`: the seal these tests hand-build must be
-    publishable without a fixture in sight, or the producer this contract is
-    written for could not exist either.
-    """
-
-    def __init__(self, root: Path):
-        self.root = root
-        self.tree = RunTree(root, RUN_ID)
-        run = self.tree.read_run()
-        self.context = StageContext(
-            tree=self.tree,
-            run=run,
-            fixture=None,
-            scenario=REAL_SCENARIO,
-            stage=DESIGNATOR,
-            adapter_revision=adapter_recipe_for(run, DESIGNATOR),
-            args=None,
-            registry=None,
-        )
-        # Built lazily, and only by `propose_served`: a served chain writes a
-        # serving receipt the moment it exists, and most of this class's tests
-        # never serve a chair at all.
-        self._served: _StructureDesignator | None = None
-        self.pages = {
-            record["payload"]["ordinal"]: record
-            for record in (
-                self.tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
-                for entry in self.tree.build_manifest(EXEMPLAR)["artifacts"]
-                if entry["kind"] == "page"
-            )
-            if record["outcome"] == "sealed"
-        }
-        self.rows: list[dict[str, Any]] = []
-
-    def rectangle(self, ordinal: int) -> dict[str, int]:
-        """A rectangle strictly inside the sealed page, so it is not the page's own."""
-        width, height = dimensions(
-            self.tree.read_bytes(self.pages[ordinal]["payload"]["image_path"])
-        )
-        return {"x": 0, "y": 0, "w": max(1, width // 2), "h": max(1, height // 2)}
-
-    def propose(
-        self,
-        ordinal: int,
-        bounds: dict[str, int],
-        *,
-        raw_bounds: dict[str, int] | None = None,
-        act: str | None = None,
-        key: str | None = None,
-    ) -> str:
-        """One proposal-origin region, shaped as `cut_minted_region` publishes it."""
-        page = self.pages[ordinal]
-        page_id = page["subject_id"]
-        act = derive_act_id(page_id, "proposal", bounds) if act is None else act
-        key = f"structural:{ordinal}:{len(self.rows) + 1}" if key is None else key
-        published = self.context.publish(
-            kind="region",
-            subject_id=act,
-            outcome="proposed",
-            attempt=attempt_id(act, "crop", 1),
-            inputs=[self.context.input_ref(page["payload"]["image_path"])],
-            payload={
-                "act_key": key,
-                "attempt_ordinal": 1,
-                "origin": "proposal",
-                "transform": {
-                    "operation": "crop",
-                    "source_page_ordinal": ordinal,
-                    "source_page_id": page_id,
-                    "bounds": bounds,
-                },
-                "raw_bounds": bounds if raw_bounds is None else raw_bounds,
-                "padding": None,
-                "image_path": page["payload"]["image_path"],
-                "image_sha256": page["payload"]["source_sha256"],
-                "provenance": {"kind": "hand-built structural proposal"},
-            },
-        )
-        self.rows.append(
-            _row(
-                act,
-                key,
-                page_id,
-                ordinal,
-                "proposed",
-                [self.context.input_ref(published.relative_path)],
-            )
-        )
-        return act
-
-    def propose_served(self, ordinal: int, bounds: dict[str, int]) -> str:
-        """A structural proposal minted through the real served-chair chain.
-
-        D3 (892b1f951f) closed the route `propose`'s bare provenance used to
-        take: a real-ingress proposal-class row now owes `expected_acts` the
-        served call its seal provenance names, walked back to the page's
-        retained `structure-answer`. Built with
-        `test_stage_structure_proposals._StructureDesignator`'s own
-        structure-status -> structure-answer -> call-record chain rather than
-        re-deriving it here, so the two files describe the served route
-        identically. Any row this class's other tests need to stay reachable
-        past that check -- the ambiguous, unevidenced and malformed rows this
-        file exists to test -- must clear it too, exactly as a real seal would.
-        """
-        if self._served is None:
-            self._served = _StructureDesignator(
-                self.root, RUN_ID, scenario=REAL_SCENARIO, fixture=None
-            )
-        self._served.status(ordinal, self._served.answer(ordinal, [bounds]))
-        act = self._served.propose(ordinal, bounds)
-        self.rows.append(self._served.rows[-1])
-        return act
-
-    def propose_far_page_region(
-        self,
-        act: str,
-        key: str,
-        ordinal: int,
-        bounds: dict[str, int],
-        *,
-        transform: dict[str, Any] | None | object = _WELL_FORMED,
-    ):
-        """A second, far-page region for an act `propose` already minted a row for.
-
-        Shaped exactly as `propose`'s own region, on the far page a continuation
-        would be cut over. No row is appended -- one act still seals one row --
-        so the caller is responsible for splicing the returned record's
-        reference into that row's own `evidence` list before sealing.
-        `transform` may be overridden to publish a region the consumer cannot
-        place; a producer can write one, so the consumer is held to refusing it.
-        """
-        page = self.pages[ordinal]
-        page_id = page["subject_id"]
-        return self.context.publish(
-            kind="region",
-            subject_id=act,
-            outcome="proposed",
-            attempt=attempt_id(act, "crop", 2),
-            inputs=[self.context.input_ref(page["payload"]["image_path"])],
-            payload={
-                "act_key": key,
-                "attempt_ordinal": 2,
-                "origin": "proposal",
-                "transform": {
-                    "operation": "crop",
-                    "source_page_ordinal": ordinal,
-                    "source_page_id": page_id,
-                    "bounds": bounds,
-                }
-                if transform is _WELL_FORMED
-                else transform,
-                "raw_bounds": bounds,
-                "padding": None,
-                "image_path": page["payload"]["image_path"],
-                "image_sha256": page["payload"]["source_sha256"],
-                "provenance": {"kind": "hand-built structural continuation"},
-            },
-        )
-
-    def hold_residual(self, ordinal: int, bounds: dict[str, int]) -> str:
-        page_id = self.pages[ordinal]["subject_id"]
-        act = derive_act_id(page_id, "residual", bounds)
-        published = self.context.publish(
-            kind="hold",
-            subject_id=act,
-            outcome="held",
-            payload={
-                "act_key": f"residual:{ordinal}:0",
-                "page_ordinal": ordinal,
-                "residual_bounds": bounds,
-                "residual_pixel_count": bounds["w"] * bounds["h"],
-                "reason": "hand-built residual hold",
-            },
-        )
-        self.rows.append(
-            _row(
-                act,
-                f"residual:{ordinal}:0",
-                page_id,
-                ordinal,
-                "held",
-                [self.context.input_ref(published.relative_path)],
-            )
-        )
-        return act
-
-    def hold_beside(self, act: str, ordinal: int) -> None:
-        """A hold for an act that already has a row: no rectangle in its payload.
-
-        A producer can write one -- an aborted hold, a payload shape that moved
-        -- and it matches no minted class, so the consumer is held to refusing
-        it rather than letting the act's regions reclassify it as structural.
-
-        The row is turned `held` and both records spliced into its evidence,
-        because that is the seal a producer publishing this hold would actually
-        write, and it is the shape nothing else catches:
-        `_verify_proposal_seal_evidence` refuses a `proposed` row carrying any
-        hold, but a `held` row with exactly one hold is precisely what it
-        expects to see.
-        """
-        published = self.context.publish(
-            kind="hold",
-            subject_id=act,
-            outcome="held",
-            payload={
-                "act_key": f"held:{ordinal}:0",
-                "page_ordinal": ordinal,
-                "reason": "hand-built hold naming no rectangle",
-            },
-        )
-        row = self.rows[-1]
-        row["outcome"] = "held"
-        row["evidence"] = sorted(
-            [*row["evidence"], self.context.input_ref(published.relative_path)],
-            key=lambda reference: reference["relative_path"],
-        )
-
-    def page_rectangle(self, ordinal: int) -> dict[str, int]:
-        width, height = dimensions(
-            self.tree.read_bytes(self.pages[ordinal]["payload"]["image_path"])
-        )
-        return {"x": 0, "y": 0, "w": width, "h": height}
-
-    def fallback_record(self, act: str, ordinal: int, *, attempt: str | None = None) -> None:
-        """A page-fallback record, shaped as `_publish_page_fallback` publishes it.
-
-        Minus the structure-status input it would cite: these tests stop at the
-        classification, and the fallback verifier's own premise check is what
-        `common/test_stage_page_residual.py` and the acceptance run already hold.
-
-        `attempt` is what lets a caller publish a *second* record for one act:
-        an artifact id binds stage, kind, subject and attempt, so two records
-        for one subject reach the manifest only when their attempts differ.
-        """
-        page = self.pages[ordinal]
-        self.context.publish(
-            kind="page-fallback",
-            subject_id=act,
-            outcome="proposed",
-            attempt=attempt,
-            payload={
-                "act_key": f"page-fallback:{ordinal}",
-                "page_id": page["subject_id"],
-                "page_ordinal": ordinal,
-                "page_bounds": self.page_rectangle(ordinal),
-            },
-        )
-
-    def unevidenced_row(self, ordinal: int) -> str:
-        page_id = self.pages[ordinal]["subject_id"]
-        act = derive_act_id(page_id, "proposal", {"x": 1, "y": 1, "w": 1, "h": 1})
-        self.rows.append(_row(act, f"structural:{ordinal}:9", page_id, ordinal, "proposed", []))
-        return act
-
-    def seal(self) -> None:
-        # A served proposal (`propose_served`) owes the seal's own provenance an
-        # engine_call too (`_structure_chair_call` reads it from the *seal*, not
-        # from any one row): once one has been minted, the seal is the served
-        # designator's own provenance, engine_call included, rather than the
-        # bare marker every other test in this file still seals with.
-        provenance = (
-            self._served.provenance()
-            if self._served is not None
-            else {"kind": "hand-built proposal seal"}
-        )
-        payload: dict[str, Any] = {
-            "expected_acts": self.rows,
-            "count": len(self.rows),
-            "provenance": provenance,
-        }
-        payload["self_hash"] = self_hash(payload)
-        self.context.publish(
-            kind="proposal-seal",
-            subject_id="proposal-seal",
-            outcome="proposed",
-            inputs=[reference for row in self.rows for reference in row["evidence"]],
-            payload=payload,
-        )
-        self.context.seal_boundary()
-        self.context.finish()
-
-
 # --- the real context, opened ---------------------------------------------------
 
 
-def test_a_real_run_opens_with_bindings_and_a_structural_row_recomputes_from_raw_bounds(
-    real_root,
-):
-    """The honest shape, and the regression test for the planted defect.
-
-    A structural `proposed` act on a real seal used to fall through the fixture
-    floor -- `context.fixture.get("act", [])` read `[]` -- into the minted-row
-    check, which refused it with "extends the denominator beyond the fixture" on
-    a run that never had one. Now the floor is skipped by name and the row is
-    recomputed against the rectangle its own region record says it was minted
-    over.
-
-    D3 closed a second, later route for the same act: a real-ingress proposal
-    row now also owes the served call its seal provenance names, so this is
-    minted through `propose_served`'s structure-status -> structure-answer ->
-    call-record chain rather than the bare `propose`.
-    """
-    designator = _Designator(real_root)
-    act = designator.propose_served(1, designator.rectangle(1))
-    designator.seal()
-
-    # `--scenario` is argv nobody sealed on this route, so it is ignored, not
-    # honoured: the context's scenario is the constant.
-    context = _open(real_root, ATTESTATORES, scenario="no-such-declared-scenario")
+def test_a_real_run_opens_with_its_bindings_and_no_fixture(real_root):
+    """`--scenario` is argv nobody sealed on this route, so it is ignored, not
+    honoured: the context's scenario is the constant, and its fixture refuses."""
+    context = _open(real_root, DESIGNATOR, scenario="no-such-declared-scenario")
 
     assert context.scenario == REAL_SCENARIO
-    assert context.stage == ATTESTATORES
+    assert context.stage == DESIGNATOR
     assert context.registry is not None
     assert context.armarium_formats is not None
     assert context.serving_config_inputs is not None
     sealed = context.sealed_config_digests
     assert {"models", "armarium-formats", "run-policy", "decoding", "recovery"} <= set(sealed)
     assert context.recovery_policy["config_sha256"] == sealed["recovery"]
-    with pytest.raises(ContractError, match="attestatores asked its context for fixture"):
+    with pytest.raises(ContractError, match="designator asked its context for fixture"):
         _ = context.fixture
-
-    acts = expected_acts(context)
-    assert [row["act_id"] for row in acts] == [act]
-    assert acts[0]["outcome"] == "proposed"
-
-
-def test_altered_raw_bounds_refuse_by_name_and_never_mention_the_fixture(real_root):
-    designator = _Designator(real_root)
-    bounds = designator.rectangle(1)
-    designator.propose(1, bounds, raw_bounds={**bounds, "w": bounds["w"] + 1})
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="does not verify against the proposal class"):
-        expected_acts(context)
-    # And the refusal is the real-mode one, not the fixture floor's.
-    with pytest.raises(FatalAccounting) as refusal:
-        expected_acts(context)
-    assert "beyond the fixture" not in str(refusal.value)
-
-
-def test_a_row_with_no_designator_evidence_at_all_is_refused(real_root):
-    designator = _Designator(real_root)
-    designator.propose_served(1, designator.rectangle(1))
-    unevidenced = designator.unevidenced_row(2)
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match=f"act {unevidenced} has no Designator evidence"):
-        expected_acts(context)
-
-
-def test_a_row_with_both_a_hold_and_a_page_fallback_record_is_refused_as_ambiguous(real_root):
-    """Class is decided by which evidence exists; two kinds of evidence is no class.
-
-    Nothing tries residual, then page-fallback, until one verifies -- that would
-    be a picker over the producer's own records.
-    """
-    designator = _Designator(real_root)
-    designator.propose_served(1, designator.rectangle(1))
-    residual = designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
-    designator.fallback_record(residual, 2)
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="matches more than one act class") as refusal:
-        expected_acts(context)
-    assert "residual, page-fallback" in str(refusal.value)
-
-
-def test_a_page_fallback_act_with_its_crop_regions_is_one_class_not_two(real_root):
-    """A fallback act's predetermined crops are proposal regions of the same act.
-
-    The `page-fallback` record decides the class; the regions beside it are its
-    consequence, not a second claim. So the row reaches the fallback verifier --
-    which here refuses on the premise it cannot find, naming the class -- and is
-    never called ambiguous.
-    """
-    designator = _Designator(real_root)
-    rectangle = designator.page_rectangle(2)
-    fallback = derive_act_id(designator.pages[2]["subject_id"], "page-fallback", rectangle)
-    designator.propose(2, designator.rectangle(2), act=fallback, key="page-fallback:2")
-    designator.fallback_record(fallback, 2)
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting) as refusal:
-        expected_acts(context)
-    assert "page-fallback" in str(refusal.value)
-    assert "more than one act class" not in str(refusal.value)
-    assert "no Designator evidence" not in str(refusal.value)
-
-
-def test_a_structural_row_naming_the_wrong_page_ordinal_is_refused_by_name(real_root):
-    """Act identity binds page, class and bounds -- never page_ordinal or act_key.
-
-    A row free to disagree with its own region on either field would still
-    verify: stages 3-7 index pages and join continuations by `page_ordinal`,
-    not by identity, so a believed mismatch reaches them silently.
-    """
-    designator = _Designator(real_root)
-    act = designator.propose(1, designator.rectangle(1))
-    designator.rows[-1]["page_ordinal"] = 2
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="page_ordinal") as refusal:
-        expected_acts(context)
-    assert act in str(refusal.value)
-
-
-def test_a_structural_row_naming_a_foreign_act_key_is_refused_by_name(real_root):
-    designator = _Designator(real_root)
-    act = designator.propose(1, designator.rectangle(1))
-    designator.rows[-1]["act_key"] = "some-other-key"
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="act_key") as refusal:
-        expected_acts(context)
-    assert act in str(refusal.value)
-
-
-def test_a_structural_row_claiming_a_continuation_with_no_far_page_region_is_refused(real_root):
-    """`has_continuation` is a belief too, and this is the harmless direction: a
-    row claims a page that was never cut."""
-    designator = _Designator(real_root)
-    designator.propose(1, designator.rectangle(1))
-    designator.rows[-1]["has_continuation"] = True
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="has_continuation"):
-        expected_acts(context)
-
-
-def test_a_structural_row_denying_a_continuation_the_designator_actually_cut_is_refused(real_root):
-    """The silent-loss direction: a published far-page crop the flag denies.
-
-    The Attestatores append the far page only when `has_continuation` is set
-    (3_attestatores/run.py), so a `False` flag beside a real far-page region
-    would drop that crop before any witness ever saw it.
-    """
-    designator = _Designator(real_root)
-    act = designator.propose(1, designator.rectangle(1))
-    key = designator.rows[-1]["act_key"]
-    far_region = designator.propose_far_page_region(act, key, 2, designator.rectangle(2))
-    designator.rows[-1]["evidence"].append(designator.context.input_ref(far_region.relative_path))
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="has_continuation"):
-        expected_acts(context)
-
-
-def test_a_far_page_region_the_denominator_cannot_place_is_refused_not_dropped(real_root):
-    """A region with no transform object names no page, and must not vanish.
-
-    `has_continuation` is reconciled against the far-page regions the Designator
-    actually cut. A region whose `transform` is not an object belongs to neither
-    page list, so filtering it out silently would leave a `False` flag agreeing
-    with an empty far-page count while a continuation crop sat published beside
-    it -- and the Attestatores append the far page only when the flag is set.
-    """
-    designator = _Designator(real_root)
-    act = designator.propose(1, designator.rectangle(1))
-    key = designator.rows[-1]["act_key"]
-    far_region = designator.propose_far_page_region(
-        act, key, 2, designator.rectangle(2), transform=None
-    )
-    designator.rows[-1]["evidence"].append(designator.context.input_ref(far_region.relative_path))
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="carries no transform object") as refusal:
-        expected_acts(context)
-    assert act in str(refusal.value)
-
-
-def _foreign_page_id() -> str:
-    """A well-formed page identity for bytes no run of this submission carries."""
-    return derive_page_id(
-        {"kind": "source", "sha256": digest_bytes(b"a page this submission never held")},
-        {"operation": "whole"},
-    )
-
-
-def test_a_far_page_region_naming_a_page_this_run_never_published_is_refused(real_root):
-    """ "Far" must mean another page *of this run*, not merely "not the row's".
-
-    The far-page list was everything the row's own page id did not match, so a
-    transform naming a page id from nowhere satisfied `has_continuation=True`
-    with a crop no downstream reader could open: the Attestatores would append
-    a page this run's Exemplar never sealed. The region's page is now checked
-    against the run's own page index, which is what makes the far list a list
-    of real pages rather than a list of mismatches.
-    """
-    designator = _Designator(real_root)
-    act = designator.propose(1, designator.rectangle(1))
-    key = designator.rows[-1]["act_key"]
-    bounds = designator.rectangle(2)
-    far_region = designator.propose_far_page_region(
-        act,
-        key,
-        2,
-        bounds,
-        transform={
-            "operation": "crop",
-            "source_page_ordinal": 2,
-            "source_page_id": _foreign_page_id(),
-            "bounds": bounds,
-        },
-    )
-    designator.rows[-1]["evidence"].append(designator.context.input_ref(far_region.relative_path))
-    designator.rows[-1]["has_continuation"] = True
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="which this run's Exemplar never published") as ref:
-        expected_acts(context)
-    assert act in str(ref.value)
-
-
-def test_a_continuation_region_naming_a_foreign_act_key_is_refused(real_root):
-    """The far region's recomputable facts are recomputed, not only counted.
-
-    `act_key` is the field stages 3-7 join on, and the far region publishes its
-    own copy exactly as the near one does; nothing before this compared them,
-    so a continuation crop could be appended to an act under a key naming a
-    different unit entirely.
-    """
-    designator = _Designator(real_root)
-    act = designator.propose(1, designator.rectangle(1))
-    far_region = designator.propose_far_page_region(
-        act, "structural:9:9", 2, designator.rectangle(2)
-    )
-    designator.rows[-1]["evidence"].append(designator.context.input_ref(far_region.relative_path))
-    designator.rows[-1]["has_continuation"] = True
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="continuation region names act_key"):
-        expected_acts(context)
-
-
-def test_a_continuation_region_naming_the_wrong_page_ordinal_is_refused(real_root):
-    """And the far ordinal, against the run's page index rather than the row.
-
-    No seal-row field names the far page, so the row cannot be the authority
-    here; the Exemplar's own index is. A continuation whose ordinal disagrees
-    with it would place the crop on the wrong page in every reader that orders
-    by ordinal.
-    """
-    designator = _Designator(real_root)
-    act = designator.propose(1, designator.rectangle(1))
-    key = designator.rows[-1]["act_key"]
-    bounds = designator.rectangle(2)
-    far_region = designator.propose_far_page_region(
-        act,
-        key,
-        2,
-        bounds,
-        transform={
-            "operation": "crop",
-            "source_page_ordinal": 7,
-            "source_page_id": designator.pages[2]["subject_id"],
-            "bounds": bounds,
-        },
-    )
-    designator.rows[-1]["evidence"].append(designator.context.input_ref(far_region.relative_path))
-    designator.rows[-1]["has_continuation"] = True
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="names source_page_ordinal 7"):
-        expected_acts(context)
-
-
-def test_an_act_whose_hold_names_no_rectangle_is_refused_not_read_as_structural(real_root):
-    """A hold matching no minted class must not be reclassified away.
-
-    A hold naming neither `residual_bounds` nor `page_bounds` matched no minted
-    class, so a `held` act carrying one beside a proposal region fell through
-    to the structural pass, was recomputed as a *proposal* against that region,
-    and passed -- its hold never examined, and its held-ness never reconciled,
-    on the one route where the hold is the only evidence the act was held at
-    all. The evidence check downstream cannot catch it either: one hold is
-    exactly what a `held` row is supposed to carry.
-    """
-    designator = _Designator(real_root)
-    act = designator.propose(1, designator.rectangle(1))
-    designator.hold_beside(act, 1)
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="naming neither residual_bounds nor page_bounds"):
-        expected_acts(context)
-
-
-def test_two_page_fallback_records_for_one_act_are_refused_not_silently_last_wins(real_root):
-    """The duplicate rule the hold check already applies, applied to every kind.
-
-    `_designator_records_by_subject` built its index by comprehension, so two
-    records for one subject left whichever the manifest visited last -- an act
-    verified against a rectangle chosen by artifact-hash ordering, while the
-    hold rule beside it refuses the same duplication by name. The helper is
-    called directly here because every caller reads its result for a different
-    purpose and would refuse for its own reason first; what is under test is
-    the index, not any one consumer of it.
-    """
-    designator = _Designator(real_root)
-    page_id = designator.pages[1]["subject_id"]
-    act = derive_act_id(page_id, "page-fallback", designator.page_rectangle(1))
-    designator.fallback_record(act, 1)
-    designator.fallback_record(act, 1, attempt=attempt_id(act, "page-fallback", 2))
-    designator.propose(1, designator.rectangle(1))
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    entries = context.tree.build_manifest(DESIGNATOR)["artifacts"]
-    assert len([entry for entry in entries if entry["kind"] == "page-fallback"]) == 2
-
-    with pytest.raises(FatalAccounting, match="more than one Designator page-fallback record"):
-        _designator_records_by_subject(context, "page-fallback")
-
-
-def test_a_malformed_real_minted_row_never_mentions_the_fixture(real_root):
-    """The fixture-worded refusal is fixture-only wording, confined to fixture mode.
-
-    A residual hold sealed as `proposed` -- malformed in a way real ingress can
-    produce, since there is no fixture floor to have caught it first -- must
-    still refuse, but never with the sentence a real run never had a fixture
-    to be measured against.
-    """
-    designator = _Designator(real_root)
-    designator.propose_served(1, designator.rectangle(1))
-    designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
-    designator.rows[-1]["outcome"] = "proposed"
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting) as refusal:
-        expected_acts(context)
-    assert "beyond the fixture" not in str(refusal.value)
-    assert "beyond the structural pass" in str(refusal.value)
-
-
-def test_a_residual_row_naming_the_wrong_page_ordinal_is_refused_by_name(real_root):
-    """A residual's identity binds page, class and rectangle -- not its ordinal.
-
-    `act_bindings` puts nothing about `page_ordinal` into the act id, so a
-    residual row could name any page's ordinal and still re-derive perfectly
-    against the rectangle its own hold names. Stages 3-7 index and join by the
-    named field, so the review item would arrive filed under a page whose ink
-    it is not. `hold_residual_act` records the ordinal beside the rectangle;
-    the two must agree.
-
-    The proposal beside it is served (`propose_served`) because a real-ingress
-    proposal-class row owes `expected_acts` the chair call its seal provenance
-    names, and every row is classified before any minted row is recomputed. An
-    unserved proposal here would refuse for its own missing `engine_call`, and
-    this test would never reach the residual it is about.
-    """
-    designator = _Designator(real_root)
-    designator.propose_served(1, designator.rectangle(1))
-    designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
-    designator.rows[-1]["page_ordinal"] = 1
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="own hold record names page_ordinal 2"):
-        expected_acts(context)
-
-
-def test_a_residual_row_naming_a_foreign_act_key_is_refused_by_name(real_root):
-    """The other field the identity does not bind, and the one a reviewer reads.
-
-    The same hole as the ordinal above: `act_key` is what a reviewer and every
-    downstream join see, and a row is free to name one its own hold never
-    recorded. The proposal beside it is served for the reason given above.
-    """
-    designator = _Designator(real_root)
-    designator.propose_served(1, designator.rectangle(1))
-    designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
-    designator.rows[-1]["act_key"] = "residual:2:41"
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting, match="own hold record names act_key 'residual:2:0'"):
-        expected_acts(context)
-
-
-def test_a_real_minted_row_in_no_admitted_outcome_is_told_about_the_structural_pass(real_root):
-    """The third refusal in the minted-row check said "the sealed fixture" too.
-
-    A minted row whose outcome is neither 'held' nor 'proposed' -- `excluded`
-    here, which is in the Designator's own vocabulary -- was told it "is not
-    declared in the sealed fixture", naming a declaration a real run does not
-    have and sending an operator to look for it. The other two refusals in this
-    function already say `beyond`; this one now does as well. The proposal
-    beside the minted row is served, so the row under test is the one that
-    refuses.
-    """
-    designator = _Designator(real_root)
-    designator.propose_served(1, designator.rectangle(1))
-    designator.hold_residual(2, {"x": 1, "y": 1, "w": 1, "h": 1})
-    designator.rows[-1]["outcome"] = "excluded"
-    designator.seal()
-    context = _open(real_root, ATTESTATORES)
-
-    with pytest.raises(FatalAccounting) as refusal:
-        expected_acts(context)
-    assert "extends the denominator beyond the structural pass and is neither" in str(refusal.value)
-    assert "fixture" not in str(refusal.value)
 
 
 # --- the binding recheck ----------------------------------------------------------
@@ -968,7 +228,9 @@ def _moved(tmp_path: Path, source: Path, old: str, new: str) -> Path:
     [
         (
             "--decoding-config",
-            lambda tmp: _moved(tmp, DEFAULT_DECODING_CONFIG_PATH, "seed = 20260820", "seed = 1"),
+            lambda tmp: _moved(
+                tmp, DEFAULT_DECODING_CONFIG_PATH, "page_max_tokens = 12288", "page_max_tokens = 1"
+            ),
             "decoding",
         ),
         ("--models-config", _moved_models_config, "models"),
@@ -1079,38 +341,25 @@ def test_a_run_sealed_with_no_data_handling_digest_is_refused_by_name(real_root)
     assert "sealed no digest for the data-handling configuration" in str(refusal.value)
 
 
-def test_run_policy_digest_moves_with_each_of_its_eight_fields():
+def test_run_policy_digest_moves_with_each_of_its_three_fields():
     base = dict(
         witness_context="named",
         witness_context_declaration_sha256="a" * 64,
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-        perlector_instrument_per_mille=0,
-        perlector_instrument_approval_ref="",
-        blind_read="fed",
         mechanics_qualification=False,
     )
     moved = {
         "witness_context": "blinded",
         "witness_context_declaration_sha256": "b" * 64,
-        "nuda_per_mille": 1,
-        "nuda_approval_ref": "lectio-nuda-sampling-design.v1",
-        "perlector_instrument_per_mille": 1,
-        "perlector_instrument_approval_ref": "perlector-prior-draft-instrument-design.v1",
-        "blind_read": "saved",
         # A run created ordinarily must not resume under the mechanics flag and
         # pass the reuse check, mixing ordinary and mechanics-only artefacts in
         # one tree.
         "mechanics_qualification": True,
     }
     assert real_run_policy_digest(**base) == real_run_policy_digest(**base)
-    assert len({real_run_policy_digest(**{**base, "blind_read": m}) for m in BLIND_READ_MODES}) == 3
     for field, value in moved.items():
         assert real_run_policy_digest(**{**base, field: value}) != real_run_policy_digest(**base), (
             field
         )
-    with pytest.raises(ContractError, match="blind_read must be one of"):
-        real_run_policy_digest(**{**base, "blind_read": True})
     with pytest.raises(ContractError, match="mechanics_qualification must be a bool"):
         real_run_policy_digest(**{**base, "mechanics_qualification": 1})
 

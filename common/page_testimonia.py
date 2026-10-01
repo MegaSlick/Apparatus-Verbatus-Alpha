@@ -19,13 +19,12 @@ from typing import Any, Final
 
 from common.chairs.models import AbsentChair
 from common.chandra_native_retry import validate_trace as validate_chandra_trace
-from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
+from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
-from common.exemplar_boundary import read_sealed_page, verify_exemplar_crop_lineage
+from common.exemplar_boundary import read_sealed_page
 from common.imaging import dimensions
 from common.native_witness import (
     record_presentations,
-    unpresented_region_ids,
     validate_capture_text_view,
     validate_native_capture,
     validate_native_witness_geometry,
@@ -45,7 +44,6 @@ from common.page_witness_units import reads_detector_records
 from common.stage import (
     ATTEMPTED_WITNESS_OUTCOMES,
     latest_per_chair,
-    recovery_region_count,
     stage_manifest,
     validate_serving_provenance,
 )
@@ -56,47 +54,6 @@ from common.witness_regime import NAMED, witness_label
 
 def input_order(reference: dict[str, str]) -> tuple[str, str]:
     return reference["relative_path"], reference["sha256"]
-
-
-# --- the Designator's proposals a page Testimonium is measured against -------------
-
-
-def verify_region(context, region: dict) -> dict:
-    """Prove the region handed over is the region the reference describes.
-
-    The digest catches changed bytes, decoding catches a non-image, and the dimensions
-    catch a crop that does not match its transform. The cause goes into the refusal
-    text because `run_stage` prints only the refusal; these messages name
-    ordinals and run-relative paths, never a submitted filename.
-    """
-    try:
-        return verify_exemplar_crop_lineage(context.tree, context.run, region)
-    except ContractError as error:
-        raise SchemaRefusal(
-            f"a Designator region does not trace to its Exemplar page: {error}"
-        ) from error
-
-
-def sealed_proposal_regions(context) -> list[dict]:
-    """Every verified proposal in the run-wide routing denominator."""
-    regions = []
-    for entry in stage_manifest(context, DESIGNATOR)["artifacts"]:
-        if entry["kind"] != "region":
-            continue
-        record = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        # Keep the origin-specific refusal ahead of the general lineage refusal;
-        # callers rely on the shared recovery-denominator vocabulary.
-        recovery_region_count(record.get("subject_id", "unidentified act"), [record])
-        validate_serving_provenance(
-            context,
-            record.get("payload", {}).get("provenance"),
-            producer_stage=DESIGNATOR,
-            require_receipt=True,
-        )
-        verify_region(context, record)
-        if record["payload"]["origin"] == "proposal":
-            regions.append(record)
-    return regions
 
 
 # --- one page Testimonium -------------------------------------------------------------
@@ -177,7 +134,6 @@ def chair_was_served(context, record: dict[str, Any]) -> bool:
 def validate_page_testimonium_record(
     context,
     record: dict[str, Any],
-    proposal_regions: list[dict[str, Any]],
 ) -> None:
     """Reconcile a page Testimonium's outcome, page, presentation, and inputs."""
     payload = record.get("payload")
@@ -189,12 +145,6 @@ def validate_page_testimonium_record(
     blank_testimony = is_detector_blank_testimony(context, record)
     attempted = chair_was_served(context, record)
     presented = payload["presented"]
-    if payload["regions"] != []:
-        raise SchemaRefusal(
-            "a page Testimonium carries act-region references. Its page evidence would acquire "
-            "an act identity the page record does not own. Keep act associations in the "
-            "digest-bound attachments"
-        )
     if blank_testimony:
         census = empty_detector_page(
             context, stage_manifest(context, DESIGNATOR)["artifacts"], record["subject_id"]
@@ -223,7 +173,11 @@ def validate_page_testimonium_record(
     if not attempted:
         # As in the act-scoped check: before the image-evidence refusal, which a
         # stripped record that kept its response would pass.
-        if payload.get("native_capture") is not None or payload.get("raw_response_refs"):
+        if (
+            payload.get("native_capture") is not None
+            or payload.get("raw_response_refs")
+            or "serving_call_ref" in payload
+        ):
             raise SchemaRefusal(
                 "a non-attempted page Testimonium retains a provider response. The record would "
                 "say the chair was not served while naming the bytes it answered with, outside "
@@ -276,6 +230,8 @@ def validate_page_testimonium_record(
         retained.extend(
             reference for reference in payload.get("unit_call_refs", []) if reference is not None
         )
+        if "serving_call_ref" in payload:
+            retained.append(payload["serving_call_ref"])
         # De-duplicated as the producer does: one response can reach the same blob
         # through both `raw_response_refs` and `native_capture`, and
         # `validate_input_refs` refuses a repeated path, so a doubled expectation could
@@ -288,19 +244,6 @@ def validate_page_testimonium_record(
                 + ". The consumer cannot prove which immutable pixels produced the page "
                 "report. Restore the digest-bound inputs and remove unrelated ones"
             )
-    page_proposals = [
-        region
-        for region in proposal_regions
-        if region["payload"]["transform"]["source_page_id"] == record["subject_id"]
-    ]
-    if payload["unpresented_regions"] != unpresented_region_ids(
-        record_presentations(payload), page_proposals
-    ):
-        raise SchemaRefusal(
-            "a page Testimonium does not name exactly the proposal regions outside its "
-            "presentation. Its derived layer would look more complete than the pixels shown. "
-            "Re-derive unpresented_regions from the sealed page proposals"
-        )
     validate_serving_provenance(
         context,
         payload["provenance"],
@@ -341,7 +284,7 @@ def verify_page_native_capture(
 # --- every page ------------------------------------------------------------------------
 
 
-def current_page_testimonia(context, proposal_regions: list[dict]) -> dict[str, list[dict]]:
+def current_page_testimonia(context) -> dict[str, list[dict]]:
     """Every page's current page Testimonium per chair, by page id, each fully validated.
 
     Every record is validated, its native capture included, but only each
@@ -354,7 +297,7 @@ def current_page_testimonia(context, proposal_regions: list[dict]) -> dict[str, 
         record = context.tree.read_artifact(
             ATTESTATORES, PAGE_TESTIMONIUM_KIND, entry["artifact_id"]
         )
-        validate_page_testimonium_record(context, record, proposal_regions)
+        validate_page_testimonium_record(context, record)
         capture = record["payload"].get("native_capture")
         if capture is not None:
             verify_page_native_capture(

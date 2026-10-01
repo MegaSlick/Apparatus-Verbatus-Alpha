@@ -1,10 +1,9 @@
-"""Request fields a chair carries because of *who occupies it*, shared by stages.
+"""Request fields a chair carries because of *who occupies it*.
 
-One model can fill more than one chair, and when it does, both chairs owe it
-the same call shape. `datalab-to/chandra-ocr-2` fills `designator_structure`
-(`pipeline/2_designator/`) and `attestator_1` (`pipeline/3_attestatores/`), and
-neither of those packages may import the other -- so a fact about how Chandra
-must be called lives here, once, rather than as two literals that can drift.
+`datalab-to/chandra-ocr-2` fills `attestator_1` (`pipeline/3_attestatores/`), and
+the serving client (`operations/serving/client.py`) holds a Chandra request to
+the same call shape -- so a fact about how Chandra must be called lives here,
+once, rather than as two literals that can drift.
 
 Nothing here decides anything about a *request*: the per-request arithmetic is
 `common/request_capacity.py`'s, and what a chair's own adapter carries from its
@@ -18,12 +17,12 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Any, Final, Mapping
 
-# Sent on every Chandra request, at both chairs. The two chat templates that
+# Sent on every Chandra request. The two chat templates that
 # ship at the pinned revision disagree on whether a turn opens in thinking
 # mode -- read from the release's own template files, never seen running --
 # so forcing this off is a no-op under one template and decisive under the
 # other, and either way it is free -- a thinking turn would waste a tight page
-# budget, and both chairs' parsers refuse a body that opens with `<think>`.
+# budget, and the chair's parser refuses a body that opens with `<think>`.
 CHANDRA_CHAT_TEMPLATE_KWARGS: Final[Mapping[str, bool]] = MappingProxyType(
     {"enable_thinking": False}
 )

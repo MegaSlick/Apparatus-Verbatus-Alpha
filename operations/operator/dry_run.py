@@ -153,7 +153,8 @@ def make_transcript(output: str | Path) -> Path:
         surface.upload(source, sealed_manifest=manifest)
 
         _heading(lines, "4. run — named pages and acts, resumable evidence")
-        surface.run(run_id="acceptance-dry-run")
+        # A scenario the pages read to completion, so the export that follows is whole.
+        surface.run(run_id="acceptance-dry-run", scenario="page-unbroken")
 
         _heading(lines, "5. export — local evidence bundle and reconciliation")
         surface.export(run_id="acceptance-dry-run")

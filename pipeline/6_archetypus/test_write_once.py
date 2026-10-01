@@ -32,7 +32,7 @@ def invoke_archetypus(root: Path, run_id: str, scenario: str) -> subprocess.Comp
 
 def test_a_second_differing_write_for_the_same_act_is_refused_and_the_original_survives(tmp_path):
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
     tree = RunTree(root, "r")
 
     entry = next(
@@ -60,7 +60,7 @@ def test_a_second_differing_write_for_the_same_act_is_refused_and_the_original_s
     # unchanged upstream evidence and tries to publish them at the same path,
     # which now holds the tampered bytes: a genuine same-identity conflict,
     # not a rewrite this stage requests.
-    result = invoke_archetypus(root, "r", "happy")
+    result = invoke_archetypus(root, "r", "page-unbroken")
     assert result.returncode == 2, result.stderr
     assert "Traceback" not in result.stderr
     assert "already holds different bytes" in result.stderr
@@ -79,7 +79,7 @@ def test_a_second_differing_write_for_the_same_act_is_refused_and_the_original_s
 def test_rerunning_with_unchanged_upstream_evidence_reuses_the_original_bytes(tmp_path):
     """The acceptance half beside the refusal: nothing about resume rewrites."""
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
     tree = RunTree(root, "r")
 
     before = {
@@ -89,7 +89,7 @@ def test_rerunning_with_unchanged_upstream_evidence_reuses_the_original_bytes(tm
     }
     assert before
 
-    result = invoke_archetypus(root, "r", "happy")
+    result = invoke_archetypus(root, "r", "page-unbroken")
     assert result.returncode == 0, result.stderr
 
     after = {
@@ -105,7 +105,7 @@ def test_index_json_is_rewritable_and_reflects_the_same_reconciled_rows(tmp_path
     rewritten each run, unlike the per-act records it summarizes, and doing so
     must not change what it reconciles to."""
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
     tree = RunTree(root, "r")
     index_path = tree.resolve(tree.index_path(ARCHETYPUS))
     first = json.loads(index_path.read_bytes().decode("utf-8"))
@@ -118,7 +118,7 @@ def test_index_json_is_rewritable_and_reflects_the_same_reconciled_rows(tmp_path
     stale["self_hash"] = self_hash(stale)
     index_path.write_bytes(json.dumps(stale).encode("utf-8"))
 
-    result = invoke_archetypus(root, "r", "happy")
+    result = invoke_archetypus(root, "r", "page-unbroken")
     assert result.returncode == 0, result.stderr
     second = json.loads(index_path.read_bytes().decode("utf-8"))
     assert second == first

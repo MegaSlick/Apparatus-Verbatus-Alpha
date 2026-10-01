@@ -1,21 +1,17 @@
 """Shared residual-ink measurement for the early Ink Map and late Recensor.
 
 Ink is derived from the sealed page independently of stage claims. Coverage is
-the Designator's declared ``transform.bounds``, clipped here so a later
-geometry refusal is not pre-empted by this measurement. The early Ink Map
-passes empty coverage for the pre-proposal denominator; the Recensor passes
-every proposal and recovery region. This module invents no act, requests no
-recovery and holds no run.
+the boxes a caller declares, clipped here so a later geometry refusal is not
+pre-empted by this measurement. The early Ink Map passes empty coverage for the
+whole page's denominator; the Recensor passes the Perlector's reading regions.
+This module invents no act, requests no recovery and holds no run.
 
 The paper value comes from `common.background.infer_background_evidence`
-under the sealed `[background]` policy of `config/ink_map.toml`, the one the
-Designator's structure pass reads too, so the audit and the stage it audits
-threshold against the same paper. The
-contrast stays this module's own: an audit sharing the Designator's margin
-would restate it rather than check it.
+under the sealed `[background]` policy of `config/ink_map.toml`, so every
+reader thresholds against the same paper. The contrast stays this module's
+own.
 
-The page-spanning component the Designator withholds from grouping
-(`pipeline/2_designator/grouping.partition_page_spanning`) held 35 to 87 per
+The page-spanning component held 35 to 87 per
 cent of audited ink on 44 real pages, so counting it flagged every page. It is
 re-derived here at the page's own derived margin, because the Designator's record
 carries only whole-page boxes, and taken out of `total_ink_pixels` and
@@ -57,11 +53,8 @@ from common.sealed_config import read_sealed_toml
 MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 
 #: A pixel this many levels below the page's own inferred background is ink.
-#: Kept at or above the Designator conservation denominator's margin (2), so
-#: this audit never calls ink a pixel that accounting dismissed, the one
-#: disagreement that could lose ink silently (pinned by
-#: `common/test_designator_recensor_ink_calibration.py`). A reasoned default,
-#: not measured on real pages. Below a page's derived margin it counts more ink
+#: It sits below a
+#: photographed page's derived margin (median 66), so there it counts more ink
 #: than the Designator's primary scan does; that is why the gates are fractions.
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
 
@@ -105,9 +98,7 @@ class CoverageAuditPolicy(TypedDict):
     minimum_fraction_outside_bp: int
 
 
-#: Beside `[background]` under the one `ink-map` seal: the component this audit
-#: removes must be the one the Designator withheld, which holds only while both
-#: read one `page_spanning_area_bp` and one `gap_tolerance_px`, from this file.
+#: Beside `[background]` under the one `ink-map` seal.
 DEFAULT_COVERAGE_AUDIT_CONFIG_PATH: Final = DEFAULT_INK_MAP_CONFIG_PATH
 # Named in every provenance refusal this module raises.
 _OWNER: Final = "the ink-map configuration"
@@ -399,10 +390,9 @@ def page_spanning_components(
 ) -> tuple[list[dict[str, Any]], bytearray]:
     """This page's page-spanning components, and a page-sized 0/1 mask of their pixels.
 
-    The question `pipeline/2_designator/grouping.partition_page_spanning` asks,
-    on the same bytes at the same margin, gap tolerance and bound, so the
-    component removed here is the one that stage withheld. The mask is needed
-    because such a component's bounding box is the whole page.
+    Asked on the same bytes at the same margin, gap tolerance and bound by every
+    reader. The mask is needed because such a component's bounding box is the
+    whole page.
 
     One labelling costs about as much as the rest of `residual_ink` (up to
     1.83 s and 207 MB on an 18.4-megapixel page), so `ink_map_page` labels

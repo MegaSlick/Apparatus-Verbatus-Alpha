@@ -43,10 +43,7 @@ DAI_LIMIT_SOURCES = {
         "@ e371095d4ffe585f31f4974462931ddbac61ff64)"
     ),
 }
-SCHEDULING_POLICY = "chair-outer-act-inner.stage-major-parish.v1"
-# Where an act with no page ordinal sorts: before every placed act, and named
-# rather than spelled -1 at the two places that have to agree on it.
-_UNPLACED_ORDINAL = -1
+SCHEDULING_POLICY = "chair-outer-page-inner.stage-major-parish.v1"
 # The (adapter, parser) pairs `retain_model_view` can actually carry to a state.
 _RUNNABLE_PARSERS = frozenset(
     {
@@ -71,7 +68,7 @@ _UNCERTAINTY_TOKENS = ("[UNCERTAIN]", "[CROSSED_OUT]")
 #: uncertainty convention (`_UNCERTAINTY_TOKENS`), so it can express doubt but
 #: has no coordinate vocabulary, so it cannot express layout. Safe to declare
 #: uncertainty only because the Perlector's bracket-marker comparison view is
-#: already wired for act-scoped capability-declaring chairs
+#: already wired for capability-declaring chairs
 #: (`pipeline/4_perlector/run.py::dissent_testimonia`); declared earlier, this
 #: chair would have gone permanently `compared: unknown`.
 DAI_FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
@@ -259,11 +256,11 @@ def dai_model_view(
 
     The identity transform is a claim about bytes, not paths: when no resize
     is needed the two image references must name the same SHA-256, not the
-    same reference dict. The source is the Designator's proposal crop under
+    same reference dict. The source is the Designator's record crop under
     `2_designator/`; every image a witness is shown is published into
     `3_attestatores/`, so a byte-identical image legitimately appears at two
     stage-owned paths. Equal digests are equal pixels because
-    `verify_exemplar_crop_lineage` already proves the source crop is exactly
+    `_verify_detector_region` already proves the source crop is exactly
     `crop_png(sealed page, bounds)`, which `_dai_present` re-derives the same
     way. Requiring the whole dict to match instead refused every genuine
     no-resize DAI act after its response had already come back.
@@ -603,9 +600,9 @@ def retain_model_view(
 
 
 def stage_major_schedule(
-    parish_id: str, acts: Iterable[dict[str, Any]], chairs: Iterable[str]
+    parish_id: str, units: Iterable[dict[str, Any]], chairs: Iterable[str]
 ) -> list[dict[str, str]]:
-    """One resident chair at a time; deterministic chair-outer, act-inner order."""
+    """One resident chair at a time; deterministic chair-outer, page-inner order."""
     if not isinstance(parish_id, str) or not parish_id:
         raise SchemaRefusal("schedule parish identity is blank")
     chair_rows = list(chairs)
@@ -616,32 +613,34 @@ def stage_major_schedule(
     # here, so the duplicate is caught before the set absorbs it.
     if len(ordered_chairs) != len(chair_rows):
         raise SchemaRefusal("schedule repeats a chair")
-    rows = list(acts)
-    seen_acts: set[str] = set()
+    rows = list(units)
+    seen_units: set[str] = set()
     for row in rows:
-        if not isinstance(row, dict) or not isinstance(row.get("act_id"), str) or not row["act_id"]:
-            raise SchemaRefusal("schedule act has no identity")
-        # A duplicate act row would become one duplicate Testimonium per chair.
-        if row["act_id"] in seen_acts:
-            raise SchemaRefusal("schedule repeats an act")
-        seen_acts.add(row["act_id"])
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row.get("unit_id"), str)
+            or not row["unit_id"]
+        ):
+            raise SchemaRefusal("schedule unit has no identity")
+        # A duplicate unit row would become one duplicate Testimonium per chair.
+        if row["unit_id"] in seen_units:
+            raise SchemaRefusal("schedule repeats a unit")
+        seen_units.add(row["unit_id"])
         # Checked rather than left to `sorted`, whose TypeError on a
         # non-integer ordinal would be unnamed.
-        ordinal = row.get("page_ordinal", _UNPLACED_ORDINAL)
+        ordinal = row.get("page_ordinal")
         if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise SchemaRefusal("schedule act page ordinal is not an integer")
-    ordered_acts = sorted(
-        rows, key=lambda row: (row.get("page_ordinal", _UNPLACED_ORDINAL), row["act_id"])
-    )
+            raise SchemaRefusal("schedule unit page ordinal is not an integer")
+    ordered_units = sorted(rows, key=lambda row: (row["page_ordinal"], row["unit_id"]))
     return [
         {
             "policy": SCHEDULING_POLICY,
             "parish_id": parish_id,
             "chair": chair,
-            "act_id": act["act_id"],
+            "unit_id": unit["unit_id"],
         }
         for chair in ordered_chairs
-        for act in ordered_acts
+        for unit in ordered_units
     ]
 
 
@@ -713,7 +712,7 @@ def execute_stage_major_schedule(
 ) -> list[Any]:
     """Execute only contiguous chair blocks through the shared residency guard."""
     rows = list(schedule)
-    expected_fields = {"policy", "parish_id", "chair", "act_id"}
+    expected_fields = {"policy", "parish_id", "chair", "unit_id"}
     if any(
         not isinstance(row, dict)
         or set(row) != expected_fields
@@ -725,11 +724,11 @@ def execute_stage_major_schedule(
     chair_blocks = []
     for chair, chair_rows in groupby(rows, key=lambda row: row["chair"]):
         chair_blocks.append(chair)
-        served = [row["act_id"] for row in chair_rows]
-        # A repeat here is a second serving of one act under one load; checked
+        served = [row["unit_id"] for row in chair_rows]
+        # A repeat here is a second serving of one unit under one load; checked
         # rather than trusted from a schedule this executor did not build.
         if len(set(served)) != len(served):
-            raise SchemaRefusal("stage-major execution schedule serves one act twice to a chair")
+            raise SchemaRefusal("stage-major execution schedule serves one unit twice to a chair")
     if len(chair_blocks) != len(set(chair_blocks)):
         raise SchemaRefusal("stage-major execution schedule returns to an unloaded chair")
     if len({row["parish_id"] for row in rows}) > 1:
