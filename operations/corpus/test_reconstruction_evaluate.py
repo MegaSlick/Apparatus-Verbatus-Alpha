@@ -158,12 +158,9 @@ def test_rows_not_packaged_as_jsonl_are_counted_as_not_measured():
 
 @pytest.fixture(scope="module")
 def happy_run(tmp_path_factory) -> RunTree:
-    """The `happy` run with the Coniector switched on: one fixture reply per page."""
+    """The `happy` run with the Coniector on, its default: one fixture reply per page."""
     run_root = tmp_path_factory.mktemp("reconstruction-runs")
-    config = tmp_path_factory.mktemp("config") / "reconstruction.toml"
-    text = (ROOT / "config" / "reconstruction.toml").read_text(encoding="utf-8")
-    assert 'mode = "off"' in text
-    config.write_text(text.replace('mode = "off"', 'mode = "on"'), encoding="utf-8")
+    config = ROOT / "config" / "reconstruction.toml"
     completed = _orchestrate(run_root, "happy", "--reconstruction-config", str(config))
     # The act across the page break keeps the export partial: exit 3, export sealed.
     assert completed.returncode == 3, completed.stderr

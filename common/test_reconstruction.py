@@ -44,7 +44,7 @@ def assert_not_made(result, *expected):
 
 def test_the_policy_loads_its_starting_values_with_its_seal():
     assert dataclasses.asdict(POLICY) | {"sha256": None} == {
-        "mode": "off",
+        "mode": "on",
         "pages_are_consecutive": False,
         "max_departures_per_act": 5,
         "max_departure_characters": 40,
@@ -77,9 +77,9 @@ def _config_text():
         lambda text: text.replace("max_departures_per_act = 5", "max_departures_per_act = true"),
         lambda text: text.replace("max_departures_per_act = 5", "max_departures_per_act = 5.0"),
         lambda text: text.replace("max_changed_share_bp = 1500", "max_changed_share_bp = 10001"),
-        lambda text: text.replace('mode = "off"', 'mode = "sometimes"'),
-        lambda text: text.replace('mode = "off"', 'mode = ["on"]'),
-        lambda text: text.replace('mode = "off"\n', ""),
+        lambda text: text.replace('mode = "on"', 'mode = "sometimes"'),
+        lambda text: text.replace('mode = "on"', 'mode = ["on"]'),
+        lambda text: text.replace('mode = "on"\n', ""),
         lambda text: text.replace("pages_are_consecutive = false", 'pages_are_consecutive = "no"'),
         lambda text: text.replace("pages_are_consecutive = false\n", ""),
     ],

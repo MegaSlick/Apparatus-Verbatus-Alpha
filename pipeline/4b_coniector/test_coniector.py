@@ -1,4 +1,4 @@
-"""The Coniector on the fixture: off by default, each page reconstructed from its own
+"""The Coniector on the fixture: on by default, each page reconstructed from its own
 text, a join only on consecutive pages, and what is not made says why.
 
 The trees are the fixture's page-read scenarios (`conftest.build_page_tree`), taken
@@ -9,6 +9,7 @@ fixture's replies are `[[reconstruction_answer]]` in `proof/skeleton_fixture.tom
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 from io import BytesIO
@@ -50,7 +51,7 @@ AFTER_PERLECTOR = (
 
 def _config(directory: Path, *, mode: str = "on", consecutive: bool = False) -> Path:
     text = Path("config/reconstruction.toml").read_text(encoding="utf-8")
-    text = text.replace('mode = "off"', f'mode = "{mode}"')
+    text = re.sub(r'^mode = "(on|off)"$', f'mode = "{mode}"', text, count=1, flags=re.M)
     if consecutive:
         text = text.replace("pages_are_consecutive = false", "pages_are_consecutive = true")
     directory.mkdir(parents=True, exist_ok=True)
@@ -93,7 +94,8 @@ def _members(root: Path) -> dict[str, bytes]:
 
 @pytest.fixture(scope="module")
 def off(tmp_path_factory):
-    return _run(tmp_path_factory.mktemp("off"), "happy")
+    base = tmp_path_factory.mktemp("off")
+    return _run(base, "happy", reconstruction_config=_config(base / "config-r", mode="off"))
 
 
 @pytest.fixture(scope="module")
@@ -114,9 +116,12 @@ def reviewed(tmp_path_factory):
     return _run(base, "page-review", reconstruction_config=_config(base / "config-r"))
 
 
-def test_off_by_default_the_plan_asks_nothing_and_no_act_carries_a_reconstruction(off):
+def test_the_committed_default_runs_the_reconstructor():
+    assert load_reconstruction_policy().mode == "on"
+
+
+def test_off_the_plan_asks_nothing_and_no_act_carries_a_reconstruction(off):
     root, _options = off
-    assert load_reconstruction_policy().mode == "off"
     (plan,) = _records(root, PLAN_KIND)
     assert plan["payload"]["mode"] == "off" and plan["payload"]["calls"] == []
     assert _records(root, CALL_KIND) == [] and _records(root, RECONSTRUCTION_KIND) == []

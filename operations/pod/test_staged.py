@@ -991,7 +991,7 @@ def test_a_fresh_lifecycle_closes_a_pod_under_the_boot_it_is_handed(
 
 
 def test_the_printed_schedule_says_the_coniector_boots_only_when_its_mode_is_on() -> None:
-    """Its chair is off by default, so its line must not read as a boot every run needs."""
+    """Its chair runs only on a run sealed mode = "on", so its line must name that condition."""
 
     from operations.pod.staged import render_boot_schedule
 

@@ -17,7 +17,7 @@ reconstruction is counted in any denominator.
 
 - The sealed switches and bounds of `config/reconstruction.toml`
   (`--reconstruction-config`, sealed as `reconstruction`): `mode` (`on` or
-  `off`, default `off`), `pages_are_consecutive` (default `false`) and the
+  `off`, default `on`), `pages_are_consecutive` (default `false`) and the
   departure bounds `common.reconstruction.load_reconstruction_policy` reads.
 - The sealed decoding policy: the `reconstructor` chair's sampling row and
   `[reconstructor_generation] answer_max_tokens`.
@@ -101,7 +101,9 @@ Coniector sealed over readings a later recovery replaced is refused); each
 call's prompt; its maker against the run's roster and its receipt; a call not
 asked against the evidence its reason leaves (the roster's absent chair, the
 capacity record that did not fit, the failure's retained bytes); each reply
-against the fixture's declaration or the retained engine bytes, and a live
+against the fixture's declaration (a scenario that declares none for a page is
+answered with every subject and chain and no finding or departure) or the
+retained engine bytes, and a live
 call's retained record against this prompt's request, rendered again with the
 chair's sealed sampling row and the receipt's seed; each parse; and every
 reconstruction from its reply. A record the recomputation does not give, or one

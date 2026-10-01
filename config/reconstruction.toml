@@ -5,9 +5,10 @@
 # below is required and no other is read. Every bound is a starting value, to be
 # measured on the proof run.
 
-# Whether the Coniector's model chair (`reconstructor`) runs: "on" or "off". Off,
-# the stage plans no call and loads no model, and no act carries a reconstruction.
-mode = "off"
+# Whether the Coniector's model chair (`reconstructor`) runs: "on" or "off". On by
+# default, so every run proposes a reconstruction beneath each diplomatic reading;
+# off, the stage plans no call and loads no model, and no act carries one.
+mode = "on"
 
 # Whether the submitted pages are consecutive leaves of one register. Only then
 # does the Coniector see a neighbouring page's edge act or join an act across a

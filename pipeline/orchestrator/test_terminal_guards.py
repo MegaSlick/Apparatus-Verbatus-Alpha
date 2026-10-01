@@ -126,7 +126,7 @@ class _RecordingContext:
             "alignment": read_sealed_toml(self.args.alignment_config, "config")[1],
             "reconstruction": load_reconstruction_policy(self.args.reconstruction_config).sha256,
         }
-        # The Coniector, switched off, plans no call; the export proves its one plan.
+        # The Coniector plans no call over this synthetic run; the export proves its one plan.
         self.coniector_plan = {
             "artifact_id": "coniector-plan",
             "payload": plan_payload(
@@ -418,7 +418,7 @@ def _stub_page_export(monkeypatch, armarium, context, rows: list[dict], category
         lambda _context, pages, *_args: {"pages_sealed": len(pages)},
     )
     monkeypatch.setattr(armarium, "page_accounting_rows", lambda *_args: [])
-    # The Coniector, switched off, made nothing over these rows.
+    # The Coniector made nothing over these rows.
     monkeypatch.setattr(
         armarium,
         "verified_reconstructions",

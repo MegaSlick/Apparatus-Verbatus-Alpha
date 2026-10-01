@@ -30,13 +30,7 @@ RUN_ID = "r"
 @pytest.fixture(scope="module")
 def bundle(tmp_path_factory) -> dict:
     base = tmp_path_factory.mktemp("coniector-layer")
-    config = base / "reconstruction.toml"
-    config.write_text(
-        Path("config/reconstruction.toml")
-        .read_text(encoding="utf-8")
-        .replace('mode = "off"', 'mode = "on"'),
-        encoding="utf-8",
-    )
+    config = Path("config/reconstruction.toml")
     root, options = build_page_tree(base, "happy", reconstruction_config=config)
     for program in (
         "pipeline/5_recensor/run.py",
@@ -282,7 +276,6 @@ def joined(tmp_path_factory) -> dict:
     config.write_text(
         Path("config/reconstruction.toml")
         .read_text(encoding="utf-8")
-        .replace('mode = "off"', 'mode = "on"')
         .replace("pages_are_consecutive = false", "pages_are_consecutive = true"),
         encoding="utf-8",
     )

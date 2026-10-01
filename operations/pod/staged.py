@@ -178,8 +178,8 @@ COLLECTION_BOOT_SCHEDULE: tuple[ScheduledStage, ...] = (
         True,
         (ScheduledChair("reconstructor", "Qwen3.8-27B, text only"),),
         only_when=(
-            'the run is sealed with config/reconstruction.toml mode = "on"; the default is '
-            "off, which loads no model and needs no pod"
+            'the run is sealed with config/reconstruction.toml mode = "on", the default; '
+            '"off" loads no model and needs no pod'
         ),
     ),
     ScheduledStage("armarium", False),

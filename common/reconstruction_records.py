@@ -451,8 +451,15 @@ def call_outcome(parse_state: str) -> str:
 # --- the fixture's declared replies ------------------------------------------------------
 
 
-def fixture_reply(context, page_ordinal: int, pages_are_consecutive: bool) -> dict[str, Any]:
-    """The synthetic fixture's one declared reply to this page under this scenario."""
+def fixture_reply(context, call: Mapping[str, Any], pages_are_consecutive: bool) -> dict[str, Any]:
+    """The synthetic fixture's reply to this call under this scenario.
+
+    A scenario declares at most one `[[reconstruction_answer]]` per page and
+    switch. Where it declares none, the reconstructor proposes nothing: every
+    subject is answered with no finding and no departure, and every chain is
+    one act, as the Recensor's agreed break says.
+    """
+    page_ordinal = call["page_ordinal"]
     rows = [
         row
         for row in context.fixture.get("reconstruction_answer", [])
@@ -460,11 +467,20 @@ def fixture_reply(context, page_ordinal: int, pages_are_consecutive: bool) -> di
         and row.get("page_ordinal") == page_ordinal
         and row.get("pages_are_consecutive") is pages_are_consecutive
     ]
+    if not rows:
+        answer = {
+            "acts": [{"act": act, "findings": [], "departures": []} for act in call["subjects"]],
+            "joins": [
+                {"acts": list(chain), "continues": True, "departures": []}
+                for chain in call["chains"]
+            ],
+        }
+        return {"content": json.dumps(answer), "stop_reason": "stop"}
     if len(rows) != 1:
         raise ContractError(
             f"the fixture declares {len(rows)} reconstruction answers for scenario "
             f"{context.scenario!r}, page {page_ordinal}, pages_are_consecutive = "
-            f"{str(pages_are_consecutive).lower()}; a page reconstructed offline needs exactly one"
+            f"{str(pages_are_consecutive).lower()}; a page reconstructed offline needs at most one"
         )
     row = rows[0]
     if not isinstance(row.get("answer"), str) or row.get("stop_reason", "stop") not in (
@@ -534,7 +550,7 @@ def _reply_as_given(context, payload: Mapping[str, Any], text: str, what: str) -
         if payload["engine_call"] is not None or payload["capacity"] is not None:
             raise FatalAccounting(f"{what} is a fixture reply carrying live call evidence")
         declared = fixture_reply(
-            context, payload["page_ordinal"], _sealed_policy(context).pages_are_consecutive
+            context, payload["call"], _sealed_policy(context).pages_are_consecutive
         )
         if (declared["content"], declared["stop_reason"]) != (
             payload["reply_text"],

@@ -14,8 +14,8 @@ Per run, in order (`common/reconstruction_records.py` holds the shapes):
     reconstruction-call   one per call: the reply as given, parsed, or why none
     reconstruction        one per subject act and one per join: made, or not made
 
-With `mode = "off"` (config/reconstruction.toml) the plan asks nothing and no
-model is loaded. A run that read Designator acts one at a time has no page
+`mode` (config/reconstruction.toml) is on by default; with `mode = "off"` the plan
+asks nothing and no model is loaded. A run that read Designator acts one at a time has no page
 answers to reconstruct over, and its plan says so. A reconstruction that could
 not be made leaves the diplomatic reading delivered and says why.
 """
@@ -182,7 +182,7 @@ def _ask(chair: _Chair, call: dict, text: str, policy, max_tokens: int, what: st
     if not chair.present:
         return _not_asked(CHAIR_ABSENT, "no reconstructor chair is configured for this run")
     if not chair.live:
-        reply = fixture_reply(chair.context, call["page_ordinal"], policy.pages_are_consecutive)
+        reply = fixture_reply(chair.context, call, policy.pages_are_consecutive)
         return {
             "reply_text": reply["content"],
             "finish_reason": reply["stop_reason"],

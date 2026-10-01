@@ -95,11 +95,13 @@ FIXTURE = "synthetic-two-page-v0"
 #   - any string sealed into a record or the export manifest.
 #
 # The review pins are the page-read `page-review` scenario's tree, whose page 2
-# the committed re-ask budget asks once more.
-HAPPY_SNAPSHOT_FILES = 135
-REVIEW_SNAPSHOT_FILES = 140
-HAPPY_RUN_TREE_DIGEST = "3b02e28fc7a541256cd9ad142b0fbb0becc5e235f0772ef0495efde4c04610c7"
-REVIEW_RUN_TREE_DIGEST = "8c8fffbcef0bc1174764da7b396524a575fe04f26182cfe6c657006be3e1aa9e"
+# the committed re-ask budget asks once more. Both trees carry the Coniector's
+# records, since the committed reconstruction config runs it: a call per page,
+# a reconstruction per act, and the reconstructor's receipt.
+HAPPY_SNAPSHOT_FILES = 141
+REVIEW_SNAPSHOT_FILES = 147
+HAPPY_RUN_TREE_DIGEST = "9cf4ff1aae37bf4b362f779c7abce23a537cad7176f5bd91446e67b0c71997bf"
+REVIEW_RUN_TREE_DIGEST = "b0607fc3e76f97b779a002b912a774b7a8eaa606ab382025865d7cb65e3e4e4a"
 
 
 def orchestrate(
