@@ -480,11 +480,13 @@ def test_a_decision_that_would_release_an_unplaced_reading_keeps_it_held(tmp_pat
     decisions = _decisions(root)
     assert decisions["applied"], "the decisions were applied, not refused"
     # Only what took effect is reported cleared: the unit release cleared nothing
-    # that still holds it, so no unit clearance reaches the aggregate; the page's
-    # residual ink stays cleared.
+    # that still holds it, so no unit clearance reaches the aggregate. The page
+    # decision cleared every code of p2's, yet all but the residual ink still hold
+    # its reading, so the page row reports the residual ink alone.
     cleared = review["payload"]["operator_review"]["cleared"]
     assert not set(cleared["unit"] + cleared["page"]) & set(codes)
-    assert "residual-ink" in cleared["page"]
+    assert cleared["page"] == ["residual-ink"]
     rows = aggregate_clearances(decisions, unit_key="act_key")
-    assert [row for row in rows if row["scope"] == "unit"] == []
-    assert [(row["scope"], row["subject"]) for row in rows] == [("page", 2)]
+    assert [(row["scope"], row["subject"], row["cleared"]) for row in rows] == [
+        ("page", 2, ["residual-ink"])
+    ]
