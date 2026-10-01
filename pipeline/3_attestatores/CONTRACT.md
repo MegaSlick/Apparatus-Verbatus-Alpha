@@ -418,7 +418,7 @@ a fact about one request -- these pixels, at this row's `max_pixels`, against
 this row's `max_model_len` -- so `run.py::capacity_refusal_attempt` records it
 as this attempt's own `outcome="failed"`, in the same shape an empty or
 malformed response takes, and `_serve_page_unit` or `_serve_detector_page` moves
-to the next unit, as the Designator holds a single page and publishes the rest. A
+to the next unit. A
 missed act is worse than a poorly read one, and one page's arithmetic
 is no reason to lose another page's reading.
 
@@ -526,8 +526,9 @@ real run: there is no row to pass over.
 
 **What is proven offline.** `test_attestatores_real_ingress.py` carries a real
 submission of the synthetic fixture's own two pages through the Door, the
-Exemplar and the Ink Map as programs, hand-builds the Designator's regions and
-seal in the shape `cut_minted_region` publishes them, and runs this stage's
+Exemplar and the Ink Map as programs, hand-builds the Designator's record-detector
+census and seal in the shape `pipeline/2_designator/run.py::_publish_detector_records`
+publishes them, and runs this stage's
 `main` with three served fake chairs: every page record publishes, the page
 records name the Exemplar's own page subjects, no declaration is read or
 reported, and the fixture accessor is never touched. The same file holds the

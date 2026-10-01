@@ -151,7 +151,7 @@ flag; a missing, stray or different link is refused. `continuation_links` names 
 receipt is `partial` while any page break is unresolved. A review whose subject is
 outside `reading_acts`, or any recovery request, is refused. A receipt written as
 `recensor-partition-receipt.v1`, `.v2` or `.v3` counts the Designator's proposal acts,
-which no run counts any more, and is refused by name.
+which a run does not have, and is refused by name.
 
 ## Stage-completion seal
 
