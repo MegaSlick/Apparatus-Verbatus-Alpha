@@ -949,3 +949,80 @@ def test_a_real_reasked_run_is_read_with_its_reask_as_the_receipt_binds_it(tmp_p
     assert receipt["schema"] == RECENSOR_PARTITION_RECEIPT_SCHEMA_V5
     bound = [row["page_ordinal"] for row in receipt["pages"] if row["reask_ref"] is not None]
     assert bound == [page["feed"]["page_ordinal"]]
+
+
+class _PathTree(_Tree):
+    """`_Tree` whose manifest names each record's path, as a run tree's does."""
+
+    def build_manifest(self, stage, *, verify_inputs=True):
+        return {
+            "artifacts": [
+                {**entry, "relative_path": f"{stage}/{entry['kind']}/{entry['artifact_id']}.json"}
+                for entry in super().build_manifest(stage)["artifacts"]
+            ]
+        }
+
+
+def test_a_page_a_person_had_read_again_is_judged_on_its_current_reading(monkeypatch):
+    """The re-read supersedes the first reading: only its accounting and regions are judged."""
+    acts = one_act_each()
+    built, first = page(acts), page(acts[:2])
+    path = f"{PERLECTOR}/page-reading/r1.json"
+    reread_path = f"{PERLECTOR}/page-reading/r3.json"
+    base = {"page_id": "page-1", "engine_call": None}
+    records = {
+        (PERLECTOR, "page-feed", "f"): {"subject_id": "page-1", "payload": built["feed"]},
+        (PERLECTOR, "page-reading", "r1"): {
+            "subject_id": "page-1",
+            "payload": {**first["reading"], **base, "attempt_ordinal": 1},
+        },
+        (PERLECTOR, "page-reading", "r3"): {
+            "subject_id": "page-1",
+            "payload": {
+                **built["reading"],
+                **base,
+                "attempt_ordinal": 3,
+                "operator_reread": {"decisions": [], "supersedes": [{"relative_path": path}]},
+            },
+        },
+        (PERLECTOR, "page-accounting", "p1"): {
+            "subject_id": "page-1",
+            "payload": {**first["accounting"], "answer_basis": "attempt-1"},
+        },
+        (PERLECTOR, "page-accounting", "p3"): {
+            "subject_id": "page-1",
+            "payload": {**built["accounting"], "answer_basis": "attempt-3"},
+        },
+    }
+    for reading, at, built_page in (("r1", path, first), ("r3", reread_path, built)):
+        for region, perlectio in zip(
+            built_page["act_regions"], built_page["perlectios"], strict=True
+        ):
+            act_id = f"{reading}-act-{region['n']}"
+            ref = {"page_reading_ref": {"relative_path": at, "sha256": "0" * 64}}
+            records[(PERLECTOR, "act-region", act_id)] = {
+                "subject_id": act_id,
+                "payload": {**region, "page_id": "page-1", **ref},
+            }
+            records[(PERLECTOR, "perlectio", act_id)] = {
+                "subject_id": act_id,
+                "payload": {**perlectio, **ref},
+            }
+    monkeypatch.setattr(
+        "operations.corpus.exactly_once.load_exemplar_page_shas", lambda tree: {1: PAGE_SHA}
+    )
+
+    [loaded] = load_page_records(_PathTree(records, {}))
+
+    assert loaded["reading"]["attempt_ordinal"] == 3
+    assert loaded["reask"] is None
+    assert loaded["accounting"]["answer_basis"] == "attempt-3"
+    assert len(loaded["act_regions"]) == len(built["act_regions"])
+    result = report([loaded])
+    assert result["gate"]["passed"] is True
+    assert result["pages"]["operator_reread_ordinals"] == [1]
+    # A run with no re-read says nothing of one.
+    assert (
+        "operator_reread_ordinals"
+        not in report(load_page_records(_Tree(_reask_tree_records(built, first), {})))["pages"]
+    )
