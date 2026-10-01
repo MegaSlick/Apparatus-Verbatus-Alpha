@@ -44,6 +44,7 @@ from common.contracts.errors import ContractError
 from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR, SEAL_PREDECESSORS
 from common.stage import EXIT_FATAL, REAL_SCENARIO, StageContext
 from conftest import load_stage
+from operations.serving.assembly import SERVING_READER
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -115,15 +116,17 @@ def test_each_stage_opens_through_the_shared_constructor_and_owns_no_opener(
     """`main` hands argv, its own stage name and the registry factory it was
     given to `common.stage.open_stage_context`, which decides the route from one
     read of the run authority. Nothing before that call may run, so the stub
-    stops `main` there; nothing else in the module may open a run on its own."""
+    stops `main` there; nothing else in the module may open a run on its own. A
+    stage that reads the page-read denominator also hands it the serving
+    package's reader, so a live page call is read again rather than refused."""
     args = SimpleNamespace(run_root="unused", run_id="r")
     opened = []
 
     def registry_factory(_path):
         raise AssertionError("the stage must pass the factory through, not resolve it")
 
-    def open_stage_context(observed_args, observed_stage, *, registry_factory):
-        opened.append((observed_args, observed_stage, registry_factory))
+    def open_stage_context(observed_args, observed_stage, *, registry_factory, **kwargs):
+        opened.append((observed_args, observed_stage, registry_factory, kwargs))
         raise _Opened
 
     def open_context(*_args, **_kwargs):
@@ -145,7 +148,8 @@ def test_each_stage_opens_through_the_shared_constructor_and_owns_no_opener(
 
     with pytest.raises(_Opened):
         module.main(registry_factory=registry_factory)
-    assert opened == [(args, stage, registry_factory)]
+    reader = {} if stage == PERLECTOR else {"serving_reader": SERVING_READER}
+    assert opened == [(args, stage, registry_factory, reader)]
     assert not hasattr(module, "_open"), "a stage-private opener is the drift this closes"
 
 

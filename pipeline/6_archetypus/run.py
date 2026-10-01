@@ -107,6 +107,7 @@ from common.stage import (  # noqa: E402
     validate_serving_provenance,
 )
 from common.witness_regime import witness_label  # noqa: E402
+from operations.serving.assembly import SERVING_READER  # noqa: E402
 
 DESCRIPTION = "Archetypus: exactly one established reading per act, written once."
 
@@ -2107,7 +2108,9 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # stage reads no fixture declaration at all: its one denominator is
     # `expected_acts`, which on a real run recomputes every row from the
     # Designator's own sealed evidence rather than from a declared floor.
-    context = open_stage_context(args, ARCHETYPUS, registry_factory=registry_factory)
+    context = open_stage_context(
+        args, ARCHETYPUS, registry_factory=registry_factory, serving_reader=SERVING_READER
+    )
     if sealed_reading_unit(context) == READING_UNIT_PAGE:
         return _main_page(context)
 

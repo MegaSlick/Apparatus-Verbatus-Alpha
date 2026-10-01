@@ -116,7 +116,12 @@ from common.contracts.canonical import digest_of, is_plain_int
 from common.contracts.envelope import digest_ref, read_verified
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.native_witness import REPETITION_FINDING_KINDS
-from common.page_path import PAGE_TESTIMONIUM_KIND, READING_UNIT
+from common.page_path import (
+    PAGE_TESTIMONIUM_KIND,
+    READING_UNIT,
+    SURYA_ORDER_HEAD,
+    SURYA_RASTER_FALLBACK,
+)
 from common.page_witness_units import (
     NO_ANSWER_HEALTH,
     READ_OUTCOME,
@@ -126,7 +131,6 @@ from common.page_witness_units import (
     witness_reading,
 )
 from common.witness_regime import BLINDED, NAMED, REGIMES
-from operations.serving.surya_detector import contract as surya_contract
 
 SCHEMA: Final = "perlector-page-feed.v1"
 BOX_SCALE: Final = 1000
@@ -182,10 +186,6 @@ _UNIT_FIELDS: Final = frozenset({"ordinal", "box_px", "label", "text"})
 _SURYA_FIELDS: Final = frozenset(
     {"census_ref", "block_sequence", "block_sequence_reason", "lines", "blocks"}
 )
-# How Surya ordered a page's blocks: its reading-order model, or a raster sort
-# (top to bottom, then left to right) with the reason Surya fell back to it.
-ORDER_HEAD: Final = surya_contract.ORDER_HEAD
-RASTER_FALLBACK: Final = surya_contract.RASTER_FALLBACK
 # Given as `surya` when the run holds no Surya census at all: the feed then
 # records Surya as absent and shows no line or block, whatever the switches say.
 SURYA_ABSENT: Final = "absent"
@@ -474,12 +474,12 @@ def _surya(surya: Any, switches: dict[str, Any], page_size: tuple[int, int]) -> 
         )
     order, reason = surya["block_sequence"], surya["block_sequence_reason"]
     if not (
-        (order == ORDER_HEAD and reason is None)
-        or (order == RASTER_FALLBACK and isinstance(reason, str) and reason.strip())
+        (order == SURYA_ORDER_HEAD and reason is None)
+        or (order == SURYA_RASTER_FALLBACK and isinstance(reason, str) and reason.strip())
     ):
         raise SchemaRefusal(
-            f"Surya's block_sequence is not {ORDER_HEAD!r} with no reason or "
-            f"{RASTER_FALLBACK!r} with one"
+            f"Surya's block_sequence is not {SURYA_ORDER_HEAD!r} with no reason or "
+            f"{SURYA_RASTER_FALLBACK!r} with one"
         )
     lines = surya["lines"] if switches["surya_lines"] else []
     blocks = surya["blocks"] if switches["surya_blocks"] else []

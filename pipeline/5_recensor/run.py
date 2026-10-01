@@ -142,6 +142,7 @@ from common.testimony_content_coverage import (  # noqa: E402
     validate_testimony_content_coverage,
     validate_testimony_content_coverage_continuation,
 )
+from operations.serving.assembly import SERVING_READER  # noqa: E402
 
 DESCRIPTION = "Recensor: establishes that the text is complete. It establishes no text."
 
@@ -3501,7 +3502,9 @@ def review_a_page_read_run(context, denominator: dict) -> int:
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(DESCRIPTION).parse_args()
-    context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
+    context = open_stage_context(
+        args, RECENSOR, registry_factory=registry_factory, serving_reader=SERVING_READER
+    )
     denominator = reading_denominator(context)
     if denominator["reading_unit"] == READING_UNIT_PAGE:
         return review_a_page_read_run(context, denominator)

@@ -388,6 +388,33 @@ class StageChairProtocol(ChairProtocol, Protocol):
     config: ModelsConfig
 
 
+class ServingReader(Protocol):
+    """What only the serving package can read back about a live chair call.
+
+    `common/` never imports `operations/`, yet a verifier here re-derives a live
+    page call from three serving facts: the sealed serving row a request was
+    measured against, the engine's retained reply as the client parsed it, and
+    the exact request bytes the client sent. A stage that verifies a page-read
+    run opens its context with the serving package's reader
+    (`operations.serving.assembly.SERVING_READER`). Each method raises
+    `ContractError` when it refuses.
+    """
+
+    def serving_row(self, context: "StageContext", chair: ChairIdentity, tier: Any) -> Any:
+        """The sealed serving row for `chair` at `tier`, re-read from the run's own seal."""
+        ...
+
+    def reading_reply(
+        self, *, status: Any, body: bytes, kind: Any, model_id: str
+    ) -> tuple[str, str | None]:
+        """`(content, finish_reason)` of one retained chat reply, parsed as the client did."""
+        ...
+
+    def request_bytes(self, payload: Mapping[str, Any], *, model_id: str, seed: Any) -> bytes:
+        """The exact request bytes the client renders for a sampled `payload`."""
+        ...
+
+
 # Recorded as well as folded into `config_digest`: a digest inside a hash can be
 # verified but not named, so a reader of the run tree could not say which policy
 # governed it.
@@ -437,6 +464,7 @@ class StageContext:
         "_recovery_policy",
         "sealed",
         "page_read_denominator",
+        "serving_reader",
     )
 
     def __init__(
@@ -453,6 +481,7 @@ class StageContext:
         armarium_formats: ArmariumFormats | None = None,
         serving_config_inputs: Mapping[str, str] | None = None,
         recovery_policy: Mapping[str, Any] | None = None,
+        serving_reader: ServingReader | None = None,
     ):
         self.tree = tree
         self.run = run
@@ -482,6 +511,8 @@ class StageContext:
         self.page_read_denominator: (
             tuple[dict[int, dict[str, Any]], list[dict[str, Any]]] | None
         ) = None
+        # Read back a live page call; `None` refuses one (`ServingReader`).
+        self.serving_reader = serving_reader
 
     @property
     def fixture(self) -> dict[str, Any]:
@@ -2892,7 +2923,9 @@ def _verify_reply(
         )
         try:
             if engine_call is not None:
-                reply = page_path.retained_reply(context.tree.read_bytes, engine_call)
+                reply = page_path.retained_reply(
+                    context.tree.read_bytes, engine_call, _serving_reader(context, what)
+                )
                 _require(
                     reply["finish_reason"] == engine_call.get("finish_reason"),
                     f"{what}'s engine_call names a finish its retained response does not give",
@@ -2979,19 +3012,27 @@ def _verify_request(
         _verify_engine_call(context, what, chair, reading, payload, feed, text, image_sha256s)
 
 
+def _serving_reader(context, what: str) -> ServingReader:
+    """The context's `ServingReader`, or a refusal: a live call is read again, never trusted."""
+    reader = context.serving_reader
+    _require(
+        reader is not None,
+        f"{what}'s reading was asked live, but this stage opened its context with no serving "
+        "reader, so its call cannot be read again",
+    )
+    return reader
+
+
 def _verify_capacity(context, what, chair, payload, feed, text) -> None:
     """A live reading's capacity is what its sealed serving row gives for this request."""
     from common.request_capacity import RequestCapacityRefusal
-    from operations.serving.assembly import bound_serving_recipes
-    from operations.serving.errors import ServingError
 
+    reader = _serving_reader(context, what)
     capacity = payload["capacity"]
     record = capacity.get("capacity") if isinstance(capacity, Mapping) else None
     tier = record.get("tier") if isinstance(record, Mapping) else None
     try:
-        row = bound_serving_recipes(context, context.args.serving_recipes_config).for_identity(
-            chair, tier
-        )
+        row = reader.serving_row(context, chair, tier)
         policy, _digest = sealed_decoding_policy(context)
         expected: Any = page_path.request_capacity(
             row, chair.serving_recipe, feed, text, perlector_page_max_tokens(policy)
@@ -3002,7 +3043,7 @@ def _verify_capacity(context, what, chair, payload, feed, text) -> None:
             raise FatalAccounting(f"{what}'s request cannot be measured: {refusal}") from refusal
         expected = {"capacity": refusal.capacity, "answer_reserve": None, "max_tokens": None}
         problems = [{"code": page_path.REFUSED_CAPACITY, "detail": str(refusal)}]
-    except (ContractError, ServingError, KeyError, TypeError, ValueError) as error:
+    except (ContractError, KeyError, TypeError, ValueError) as error:
         raise FatalAccounting(f"{what}'s request cannot be measured again: {error}") from error
     refused = payload["parse_state"] == page_path.REFUSED_CAPACITY
     _require(
@@ -3019,9 +3060,8 @@ def _verify_engine_call(context, what, chair, reading, payload, feed, text, imag
     from common.contracts.envelope import read_verified
     from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
     from common.perlector_audit import decode_recorded_generation
-    from operations.serving.errors import ServingError
-    from operations.serving.http import request_body
 
+    reader = _serving_reader(context, what)
     engine_call = payload["engine_call"]
     inputs = reading.get("inputs", [])
     _require(
@@ -3039,7 +3079,7 @@ def _verify_engine_call(context, what, chair, reading, payload, feed, text, imag
         _require(isinstance(call, dict), f"{what}'s call record is not a JSON object")
         verify_retained_call_sampling(context, call, PERLECTOR_CHAIR)
         generation = decode_recorded_generation(call.get("generation_sent"))
-        body = request_body(
+        body = reader.request_bytes(
             {
                 **generation,
                 "messages": [
@@ -3063,12 +3103,11 @@ def _verify_engine_call(context, what, chair, reading, payload, feed, text, imag
             },
             model_id=engine_call["served_model_id"],
             seed=generation.get("seed"),
-            deterministic=False,
         )
         policy, _digest = sealed_decoding_policy(context)
     except FatalAccounting:
         raise
-    except (ContractError, ServingError, KeyError, TypeError, ValueError) as error:
+    except (ContractError, KeyError, TypeError, ValueError) as error:
         raise FatalAccounting(f"{what}'s call record cannot be read again: {error}") from error
     _require(
         call.get("schema") == CHAIR_CALL_RECORD_SCHEMA
@@ -5150,11 +5189,13 @@ def open_context(
     registry_factory: Callable[[str], StageChairProtocol] = ChairRegistry.from_toml,
     tree: RunTree | None = None,
     run: Mapping[str, Any] | None = None,
+    serving_reader: ServingReader | None = None,
 ) -> StageContext:
     """Open an existing run for a stage that is not the first to write.
 
     `tree` and `run` come together or not at all, so the route and the binding
-    check use one read of `run.json`.
+    check use one read of `run.json`. `serving_reader` is the stage's
+    `ServingReader`, for a stage that verifies a page-read run's live calls.
     """
     if (tree is None) != (run is None):
         raise ContractError(
@@ -5231,7 +5272,9 @@ def open_context(
         )
     verify_predecessor_seal(tree, stage)
     refuse_halted_run(tree, stage, args.hard_failure_config)
-    return _bound_context(tree, run, fixture, args.scenario, stage, args, registry, bindings)
+    return _bound_context(
+        tree, run, fixture, args.scenario, stage, args, registry, bindings, serving_reader
+    )
 
 
 def open_stage_context(
@@ -5239,6 +5282,7 @@ def open_stage_context(
     stage: str,
     *,
     registry_factory: Callable[[str], StageChairProtocol] = ChairRegistry.from_toml,
+    serving_reader: ServingReader | None = None,
 ) -> StageContext:
     """Open an existing run for any stage after the Door, on either ingress route.
 
@@ -5247,8 +5291,15 @@ def open_stage_context(
     tree = RunTree(Path(args.run_root), args.run_id)
     run = tree.read_run()
     if not is_real_ingress(run):
-        return open_context(args, stage, registry_factory=registry_factory, tree=tree, run=run)
-    return _open_real_context(args, stage, tree, run, registry_factory)
+        return open_context(
+            args,
+            stage,
+            registry_factory=registry_factory,
+            tree=tree,
+            run=run,
+            serving_reader=serving_reader,
+        )
+    return _open_real_context(args, stage, tree, run, registry_factory, serving_reader)
 
 
 def _open_real_context(
@@ -5257,6 +5308,7 @@ def _open_real_context(
     tree: RunTree,
     run: Mapping[str, Any],
     registry_factory: Callable[[str], StageChairProtocol],
+    serving_reader: ServingReader | None,
 ) -> StageContext:
     """Open a real submission's run for a stage after the Door.
 
@@ -5273,7 +5325,9 @@ def _open_real_context(
     _refuse_incompatible_real_reuse(run, bindings, run_id=args.run_id)
     verify_predecessor_seal(tree, stage)
     refuse_halted_run(tree, stage, args.hard_failure_config)
-    return _bound_context(tree, run, None, REAL_SCENARIO, stage, args, registry, bindings)
+    return _bound_context(
+        tree, run, None, REAL_SCENARIO, stage, args, registry, bindings, serving_reader
+    )
 
 
 def _open_registry(args, registry_factory: Callable[..., StageChairProtocol]) -> StageChairProtocol:
@@ -5299,6 +5353,7 @@ def _bound_context(
     args,
     registry: StageChairProtocol,
     bindings: Mapping[str, Any],
+    serving_reader: ServingReader | None,
 ) -> StageContext:
     """A context over the bindings just checked; the adapter recipe comes from `run.json` only."""
     return StageContext(
@@ -5314,6 +5369,7 @@ def _bound_context(
         armarium_formats=bindings["armarium_formats"],
         serving_config_inputs=bindings["serving_config_inputs"],
         recovery_policy=bindings["recovery_policy"],
+        serving_reader=serving_reader,
     )
 
 

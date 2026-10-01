@@ -138,6 +138,7 @@ from common.testimony_content_coverage import (  # noqa: E402
     validate_testimony_content_coverage,
     validate_testimony_content_coverage_continuation,
 )
+from operations.serving.assembly import SERVING_READER  # noqa: E402
 
 DESCRIPTION = "Armarium: where the output is written, and where the totals must reconcile."
 
@@ -2542,7 +2543,9 @@ def _require_refused_in_census(row: dict, census: dict[int, dict]) -> None:
 def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(DESCRIPTION).parse_args()
-    context = open_stage_context(args, ARMARIUM, registry_factory=registry_factory)
+    context = open_stage_context(
+        args, ARMARIUM, registry_factory=registry_factory, serving_reader=SERVING_READER
+    )
     submission_id, fixture_id, run_identity = export_run_identity(context)
     formats = context.armarium_formats
     if formats is None:

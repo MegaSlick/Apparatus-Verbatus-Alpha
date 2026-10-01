@@ -107,8 +107,10 @@ writer and the counter cannot read a page two ways:
   and its inputs must be exactly these;
 - the reading: its parse state, answer, problems, finish and stop reason are
   read again with `page_path.read_reply` from what the engine said -- a live
-  reading's retained response bytes (`page_path.retained_reply`), a fixture
-  run's declared page answer -- and must be the recorded ones. A page not asked
+  reading's retained response bytes (`page_path.retained_reply`, parsed by the
+  `stage.ServingReader` the stage opened its context with, since `common/`
+  never imports the serving package), a fixture run's declared page answer --
+  and must be the recorded ones. A page not asked
   has exactly `page_path.not_run_problems`; a refused or failed call records
   only that, with no call and no answer. The disposition is `read` exactly when
   the answer parsed and nothing holds it; a problem without a non-empty string

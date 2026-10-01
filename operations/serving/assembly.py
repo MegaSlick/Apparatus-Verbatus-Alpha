@@ -5,7 +5,7 @@ preflight's smoke reader, and the chair client each serving stage reads through.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Final, Mapping, Protocol
 
 from common.chairs.models import ChairIdentity
 from common.contracts.errors import ContractError
@@ -24,8 +24,19 @@ from operations.pod.preflight import (
 
 from .client import ChairClient
 from .config import ServingConfigInputs, ServingRecipes, load_serving_recipes
-from .errors import ServingConfigurationError, ServingError
-from .http import HttpTransport, UrllibHttpTransport
+from .errors import (
+    ChairRequestRefusal,
+    ChairResponseRefusal,
+    ServingConfigurationError,
+    ServingError,
+)
+from .http import (
+    HttpResponse,
+    HttpTransport,
+    UrllibHttpTransport,
+    parse_openai_reading,
+    request_body,
+)
 from .manager import (
     _PREFLIGHT_QUALIFICATION_PURPOSE,
     MECHANICS_QUALIFICATION_PURPOSE,
@@ -207,6 +218,39 @@ def _bound_serving(
             f"{DEFAULT_POD_PLACEMENT_CONFIG_PATH}: {error}; rerun with the files this run sealed"
         ) from error
     return recipes, inputs
+
+
+class _BoundServingReader:
+    """`common.stage.ServingReader` over this package: the sealed catalogue, the client's
+    reply parser and its request renderer, each refusal named as a `ContractError`."""
+
+    def serving_row(self, context: Any, chair: ChairIdentity, tier: Any) -> Any:
+        try:
+            return bound_serving_recipes(context, context.args.serving_recipes_config).for_identity(
+                chair, tier
+            )
+        except ServingError as error:
+            raise ContractError(str(error)) from error
+
+    def reading_reply(
+        self, *, status: Any, body: bytes, kind: Any, model_id: str
+    ) -> tuple[str, str | None]:
+        try:
+            result = parse_openai_reading(
+                HttpResponse(status=status, body=body), kind=kind, expected_model_id=model_id
+            )
+        except (ChairRequestRefusal, ChairResponseRefusal) as error:
+            raise ContractError(str(error)) from error
+        return result.outputs[0], result.finish_reasons[0]
+
+    def request_bytes(self, payload: Mapping[str, Any], *, model_id: str, seed: Any) -> bytes:
+        try:
+            return request_body(payload, model_id=model_id, seed=seed, deterministic=False)
+        except ServingError as error:
+            raise ContractError(str(error)) from error
+
+
+SERVING_READER: Final = _BoundServingReader()
 
 
 def retain_chair_bytes(context: Any, data: bytes) -> dict[str, str]:

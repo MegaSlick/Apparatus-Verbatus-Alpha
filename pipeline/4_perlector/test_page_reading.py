@@ -60,6 +60,7 @@ from conftest import (
     programs_through,
     rewitness_stage_boundary,
 )
+from operations.serving.assembly import SERVING_READER
 from operations.serving.config import profile_preflight_digest
 from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
 
@@ -1529,7 +1530,9 @@ def test_the_denominator_reads_a_live_reading_again_from_its_retained_reply(
     for reading in _records(live_tree.root, "page-reading"):
         payload = reading["payload"]
         reply = page_path.retained_reply(
-            lambda path: (live_tree.root / "r" / path).read_bytes(), payload["engine_call"]
+            lambda path: (live_tree.root / "r" / path).read_bytes(),
+            payload["engine_call"],
+            SERVING_READER,
         )
         assert reply == {
             "content": PAGE_ANSWERS[payload["page_ordinal"]],
@@ -1552,11 +1555,11 @@ def test_the_denominator_reads_a_live_reading_again_from_its_retained_reply(
             str(_page_roster(live_tree.protocol)),
         ]
     )
-    acts = reading_acts(open_context(args, RECENSOR))
+    acts = reading_acts(open_context(args, RECENSOR, serving_reader=SERVING_READER))
     assert [act["act_key"] for act in acts] == ["p1:1", "p1:2", "p2:1"]
 
 
-def _denominator_context(tree: _Live):
+def _denominator_context(tree: _Live, serving_reader=SERVING_READER):
     args = stage_parser("page-read denominator").parse_args(
         [
             "--run-root",
@@ -1573,7 +1576,7 @@ def _denominator_context(tree: _Live):
             str(_page_roster(tree.protocol)),
         ]
     )
-    return open_context(args, RECENSOR)
+    return open_context(args, RECENSOR, serving_reader=serving_reader)
 
 
 def _forge_reading(tree: _Live, ordinal: int, change) -> None:
@@ -1618,6 +1621,16 @@ def test_the_denominator_binds_a_live_reading_to_its_pages_request(
     _forge_reading(live_tree, 1, change)
     with pytest.raises(FatalAccounting, match=refusal):
         reading_acts(_denominator_context(live_tree))
+
+
+def test_a_context_without_a_serving_reader_refuses_a_live_reading(
+    live_tree, tmp_path, monkeypatch
+):
+    """A live call is read again or the run is refused; it is never taken from the record."""
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
+    assert exit_code == 0
+    with pytest.raises(FatalAccounting, match="no serving reader"):
+        reading_acts(_denominator_context(live_tree, serving_reader=None))
 
 
 def test_the_denominator_measures_a_capacity_refusal_again(tmp_path, monkeypatch):

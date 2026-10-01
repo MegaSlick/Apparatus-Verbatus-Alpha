@@ -111,6 +111,15 @@ UNPLACED_CLASS: Final = "reading-unplaced"
 SURYA_PAGE_KIND: Final = "surya-page"
 SURYA_LINE_KIND: Final = "surya-line"
 SURYA_BLOCK_KIND: Final = "surya-block"
+# How Surya ordered a page's blocks (a census's `reading_order`, the feed's
+# `block_sequence`): its reading-order head, or a raster sort (top to bottom,
+# then left to right) with the reason Surya fell back to it. Restated from
+# `operations/serving/surya/contract.py`, which Surya's own environment loads
+# standalone without this package; `common/test_surya_reading_orders.py` holds
+# the two equal.
+SURYA_ORDER_HEAD: Final = "surya-order-head"
+SURYA_RASTER_FALLBACK: Final = "raster-fallback"
+SURYA_READING_ORDERS: Final = (SURYA_ORDER_HEAD, SURYA_RASTER_FALLBACK)
 # The Attestatores' page witness record a feed is built from.
 PAGE_TESTIMONIUM_KIND: Final = "page-testimonium"
 
@@ -292,17 +301,14 @@ def page_sampling(decoding_policy: Mapping[str, Any], role: str) -> dict[str, An
     }
 
 
-def retained_reply(read_bytes, engine_call: Mapping[str, Any]) -> dict[str, Any]:
+def retained_reply(read_bytes, engine_call: Mapping[str, Any], reader: Any) -> dict[str, Any]:
     """What the engine answered a live page call, read again from its retained bytes.
 
     `engine_call` is the `page-reading`'s: the raw response and the call record
-    are read digest-checked, and the response is parsed as the serving client
-    parsed it. Returns `{content, finish_reason, stop_reason}`.
+    are read digest-checked, and `reader` (the stage's `common.stage.ServingReader`)
+    parses the response as the serving client parsed it. Returns `{content,
+    finish_reason, stop_reason}`.
     """
-    # The serving package reads `common.stage`, which reads this module.
-    from operations.serving.errors import ChairRequestRefusal, ChairResponseRefusal
-    from operations.serving.http import HttpResponse, parse_openai_reading
-
     if not isinstance(engine_call, Mapping):
         raise ContractError("a live page reading's engine_call is not an object")
     body = read_verified(read_bytes, engine_call["raw_response_ref"], "a page reading's response")
@@ -312,21 +318,18 @@ def retained_reply(read_bytes, engine_call: Mapping[str, Any]) -> dict[str, Any]
     if not isinstance(call, dict):
         raise ContractError("a page reading's call record is not a JSON object")
     try:
-        result = parse_openai_reading(
-            HttpResponse(status=call.get("response_status"), body=body),
+        content, finish_reason = reader.reading_reply(
+            status=call.get("response_status"),
+            body=body,
             kind=call.get("kind"),
-            expected_model_id=engine_call["served_model_id"],
+            model_id=engine_call["served_model_id"],
         )
-        stop_reason = reading_stop_reason(result.finish_reasons[0])
-    except (ChairRequestRefusal, ChairResponseRefusal, ValueError) as error:
+        stop_reason = reading_stop_reason(finish_reason)
+    except (ContractError, ValueError) as error:
         raise ContractError(
             f"a page reading's retained response is not a reading: {error}"
         ) from error
-    return {
-        "content": result.outputs[0],
-        "finish_reason": result.finish_reasons[0],
-        "stop_reason": stop_reason,
-    }
+    return {"content": content, "finish_reason": finish_reason, "stop_reason": stop_reason}
 
 
 def read_reply(
@@ -1026,9 +1029,6 @@ def sealed_surya_census(
     its detections must agree exactly, and every sealed detection must be
     named by its page's census. This is the one place that shape is read.
     """
-    # The serving package reads `common.stage`, which reads this module.
-    from operations.serving.surya_detector import contract as surya_contract
-
     censuses = [entry for entry in designator_entries if entry["kind"] == SURYA_PAGE_KIND]
     if not censuses:
         return None
@@ -1047,7 +1047,7 @@ def sealed_surya_census(
         census = _fields(record["payload"], _SURYA_CENSUS_FIELDS, f"page {page_id}'s Surya census")
         if census["page_id"] != page_id:
             raise FatalAccounting(f"page {page_id}'s Surya census names another page")
-        if census["reading_order"] not in surya_contract.READING_ORDERS:
+        if census["reading_order"] not in SURYA_READING_ORDERS:
             raise FatalAccounting(
                 f"page {page_id}'s Surya census states reading order "
                 f"{census['reading_order']!r}, which is not one Surya gives"
