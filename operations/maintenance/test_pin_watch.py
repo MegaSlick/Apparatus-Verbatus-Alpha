@@ -47,8 +47,7 @@ def test_pins_come_from_configured_chairs_and_vendor_source_constants() -> None:
             "0c57f057391113579e7af170b864542f049e67aa",
             "huggingface",
         ),
-        ("Qwen/Qwen3.8-27B", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0", "huggingface"),
-        # The reconstructor sits on the Perlector's repository at the same pin.
+        # The Perlector and the reconstructor share this repository and pin: one row.
         ("Qwen/Qwen3.8-27B", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0", "huggingface"),
         ("datalab-to/chandra", "d4f7467435aa4137d9539f000ddf0b7ced3eb43f", "github"),
         ("stanford-oval/Churro", "4abb17386d9656199c2776195926545fc527a691", "github"),
@@ -183,3 +182,20 @@ def test_an_undelivered_notification_exits_nonzero(monkeypatch: pytest.MonkeyPat
 
     assert pin_watch.main() == 1
     assert "NOT DELIVERED" in capsys.readouterr().out
+
+
+def test_one_repository_at_two_revisions_stays_two_pins(tmp_path: Path) -> None:
+    models = tmp_path / "models.toml"
+    models.write_text(
+        "\n".join(
+            f'[chairs.{chair}]\nstate = "configured"\nsource = "huggingface"\n'
+            f'repo = "owner/model"\nrevision = "{revision}"\n'
+            for chair, revision in (("first", "a" * 40), ("second", "b" * 40), ("third", "a" * 40))
+        ),
+        encoding="utf-8",
+    )
+    pins = pin_watch._pins((models,), pin_watch.ROOT / "common/test_vendor_parity.py")
+    assert [(pin.repo, pin.revision) for pin in pins if pin.repo == "owner/model"] == [
+        ("owner/model", "a" * 40),
+        ("owner/model", "b" * 40),
+    ]

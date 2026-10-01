@@ -111,3 +111,4 @@ def test_an_unparsed_body_and_an_unknown_finish_word_are_refused_with_the_bytes_
             what="page 1",
         )
     assert unknown.value.code == "ENGINE_FINISH_REASON_UNRECOGNIZED"
+    assert unknown.value.detail.startswith("page 1 received an engine stop reason 'abort'")

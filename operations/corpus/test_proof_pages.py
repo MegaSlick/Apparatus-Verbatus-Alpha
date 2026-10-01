@@ -9,8 +9,8 @@ import pytest
 
 from common.contracts.canonical import digest_bytes, verify_self_hash
 
-from . import CorpusRefusal
-from .local_admission import admit_local_set
+from . import CorpusRefusal, proof_pages
+from .local_admission import admit_local_set, load_local_admission_ledger
 from .proof_pages import REPOSITORY, choose, main, pick
 from .test_local_admission import _two_page_set
 
@@ -94,6 +94,25 @@ def test_a_page_whose_image_changed_since_admission_is_refused(admitted, tmp_pat
         image.write_bytes(image.read_bytes() + b"\0")
     with pytest.raises(CorpusRefusal, match="^digest-mismatch:"):
         pick(ledger, tmp_path / "proof", page_shas=shas[:1])
+
+
+def test_a_chosen_page_without_reference_truth_leaves_the_output_empty(
+    admitted, tmp_path, monkeypatch
+):
+    ledger, shas = admitted
+
+    def without_second_reference(path):
+        loaded = load_local_admission_ledger(path)
+        loaded["reference_pages"] = [
+            page for page in loaded["reference_pages"] if page["page"]["sha256"] != shas[1]
+        ]
+        return loaded
+
+    monkeypatch.setattr(proof_pages, "load_local_admission_ledger", without_second_reference)
+    output = tmp_path / "proof"
+    with pytest.raises(CorpusRefusal, match="^reference-missing:"):
+        pick(ledger, output, page_shas=shas)
+    assert not output.exists() or not any(output.iterdir())
 
 
 def test_the_command_prints_the_chosen_digests(admitted, tmp_path, capsys):

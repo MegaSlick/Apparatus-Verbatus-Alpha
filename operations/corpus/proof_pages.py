@@ -132,6 +132,12 @@ def pick(
         if digest_bytes(image.read_bytes()) != sha:
             raise Refusal(f"digest-mismatch: {image.name} does not hash to {sha}")
         copies.append((sha, image))
+    references = sorted(
+        (page for page in ledger["reference_pages"] if page["page"]["sha256"] in set(chosen)),
+        key=lambda page: page["page"]["sha256"],
+    )
+    if [page["page"]["sha256"] for page in references] != chosen:
+        raise Refusal("reference-missing: a chosen page has no reference page in the ledger")
 
     folder = output / "pages"
     folder.mkdir(parents=True, exist_ok=True)
@@ -142,12 +148,6 @@ def pick(
     (output / "submission-manifest.json").write_bytes(
         canonical_bytes(build_manifest(walk_folder(folder)))
     )
-    references = sorted(
-        (page for page in ledger["reference_pages"] if page["page"]["sha256"] in set(chosen)),
-        key=lambda page: page["page"]["sha256"],
-    )
-    if [page["page"]["sha256"] for page in references] != chosen:
-        raise Refusal("reference-missing: a chosen page has no reference page in the ledger")
     (output / "reference-pages.jsonl").write_bytes(
         b"".join(canonical_bytes(page) + b"\n" for page in references)
     )

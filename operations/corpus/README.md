@@ -216,9 +216,8 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   the repository and an output inside it must be under `private/`; nothing leaves the
   machine.
 
-All four units exist as of this commit; the fetch protocol, comparator, and
-hold-out sections below describe behaviour that runs, not a shape still to be
-built.
+The fetch protocol, comparator and hold-out sections below describe behaviour that
+runs.
 
 ## A proof run, end to end
 
