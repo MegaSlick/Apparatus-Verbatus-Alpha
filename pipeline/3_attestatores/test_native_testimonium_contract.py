@@ -2,39 +2,35 @@
 
 import ast
 import copy
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from common.chairs import ChairRegistry
-from common.chairs.models import AbsentChair
 from common.contracts.canonical import digest_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
+from common.contracts.stages import ATTESTATORES, EXEMPLAR
 from common.imaging import dimensions
+from common.native_witness import record_presentations
 from common.runtree.store import RunTree
-from conftest import load_stage
+from conftest import load_stage, run_stage, run_through
 
 ROOT = Path(__file__).resolve().parents[2]
+ATTESTATORES_PROGRAM = "pipeline/3_attestatores/run.py"
 
 
 attestatores = load_stage("3_attestatores")
 
 
-def _base(*, page=False):
-    payload = {
+def _base():
+    return {
         "chair": "attestator_1",
-        "act_key": "a1",
         "attempt_ordinal": 1,
-        "regions": [],
         "provenance": {},
         "format_capabilities": {},
         "payload": "native bytes remain elsewhere",
         "witness_reported": None,
         "content_health": {},
-        "unpresented_regions": [],
         "presented": {
             "kind": "page",
             "source_page_id": "page-1",
@@ -56,77 +52,46 @@ def _base(*, page=False):
                 "span": None,
             }
         ],
+        "scope": "page",
+        "page_ordinal": 1,
     }
-    if page:
-        payload.update(
-            {
-                "scope": "page",
-                "page_ordinal": 1,
-                "page_role": "primary",
-                "unjoined_act_attempts": [],
-            }
-        )
-    return payload
 
 
-def test_unknown_field_is_refused_at_both_act_and_page_writer_validators():
-    act = _base()
-    act["untrusted"] = True
-    with pytest.raises(SchemaRefusal, match="closed"):
-        attestatores.validate_testimonium_payload(act)
-    page = _base(page=True)
+def test_unknown_field_is_refused_at_the_page_writer_validator():
+    page = _base()
     page["untrusted"] = True
     with pytest.raises(SchemaRefusal, match="closed"):
         attestatores.validate_page_testimonium_payload(page)
 
 
-def test_rederived_reread_rule_names_new_ink_as_a_recovery_request():
-    with pytest.raises(ContractError, match="New testimony after a reading is refused; new INK"):
-        attestatores.require_open_witness_layer(
-            frozenset({"act-1"}), {"act_id": "act-1", "act_key": "a1"}, "a reread"
+def _page_records(tree, ordinal=None):
+    return [
+        record
+        for record in (
+            tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+            for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+            if entry["kind"] == "page-testimonium"
         )
+        if ordinal is None or record["payload"]["attempt_ordinal"] == ordinal
+    ]
 
 
-def _attempt(outcome):
-    return attestatores.Attempt(
-        outcome=outcome,
-        native_payload=None,
-        witness_reported=None,
-        format_capabilities=None,
-        health={},
-        reason="fixture" if outcome != "read" else None,
-    )
+def test_a_page_the_perlector_was_shown_closes_its_witness_layer(tmp_path):
+    """A reading is established over the testimony it was shown; a new attempt
+    there would supersede it, so a pass that would append one is refused before
+    anything is written."""
+    root = tmp_path / "runs"
+    run_through(root, "closed-layer", "happy", "perlector")
+    tree = RunTree(root, "closed-layer")
+    before = len(_page_records(tree))
 
+    result = run_stage(root, "closed-layer", "happy", ATTESTATORES_PROGRAM, attempt_ordinal=2)
 
-def test_a_page_witness_shown_pixels_that_all_come_back_failed_is_still_attempted():
-    """A page chair attempted (shown pixels) on every act but every response was
-    unusable must not collapse into the same `presented: {}` fact as a chair
-    never shown an image at all -- those are held acts, refused pages, and
-    absent chairs, not attempted-and-failed."""
-    acts = [{"act_id": "a1"}, {"act_id": "a2"}]
-    attempts_by_pair = {
-        ("a1", "attestator_1"): _attempt("failed"),
-        ("a2", "attestator_1"): _attempt("failed"),
-    }
-    assert attestatores.page_witness_attempted(acts, "attestator_1", attempts_by_pair) is True
-
-
-def test_a_page_witness_never_run_on_any_act_is_not_attempted():
-    acts = [{"act_id": "a1"}, {"act_id": "a2"}]
-    attempts_by_pair = {
-        ("a1", "attestator_1"): _attempt("not-run"),
-        ("a2", "attestator_1"): _attempt("dead"),
-    }
-    assert attestatores.page_witness_attempted(acts, "attestator_1", attempts_by_pair) is False
-
-
-def test_a_page_witness_with_one_failed_and_one_unread_act_is_still_attempted():
-    acts = [{"act_id": "a1"}, {"act_id": "a2"}]
-    attempts_by_pair = {
-        ("a1", "attestator_1"): _attempt("not-run"),
-        ("a2", "attestator_1"): _attempt("failed"),
-    }
-    assert attestatores.page_witness_attempted(acts, "attestator_1", attempts_by_pair) is True
+    assert result.returncode == attestatores.EXIT_HELD, result.stderr
+    assert "witness layer is closed: a whole pass at ordinal 2" in result.stderr
+    assert "to witness these pages again, start a new run" in result.stderr
+    assert len(_page_records(tree)) == before
+    assert _page_records(tree, ordinal=2) == []
 
 
 def _is_call_statement(statement: ast.stmt, name: str) -> bool:
@@ -137,11 +102,8 @@ def _is_call_statement(statement: ast.stmt, name: str) -> bool:
     )
 
 
-TESTIMONIUM_KINDS = {"testimonium", "page-testimonium"}
-
-
 def _publish_lines(node: ast.AST) -> list[int]:
-    """Only Testimonium writes. An act-attachment carries no adapter presentation.
+    """Only page Testimonium writes.
 
     A dynamic or non-literal `kind` is counted, so a write this proof cannot
     classify fails loudly rather than slipping past it.
@@ -157,7 +119,7 @@ def _publish_lines(node: ast.AST) -> list[int]:
         kinds = [keyword.value for keyword in child.keywords if keyword.arg == "kind"]
         if len(kinds) != 1 or not isinstance(kinds[0], ast.Constant):
             lines.append(child.lineno)
-        elif kinds[0].value in TESTIMONIUM_KINDS:
+        elif kinds[0].value == "page-testimonium":
             lines.append(child.lineno)
     return lines
 
@@ -175,11 +137,9 @@ def _child_blocks(statement: ast.stmt):
 def _undominated_publishes(statements: list[ast.stmt], name: str) -> list[int]:
     """Publish lines this block can reach without first executing a `name` call.
 
-    Dominance is per block, not per function: the page writer validates and
-    publishes inside its page/chair loop, which is correct. What must never
-    exist is a publish reachable down a path where the reconciliation sits in a
-    branch that did not run. (`test_page_join.py` runs the fuller write scan
-    over the same tree.)
+    What must never exist is a publish reachable down a path where the
+    reconciliation sits in a branch that did not run.
+    (`test_page_witness_roster.py` runs the fuller write scan over the same tree.)
     """
     validated = False
     undominated: list[int] = []
@@ -202,7 +162,7 @@ def _undominated_publishes(statements: list[ast.stmt], name: str) -> list[int]:
 
 @pytest.mark.parametrize(
     "writer",
-    ("publish_attempt", "publish_page_testimonia_and_attachments"),
+    ("publish_page_testimonium", "publish_detector_page_testimonium"),
 )
 def test_each_testimonium_writer_reconciles_adapter_evidence_before_publication(writer):
     """A later tally refusal cannot undo immutable evidence already published.
@@ -236,24 +196,27 @@ def test_dai_uncertainty_tokens_reach_a_closed_testimonium_verbatim():
     presented = _base()["presented"]
     observed = adapter.observe(presented, parsed)
 
-    record = attestatores.testimonium_payload(
+    record = attestatores.page_testimonium_payload(
         chair="attestator_2",
-        act_key="a1",
+        page_ordinal=1,
         ordinal=1,
-        regions=[],
         provenance={},
-        format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
-        native_payload=parsed,
-        witness_reported=None,
-        health=attestatores.content_health(parsed, completed=True),
+        attempt=attestatores.Attempt(
+            "read",
+            parsed,
+            None,
+            attestatores.DEFAULT_FORMAT_CAPABILITIES,
+            attestatores.content_health(parsed, completed=True),
+            None,
+        ),
         presented=presented,
         observed=observed,
-        outcome="read",
+        testimonium_id="art_0123456789abcdef",
     )
 
     assert record["payload"] == raw.decode("utf-8")
-    # The `reported` compatibility projection is retired: the retained payload
-    # is the coverage text directly, so there is no second field restating it.
+    # The retained payload is the coverage text directly, so there is no second
+    # field restating it.
     assert "reported" not in record
     assert record["observed"][0]["span"] == {"start": 0, "end": len(record["payload"])}
 
@@ -271,123 +234,38 @@ class _Context:
         }
 
 
-def test_unpresented_regions_must_be_a_unique_list_of_region_ids():
-    for bad in ("rgn_1", [""], ["rgn_1", "rgn_1"], [1]):
-        payload = _base()
-        payload["unpresented_regions"] = bad
-        with pytest.raises(SchemaRefusal, match="unique list of region ids"):
-            attestatores.validate_testimonium_payload(payload)
-
-
-def test_a_record_with_no_presentation_at_all_cannot_name_an_unpresented_region():
-    """`presented: {}` is a chair that was never shown an image. Naming a crop
-    its presentation does not speak for would claim a presentation exists."""
-    payload = _base()
-    payload["presented"] = {}
-    payload["observed"] = []
-    payload["unpresented_regions"] = ["rgn_0123456789abcdef"]
-    with pytest.raises(SchemaRefusal, match="cannot name regions"):
-        attestatores.validate_testimonium_payload(payload)
-
-
-def _happy_run(tmp_path, run_id):
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "happy",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--run-id",
-            run_id,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
+def _witnessed(tmp_path, run_id, scenario="happy"):
+    run_through(tmp_path / "runs", run_id, scenario, "attestatores")
     return RunTree(tmp_path / "runs", run_id)
 
 
-def _region_testimonium(tree):
-    """Region-ref tests cannot use DAI's distinct ``adapter-crop`` shape."""
-    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "testimonium":
-            continue
-        record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        if record["payload"]["presented"]["kind"] == "region":
-            return record
-    raise AssertionError("the fixture has no region-kind Testimonium")
-
-
-def test_a_continuation_act_states_which_of_its_crops_the_derived_layer_omits(tmp_path):
-    tree = _happy_run(tmp_path, "continuation-scope")
-    regions = [
-        tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == "region"
-    ]
-    by_act: dict[str, list] = {}
-    for region in regions:
-        by_act.setdefault(region["subject_id"], []).append(region)
-    continuation = next(act_id for act_id, rows in by_act.items() if len(rows) == 2)
-    single = next(act_id for act_id, rows in by_act.items() if len(rows) == 1)
-    second_crop = sorted(
-        by_act[continuation], key=lambda region: region["payload"]["attempt_ordinal"]
-    )[1]["payload"]["region_id"]
-
-    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "testimonium":
-            continue
-        record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        expected = [second_crop] if entry["subject_id"] == continuation else []
-        assert record["payload"]["unpresented_regions"] == expected, entry["artifact_id"]
-        presented = record["payload"]["presented"]
-        if presented["kind"] == "region":
-            assert presented["region_ref"]["region_id"] != second_crop
-        else:
-            assert presented["kind"] == "adapter-crop"
-            assert "region_ref" not in presented
-    assert single != continuation
-
-
-def test_page_native_geometry_stays_with_page_witnesses_and_inside_witness_views(tmp_path):
-    """Native page-space geometry may ride only records owned by a page witness.
-
-    A page witness's act view may restate its page-space geometry (boxes may
-    exceed that record's one-crop presentation); every other record's observed
-    boxes must stay inside the exact presentation the witness was shown, and
-    no act-scoped chair may carry native geometry.
-    """
-    tree = _happy_run(tmp_path, "native-page-scope")
+def test_page_native_geometry_stays_with_the_chairs_that_report_it(tmp_path):
+    """Native page-space geometry rides only the records of a chair that reports
+    it (Chandra) or that the fixture declares a box for (Churro's one row);
+    every other box stays inside one image the chair was shown."""
+    tree = _witnessed(tmp_path, "native-page-scope")
     native = []
-    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] not in {"testimonium", "page-testimonium"}:
-            continue
-        record = tree.read_artifact(ATTESTATORES, entry["kind"], entry["artifact_id"])
+    for record in _page_records(tree):
         payload = record["payload"]
-        presented = payload["presented"]
-        page_witness_view = entry["kind"] == "testimonium" and payload.get("page_witness") is True
+        shown = record_presentations(payload)
         for observation in payload["observed"]:
             if observation["bounds_source"] == "native":
-                native.append((entry["kind"], payload["chair"]))
-                assert entry["kind"] == "page-testimonium" or page_witness_view
-            if presented and not page_witness_view:
-                outer = presented["transform"]["bounds"]
-                inner = observation["bounds"]
-                assert outer["x"] <= inner["x"]
-                assert outer["y"] <= inner["y"]
-                assert outer["x"] + outer["w"] >= inner["x"] + inner["w"]
-                assert outer["y"] + outer["h"] >= inner["y"] + inner["h"]
-    assert ("page-testimonium", "attestator_1") in native
-    assert all(chair in {"attestator_1", "attestator_3"} for _kind, chair in native)
+                native.append(payload["chair"])
+                continue
+            inner = observation["bounds"]
+            assert any(
+                outer["x"] <= inner["x"]
+                and outer["y"] <= inner["y"]
+                and outer["x"] + outer["w"] >= inner["x"] + inner["w"]
+                and outer["y"] + outer["h"] >= inner["y"] + inner["h"]
+                for outer in (image["transform"]["bounds"] for image in shown)
+            ), record["artifact_id"]
+    assert "attestator_1" in native
+    assert set(native) <= {"attestator_1", "attestator_3"}
 
 
 def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_seam(tmp_path):
-    tree = _happy_run(tmp_path, "page-blob-forgery")
+    tree = _witnessed(tmp_path, "page-blob-forgery")
     context = _Context(tree)
     pages = [
         tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
@@ -396,9 +274,7 @@ def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_
     ]
     first, second = sorted(pages, key=lambda page: page["payload"]["ordinal"])[:2]
     testimony = next(
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
+        record for record in _page_records(tree) if record["payload"]["chair"] == "attestator_3"
     )
     forged = copy.deepcopy(testimony)
     width, height = dimensions(tree.read_bytes(second["payload"]["image_path"]))
@@ -416,7 +292,6 @@ def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_
         },
     }
     forged["payload"]["observed"] = []
-    forged["payload"]["unpresented_regions"] = []
     forged["inputs"] = [context.input_ref(second["payload"]["image_path"])]
     forged["self_hash"] = self_hash(forged)
 
@@ -427,39 +302,16 @@ def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_
 def test_a_page_witness_shown_pixels_carries_the_serving_moment_that_produced_them(tmp_path):
     """One record may not say both "I was shown this image" and "no serving
     happened"; attempted testimony must carry its receipt."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "review",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--run-id",
-            "page-serving-moment",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 3, result.stderr
-    tree = RunTree(tmp_path / "runs", "page-serving-moment")
+    tree = _witnessed(tmp_path, "page-serving-moment", "malformed-witness")
     seen_failed_but_presented = False
-    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != "page-testimonium":
-            continue
-        record = tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+    for record in _page_records(tree):
         payload = record["payload"]
-        if payload["provenance"]["chair_state"] != "configured":
-            continue
         assert bool(payload["presented"]) == (payload["provenance"]["receipt_ref"] is not None), (
-            entry["artifact_id"]
+            record["artifact_id"]
         )
         if record["outcome"] == "failed" and payload["presented"]:
             seen_failed_but_presented = True
-    assert seen_failed_but_presented, "the review fixture no longer exercises the case"
+    assert seen_failed_but_presented, "the malformed-witness fixture no longer exercises the case"
 
 
 @pytest.mark.parametrize(
@@ -495,87 +347,22 @@ def test_a_page_witness_shown_pixels_carries_the_serving_moment_that_produced_th
     ),
 )
 def test_a_sealed_region_missing_its_presentation_fields_is_named_not_indexed(region, message):
-    """`validate_testimonium_presentation` treats manifest regions as untrusted.
-
-    It reads them straight out of the Designator manifest to reconcile a record,
-    without the crop-lineage verification the writer's caller performs. A raw
-    KeyError there would be the validation seam failing to say what is wrong
-    with the evidence it was asked to judge.
-    """
+    """A record crop shown to DAI is untrusted until its presentation is built:
+    a raw KeyError would be the seam failing to say what is wrong with it."""
     with pytest.raises(SchemaRefusal, match=message):
         attestatores.presentation_for_region(region)
 
 
 def test_a_never_presented_page_witness_is_not_run_and_carries_no_receipt(tmp_path):
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "ink-free-page-unwitnessed",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--run-id",
-            "page-never-presented",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 3, result.stderr
-    tree = RunTree(tmp_path / "runs", "page-never-presented")
-    records = [
-        tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "page-testimonium"
-        and tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])["payload"][
-            "page_ordinal"
-        ]
-        == 3
-    ]
+    tree = _witnessed(tmp_path, "page-never-presented", "ink-free-page-unwitnessed")
+    records = [record for record in _page_records(tree) if record["payload"]["page_ordinal"] == 3]
     assert records
     for record in records:
-        assert record["outcome"] == "not-run"
+        # DAI's own detector found nothing there, which is its blank testimony.
+        expected = "genuinely-empty" if record["payload"]["chair"] == "attestator_2" else "not-run"
+        assert record["outcome"] == expected
         assert record["payload"]["presented"] == {}
         assert record["payload"]["provenance"]["receipt_ref"] is None
-
-
-def test_a_region_ref_naming_no_sealed_designator_region_is_refused(tmp_path):
-    tree = _happy_run(tmp_path, "unknown-region-ref")
-    context = _Context(tree)
-    testimony = _region_testimonium(tree)
-    forged = copy.deepcopy(testimony)
-    forged["payload"]["presented"]["region_ref"] = {"region_id": "rgn_" + "0" * 16}
-    forged["self_hash"] = self_hash(forged)
-    with pytest.raises(SchemaRefusal, match="no unique sealed Designator region"):
-        attestatores.validate_testimonium_presentation(context, forged)
-
-
-def test_a_region_ref_matching_two_manifest_rows_is_not_treated_as_unique(tmp_path, monkeypatch):
-    tree = _happy_run(tmp_path, "duplicate-region-ref")
-    context = _Context(tree)
-    testimony = _region_testimonium(tree)
-    original = tree.build_manifest
-    designator_manifest = original(DESIGNATOR)
-    matching = next(
-        entry
-        for entry in designator_manifest["artifacts"]
-        if entry["kind"] == "region"
-        and tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])["payload"]["region_id"]
-        == testimony["payload"]["presented"]["region_ref"]["region_id"]
-    )
-
-    def duplicated_manifest(stage):
-        manifest = original(stage)
-        if stage == DESIGNATOR:
-            return {**manifest, "artifacts": [*manifest["artifacts"], matching]}
-        return manifest
-
-    monkeypatch.setattr(tree, "build_manifest", duplicated_manifest)
-    with pytest.raises(SchemaRefusal, match="no unique sealed Designator region"):
-        attestatores.validate_testimonium_presentation(context, testimony)
 
 
 def test_a_declared_quantization_rule_has_nowhere_to_ride_in_this_contract():
@@ -587,17 +374,8 @@ def test_a_declared_quantization_rule_has_nowhere_to_ride_in_this_contract():
         payload = _base()
         mutate(payload)
         with pytest.raises(SchemaRefusal, match="closed|unknown field"):
-            attestatores.validate_testimonium_payload(payload)
+            attestatores.validate_page_testimonium_payload(payload)
 
-
-# ------------------- the two fields only a live reading writes ----------------
-#
-# `serving_call_ref` names the `chair-call-record.v1` blob for the one request
-# this attempt came from, and `native_capture` is the adapter's own retained
-# model view of the response (SPEC_A section 2.3). Both are optional and are
-# written only by the live pass, so a fixture Testimonium is byte-for-byte what
-# it always was; what follows closes them at the writer, which is the same
-# validator the tally read-back uses.
 
 _BLOB_PREFIX = "3_attestatores/blobs/sha256/"
 
@@ -607,74 +385,25 @@ def _blob_ref(seed: str) -> dict[str, str]:
     return {"relative_path": _BLOB_PREFIX + digest, "sha256": digest}
 
 
-def _live_capture(reference: dict[str, str], *, stop: str = "stop") -> dict[str, object]:
-    return {
-        "schema": "attestatores-model-view.v1",
+def test_a_malformed_retained_model_view_is_refused_at_the_page_writer():
+    """A view which is not a retained model view at all cannot ride into a page
+    record unexamined. The stop word is not what this proves: the live boundary
+    refuses an unreadable engine word itself, before publication
+    (`run.py::refuse_unpublishable_stop_word`)."""
+    payload = _base()
+    reference = _blob_ref("live response bytes")
+    payload["native_capture"] = {
+        "schema": "not-a-model-view.v9",
         "adapter": "chandra.v1",
         "view": {"prompt": {"instruction": "read"}},
         "raw_response_ref": reference,
-        "transport_stop_reason": stop,
-        "stop_reason": stop,
+        "transport_stop_reason": "stop",
+        "stop_reason": "stop",
         "findings": [],
         "parse": {"state": "parsed", "parser": "json", "text": "native bytes remain elsewhere"},
     }
-
-
-def test_a_live_act_record_may_name_its_retained_response_call_and_model_view():
-    payload = _base()
-    reference = _blob_ref("live response bytes")
-    payload["raw_response_ref"] = reference
-    payload["raw_response_kind"] = "model-output"
-    payload["serving_call_ref"] = _blob_ref("call record bytes")
-    payload["native_capture"] = _live_capture(reference)
-    assert attestatores.validate_testimonium_payload(payload) is payload
-
-
-def test_a_serving_call_reference_without_a_retained_response_is_refused():
-    payload = _base()
-    payload["serving_call_ref"] = _blob_ref("call record bytes")
-    with pytest.raises(SchemaRefusal, match="retains no response"):
-        attestatores.validate_testimonium_payload(payload)
-
-
-def test_a_retained_model_view_naming_another_response_is_refused():
-    payload = _base()
-    payload["raw_response_ref"] = _blob_ref("live response bytes")
-    payload["raw_response_kind"] = "model-output"
-    payload["serving_call_ref"] = _blob_ref("call record bytes")
-    payload["native_capture"] = _live_capture(_blob_ref("some other response entirely"))
-    with pytest.raises(SchemaRefusal, match="different response blob"):
-        attestatores.validate_testimonium_payload(payload)
-
-
-def test_a_serving_call_reference_outside_this_stage_s_blob_store_is_refused():
-    payload = _base()
-    payload["raw_response_ref"] = _blob_ref("live response bytes")
-    payload["serving_call_ref"] = {
-        "relative_path": "4_perlector/blobs/sha256/" + "0" * 64,
-        "sha256": "0" * 64,
-    }
-    with pytest.raises(SchemaRefusal, match="serving_call_ref is not an Attestatores blob"):
-        attestatores.validate_testimonium_payload(payload)
-
-
-def test_a_malformed_retained_model_view_is_refused_at_the_act_writer_too():
-    """The shared capture contract closes an act record, not only a page record.
-
-    The stop word is deliberately not what this proves: the shared validator
-    checks that only for `churro.v1` (`_validate_churro_capture`), so the live
-    boundary refuses an unreadable engine word itself, before publication
-    (`run.py::refuse_unpublishable_stop_word`, proven in
-    `test_attestatores_live_pass.py`). What this closes here is that a view
-    which is not a retained model view at all cannot ride into an act record
-    unexamined.
-    """
-    payload = _base()
-    reference = _blob_ref("live response bytes")
-    payload["raw_response_ref"] = reference
-    payload["native_capture"] = {**_live_capture(reference), "schema": "not-a-model-view.v9"}
     with pytest.raises(SchemaRefusal, match="retained model-view schema"):
-        attestatores.validate_testimonium_payload(payload)
+        attestatores.validate_page_testimonium_payload(payload)
 
 
 # ------------- the serving moment a live provenance record names --------------
@@ -717,25 +446,5 @@ def test_a_chair_that_was_never_asked_cannot_carry_a_serving_receipt():
             context,
             _identity(),
             attempted=False,
-            receipt_ref={"relative_path": "receipts/x.json", "sha256": "c" * 64},
-        )
-
-
-def test_an_absent_chair_cannot_carry_a_serving_receipt():
-    context = _ProvenanceContext()
-    absent = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).config.chairs[
-        "secondary_proposer"
-    ]
-    assert isinstance(absent, AbsentChair), (
-        "this test needs an absent roster entry; secondary_proposer is now configured "
-        "in config/models.toml, so provenance_for would fall through to the "
-        "configured-return path instead of raising -- pick a different absent entry "
-        "or re-derive this test's fixture"
-    )
-    with pytest.raises(ContractError, match="absent"):
-        attestatores.provenance_for(
-            context,
-            absent,
-            attempted=True,
             receipt_ref={"relative_path": "receipts/x.json", "sha256": "c" * 64},
         )

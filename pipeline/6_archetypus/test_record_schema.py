@@ -11,20 +11,21 @@ constructor.
 """
 
 import inspect
-from types import SimpleNamespace
 
 import pytest
 
 from common.contracts.canonical import digest_of, self_hash, verify_self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
-from common.contracts.outcomes import VOCABULARIES
-from common.contracts.stages import PERLECTOR
-from common.contracts.uncertainty import from_perlectio
 from conftest import load_stage
 
 archetypus = load_stage("6_archetypus")
 
-ACT = {"act_id": "act_0000000000000001", "act_key": "a1", "page_id": "pg_0000000000000001"}
+ACT = {
+    "act_id": "act_0000000000000001",
+    "act_key": "a1",
+    "page_id": "pg_0000000000000001",
+    "kind": "act",
+}
 READING_REF = {"relative_path": "4_perlector/artifacts/perlectio/art_b.json", "sha256": "b" * 64}
 REVIEW_REF = {"relative_path": "5_recensor/artifacts/review/art_c.json", "sha256": "c" * 64}
 REGION = {
@@ -35,8 +36,6 @@ REGION = {
     "source_page_ordinal": 1,
     "source_page_id": "pg_0000000000000001",
     "transform": {"x": 0, "y": 0, "w": 100, "h": 50},
-    "structure_provenance": {"chair": "designator"},
-    "witness_covered": True,
 }
 
 
@@ -53,9 +52,9 @@ def _uncertainty(**overrides) -> dict:
     return {
         "uncertain_spans": [],
         "gaps": [],
-        "self_revisions": [],
+        "self_revisions": None,
         "assessment": _ASSESSED,
-        "lectio_kind": "primed-with-prior",
+        "lectio_kind": "page-read",
         **overrides,
     }
 
@@ -96,17 +95,11 @@ def make_record(**overrides) -> dict:
 def test_the_only_public_constructor_resolves_the_accepted_evidence_itself():
     assert not hasattr(archetypus, "build_record")
     assert not hasattr(archetypus, "_build_record")
-    assert "establish_from_accepted_primed_perlectio" in {
-        name
-        for name, function in inspect.getmembers(archetypus, inspect.isfunction)
-        if not name.startswith("_")
-    }
-    assert tuple(
-        inspect.signature(archetypus.establish_from_accepted_primed_perlectio).parameters
-    ) == (
+    assert tuple(inspect.signature(archetypus.establish_from_accepted_page_reading).parameters) == (
         "context",
-        "act",
+        "row",
         "review_ref",
+        "page_testimonia",
     )
 
 
@@ -132,6 +125,7 @@ def test_exactly_one_field_holds_the_established_characters():
             "act_id",
             "act_key",
             "page_id",
+            "kind",
             "text",
             "text_hash",
             "status",
@@ -288,19 +282,10 @@ def test_record_validation_refuses_a_gap_whose_position_label_lies_about_its_own
         archetypus.validate_record(seal_record(uncertainty=_uncertainty(gaps=[gap])))
 
 
-def test_record_validation_refuses_a_self_revision_with_a_negative_prior_offset():
-    """A prior-draft offset can never be negative, whatever draft it indexes.
-
-    `prior_span` anchors into the Perlector's prior draft, a string this layer
-    never sees, so it cannot bound-check the offset against that draft's
-    length -- but a negative offset is nonsensical regardless of which string
-    it indexes.
-    """
-    revision = {
-        "reading_span": {"start": 0, "end": 0},
-        "prior_span": {"start": -5, "end": -1},
-    }
-    with pytest.raises(SchemaRefusal, match="negative offset"):
+def test_record_validation_refuses_a_page_reading_that_claims_self_revisions():
+    """A page reading had no prior draft, so it has no self-revisions to record."""
+    revision = {"reading_span": {"start": 0, "end": 0}, "prior_span": {"start": 0, "end": 0}}
+    with pytest.raises(SchemaRefusal, match="self-revisions are not measured"):
         archetypus.validate_record(seal_record(uncertainty=_uncertainty(self_revisions=[revision])))
 
 
@@ -381,30 +366,6 @@ def test_record_validation_refuses_gap_evidence_with_a_non_digest_reference():
         archetypus.validate_record(seal_record(uncertainty=_uncertainty(gaps=[gap])))
 
 
-def test_record_validation_refuses_an_open_self_revision_bound():
-    """A nested offset object cannot smuggle an unvalidated field through reseal."""
-    revision = {
-        "reading_span": {"start": 0, "end": 0, "unit": "bytes"},
-        "prior_span": {"start": 0, "end": 0},
-    }
-    with pytest.raises(SchemaRefusal, match="reading_span has no exact offset range"):
-        archetypus.validate_record(seal_record(uncertainty=_uncertainty(self_revisions=[revision])))
-
-
-def test_from_perlectio_refuses_a_non_object_self_revision_by_name():
-    """A resealed producer value is a schema refusal, never an AttributeError."""
-    with pytest.raises(SchemaRefusal, match=r"self_revision\[0\].*closed source schema"):
-        from_perlectio(
-            {
-                "text": "Maria",
-                "lectio_kind": "primed-with-prior",
-                "uncertain_spans": [],
-                "gaps": [],
-                "self_revision": [None],
-            }
-        )
-
-
 def test_record_validation_refuses_an_annotation_short_of_its_validated_form():
     """A gap with no `witness_evidence` key validates, but not as what is stored.
 
@@ -434,232 +395,32 @@ def test_record_validation_refuses_a_no_readable_text_record_carrying_an_annotat
         )
 
 
-# --- The guard that decides whether an unresolved reading can establish text ----
-
-
-_READING_REF = {"relative_path": "4_perlector/artifacts/x.json", "sha256": "0" * 64}
-
-
-def _perlectio(outcome: str) -> dict:
-    # `lectio_kind` carries R5a's production marker for the tests that pass a
-    # completed outcome: the outcome-classification guard runs first, so a
-    # failing outcome refuses regardless of kind, but a completed reading
-    # without the marker would stop at the later only-primed-with-prior-
-    # establishes refusal instead of the guard those tests aim at.
-    return {
-        "stage": archetypus.PERLECTOR,
-        "kind": "perlectio",
-        "outcome": outcome,
-        "payload": {"text": "some established characters", "lectio_kind": "primed-with-prior"},
-    }
-
-
-def _accepted_review() -> dict:
-    """A review that passes every guard *before* the completed-class check.
-
-    Built deliberately so the refusal under test is the one being reached: with a
-    weaker review the earlier "accepts only the exact Perlectio a Recensor
-    accepted" refusal fires first and the test passes without ever touching the
-    guard it names. That happened on the first draft of this test.
+def test_two_groups_naming_one_crop_path_collapse_to_a_single_input():
+    """`_direct_inputs`'s dedup-by-path guards the cross-group case -- a review
+    or Perlectio reference coinciding with a crop path -- which the run tree's
+    layout makes structurally impossible today; `_crop_references` already
+    refuses two *regions* naming one crop path before this function runs. The
+    dedup is the cheap defensive form of that layout guarantee, and this test
+    pins the collapse plus the no-distinct-input-dropped half so the defence
+    cannot rot unnoticed.
     """
-    return {
-        "stage": archetypus.RECENSOR,
-        "kind": "review",
-        "outcome": "accepted",
-        "inputs": [_READING_REF],
-        "payload": {"perlectio_ref": _READING_REF, "decision": "accepted"},
-    }
+    shared = {"relative_path": "2_designator/blobs/ab/cdef", "sha256": "a" * 64}
+    other = {"relative_path": "4_perlector/artifacts/reading.json", "sha256": "b" * 64}
 
+    combined = archetypus._direct_inputs([shared, other], [shared])
 
-# Every non-`read` member of the Perlector's own closed vocabulary. `held-for-review`
-# is deliberately absent: it is not one of this stage's outcomes at all, so it is
-# refused a step earlier by the invariant-#10 check and would have made this test
-# pass without reaching the guard it names.
-@pytest.mark.parametrize(
-    "outcome",
-    sorted(outcome for outcome in VOCABULARIES[PERLECTOR] if outcome != "read"),
-)
-def test_only_a_completed_reading_may_establish_text(outcome):
-    """The one guard standing between an unresolved reading and the established text.
-
-    Measured untested by mutation during the final read of this branch: removing
-    it broke nothing in a 1,761-test suite. It is also the guard that makes the
-    stage-08/stage-10 field-name seam harmless — stage 08 writes gaps only under
-    `no-readable-text`, which classes as unresolved, and *this* is what refuses
-    it. A protection nothing exercises is a protection nobody would notice
-    losing, and this one is load-bearing for a claim made about two
-    other branches.
-    """
-    with pytest.raises(FatalAccounting, match="may only come"):
-        archetypus.accepted_primed_perlectio(
-            None,
-            _accepted_review(),
-            _perlectio(outcome),
-            _READING_REF,
-            "act_0000000000000001",
-            page_id="page_0000000000000001",
-        )
-
-
-def test_a_completed_reading_is_not_refused_by_that_guard():
-    """Invariant #14: the refusal must not have been bought by refusing good input.
-
-    A `read` outcome passes the completed-class check — it fails later, on the
-    parts of the boundary this test does not supply, which is what proves the
-    guard above is the thing being exercised rather than some earlier refusal.
-    """
-    with pytest.raises(FatalAccounting, match="no object basis") as caught:
-        archetypus.accepted_primed_perlectio(
-            None,
-            _accepted_review(),
-            _perlectio("read"),
-            _READING_REF,
-            "act_0000000000000001",
-            page_id="page_0000000000000001",
-        )
-    assert "may only come" not in str(caught.value)
-
-
-# --- The act-attachment view is required, not merely checked when present -------
-#
-# Audit-and-repair seat 3, R0. F-O2: `accepted_primed_perlectio` checked the
-# R0 act-attachment dossier view only `if attachment is not None`, so a resealed
-# reading that had simply dropped the field walked past the whole page-witness
-# custody chain -- reference shape, direct-input binding, and the digest-checked
-# dereference of the attachment artifact itself. The retained Testimonium basis
-# beside it was already required for the same reason.
-
-
-def _primed_perlectio_without_an_attachment_view() -> dict:
-    """A `read` Perlectio that passes every guard before the attachment check.
-
-    Regions and a retained Testimonium basis are supplied precisely so the
-    refusal under test is the one reached, not an earlier and unrelated one --
-    the idiom `test_only_a_completed_reading_may_establish_text` above already
-    applies on this same boundary.
-    """
-    return {
-        "stage": archetypus.PERLECTOR,
-        "kind": "perlectio",
-        "outcome": "read",
-        "inputs": [_READING_REF],
-        "payload": {
-            "text": "some established characters",
-            # R5a's production marker, so the attachment-view refusal under test
-            # is reached instead of the earlier lectio_kind gate (host fix).
-            "lectio_kind": "primed-with-prior",
-            "basis": {
-                "regions": [{"image_path": "2_designator/blobs/sha256/deadbeef"}],
-                "testimonia": [{"chair": "attestator_1", "testimonium_ref": _READING_REF}],
-            },
-            "dossier": {"act_key": "a1", "dossier_digest": "d" * 64},
-        },
-    }
-
-
-def test_a_primed_reading_without_its_act_attachment_view_may_not_establish_text():
-    """R0's exit criterion says the attachment is consumed, not consumed-if-present."""
-    with pytest.raises(SchemaRefusal, match="no act-attachment view"):
-        archetypus.accepted_primed_perlectio(
-            None,
-            _accepted_review(),
-            _primed_perlectio_without_an_attachment_view(),
-            _READING_REF,
-            "act_0000000000000001",
-            page_id="page_0000000000000001",
-        )
-
-
-# --- The attachment-row scope rules, which two stages have to agree on ---------
-
-
-def _attachment_context(attachments: list[dict]):
-    """A context whose only job is to hand back one act-attachment record."""
-    record = {"payload": {"attachments": attachments}}
-    return SimpleNamespace(
-        tree=SimpleNamespace(read_artifact_reference=lambda *args, **kwargs: record)
+    paths = [reference["relative_path"] for reference in combined]
+    assert len(paths) == len(set(paths)), (
+        f"one crop path reached the envelope twice: {paths}; build_envelope refuses "
+        "a path listed twice, so the defensive collapse must hold"
+    )
+    assert set(paths) == {shared["relative_path"], other["relative_path"]}, (
+        "collapsing duplicates must not drop a distinct input"
     )
 
-
-def _attachment_row(**overrides) -> dict:
-    row = {
-        "chair": "attestator_1",
-        "page_witness": True,
-        "page_ordinal": 2,
-        "attached": False,
-        "testimonium_ref": _READING_REF,
-        "content_health": {},
-        "alignment": None,
-        "span": None,
-    }
-    row.update(overrides)
-    return row
-
-
-_ABSENT = object()
-
-
-def _verify_rows(attachments: list[dict], **view_overrides) -> None:
-    view = {
-        "reference": _READING_REF,
-        "page_witness_count": 1,
-        "comparison_views": {},
-        # Required of the embedded view since sealed-proposal edge deltas
-        # joined it. Empty by default on purpose: the scope-rule tests below
-        # are about the rows, and a fixture missing the field would be refused
-        # for its own shape before reaching them.
-        "edge_deltas": {},
-    }
-    view.update(view_overrides)
-    archetypus._verify_act_attachment_view(
-        _attachment_context(attachments),
-        "act_0000000000000001",
-        "pg_0000000000000001",
-        [{"source_page_id": "pg_0000000000000001"}],
-        {"act_attachment": {key: value for key, value in view.items() if value is not _ABSENT}},
-    )
-
-
-@pytest.mark.parametrize(
-    ("edge_deltas", "case"),
-    [
-        (_ABSENT, "absent"),
-        ([], "a list rather than a mapping"),
-        ("", "an empty string"),
-        (None, "null"),
-    ],
-)
-def test_the_embedded_view_refuses_an_edge_deltas_field_that_is_not_a_mapping(edge_deltas, case):
-    """The field the scope fixtures supply is a contract, not fixture furniture.
-
-    Supplied empty everywhere else, so nothing here would have failed if the
-    field stopped being required, started accepting a non-mapping, or were
-    ignored outright -- and this stage re-derives the Perlectio's page-witness
-    facts from it. `None` and `[]` matter as much as absence: each is a way for
-    "no geometry was measured" to arrive dressed as "no geometry disagreed".
-    """
-    with pytest.raises(SchemaRefusal, match="malformed embedded act-attachment facts"):
-        _verify_rows([_attachment_row()], edge_deltas=edge_deltas)
-
-
-def test_a_page_witness_row_without_a_page_ordinal_is_refused_as_the_recensor_refuses_it():
-    """Two consumers of one act-attachment may not disagree on a row's validity.
-
-    This check gated the ordinal on `is not None`, so a page-witness row that
-    omitted the field was accepted and keyed as `(chair, None)` — while the
-    Recensor's `act_attachment_facts` refuses that exact row. It also meant a
-    chair with one row on page 2 and one row missing the field made two distinct
-    keys, passing the duplicate guard as two contributing pages when nobody could
-    say what the second page was.
-    """
-    with pytest.raises(SchemaRefusal, match="has no integer page ordinal"):
-        _verify_rows([_attachment_row(page_ordinal=None)])
-
-    with pytest.raises(SchemaRefusal, match="has no integer page ordinal"):
-        _verify_rows([_attachment_row(page_ordinal=2), _attachment_row(page_ordinal=None)])
-
-
-def test_an_act_scoped_row_carrying_a_page_ordinal_is_refused_here_too():
-    """The other half of the same scope rule, in the Recensor's own words."""
-    with pytest.raises(SchemaRefusal, match="scope is contradictory"):
-        _verify_rows([_attachment_row(page_witness=False, page_ordinal=2)])
+    # The other half of the same function: one path cannot hold two sets of
+    # bytes, so collapsing them silently would seal a record whose inputs the
+    # Armarium cannot reconcile at export.
+    conflicting = {"relative_path": shared["relative_path"], "sha256": "c" * 64}
+    with pytest.raises(FatalAccounting, match="different digests"):
+        archetypus._direct_inputs([shared], [conflicting])

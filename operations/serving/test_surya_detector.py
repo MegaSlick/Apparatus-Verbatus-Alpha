@@ -239,7 +239,7 @@ def test_the_parsed_page_keeps_the_bytes_the_runner_wrote():
 
 def _identity():
     config = load_models_toml(ROOT / "config" / "models.toml")
-    return config.chairs["designator_structure"]
+    return config.chairs["designator_surya"]
 
 
 def test_the_fixture_detector_answers_every_page_including_an_empty_one():
@@ -327,7 +327,7 @@ def test_a_subprocess_row_resolves_to_the_subprocess_mode_and_is_never_launched(
 
     recipes = _catalogue(_row())
     config = load_models_toml(ROOT / "config" / "models.toml")
-    identity = config.chairs["designator_structure"]
+    identity = config.chairs["designator_surya"]
     surya = dataclasses.replace(identity, role="designator_surya", serving_recipe="surya-v0")
     assert serving_mode_for(recipes, surya, "generic-24gb") == "subprocess"
     with pytest.raises(ServingConfigurationError, match="no serving process is ever started"):

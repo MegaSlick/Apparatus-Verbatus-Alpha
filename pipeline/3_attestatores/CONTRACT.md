@@ -1,9 +1,11 @@
 # Attestatores — contract
 
-The Attestatores retains one immutable `kind="testimonium"` for every configured
-chair and every Designator act, on every attempted read. It does not merge, rank,
-select, or turn a Testimonium into established text. A missing artifact is never a
-witness outcome.
+The Attestatores retains one immutable `kind="page-testimonium"` for every page
+the Exemplar sealed and every configured page witness chair, on every attempted
+read. The schedule is the sealed pages: no act list decides what a witness is
+shown. It does not merge,
+rank, select, or turn a Testimonium into established text. A missing artifact is
+never a witness outcome.
 
 ## Stage-completion seal
 
@@ -21,15 +23,15 @@ boundary: the producer refuses to re-seal, and the successor refuses to read,
 when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
 so removing the latest leaves a prefix that still looks whole — and the earlier
 statement would then answer for a boundary it never witnessed.
-
 ## Exact input boundary
 
-For a proposed act, the stage accepts only Designator regions whose provenance and
-Exemplar crop lineage verify. Each attempted Testimonium names precisely the
-original proposal regions and their pixel blobs. A later recovery crop is not
-silently substituted for what a chair saw.
+A witness is shown a sealed Exemplar page: Chandra and Churro the whole page,
+DAI the record crops its own detector cut from it. A page the Exemplar refused
+has no pixels and is not witnessed. The Designator's sealed detector regions are
+read after its stage seal verifies, as DAI's units and nothing else. No act
+decides whether a page is read.
 
-This stage now has two writers, and which one runs is decided by the sealed
+This stage has two writers, and which one runs is decided by the sealed
 serving-recipe row for each configured witness chair — never by a new
 configuration key, and never by a fallback in either direction. Under the
 committed fixture catalogue every chair is `kind = "fixture"` and the writer is
@@ -37,11 +39,10 @@ the declared synthetic skeleton described here: its `fixture://` serving facts
 are fixture declarations, not measurements of a live model, and its bytes are
 the pinned acceptance path. Under a catalogue whose rows for those chairs are
 `kind = "vllm"`, the live boundary below runs instead: the serving response and
-body contract Spec 04 was waiting for is `common/contracts/serving.py`'s
-`chair-call-record.v3` plus `operations/serving/http.py::parse_openai_reading`,
-and the capture-as-Testimonium intake is `common/native_witness.py`'s retained
-model view, which the live pass records on every act attempt whose bytes reached
-an adapter parser.
+body contract is `common/contracts/serving.py`'s `chair-call-record.v3` plus
+`operations/serving/http.py::parse_openai_reading`, and the capture-as-Testimonium
+intake is `common/native_witness.py`'s retained model view, which the live pass
+records on every page attempt whose bytes reached an adapter parser.
 
 ## Live response boundary
 
@@ -50,41 +51,29 @@ an adapter parser.
 chair, measured placement tier) in the catalogue the run sealed, re-read and
 digest-checked against `config_digest` at the moment it is used. A roster that
 mixes postures is refused by name: one run reads its witnesses one way, or every
-consumer comparing witnesses across an act is comparing two kinds of evidence
+consumer comparing witnesses across a page is comparing two kinds of evidence
 without being told. An absent chair names no mode and stays `dead`.
 `--placement-tier` is required to resolve a live row and is deliberately not
 sealed: it is a measured fact of the card, and the receipt records the caps that
 actually bound the serving moment.
-
 **Pass structure.** The live pass is chair-outer and publishes per response.
-Preflight stays a no-write preflight and consults no chair: its resolver returns
-a pending sentinel for every unsealed pair, and the pass fills each one in as its
-own response arrives. Serving runs through `feeding.stage_major_schedule` and
-`feeding.execute_stage_major_schedule` under a `SingleChairResidency`, one
-schedule per chair concatenated, so one chair is resident at a time, no unit is
-served twice, and a schedule that returned to an unloaded chair is refused. A
-chair's unit of work is its own sealed scope: an act-scoped chair is asked once
-per act, a page-scoped chair once per *page*, and that page response derives both
-the page Testimonium and the act-scoped compatibility records of every act whose
-primary page it is. A continuation page's response feeds no act record; the act's
-own view belongs to its primary page.
+Preflight stays a no-write preflight and consults no chair. Serving runs through
+`feeding.stage_major_schedule` and `feeding.execute_stage_major_schedule` under a
+`SingleChairResidency`, one schedule per chair concatenated, so one chair is
+resident at a time, no unit is served twice, and a schedule that returned to an
+unloaded chair is refused. A schedule unit is one sealed page
+(`{unit_id, page_ordinal}`, the unit being the page's Exemplar identity): Chandra
+and Churro are asked once per page, and DAI once per record its own detector
+found on the page, all inside that page's unit.
 
-**Resume.** A pair already sealed at this ordinal is reused from its retained
-Testimonium and never asked again — a live chair cannot reproduce immutable
-bytes. A page response is likewise never re-requested while a sealed record
-describes it: the page Testimonium if the interrupted pass reached it, otherwise
-the act-scoped record of an act whose primary page it is, which carries the same
-capture. A page nothing sealed depends on — a continuation page after an
-interruption — is asked for again, because no sealed record contradicts a new
-answer. A record whose receipt says `fixture://`, or an *attempted* act record
-naming no serving call, is refused rather than resumed over: a live pass cannot
-continue a fixture-posture run. A `dead`/`not-run` record is not that evidence
-— it names no serving call because no chair was ever shown pixels for it, which
-is an independent fact from a fixture-posture response, so it is skipped rather
-than raised on. A sealed capture read under a text view this build no longer
-produces is refused by name at every point a resumed pass reuses one (the page
-record, the act record and a Chandra terminal record), before its bytes are
-read; see "The capture's text view" below.
+**Resume.** A page record already sealed at this ordinal is kept and its page is
+never asked again — a live chair cannot reproduce immutable bytes. A DAI page is
+sealed only once every one of its records has been answered, so a pass
+interrupted inside a page asks that page's records again. Chandra's native retry
+loop resumes from its own sealed intent and terminal records (below). A sealed
+capture read under a text view this build no longer produces is refused by name
+at every point a resumed pass reuses one (the page record and a Chandra terminal
+record), before its bytes are read; see "The capture's text view" below.
 
 **Closed asymmetry: cut-off composition is shared.** A parse failure landing on
 a response the provider itself cut off at its bound now reads as an exhausted
@@ -92,51 +81,29 @@ bound, not plain bad ink, on both paths alike. `_failed_parse_composition`
 holds the one composition — the `cut_note`-prefixed `reason` suffix and the
 `transport_stop_reason`-bearing `_unrecordable_health` basis — and both
 `captured_page_attempt` and `live_attempt_from_response` call it on their
-parse-failure branch, so the two cannot drift apart again. An act-scoped chair
-is evidence of the same kind as a page-scoped one; a truncation fact the
-provider actually reported has no reason to survive on one path's summary and
-vanish from the other's; Recensor coverage reading a provider-truncated act as
-plain "failed" with no truncation flag was exactly the kind of silent loss this pipeline refuses.
-Regression coverage lives beside the page-path original:
-`test_cut_off_and_parser_failure_name_both_on_each_witness_path` and
-`test_live_attempt_from_response_parser_failure_without_cut_off_keeps_verbatim_reason`
-in `test_live_witness.py`.
-
-Recovering a page's response is not the same as finishing every act view it
-owes: an interruption between two of a *single* page's own act publications
-(the happy fixture's `a1`/`a2`, both primary on page 1) used to leave the later
-one sealed nowhere and unreachable, because the resumed pass rebuilt the page's
-capture from the earlier act alone and never revisited the rest. `run.py`
-factors the per-act publish loop into `publish_page_act_views`, shared by
-`_serve_page_unit` (a response this pass just received) and `live_attempt_pass`
-(a response `resumed_page_captures` recovered), and calls it for every recovered
-page capture before the schedule is built — publishing exactly the pairs still
-pending on that page, from the very response the interrupted pass already
-retained, never asking the chair again. When more than one sealed act record
-could supply a page's resumed capture, every one of them is checked to agree
-(`raw_response_ref`, `native_capture`, `outcome`) rather than taking whichever
-sorts first; a disagreement is a named refusal, not a silent choice.
+parse-failure branch, so the two cannot drift apart again. A DAI record
+response is evidence of the same kind as a whole-page one; a truncation fact
+the provider actually reported survives on both paths alike.
 
 **What a live record gains.** `native_capture` (the adapter's retained model
-view), `serving_call_ref` (the `chair-call-record.v3` blob for the one request)
-and `raw_response_kind` (which sort of bytes `raw_response_ref` names) are
-admitted on an act Testimonium and written only in live mode, so a fixture
-record is byte-for-byte what it was. `provenance.receipt_ref` names the receipt
-the chair's own client re-read at start, never a declared `fixture://`
-stand-in. `content_health.truncated` comes from the engine's stop word:
-`"stop"` → `false`, `"length"` → `true`, and an unreported word → `null` with
-`truncation_basis = "not-recorded"`, on the act record and the page record
-alike. Both retained blobs are re-read and digest-checked by the attempt tally
-rather than carried as envelope inputs, because the tally re-derives an act
-record's inputs from its regions and presentation alone.
+view) is admitted on a page Testimonium and written only in live mode or for a
+fixture Churro page declared as raw bytes, so every other fixture record is
+byte-for-byte what it was. `provenance.receipt_ref` names the receipt the
+chair's own client re-read at start, never a declared `fixture://` stand-in.
+`content_health.truncated` comes from the engine's stop word: `"stop"` →
+`false`, `"length"` → `true`, and an unreported word → `null` with
+`truncation_basis = "not-recorded"`. Every retained call record is linked
+from its page record and bound as an input: DAI's page record names each
+record's call in `unit_call_refs`, and a Chandra or Churro page record names
+its one request's call in `serving_call_ref`. The writer and the tally
+(`verify_page_call_sampling`) hold each call to the chair's sealed sampling
+row and its receipt's seed; a Chandra native page sends no seed and samples at
+its returned attempt's ordinal. A live page record that retains a response and
+names no serving call is refused, so no response's sampling goes unchecked.
 
 **Chandra is a served witness like the others, reading its vendor's own
-grammar.** Every witness runs its own full pass:
-Chandra reads the page for the Designator and separately as Attestator 1, and
-nothing is captured from one call into another. The capture-as-Testimonium
-intake the structure-chair design had half built (`feeding.chandra_capture_intake`,
-the `chandra-capture.v1` name) is removed rather than left as dead surface.
-What the served chair parses is the vendor's own layout HTML, read by
+grammar.** Every witness runs its own full pass, and nothing is captured
+from one call into another. What the served chair parses is the vendor's own layout HTML, read by
 `common/chandra_layout.py::parse_layout_html` under the parser name `html`
 (U9 of the vendor systems design). A body in that grammar is a reading -- page
 text, and block geometry from each `data-bbox` in sealed-page pixels with a span
@@ -147,24 +114,13 @@ publishes no output specimen -- was true of the model card and false of the
 repository, which ships both the prompt every caller sends and the parser for
 the answer it asks for; both are carried and digest-pinned now, so what this
 chair is asked and what it is read as are the vendor's, not this repository's.
-
 **Fixture declarations a live pass does not read.** A live pass reads the
-fixture's pages, acts, continuations and proposals — that is the corpus — and
-reads none of its declared witness responses (`testimony`, `witness_failure`,
-`witness_empty`, `witness_not_run`, `churro_page_response`) or declared
+fixture's pages — that is the corpus — and reads none of its declared witness
+responses (`testimony`, `witness_failure`, `witness_empty`, `witness_not_run`,
+`witness_malformed`, `churro_page_response`, `dai_record_response`) or declared
 `native_observation` geometry, which are the offline posture's stand-in for a
 model. The pass names on stderr how many such rows it passed over, so an
-operator cannot mistake one posture's record for the other's. Fixture-declared
-Chandra anchors are not read either: aligning real witness text against
-declared act spans would place a reading on geometry nobody measured. The live
-anchor is instead derived from the Chandra chair's own served page response
-(the derived anchor, below), and a page that chair did not read as text has no
-anchor, which its page witnesses say by name (`missing-chandra-page-anchor`).
-`chandra_anchor` rows are counted on that
-same stderr line, separately from the chair-keyed families above: an anchor
-keys on `page_ordinal`, not `chair`, so it cannot ride the `chair in
-live_chairs` filter the others share, and every anchor the scenario declares is
-one the live pass discards regardless of which chair would have used it.
+operator cannot mistake one posture's record for the other's.
 
 ### The Chandra layout grammar
 
@@ -216,13 +172,12 @@ the decoding policy's exact `datalab-to/chandra@d4f7467` recipe: the initial
 0.2, 0.4, 0.6, 0.8, 0.8, 0.8 with `top_p=0.95`. Only the vendor's literal
 repeat detector (including its cut-last-50 probe) or an inference error advances
 the loop; only errors wait 2, 4, 6, 8, 10, then 12 seconds. This capability is
-restricted to the page-scoped `attestator_1`/`chandra.v1` route. The separate
-Designator structure chair retains its own coverage recovery policy.
+restricted to the page-scoped `attestator_1`/`chandra.v1` route.
 
 Every physical request has an immutable `chandra-native-attempt-intent` artifact
 (`chandra-native-attempt-intent.v1`) before HTTP and a terminal
 `chandra-native-attempt` artifact (`chandra-native-attempt.v1`) afterward. Page
-and act Testimonia bind both through `native_inference`; their validators require
+Testimonia bind both through `native_inference`; their validators require
 the referenced evidence rather than treating the compact trace as a free-standing
 claim. A crash that leaves an intent without terminal evidence is delivery-unknown
 and refuses manual-free resume; it is never replayed blindly. A retained response
@@ -258,22 +213,19 @@ before any parser runs, so the refusal names a surprise rather than losing one.
 `ocr_layout` prompt, digest-checked at import -- as one `user` turn with no
 system message, which is the shape `chandra/model/vllm.py` builds. The fixture
 posture records `chandra.FIXTURE_PROMPT` in its retained model view instead
-(`run.py::resolve_attempt`): that view is sealed into the fixture's pinned
+(`run.py::_fixture_chandra_attempt`): that view is sealed into the fixture's pinned
 bytes, the fixture never asks a chair anything, and changing what a served
 chair is asked may not move a fixture byte.
 
-**Geometry converts once, the Designator's way.** A block's `bbox_1000` is
-quantized low-edges-floor / far-edges-ceil in normalized space and converted to
-sealed-page pixels by `common.structure_answer.to_page_bounds`, the same
-conversion the Designator's structure pass applies to its own Chandra call, so
-the two Chandra readings of one page share one page-pixel mapping. The
+**Geometry converts once.** A block's `bbox_1000` is quantized
+low-edges-floor / far-edges-ceil in normalized space and converted to
+sealed-page pixels by `common.chandra_layout.to_page_bounds`. The
 denominator is the *sealed page*, not the resized view the chair was shown,
 because the vendor's own denominator is the same one. That conversion clamps
 the far edges to the page, and a component outside [0, 1000] is malformed
 before it reaches the conversion, so a normalized box can never overshoot the
-sealed page. `chandra.observe` takes a keyword `page_size` for it: a page
-witness's act view presents one crop while restating page-level geometry, so
-the presentation's bounds are never the denominator, and a body that needs the
+sealed page. `chandra.observe` takes a keyword `page_size` for it, so the
+presentation's bounds are never the denominator, and a body that needs the
 size without one is refused rather than placed in the wrong space. Each
 observed box carries the block's span into the retained page text. A body whose
 blocks all report no rectangle -- `Blank-Page`, or a `data-bbox` the reader
@@ -293,204 +245,12 @@ sealed Exemplar (ARCHITECTURE invariant 3). The colour step runs after the
 resize where the vendor runs it before, because the replay in
 `validate_presented_page_binding` is colour-last for every adapter and the two
 orders are the same pixels on every mode a sealed crop can arrive in. Only a
-whole-page presentation is transformed: an act view of a page witness restates
-one page reading against a Designator crop nobody was shown, and minting a
-vendor recipe over it would record a step that never ran.
-
-**A live page's partition is derived from the page response itself.** The
-fixture walks one declared response per compatibility act; a live page has one
-response that every act view on the page also carries, so
-`publish_page_testimonia_and_attachments` derives the live partition from the
-page capture's bytes once rather than once per act (which appended the same
-blocks per act). A resumed page capture rehydrates those bytes from the sealed
-record's capture, read back and digest-checked (`_page_capture_from_record`),
-so the republished page record derives the same geometry the interrupted pass
-did.
-
-### The derived anchor (R4 on the live path)
-
-The fixture route aligns page-witness text against the fixture's declared
-`[[chandra_anchor]]` rows. The live route aligns against an anchor derived from
-the Chandra chair's OWN served response for the page
-(`run.py::derived_chandra_anchor`): the anchor text is that chair's retained
-page text, and an act's anchor lines are the reported blocks with the largest
-positive intersection area against that act's sealed proposal regions on this
-page. Each block belongs to one act; an exact tie belongs to none, so no act
-gets text from a guessed block. This attaches text by geometry and never by
-choosing among witnesses.
-The act's `anchor_span` is the hull, in the markup-stripped normalized view
-`align_to_anchor` measures in, of those blocks' spans translated through
-`markup_text_view`'s offset map; `line_geometry` carries every owned
-block in reading order. Everything after that is the machinery the fixture
-route already had, unchanged: one `align_to_anchor` per `(page, chair)`, the
-clip to the act's range, the translation back to raw offsets, the trivial
-zero-length attach for a genuinely-empty witness, `refuse_ambiguous_act_alignments`
-for two acts one chair cannot tell apart (including any overlapping aligned
-spans that remain after block ownership, named rather than resolved).
-
-### The matcher, and its step budget
-
-`common/alignment.py::_matching_blocks` is `difflib.SequenceMatcher(autojunk=
-False)`'s Ratcliff-Obershelp blocks -- longest common contiguous block first,
-then the same search recursively either side of it. That objective is
-load-bearing here, not incidental. A page of register acts repeats the same
-opening formula, so a witness that read only the second of two acts is a genuine
-ambiguity, and the two ways of resolving it attach the *same number* of
-characters: the whole reading against the second act, or the shared opening
-against the first act plus the remainder against the second. Only the first says
-what the witness did.
-
-**RapidFuzz's Indel/LCS opcodes were tried and refused on
-measurement.** They are four orders of magnitude
-faster -- the slowest input the sealed pair bound admits, 283.9 s to finish
-under Ratcliff-Obershelp, takes 0.011 s under them -- and
-on identical or near-identical page text they return byte-for-byte the same
-blocks (26 blocks, 7,508 matched characters on a 1,200-word page fixture). But
-LCS maximizes matched characters and breaks ties towards the earliest match, so
-it takes the second reading of the ambiguity above. The pipeline's own
-`confirmed-blank` scenario failed on exactly that: the witness's act-two opening
-was attributed to act one, twelve characters of page text fell outside every act
-attachment, the Recensor read that as incomplete testimony coverage, and both
-acts were held instead of the blank being sealed. A coverage-maximizing
-objective is the wrong objective for attaching a reading to an anchor.
-`common/test_alignment.py` pins that case by name so the swap is not retried
-blind, alongside the fidelity and monotonicity properties the same work
-established.
-
-The matcher's work is bounded by a count, not a clock. `common/alignment.py::
-StepCountedMatcher` charges each `find_longest_match` call, before it runs, one
-step per witness character in its range and one per anchor position of that
-character below the range's end -- at least the work the call does -- and stops
-at the sealed `max_alignment_steps`. Whether a page aligns is therefore a
-function of its texts and the sealed limits alone: the same page gives the same
-record on a laptop and on a loaded pod.
-
-An unaligned page witness is not `comparable`, so it leaves the act's witness
-floor -- a budget small enough to run out on real work records a comparison as
-coverage that is missing. What the budget covers, exactly: a page at the pair
-ceiling (10,000 x 10,000 characters) made of register acts of 150 characters or
-more, including the costliest such page, whose acts repeat one formula verbatim
-and whose witness misreads the same word in every act, so every repeat is an
-equally long candidate match and the search revisits them all. That page needs
-243.2M steps at 150 characters, under half the sealed 500M. Varied acts,
-witnesses with scattered errors, reordered or half-read pages and asymmetric
-page shapes cost far less. `common/test_alignment.py` pins the headroom on the
-150-character page.
-
-What it does not cover: a page at the ceiling made of shorter units repeated
-verbatim, such as index rows. A 60-character unit needs 570M steps. Such a page
-comes out `alignment-step-limit`, counted `unmeasured` and named, never a silent
-loss; the act is held only when that leaves its witness floor short. Degenerate chair responses the bounds admit -- two different
-low-entropy strings, a repetition loop against a page -- stop the same way,
-after at most the budget's work rather than however long they would take.
-
-One stop at the sealed 500M costs about 45 seconds of wall time: measured at
-42.0 s (40.2 s CPU) for two different repeated phrases and 48.7 s (42.8 s CPU)
-for the 60-character unit, on a 4-core Intel Xeon virtual machine at 2.10 GHz
-with 15 GiB of memory, under Python 3.14.6, while other jobs held its load
-average between 3.5 and 6.9. The alignment is cached per page and chair, so this
-is at most once per stopped page witness.
-
-A spent budget is `alignment-step-limit`. The name has to say that this module
-stopped, because nothing may read it as a measurement of the witness. No
-comparison was made, so none may be claimed: the chair does not count toward the
-act's witness floor, and the Recensor holds the act only when the chairs that do
-count fall short of that floor. `common/contracts/outcomes.py::witness_coverage`
-counts the chair in its own `shortfalls["unmeasured"]` bucket, apart from
-`shortfalls["unaligned"]`, and the Recensor's hold reason names it as unmeasured,
-not failed. The same bucket takes a page stopped by the character or pair bound,
-which is equally unmeasured. The Recensor partition receipt carries the split
-from `recensor-partition-receipt.v3`; a v2 receipt still reads, with its single
-`unaligned` bucket.
-
-**Not built: an LCS fallback on a spent budget.** A bounded LCS pass (RapidFuzz
-Indel) could return spans where Ratcliff-Obershelp runs out, with the record
-naming which matcher produced them. It is not built because nothing is lost
-without it: the counted budget already gives a spent budget a named reason and
-its own bucket, a page of register acts aligns under Ratcliff-Obershelp with
-room to spare, and the pages that do run out are short repeated units or
-degenerate responses, on which the LCS tie-break flaw above would decide an
-attachment that is not well defined anyway.
-
-Only acts whose primary page is this one are anchored; a continuation's tail
-has no anchor line by design. An act no reported block overlaps, or whose
-overlapping blocks carry no normalizable text, is `act-anchor-line-not-located`:
-the page's anchor exists and locates no line for it. A page the Chandra chair
-did not read as text -- an unrecognized body, or a genuinely-empty page, which
-has no text to anchor to -- derives no anchor, and its page witnesses come back
-`missing-chandra-page-anchor` (or, for a genuinely-empty witness, the trivial
-attach's `no-page-anchor`, the blank-confirmation path the fixture already
-exercises). `declared_chandra_anchor_chair` names the anchor chair on both
-routes.
-
-**What live alignment does.** Alignment supplies a span inside a witness's own
-text. Reported geometry overlapping the proposal attaches a chair on its own
-evidence. A page witness without reported geometry can instead attach by
-`anchor-line` when its alignment locates an act span; the basis is recorded rather
-than attributed as that chair's geometry. An unlocated alignment does not attach
-by `anchor-line`; reported geometry can still attach the chair independently.
-Such a geometrically attached row can therefore have `attached: true` and
-`comparable: false` when its alignment is unlocated.
-
-**Unit 12 tried to close that for Churro by asking; U10 retired the question.**
-Unit 12 asked the served chair for a `box_1000` per block, in a modified carry
-of a prompt the model was never trained on, so that a geometry-blind page
-witness would have rectangles to attach acts by. The vendor systems ruling
-retired both halves: the vendor's own registry answer for this model is a single
-system instruction, and Churro-DS carries no geometry at all, so a coordinate
-channel was a channel the weights were never taught to fill. Churro therefore
-reports no geometry, its only observation is the `bounds_source="presented"`
-echo routing and coverage exclude, and it reads and aligns without reporting a
-rectangle. What attaches it is the Perlector's `anchor-line` basis for a page
-witness whose alignment for an act is `aligned` with a located span (U12 of the
-vendor systems design), not a channel asked of a model that cannot fill it.
-
-**What the floor rests on, said plainly.** `comparable` requires `attached`
-**and** `alignment.status == "aligned"`, and every page witness's alignment is
-computed against the anchor derived from the Chandra chair's response. So a
-third witness counts toward the floor only because the first located its text.
-That is not the attachment rule this section forbids -- the anchor is a
-text-locating instrument the closed alignment schema already refuses to treat as
-a preference -- but it is a real
-narrowing of what "three independent witnesses" means: two independent readings
-and one dependent comparability, not three unrelated readings agreeing. The
-dependency was inert while Churro could never count. It is load-bearing now, and
-any later claim about witness independence has to say so.
-
-**A page witness's geometry on a continuation page is a record the Perlector
-now reads.** A continuation page carries no act anchor, so geometry is the only
-basis that can attach anything there (the alignment is forced to
-`continuation-page-no-act-anchor` before geometry is consulted). A served
-Chandra whose page-2 block overlaps an act's continuation region therefore
-publishes that act's page-2 entry as `attached: true`,
-`attachment_basis: geometric-overlap`, alignment
-`continuation-page-no-act-anchor`, `comparable: false`, no span
-(`test_attestatores_live_pass.py` pins it). `pipeline/4_perlector/run.py::act_attachment_view`
-used to refuse that twice over: it required `attached` to equal the witness's
-geometric overlap with the act's sealed regions on that page (so `false` was
-refused as not derived from geometry) and separately refused any
-continuation-page entry that was attached (so `true` was refused as claiming an
-anchor). No record satisfied both, so a page witness reporting geometry over a
-continuation region could not pass the Perlector in either state. The
-contradiction was unreachable until a served Chandra parsed -- the fixture
-declares no geometry on a continuation page -- and it was fixed on the
-Perlector's side, as this section predicted, by dropping the second rule:
-`attached` says only that the chair's ink overlaps the act's, and the
-`continuation-page-no-act-anchor` alignment beside it already says no
-comparison view exists. What the continuation page genuinely lacks is an
-*anchor*, and that is what the surviving rule now names. The derivation rule is
-untouched, so an entry that discounts its own geometry is still refused
-(`pipeline/4_perlector/test_live_perlector.py`).
-`pipeline/test_live_reading_seam_e2e.py` still scripts Chandra's
-continuation-page answer in the contract's page-text form, which is a
-legitimate answer and one the Perlector reads; the geometry form is exercised
-against the reader directly.
-
-**No live reread.** `--operation reread` is refused by name under a live roster.
-A reread asks one chair for one act again at a new ordinal; it needs its own
-residency, its own per-response publication, and its own answer to what an
-act-scoped reread of a page witness means. Run the whole pass at the next
-ordinal, or reread under the fixture catalogue.
+whole-page presentation is transformed; any other presentation is refused.
+**A live page's partition is derived from the page response itself.** The page
+capture's bytes are retained once, and the partition (`observed`) is derived
+from those bytes by the adapter's `observe`. The fixture's Chandra page is
+declared as its own retained responses (`raw_responses`), and its partition is
+derived from them the same way.
 
 ### The cross-file seams that let a live pass carry every chair
 
@@ -514,16 +274,16 @@ say.
    `NaN`, `Infinity`, or a vendor value shaped like the tagged form itself — is
    a named refusal before the request is built, not a discovery afterwards.
 2. **The DAI identity transform is a claim about bytes, not about paths.** When
-   an act crop needs no resize — which is every act crop in the reference
+   a record crop needs no resize — which is every record crop in the reference
    fixture — the model must be shown exactly the source image, and
    `feeding.dai_model_view` now requires the two references to name the same
    SHA-256 rather than to be the same reference dict. They legitimately differ:
-   the source is the Designator's proposal crop under `2_designator/`, and every
+   the source is the Designator's record crop under `2_designator/`, and every
    image a witness is shown is inventoried under `3_attestatores/`. Both are
    `crop_png` of the same sealed page at the same bounds, and
-   `verify_exemplar_crop_lineage` already proves the first of them is, so equal
+   `_verify_detector_region` already proves the first of them is, so equal
    digests are equal pixels. Held to the whole dict, the rule refused a genuine
-   DAI act *after* its response had already come back.
+   DAI reading *after* its response had already come back.
 3. **The truncation the page contract re-derives has three states.** A Churro
    page record's health is re-derived from its capture, and the question asked
    was two-valued — "is this a cut-off word" — so an engine that reported
@@ -580,7 +340,7 @@ the answer short. Churro alone used to send a bound,
 and only where the row could hold the whole declared value beside the prompt;
 Chandra and DAI sent **nothing**, which is not the same as being unbounded —
 with no `max_tokens` the engine sets the answer budget to `max_model_len −
-prompt` itself, so a DAI act crop could generate some 7,700 tokens against a
+prompt` itself, so a DAI crop could generate some 7,700 tokens against a
 1,024-token upstream bound on a card billing by the hour. On every row this
 catalogue ships that is the case for DAI alone; Chandra's 12,384 is above what its
 24/48 GB rows leave, so it sends none there and behaves as before. A `"length"` stop means the vendor's bound
@@ -642,13 +402,12 @@ which would make the selector a choice between one option and an error.
 page chairs and of DAI.** The bound above governs what may be *sent*; it cannot
 say whether the request the engine receives is admissible at all. A whole
 300-dpi page costs Chandra 1,715 prompt tokens and Churro 2,280 at the smallest
-tier's `max_pixels`, before a word of prompt is counted, and a page-fallback
-act hands DAI a page-sized crop at the same cost. `live_witness.
+tier's `max_pixels`, before a word of prompt is counted. `live_witness.
 request_capacity_or_refuse` computes that arithmetic from the sealed row's own
 `min_pixels`/`max_pixels`/`patch_size`/`merge_size` (`common/request_capacity.py`)
 plus the chair's measured prompt cost and its measured answer budget at the
-scope it was asked at — a page's answer for a page chair, one act's for DAI, so
-that reserving a page's answer never refuses an ordinary act crop that
+scope it was asked at — a page's answer for Chandra and Churro, one record's for
+DAI, so that reserving a page's answer never refuses an ordinary record crop that
 measurably works. A request that does not fit is refused by name before it is
 built, and the refusal carries the whole record. One that does fit carries the
 record onto the request, and the client copies it onto the retained call
@@ -656,13 +415,10 @@ record. Nothing is ever downscaled to make a request fit.
 
 **A refused request costs its own attempt, not the pass.** The refusal above is
 a fact about one request -- these pixels, at this row's `max_pixels`, against
-this row's `max_model_len` -- and it left `_serve_act_unit` and
-`_serve_page_unit` as an exception nothing between there and `main` caught, so
-one oversized page ended the stage and every other page's testimony went with
-it. The Designator, asked the same question, held the single page and published
-the rest. That asymmetry is closed: `run.py::capacity_refusal_attempt` records
-the refusal as this attempt's own `outcome="failed"`, in the same shape an
-empty or malformed response takes, and the pass moves to the next unit. A
+this row's `max_model_len` -- so `run.py::capacity_refusal_attempt` records it
+as this attempt's own `outcome="failed"`, in the same shape an empty or
+malformed response takes, and `_serve_page_unit` or `_serve_detector_page` moves
+to the next unit. A
 missed act is worse than a poorly read one, and one page's arithmetic
 is no reason to lose another page's reading.
 
@@ -686,19 +442,6 @@ did leave, from a chair that was asked; its bytes are retained and the stage
 stops and says so, rather than publishing a Testimonium about a response it
 declined to read. `test_attestatores_live_pass.py` drives both through
 `_serve_page_unit` and asserts the two different endings.
-
-Two further seams closed with them:
-
-**A live record says which kind of bytes it retained.** `raw_response_ref` means
-the adapter's own output on every branch where a parser ran, and the whole
-transport body on the one branch where none could; those are different evidence,
-and until `raw_response_kind` was added to the act Testimonium the record said
-neither and a reader had to infer it from which other optional field happened to
-be present. The field is written only in live mode, its vocabulary is closed
-(`common/contracts/serving.py`), a retained model view must agree it describes
-model output, and the attempt tally still re-reads and digest-checks the blob it
-names.
-
 **The client normalizes the receipt reference, and both stage-side converters
 are gone.** `ServiceHandle.receipt_reference` is a read-only mapping proxy and
 `RunTree.read_run_receipt` requires its own reference type or a plain `dict`;
@@ -716,111 +459,43 @@ both removals are behaviour-identical, and the stale claim that the bare wiring
 of the same shape survives in this stage's own `test_attestatores_live_pass.py`,
 where it is a local test fixture rather than a stage seam; it is equally
 redundant and equally harmless, and whoever next edits that file may drop it.
-
-One smaller note still open for whoever comes next: a page Testimonium cannot
-name its `serving_call_ref` (the shared page contract's optional fields do not
-admit it), so a continuation-page response's call record is an inventoried blob
-no record links.
-
 **A live Chandra page record names its response once, through its capture.**
 `run.py::_named_once` de-duplicates a page record's published `inputs` by
 `relative_path` before the envelope writer runs, because
-`common/contracts/envelope.validate_input_refs` refuses any repeated path. But
-`pipeline/4_perlector/run.py::validate_page_testimonium_record` reconstructs
-the same record's *expected* `inputs` by concatenating `raw_response_refs` and
-the capture's `raw_response_ref` with no de-duplication, then compares the two
-lists for exact equality — so a page record that listed the capture's own
-response under `raw_response_refs` as well would be publishable here and
-refused one stage downstream. Now that a live Chandra page parses and its
-partition is derived from the very bytes the capture names, this stage keeps
-the two fields disjoint on the live path by construction: the partition list
-stays empty, the capture names the bytes, the geometry is derived from them,
-and the act views carry the quantization rule beside their own retained
-reference (`adapter_metadata` is absent from the live page record because the
-shared contract ties it to `raw_response_refs`). The one exception is a
-page-edge overshoot finding, which the shared contract requires to be traceable
-through `raw_response_refs`; there the reference is added and the Perlector's
-arithmetic would refuse the record. That branch is unreachable for the wire
-contract -- its page-pixel conversion clamps to the page -- and reachable only
-for a live body wearing the fixture placeholder's pixel boxes. The
-Perlector-side fix has since landed -- one entry per `relative_path` before the
-sorted comparison -- so that branch is no longer a record this stage may
-publish and the next one must refuse.
+`common/contracts/envelope.validate_input_refs` refuses any repeated path. On
+the live path the two fields stay disjoint by construction: the partition list
+`raw_response_refs` stays empty, the capture names the bytes, and the geometry
+is derived from them (`adapter_metadata` is absent from the live page record
+because the shared contract ties it to `raw_response_refs`). The one exception
+is a page-edge overshoot finding, which the shared contract requires to be
+traceable through `raw_response_refs`; the Perlector compares one entry per
+`relative_path`, so naming the capture's bytes there as well is accepted.
 
-**Read end to end, and it reaches a held export.**
-`pipeline/test_live_reading_seam_e2e.py` runs this stage's live pass as one link
-in a whole run: the real stage programs to the Designator, this stage's three
-live witness chairs, a live Perlector, and then the Recensor, Archetypus and
-Armarium over what both wrote — the first time any stage after the Perlector has
-read a live tree. They read it: the run seals a terminal export, and it is
-**delivered** (`EXIT_COMPLETE` at the Recensor, the Archetypus and the
-Armarium). Each act counts **three** witnesses of a floor of three. Chandra
-reads under its grammar, attached by its own block geometry and aligned against
-the anchor derived from its own response; DAI reads its crops, basis
-`presented-region`; Churro reads the whole page, reports no geometry at all --
-`HistoricalDocument` has no coordinate vocabulary anywhere -- and attaches on
-the `anchor-line` basis, because it is located against Chandra's anchor with a
-real span.
-
-**Both halves of that were once holds, and neither was closed by asking.** Unit
-12 asked this chair for block rectangles in a modified carry of a prompt the
-model was never trained on, and those rectangles were what attached it. The
-coordinate channel is retired with the prompt that asked for it, because a
-`box_1000` per block is a channel Churro-3B's weights were never taught to fill.
-What closed the hold is U12, admitting the Perlector's existing
-`anchor-line` basis for a page witness whose alignment for an act is `aligned`
-with a located span.
-
-**Both halves are still asserted by name, before the aggregate.** The witness
-floor is one: `coverage/under_witnessed` false, `shortfalls`
-`{failed: 0, truncated: 0, unaligned: 0, unmeasured: 0}`. The second is
-`testimony_content_coverage`: the Recensor diffs each page witness's retained
-page text against the union of its attached-and-aligned spans, so an unattached
-page witness's WHOLE page text would be uncovered and the page would hold for
-that reason too, independently of the floor. With attachment reached, both page
-chairs cover their page (0 uncovered non-whitespace each). A bare
-`reasons == []` would fail identically whichever half had broken, so neither is
-asserted through the other.
-
-**What that does and does not claim.** One scripted run over a fixture whose
-page text is exactly its two acts reaches `delivered`. Nothing follows about a
-real page. A real register carries headers, folio
-numbers and marginalia no proposal covers; Churro will transcribe them, and that
-page will hold on content coverage. That is the coverage guarantee working,
-not a regression to repair by loosening a floor.
-
-**The offline posture still delivers, and the two diverge on one declared row.**
+**The offline Churro observation is declared, not measured.**
 `proof/skeleton_fixture.toml`'s `[[native_observation]]` for `attestator_3`
 states a page box outright, and `run.py::_fixture_native_observations` publishes
-it as `bounds_source "native"` without consulting the adapter — so the fixture
-happy scenario still attaches Churro, still counts three witnesses of a floor of
-three, and still reaches a delivered export, over geometry the live chair cannot
-produce. The row is kept rather than deleted: removing it moves the whole
-offline proof to the held posture (measured — 109 failures in
-`pipeline/orchestrator/test_orchestrator_acceptance.py` alone, the happy
-scenario at exit 3 with both acts under-witnessed), which is U12's change and
-not this unit's. It is recorded instead of left implicit: at the declaration in
-`proof/build_fixture.py`, and mechanically in
-`proof/test_fixture_declaration_contract.py`, which pins `attestator_3` as the
-one chair declaring a box its own adapter reports it cannot express, so the
-divergence cannot outlive U12 in silence.
+it as `bounds_source "native"` without consulting the adapter, over geometry the
+live chair cannot produce (`HistoricalDocument` has no coordinate vocabulary).
+`proof/test_fixture_declaration_contract.py` pins `attestator_3` as the one
+chair declaring a box its own adapter reports it cannot express, so the
+divergence stays visible.
 
 ## Real ingress
 
 `main` opens through `common.stage.open_stage_context`, which reads the run
 authority once and decides the route from its ingress record. On a real
 submission the context carries the registry, the sealed digest map this stage
-requires (`alignment`, `decoding`, and the real-only names the Door seals),
-the parsed serving inputs, `fixture=None` behind an accessor that refuses by
-stage name, and `REAL_SCENARIO` -- never `--scenario`, which the real route
-does not read. `run.py::real_ingress(context)` is this stage's one reading of
-the route, off `context.run`; nothing here branches on `context.scenario` or on
-the shape of a fixture.
+requires (`decoding`, and the real-only names the Door seals), the parsed
+serving inputs, `fixture=None` behind an accessor that refuses by stage name,
+and `REAL_SCENARIO` -- never `--scenario`, which the real route does not read.
+`run.py::real_ingress(context)` is this stage's one reading of the route, off
+`context.run`; nothing here branches on `context.scenario` or on the shape of a
+fixture.
 
 **The only real posture is every witness served.** Every witness runs its own
 full pass, with no capture and no slicing, and a roster where every configured
 witness row is served is the only real posture. `require_every_witness_served` refuses, by chair name and before
-any act is read, a real run whose sealed catalogue gives a configured witness a
+any page is read, a real run whose sealed catalogue gives a configured witness a
 fixture row, and a real run in which no witness serves at all; there is no
 fixture to answer for a chair on a real submission, so a fixture row there is
 not a second posture but a chair nothing can ask. The mixed-posture refusal in
@@ -828,103 +503,71 @@ not a second posture but a chair nothing can ask. The mixed-posture refusal in
 fire on the shipped `config/serving_recipes_real.toml`, whose witness rows are
 live at every tier in `config/pod_placement.toml`, and
 `test_attestatores_real_ingress.py` holds that.
-
 **`page_identity` is the Exemplar page index on both routes.** Every "which
 page is ordinal N" -- the whole-page presentation, the page Testimonium's
 subject, the live schedule's page unit -- goes through `page_subject`, which is
-`common.stage.exemplar_page_ids` over the Exemplar's own `page` artifacts. On a
-fixture run the index agrees with the old fixture-declared identity for every
-sealed page, because a sealed page's identity is its admitted bytes' digest and
-"sealed" means those bytes matched the declaration; a refused page is indexed
-under the Door's `source-N` admission subject, and this stage only asks a
-page-scoped chair about pages that carry proposed acts -- on every shipped
-fixture family those are sealed pages, so no fixture byte moves -- but `by_page`
-is built from a real run's own seal rows, not from this invariant, so
-`presentation_for_page` checks the Exemplar page's `outcome` itself and refuses
-by name rather than reading a refused page's absent `image_path`. The index is
-built once per pass (`publish_page_testimonia_and_attachments` and
-`live_attempt_pass` each call `exemplar_page_ids` once and thread the result
-into every `page_subject` / `presentation_for_page` call as `page_ids`) rather
-than walked again at every lookup: the Exemplar layer is sealed before this
-stage opens, so the walk answers the same every time for the life of the
-process, and a cache scoped to one pass cannot outlive the tree it described.
-Review found this stage paying roughly seven such walks per page rather than
-the three this note used to claim; a page-level bound on a large corpus is
-still roadmap work.
+`common.stage.exemplar_page_ids` over the Exemplar's own `page` artifacts. The
+pages witnessed are those whose Exemplar `page` record is `sealed`
+(`sealed_pages`). The index is built once per pass and threaded into every
+`page_subject` / `presentation_for_page` call as `page_ids`: the Exemplar layer
+is sealed before this stage opens, so the walk answers the same every time for
+the life of the process.
 
-**The declared witness tables have no real-mode counterpart.** `witness_failure`,
-`witness_not_run`, `witness_malformed`, `witness_empty`, `native_observation`,
-`chandra_anchor` and `churro_page_response` are the offline posture's stand-ins
-for a model; the response boundary on a real run is the live pass above (Section
-A), and what a chair returned is what the transport actually returned. On a real
-run the pass's declaration set is `real_declarations` -- empty in every family,
-in the exact shape `declarations_for` builds, and a test holds the two shapes
-equal -- and the preflight's validation of declared Churro page responses is
-skipped by `main`'s `fixture_declared=False`, because there is no fixture and
-nothing to validate. The three-source order for native geometry (declared
-observation, adapter observation, presented bounds) loses its first source on a
-real run: geometry is the adapter's `observe` over the real payload or the
-presentation, never a declaration. `refuse_unread_fixture_declarations` prints
-nothing on a real run: there is no row to pass over. The readers that stay
-fixture-only (`testimony_for`, `declared_response`, `churro_page_capture`,
-`captured_churro_page_attempt`, `_fixture_native_observations`, the declared
-anchor read) are not reached on a real run, because the served posture makes
-every real pass a live pass; if one ever is, the accessor refuses by name rather
-than handing back an empty table. `validate_declared_churro_page_responses`
-keeps reading the fixture's own page ordinals for the fixture route, since it
-runs only there.
+**The declared witness tables have no real-mode counterpart.** The tables named
+under "Fixture declarations a live pass does not read" are the offline
+posture's stand-ins for a model; on a real run every witness is served, so every
+real pass is a live pass and none of their readers (`declared_page_response`,
+`fixture_page_attempt`, `captured_churro_page_attempt`,
+`_fixture_native_observations`) is reached. If one ever is, the fixture accessor
+refuses by name rather than handing back an empty table. Native geometry on a
+real run is the adapter's `observe` over the real payload or the presentation,
+never a declaration. `refuse_unread_fixture_declarations` prints nothing on a
+real run: there is no row to pass over.
 
-**The continuation refusal.** `page_denominator` names an act's far page from
-its verified regions; with no verified region and a recorded crop refusal it
-used to fall back to the fixture's `[[continuation]]` declaration. On a real
-run there is none, and the refusal says so and says what clears it: *act X's
-proposal seal claims a continuation and real ingress carries no continuation
-declaration; its far-page evidence cannot be addressed. The Designator must
-publish the continuation region that names the far page.* This branch is
-reached only past `expected_acts`, which on a real run already verified that
-the far-page region exists and recomputes the act against it -- so what it
-means is that the region existed and was refused at the crop boundary, and the
-one thing that addresses the far page is the Designator's own region record for
-it.
+**What is proven offline.** `test_attestatores_real_ingress.py` carries a real
+submission of the synthetic fixture's own two pages through the Door, the
+Exemplar and the Ink Map as programs, hand-builds the Designator's record-detector
+census and seal in the shape `pipeline/2_designator/run.py::_publish_detector_records`
+publishes them, and runs this stage's
+`main` with three served fake chairs: every page record publishes, the page
+records name the Exemplar's own page subjects, no declaration is read or
+reported, and the fixture accessor is never touched. The same file holds the
+seal refusal over an unsealed Designator (context opened, nothing written), the
+fixture-catalogue refusal, and the shipped real catalogue's posture at every
+tier.
 
-**What is proven offline.** `test_attestatores_real_ingress.py` carries a real submission
-of the synthetic fixture's own two pages through the Door, the Exemplar and the
-Ink Map as programs, hand-builds the Designator's regions and seal in the shape
-`cut_minted_region` publishes them (to keep the test on this stage's own side of
-that boundary, over records the module controls, rather than standing up a served
-structure chair to produce them), and runs this stage's `main` with three served
-fake chairs: every act and page
-record publishes, the page records name the Exemplar's own page subjects, no
-declaration is read or reported, and the fixture accessor is never touched. The
-same file holds the seal refusal over an unsealed Designator (context opened,
-nothing written, no "sealed no digest"), the fixture-catalogue refusal, and the
-shipped real catalogue's posture at every tier. The real structural pass is no
-longer roadmap work — `pipeline/2_designator/run.py`'s `live_initial_pass` asks a
-served chair for every sealed page, driven end to end in
-`pipeline/test_structure_chair_e2e.py` — so what is hand-built here is a fixture
-for this consumer, not a stand-in for a producer that does not exist. What this
-stage is ready for is the Designator's seal, whichever pass wrote it.
+## Page Testimonium schema
 
-## Testimonium schema
-
-Every record payload has these fields:
+`kind="page-testimonium"`, one per `(sealed page, page chair, attempt ordinal)`,
+subject the page's Exemplar identity, attempt
+`attempt_id(page_id, f"read:{chair}", ordinal)`. Its payload is the closed shape
+`common/native_witness.py` declares (`PAGE_TESTIMONIUM_REQUIRED_FIELDS` and its
+optional fields):
 
 ```text
-chair, act_key, attempt_ordinal
-regions = [{region_id, image_path, image_sha256}, ...]
-provenance, format_capabilities
+chair, attempt_ordinal, provenance, format_capabilities
 payload, witness_reported, content_health
-presented, observed, unpresented_regions
-reason                         only when a named non-reading/failure needs one
+presented, observed
+scope = "page", page_ordinal
+reason, page_edge_overshoots, raw_response_refs, adapter_metadata,
+native_capture, native_inference, presentations, unit_captures, unit_call_refs,
+serving_call_ref               only where the record has them
 ```
+
+A page record names no act: a record carrying an act field (`act_key`,
+`regions`, `page_role`, `unjoined_act_attempts`) is not the closed schema and is
+refused. `serving_call_ref` and `unit_call_refs` are never both present. The
+writer validates the exact shape, and the facts this stage computes
+(`validate_page_record_facts`), before it publishes.
 
 `payload` is the witness's JSON-native output, retained as its own shape. An
 object, array, integer, boolean, null, or text response is not flattened into a
 common body schema. `witness_reported` is the witness's separate self-report — a
 confidence/status claim remains evidence, but it is not health and cannot make
-the stage treat a channel as complete. `content_health` is stage-computed from
-native output and a trusted response-boundary fact: recordability, UTF-8 validity,
-emptiness, blankness, character count for text, and truncation. It never reads
+the stage treat a channel as complete; a confidence outside the closed ordinal
+set fails the attempt. `content_health` is stage-computed from native output and
+a trusted response-boundary fact: recordability, UTF-8 validity, emptiness,
+blankness, character count for text, and truncation. It never reads
 `witness_reported`; when the real serving boundary cannot supply completion,
 truncation is `null`, not guessed from punctuation.
 
@@ -932,11 +575,9 @@ truncation is `null`, not guessed from punctuation.
 and it is the fact a later reader needs beside `witness_reported` to avoid a
 specific mistake: a witness whose format cannot say "unsure" must not be read as
 confident merely for having said something. The `witness-capabilities` scenario
-declares both sides on act a1 — chair 1 cannot express uncertainty and claims
-high confidence anyway, chair 2 can and reports doubt — so the distinction is
-exercised rather than merely representable without blinding one chair in the
-reference happy run's dissent record. Both claims are retained verbatim and
-neither reaches an outcome, a coverage count, or `content_health`.
+declares it on page 1: the Chandra chair cannot express uncertainty and claims
+high confidence anyway. The claim is retained verbatim and reaches no outcome,
+coverage count, or `content_health`.
 
 The synthetic fixture declares complete responses, so its retained text gets
 `truncated=false`. A malformed or unrecordable provider response becomes a
@@ -944,28 +585,25 @@ The synthetic fixture declares complete responses, so its retained text gets
 characters, stringified, or turned into an empty report. Malformed witness
 metadata never rewrites facts about a recordable native payload: an unavailable
 `format_capabilities` record is retained as `null`, and `content_health` continues
-to describe the native response. Arbitrary
-binary response retention remains an explicit Spec 04 response-contract decision.
-The current canonical artifact format can faithfully retain only float-free
-JSON-native values: its shared canonical writer refuses floating-point numbers,
-and this stage records that refusal as `failed` rather than coercing the number.
-That is an unresolved gap against Spec 07's unexpected-but-parseable payload
-requirement, not a claim that the float was retained verbatim.
+to describe the native response. The canonical artifact format can faithfully
+retain only float-free JSON-native values: its shared canonical writer refuses
+floating-point numbers, and this stage records that refusal as `failed` rather
+than coercing the number.
 
 ### Native image/geometry waist
 
 `presented` is either `{}` (this record has no image presentation) or the closed
 description of exactly one `page`, `region`, or `adapter-crop` image: sealed page
 identity and ordinal, blob path/digest, and an executable sealed-page transform.
-A region presentation is re-derived from its unique Designator proposal. A page
+A region presentation names one Designator detector region. A page
 presentation must name the whole sealed page and `operation="whole"`. An
 adapter-crop is either an exact `operation="crop"`, or the closed
 `operation="crop-resize-preserve-aspect"` recipe with Pillow LANCZOS, floor
 rounding, and source/target dimensions. Both read seams regenerate its PNG bytes
 from the sealed page and refuse a digest that differs. A resize or any other
 adapter-owned recipe must extend this closed transform rather than ride as an
-opaque operation string. DAI records the exact crop recipe when its proposal is
-already inside every ceiling; it does not claim a resampler ran on Pillow's
+opaque operation string. DAI records the exact crop recipe when its record crop
+is already inside every ceiling; it does not claim a resampler ran on Pillow's
 identity-copy path.
 
 `observed` is the witness-order list of integer sealed-page boxes, each with a
@@ -973,28 +611,14 @@ dense zero-based ordinal, `bounds_source` in `native | derived | presented`, and
 an optional non-overlapping span into this Testimonium's own retained text. Every
 box is contained by the exact presented image's page-space bounds; a witness
 cannot report pixels its presentation did not include.
+`observed` carries no act identity, preference, authority, or confidence field.
+A `presented` box is an explicit no-geometry fallback: it restates the image
+sent and is excluded from coverage. Only
+`native` and `derived` boxes report witness geometry.
 
-**One record kind is exempt, and only one.** A page chair's act view
-(`page_witness: true`, never `scope: "page"`) presents a single crop while
-restating the page-level geometry that chair actually reported, so its boxes may
-legitimately exceed that one crop. They remain bounded by the sealed page, which
-is the wall that does not move, and Unit 10C's coverage derivation is what
-consumes that page-space geometry. The flag cannot buy the exemption on its own:
-a `scope: "page"` record presents the chair's complete view and keeps the
-containment rule, so the relaxation cannot be forged onto a record whose
-presentation really was everything the witness saw. Every other record — act
-chairs, and page chairs at page scope — is contained as above. `observed`
-carries no act identity, preference, authority, or confidence field. `presented`
-is an explicit no-geometry fallback: it restates the image sent and is excluded
-from both unrouted-ink detection and Unit 10C coverage. Only `native` and
-`derived` boxes report witness geometry.
-
-`unpresented_regions` is computed after the adapter's final presentation and
-re-derived at both later act read seams by page-space containment. With a real
-presentation, `[]` means every bound proposal crop lies inside that one image;
-with `presented={}`, the list is inapplicable and must be `[]`. Those states are
-not ambiguous because `presented` distinguishes them, and a non-attempted record
-is independently forbidden from binding any regions or image inputs.
+A native box that runs past the sealed page edge is kept as reported, never
+clamped, in `page_edge_overshoots`, present only on a record with a real
+presentation.
 
 The runnable adapter registry resolves exact configured names with no default.
 `present(context, presentation)` may retain an adapter-owned crop through the run
@@ -1007,9 +631,9 @@ that never receives its own response.
 **Observations reach a record from three sources, in this order.** The fixture's
 `[[native_observation]]` table is consulted first: rows matching the chair and
 page ordinal (and the scenario, where one is named) become `bounds_source="native"`
-boxes directly, ahead of the adapter. Those are reported geometry — they drive
-attachment and routing exactly as an adapter's own layout would, which is what
-makes the table a stimulus for the geometry paths rather than decoration. Only
+boxes directly, ahead of the adapter. Those are reported geometry, exactly as
+an adapter's own layout would be, which is what makes the table a stimulus for
+the geometry paths rather than decoration. Only
 when no row matches does `observe` run, and only when there is no adapter at all
 does the `bounds_source="presented"` echo of the presentation stand in.
 
@@ -1020,10 +644,10 @@ consult report.
 
 **Configuration.** Two rows on the occupant's own `[chairs.<role>]` table in
 `config/models.toml`: `witness_adapter` (an exact declared name — no default, no
-near match; a default adapter is a picker with one candidate) and `witness_scope`
-∈ `page | act`. Both enter `ChairIdentity.to_record()` and therefore
-`config_digest`. `witness_scope` is invocation granularity only: it says nothing
-about image kind, geometry, region identity, or coverage.
+near match; a default adapter is a picker with one candidate) and `witness_scope
+= "page"`. Both enter `ChairIdentity.to_record()` and therefore `config_digest`.
+`witness_adapters.validate_runnable_adapter_bindings` refuses a configured witness
+chair scoped any other way before the run opens: every witness reads whole pages.
 
 **Registries move together.** The declared name joins
 `common/witness_adapters.KNOWN_WITNESS_ADAPTER_NAMES`; the callable joins
@@ -1038,14 +662,11 @@ contract:
 * `present(context, presentation)` returns the closed `presented` block —
   `kind` ∈ `page | region | adapter-crop`, sealed page identity and ordinal, blob
   path and digest, and an executable transform in **sealed-page pixel space**
-  (the only space anything downstream can verify: `verify_exemplar_crop_lineage`
-  re-derives there and the Recensor reconciles there). `kind="region"` may name a
-  Designator region whose `origin` is `proposal` and nothing else — a recovery
-  crop may never be presented as a witness basis. An `adapter-crop` is an
-  adapter-owned derivative, not a third scope: the current DAI occupant is
-  act-scoped and publishes one from the proposal it was assigned. Both read
-  seams regenerate its bytes from the sealed page and refuse a differing
-  digest.
+  (the only space anything downstream can verify). `kind="region"` names a
+  Designator detector region, the source of a DAI unit. An `adapter-crop` is an
+  adapter-owned derivative: DAI publishes one from each detector record crop it
+  is shown. Both read seams regenerate its bytes from the sealed page and refuse
+  a differing digest.
 * `observe(presentation, native_payload)` returns the closed `observed` list from
   that exact image and response together — dense, unique, zero-based ordinal;
   integer `x/y/w/h` in the pixel space of `presented.source_page_id`;
@@ -1067,23 +688,15 @@ attempt into a `failed` Testimonium with `content_health.recordable=false`, whic
 would report a working layout model as a broken witness. Return text or
 integer-only structures from `parse`; put the geometry through `observe` and the
 floats in the blob.
-
-**Scope semantics.** A `page` occupant writes one page-scoped Testimonium per
-(page, chair) carrying `partition_disagreement`, and reaches an act only by
-**geometric overlap of its own reported `native`/`derived` geometry against the
-sealed proposal** — never through an anchor, never chair against chair. A
-`presented` box is an explicit no-geometry fallback and is excluded from both
-routing and coverage. An `act` occupant writes one Testimonium per (act, chair)
-with attachment basis `presented-region`. A page witness cannot be re-asked: a
-targeted reread reaches act-scoped chairs only.
+**Scope semantics.** Every occupant writes one page-scoped Testimonium per
+(page, chair). No witness is asked about an
+act, and this stage attaches no reading to one: the Perlector reads the page
+records. A `presented` box is an explicit no-geometry fallback and is excluded
+from both routing and coverage.
 
 **What an adapter never does.** It never mints a region (crop lineage refuses a
 stage that is not the Designator), never expresses a preference, and never
-reports coverage. Ink it observed that no sealed proposal accounts for becomes a
-named non-fatal `unrouted-observation` finding, retained in
-`partition_disagreement.unclaimed_observations`; the Recensor alone may spend a
-bounded fallback-recrop on it, against one absolute cap of three shared with
-every other recovery origin.
+reports coverage.
 
 **Evidence.** Published vendor specimens enter with their source and licence
 recorded, exactly as `common/churro_document.py` cites stanford-oval/Churro at
@@ -1149,297 +762,100 @@ generic unsupported-native-type failure is accurate. The adapters instead keep
 the float in the raw blob and make the declared conversion in `observe`.
 
 ### Perlector testimony input
-
-The Perlector reads the retained derived `payload.payload`, not a second
-`payload.reported` projection. It uses act-scoped text or a located page-witness
-span as testimony; structured nontext payloads remain retained and are represented
-as incomparable rather than coerced into text.
+The Perlector reads the retained `payload.payload` of every current page
+record; structured nontext payloads remain retained and are represented as
+incomparable rather than coerced into text.
 
 ## Outcomes and provenance
 
-Every configured chair has one explicit outcome per act per attempt:
+Every page witness chair has one explicit outcome per sealed page per attempt:
 
-- `read` and `genuinely-empty` mean a chair actually read the exact regions and
-  carry a serving receipt. `genuinely-empty` has native `payload=""`; it is never
-  represented by an empty file. Both are **derived from a retained, recordable
-  response to that exact request** — same boundary, same retention, and the only
-  difference between them is whether the retained body has characters in it. No
-  act, page, or identity reaches either outcome by being a particular kind of
-  thing.
+- `read` and `genuinely-empty` mean the chair was shown the page and its
+  response was retained, with a serving receipt. `genuinely-empty` has native
+  `payload=""`; it is never represented by an empty file. Both are **derived
+  from a retained, recordable response to that exact request**; the only
+  difference between them is whether the retained body has characters in it.
+  The one `genuinely-empty` with no response is a record reader's page on which
+  its own detector looked and found nothing (DAI, below): the detector's sealed
+  census is the testimony, and the record binds it.
 - `failed` means an attempt reached the response boundary but produced no usable
-  Testimonium. It also carries the attempted region inputs and a receipt.
-- `dead` means an `AbsentChair`: the chair was unavailable and no attempt reached
-  the region. It retains the absence record, with no invented receipt.
-- `not-run` means a configured chair was never attempted, including a held or
-  refused proposal. It retains the resolved pin but no invented receipt.
+  Testimonium. It carries the presentation and a receipt.
+- `not-run` means a configured chair was never attempted on the page. It
+  retains the resolved pin but no invented receipt, and every content-health
+  fact is `null`, because emptiness that nobody measured is unknown rather than
+  absent.
 - `excluded` is never produced by this writer. Generic envelope validation
-  refuses a missing reference but checks only that the identifier is non-empty;
-  Stage 3 does not yet resolve that identifier to verified, project-lead-approved
-  exclusion-record bytes. The positive approved-exclusion path is therefore not
-  implemented.
+  refuses a missing approval reference but checks only that the identifier is
+  non-empty; the positive approved-exclusion path is not implemented.
 
-A Designator page-fallback act is witnessed exactly like any other proposed act.
-This used to be the one exception: the stage recognized the minted identity
-(`_is_page_fallback`) and wrote `genuinely-empty` for every configured chair
-before consulting any response boundary, then gave each record the proposal
-regions, marked it attempted, minted a serving receipt and recorded
-trusted-boundary health — three chairs on disk as having independently read a
-page none of them was asked about, which the Recensor could then seal
-`confirmed-blank` on (Sol-S1). The branch and its identity check are both gone;
-nothing in this stage asks what kind of act it is reading.
+An `AbsentChair` is not a page witness and gets no record: the Perlector and
+the Recensor see it in the sealed roster and count it against the witness floor.
 
-So the fallback crop goes through the same response boundary as any other
-proposed region, and a missing response is `not-run` (whole pass) or `failed`
-(targeted reread) and holds the act. It is never an empty report: a `not-run`
-record leaves every content-health fact `null`, because emptiness that nobody
-measured is unknown rather than absent. `ink-free-page` declares one empty
-witness response per chair for `page-fallback:3` and completes as a
-`confirmed-blank`; `ink-free-page-unwitnessed` is the same page with those three
-declarations removed and holds instead. Both are pinned end to end
-(`test_an_ink_free_page_fallback_is_witnessed_and_read_end_to_end`,
-`test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_blank`),
-and the resolution itself in
-`pipeline/3_attestatores/test_page_fallback_witnessing.py`.
-
-**A real implementation may make fallback pages cheap however it likes** — a
-cheaper model, a coarser crop, a page-scoped call — but whatever it does has to
-produce a response this stage retains, or the act holds. Skipping the provider
-call entirely is the one thing it may not do, because the outcome it would skip
-to is a positive claim about what a witness reported.
+`ink-free-page` declares an empty response from each whole-page chair for page 3
+and completes; `ink-free-page-unwitnessed` is the same page with those
+declarations removed, so those chairs are `not-run` there and the page is held.
 
 `provenance` holds the exact resolved identity/revision and, only for attempted
-outcomes, the digest-checked serving receipt. A failed or absent chair cannot be
-replaced by another chair.
-
-A malformed proposal crop is isolated to its act: every chair receives its
-explicit `not-run` or `dead` record, no chair is said to have read the refused
-pixels, and other acts continue. Malformed native output or malformed capability
-metadata similarly becomes one `failed` attempt with the remaining chair records
-retained; neither case is silently repaired into a reading.
-
-A refused crop completes this retention stage because each configured chair has
-been accounted for, and the explicit non-reading records are what make the
-shortfall visible downstream. It is worth being exact about how far that goes
-today: the Perlector verifies the same crop lineage itself, so a crop this stage
-refused for a broken lineage is refused there as a named fatal rather than
-carried into a partial export. Retention completing is the guarantee here; a
-partial export past a refused crop is not one this tree currently reaches.
+outcomes, the digest-checked serving receipt. A failed chair cannot be replaced
+by another chair. Malformed native output or malformed capability metadata
+becomes one `failed` attempt with the other records retained; neither case is
+silently repaired into a reading, and neither holds the pass.
 
 Stage 3 holds, and every hold stops orchestration, in two shapes: an `UNKNOWN`
 attempt tally, and a whole pass refused by its own no-write preflight. The
 preflight refuses more than one thing — bytes that differ from an attempt
 already sealed at that ordinal, an ordinal past the next appendable one, a
-fixture declaring conflicting outcomes for one pair at one ordinal — and every
-one of them writes nothing. Only the tally says the evidence channel is damaged.
+fixture declaring two responses for one page and chair at one ordinal, a
+declaration naming a page or chair no pass reads, a page whose witness layer is
+closed — and every one of them writes nothing. Only the tally says the evidence
+channel is damaged.
 
 ## Retention and current state
 
-Two write paths, and both append.
+One write path, and it appends.
 
-`--attempt-ordinal N` (default `1`) is the whole pass: every configured chair on
-every expected act, at that one ordinal. For each `(act, chair)` pair the writer
-permits only an exact byte-identical repeat of an ordinal that pair already holds,
-or its next contiguous one — so the same command twice is a resume rather than a
-second reading, and the whole pass still resumes over a folder in which one chair
-has been reread past it. `current + 2` is refused: a gap means an attempt that
-existed is no longer here.
+`--attempt-ordinal N` (default `1`) is the whole pass: every page witness chair
+on every sealed page, at that one ordinal. For each `(page, chair)` pair the
+writer permits only an exact byte-identical repeat of an ordinal that pair
+already holds, or its next contiguous one — so the same command twice is a
+resume rather than a second reading. `current + 2` is refused: a gap means an
+attempt that existed is no longer here.
 
-`--operation reread --act <act_id> --chair <role>` moves exactly one chair on one
-act, at the ordinal that chair's own history says comes next. This is the path a
-real reread uses: a reread happens because one witness failed on one act, and
-re-witnessing the other chairs to reach it would re-read ink nobody doubted and
-spend a provider call per chair per act to do it. Every other chair's current
-record stays the attempt it already was. It is refused, writing nothing, for an
-act the proposal seal does not name, a chair the run is not sealed with, a
-Designator-held act (no witness was shown a reading there), an absent chair
-(a dead chair asked again is not a second attempt), a chair with no first attempt
-to follow, a **page witness** (below), and an act whose **witness layer is
-closed** (below). The orchestrator never invokes it, and that is a decision
-rather than a gap: recovery exists for *coverage* — a missed region,
-a cut crop, a continuation — while a witness reread recovers *priming*, so
-driving it from the recovery loop would make witness quality a loop variable.
-`RECOVERY_KINDS` is unchanged. This is an operator repair with a documented
-window.
+The RunTree's immutable publish boundary atomically creates each attempt
+identity and refuses different bytes at an existing one. The stage has no
+pointer and no artifact overwrite path. Consumers derive current per
+`(page, chair)` through the shared `latest_attempt()` discipline, so a later
+`failed` attempt is current and visible while the earlier reading remains
+retained history. A missing or gapped history is refused rather than repaired or
+selected around.
 
-A targeted reread re-derives that act's act-attachment as part of its own write,
-through the `act_scoped_attachment_entry` the whole pass uses for the same
-derivation. The attachment is a derived view of the per-`(act, chair)` attempt
-stream and the reread appends to exactly that stream, so a reread that left it
-alone wrote a Testimonium no later stage could consume: the very next Perlector
-invocation refused the stale record, in the reread's own intended order. Only the
-reread chair's entry is re-derived; the others are carried forward, and checked
-against their chairs' current attempts on the way so a stale entry is refused
-rather than laundered into a newer record.
+**The witness layer closes at the first reading.** Once the Perlector's
+page-feed for a page shows witnesses, an appending whole pass over that page is
+refused by name before anything is written: re-asking a witness because it
+spoke again is a re-roll. A pass that only repeats attempts already sealed is a
+resume and is untouched.
 
-## The one attempt model
-
-**The reading attempt ordinal is a function of the act's crop history alone** —
-one reading of the proposal, plus one for each recovery crop cut since
-(`pipeline/4_perlector/run.py::_next_attempt`, and the identity the Recensor,
-Archetypus and Armarium each enforce). Witness testimony never moves it.
-
-That is a decision, not an omission. A Testimonium is a clue that primes a
-reading, never the ink the reading is established from (ARCHITECTURE),
-so a second look by a witness does not make a second reading exist — and
-re-reading an act because a witness spoke again is a re-roll, and recovery
-restores coverage, never quality. The alternatives were weighed and rejected: advancing the ordinal on any
-new current evidence makes witness quality a loop variable at the four stages that
-decide whether text may be established, and deleting the reread outright leaves
-the whole pass as the only retry, which costs every chair on every act its
-currency to move one.
-
-Two consequences follow, and both are enforced at entry rather than discovered
-downstream.
-
-**The reread has a window.** It is open until the Perlector establishes a reading
-that cites this act's testimony, and closed afterwards. A new witness attempt on a
-closed act — targeted reread *or* appending whole pass — is refused by name. The
-deep reason is not the ordinal mechanics (a pending recovery reread means a new
-reading can be pending even on a closed act): it is that a witness is only ever
-shown the act's *original proposal crop* (`proposed_regions`; the Perlector
-refuses testimony naming a recovery crop), so a second look can only ever add
-priming, never coverage — and re-reading because a witness spoke again is
-a re-roll, and recovery restores coverage, never quality. Mechanically, the Perlector would also recompute the
-same ordinal, build a different payload, and meet its own immutable record. A held act's or an
-absent chair's `not-run` reading cites no testimony and closes nothing. A pass
-that only repeats attempts already sealed is a resume and is untouched.
-
-**A targeted reread takes its act off the shared whole-pass ordinal.** The whole
-pass is a run-level instrument at one ordinal and re-derives each act's attachment
-there; after a reread that ordinal is already taken by a record describing a
-different state. An appending whole pass on an act whose chairs no longer share
-one current ordinal is therefore refused before anything is written. A partly-lost
-attempt layer is not that case — its surviving pairs still share an ordinal — so
-the repair pass still works.
-
-**A page witness cannot be act-reread.** It reports one reading per page; its
-act-level view is derived from the page join and that join's alignment against the
-page anchor. An act-targeted reread would re-derive one act's view from an attempt
-the page record does not describe, leaving the two disagreeing about the same
-chair. No operation exists today to re-ask a page witness about anything —
-building one would be new, page-scoped Attestatores work — and the refusal says
-so rather than half-performing the act-scoped one. (The recovery vocabulary's
-`page-level-reread` is a *Perlector* operation; that name is not borrowed here.)
-
-One residual is left to the RunTree rather than checked at entry, deliberately:
-reread *every* chair on one act up to the same ordinal and the act agrees again,
-so an appending whole pass at that ordinal passes the shared-ordinal check and
-meets the attachment collision at publication. Reaching it also needs each chair's
-whole-pass attempt to be byte-identical to its reread attempt — otherwise
-`_refuse_write_collision` stops the pass first — so the pass that survives is one
-that had nothing to add. The outcome is a loud fatal refusal with
-`RunTree.write_manifest` as the recorded one-step recovery, and closing it would
-cost a second derivation of every attachment in preflight.
-
-The end-to-end assertions for all of this are
-`pipeline/orchestrator/test_attempt_model.py`.
-
-Neither path accepts the other's arguments: `--attempt-ordinal` beside a reread,
-or `--act`/`--chair` beside a whole pass, is refused rather than ignored. An
-operation this stage does not implement is refused for the same reason — a
-mistyped `reread` would otherwise run a whole pass and exit 0 over a witness it
-never asked again.
-
-Fixture response declarations are ordinal-bound. An older row without an
-`attempt_ordinal` describes attempt 1 only; a successful reread therefore carries
-the newly declared native response for its own ordinal rather than silently
-reusing attempt 1's testimony. A reread for which no response is declared at its
-own ordinal is `failed`, not `not-run`: the invocation named one chair on one
-act, so it is an attempt that produced no usable Testimonium.
-
-Each attempt identity binds the act, the operation `read:<chair>`, and the
-ordinal — `attempt_id(act_id, f"read:{chair}", ordinal)`. The RunTree's
-immutable publish boundary atomically creates it and refuses different bytes at
-an existing identity. The stage has no pointer and no artifact overwrite path.
-
-Act-scoped Testimonium consumers derive current per chair through
-`common.stage.latest_per_chair()`. The Recensor also reads `page-testimonium`
-records directly for content coverage, deriving current per `(page, chair)`
-through the shared `latest_attempt()` discipline. Thus a later `failed` attempt
-is current and visible, while the earlier successful attempt remains retained
-history. A missing or gapped history is refused rather than repaired or selected
-around.
-
-### Closed page-continuation record
-
-`kind="page-testimonium"` is a closed producer record. It carries the ordinary
-Testimonium fields plus exactly `scope="page"`, `page_ordinal`, `page_role`, and
-`unjoined_act_attempts`; `reason` and the textual `reported` projection remain
-the only conditional fields. The writer validates that exact shape before it
-publishes, refusing unknown fields at this producing boundary.
-
-`page_role` is one of `primary`, `continuation`, or `mixed`. It describes the
-relationship of the page's contributing proposal acts to their scalar primary
-page: a page reached only by continuations is `continuation`; a page containing
-only primary regions is `primary`; and a page containing both is `mixed`.
-Every proposed act joins every page represented by its proposal regions. Thus a
-continuation publishes one page Testimonium per contributing page and per page
-chair, and its act attachment carries one explicitly page-ordinalled reference
-to each. The primary scalar remains act identity, never a reduction of the
-evidence denominator.
-
-An act whose crop was refused has no proposal regions to read pages off, and its
-pages come from the sealed proposal facts instead — its own `page_ordinal` plus
-the fixture's declared continuation page. A refused crop was never shown to a
-witness, but the page-level non-reading Testimonium is still published for every
-page it covered: turning an isolated crop failure into a page that vanishes from
-the denominator is the exact silent loss this pipeline exists to catch.
-
-`page_role` is written by a producer that holds one page's whole act list, and
-read back by two stages that hold different amounts of it. The Perlector holds
-one act, so it refuses only the two labels that act's own primary-page fact
-contradicts. `mixed` contradicts no single act, so the **Recensor** re-derives
-the role from every act attached to the page and refuses a claim the whole page
-disproves (`pipeline/5_recensor/run.py::reconcile_page_roles`). Its denominator
-is this stage's own published attachments, not a second walk of the Designator's
-regions, so the two groupings cannot drift apart.
-
-### The page record's own outcome
-
-R0 has no live page-scoped witness. A page Testimonium is `page_join`'s
-concatenation of one chair's own act attempts on that page, so its outcome comes
-from the joined text and not from the shape of the list that produced it:
-`failed` when no reading joined and at least one underlying attempt reached the
-chair — or when the join could not carry every attempt and the carried ones were
-all empty, because a completed absence may only be claimed over a page this
-chair's join fully read (invariant 6); `not-run` when no underlying attempt
-reached the configured chair;
-`genuinely-empty` when every attempt joined and every one delivered an empty
-body; `read` when the text carries a delivered character (delivered characters
-beside disclosed omissions claim less, not more). Separators are placed only *between* delivered characters.
-Joining every payload including the empty ones and calling the result `read`
-whenever the list was non-empty gave a page of genuinely-empty acts
-`payload="\n"` under a reading outcome — characters no act delivered, retained
-as testimony to them. An act whose reading the join could not
-carry is disclosed in `unjoined_act_attempts`; an act it carried as empty is not,
-because it was carried.
-
-The synthetic page presentation and receipt are fixture declarations of the
-page-scoped invocation the skeleton is exercising, just as the act arm's
-`fixture://` receipt is a declaration rather than a live serve. `page_join`
-supplies that declared invocation's response fragments; it is not evidence that
-a provider ran. A failed page record carries a presentation and receipt exactly
-when at least one underlying act attempt reached the configured chair. If none
-did, the page outcome is `not-run`, with `presented={}` and no receipt. Thus
-`failed` never also means “never attempted,” and an absent or never-shown chair
-is never forced to invent a serving moment.
+Fixture response declarations are ordinal-bound. A row without an
+`attempt_ordinal` describes attempt 1 only, so a pass at a later ordinal never
+silently reuses attempt 1's testimony; with nothing declared at its own ordinal
+the attempt is `not-run`. Each row is keyed by `page_ordinal` and `chair`; a
+row scoped to the run's scenario replaces the unscoped rows for that page and
+chair, across every table.
 
 ### DAI: a page witness over its own detector's records
 
 DAI was trained on crops of the records its own project's detector finds, so a
-page-scoped `dai.v1` chair is shown its page that way and never the
-Designator's act crops. The adapter declares it (`RunnableAdapter.page_units =
+page-scoped `dai.v1` chair is shown its page that way. The adapter declares it (`RunnableAdapter.page_units =
 "detector-records"`), and a roster that scopes such a chair `page` without a
-configured `secondary_proposer` is refused before anything runs. The fixture
-posture has no per-record reading to declare, so such a chair must be served
-live; a fixture row for it is refused by name.
-
+configured `secondary_proposer` is refused before anything runs. The chair
+runs on the fixture pass as on a live one: its detector's fixture row answers
+from the fixture's `[[detector_record]]` rows (see the fixture posture below).
 **Units.** A page's units are the Designator's `detector-region` crops of that
 page, in the detector's own order, read from its `detector-page` census. A
 missing or out-of-order record, a census whose count disagrees with its
 records, or a crop that does not re-derive from its sealed page at its recorded
 bounds refuses. A record the Designator could not cut is not a unit. A page
-that carries acts and no census refuses: the chair cannot be shown the page as
+with no census refuses: the chair cannot be shown the page as
 it was trained to read it.
 
 **One call per record.** Each unit is one request, with the unit crop as the
@@ -1447,11 +863,36 @@ presentation `dai.v1` resizes and sends; every response is retained as it
 arrives. A unit refused for capacity before it is sent is a `failed` unit with
 no capture. The page record is sealed only once every unit on the page has
 been answered, so a pass interrupted inside a page asks that page's units
-again, and a page record already sealed is resumed and never asked again. A
-page with no unit is sealed `not-run` without a request, with reason "DAI's own
-record detector found no record on this page, so DAI was shown nothing here",
-or, when the census counts records none of which enclosed a crop, a reason
-naming that count.
+again, and a page record already sealed is resumed and never asked again.
+**A page the detector found nothing on.** When the census counts no record and
+the detector's retained run facts are complete, its cap (`max_det`) included, as
+the page accounting's rule (i) reads them: DAI's own detector looked and the page
+holds nothing for it. That is testimony. The page is sealed without a
+request as `genuinely-empty`: native `payload` `""`, content health of empty
+text (blank, not truncated), `presented={}`, no observed box, no receipt, and
+one input, the page's `detector-page` census, with reason "DAI's own record
+detector looked at this page and found no record below its cap, so the page
+holds nothing for DAI". Every reader re-derives it
+(`common.page_testimonia.is_detector_blank_testimony`,
+`common.page_path.empty_detector_page`): such a record whose text is not empty,
+whose health or reason is not the fixed one above, whose census names a record
+or states no cap, or which binds anything but that census is refused. It counts
+toward the witness floor like any reading, and the page accounting records it
+`witness-read-blank` rather than holding it unread. On a page whose reading
+establishes acts, the detector's silence contradicts the reading, and the page
+accounting's rule (i) holds the page (`no-detector-record-on-act-page`). A page
+with no record crop that is not such testimony is sealed `not-run` without a
+request: a detector whose run facts state no cap (reason naming them
+incomplete), or a census that counts records none of which enclosed a crop (a
+reason naming that count). A sealed page with no census is refused.
+
+**The fixture posture.** A fixture row reads each record exactly as a served
+one is read -- the same presentation, the same closed model view and the same
+retained capture under the `text` parser -- and only the answer is declared: one
+`[[dai_record_response]]` row `{page_ordinal, detector_ordinal, chair, text}`
+per record, optionally scoped to a scenario, retained under the stop word
+`fixture-complete` with its receipt saying `fixture://`. A record with no
+declared answer, or with two, refuses by name.
 
 **The page record.** One `page-testimonium` per page, in the closed page shape
 plus three fields. `presentations` lists every image the chair was shown, in
@@ -1469,201 +910,51 @@ presented image, retained response and unit call record is digest-bound in
 `inputs`. Both later
 readers take every presentation from `presentations`
 (`common/native_witness.py::record_presentations`).
-
-**The page text.** Unit readings join with `"\n"` in act order: each act's
-owned records together, in detector order, then the records no act owns. So
-one act's slice never reaches into another's. An empty reading adds no
-separator.
-
-**Ownership.** A record belongs to the act whose proposal regions on the page
-it overlaps most by area, and to no act on a tie or when it overlaps none. This
-decides where DAI's text sits, not what it says or whether an act exists.
+**The page text.** Unit readings join with `"\n"` in the detector's own order.
+An empty reading adds no separator.
 
 **The page outcome.** One failed unit fails the page, with a reason naming each
-failed record: an act then goes visibly under-witnessed by DAI rather than read
+failed record: the page then goes visibly under-witnessed by DAI rather than read
 from part of what DAI was shown. Otherwise the page is `read`, or
 `genuinely-empty` when every unit delivered an empty reading.
-
-**Act attachment.** On an act's primary page the entry's alignment comes from
-ownership, not from the Chandra anchor: `aligned` with
-`anchor_basis: "detector-record"`, `anchor_chair: null`, a zero-length
-`anchor_span`, a `witness_span` from the first to the last owned record's span,
-and one `line_geometry` box per owned record; `unaligned` with reason
-`no-detector-record-owned` when the act owns no record; and
-`non-reading-page-testimonium-<outcome>` when the page did not read. A
-continuation page stays `continuation-page-no-act-anchor`, as for every page
-witness. That alignment is recorded and attaches nothing: a `presented` box is
-not reported geometry, so it never counts as `geometric-overlap`, and a
-`detector-record` alignment is not a located anchor line. Every DAI entry is
-therefore `attached: false`, `attachment_basis: "unattached"`, `span: null`,
-and DAI reaches no act comparison until witnesses are read page-only. The act's own `testimonium` view keeps the act's Designator crop as
-its presentation, since the chair was never shown that crop.
-
-## Act-attachment schema (R4)
-
-Written by the same stage invocation that writes page testimony, one
-`act-attachment` record per act in the proposal seal, held acts included
-(`subject_id == act_id`). A held act carries one entry per chair with
-`page_witness` false, `attached` false, `page_ordinal` null, and `alignment`
-null. Its payload carries `attachments`: each entry with `chair`,
-`attached` (bool), `comparable` (bool), `span` (`{start, end}`),
-`content_health` (dict or null —
-null is "health not recorded", a distinct fact), `page_witness` (bool,
-strictly), `page_ordinal` (int for a page witness, **null** for an act-scoped
-chair — the field is required either way, and the Perlector refuses a
-page-scoped attachment that omits it as readily as an act-scoped one that
-carries it), a `testimonium_ref` pointing at the chair's Testimonium or
-page-Testimonium, an `attachment_basis` (`presented-region`, `anchor-line`,
-`geometric-overlap`, or `unattached`), and
-`alignment` — null for an act-scoped chair, and for a page witness exactly one
-of:
-
-**The denominator is `(chair, contributing page)`, not `chair`.** An act-scoped
-chair contributes exactly one entry. A page witness contributes one entry per
-page the act's proposal regions came from, so an act that runs across the page
-break carries two — the primary page's entry holds the real comparison view, and
-each continuation page's entry is explicitly unaligned with reason
-`continuation-page-no-act-anchor` (a page anchor locates a line for an act it
-begins, not for the tail that runs onto it). The Perlector reconciles that exact
-pair set against the regions it actually read
-(`pipeline/4_perlector/run.py::act_attachment_view`), so an attachment cannot
-claim a page the ink does not support, or drop one the ink does.
-
-- aligned: the closed key set `{status, anchor_basis, anchor_chair,
-  anchor_span, witness_span, anchor_line_match, line_geometry, loss,
-  offset_maps}`, with
-  `anchor_chair` naming the sole configured Chandra witness
-  (`declared_chandra_anchor_chair`) — a string exactly when `anchor_basis` is
-  `act-anchor`, and null otherwise, refused either way round by both readers.
-  On the live path the anchor IS that chair's retained page Testimonium: its
-  page text, and the block spans its reported geometry carries into that text
-  (the derived anchor, below). On the fixture path the anchor is the
-  fixture's declared `[[chandra_anchor]]` stand-in, and the field identifies
-  the configured association without claiming the declaration was re-derived
-  from a retained Testimonium. The Designator is structurally out of reach
-  because it is not a witness role, and the lectio prior is written after this
-  stage runs, so nothing here could read it. `line_geometry` carries one
-  rectangle per anchor line -- exactly one on the fixture path, and on the
-  live path every reported block that overlaps the act. `anchor_basis` is one of
-  `act-anchor` (computed through Chandra's located anchor line),
-  `detector-record` (a chair read one detector record at a time, placed by the
-  records this act owns; see above),
-  `no-page-anchor` (a genuinely-empty witness's trivial zero-length attach on
-  a page with no Chandra anchor at all — the ink-free/fallback path; blank
-  confirmation stays open), or `act-line-not-located` (the page's anchor
-  exists but locates no line for this act — the Recensor's
-  `blank_corroboration` refuses to seal a terminal blank on it).
-  `anchor_line_match` is how much of THIS act's anchor line the witness
-  actually matched -- `{anchor_characters, matched_characters,
-  longest_matched_run}`, all three measured in the normalized space the matcher
-  ran in, over the fragments clipped to this act's anchor range before they were
-  hulled into `witness_span`. `anchor_line_located` reads the longest run,
-  because a hull is positive as soon as any two characters coincide and total
-  coverage does not separate a real reading from a long enough coincidence; the
-  other two travel as disclosure. A trivial zero-length attach records
-  `matched_characters: 0`, never an absent field.
-  `witness_span` and its top-level `span` mirror index the raw retained page
-  reading. Alignment is computed over the markup-stripped,
-  whitespace-collapsed view and translated back to raw character offsets before
-  publication. `offset_maps` instead map normalized-text positions to raw
-  offsets, with `None` for synthesized separators, while `loss` records what
-  normalization changed. Never index an `offset_maps` entry with
-  `witness_span` or `span`: they use different coordinate spaces.
-- unaligned: `{status, reason}`, reasons among `missing-chandra-page-anchor`,
-  `act-anchor-line-not-located`, `no-overlap-with-act-anchor`,
-  `no-raw-counterpart-for-aligned-span`,
-  `character-limit`, `character-pair-limit`, `alignment-step-limit`,
-  `no-common-anchor-text` (the aligner's own reasons pass through
-  verbatim), `non-reading-page-testimonium-<outcome>` for a native page
-  capture that produced no reading, `non-reading-act-attempt-<outcome>`
-  where the page record is the legacy join and this act's own attempt is
-  the non-reading fact (the page record itself may still read, on the
-  strength of another act), `no-detector-record-owned` for an act that owns
-  none of the records a detector-record chair read, and
-  `continuation-page-no-act-anchor` for a
-  contributing page that is not the act's primary one.
-
-For a page witness, `attached` is derived from one of two bases since Unit 12
-(`common/contracts/outcomes.py::page_attachment_basis`, re-derived by both
-readers): this chair's reported boxes overlap one of the act's sealed proposal
-regions and its outcome is a reading (`geometric-overlap`), or -- only where it
-reported no such ink -- its alignment located this act's own anchor line inside
-its page text (`anchor-line`). The second basis exists because a witness grammar
-can carry no coordinates at all, and *located* is a measurement, not an aligned
-status: the alignment's `anchor_line_match` must show a contiguous run of this
-act's anchor line at least `ANCHOR_LINE_RUN_FLOOR` characters long, or the whole
-line where the line is shorter. Without that measurement two coincidental
-characters attached a witness whose text had nothing to do with the page.
-
-`comparable` is the separate question of whether text
-exists to compare for THIS act — a page witness is comparable exactly when it is
-attached, its alignment is `aligned`, and its page record retains a string; an
-act-scoped chair, exactly when it is attached and its own retained derived
-`payload` is a string. A structured native report is therefore retained, visible
-and incomparable. `comparable` implies `attached`, never the reverse, and
-`common/contracts/outcomes.py::witness_coverage` counts a chair toward the
-witness floor only when BOTH hold — the guard that lets `dissent_against` record
-a structured witness as `compared: "unknown"` instead of refusing the run
-outright. Neither reader takes `comparable` on trust: the Perlector
-(`act_attachment_view`) and the Recensor (`act_attachment_facts`) each re-derive
-it from the Testimonium this entry names. `attached` is re-derived by the
-Perlector for both scopes and by the Recensor for both scopes: page witnesses
-from their geometry against the sealed proposal, and act-scoped witnesses from
-the outcome of the exact current Testimonium the attachment must reference.
-The Recensor derives act-scoped `comparable` from that same current record's
-retained payload, not from the attachment row's own `attached` boolean; forging
-both booleans false therefore cannot preserve the equation while removing a
-completed chair from the floor. All three files pin the shapes above; a field
-change here is an interface change and lands in all three in the same commit.
-
-The Recensor takes an act's chair-level `attached` as the OR across that chair's
-contributing pages (`act_attachment_facts`): the act-level floor asks whether the
-chair delivered this act at all, and a continuation page with no anchor of its own
-may not erase the primary page's valid attachment. Every page reference stays
-separately checked by the page-scoped content denominator beside it.
-
 ## Attempt tally
 
-The stage's derived manifest is rebuilt from immutable Testimonia, compared to its
-stored inventory, and checked against the Testimonium schema, provenance, receipts,
-and exact region inputs before a re-read may append. The full act/chair denominator
-is reconciled at the close of a pass rather than before one — see the last section,
-which says why. `attempt_tally()` returns `KNOWN` only when that inventory is
-whole. An absent, garbled, truncated or divergent inventory returns `UNKNOWN`,
-`count=null`, `hold=true`, and the check runs before anything is written, so a
-re-read over a damaged inventory appends nothing. The stored inventory counts as
-evidence that attempts existed even when the walk finds none left: a folder whose
-whole Testimonium layer is gone but whose manifest still describes it holds, rather
-than taking the first-run path and writing attempt 1 over a history that recorded
-more. The closing tally can also hold *after* an attempt was appended — the append
+The stage's derived manifest is rebuilt from immutable page Testimonia, compared
+to its stored inventory, and each record is checked against the page schema, the
+facts this stage computes, the page roster, the shared page-record validator,
+its native capture's bytes and every retained call record's sampling. `attempt_tally()`
+returns `KNOWN` only when that inventory is whole. An absent, garbled, truncated
+or divergent inventory returns `UNKNOWN`, `count=null`, `hold=true`, and the
+check runs before anything is written, so a later pass over a damaged inventory
+appends nothing. The stored inventory counts as evidence that attempts existed
+even when the walk finds none left: a folder whose whole Testimonium layer is
+gone but whose manifest still describes it holds, rather than taking the
+first-run path and writing attempt 1 over a history that recorded more. The
+closing tally can also hold *after* an attempt was appended — the append
 happened and is retained; what the hold says is that the folder no longer
-reconciles.
+reconciles. An accounting imbalance (`FatalAccounting`) is never turned into a
+hold: it is fatal, and no completion seal is published.
 
 **This channel is the count of attempts, not a witness's own output.** A provider
 response the stage could not retain is one witness's channel, and the `failed`
 attempt naming it — with `content_health.recordable=false` and a reason — is a
-counted, accounted record. It leaves the tally `KNOWN`, the act under-witnessed
-and the run visibly partial, and it does not stop the Perlector reading ink that
-was never in doubt. Two `recordable=false` shapes are still `UNKNOWN`, because
-neither can be resolved in the run's favour: a record claiming `read` or
-`genuinely-empty` while saying nothing could retain what it read, and a `failed`
-record carrying no reason.
+counted, accounted record. It leaves the tally `KNOWN`, the page under-witnessed
+and the run visibly partial, and it does not stop the Perlector reading the
+page. Two `recordable=false` shapes are still `UNKNOWN`, because neither can be
+resolved in the run's favour: a record claiming `read` or `genuinely-empty`
+while saying nothing could retain what it read, and a `failed` record carrying
+no reason.
 
-This check runs immediately after Stage 3 and before a later re-read; the
-orchestrator stops at an Attestatores `UNKNOWN` hold, so an older complete export
-cannot mask it. Direct invocation of a later owner stage still needs that owner's
-own evidence-boundary check and is not simulated here.
-
-**Whether every configured act/chair pair is accounted for is a closing check, not
+**Whether every sealed page/chair pair is accounted for is a closing check, not
 a precondition.** A pass killed part way through leaves attempts on disk and no
 stored manifest, and the pass that would supply the missing pairs may not be
-refused for their being missing. The stored manifest is still required before a
-re-read, per spec 07 test 5, so an interrupted pass holds until someone
-re-derives it — `RunTree.write_manifest("attestatores")`, one step, losing
-nothing because the manifest is derived from the immutable attempts. After that
-the pass resumes: the attempts already written are byte-identical repeats and the
-missing ones are created. If the denominator still does not reconcile once the
-pass has run, the folder holds.
+refused for their being missing. Once a pass has sealed the stage, its stored
+manifest is required before a later pass, so a folder that lost it holds until
+someone re-derives it — `RunTree.write_manifest("attestatores")`, one step,
+losing nothing because the manifest is derived from the immutable attempts.
+After that the pass resumes: the attempts already written are byte-identical
+repeats and the missing ones are created. If the denominator still does not
+reconcile once the pass has run, the folder holds.
 
 One thing to know before reaching for that step: it loses nothing *while the
 attempts it describes are still on disk*. Over a folder whose attempts are gone,

@@ -113,7 +113,6 @@ from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity, is_witness_role
 from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
-from common.contracts.prior_draft import BLIND_READ_MODES
 from common.contracts.stages import SEAL_PREDECESSORS
 from common.runtree.store import RunTree
 from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
@@ -244,7 +243,6 @@ class RunPlan:
     interval_seconds: float
     dry_run: bool
     mechanics_qualification: bool = False
-    blind_read: str = "off"
     stage: str | None = None
     from_stage: str | None = None
     to_stage: str | None = None
@@ -390,8 +388,6 @@ class RunPlan:
         command += ["--store-root", str(store_root)]
         if self.mechanics_qualification:
             command.append("--mechanics-qualification")
-        if self.blind_read != "off":
-            command += ["--blind-read", self.blind_read]
         if self.stage is not None:
             command += ["--stage", self.stage]
         if self.from_stage is not None and self.to_stage is not None:
@@ -431,7 +427,6 @@ class RunPlan:
             "interval_seconds": self.interval_seconds,
             "dry_run": self.dry_run,
             "mechanics_qualification": self.mechanics_qualification,
-            "blind_read": self.blind_read,
             "selection": self.selection_record(),
             "triage_decision_manifest": str(self.triage_decision_manifest)
             if self.triage_decision_manifest
@@ -470,8 +465,8 @@ class RunPlan:
         selected = set(self.selected_stages())
         roles: set[str] = set()
         if "designator" in selected:
-            roles.update(("designator_structure", "secondary_proposer", "designator_surya"))
-        if selected & {"perlector", "recovery"}:
+            roles.update(("secondary_proposer", "designator_surya"))
+        if "perlector" in selected:
             roles.add("perlector")
         try:
             configured = load_models_toml(self.models_config).chairs
@@ -491,20 +486,15 @@ def _require_selection_predecessor(plan: RunPlan) -> None:
     """Refuse a selection whose first stage's predecessor is not sealed in this run's tree.
 
     The orchestrator refuses the same thing when that stage opens; asking
-    first keeps the refusal ahead of a paid bootstrap. Recovery has no stage
-    program of its own, so it is checked as Archetypus, whose predecessor is
-    Recensor. The orchestrator checks that seal for recovery only once the run
-    has a ``run.json``; this check asks for it always, which refuses earlier,
-    never later.
+    first keeps the refusal ahead of a paid bootstrap.
     """
 
     first = plan.selected_stages()[0]
-    consumer = "archetypus" if first == "recovery" else first
-    predecessor = SEAL_PREDECESSORS.get(consumer)
+    predecessor = SEAL_PREDECESSORS.get(first)
     if predecessor is None:
         return
     try:
-        verify_predecessor_seal(RunTree(plan.run_root, plan.run_id), consumer)
+        verify_predecessor_seal(RunTree(plan.run_root, plan.run_id), first)
     except ContractError as error:
         raise RunRefusal(
             f"starting at {first} requires this run's sealed {predecessor} stage: {error}",
@@ -574,13 +564,6 @@ def build_parser() -> bootstrap_main.RefusingParser:
         "--mechanics-qualification",
         action="store_true",
         help="run real mechanics with unproven profiles; does not mark them proven",
-    )
-    parser.add_argument(
-        "--blind-read",
-        choices=BLIND_READ_MODES,
-        default="off",
-        help="the Perlector's blind read, passed to the orchestrator (sealed into the run): "
-        "off (default), fed, or saved as a training witness",
     )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--stage", choices=SEQUENCE_NAMES)
@@ -731,7 +714,6 @@ def resolve_run_plan(
         interval_seconds=interval,
         dry_run=args.dry_run or bootstrap.dry_run,
         mechanics_qualification=args.mechanics_qualification,
-        blind_read=args.blind_read,
         stage=stage,
         from_stage=from_stage,
         to_stage=to_stage,

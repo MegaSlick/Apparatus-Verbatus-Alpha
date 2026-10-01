@@ -1,17 +1,21 @@
-"""Connected-component labelling over an ink pixel set, shared by the Designator and the audit.
+"""Connected-component labelling over an ink pixel set.
 
 Connectivity is Chebyshev: two ink pixels join when at most `gap_tolerance_px`
 blank pixels separate them in any direction, so diagonal neighbours join even
 at a tolerance of zero. Components come back in one total order: origin
 `(top, left)`, and among components sharing an origin, their smallest `(x, y)`
-ink pixel. `pipeline/2_designator/_test_support.label_components_reference`
-is the per-pixel oracle both properties are tested against.
+ink pixel. `common/test_background_components.label_components_reference` is
+the per-pixel oracle both properties are tested against.
 
-`common/residual_ink.py` labels the page itself, at the Designator's derived
-margin under the same sealed `gap_tolerance_px` and `page_spanning_area_bp`,
-so the page-spanning component it removes from the audit is the one the
-Designator withholds from grouping, found from the same bytes without reading
-the stage it audits.
+`common/residual_ink.py`'s outside-coverage audit uses it to name a page's
+page-spanning component, so it does not report that pixel population as
+ordinary outside-coverage ink. It labels the page at its own derived margin
+under the sealed `gap_tolerance_px` and `page_spanning_area_bp`. What stays
+the audit's own is the contrast it *counts* ink at, which is the half of the instrument
+that makes it a second opinion rather than a restatement -- measured on 44 real
+pages, using the audit's own looser ink set for the margin instead merges the
+writing into the page-spanning component and hides outside-coverage ink on 41
+of the 44.
 """
 
 from typing import TypedDict
@@ -80,17 +84,20 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
 
     The component geometry alone; `label_component_runs` below keeps each
     component's own runs, for the one caller that needs pixels back rather
-    than a rectangle. `scan_ink_components` labels every ink pixel through
-    here.
+    than a rectangle.
 
-    Labels row runs rather than pixels: a per-pixel union-find costs
-    `ink_pixels x radius^2` dictionary operations (383 s and 2.17 GB for one
-    photographed page at the sealed `gap_tolerance_px = 3`), while real ink is
-    horizontally contiguous, so a page of millions of pixels is a few hundred
-    thousand runs and the neighbourhood probe becomes an interval overlap test.
-    `test_structure.py` compares the result with the per-pixel oracle in
-    `pipeline/2_designator/_test_support.py`: same components, same bounds and
-    the same total order.
+    A row-run substitution over the retired per-pixel union-find
+    (kept in `common/test_background_components.py` as this one's oracle), made on
+    measurement: the per-pixel version cost `ink_pixels x radius^2` dictionary
+    operations, measured at 383 s and 2.17 GB for one photographed page at the
+    sealed `gap_tolerance_px = 3`. Real ink is horizontally contiguous, so a
+    page of millions of pixels is a few hundred thousand runs, turning the
+    per-pixel neighbourhood probe into an interval overlap test.
+
+    The contract is unchanged and proved, not asserted: same components, same
+    bounds, same `gap_tolerance_px` semantics, and the same total order (origin
+    `(top, left)`, ties broken by sorted `(x, y)` ink), with `test_background_components.py`
+    comparing the two implementations directly on every page shape.
     """
     return [
         component
@@ -113,8 +120,7 @@ def label_component_runs(
     The input is runs rather than a pixel set because the caller that needs the
     runs back (`common/residual_ink.py`) already holds the page as translated
     scanlines and would otherwise materialise one Python tuple per ink pixel to
-    hand them over -- the memory `structure.py`'s own docstring names as the
-    remaining cost of `ink_pixels`.
+    hand them over.
     """
     if gap_tolerance_px < 0:
         raise ContractError(f"gap tolerance {gap_tolerance_px} is negative")

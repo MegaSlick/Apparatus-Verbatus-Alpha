@@ -4,9 +4,9 @@ Nothing here starts a pod, opens a socket, or loads a model. The run tree is
 built by the real Door-through-Attestatores chain as subprocesses, and then
 `run.py`'s own `main` is called in this process with the fake endpoint from
 `operations/serving/fakes.py` behind it — so what is proved is the stage's
-wiring: which reader the sealed catalogue selects, what the record carries
-about the call that produced it, which acts a resumed pass declines to ask
-about again, and which engine answers stop the pass rather than being published.
+wiring: which reader the sealed catalogue selects, how a live call's record is
+held to the call that produced it, how a resumed pass accounts for retained
+replies, and that the chair is stopped before the seal.
 
 The selector is deliberately not a flag on this stage. A run is live because the
 serving-recipe row sealed into its `config_digest` says `kind = "vllm"` for the
@@ -29,17 +29,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import dissent
 import pytest
 
-from common import perlector_audit
-from common.chairs.models import ChairIdentity
 from common.chairs.registry import ChairRegistry
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
-from common.contracts.envelope import validate_input_refs
+from common.contracts.canonical import digest_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
-from common.decoding import SAMPLING_FIELDS, load_decoding_policy
+from common.decoding import load_decoding_policy
+from common.page_path import distinct_refs
+from common.page_testimonia import validate_page_testimonium_record
 from common.runtree.store import SERVING_LOGS_DIR, RunTree
 from common.sealed_config import read_sealed_toml
 from common.stage import StageContext
@@ -54,17 +52,12 @@ from operations.serving.config import (
 )
 from operations.serving.errors import ServiceStopError
 from operations.serving.fakes import (
-    ABSENT,
     FakeEndpoint,
     FakeLauncher,
     FakePackages,
     FakeRegistry,
     ScriptedAnswer,
-    scripted_prompt_too_long,
-    shipped_chair_decoding,
-    shipped_decoding_policy,
 )
-from operations.serving.http import EndpointUnavailable, HttpResponse
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher
 from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 
@@ -222,63 +215,9 @@ def chained_run(tmp_path_factory) -> tuple[Path, Path]:
     return root, catalogue
 
 
-@pytest.fixture(scope="module")
-def fed_chained_run(tmp_path_factory) -> tuple[Path, Path]:
-    """The same chain sealed with `--blind-read fed`, which makes a Pass A that the reading is shown."""
-    base = tmp_path_factory.mktemp("live-perlector-fed")
-    catalogue = _live_catalogue(base)
-    root = base / "runs"
-    _chain_through_attestatores(
-        root,
-        catalogue,
-        extra=(
-            "--blind-read",
-            "fed",
-        ),
-    )
-    return root, catalogue
-
-
-@pytest.fixture(scope="module")
-def saved_chained_run(tmp_path_factory) -> tuple[Path, Path]:
-    """The same chain sealed with `--blind-read saved`."""
-    base = tmp_path_factory.mktemp("live-perlector-saved")
-    catalogue = _live_catalogue(base)
-    root = base / "runs"
-    _chain_through_attestatores(root, catalogue, extra=("--blind-read", "saved"))
-    return root, catalogue
-
-
 @pytest.fixture()
 def live_run(chained_run, tmp_path: Path) -> tuple[Path, Path]:
     template, catalogue = chained_run
-    root = tmp_path / "runs"
-    shutil.copytree(template, root)
-    return root, catalogue
-
-
-@pytest.fixture(scope="module")
-def declaring_chained_run(tmp_path_factory) -> tuple[Path, Path]:
-    """A run tree sealed under `no-readable-text-reading` throughout.
-
-    `config_digest` binds the scenario along with everything else
-    (`run_config_bindings`), so a live Perlector pass over this scenario
-    must be sealed by the whole chain under it — asking a run built as
-    `happy` to read as a different scenario is refused by `open_context`
-    itself (`IncompatibleReuse`) before the Perlector's own guard is ever
-    reached, and rightly so: it is a different question from the one this
-    guard answers.
-    """
-    base = tmp_path_factory.mktemp("live-perlector-declaring")
-    catalogue = _live_catalogue(base)
-    root = base / "runs"
-    _chain_through_attestatores(root, catalogue, scenario="no-readable-text-reading")
-    return root, catalogue
-
-
-@pytest.fixture()
-def declaring_run(declaring_chained_run, tmp_path: Path) -> tuple[Path, Path]:
-    template, catalogue = declaring_chained_run
     root = tmp_path / "runs"
     shutil.copytree(template, root)
     return root, catalogue
@@ -340,37 +279,6 @@ def _serving_factory(
     return factory
 
 
-_REPROOF_RESPONSE_MARKER = "Required response object, shown with unchanged replacements:\n"
-
-
-def _unchanged_reproof_response(body: bytes | None) -> str | None:
-    """Return the exact unchanged edit envelope rendered into an audit request."""
-    if body is None:
-        return None
-    request = json.loads(body)
-    for message in request.get("messages", []):
-        content = message.get("content", [])
-        parts = [{"type": "text", "text": content}] if isinstance(content, str) else content
-        for part in parts:
-            text = part.get("text") if isinstance(part, dict) else None
-            if isinstance(text, str) and _REPROOF_RESPONSE_MARKER in text:
-                response = text.rsplit(_REPROOF_RESPONSE_MARKER, 1)[1]
-                parsed = json.loads(response)
-                assert parsed["schema"] == perlector_audit.RESPONSE_SCHEMA
-                return response
-    return None
-
-
-class _ExactAuditEndpoint(FakeEndpoint):
-    """Serve the prompt's unchanged exact edits while scripting ordinary readings."""
-
-    def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
-        response = _unchanged_reproof_response(body)
-        if method == "POST" and url.endswith("/chat/completions") and response is not None:
-            self._answers.insert(0, ScriptedAnswer(content=response, finish_reason="stop"))
-        return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
-
-
 def _run_perlector(
     live_run,
     tmp_path: Path,
@@ -390,15 +298,12 @@ def _run_perlector(
     for a real Perlector invocation of a resumed run.
     """
     root, catalogue = live_run
-    endpoint = _ExactAuditEndpoint(
+    endpoint = FakeEndpoint(
         served_model_id=SERVED_MODEL_ID,
         blob_store=_TreeBlobs(root),
         assert_retained_before_next_request=True,
     )
-    # Padded rather than exactly counted: the number of reader calls per act is
-    # the pass structure's business (Pass A, Pass B, and a re-proof when the
-    # frozen flags ask for one), and a test that pinned it here would fail on
-    # any honest change to that structure while proving nothing about the seam.
+    # Padded rather than exactly counted: one call per page the pass reads.
     endpoint.script(*answers, *(answers[-1:] or ()) * 60)
     if endpoint_out is not None:
         endpoint_out.append(endpoint)
@@ -423,20 +328,6 @@ def _run_perlector(
         ],
     )
     return endpoint, perlector.main(serving_factory=factory)
-
-
-def _published_readings(root: Path) -> list[dict[str, Any]]:
-    """Every Perlectio on disk that records an attempted reading.
-
-    Read from the artifact files rather than through a manifest: a pass that
-    stopped never wrote one, and these tests need to see exactly what a stopped
-    pass did and did not publish.
-    """
-    directory = root / "r" / "4_perlector" / "artifacts" / "perlectio"
-    if not directory.exists():
-        return []
-    records = [json.loads(path.read_text(encoding="utf-8")) for path in directory.glob("*.json")]
-    return [record for record in records if record["outcome"] != "not-run"]
 
 
 # --- the selector: the sealed row kind, and nothing else ----------------------
@@ -509,482 +400,17 @@ def test_a_placement_table_that_is_not_the_sealed_one_is_refused(chained_run):
         perlector.perlector_serving_mode(context, args, _perlector_identity())
 
 
-def test_an_absent_chair_resolves_to_fixture_without_consulting_the_catalogue():
+def test_an_absent_chair_resolves_to_fixture_without_consulting_the_catalogue(
+    absent_third_chair_config,
+):
     """An absence has no identity to look a row up by, so none is looked up."""
-    absent = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).resolve(
-        "secondary_proposer"
-    )
+    absent = ChairRegistry.from_toml(str(absent_third_chair_config)).resolve("attestator_3")
     context = SimpleNamespace(serving_config_inputs=None)
     args = SimpleNamespace(serving_recipes_config="/nonexistent.toml", placement_tier=None)
     assert perlector.perlector_serving_mode(context, args, absent) == "fixture"
 
 
 # --- a live pass, and what its record carries ---------------------------------
-
-
-def test_a_live_pass_reads_through_the_chair_and_binds_the_call_it_read_from(
-    live_run, tmp_path, monkeypatch
-):
-    root, catalogue = live_run
-    endpoint, exit_code = _run_perlector(
-        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
-    )
-    assert exit_code == 0
-    assert endpoint.requests, "the live pass sent no reading request"
-
-    tree = RunTree(root, "r")
-    readings = _published_readings(root)
-    assert readings, "the live pass published no reading"
-    for record in readings:
-        payload = record["payload"]
-        assert payload["text"] == READING
-        call = payload["engine_call"]
-        assert call["finish_reason"] == "stop"
-        assert call["served_model_id"] == SERVED_MODEL_ID
-        # The retained response is on disk, at the digest the record names, and
-        # the envelope binds it as a direct input rather than merely citing it.
-        assert tree.resolve(call["raw_response_ref"]["relative_path"]).exists()
-        assert call["raw_response_ref"]["sha256"] == call["response_sha256"]
-        bound = {reference["relative_path"] for reference in record["inputs"]}
-        assert call["raw_response_ref"]["relative_path"] in bound
-        assert call["call_record_ref"]["relative_path"] in bound
-        # The receipt is the one the live service published, never the declared
-        # fixture stand-in.
-        receipt = tree.read_run_receipt(payload["provenance"]["receipt_ref"])
-        assert receipt["engine"] == "vllm"
-        assert receipt["chair"] == "perlector"
-
-
-def test_live_reproof_call_missing_generation_is_a_schema_refusal(live_run, tmp_path, monkeypatch):
-    root, _catalogue = live_run
-    _endpoint, exit_code = _run_perlector(
-        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
-    )
-    assert exit_code == 0
-    tree = RunTree(root, "r")
-    for reading in _published_readings(root):
-        finding_ref = reading["payload"]["audit"]["finding_ref"]
-        finding = json.loads(tree.read_bytes(finding_ref["relative_path"]))
-        call_evidence = finding["payload"]["reproof_call"]
-        if call_evidence is not None:
-            break
-    else:
-        raise AssertionError("the live builder produced no re-proof call")
-
-    original_call_ref = call_evidence["call_record_ref"]
-    call = json.loads(tree.read_bytes(original_call_ref["relative_path"]))
-    call.pop("generation_sent")
-    malformed_bytes = canonical_bytes(call)
-    _digest, retained = tree.put_blob(PERLECTOR, malformed_bytes)
-    malformed_ref = {
-        "relative_path": retained.relative_path,
-        "sha256": digest_bytes(malformed_bytes),
-    }
-    malformed_evidence = {**call_evidence, "call_record_ref": malformed_ref}
-    reading = copy.deepcopy(reading)
-    reading["inputs"] = [
-        malformed_ref if reference == original_call_ref else reference
-        for reference in reading["inputs"]
-    ]
-    draft_ref = reading["payload"]["audit"]["draft_ref"]
-    draft = json.loads(tree.read_bytes(draft_ref["relative_path"]))["payload"]
-    request = perlector_audit.audit_request(
-        act_key=draft["act_key"],
-        attempt_ordinal=draft["attempt_ordinal"],
-        draft_ref=draft_ref,
-        semi_final_text=draft["semi_final_text"],
-        flags=draft["flags"],
-        policy_schema=draft["policy"]["schema"],
-    )
-    with pytest.raises(SchemaRefusal, match="no recorded generation object"):
-        perlector_audit._validate_live_reproof_request(
-            tree, reading, malformed_evidence, request, shipped_decoding_policy()[0]
-        )
-
-
-def _first_live_reproof(root: Path):
-    """The first published reading whose audit carried a live re-proof call, with
-    its call evidence and the audit request that call answered."""
-    tree = RunTree(root, "r")
-    for reading in _published_readings(root):
-        finding_ref = reading["payload"]["audit"]["finding_ref"]
-        finding = json.loads(tree.read_bytes(finding_ref["relative_path"]))
-        call_evidence = finding["payload"]["reproof_call"]
-        if call_evidence is not None:
-            break
-    else:
-        raise AssertionError("the live builder produced no re-proof call")
-    draft_ref = reading["payload"]["audit"]["draft_ref"]
-    draft = json.loads(tree.read_bytes(draft_ref["relative_path"]))["payload"]
-    request = perlector_audit.audit_request(
-        act_key=draft["act_key"],
-        attempt_ordinal=draft["attempt_ordinal"],
-        draft_ref=draft_ref,
-        semi_final_text=draft["semi_final_text"],
-        flags=draft["flags"],
-        policy_schema=draft["policy"]["schema"],
-    )
-    return tree, reading, call_evidence, request
-
-
-def test_the_audit_rebuild_holds_a_reproof_call_to_the_sealed_perlector_row(
-    live_run, tmp_path, monkeypatch
-):
-    root, _catalogue = live_run
-    _run_perlector(
-        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
-    )
-    tree, reading, call_evidence, request = _first_live_reproof(root)
-    policy = shipped_decoding_policy()[0]
-    # Positive control: the retained call verifies against the sealed row.
-    perlector_audit._validate_live_reproof_request(tree, reading, call_evidence, request, policy)
-    with pytest.raises(SchemaRefusal, match="without the run's sealed decoding policy"):
-        perlector_audit._validate_live_reproof_request(tree, reading, call_evidence, request, None)
-    # A policy whose Perlector row differs is not the one this call was sent under.
-    moved = copy.deepcopy(policy)
-    moved["chair_decoding"]["perlector"]["presence_penalty"] = 1.0
-    with pytest.raises(SchemaRefusal, match="sampling is off"):
-        perlector_audit._validate_live_reproof_request(tree, reading, call_evidence, request, moved)
-
-
-def test_the_pass_asks_the_engine_exactly_once_per_reading_and_never_retries(
-    live_run, tmp_path, monkeypatch
-):
-    """One request per reader call, and one reader call per arm.
-
-    The pipeline does not gate model behaviour. A retry, a second
-    sample, or a re-ask on a disappointing answer would all show up here as more
-    requests than the pass has arms.
-    """
-    root, catalogue = live_run
-    endpoint, _exit = _run_perlector(
-        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
-    )
-    readings = _published_readings(root)
-    # Pass A and Pass B for every act that was read, plus at most one re-proof
-    # each; nothing in this stage may ask twice for one arm.
-    assert 2 * len(readings) <= len(endpoint.requests) <= 3 * len(readings)
-    # Every request carries the Perlector's sealed sampling row, exactly.
-    sampling = shipped_chair_decoding("perlector")
-    for request in endpoint.requests:
-        assert {key: request[key] for key in SAMPLING_FIELDS if key in request} == sampling
-        assert request["stream"] is False
-        assert request["model"] == SERVED_MODEL_ID
-
-
-def test_an_engine_length_publishes_a_held_truncation_and_never_a_reading(
-    live_run, tmp_path, monkeypatch
-):
-    root, _catalogue = live_run
-    _endpoint, exit_code = _run_perlector(
-        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="length")
-    )
-    readings = _published_readings(root)
-    assert readings
-    for record in readings:
-        assert record["outcome"] == "truncated"
-        truncation = record["payload"]["truncation"]
-        assert truncation["classification"] == "truncated"
-        assert truncation["signals"]["stop_reason_declared"] == "length"
-        assert record["payload"]["engine_call"]["finish_reason"] == "length"
-    # The stage still completes: a truncated act is *recorded* as truncated and
-    # the Recensor routes it to review. Losing the run's other acts to one held
-    # reading is the failure this stage does not have.
-    assert exit_code == 0
-
-
-def test_a_reply_that_reaches_its_bound_holds_the_act_and_is_never_asked_again(
-    live_run, tmp_path, monkeypatch
-):
-    """The sealed output bound stops a runaway, and a stop is a hold, not a re-run.
-
-    Distinct bounds are sealed so each request shows which one it was sent
-    under: a reading gets the reading bound, a re-proof its own.
-    """
-    root, _catalogue = live_run
-    reading_bound, reproof_bound = 100, 200
-    monkeypatch.setattr(
-        perlector, "perlector_max_tokens", lambda _policy: (reading_bound, reproof_bound)
-    )
-    endpoint, _exit = _run_perlector(
-        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="length")
-    )
-
-    def is_reproof(request: dict[str, Any]) -> bool:
-        return any(
-            "zero-based Python Unicode code-point offsets" in part.get("text", "")
-            for part in request["messages"][0]["content"]
-        )
-
-    reproofs = [request for request in endpoint.requests if is_reproof(request)]
-    readings_sent = [request for request in endpoint.requests if not is_reproof(request)]
-    assert reproofs and readings_sent
-    assert {request["max_tokens"] for request in reproofs} == {reproof_bound}
-    assert {request["max_tokens"] for request in readings_sent} == {reading_bound}
-    readings = _published_readings(root)
-    assert readings
-    assert all(record["outcome"] == "truncated" for record in readings)
-    # Pass B and the one re-proof each ask once (Pass A runs only when --blind-read is fed or saved);
-    # the stop re-asks nothing.
-    assert len(endpoint.requests) == 2 * len(readings)
-    retained_bounds = {
-        json.loads(path.read_bytes())["generation_sent"]["max_tokens"]
-        for path in (root / "r" / "4_perlector" / "blobs" / "sha256").glob("*")
-        if b'"generation_sent"' in path.read_bytes()
-    }
-    assert retained_bounds == {reading_bound, reproof_bound}
-
-
-def test_an_unreported_stop_reason_holds_the_reading_as_unknown(live_run, tmp_path, monkeypatch):
-    """An engine that reported nothing is never `complete` (`truncation.py`).
-
-    The absence travels verbatim: `finish_reason` is `null` on the call record
-    and `stop_reason_declared` is `None` on the instrument, rather than a `"stop"`
-    nothing observed.
-    """
-    root, _catalogue = live_run
-    _endpoint, _exit = _run_perlector(
-        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason=ABSENT)
-    )
-    readings = _published_readings(root)
-    assert readings
-    for record in readings:
-        assert record["outcome"] == "truncated"
-        assert record["payload"]["truncation"]["classification"] == "unknown"
-        assert record["payload"]["truncation"]["signals"]["stop_reason_declared"] is None
-        assert record["payload"]["engine_call"]["finish_reason"] is None
-
-
-def test_an_unrecognized_stop_reason_publishes_one_retained_act_failure_and_continues(
-    live_run, tmp_path, monkeypatch
-):
-    """`"abort"` is neither a completion nor a cutoff, so it is refused by name.
-
-    The response remains retained, but it becomes the failed act's direct
-    evidence rather than aborting every later act.  A future invocation sees
-    the immutable failed Perlectio and does not ask the chair for it again.
-    """
-    root, catalogue = live_run
-    endpoint, exit_code = _run_perlector(
-        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="abort")
-    )
-    assert exit_code == 0
-    failures = [record for record in _published_readings(root) if record["outcome"] == "failed"]
-    assert failures
-    failure = failures[0]
-    assert failure["payload"]["failure"]["kind"] == "engine-signal"
-    assert failure["payload"]["failure"]["code"] == "ENGINE_FINISH_REASON_UNRECOGNIZED"
-    assert failure["payload"]["failure"]["response_completion"] == "complete"
-    assert failure["payload"]["failure"]["raw_response_ref"] in failure["inputs"]
-    context = _page_context(root, catalogue, monkeypatch)
-    forged = copy.deepcopy(failure)
-    forged["payload"]["failure"]["call_record_ref"] = None
-    forged["self_hash"] = self_hash(forged)
-    with pytest.raises(SchemaRefusal, match="completed engine or chair response failure"):
-        perlector.validate_failed_perlectio(context, forged, forged["subject_id"])
-    call_ref = failure["payload"]["failure"]["call_record_ref"]
-    call = json.loads(RunTree(root, "r").read_bytes(call_ref["relative_path"]))
-    call["generation_sent"]["seed"] = [call["generation_sent"]["seed"]]
-    _digest, listed = RunTree(root, "r").put_blob(PERLECTOR, json.dumps(call).encode())
-    listed_ref = context.input_ref(listed.relative_path)
-    listed_seed = copy.deepcopy(failure)
-    listed_seed["payload"]["failure"]["call_record_ref"] = listed_ref
-    listed_seed["inputs"] = [
-        listed_ref if reference == call_ref else reference for reference in listed_seed["inputs"]
-    ]
-    listed_seed["self_hash"] = self_hash(listed_seed)
-    with pytest.raises(SchemaRefusal, match="sent seed \\["):
-        perlector.validate_failed_perlectio(context, listed_seed, listed_seed["subject_id"])
-    evidence_free_live = copy.deepcopy(failure)
-    evidence_free_live["payload"]["failure"].update(
-        {
-            "phase": "audit-reproof",
-            "kind": "reproof-response",
-            "code": "ReproofResponseRefusal",
-            "raw_response_ref": None,
-            "call_record_ref": None,
-            "request_sha256": None,
-            "receipt_ref": None,
-            "served_model_id": None,
-            "response_completion": None,
-        }
-    )
-    evidence_free_live["self_hash"] = self_hash(evidence_free_live)
-    with pytest.raises(SchemaRefusal, match="live re-proof failure omits"):
-        perlector.validate_failed_perlectio(
-            context, evidence_free_live, evidence_free_live["subject_id"]
-        )
-    assert endpoint.requests
-    resumed, resumed_exit = _run_perlector(
-        live_run,
-        tmp_path / "resume",
-        monkeypatch,
-        ScriptedAnswer(content="must not be requested", finish_reason="stop"),
-    )
-    assert resumed_exit == 0
-    assert resumed.requests == [], "a sealed failed act was re-asked on resume"
-    blobs = root / "r" / "4_perlector" / "blobs" / "sha256"
-    retained = [path.read_bytes() for path in blobs.glob("*")] if blobs.exists() else []
-    assert any(b'"abort"' in body for body in retained), "the refusing response was not retained"
-
-
-def test_a_body_that_is_not_a_reading_becomes_a_retained_act_failure(
-    live_run, tmp_path, monkeypatch
-):
-    """A malformed completed response is retained and held act-locally."""
-    root, _catalogue = live_run
-    _endpoint, exit_code = _run_perlector(
-        live_run, tmp_path, monkeypatch, ScriptedAnswer(body=b"{ this is not a reading")
-    )
-    assert exit_code == 0
-    failures = [record for record in _published_readings(root) if record["outcome"] == "failed"]
-    assert failures
-    for record in failures:
-        failure = record["payload"]["failure"]
-        assert failure["kind"] == "engine-signal"
-        assert failure["code"] == "CHAIR_RESPONSE_INVALID"
-        assert failure["phase"] == "establishing"
-        assert failure["response_completion"] == "complete"
-        assert "text" not in record["payload"] and "audit" not in record["payload"]
-        for field in ("raw_response_ref", "call_record_ref", "receipt_ref"):
-            assert failure[field] in record["inputs"]
-        assert failure["request_sha256"] and failure["served_model_id"]
-
-
-def test_an_invalid_failed_record_is_refused_before_immutable_publication(
-    live_run, tmp_path, monkeypatch
-):
-    original = perlector._failure_record
-
-    def corrupt_call_reference(error, *, phase):
-        failure = original(error, phase=phase)
-        assert failure is not None and failure["call_record_ref"] is not None
-        failure["call_record_ref"]["sha256"] = "0" * 64
-        return failure
-
-    monkeypatch.setattr(perlector, "_failure_record", corrupt_call_reference)
-    with pytest.raises(SchemaRefusal, match="does not match retained bytes"):
-        _run_perlector(
-            live_run,
-            tmp_path,
-            monkeypatch,
-            ScriptedAnswer(content=READING, finish_reason="abort"),
-        )
-    assert not [
-        record for record in _published_readings(live_run[0]) if record["outcome"] == "failed"
-    ]
-
-
-def test_a_resumed_live_pass_never_asks_the_chair_about_an_act_already_sealed(
-    live_run, tmp_path, monkeypatch
-):
-    """A live chair cannot reproduce immutable bytes.
-
-    A fixture resume republishes byte-identical readings and the store reuses
-    them. A live one cannot, so an act already sealed at this ordinal is left
-    exactly as it is and never asked again — and with every act already sealed,
-    no chair is started at all.
-    """
-    root, _catalogue = live_run
-    first, _exit = _run_perlector(
-        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
-    )
-    sealed = len(_published_readings(root))
-    assert sealed and first.requests
-
-    second, exit_code = _run_perlector(
-        live_run,
-        tmp_path / "resume",
-        monkeypatch,
-        ScriptedAnswer(
-            content="A SECOND READING THAT MUST NEVER BE ASKED FOR", finish_reason="stop"
-        ),
-    )
-    assert exit_code == 0
-    assert second.requests == [], "a resumed live pass re-read an act it had already sealed"
-    assert len(_published_readings(root)) == sealed
-
-
-class _Interrupted(Exception):
-    """A process death injected between two publications of one act's attempt."""
-
-
-def _interrupt_after(monkeypatch, kind: str) -> None:
-    """Let the real publication of `kind` land, then kill the pass.
-
-    The artifact is on disk exactly as a SIGKILL, an OOM or a dropped
-    connection would have left it: immutable, at an identity the next
-    invocation recomputes, and with no Perlectio beside it.
-    """
-    real_publish = StageContext.publish
-    struck = False
-
-    def publish_then_die(self, **kwargs):
-        nonlocal struck
-        result = real_publish(self, **kwargs)
-        if kwargs["kind"] == kind and not struck:
-            struck = True
-            raise _Interrupted(f"simulated process death after publishing {kind}")
-        return result
-
-    monkeypatch.setattr(StageContext, "publish", publish_then_die)
-
-
-def _artifacts(root: Path, kind: str) -> list[Path]:
-    directory = root / "r" / "4_perlector" / "artifacts" / kind
-    return sorted(directory.glob("*.json")) if directory.exists() else []
-
-
-def _perlectiones(root: Path) -> dict[str, dict[str, Any]]:
-    """Every Perlectio on disk by act, read from the files rather than a manifest."""
-    records = [
-        json.loads(path.read_text(encoding="utf-8")) for path in _artifacts(root, "perlectio")
-    ]
-    by_act: dict[str, dict[str, Any]] = {}
-    for record in records:
-        assert record["subject_id"] not in by_act, "an act gained a second Perlectio"
-        by_act[record["subject_id"]] = record
-    return by_act
-
-
-@pytest.mark.parametrize("kind", ["lectio-prior", "audit-draft"])
-def test_a_live_pass_refuses_to_resume_an_act_it_left_half_read(
-    request, tmp_path, monkeypatch, kind
-):
-    """One reading comes from one serving session: an interrupted act is never finished."""
-    # Pass A exists only in a fed or saved run; the half-read refusal is exercised on fed.
-    fed = (
-        (
-            "--blind-read",
-            "fed",
-        )
-        if kind == "lectio-prior"
-        else ()
-    )
-    template, catalogue = request.getfixturevalue("fed_chained_run" if fed else "chained_run")
-    live_run = (tmp_path / "runs", catalogue)
-    shutil.copytree(template, live_run[0])
-    root = live_run[0]
-    answer = ScriptedAnswer(content=READING, finish_reason="stop")
-    _interrupt_after(monkeypatch, kind)
-    with pytest.raises(_Interrupted):
-        _run_perlector(live_run, tmp_path, monkeypatch, answer, extra_args=fed)
-    artifacts = root / "r" / "4_perlector" / "artifacts"
-    before = {path: path.read_bytes() for path in artifacts.rglob("*.json")}
-    monkeypatch.undo()
-
-    endpoints: list = []
-    with pytest.raises(ContractError, match="interrupted live attempt"):
-        _run_perlector(
-            live_run,
-            tmp_path / "resume",
-            monkeypatch,
-            answer,
-            endpoint_out=endpoints,
-            extra_args=fed,
-        )
-    assert endpoints[0].requests == []
-    assert {path: path.read_bytes() for path in artifacts.rglob("*.json")} == before
 
 
 @pytest.mark.parametrize("minutes,refused", [(1, True), (60, False)])
@@ -1010,170 +436,6 @@ def test_a_launch_the_reading_deadline_cannot_cover_is_refused_before_the_chair_
             extra_args=("--reading-deadline", deadline),
         )
     assert endpoints[0].requests == []
-
-
-def test_a_non_200_from_the_engine_becomes_a_retained_act_failure_and_continues(
-    live_run, tmp_path, monkeypatch
-):
-    """A non-200 is retained evidence for one act, not a stage-wide abort."""
-    root, _catalogue = live_run
-    refusal = scripted_prompt_too_long(
-        max_model_len=2048, requested_tokens=4125, prompt_tokens=3909, completion_tokens=216
-    )
-
-    _endpoint, exit_code = _run_perlector(live_run, tmp_path, monkeypatch, refusal)
-
-    assert exit_code == 0
-    failures = [record for record in _published_readings(root) if record["outcome"] == "failed"]
-    assert failures
-    assert failures[0]["payload"]["failure"]["kind"] == "chair-response"
-    assert failures[0]["payload"]["failure"]["code"] == "CHAIR_RESPONSE_HTTP_ERROR"
-    assert failures[0]["payload"]["failure"]["response_completion"] == "complete"
-    for field in ("raw_response_ref", "call_record_ref", "receipt_ref"):
-        assert failures[0]["payload"]["failure"][field] in failures[0]["inputs"]
-    blobs = root / "r" / "4_perlector" / "blobs" / "sha256"
-    retained = [path.read_bytes() for path in blobs.glob("*")] if blobs.exists() else []
-    assert any(b"maximum context length" in body for body in retained), (
-        "the refusing body was not retained"
-    )
-
-
-def _first_pass_a_is_refused(run_kind, mode, request, tmp_path, monkeypatch):
-    template, catalogue = request.getfixturevalue(run_kind)
-    root = tmp_path / "runs"
-    shutil.copytree(template, root)
-    refusal = scripted_prompt_too_long(
-        max_model_len=2048, requested_tokens=4125, prompt_tokens=3909, completion_tokens=216
-    )
-    _endpoint, exit_code = _run_perlector(
-        (root, catalogue),
-        tmp_path,
-        monkeypatch,
-        refusal,
-        ScriptedAnswer(content=READING, finish_reason="stop"),
-        extra_args=("--blind-read", mode),
-    )
-    return root, exit_code
-
-
-def test_a_failed_saved_blind_read_is_kept_and_costs_no_production_reading(
-    request, tmp_path, monkeypatch
-):
-    root, exit_code = _first_pass_a_is_refused(
-        "saved_chained_run", "saved", request, tmp_path, monkeypatch
-    )
-
-    assert exit_code == 0
-    readings = _published_readings(root)
-    assert readings and all(record["outcome"] != "failed" for record in readings)
-    failed = [
-        json.loads(path.read_text(encoding="utf-8")) for path in _artifacts(root, "lectio-prior")
-    ]
-    failed = [record for record in failed if record["outcome"] == "failed"]
-    assert len(failed) == 1
-    assert failed[0]["payload"]["failure"]["code"] == "CHAIR_RESPONSE_HTTP_ERROR"
-    for field in ("raw_response_ref", "call_record_ref", "receipt_ref"):
-        assert failed[0]["payload"]["failure"][field] in failed[0]["inputs"]
-    by_act = _perlectiones(root)
-    assert all(
-        "prior_draft" not in record["payload"]["dossier"] and record["outcome"] != "failed"
-        for record in by_act.values()
-    )
-
-
-def test_a_failed_fed_blind_read_still_fails_its_act(request, tmp_path, monkeypatch):
-    root, exit_code = _first_pass_a_is_refused(
-        "fed_chained_run", "fed", request, tmp_path, monkeypatch
-    )
-
-    assert exit_code == 0
-    assert any(record["outcome"] == "failed" for record in _published_readings(root))
-    assert not any(
-        json.loads(path.read_text(encoding="utf-8"))["outcome"] == "failed"
-        for path in _artifacts(root, "lectio-prior")
-    )
-
-
-def test_recovery_skips_only_a_validated_operational_failure_sibling(
-    live_run, tmp_path, monkeypatch
-):
-    root, catalogue = live_run
-    refusal = scripted_prompt_too_long(
-        max_model_len=2048, requested_tokens=4125, prompt_tokens=3909, completion_tokens=216
-    )
-    _endpoint, exit_code = _run_perlector(
-        live_run,
-        tmp_path,
-        monkeypatch,
-        refusal,
-        ScriptedAnswer(content=READING, finish_reason="stop"),
-    )
-    assert exit_code == 0
-    records = list(_perlectiones(root).values())
-    failed = next(record for record in records if record["outcome"] == "failed")
-    successful = next(record for record in records if record["outcome"] != "failed")
-    current = [
-        {"act_id": successful["subject_id"], "page_id": page_id}
-        for page_id in sorted(
-            {region["source_page_id"] for region in successful["payload"]["basis"]["regions"]}
-        )
-    ]
-    expected = [{"act_id": record["subject_id"]} for record in records]
-    context = _page_context(root, catalogue, monkeypatch)
-
-    assert perlector._sealed_sibling_semi_finals(context, current, expected=expected) == []
-
-    read_artifact = context.tree.read_artifact
-
-    def malformed_failure(stage, kind, artifact_id):
-        record = read_artifact(stage, kind, artifact_id)
-        if record["subject_id"] == failed["subject_id"]:
-            record = copy.deepcopy(record)
-            record["payload"]["failure"].pop("kind")
-            record["self_hash"] = self_hash(record)
-        return record
-
-    monkeypatch.setattr(context.tree, "read_artifact", malformed_failure)
-    with pytest.raises(SchemaRefusal, match="not its closed schema"):
-        perlector._sealed_sibling_semi_finals(context, current, expected=expected)
-
-
-def test_a_transport_timeout_fails_one_act_and_continues_to_the_next(
-    live_run, tmp_path, monkeypatch
-):
-    """A transport timeout seals its act and does not prevent the next act from running."""
-    root, _catalogue = live_run
-    original_read = perlector.VLLMReader.read
-    calls = 0
-
-    def timeout_once(reader, *args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise EndpointUnavailable("simulated inference timeout")
-        return original_read(reader, *args, **kwargs)
-
-    monkeypatch.setattr(perlector.VLLMReader, "read", timeout_once)
-    endpoint, exit_code = _run_perlector(
-        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
-    )
-
-    assert exit_code == 0
-    records = _perlectiones(root)
-    assert len(records) == 2, "both acts must reach a terminal sealed record"
-    assert any(
-        record["outcome"] == "failed" and record["payload"]["failure"]["kind"] == "transport"
-        for record in records.values()
-    )
-    assert (
-        next(
-            record["payload"]["failure"]["response_completion"]
-            for record in records.values()
-            if record["outcome"] == "failed"
-        )
-        == "unknown"
-    )
-    assert endpoint.requests, "the later act was not sent to the chair"
 
 
 def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
@@ -1210,108 +472,11 @@ def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
     }
 
 
-def test_a_live_pass_refuses_a_fixture_declared_reading_failure(
-    declaring_run, tmp_path, monkeypatch
-):
-    """A declared `reading_failure` is a stand-in for a real engine's own
-    report (`_reconciled_truncation`'s own docstring). A live pass answering a
-    declared act is a misconfiguration knowable from the fixture and the act
-    key alone, before any chair is started -- so the refusal fires ahead of
-    every reader call, chair start and publication, leaving the tree exactly
-    as this invocation found it (no orphaned Pass A, no engine call spent on a
-    reading that would be discarded). `declaring_run` is sealed under
-    `no-readable-text-reading` throughout the chain, so `config_digest`
-    matches this same scenario."""
-    root, _catalogue = declaring_run
-    captured_endpoint: list = []
-    with pytest.raises(perlector.ContractError, match="declares reading outcome"):
-        _run_perlector(
-            declaring_run,
-            tmp_path,
-            monkeypatch,
-            ScriptedAnswer(content=READING, finish_reason="stop"),
-            scenario="no-readable-text-reading",
-            endpoint_out=captured_endpoint,
-        )
-    assert _published_readings(root) == [], (
-        "a refused act must publish nothing rather than a reading contradicted "
-        "by its own declared outcome"
-    )
-    assert captured_endpoint and captured_endpoint[0].requests == [], (
-        "the refusal must fire before any chair is asked to read"
-    )
-    artifacts_dir = root / "r" / "4_perlector" / "artifacts"
-    published_kinds = (
-        {path.name for path in artifacts_dir.iterdir() if path.is_dir()}
-        if artifacts_dir.exists()
-        else set()
-    )
-    assert published_kinds == set(), (
-        "the refusal must fire before any establishing pass is published -- "
-        f"found {published_kinds}"
-    )
-
-
-def _evaluate_reading_inputs(
-    *,
-    row_inputs: list[dict[str, str]],
-    reproof_inputs: list[dict[str, str]],
-    draft_ref,
-    finding_ref,
-) -> list[dict[str, str]]:
-    return perlector._audited_reading_inputs(row_inputs, reproof_inputs, draft_ref, finding_ref)
-
-
-def test_a_duplicated_page_render_input_still_refuses_the_double_count():
-    """The dedup added for a repeated re-proof reference must stay scoped to
-    the re-proof: `row["inputs"]` (the image, testimonia, attachment and prior
-    references) can never legitimately repeat, and a duplicate there must
-    still hit the envelope's own two-digests-for-one-path refusal rather than
-    being silently absorbed by `_distinct_inputs` across the whole list.
-
-    This calls the production composition, `_audited_reading_inputs`, because a
-    local copy proves nothing about what `run.py` actually does."""
-    page = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "a" * 64}
-    draft_ref = {"relative_path": "4_perlector/blobs/sha256/bb", "sha256": "b" * 64}
-    finding_ref = {"relative_path": "4_perlector/blobs/sha256/cc", "sha256": "c" * 64}
-    reading_inputs = _evaluate_reading_inputs(
-        row_inputs=[page, page],
-        reproof_inputs=[],
-        draft_ref=draft_ref,
-        finding_ref=finding_ref,
-    )
-    assert reading_inputs.count(page) == 2, (
-        "a page repeated in row['inputs'] must reach the envelope's own "
-        "double-count refusal unchanged, not be collapsed by the production "
-        "composition"
-    )
-    with pytest.raises(SchemaRefusal, match="is listed twice"):
-        validate_input_refs(reading_inputs)
-
-
-def test_a_repeated_reproof_reference_still_collapses_to_one_first_named_entry():
-    """The other half of the same property: a re-proof that re-names the
-    establishing blob must still collapse to a single entry, in first-named
-    order -- so the fix for the finding above cannot be "delete the dedup
-    entirely", which would also break this."""
-    page = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "a" * 64}
-    reproof = {"relative_path": "4_perlector/blobs/sha256/dd", "sha256": "d" * 64}
-    draft_ref = {"relative_path": "4_perlector/blobs/sha256/bb", "sha256": "b" * 64}
-    finding_ref = {"relative_path": "4_perlector/blobs/sha256/cc", "sha256": "c" * 64}
-    reading_inputs = _evaluate_reading_inputs(
-        row_inputs=[page],
-        reproof_inputs=[reproof, reproof, page],
-        draft_ref=draft_ref,
-        finding_ref=finding_ref,
-    )
-    assert reading_inputs == [page, reproof, draft_ref, finding_ref]
-
-
 # --- the refusals this wiring adds --------------------------------------------
 
 
 def test_an_outcome_that_attempted_no_reading_cannot_carry_a_receipt():
-    """A held act and an absent chair name what would have read and stop there."""
+    """A page not asked and an absent chair name what would have read and stop there."""
     with pytest.raises(SchemaRefusal, match="attempted no reading"):
         perlector.provenance_for(
             SimpleNamespace(),
@@ -1321,13 +486,13 @@ def test_an_outcome_that_attempted_no_reading_cannot_carry_a_receipt():
         )
 
 
-def test_an_absent_chair_that_attempted_a_reading_cannot_carry_a_receipt():
+def test_an_absent_chair_that_attempted_a_reading_cannot_carry_a_receipt(
+    absent_third_chair_config,
+):
     """An absent chair served nothing, so a receipt reference names a serving
     moment it never had -- the mirror of the not-attempted guard above, for
     the other reading that never happened."""
-    absent = ChairRegistry.from_toml(str(ROOT / "config" / "models.toml")).resolve(
-        "secondary_proposer"
-    )
+    absent = ChairRegistry.from_toml(str(absent_third_chair_config)).resolve("attestator_3")
     with pytest.raises(SchemaRefusal, match="absent"):
         perlector.provenance_for(
             SimpleNamespace(),
@@ -1349,15 +514,15 @@ def test_two_digests_for_one_input_path_are_refused():
     """Content addressing makes this impossible, so it is a rewritten blob."""
     first = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "a" * 64}
     second = {"relative_path": "4_perlector/blobs/sha256/aa", "sha256": "b" * 64}
-    assert perlector._distinct_inputs([first, first]) == [first]
+    assert distinct_refs([first, first]) == [first]
     with pytest.raises(SchemaRefusal, match="two different digests"):
-        perlector._distinct_inputs([first, second])
+        distinct_refs([first, second])
 
 
 def _engine_call_world(tree, *, seed: int, schema: str = "chair-call-record.v3"):
     """A retained Perlector call record at its sealed row, and a context that reads it.
 
-    The serving receipt's seed is 7; the variance arms' are the sealed policy's.
+    The serving receipt's seed is 7.
     """
     from common.decoding import (
         DEFAULT_DECODING_CONFIG_PATH,
@@ -1407,34 +572,26 @@ def test_an_engine_call_naming_bytes_that_moved_is_refused(live_run):
     root, _catalogue = live_run
     context, full_call = _engine_call_world(RunTree(root, "r"), seed=7)
     honest = [full_call["raw_response_ref"], full_call["call_record_ref"]]
-    assert perlector.engine_call_inputs(context, full_call, variance_arm=None) == honest
+    assert perlector.engine_call_inputs(context, full_call) == honest
     lying = {"relative_path": full_call["raw_response_ref"]["relative_path"], "sha256": "c" * 64}
     with pytest.raises(SchemaRefusal, match="retained bytes at that path"):
         perlector.engine_call_inputs(
             context,
             {**full_call, "raw_response_ref": lying, "response_sha256": lying["sha256"]},
-            variance_arm=None,
         )
 
 
-def test_an_engine_call_is_held_to_its_pass_s_sealed_seed(live_run):
-    """Perlectio sends the receipt's seed and each variance arm its own; a call
-    under another pass's seed is refused where the reading binds it."""
-    from common.decoding import VARIANCE_ARMS, load_decoding_policy, variance_arm_seed
-
+def test_an_engine_call_is_held_to_the_receipts_sealed_seed(live_run):
+    """A page reading sends the receipt's seed; a call under any other seed is
+    refused where the reading binds it."""
     root, _catalogue = live_run
-    policy, _digest = load_decoding_policy()
-    prior_seed, nuda_seed = (variance_arm_seed(policy, arm) for arm in VARIANCE_ARMS)
+    arm_seed = 8
     tree = RunTree(root, "r")
     context, at_receipt_seed = _engine_call_world(tree, seed=7)
-    _context, at_nuda_seed = _engine_call_world(tree, seed=nuda_seed)
-    perlector.engine_call_inputs(context, at_nuda_seed, variance_arm="lectio-nuda")
-    with pytest.raises(SchemaRefusal, match=f"sent seed {nuda_seed}, not {prior_seed}"):
-        perlector.engine_call_inputs(context, at_nuda_seed, variance_arm="lectio-prior")
-    with pytest.raises(SchemaRefusal, match=f"sent seed 7, not {nuda_seed}"):
-        perlector.engine_call_inputs(context, at_receipt_seed, variance_arm="lectio-nuda")
-    with pytest.raises(SchemaRefusal, match=f"sent seed {nuda_seed}, not 7"):
-        perlector.engine_call_inputs(context, at_nuda_seed, variance_arm=None)
+    perlector.engine_call_inputs(context, at_receipt_seed)
+    _context, at_arm_seed = _engine_call_world(tree, seed=arm_seed)
+    with pytest.raises(SchemaRefusal, match=f"sent seed {arm_seed}, not 7"):
+        perlector.engine_call_inputs(context, at_arm_seed)
 
 
 def test_an_engine_call_off_its_sealed_row_or_retired_is_refused(live_run):
@@ -1442,7 +599,7 @@ def test_an_engine_call_off_its_sealed_row_or_retired_is_refused(live_run):
     tree = RunTree(root, "r")
     context, retired = _engine_call_world(tree, seed=7, schema="chair-call-record.v2")
     with pytest.raises(SchemaRefusal, match="written as chair-call-record.v2"):
-        perlector.engine_call_inputs(context, retired, variance_arm=None)
+        perlector.engine_call_inputs(context, retired)
 
 
 def test_an_engine_call_with_the_wrong_shape_is_refused_by_name():
@@ -1450,7 +607,7 @@ def test_an_engine_call_with_the_wrong_shape_is_refused_by_name():
     until this refusal: every other field's shape is checked, and a live
     reading's `engine_call` should not be the one exception."""
     with pytest.raises(SchemaRefusal, match="wrong shape"):
-        perlector.engine_call_inputs(SimpleNamespace(), {"raw_response_ref": {}}, variance_arm=None)
+        perlector.engine_call_inputs(SimpleNamespace(), {"raw_response_ref": {}})
 
 
 def test_an_engine_call_with_two_digests_for_one_response_is_refused():
@@ -1466,27 +623,7 @@ def test_an_engine_call_with_two_digests_for_one_response_is_refused():
         "served_model_id": SERVED_MODEL_ID,
     }
     with pytest.raises(SchemaRefusal, match="two different digests"):
-        perlector.engine_call_inputs(SimpleNamespace(), engine_call, variance_arm=None)
-
-
-def test_a_fixture_reading_carries_no_engine_call_field():
-    """The field exists only on the shape that has an engine behind it.
-
-    `with_engine_call` is the one place a record's closed field set widens, and
-    a `LectioResult` with no `engine_call` — every `FixtureReader` result — must
-    leave both the payload and the schema exactly as they were, or the
-    acceptance pin over the fixture path would move.
-    """
-    payload = {"text": "alpha"}
-    fields = perlector.with_engine_call(
-        payload, {"text": "alpha", "stop_reason": "stop"}, frozenset({"text"})
-    )
-    assert payload == {"text": "alpha"}
-    assert fields == frozenset({"text"})
-    live = {"text": "alpha", "stop_reason": "stop", "engine_call": {"finish_reason": "stop"}}
-    fields = perlector.with_engine_call(payload, live, frozenset({"text"}))
-    assert payload["engine_call"] == {"finish_reason": "stop"}
-    assert fields == frozenset({"text", "engine_call"})
+        perlector.engine_call_inputs(SimpleNamespace(), engine_call)
 
 
 # --- the shutdown-before-seal ordering, and the production factory ------------
@@ -1671,7 +808,6 @@ def test_one_retained_response_named_by_both_halves_of_a_page_record_is_one_inpu
     """
     root, catalogue = live_run
     context = _page_context(root, catalogue, monkeypatch)
-    proposals = perlector.sealed_proposal_regions(context)
     pages = [
         context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
         for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
@@ -1681,7 +817,7 @@ def test_one_retained_response_named_by_both_halves_of_a_page_record_is_one_inpu
         (page for page in pages if page["payload"].get("native_capture") is not None), None
     )
     assert record is not None, "no page Testimonium in this tree retains a native capture"
-    perlector.validate_page_testimonium_record(context, record, proposals)
+    validate_page_testimonium_record(context, record)
 
     reference = record["payload"]["native_capture"]["raw_response_ref"]
     assert reference in record["inputs"]
@@ -1690,965 +826,37 @@ def test_one_retained_response_named_by_both_halves_of_a_page_record_is_one_inpu
     both["self_hash"] = self_hash(both)
     # `inputs` is untouched: it is what the producer would have written, and
     # the point is that this record needs no second entry to be honest.
-    perlector.validate_page_testimonium_record(context, both, proposals)
+    validate_page_testimonium_record(context, both)
 
     # The rule did not go soft. An input the record does not derive from is
     # still refused, and so is one retained response left unbound.
+    foreign = next(
+        page["payload"]["presented"]["image_path"]
+        for page in pages
+        if page["payload"]["presented"]
+        and page["payload"]["presented"]["image_path"]
+        != record["payload"]["presented"]["image_path"]
+    )
     extra = copy.deepcopy(both)
     extra["inputs"] = sorted(
-        [*extra["inputs"], context.input_ref(proposals[0]["payload"]["image_path"])],
+        [*extra["inputs"], context.input_ref(foreign)],
         key=lambda item: (item["relative_path"], item["sha256"]),
     )
     with pytest.raises(SchemaRefusal, match="does not bind exactly its presented image"):
-        perlector.validate_page_testimonium_record(context, extra, proposals)
+        validate_page_testimonium_record(context, extra)
     unbound = copy.deepcopy(both)
     unbound["inputs"] = [item for item in unbound["inputs"] if item != reference]
     with pytest.raises(SchemaRefusal, match="every retained raw response"):
-        perlector.validate_page_testimonium_record(context, unbound, proposals)
-
-
-def _continuation_attachment(*, attached: bool, alignment: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "chair": "attestator_1",
-        "page_witness": True,
-        "page_ordinal": 2,
-        "testimonium_ref": {"relative_path": "3_attestatores/artifacts/p.json", "sha256": "b" * 64},
-        "attached": attached,
-        "comparable": False,
-        "attachment_basis": "geometric-overlap" if attached else "unattached",
-        "content_health": {"characters": 12},
-        "alignment": alignment,
-        "span": None,
-    }
-
-
-def _continuation_context(monkeypatch, attachment: dict[str, Any]):
-    """The smallest tree a page witness's continuation-page entry needs.
-
-    Stubbed rather than driven, and `validate_page_testimonium_record` is
-    stubbed out with it: the page record's own validity has its own suites
-    (`test_region_boundary.py`, and the test above), while what is under test
-    here is the pair of rules `act_attachment_view` applies to `attached` on a
-    page that is not the act's primary one. Everything those two rules read is
-    real -- the geometric derivation runs over reported observations and the
-    act's sealed bases, exactly as it does in a run.
-    """
-    # A real `ChairIdentity`: `declared_page_witness_chairs` reads page scope
-    # off the sealed configuration's own type, and a stand-in would be read as
-    # act-scoped and never reach the branch under test.
-    identity = ChairIdentity(
-        role="attestator_1",
-        source="local-repository",
-        repo=None,
-        path="attestator_1",
-        revision=None,
-        digest_manifest="a" * 64,
-        manifest="manifests/attestator_1.json",
-        adapter_of=None,
-        serving_recipe="fixture",
-        license_note="fixture",
-        witness_adapter="chandra.v1",
-        witness_scope="page",
-    )
-    page_payload = {
-        "chair": "attestator_1",
-        "scope": "page",
-        "page_ordinal": 2,
-        "page_role": "continuation",
-        "unjoined_act_attempts": [],
-        "payload": "SYNTHETIC TAIL",
-        # Reported geometry that really does overlap the act's sealed region on
-        # this page: the state a served Chandra reaches and the fixture never did.
-        "observed": [
-            {
-                "ordinal": 0,
-                "bounds": {"x": 20, "y": 20, "w": 160, "h": 60},
-                "bounds_source": "native",
-                "span": None,
-            }
-        ],
-    }
-    testimonium = {"outcome": "read", "payload": page_payload, "artifact_id": "page-2-attestator-1"}
-    attachment_record = {
-        "artifact_id": "attachment-1",
-        "payload": {"act_key": "a1", "attempt_ordinal": 1, "attachments": [attachment]},
-    }
-    tree = SimpleNamespace(
-        build_manifest=lambda stage: {
-            "artifacts": [
-                {"kind": "act-attachment", "subject_id": "act_0123456789abcdef", "artifact_id": "x"}
-            ]
-        },
-        read_artifact=lambda stage, kind, artifact_id: attachment_record,
-        read_artifact_reference=lambda reference, *, stage, kind, subject_id: testimonium,
-    )
-    context = SimpleNamespace(
-        tree=tree,
-        witness_chairs=["attestator_1"],
-        registry=SimpleNamespace(
-            config=SimpleNamespace(chairs={"attestator_1": identity}),
-            resolve=lambda chair: identity,
-        ),
-        artifact_ref=lambda stage, kind, artifact_id: {"artifact_id": artifact_id},
-    )
-    monkeypatch.setattr(perlector, "latest_attempt", lambda records, label, operation: records[0])
-    monkeypatch.setattr(
-        perlector, "validate_page_testimonium_record", lambda context, record, regions: None
-    )
-    act = {"act_id": "act_0123456789abcdef", "act_key": "a1", "page_ordinal": 1}
-    bases = [
-        {
-            "source_page_ordinal": 2,
-            "source_page_id": "page_two",
-            "region_id": "r2",
-            "transform": {"bounds": {"x": 20, "y": 20, "w": 160, "h": 60}},
-        }
-    ]
-    chair_testimonium = {
-        "outcome": "read",
-        "payload": {
-            "chair": "attestator_1",
-            "content_health": {"characters": 12},
-            # The scope claim's second spelling, reconciled against the run's
-            # own declaration by this reader.
-            "page_witness": True,
-        },
-    }
-    return context, act, [chair_testimonium], bases
-
-
-CONTINUATION_ALIGNMENT = {"status": "unaligned", "reason": "continuation-page-no-act-anchor"}
-
-
-def test_a_page_witness_attached_by_geometry_on_a_continuation_page_is_readable(monkeypatch):
-    """The two rules now admit exactly one state, and it is the honest one.
-
-    `attached` is derived from geometry alone on every contributing page, so a
-    chair whose block covers an act's continuation region publishes that entry
-    as attached. This reader required the same thing -- and separately refused
-    any attached continuation entry, so neither `true` nor `false` could pass
-    and the record had no legal spelling at all. What a continuation page
-    genuinely lacks is an ANCHOR, and that is what the surviving rule says.
-    """
-    context, act, testimonia, bases = _continuation_context(
-        monkeypatch, _continuation_attachment(attached=True, alignment=CONTINUATION_ALIGNMENT)
-    )
-    view = perlector.act_attachment_view(context, act, testimonia, bases, {"r2"})
-    assert view["page_witness_count"] == 1
-    # Attached, and still carrying no comparison view: the anchor is the thing
-    # the continuation page does not have.
-    assert view["comparison_views"] == {}
-    assert view["edge_deltas"]["attestator_1"][0]["region_id"] == "r2"
-
-
-def test_a_continuation_page_entry_that_contradicts_its_own_geometry_is_still_refused(monkeypatch):
-    """Dropping one rule did not drop the other: geometry still decides.
-
-    An entry that says `attached: false` while the chair's reported ink covers
-    the act's sealed region on that page is a witness whose evidence was
-    silently discounted, and it is refused by the derivation rule exactly as
-    before.
-    """
-    context, act, testimonia, bases = _continuation_context(
-        monkeypatch, _continuation_attachment(attached=False, alignment=CONTINUATION_ALIGNMENT)
-    )
-    with pytest.raises(SchemaRefusal, match="does not derive from"):
-        perlector.act_attachment_view(context, act, testimonia, bases, {"r2"})
-
-
-def test_a_continuation_page_entry_claiming_an_act_anchor_is_refused(monkeypatch):
-    """The surviving rule, on the fault it actually names.
-
-    A continuation entry whose alignment claims anything other than
-    `continuation-page-no-act-anchor` is asserting an act-specific anchor on a
-    page that has none -- the fault the old pair was reaching for, now stated
-    once and about the field that carries it.
-    """
-    context, act, testimonia, bases = _continuation_context(
-        monkeypatch,
-        _continuation_attachment(
-            attached=True, alignment={"status": "unaligned", "reason": "no-overlap-with-act-anchor"}
-        ),
-    )
-    with pytest.raises(SchemaRefusal, match="carries no act-specific anchor"):
-        perlector.act_attachment_view(context, act, testimonia, bases, {"r2"})
-
-
-# --- the anchor-line basis: a witness whose grammar carries no geometry ---------
-
-PAGE_TEXT = "SYNTHETIC ACT ONE alpha beta gamma"
-ALIGNED_ON_THE_ACT_ANCHOR = {
-    "status": "aligned",
-    "anchor_basis": "act-anchor",
-    "anchor_chair": "attestator_1",
-    "anchor_span": {"start": 0, "end": len(PAGE_TEXT)},
-    "witness_span": {"start": 0, "end": len(PAGE_TEXT)},
-    "anchor_line_match": {
-        "anchor_characters": len(PAGE_TEXT),
-        "matched_characters": len(PAGE_TEXT),
-        "longest_matched_run": len(PAGE_TEXT),
-    },
-    "line_geometry": [],
-    "loss": {"witness": {"markup_characters": 0}, "anchor": {"markup_characters": 0}},
-    "offset_maps": {"witness": [], "anchor": []},
-}
-NATIVE_OVER_THE_ACT = [
-    {
-        "ordinal": 0,
-        "bounds": {"x": 22, "y": 22, "w": 150, "h": 70},
-        "bounds_source": "native",
-        "span": None,
-    }
-]
-PRESENTED_ECHO_ONLY = [
-    {
-        "ordinal": 0,
-        "bounds": {"x": 0, "y": 0, "w": 200, "h": 260},
-        "bounds_source": "presented",
-        "span": None,
-    }
-]
-
-
-def _primary_attachment(
-    *, attached: bool, basis: str, alignment: dict[str, Any], comparable: bool | None = None
-) -> dict[str, Any]:
-    aligned = alignment.get("status") == "aligned"
-    return {
-        "chair": "attestator_3",
-        "page_witness": True,
-        "page_ordinal": 1,
-        "testimonium_ref": {"relative_path": "3_attestatores/artifacts/p.json", "sha256": "c" * 64},
-        "attached": attached,
-        "comparable": (attached and aligned) if comparable is None else comparable,
-        "attachment_basis": basis,
-        "content_health": {"characters": len(PAGE_TEXT)},
-        "alignment": alignment,
-        "span": dict(alignment["witness_span"]) if attached and aligned else None,
-    }
-
-
-def _primary_context(monkeypatch, attachment: dict[str, Any], *, observed: list[dict[str, Any]]):
-    """The act's own primary page, read by a page witness with the given geometry.
-
-    The sibling of `_continuation_context`, stubbed the same way and for the
-    same reason: the page record's own validity has its own suites, while what
-    is under test here is which evidence `act_attachment_view` will let attach a
-    page witness to an act. Everything those rules read is real -- the geometric
-    derivation runs over `observed` against the act's sealed basis, and the
-    comparison view is sliced out of the retained page text.
-
-    `observed` is the knob. A `native` box over the act's rectangle is a chair
-    that reported where it looked; a lone `presented` echo is a chair whose
-    grammar carries no coordinates at all (Churro's, by vendor design). The echo
-    is exactly what `reported_geometry_overlaps` excludes, so the second shape
-    is a witness geometry can never attach.
-    """
-    identity = ChairIdentity(
-        role="attestator_3",
-        source="local-repository",
-        repo=None,
-        path="attestator_3",
-        revision=None,
-        digest_manifest="c" * 64,
-        manifest="manifests/attestator_3.json",
-        adapter_of=None,
-        serving_recipe="fixture",
-        license_note="fixture",
-        witness_adapter="churro.v1",
-        witness_scope="page",
-    )
-    page_payload = {
-        "chair": "attestator_3",
-        "scope": "page",
-        "page_ordinal": 1,
-        "page_role": "primary",
-        "unjoined_act_attempts": [],
-        "payload": PAGE_TEXT,
-        "observed": observed,
-    }
-    testimonium = {"outcome": "read", "payload": page_payload, "artifact_id": "page-1-attestator-3"}
-    attachment_record = {
-        "artifact_id": "attachment-1",
-        "payload": {"act_key": "a1", "attempt_ordinal": 1, "attachments": [attachment]},
-    }
-    tree = SimpleNamespace(
-        build_manifest=lambda stage: {
-            "artifacts": [
-                {"kind": "act-attachment", "subject_id": "act_0123456789abcdef", "artifact_id": "x"}
-            ]
-        },
-        read_artifact=lambda stage, kind, artifact_id: attachment_record,
-        read_artifact_reference=lambda reference, *, stage, kind, subject_id: testimonium,
-    )
-    context = SimpleNamespace(
-        tree=tree,
-        witness_chairs=["attestator_3"],
-        registry=SimpleNamespace(
-            config=SimpleNamespace(chairs={"attestator_3": identity}),
-            resolve=lambda chair: identity,
-        ),
-        artifact_ref=lambda stage, kind, artifact_id: {"artifact_id": artifact_id},
-    )
-    monkeypatch.setattr(perlector, "latest_attempt", lambda records, label, operation: records[0])
-    monkeypatch.setattr(
-        perlector, "validate_page_testimonium_record", lambda context, record, regions: None
-    )
-    act = {"act_id": "act_0123456789abcdef", "act_key": "a1", "page_ordinal": 1}
-    bases = [
-        {
-            "source_page_ordinal": 1,
-            "source_page_id": "page_one",
-            "region_id": "r1",
-            "transform": {"bounds": {"x": 20, "y": 20, "w": 160, "h": 80}},
-        }
-    ]
-    chair_testimonium = {
-        "outcome": "read",
-        "payload": {
-            "chair": "attestator_3",
-            "content_health": {"characters": len(PAGE_TEXT)},
-            "page_witness": True,
-        },
-    }
-    return context, act, [chair_testimonium], bases
-
-
-def test_a_page_witness_with_no_geometry_attaches_on_its_located_anchor_line(monkeypatch):
-    """The state a geometry-free grammar reaches, and the only one it can.
-
-    Churro's published grammar carries no coordinates, so its whole page record
-    is one `presented` echo -- which `reported_geometry_overlaps` excludes by
-    name. Derived from geometry alone this chair was unattached at every act,
-    which put every act one witness under a floor of three on a shortfall that
-    had not happened. What it does have is an alignment that located THIS act's
-    anchor line inside its page text, and that is the `anchor-line` basis.
-    """
-    context, act, testimonia, bases = _primary_context(
-        monkeypatch,
-        _primary_attachment(
-            attached=True, basis="anchor-line", alignment=ALIGNED_ON_THE_ACT_ANCHOR
-        ),
-        observed=PRESENTED_ECHO_ONLY,
-    )
-    view = perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
-    assert view["page_witness_count"] == 1
-    # Attached, and carrying the act-anchored comparison view the witness floor
-    # needs: that view is the whole point of admitting the basis.
-    assert view["comparison_views"] == {"attestator_3": PAGE_TEXT}
-    # And no edge-delta evidence: a `presented` echo is not reported geometry
-    # and never becomes correspondence evidence against a proposal. The chair's
-    # key exists (it was read); what it must not carry is a single row.
-    assert view["edge_deltas"] == {"attestator_3": []}
-
-
-def test_the_same_record_without_a_located_anchor_line_is_refused_as_unattached(monkeypatch):
-    """The counterfactual for the branch above: the basis is not free.
-
-    Identical in every respect except that the alignment located nothing --
-    `no-page-anchor` is an aligned record that says so in the producer's own
-    vocabulary, carried by the trivial attach a genuinely empty reading gets.
-    A chair with neither geometry nor a located line attached to nothing, and
-    claiming otherwise would put it on the witness floor for free.
-    """
-    context, act, testimonia, bases = _primary_context(
-        monkeypatch,
-        _primary_attachment(
-            attached=True,
-            basis="anchor-line",
-            alignment={
-                **ALIGNED_ON_THE_ACT_ANCHOR,
-                "anchor_basis": "no-page-anchor",
-                "anchor_chair": None,
-                "anchor_span": {"start": 0, "end": 0},
-                "witness_span": {"start": 0, "end": 0},
-            },
-        ),
-        observed=PRESENTED_ECHO_ONLY,
-    )
-    with pytest.raises(SchemaRefusal, match="does not derive from"):
-        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
-
-
-def test_a_zero_length_anchored_span_does_not_attach_a_page_witness(monkeypatch):
-    """A located anchor with nothing under it is not a placed reading.
-
-    The trivial attach a genuinely empty page reading gets carries
-    `anchor_basis: "act-anchor"` with a zero-length `witness_span`. Reading the
-    anchor basis alone would attach it and count a chair toward the floor for a
-    slice with no characters in it; the span's length is what
-    separates the two.
-    """
-    context, act, testimonia, bases = _primary_context(
-        monkeypatch,
-        _primary_attachment(
-            attached=True,
-            basis="anchor-line",
-            alignment={
-                **ALIGNED_ON_THE_ACT_ANCHOR,
-                "anchor_span": {"start": 0, "end": 0},
-                "witness_span": {"start": 0, "end": 0},
-                "anchor_line_match": {
-                    "anchor_characters": 0,
-                    "matched_characters": 0,
-                    "longest_matched_run": 0,
-                },
-            },
-        ),
-        observed=PRESENTED_ECHO_ONLY,
-    )
-    with pytest.raises(SchemaRefusal, match="does not derive from"):
-        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
-
-
-def test_a_coincidental_anchor_line_match_does_not_attach_a_page_witness(monkeypatch):
-    """The reader re-derives the MEASUREMENT, not just the aligned status.
-
-    A witness whose text has nothing to do with the page still aligns: the
-    matcher keeps every matching block of one character, the producer clips
-    whatever falls inside this act's anchor range, and the hull across two
-    coincidental characters is a positive span. That was enough to attach on
-    `anchor-line` and to put the chair on the witness floor (hostile review of
-    Unit 12, must-fix 1). The record now carries how much of the act's own
-    anchor line was matched, and a producer that claims an attachment on a
-    coincidence is refused here exactly as one that claims it on geometry it
-    never reported.
-    """
-    context, act, testimonia, bases = _primary_context(
-        monkeypatch,
-        _primary_attachment(
-            attached=True,
-            basis="anchor-line",
-            alignment={
-                **ALIGNED_ON_THE_ACT_ANCHOR,
-                "witness_span": {"start": 3, "end": 5},
-                "anchor_line_match": {
-                    "anchor_characters": len(PAGE_TEXT),
-                    "matched_characters": 2,
-                    "longest_matched_run": 1,
-                },
-            },
-        ),
-        observed=PRESENTED_ECHO_ONLY,
-    )
-    with pytest.raises(SchemaRefusal, match="does not derive from"):
-        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
-
-
-def test_an_anchor_line_attachment_may_not_be_silently_discounted(monkeypatch):
-    """The derivation is an equality in both directions, as it always was.
-
-    Understating attachment is the same producer/reader disagreement as
-    overstating it, and it costs an act a witness it really had.
-    """
-    context, act, testimonia, bases = _primary_context(
-        monkeypatch,
-        _primary_attachment(
-            attached=False,
-            basis="unattached",
-            alignment=ALIGNED_ON_THE_ACT_ANCHOR,
-            comparable=False,
-        ),
-        observed=PRESENTED_ECHO_ONLY,
-    )
-    with pytest.raises(SchemaRefusal, match="does not derive from"):
-        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
-
-
-def test_geometry_wins_the_basis_label_when_a_chair_reported_both(monkeypatch):
-    """The label is evidence about independence, so precedence is checked.
-
-    A chair that reported ink over this act's sealed proposal attached on its
-    own evidence. Filing that as `anchor-line` would understate what the record
-    proves -- `anchor-line` says the chair counts here only because ANOTHER
-    chair's anchor located its text -- so the exact derived label is required,
-    never membership in the two admissible ones.
-    """
-    context, act, testimonia, bases = _primary_context(
-        monkeypatch,
-        _primary_attachment(
-            attached=True, basis="anchor-line", alignment=ALIGNED_ON_THE_ACT_ANCHOR
-        ),
-        observed=NATIVE_OVER_THE_ACT,
-    )
-    with pytest.raises(SchemaRefusal, match="attached it by 'geometric-overlap'"):
-        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
-
-    # And the honest spelling of that same record passes.
-    context, act, testimonia, bases = _primary_context(
-        monkeypatch,
-        _primary_attachment(
-            attached=True, basis="geometric-overlap", alignment=ALIGNED_ON_THE_ACT_ANCHOR
-        ),
-        observed=NATIVE_OVER_THE_ACT,
-    )
-    view = perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
-    assert view["comparison_views"] == {"attestator_3": PAGE_TEXT}
-
-
-def test_a_geometry_free_witness_may_not_be_filed_as_geometrically_attached(monkeypatch):
-    """The mirror of the precedence rule, and the more dangerous direction.
-
-    A chair with no reported geometry filed as `geometric-overlap` claims an
-    independent observation it never made. Nothing downstream re-reads the boxes
-    to notice; the label is the record of what happened.
-    """
-    context, act, testimonia, bases = _primary_context(
-        monkeypatch,
-        _primary_attachment(
-            attached=True, basis="geometric-overlap", alignment=ALIGNED_ON_THE_ACT_ANCHOR
-        ),
-        observed=PRESENTED_ECHO_ONLY,
-    )
-    with pytest.raises(SchemaRefusal, match="attached it by 'anchor-line'"):
-        perlector.act_attachment_view(context, act, testimonia, bases, {"r1"})
-
-
-# --- the comparison view an act-scoped chair that declares uncertainty gets -----
-
-
-def _act_scoped_record(payload: dict[str, Any]) -> dict[str, Any]:
-    return {"outcome": "read", "payload": {"chair": "attestator_2", **payload}}
-
-
-def test_an_uncertainty_declaring_act_chair_is_given_a_bracket_stripped_view():
-    """DAI rejoins the dissent instrument through its own bytes, not by fiat.
-
-    `dissent.is_comparable` refuses to diff a format that may embed
-    alternative-reading markup inline, and `markup_text_view` -- which removes
-    TAG markup -- does not touch `[UNCERTAIN]`. Without a view built for the
-    notation this chair actually uses, declaring the capability truthfully would
-    make it `compared: "unknown"` forever: the instrument ARCHITECTURE names for
-    catching a reader that learned to agree with witnesses, dark on the one
-    chair whose grammar says most about uncertain ink.
-    """
-    testimonia = [
-        _act_scoped_record(
-            {
-                "payload": "Marie [UNCERTAIN] Dupont",
-                "format_capabilities": {
-                    "can_express_uncertainty": True,
-                    "can_express_layout": False,
-                },
-            }
-        )
-    ]
-    rows = perlector.dissent_testimonia(testimonia, {"comparison_views": {}})
-    assert rows[0]["payload"]["comparison_reported"] == "Marie  Dupont"
-    # The retained record is untouched: the copy exists so the verbatim bytes
-    # stay verbatim.
-    assert testimonia[0]["payload"] == {
-        "chair": "attestator_2",
-        "payload": "Marie [UNCERTAIN] Dupont",
-        "format_capabilities": {"can_express_uncertainty": True, "can_express_layout": False},
-    }
-    assert dissent.is_comparable(rows[0]) is True
-
-
-def test_an_act_chair_that_declares_no_uncertainty_is_given_no_view():
-    """The gate is the declaration, and nothing is stripped from a plain format.
-
-    A chair whose format cannot express uncertainty is already comparable on its
-    raw report; handing it a stripped view would remove characters from a
-    reading that meant them literally.
-    """
-    testimonia = [
-        _act_scoped_record(
-            {
-                "payload": "a [UNCERTAIN] literal",
-                "format_capabilities": {
-                    "can_express_uncertainty": False,
-                    "can_express_layout": False,
-                },
-            }
-        )
-    ]
-    rows = perlector.dissent_testimonia(testimonia, {"comparison_views": {}})
-    assert "comparison_reported" not in rows[0]["payload"]
-
-
-def test_a_non_boolean_capability_claim_buys_no_comparison_view():
-    """Read from a retained record, so a truthy non-boolean decides nothing.
-
-    The producer's own seam refuses anything but a two-key boolean mapping
-    (`witness_adapters.declared_format_capabilities`), so a value that is not exactly
-    `True` here is a record no producer wrote -- and a comparison view granted
-    on `"yes"` would strip characters out of a report on the strength of a field
-    nothing validated.
-    """
-    for capabilities in ({"can_express_uncertainty": "yes"}, {"can_express_uncertainty": 1}, []):
-        testimonia = [
-            _act_scoped_record(
-                {"payload": "Marie [UNCERTAIN] Dupont", "format_capabilities": capabilities}
-            )
-        ]
-        rows = perlector.dissent_testimonia(testimonia, {"comparison_views": {}})
-        assert "comparison_reported" not in rows[0]["payload"], capabilities
-
-
-def test_a_structured_act_report_is_given_no_view_to_strip():
-    """Structured testimony stays retained and uncountable, exactly as before.
-
-    The point of the guard is that a structured report must not become a
-    comparison view by being coerced into one, which would invent text the
-    witness never wrote.
-    """
-    testimonia = [
-        _act_scoped_record(
-            {
-                "payload": {"lines": ["Marie [UNCERTAIN] Dupont"]},
-                "format_capabilities": {
-                    "can_express_uncertainty": True,
-                    "can_express_layout": False,
-                },
-            }
-        )
-    ]
-    rows = perlector.dissent_testimonia(testimonia, {"comparison_views": {}})
-    assert "comparison_reported" not in rows[0]["payload"]
-
-
-def test_a_page_witness_still_takes_its_anchored_slice_not_a_bracket_strip():
-    """One view per scope, and the page witness's is the anchored one.
-
-    A page witness declaring the capability must not be handed a bracket-strip
-    of its whole page reading: that would hand dissent the entire page as this
-    act's report, which is exactly the inversion the act-anchored clip exists to
-    prevent.
-    """
-    testimonia = [
-        {
-            "outcome": "read",
-            "payload": {
-                "chair": "attestator_3",
-                "page_witness": True,
-                "payload": "ACT ONE [UNCERTAIN] text\nACT TWO other text",
-                "format_capabilities": {
-                    "can_express_uncertainty": True,
-                    "can_express_layout": False,
-                },
-            },
-        }
-    ]
-    rows = perlector.dissent_testimonia(
-        testimonia, {"comparison_views": {"attestator_3": "ACT ONE text"}}
-    )
-    assert rows[0]["payload"]["comparison_reported"] == "ACT ONE text"
+        validate_page_testimonium_record(context, unbound)
 
 
 # --- concurrent reader calls ---------------------------------------------------
 
-BATCH = 2  # the fixture has two acts, so a row bound of two is the most it can reach
 
-
-@pytest.fixture(scope="module")
-def batching_chained_run(tmp_path_factory) -> tuple[Path, Path]:
-    """The same chain sealed under a live Perlector row whose `max_num_seqs` is `BATCH`."""
-    base = tmp_path_factory.mktemp("live-perlector-batching")
-    catalogue = _live_catalogue(base, max_num_seqs=BATCH)
-    root = base / "runs"
-    _chain_through_attestatores(root, catalogue)
-    return root, catalogue
-
-
-class _ContentEndpoint(FakeEndpoint):
-    """Answers each reading by its content, never by arrival order, and counts overlap.
-
-    With `overlap` (readings) or `reproof_overlap` (re-proofs) above one, each such call
-    blocks until that many are in flight together, and the test fails loudly if they
-    never are. Otherwise a call is held briefly. A request carrying `fail_marker` gets a
-    transport failure, whenever it arrives.
-    """
-
-    def __init__(
-        self,
-        *,
-        fail_marker: str | None = None,
-        overlap: int = 1,
-        reproof_overlap: int = 1,
-        **kwargs,
-    ) -> None:
-        super().__init__(**kwargs)
-        self._readings_meet = threading.Barrier(overlap, timeout=10) if overlap > 1 else None
-        self._reproofs_meet = (
-            threading.Barrier(reproof_overlap, timeout=10) if reproof_overlap > 1 else None
-        )
-        self._lock = threading.Lock()
-        self._fail_marker = fail_marker
-        self._in_flight = 0
-        self._reproofs_in_flight = 0
-        self.most_in_flight = 0
-        self.most_reproofs_in_flight = 0
-        self.bodies: list[bytes] = []
-
-    def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
-        if method != "POST" or body is None or not self._readiness_probe_answered:
-            return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
-        reproof = _unchanged_reproof_response(body)
-        with self._lock:
-            self.bodies.append(body)
-            self._in_flight += 1
-            self._reproofs_in_flight += reproof is not None
-            self.most_in_flight = max(self.most_in_flight, self._in_flight)
-            self.most_reproofs_in_flight = max(
-                self.most_reproofs_in_flight, self._reproofs_in_flight
-            )
-        try:
-            meet = self._readings_meet if reproof is None else self._reproofs_meet
-            if meet is None:
-                time.sleep(0.3)
-            else:
-                meet.wait()  # BrokenBarrierError: the calls never overlapped
-            if self._fail_marker is not None and self._fail_marker.encode() in body:
-                raise EndpointUnavailable("simulated transport failure for one act")
-            content = reproof if reproof is not None else READING
-            answer = {
-                "model": self.served_model_id,
-                "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
-            }
-            return HttpResponse(200, json.dumps(answer).encode())
-        finally:
-            with self._lock:
-                self._in_flight -= 1
-                self._reproofs_in_flight -= reproof is not None
-
-
-def _run_batching(
-    template: tuple[Path, Path],
-    tmp_path: Path,
-    name: str,
-    monkeypatch,
-    *extra_args: str,
-    fail_marker: str | None = None,
-    overlap: int = 1,
-    reproof_overlap: int = 1,
-    resume: bool = False,
-    endpoint: _ContentEndpoint | None = None,
-    started: datetime = datetime(2026, 1, 1, tzinfo=timezone.utc),
-) -> tuple[Path, _ContentEndpoint]:
-    """Run the stage on a fresh copy of `template` named `name`.
-
-    Runs in one test share the serving log root, lock and a fixed clock: the launch
-    argv names the log root, and a receipt's `started_at` is a serving moment. Those
-    are the only inputs that differ between two otherwise identical passes, and
-    every record cites the receipt and the launch audit. A different `started` gives a
-    pass a serving session, and a receipt, of its own.
-    """
-    source, catalogue = template
-    root = tmp_path / name / "runs"
-    if not resume:
-        shutil.copytree(source, root)
-    endpoint = endpoint or _ContentEndpoint(
-        served_model_id=SERVED_MODEL_ID,
-        fail_marker=fail_marker,
-        overlap=overlap,
-        reproof_overlap=reproof_overlap,
-    )
-    factory = _serving_factory(
-        endpoint,
-        catalogue,
-        tmp_path / "logs",
-        tmp_path / "pod-gpu.lock",
-        now=lambda: started,
-    )
-    monkeypatch.chdir(ROOT)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            str(ROOT / "pipeline" / "4_perlector" / "run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--serving-recipes-config",
-            str(catalogue),
-            "--placement-tier",
-            TIER,
-            *extra_args,
-        ],
-    )
-    assert perlector.main(serving_factory=factory) == 0
-    return root, endpoint
-
-
-def _stage_bytes(root: Path) -> dict[str, bytes]:
-    """Every file of the Perlector's sealed inventory: artifacts, blobs and manifest."""
-    stage = root / "r" / "4_perlector"
-    return {
-        str(path.relative_to(stage)): path.read_bytes()
-        for path in sorted(stage.rglob("*"))
-        if path.is_file() and SERVING_LOGS_DIR not in path.relative_to(stage).parts
-    }
-
-
-def _without_width(root: Path) -> dict[str, Any]:
-    """The Perlector's inventory with its window width taken out.
-
-    The width is the one fact a batched pass records differently: each `reader-sent`
-    record carries it, and every later record of the act binds that record by digest.
-    Everything else must be identical: the blobs, and every record apart from the
-    digests that bind it to those records. The seal and manifest only digest the rest.
-    """
-
-    def digests_out(value: Any) -> Any:
-        if isinstance(value, list):
-            return [digests_out(item) for item in value]
-        if not isinstance(value, dict):
-            return value
-        return {
-            key: digests_out(item)
-            for key, item in value.items()
-            if key not in {"self_hash", "finding_digest", "request_digest"}
-            and not (key == "sha256" and "relative_path" in value)
-        }
-
-    view: dict[str, Any] = {}
-    for path, data in _stage_bytes(root).items():
-        if path.startswith("blobs/"):
-            view[path] = data
-        elif path.startswith("artifacts/") and "/stage-seal/" not in path:
-            record = json.loads(data)
-            if record["kind"] == perlector.SENT_KIND:
-                del record["payload"]["concurrency"]
-            view[path] = digests_out(record)
-    return view
-
-
-def _widths(root: Path) -> set[int]:
-    return {
-        json.loads(path.read_text(encoding="utf-8"))["payload"]["concurrency"]
-        for path in _artifacts(root, perlector.SENT_KIND)
-    }
-
-
-def test_concurrent_calls_publish_exactly_the_bytes_a_serial_pass_publishes(
-    batching_chained_run, tmp_path, monkeypatch
-):
-    writes: list[tuple[str, str]] = []
-    publish = RunTree.publish_artifact
-
-    def recording(tree, envelope):
-        writes.append((envelope["kind"], envelope["subject_id"]))
-        return publish(tree, envelope)
-
-    monkeypatch.setattr(RunTree, "publish_artifact", recording)
-    serial_root, serial = _run_batching(
-        batching_chained_run, tmp_path, "serial", monkeypatch, "--perlector-concurrency", "1"
-    )
-    serial_writes, writes[:] = writes[:], []
-    batched_root, batched = _run_batching(
-        batching_chained_run,
-        tmp_path,
-        "batched",
-        monkeypatch,
-        "--perlector-concurrency",
-        "5",
-        overlap=BATCH,
-        reproof_overlap=BATCH,
-    )
-
-    assert serial.most_in_flight == 1
-    # Asked for more than the row's bound, the pass is capped at it, and reaches it.
-    assert batched.most_in_flight == BATCH
-    # Every record is written in the order the serial pass wrote it; a send is recorded
-    # as its call leaves, which in a batch is before the earlier act's record.
-    assert [write for write in writes if write[0] != perlector.SENT_KIND] == [
-        write for write in serial_writes if write[0] != perlector.SENT_KIND
-    ]
-    # Both acts were due a re-proof, and those were batched too.
-    assert batched.most_reproofs_in_flight == BATCH
-    # Each act's request carries only sealed inputs, never another act's reading, so
-    # every request is byte-identical whichever act was in flight beside it.
-    assert sorted(batched.bodies) == sorted(serial.bodies)
-    assert (batched_root / "r" / "4_perlector" / "manifest.json").exists()
-    assert _without_width(batched_root) == _without_width(serial_root)
-    # The width each call was sent under is on the record.
-    assert (_widths(serial_root), _widths(batched_root)) == ({1}, {BATCH})
-
-
-def test_one_failed_call_in_a_batch_fails_only_its_own_act(
-    batching_chained_run, tmp_path, monkeypatch
-):
-    # The fixture's first act, by the prompt's own act line: its witnesses' text also
-    # reaches the second act's request, as that act's neighbour clue.
-    marker = "act: a1"
-    serial_root, _ = _run_batching(
-        batching_chained_run,
-        tmp_path,
-        "serial",
-        monkeypatch,
-        "--perlector-concurrency",
-        "1",
-        fail_marker=marker,
-    )
-    batched_root, batched = _run_batching(
-        batching_chained_run, tmp_path, "batched", monkeypatch, fail_marker=marker, overlap=BATCH
-    )
-
-    assert batched.most_in_flight == BATCH
-    outcomes = sorted(record["outcome"] for record in _perlectiones(batched_root).values())
-    assert len(outcomes) == 2 and outcomes.count("failed") == 1, outcomes
-    assert _without_width(batched_root) == _without_width(serial_root)
-
-
-def test_a_refusal_mid_batch_still_publishes_every_act_already_sent(
-    batching_chained_run, tmp_path, monkeypatch
-):
-    """The deadline refuses the second act's re-proof while the first act's is in flight.
-
-    The first act's reply is still published as its Perlectio, so a resumed pass never
-    asks the chair about it again.
-    """
-    checks = 0
-    refuse = perlector._refuse_past_deadline
-    endpoints: list[_ContentEndpoint] = []
-
-    def refuse_the_second_reproof(deadline, seconds_needed, what):
-        nonlocal checks
-        if what == "the next re-proof call":
-            checks += 1
-            if checks == 2:
-                raise ContractError("simulated deadline")
-        refuse(deadline, seconds_needed, what)
-
-    original_init = _ContentEndpoint.__init__
-
-    def recording_init(self, **kwargs):
-        original_init(self, **kwargs)
-        endpoints.append(self)
-
-    monkeypatch.setattr(_ContentEndpoint, "__init__", recording_init)
-    with monkeypatch.context() as patch:
-        patch.setattr(perlector, "_refuse_past_deadline", refuse_the_second_reproof)
-        with pytest.raises(ContractError, match="simulated deadline"):
-            _run_batching(batching_chained_run, tmp_path, "run", monkeypatch)
-    root = tmp_path / "run" / "runs"
-    assert checks == 2
-    read = {
-        record["payload"]["act_key"]: record["outcome"] for record in _perlectiones(root).values()
-    }
-    assert read == {"a1": "read"}, read
-
-    _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, resume=True)
-    resumed = endpoints[-1]
-    assert resumed.bodies, "the unread act was not read on resume"
-    assert not [body for body in resumed.bodies if ACT_ONE in body]
-    assert sorted(record["outcome"] for record in _perlectiones(root).values()) == [
-        "read",
-        "read",
-    ]
-
-
-@pytest.mark.parametrize("mode", ["fed", "saved"])
-def test_a_blind_read_or_fixture_pass_reads_one_act_at_a_time(mode):
-    """Pass A, or its failure, is published inline before the establishing call."""
+def test_a_fixture_pass_reads_one_page_at_a_time():
+    """Only a live engine batches; a fixture pass has no bound to look up."""
     args = SimpleNamespace(perlector_concurrency=4)
-    blind = SimpleNamespace(blind_read=mode)
-    off = SimpleNamespace(blind_read="off")
-    # Neither consults the catalogue: a blind-read or fixture pass has no bound to look up.
-    assert perlector._reading_concurrency(blind, args, None, "live") == 1
-    assert perlector._reading_concurrency(off, args, None, "fixture") == 1
+    assert perlector._reading_concurrency(SimpleNamespace(), args, None, "fixture") == 1
 
 
 def test_the_window_finishes_in_order_within_its_bound():
@@ -2741,423 +949,6 @@ def test_a_refused_job_source_still_finishes_every_job_already_sent():
 ACT_ONE, ACT_TWO = b"act: a1", b"act: a2"
 
 
-def _main_pass_bodies(endpoint: _ContentEndpoint, act: bytes) -> list[bytes]:
-    """The reading requests about one act, leaving out its Pass-C re-proof."""
-    return [
-        body
-        for body in endpoint.bodies
-        if act in body and _unchanged_reproof_response(body) is None
-    ]
-
-
-def _stop_after_the_first_semi_final(monkeypatch, *, wait: float = 0.0) -> None:
-    """Interrupt the pass the moment act one's main-pass result is on record.
-
-    `wait` lets a call already in flight answer first, as it would when an operator's
-    Ctrl-C lands a moment after the engine replied.
-    """
-    _stop_after_the_first(monkeypatch, perlector.SEMI_FINAL_KIND, wait=wait)
-
-
-def _stop_after_the_first(
-    monkeypatch, kind: str, *, wait: float = 0.0, in_flight: threading.Event | None = None
-) -> None:
-    """Interrupt once the first `kind` record is written; with `in_flight`, not before
-    that event says the call the test holds has reached its endpoint."""
-    real_publish = StageContext.publish
-    struck = False
-
-    def publish_then_interrupt(self, **kwargs):
-        nonlocal struck
-        result = real_publish(self, **kwargs)
-        if kwargs["kind"] == kind and not struck:
-            struck = True
-            if in_flight is not None and not in_flight.wait(10):
-                raise AssertionError("the held call never reached its endpoint")
-            time.sleep(wait)
-            raise KeyboardInterrupt
-        return result
-
-    monkeypatch.setattr(StageContext, "publish", publish_then_interrupt)
-
-
-def _stop_before_the_second_act(monkeypatch) -> None:
-    """The reading deadline refuses the second act, after the first was sent."""
-    refuse = perlector._refuse_past_deadline
-    checks = 0
-
-    def refuse_the_second_act(deadline, seconds_needed, what):
-        nonlocal checks
-        if what.startswith("reading the"):
-            checks += 1
-            if checks == 2:
-                raise ContractError("simulated deadline")
-        refuse(deadline, seconds_needed, what)
-
-    monkeypatch.setattr(perlector, "_refuse_past_deadline", refuse_the_second_act)
-
-
-def _join_reader_threads() -> None:
-    """Wait for any reader call an interrupt left running to come back and be retained."""
-    for thread in threading.enumerate():
-        if thread.name.startswith("ThreadPoolExecutor"):
-            thread.join()
-
-
-@pytest.mark.parametrize("stop", ["interrupt", "deadline"])
-@pytest.mark.parametrize("width", ["1", "2"])
-def test_a_resume_adopts_every_main_pass_reply_on_record_and_asks_nothing_again(
-    batching_chained_run, tmp_path, monkeypatch, width, stop
-):
-    """Stopped after act one's main-pass reply, the resumed tree is the uninterrupted one.
-
-    Act one is never asked again: its reading is adopted from its `semi-final`, and only
-    its re-proof, which no earlier session sent, goes to the chair. At width two act
-    two's reply arrives before the interrupt is handled and is recorded too.
-    """
-    concurrency = ("--perlector-concurrency", width)
-    whole_root, _whole = _run_batching(
-        batching_chained_run, tmp_path, "whole", monkeypatch, *concurrency
-    )
-
-    with monkeypatch.context() as patch:
-        if stop == "interrupt":
-            _stop_after_the_first_semi_final(patch, wait=0.6 if width == "2" else 0.0)
-            expected = KeyboardInterrupt
-        else:
-            _stop_before_the_second_act(patch)
-            expected = ContractError
-        with pytest.raises(expected):
-            _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, *concurrency)
-    _join_reader_threads()
-    root = tmp_path / "run" / "runs"
-    assert _perlectiones(root) == {}
-    adopted = len(_artifacts(root, perlector.SEMI_FINAL_KIND))
-    assert adopted == (2 if (stop, width) == ("interrupt", "2") else 1)
-
-    _root, resumed = _run_batching(
-        batching_chained_run, tmp_path, "run", monkeypatch, *concurrency, resume=True
-    )
-    assert _main_pass_bodies(resumed, ACT_ONE) == []
-    assert len(_main_pass_bodies(resumed, ACT_TWO)) == 2 - adopted
-    assert _stage_bytes(root) == _stage_bytes(whole_root)
-
-
-def _act_two_reading(body: bytes) -> bool:
-    return ACT_TWO in body and _unchanged_reproof_response(body) is None
-
-
-def _act_two_reproof(body: bytes) -> bool:
-    return ACT_TWO in body and _unchanged_reproof_response(body) is not None
-
-
-class _HeldEndpoint(_ContentEndpoint):
-    """Holds the first request `holds` picks until released, then answers or drops it."""
-
-    def __init__(self, *, answer: bool, holds=_act_two_reading, **kwargs) -> None:
-        super().__init__(**kwargs)
-        # Set when the held request arrives, so the test interrupts only once the
-        # call is really in flight rather than racing the reader thread to it.
-        self.arrived = threading.Event()
-        self.release = threading.Event()
-        self._answer = answer
-        self._holds = holds
-        self._held = False
-
-    def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
-        if body is not None and self._holds(body) and not self._held:
-            self._held = True
-            self.arrived.set()
-            self.release.wait(10)
-            if not self._answer:
-                raise EndpointUnavailable("the connection dropped with the call in flight")
-            # A real engine's reply carries its own completion id, so a late one never
-            # shares its bytes with a reply already on record.
-            response = super().request(method, url, body=body, timeout_seconds=timeout_seconds)
-            answer = json.loads(response.body)
-            answer["id"] = "chatcmpl-late"
-            return HttpResponse(response.status, json.dumps(answer).encode())
-        return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
-
-
-def _interrupt_with_act_two_in_flight(
-    batching_chained_run,
-    tmp_path,
-    monkeypatch,
-    *,
-    answer: bool,
-    holds=_act_two_reading,
-    stop_after: str = perlector.SEMI_FINAL_KIND,
-    before_release=None,
-) -> Path:
-    """Interrupt once act one's `stop_after` record is written, with act two's call held.
-
-    The held call is released only after the pass has stopped, so its answer, or its
-    dropped connection, arrives when nothing is recording any more. `before_release`
-    patches what the late call does next, for as long as it runs.
-    """
-    endpoint = _HeldEndpoint(answer=answer, holds=holds, served_model_id=SERVED_MODEL_ID)
-    with monkeypatch.context() as patch:
-        _stop_after_the_first(patch, stop_after, in_flight=endpoint.arrived)
-        with pytest.raises(KeyboardInterrupt):
-            _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, endpoint=endpoint)
-        if before_release is not None:
-            before_release(patch)
-        endpoint.release.set()
-        _join_reader_threads()
-    return tmp_path / "run" / "runs"
-
-
-def _sends(root: Path, act_id: str) -> list[dict[str, Any]]:
-    records = [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in _artifacts(root, perlector.SENT_KIND)
-    ]
-    return sorted(
-        (record for record in records if record["subject_id"] == act_id),
-        key=lambda record: (record["payload"]["pass"], record["payload"]["send"]),
-    )
-
-
-def test_a_call_interrupted_in_flight_is_sent_again_and_the_second_send_names_the_first(
-    batching_chained_run, tmp_path, monkeypatch
-):
-    root = _interrupt_with_act_two_in_flight(
-        batching_chained_run, tmp_path, monkeypatch, answer=False
-    )
-    before = _stage_bytes(root)
-
-    _root, resumed = _run_batching(batching_chained_run, tmp_path, "run", monkeypatch, resume=True)
-    assert _main_pass_bodies(resumed, ACT_ONE) == []
-    assert len(_main_pass_bodies(resumed, ACT_TWO)) == 1
-    # Nothing the interrupted session wrote was rewritten.
-    after = _stage_bytes(root)
-    assert all(after[path] == data for path, data in before.items() if "manifest" not in path)
-    readings = _perlectiones(root)
-    assert sorted(record["outcome"] for record in readings.values()) == ["read", "read"]
-    act_two = next(
-        act_id for act_id, record in readings.items() if record["payload"]["act_key"] == "a2"
-    )
-    reading_sends = [
-        record for record in _sends(root, act_two) if record["payload"]["pass"] == "reading"
-    ]
-    assert [record["payload"]["send"] for record in reading_sends] == [1, 2]
-
-    def names(record: dict[str, Any], named: dict[str, Any]) -> bool:
-        return any(
-            reference["relative_path"].endswith(f"/{named['artifact_id']}.json")
-            for reference in record["inputs"]
-        )
-
-    # The second send names the first, and the act's semi-final names both.
-    assert names(reading_sends[1], reading_sends[0])
-    semi_final = next(
-        record
-        for record in (
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in _artifacts(root, perlector.SEMI_FINAL_KIND)
-        )
-        if record["subject_id"] == act_two
-    )
-    assert all(names(semi_final, send) for send in reading_sends)
-
-
-def test_a_reply_retained_but_named_by_no_record_refuses_the_resume(
-    batching_chained_run, tmp_path, monkeypatch
-):
-    """The reply came back after the pass had stopped recording: asking again would
-    read the act twice, so the pass refuses before its chair starts."""
-    root = _interrupt_with_act_two_in_flight(
-        batching_chained_run, tmp_path, monkeypatch, answer=True
-    )
-    before = _stage_bytes(root)
-    endpoint = _ContentEndpoint(served_model_id=SERVED_MODEL_ID)
-    with pytest.raises(ContractError, match="no record names"):
-        _run_batching(
-            batching_chained_run, tmp_path, "run", monkeypatch, resume=True, endpoint=endpoint
-        )
-    assert endpoint.bodies == []
-    assert _stage_bytes(root) == before
-
-
-def _records(root: Path, kind: str) -> dict[str, list[dict[str, Any]]]:
-    """Every record of one kind on disk, by the act key it is about."""
-    by_act: dict[str, list[dict[str, Any]]] = {}
-    for path in _artifacts(root, kind):
-        record = json.loads(path.read_text(encoding="utf-8"))
-        by_act.setdefault(record["payload"]["act_key"], []).append(record)
-    return by_act
-
-
-def test_a_reply_retained_before_its_call_record_refuses_the_resume(
-    batching_chained_run, tmp_path, monkeypatch
-):
-    """The client keeps a reply's raw bytes before the call record that names them.
-
-    A pass stopped between the two leaves a reply no call record names. It still counts:
-    the resume refuses rather than send act two again.
-    """
-    this_module = sys.modules[__name__]
-    retain = this_module.retain_chair_bytes
-
-    def die_before_the_call_record(patch) -> None:
-        def retain_raw_only(context, data: bytes):
-            if b'"schema":"chair-call-record' in data:
-                raise RuntimeError("the process died before the call record was retained")
-            return retain(context, data)
-
-        patch.setattr(this_module, "retain_chair_bytes", retain_raw_only)
-
-    root = _interrupt_with_act_two_in_flight(
-        batching_chained_run,
-        tmp_path,
-        monkeypatch,
-        answer=True,
-        before_release=die_before_the_call_record,
-    )
-    before = _stage_bytes(root)
-    endpoint = _ContentEndpoint(served_model_id=SERVED_MODEL_ID)
-    with pytest.raises(ContractError, match="no record names"):
-        _run_batching(
-            batching_chained_run, tmp_path, "run", monkeypatch, resume=True, endpoint=endpoint
-        )
-    assert endpoint.bodies == []
-    assert _stage_bytes(root) == before
-
-
-@pytest.mark.parametrize("answer", [False, True])
-def test_a_reproof_interrupted_in_flight_is_sent_again_only_if_no_reply_came_back(
-    batching_chained_run, tmp_path, monkeypatch, answer
-):
-    """Act two's re-proof is out when the pass stops, after act one is sealed.
-
-    Act two's Pass-B call record carries the same session and images as that re-proof
-    send, and is bound by its semi-final, so it answers nothing: a dropped re-proof is
-    sent again as the second re-proof send. A re-proof that did answer refuses the resume.
-    """
-    root = _interrupt_with_act_two_in_flight(
-        batching_chained_run,
-        tmp_path,
-        monkeypatch,
-        answer=answer,
-        holds=_act_two_reproof,
-        stop_after="perlectio",
-    )
-    assert sorted(record["payload"]["act_key"] for record in _perlectiones(root).values()) == ["a1"]
-    endpoint = _ContentEndpoint(served_model_id=SERVED_MODEL_ID)
-    if answer:
-        with pytest.raises(ContractError, match="no record names"):
-            _run_batching(
-                batching_chained_run, tmp_path, "run", monkeypatch, resume=True, endpoint=endpoint
-            )
-        assert endpoint.bodies == []
-        return
-    _run_batching(
-        batching_chained_run, tmp_path, "run", monkeypatch, resume=True, endpoint=endpoint
-    )
-    assert _main_pass_bodies(endpoint, ACT_ONE) == _main_pass_bodies(endpoint, ACT_TWO) == []
-    assert [body for body in endpoint.bodies if _act_two_reproof(body)] == endpoint.bodies
-    assert len(endpoint.bodies) == 1
-    reproof_sends = [
-        record["payload"]["send"]
-        for record in _records(root, perlector.SENT_KIND)["a2"]
-        if record["payload"]["pass"] == "audit-reproof"
-    ]
-    assert sorted(reproof_sends) == [1, 2]
-    assert sorted(record["outcome"] for record in _perlectiones(root).values()) == ["read", "read"]
-
-
-def test_a_semi_final_made_from_other_evidence_is_refused_not_adopted(
-    batching_chained_run, tmp_path, monkeypatch
-):
-    """A witness record the resumed act no longer resolves to the one its reading cited.
-
-    Simulated by resolving no Testimonium references in the resumed pass: the inputs the
-    act's semi-final binds are then not the inputs the act has, so it is refused, and
-    nothing is asked.
-    """
-    with monkeypatch.context() as patch:
-        _stop_after_the_first_semi_final(patch)
-        with pytest.raises(KeyboardInterrupt):
-            _run_batching(
-                batching_chained_run, tmp_path, "run", monkeypatch, "--perlector-concurrency", "1"
-            )
-    root = tmp_path / "run" / "runs"
-    before = _stage_bytes(root)
-    monkeypatch.setattr(perlector, "_testimonium_references", lambda _context, _testimonia: {})
-    endpoint = _ContentEndpoint(served_model_id=SERVED_MODEL_ID)
-    with pytest.raises(ContractError, match="made from other evidence"):
-        _run_batching(
-            batching_chained_run,
-            tmp_path,
-            "run",
-            monkeypatch,
-            "--perlector-concurrency",
-            "1",
-            resume=True,
-            endpoint=endpoint,
-        )
-    assert endpoint.bodies == []
-    assert _stage_bytes(root) == before
-
-
-def test_each_record_names_the_session_that_made_it_after_a_resume(
-    batching_chained_run, tmp_path, monkeypatch
-):
-    """Two serving sessions, two receipts, and each record names the one it came from.
-
-    Act one's main pass is read by session one and adopted; everything asked after the
-    interruption, act two's reading and both re-proofs, names session two. A re-proof
-    send carries the image digests of the call it announced, in the same order.
-    """
-    with monkeypatch.context() as patch:
-        _stop_after_the_first_semi_final(patch)
-        with pytest.raises(KeyboardInterrupt):
-            _run_batching(
-                batching_chained_run, tmp_path, "run", monkeypatch, "--perlector-concurrency", "1"
-            )
-    _root, _endpoint = _run_batching(
-        batching_chained_run,
-        tmp_path,
-        "run",
-        monkeypatch,
-        "--perlector-concurrency",
-        "1",
-        resume=True,
-        started=datetime(2026, 1, 2, tzinfo=timezone.utc),
-    )
-    root = tmp_path / "run" / "runs"
-    sends = _records(root, perlector.SENT_KIND)
-    receipt = {
-        (act, record["payload"]["pass"]): record["payload"]["receipt_ref"]
-        for act, records in sends.items()
-        for record in records
-    }
-    first, second = receipt[("a1", "reading")], receipt[("a2", "reading")]
-    assert first != second
-    assert receipt[("a1", "audit-reproof")] == receipt[("a2", "audit-reproof")] == second
-    semi_finals = _records(root, perlector.SEMI_FINAL_KIND)
-    readings = {record["payload"]["act_key"]: record for record in _perlectiones(root).values()}
-    for act, session in (("a1", first), ("a2", second)):
-        assert semi_finals[act][0]["payload"]["provenance"]["receipt_ref"] == session
-        # The Perlectio's provenance is Pass B's session, whichever session re-proofed it.
-        assert readings[act]["payload"]["provenance"]["receipt_ref"] == session
-    tree = RunTree(root, "r")
-    for act, records in sends.items():
-        for send in records:
-            if send["payload"]["pass"] != "audit-reproof":
-                continue
-            finding = next(
-                record
-                for record in _records(root, "audit-finding")[act]
-                if record["subject_id"] == send["subject_id"]
-            )
-            call_ref = finding["payload"]["reproof_call"]["call_record_ref"]
-            call = json.loads(tree.read_bytes(call_ref["relative_path"]))
-            assert call["receipt_ref"] == second
-            assert call["image_sha256s"] == send["payload"]["image_sha256s"]
-
-
 def test_a_reply_another_record_binds_answers_no_send():
     """Two acts with byte-identical crops share an attribution key.
 
@@ -3178,7 +969,7 @@ def test_a_reply_another_record_binds_answers_no_send():
         record = {"inputs": [{"relative_path": path} for path in bound]}
         tree = SimpleNamespace(
             build_manifest=lambda _stage: {
-                "artifacts": [{"kind": "semi-final", "artifact_id": "b"}],
+                "artifacts": [{"kind": "page-reading", "artifact_id": "b"}],
                 "blobs": list(blobs),
             },
             read_artifact=lambda _stage, _kind, _identifier: record,

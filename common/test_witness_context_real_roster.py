@@ -330,10 +330,6 @@ def test_the_real_profile_is_bound_to_each_roles_exact_identity_projection():
             changed,
             witness_context="named",
             witness_context_config_path=REAL_CONTEXT,
-            nuda_per_mille=0,
-            nuda_approval_ref="",
-            perlector_instrument_per_mille=0,
-            perlector_instrument_approval_ref="",
         )
 
 
@@ -353,10 +349,6 @@ def test_a_recognized_profile_keeps_coverage_but_skips_an_explicit_absence():
         changed,
         witness_context="named",
         witness_context_config_path=REAL_CONTEXT,
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-        perlector_instrument_per_mille=0,
-        perlector_instrument_approval_ref="",
     ) == _seal(REAL_CONTEXT)
 
 
@@ -414,10 +406,6 @@ def test_local_repository_is_a_location_not_proof_of_the_fixture_identity():
             changed,
             witness_context="named",
             witness_context_config_path=FIXTURE_CONTEXT,
-            nuda_per_mille=0,
-            nuda_approval_ref="",
-            perlector_instrument_per_mille=0,
-            perlector_instrument_approval_ref="",
         )
 
 
@@ -427,10 +415,6 @@ def test_a_real_run_seals_the_real_declarations_bytes():
         ChairRegistry.from_toml(REAL_ROSTER).config,
         witness_context="named",
         witness_context_config_path=REAL_CONTEXT,
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-        perlector_instrument_per_mille=0,
-        perlector_instrument_approval_ref="",
     )
 
     assert sealed == _seal(REAL_CONTEXT)
@@ -443,10 +427,6 @@ def test_a_fixture_run_still_seals_the_fixture_declaration():
         ChairRegistry.from_toml(FIXTURE_ROSTER).config,
         witness_context="named",
         witness_context_config_path=FIXTURE_CONTEXT,
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-        perlector_instrument_per_mille=0,
-        perlector_instrument_approval_ref="",
     )
 
     assert sealed == _seal(FIXTURE_CONTEXT)
@@ -479,10 +459,6 @@ def test_the_refusal_holds_under_the_blinded_regime_too():
             ChairRegistry.from_toml(REAL_ROSTER).config,
             witness_context="blinded",
             witness_context_config_path=FIXTURE_CONTEXT,
-            nuda_per_mille=0,
-            nuda_approval_ref="",
-            perlector_instrument_per_mille=0,
-            perlector_instrument_approval_ref="",
         )
 
 
@@ -506,3 +482,17 @@ def test_a_roster_without_witness_roles_records_that_absence(tmp_path):
     assert validation.verified_present_roles == ()
     assert validation.role_profiles == ()
     assert validation.source_sha256 == digest_bytes(b"{}")
+
+
+def test_no_page_path_code_shows_a_training_domain_to_the_reader():
+    """The declaration is sealed and checked against the roster, and its sentences
+    are not part of the page feed or prompt. A change that starts showing them
+    changes what the Perlector reads, and this test and the declaration's header
+    change with it."""
+    root = Path(__file__).resolve().parents[1]
+    readers = sorted(
+        str(path.relative_to(root))
+        for path in [*(root / "common").glob("page_*.py"), *(root / "pipeline").rglob("*.py")]
+        if not path.name.startswith("test_") and "training_domain" in path.read_text("utf-8")
+    )
+    assert readers == []

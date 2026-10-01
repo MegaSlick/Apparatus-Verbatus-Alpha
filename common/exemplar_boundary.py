@@ -23,13 +23,12 @@ from common.contracts.canonical import (
 )
 from common.contracts.envelope import read_verified, validate_envelope
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.identities import PROPOSAL_SEAL_ID, artifact_id, page_id, region_id
+from common.contracts.identities import artifact_id, page_id, region_id
 from common.contracts.stages import (
-    DESIGNATOR,
     DOOR,
     EXEMPLAR,
     MAX_TRIAGE_SPLIT_PARTS,
-    RECENSOR,
+    PERLECTOR,
     TRIAGE_ACTOR_FIELDS,
     TRIAGE_ACTOR_KINDS,
     TRIAGE_MODES,
@@ -174,7 +173,7 @@ def sealed_page_bytes(
 
 
 def exemplar_crop_transform(page_ordinal: int, page_id: str, bounds: dict) -> dict[str, Any]:
-    """The one construction of a crop transform, as `verify_exemplar_crop_lineage` reads it.
+    """The one construction of a crop transform, as `verify_reading_region_lineage` reads it.
 
     Region identity derives from this shape, so every stage that cuts a crop
     from a sealed page builds it here.
@@ -495,51 +494,31 @@ def _validate_exemplar_transform(transform: Any) -> None:
     raise ContractError("an Exemplar transform names an operation outside the closed vocabulary")
 
 
-def verify_exemplar_crop_lineage(
-    tree: RunTree, run: dict[str, Any], region: dict[str, Any]
-) -> dict[str, Any]:
-    """Verify one Designator crop against the exact sealed Exemplar page it inputs."""
-    if (
-        region.get("run_id") != tree.run_id
-        or region.get("stage") != DESIGNATOR
-        or region.get("kind") != "region"
-        or region.get("outcome") != "proposed"
-        or region.get("config_digest") != run.get("config_digest")
-    ):
-        raise ContractError("a crop region does not belong to this run and Designator")
-    payload = region.get("payload")
-    if not isinstance(payload, dict):
-        raise ContractError("a crop region has no payload")
-    transform = payload.get("transform")
-    _validate_exemplar_transform(transform)
-    if set(transform) != {"operation", "source_page_ordinal", "source_page_id", "bounds"}:
-        raise ContractError("a crop region carries no complete Exemplar transform")
-    # The operation is settled by the two checks above rather than here: the
-    # closed vocabulary gives "split", "deskew" and "convert" key sets of their
-    # own, so nothing but a validated crop survives the four-key shape check.
+def _sealed_source_page(
+    tree: RunTree, run: dict[str, Any], transform: dict[str, Any], what: str
+) -> tuple[bytes, dict[str, str]]:
+    """The sealed Exemplar page a crop transform names: its pixels and its input reference.
+
+    The page must be the one submitted source at the transform's ordinal, its
+    pixels must verify against the Door's admission, and the transform's
+    bounds must lie inside it.
+    """
     ordinal = transform["source_page_ordinal"]
     source_page_id = transform["source_page_id"]
     bounds = transform["bounds"]
-    if payload.get("region_id") != region_id(region.get("subject_id"), transform):
-        raise ContractError("a crop region's identities do not bind its recorded transform")
-    _verify_act_identity_binding(tree, region, payload)
     sources = [row for row in run.get("source_manifest", []) if row.get("ordinal") == ordinal]
     if len(sources) != 1:
-        raise ContractError("a crop region's source ordinal does not name one submitted page")
-    source = sources[0]
-    page_artifact_id = artifact_id(EXEMPLAR, "page", source_page_id)
-    page = tree.read_artifact(EXEMPLAR, "page", page_artifact_id)
+        raise ContractError(f"a {what}'s source ordinal does not name one submitted page")
+    page = tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", source_page_id))
     if page.get("subject_id") != source_page_id:
-        raise ContractError("a crop region's page id does not name its Exemplar page")
-    verify_sealed_page_pixels(tree, run, source, page)
-
-    page_path = page["payload"]["image_path"]
-    page_digest = page["payload"]["source_sha256"]
+        raise ContractError(f"a {what}'s page id does not name its Exemplar page")
+    verify_sealed_page_pixels(tree, run, sources[0], page)
+    page_ref = {
+        "relative_path": page["payload"]["image_path"],
+        "sha256": page["payload"]["source_sha256"],
+    }
     page_pixels = read_verified(
-        tree.read_bytes,
-        {"relative_path": page_path, "sha256": page_digest},
-        "the sealed Exemplar page",
-        ContractError,
+        tree.read_bytes, page_ref, "the sealed Exemplar page", ContractError
     )
     page_width, page_height = dimensions(page_pixels)
     if (
@@ -548,45 +527,21 @@ def verify_exemplar_crop_lineage(
         or bounds["x"] + bounds["w"] > page_width
         or bounds["y"] + bounds["h"] > page_height
     ):
-        raise ContractError("a crop region's transform falls outside its Exemplar page")
-    expected_page_ref = {"relative_path": page_path, "sha256": page_digest}
-    inputs = region.get("inputs")
-    origin = payload.get("origin")
-    if origin == "proposal":
-        if inputs != [expected_page_ref]:
-            raise ContractError(
-                "a proposal crop region does not input only the Exemplar page its transform names"
-            )
-    elif origin == "recovery":
-        if not isinstance(inputs, list) or expected_page_ref not in inputs or len(inputs) != 2:
-            raise ContractError(
-                "a recovery crop region does not input its Exemplar page and one recovery request"
-            )
-        request_ref = next(reference for reference in inputs if reference != expected_page_ref)
-        request = tree.read_artifact_reference(
-            request_ref,
-            stage=RECENSOR,
-            kind="recovery-request",
-            subject_id=region["subject_id"],
-        )
-        request_payload = request.get("payload")
-        if (
-            request["outcome"] != "recovery-requested"
-            or not isinstance(request_payload, dict)
-            or request_payload.get("act_key") != payload.get("act_key")
-        ):
-            raise ContractError(
-                "a recovery crop region is not bound to a matching Recensor request"
-            )
-    else:
-        raise ContractError("a crop region has no recognized proposal or recovery origin")
+        raise ContractError(f"a {what}'s transform falls outside its Exemplar page")
+    return page_pixels, page_ref
+
+
+def _verify_stored_crop(
+    page_pixels: bytes, bounds: dict[str, int], payload: dict[str, Any], tree: RunTree, what: str
+) -> tuple[int, int]:
+    """The crop a payload names is exactly `bounds` cut from the page; its size is returned."""
     image_path, image_digest = payload.get("image_path"), payload.get("image_sha256")
     if not isinstance(image_path, str) or not is_sha256(image_digest):
         raise ContractError("a crop region names no content-addressed crop image")
     crop = read_verified(
         tree.read_bytes,
         {"relative_path": image_path, "sha256": image_digest},
-        "the sealed Designator crop",
+        what,
         ContractError,
     )
     expected_crop = crop_png(page_pixels, bounds)
@@ -595,18 +550,60 @@ def verify_exemplar_crop_lineage(
     width, height = dimensions(crop)
     if (width, height) != (bounds["w"], bounds["h"]):
         raise ContractError("a crop region's pixels disagree with its recorded bounds")
+    return width, height
+
+
+def verify_reading_region_lineage(
+    tree: RunTree, run: dict[str, Any], region: dict[str, Any]
+) -> dict[str, Any]:
+    """Verify one Perlector `act-region` crop against the sealed Exemplar page it was cut from.
+
+    The page reading's regions are cut by `cut_exemplar_crop` over the union of
+    the cited boxes: the transform must be that crop of the page the record
+    names, `region_id` must bind the act and transform, the record must input
+    the page and the crop, and the stored crop must be exactly those pixels.
+    An unplaced entry has no crop and is refused here; its caller never asks.
+    """
+    if (
+        region.get("run_id") != tree.run_id
+        or region.get("stage") != PERLECTOR
+        or region.get("kind") != "act-region"
+        or region.get("config_digest") != run.get("config_digest")
+    ):
+        raise ContractError("a reading region does not belong to this run and Perlector")
+    payload = region.get("payload")
+    if not isinstance(payload, dict):
+        raise ContractError("a reading region has no payload")
+    transform = payload.get("transform")
+    _validate_exemplar_transform(transform)
+    if set(transform) != {"operation", "source_page_ordinal", "source_page_id", "bounds"}:
+        raise ContractError("a reading region carries no complete Exemplar transform")
+    if transform != exemplar_crop_transform(
+        payload.get("page_ordinal"), payload.get("page_id"), payload.get("union_box_px")
+    ):
+        raise ContractError(
+            "a reading region's transform is not the crop of its own union box from its own page"
+        )
+    if payload.get("transform_digest") != digest_of(transform):
+        raise ContractError("a reading region's transform digest does not bind its transform")
+    if payload.get("region_id") != region_id(region.get("subject_id"), transform):
+        raise ContractError("a reading region's identities do not bind its recorded transform")
+    page_pixels, page_ref = _sealed_source_page(tree, run, transform, "reading region")
+    inputs = region.get("inputs")
+    crop_ref = {"relative_path": payload.get("image_path"), "sha256": payload.get("image_sha256")}
+    if not isinstance(inputs, list) or page_ref not in inputs or crop_ref not in inputs:
+        raise ContractError("a reading region does not input its Exemplar page and its own crop")
+    width, height = _verify_stored_crop(
+        page_pixels, transform["bounds"], payload, tree, "the sealed reading crop"
+    )
     return {
-        "region_id": payload.get("region_id"),
-        "image_path": image_path,
-        "image_sha256": image_digest,
+        "region_id": payload["region_id"],
+        "image_path": payload["image_path"],
+        "image_sha256": payload["image_sha256"],
         "verified_dimensions": {"w": width, "h": height},
-        "source_page_ordinal": ordinal,
-        "source_page_id": source_page_id,
+        "source_page_ordinal": transform["source_page_ordinal"],
+        "source_page_id": transform["source_page_id"],
         "transform": dict(transform),
-        # Attestatores and Perlector validate this receipt-backed provenance
-        # before invoking this helper. Keep it with the verified crop facts so
-        # the export can still name the chair that marked the ink out.
-        "structure_provenance": payload.get("provenance"),
     }
 
 
@@ -649,57 +646,6 @@ def _verify_crop_is_the_same_image(stored: bytes, derived: bytes) -> None:
             "a crop region's sealed image shows the right pixels but carries content beyond "
             "the crop itself"
         )
-
-
-def _verify_act_identity_binding(
-    tree: RunTree, region: dict[str, Any], payload: dict[str, Any]
-) -> None:
-    """Refuse a region whose claimed act does not match the Designator's own seal.
-
-    Everything above proves the region's transform traces to a genuine sealed
-    Exemplar page and that `region_id` is self-consistent with its own claimed
-    `subject_id` -- but a region genuinely cut from a real page, self-consistent
-    under a *relabelled* subject_id, would pass every check above it: pixels
-    that really are act B's crop, filed under act A's identity.
-
-    The proposal seal (`common/stage.py`'s `expected_acts`) is emitted once,
-    never rewritten, so a region's `act_key` must name exactly one seal entry,
-    and that entry's own `act_id`, not the region's self-reported one, is what
-    `subject_id` must equal. Proposal evidence is checked here too, so this
-    function does not depend on a caller first running the broader
-    proposal-seal reconciliation.
-    """
-    subject_id = region.get("subject_id")
-    act_key = payload.get("act_key")
-    if not isinstance(act_key, str) or not act_key:
-        raise ContractError("a crop region names no act_key to verify its identity against")
-    seal = tree.read_artifact(DESIGNATOR, "proposal-seal", PROPOSAL_SEAL_ID)
-    matches = [
-        entry for entry in seal["payload"]["expected_acts"] if entry.get("act_key") == act_key
-    ]
-    if len(matches) != 1:
-        raise ContractError(
-            f"a crop region names act_key {act_key!r}, which the proposal seal does not "
-            "name exactly once"
-        )
-    if matches[0].get("act_id") != subject_id:
-        raise ContractError(
-            "a crop region's subject_id does not match the proposal seal's act identity "
-            "for the act_key it claims"
-        )
-    if payload.get("origin") == "proposal":
-        artifact = region.get("artifact_id")
-        if not isinstance(artifact, str) or not artifact:
-            raise ContractError("a proposal crop region has no artifact id to bind to its seal")
-        relative_path = tree.artifact_path(DESIGNATOR, "region", artifact)
-        reference = {
-            "relative_path": relative_path,
-            "sha256": digest_bytes(tree.read_bytes(relative_path)),
-        }
-        if reference not in matches[0].get("evidence", []):
-            raise ContractError(
-                "a proposal crop region does not name this proposal crop in the act's sealed evidence"
-            )
 
 
 def _refuse_a_merged_page_no_consumer_reads_yet(records: dict[int, dict[str, Any]]) -> None:

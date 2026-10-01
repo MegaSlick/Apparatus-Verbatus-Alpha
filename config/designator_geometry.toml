@@ -1,10 +1,12 @@
 # R2 Designator geometry policy.  This file is sealed into a run by its SHA-256.
 #
-# The `role` values below name geometry-policy blocks, NOT chairs.
-# `config/models.toml` is the only place a model is bound to a chair; this file
-# only says what shape a proposal adapter cuts. Surya is not a proposal
-# adapter: it runs on the whole page, as its makers wrote it, and its lines and
-# blocks are evidence records (`pipeline/2_designator/surya_detection.py`).
+# The crop policy for the configured record detector (`secondary_proposer`):
+# the Designator cuts every detector record's crop under it, on fixture and real
+# rosters alike, and DAI reads those crops. The `role` values below name
+# geometry-policy blocks, not chairs; `config/models.toml` is the only place a
+# model is bound to a chair. Surya is not cut under this policy: it runs on the
+# whole page, and its lines and blocks are evidence records
+# (`pipeline/2_designator/surya_detection.py`).
 [geometry]
 schema = "designator-geometry-policy.v1"
 
@@ -17,12 +19,4 @@ rectify = false
 [geometry.provenance]
 source = "R2 binding: REBUILD_PLAN_three_stage.md and three_stage_reading_design.md v2.1"
 calibrated_for_this_corpus = false
-# No proposer chair is ACTIVE. `config/models.toml`'s live roster carries
-# `secondary_proposer` as an explicit `state = "absent"`, and its commented real
-# roster does carry a drafted YOLOv26 entry — so a proposer is drafted, just not
-# in force. The roster ruling of 2026-08-20 named a Perlector and three
-# witnesses and spoke to no proposer, and activating the drafted one would be
-# contract work in any case: the secondary-candidate contract reads a pixel count
-# rather than a detector, and no serving-recipe row exists for the chair at any
-# tier.
-caveat = "Fixture policy only; no proposer chair is active in the live roster."
+caveat = "The crop policy for the configured record detector's records, applied on fixture and real rosters alike; not calibrated for this corpus."

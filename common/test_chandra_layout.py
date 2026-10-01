@@ -50,11 +50,12 @@ from common.chandra_layout import (
     UNLABELLED_BLOCK_LABEL,
     block_page_bounds,
     is_refusal,
+    join_delivered_texts,
     layout_block_text,
     parse_bbox_attribute,
     parse_layout_html,
+    to_page_bounds,
 )
-from common.structure_answer import to_page_bounds
 
 
 def _sha256(text: str) -> str:
@@ -751,3 +752,25 @@ def test_the_text_outside_blocks_is_what_the_finding_counts():
     assert text == "lead\nbetween\npara x"
     assert counted == len(text.replace("\n", "").replace(" ", ""))
     assert outside_blocks_text(b'<div data-bbox="1 2 3 4">in</div>\n') == ""
+
+
+# --- the shared conversion, join and digest ------------------------------------
+
+
+def test_the_page_join_puts_one_newline_only_between_delivered_texts():
+    page_text, spans = join_delivered_texts(["first", "", "second"])
+    assert page_text == "first\nsecond"
+    assert spans == [{"start": 0, "end": 5}, {"start": 5, "end": 5}, {"start": 6, "end": 12}]
+    assert page_text[spans[0]["start"] : spans[0]["end"]] == "first"
+    assert page_text[spans[2]["start"] : spans[2]["end"]] == "second"
+
+
+def test_a_page_of_only_empty_texts_never_produces_a_bare_separator():
+    """Joining the empty texts too would put a newline under a reading nobody delivered."""
+    assert join_delivered_texts(["", ""]) == ("", [{"start": 0, "end": 0}, {"start": 0, "end": 0}])
+
+
+def test_to_page_bounds_floors_the_low_edges_and_reaches_the_last_page_pixel():
+    assert to_page_bounds([0, 0, 500, 500], 1000, 1000) == {"x": 0, "y": 0, "w": 500, "h": 500}
+    assert to_page_bounds([0, 0, 1000, 1000], 7, 11) == {"x": 0, "y": 0, "w": 7, "h": 11}
+    assert to_page_bounds([1, 1, 999, 999], 7, 11) == {"x": 0, "y": 0, "w": 7, "h": 11}

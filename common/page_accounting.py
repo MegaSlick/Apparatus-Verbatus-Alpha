@@ -10,10 +10,17 @@ page's ink are accounted for. It reads no file, calls no model and chooses nothi
 witnesses. A hold only asks a human to look; a measurement that cannot be
 taken holds; any hold holds the page's acts for review.
 
-`placement_boxes`, `expand_cites` and `validate_answer` are the one reading of
-an answer's ids and regions that both this check and the stage writing the
-act-region records use, and `validate_answer` reads the answer's grammar through
-`common.page_answer`, the one grammar a page answer has.
+`placement_boxes`, `expand_cites`, `validate_answer` and `duplicate_regions`
+are the one reading of an answer's ids and regions that both this check and
+the stage writing the act-region records use, under the sealed policy, and
+`validate_answer` reads the answer's grammar through `common.page_answer`, the
+one grammar a page answer has.
+
+An entry's region is exactly the ink it names, id by id: the list of its placing
+boxes, never the rectangle around them. Every "inside" test and every region
+area reads the union of that list, so an entry citing lines of two columns does
+not claim the ink between them, and a Surya block, which may hold the whole page
+or several acts, lends its area to no entry.
 
 Every box in and out is the repository's `bounds` `{x, y, w, h}` in sealed-page
 pixels, as the feed records `box_px`; the geometry below reads corners from it.
@@ -24,25 +31,26 @@ from __future__ import annotations
 import html
 import json
 import re
-import time
 import unicodedata
 from bisect import bisect_left
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Final, Protocol
 
 from common.contracts.errors import ContractError
+from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
 from common.imaging import Bounds
 from common.page_answer import grammar_problems
+from common.page_witness_units import DETECTION_LETTERS
 from common.perlector_audit import TRUNCATION_COMPLETE
 from common.residual_ink import CoverageAuditPolicy, residual_ink_from_runs
 from common.sealed_config import read_sealed_toml
 
-SCHEMA: Final = "page-accounting.v1"
+SCHEMA: Final = "page-accounting.v2"
 SEALED_CONFIG_NAME: Final = "page-accounting"
 DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "page_accounting.toml"
@@ -55,13 +63,18 @@ BASIS_POINTS: Final = 10_000
 ANSWER_GRAMMAR: Final = "answer-grammar"
 UNKNOWN_ID: Final = "unknown-id"
 MALFORMED_RANGE: Final = "malformed-range"
+# A range over Surya lines or blocks: their numbering follows the detector, not
+# the page's columns, so a range could name ink the entry never read.
+DETECTION_RANGE: Final = "detection-range"
 CITED_AND_SET_ASIDE: Final = "cited-and-set-aside"
 SET_ASIDE_TWICE: Final = "set-aside-twice"
 SET_ASIDE_WITHOUT_REASON: Final = "set-aside-without-reason"
-DUPLICATE_REGION: Final = "duplicate-region"
 
 # Finding codes. Every code in `HOLD_CODES` holds the page; the others are recorded only.
 PAGE_ANSWER_INCOMPLETE: Final = "page-answer-incomplete"
+# Two entries claiming mostly the same ink (`duplicate_regions`): rule (h), and a
+# hold on each entry's act records.
+DUPLICATE_REGION: Final = "duplicate-region"
 READING_UNPLACED: Final = "reading-unplaced"
 UNACCOUNTED_WITNESS_UNIT: Final = "unaccounted-witness-unit"
 SET_ASIDE_SUBSTANTIAL: Final = "set-aside-substantial"
@@ -83,6 +96,9 @@ SHARED_LINE: Final = "shared-line"
 MERGED_DETECTION: Final = "merged-detection"
 RECORD_READ_AS_OTHER: Final = "record-read-as-other"
 RECORD_NOT_READ: Final = "record-not-read"
+# The record detector looked below its cap and found no record on a page whose
+# reading establishes acts: the detector and the reading disagree about the page.
+NO_RECORD_ON_ACT_PAGE: Final = "no-detector-record-on-act-page"
 SET_ASIDE_RECORD: Final = "set-aside-record"
 SPLIT_DETECTION: Final = "split-detection"
 RECORDS_NOT_MEASURED: Final = "detector-records-not-measured"
@@ -111,6 +127,7 @@ HOLD_CODES: Final = frozenset(
         MERGED_DETECTION,
         RECORD_READ_AS_OTHER,
         RECORD_NOT_READ,
+        NO_RECORD_ON_ACT_PAGE,
         SET_ASIDE_RECORD,
         RECORDS_NOT_MEASURED,
         RECORD_NOT_MEASURED,
@@ -131,7 +148,7 @@ NOT_MEASURED_CODES: Final = frozenset(
         TRUNCATION_NOT_CLASSIFIED,
     }
 )
-_PROBLEM_RULE: Final = {UNKNOWN_ID: "b", DUPLICATE_REGION: "h"}
+_PROBLEM_RULE: Final = {UNKNOWN_ID: "b"}
 
 PASS: Final = "pass"
 HOLD: Final = "hold"
@@ -142,7 +159,6 @@ RULES: Final = ("a", "b", "c", "d", "e", "f", "g", "h", "i")
 PARSED: Final = "parsed"
 FAILED_PARSE_STATES: Final = frozenset({"cut-off", "call-failed", "refused-capacity", "not-run"})
 PARSE_STATES: Final = FAILED_PARSE_STATES | {PARSED, "malformed"}
-WITNESS_READ: Final = "read"
 RECORD_DETECTOR_CONFIGURED: Final = "configured"
 RECORD_DETECTOR_ABSENT: Final = "absent"
 
@@ -183,13 +199,15 @@ class PageAccountingPolicy:
     direct_alignment_max_pairs: int
     max_alignment_pairs: int
     max_characters: int
-    deadline_milliseconds: int
+    max_alignment_steps: int
     piece_characters: int
     piece_edits: int
     window_slack: int
     min_pieces: int
     min_distinctive_share_bp: int
     max_short_unit_distance_bp: int
+    max_shared_share_bp: int
+    max_unit_area_per_character_bp: int
     sha256: str
 
 
@@ -209,7 +227,7 @@ _POLICY_TABLES: Final = {
         "direct_alignment_max_pairs",
         "max_alignment_pairs",
         "max_characters",
-        "deadline_milliseconds",
+        "max_alignment_steps",
     ),
     "identity": (
         "piece_characters",
@@ -219,6 +237,7 @@ _POLICY_TABLES: Final = {
         "min_distinctive_share_bp",
         "max_short_unit_distance_bp",
     ),
+    "region": ("max_shared_share_bp", "max_unit_area_per_character_bp"),
 }
 _BASIS_POINT_FIELDS: Final = frozenset(
     {
@@ -226,6 +245,8 @@ _BASIS_POINT_FIELDS: Final = frozenset(
         "max_unread_share_bp",
         "min_distinctive_share_bp",
         "max_short_unit_distance_bp",
+        "max_shared_share_bp",
+        "max_unit_area_per_character_bp",
     }
 )
 
@@ -300,33 +321,65 @@ def _from_corners(x0: int, y0: int, x1: int, y1: int) -> Box:
     return {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
 
 
-def placement_boxes(feed: Mapping[str, Any]) -> dict[str, Box | None]:
+def placement_boxes(feed: Mapping[str, Any], policy: PageAccountingPolicy) -> dict[str, Box | None]:
     """Every id a page feed defines, with the box it places an entry by, or `None`.
 
-    Surya's lines and blocks place by their boxes, and so does each witness
-    unit with a box when witnesses are shown in their own units. Under the
-    feed's `witness_units = "flat"` switch a witness is shown as one unit with
-    no box, so its units place nothing (their `box_px` stays on the feed as the
-    witness's sealed geometry): an entry citing it takes its region from the
-    boxed ids it also cites. The stage cuts act regions from this map and the
-    accounting measures against it, so the two never read different regions.
+    Surya's lines and the witness units whose text vouches for their box place
+    an entry. A line is text Surya found; rule (d) checks only that each line
+    lies inside some entry's region, so whether the entry citing a line read
+    it is measured no further than the truncation length signal (rule g) and
+    rule (e) where a witness unit covers the same ink. A unit places its box
+    only when its text is long enough for that box (`_vouches_for`), since
+    rule (e) holds the citing reading to the unit's text and to nothing else
+    under its box. A Surya block places nothing: one block can be the whole
+    page or hold several acts. Under the feed's `witness_units = "flat"`
+    switch a witness is shown as one unit with no box, so its units place
+    nothing (their `box_px` stays on the feed as the witness's sealed
+    geometry). Every box on the feed is checked, placing or not. An entry
+    takes its region from the placing ids it cites. The stage cuts act regions
+    from this map and the accounting measures against it, so the two never
+    read different regions.
     """
     flat = feed["switches"]["witness_units"] == WITNESS_UNITS_FLAT
+    page_area = feed["page_size"]["w"] * feed["page_size"]["h"]
     boxes: dict[str, Box | None] = {}
     for witness in feed["witnesses"]:
         for unit in witness["units"]:
-            boxes[unit["id"]] = None if flat or unit["box_px"] is None else unit["box_px"]
+            box = None if unit["box_px"] is None else _box(unit["box_px"], unit["id"])
+            places = (
+                not flat and box is not None and _vouches_for(unit["text"], box, page_area, policy)
+            )
+            boxes[unit["id"]] = box if places else None
     surya = feed["surya"]
     if surya is not None:
-        for item in surya["lines"] + surya["blocks"]:
-            boxes[item["id"]] = item["box_px"]
+        for line in surya["lines"]:
+            boxes[line["id"]] = _box(line["box_px"], line["id"])
+        for block in surya["blocks"]:
+            _box(block["box_px"], block["id"])
+            boxes[block["id"]] = None
     return boxes
 
 
-def feed_candidates(feed: Mapping[str, Any]) -> dict[str, Box | None]:
+def _vouches_for(text: str, box: Box, page_area: int, policy: PageAccountingPolicy) -> bool:
+    """Whether a unit's text is long enough to claim its box's share of the page.
+
+    Each normalized character may claim at most `max_unit_area_per_character_bp`
+    of the page's area. A unit with no text claims nothing; a folio number
+    reported on a column-sized box claims nothing either, rather than lending
+    an entry ink no rule shows it read.
+    """
+    characters = len(normalized_text(text))
+    return (
+        characters > 0
+        and _area(box) * BASIS_POINTS
+        <= policy.max_unit_area_per_character_bp * characters * page_area
+    )
+
+
+def feed_candidates(feed: Mapping[str, Any], policy: PageAccountingPolicy) -> dict[str, Box | None]:
     """Every citable id of a page feed and the box it places an entry by (`placement_boxes`).
 
-    `feed` is the `page-feed` payload: `switches.witness_units`,
+    `feed` is the `page-feed` payload: `page_size`, `switches.witness_units`,
     `witnesses[].units[]` with `id`, `box_px` and `text`, and `surya` (or
     `None`) with `lines[]` / `blocks[]` of `id` and `box_px`. Each letter's ids
     are numbered `1..n` without a gap; a feed that skips one is refused, since
@@ -343,13 +396,7 @@ def feed_candidates(feed: Mapping[str, Any]) -> dict[str, Box | None]:
         if identifier in seen:
             raise ContractError(f"feed id {identifier} appears twice")
         seen.add(identifier)
-    candidates = {
-        identifier: None if box is None else _box(box, identifier)
-        for identifier, box in placement_boxes(feed).items()
-    }
-    if surya is not None:
-        for item in surya["lines"] + surya["blocks"]:
-            _box(item["box_px"], item["id"])
+    candidates = placement_boxes(feed, policy)
     numbers: dict[str, list[int]] = {}
     for identifier in candidates:
         numbers.setdefault(identifier[0], []).append(int(identifier[1:]))
@@ -364,10 +411,12 @@ def expand_cites(
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """The known ids a list of citations names, in the order given, and its problems.
 
-    A citation is one id (`A2`) or a range (`L10-L17`: one letter, ascending,
-    both ends inclusive). An id or range end the feed does not define is
-    `unknown-id`; any other shape is `malformed-range`. Nothing is guessed: a
-    problem contributes no id.
+    A citation is one id (`A2`) or a range of witness units (`A2-A5`: one
+    letter, ascending, both ends inclusive). A range over Surya lines or
+    blocks is `detection-range`: they are cited one by one, since their
+    numbering follows the detector rather than the page's columns. An id or
+    range end the feed does not define is `unknown-id`; any other shape is
+    `malformed-range`. Nothing is guessed: a problem contributes no id.
     """
     ids: list[str] = []
     problems: list[dict[str, Any]] = []
@@ -385,6 +434,9 @@ def expand_cites(
         if match is None or match[1] != match[3] or int(match[2]) > int(match[4]):
             problems.append({"code": MALFORMED_RANGE, "cite": cite})
             continue
+        if match[1] in DETECTION_LETTERS:
+            problems.append({"code": DETECTION_RANGE, "cite": cite})
+            continue
         letter, first, last = match[1], int(match[2]), int(match[4])
         span = [f"{letter}{number}" for number in range(first, last + 1)]
         missing = [identifier for identifier in (span[0], span[-1]) if identifier not in candidates]
@@ -396,7 +448,7 @@ def expand_cites(
     return list(dict.fromkeys(ids)), problems
 
 
-def _union_box(boxes: list[Box]) -> Box | None:
+def _union_box(boxes: Sequence[Box]) -> Box | None:
     if not boxes:
         return None
     corners = [_corners(box) for box in boxes]
@@ -408,19 +460,82 @@ def _union_box(boxes: list[Box]) -> Box | None:
     )
 
 
+def region_boxes(cited_ids: Sequence[str], candidates: Mapping[str, Box | None]) -> list[Box]:
+    """The boxes of the placing ids among `cited_ids`, each box once, in first-cited order."""
+    boxes: dict[tuple[int, ...], Box] = {}
+    for identifier in cited_ids:
+        box = candidates[identifier]
+        if box is not None:
+            boxes.setdefault(_corners(box), box)
+    return list(boxes.values())
+
+
+def region_area(boxes: Sequence[Box]) -> int:
+    """The area of the union of `boxes`, each pixel once."""
+    bounding = _union_box(boxes)
+    return 0 if bounding is None else _area_inside(bounding, boxes)
+
+
+def _shared_area(region: Sequence[Box], other: Sequence[Box]) -> int:
+    """The area both regions claim: the union of their boxes' pairwise overlaps."""
+    overlaps = []
+    for a in (_corners(box) for box in region):
+        for b in (_corners(box) for box in other):
+            x0, y0, x1, y1 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
+            if x0 < x1 and y0 < y1:
+                overlaps.append(_from_corners(x0, y0, x1, y1))
+    return region_area(overlaps)
+
+
+def duplicate_regions(
+    entries: Sequence[Mapping[str, Any]], policy: PageAccountingPolicy
+) -> list[dict[str, Any]]:
+    """`duplicate-region` for every two placed entries that claim mostly the same ink.
+
+    Regions are compared as ink, whatever boxes name it: two entries are held
+    when the area both claim exceeds `max_shared_share_bp` of the smaller
+    region. That holds one region inside another, and the same ink named by
+    other ids (a range of units against the lines under them). An act sharing
+    one line with its neighbour at its edge stays under the share; rule (h)
+    records that line as `shared-line`.
+    """
+    placed = [
+        (entry["n"], entry["region_boxes_px"], region_area(entry["region_boxes_px"]))
+        for entry in entries
+        if entry["region_boxes_px"]
+    ]
+    findings = []
+    for index, (n, region, area) in enumerate(placed):
+        for other_n, other, other_area in placed[index + 1 :]:
+            shared = _shared_area(region, other)
+            smaller = min(area, other_area)
+            if shared * BASIS_POINTS > policy.max_shared_share_bp * smaller:
+                findings.append(
+                    {
+                        "code": DUPLICATE_REGION,
+                        "ns": sorted((n, other_n)),
+                        "shared_px": shared,
+                        "smaller_region_px": smaller,
+                    }
+                )
+    return sorted(findings, key=lambda finding: finding["ns"])
+
+
 def validate_answer(answer: Any, candidates: Mapping[str, Box | None]) -> dict[str, Any]:
     """Read a parsed page answer against its feed's candidates, repairing nothing.
 
-    `candidates` is `feed_candidates(feed)`. The answer's grammar is
+    `candidates` is `feed_candidates(feed, policy)`. The answer's grammar is
     `common.page_answer.grammar_problems`'s; an answer outside it has no entries
     and one `answer-grammar` problem per departure. Returns `entries` (one per
     entry, in the order given: `n`, `kind`, `label`, `cites` as given,
-    `cited_ids` expanded, `union_box_px` -- the bounding box of the cited
-    placing ids, unpadded, or `None` when the entry cites none -- and `text`),
-    `set_aside` (`{id: reason}` for every id set aside with a reason) and
-    `problems` (every finding; any one holds the page). An entry with no
-    placing citation is not a problem here: it is published unplaced and held
-    by the accounting's rule (b).
+    `cited_ids` expanded, `region_boxes_px` -- the boxes of the cited placing
+    ids (`region_boxes`), the region every rule measures -- `union_box_px`,
+    their bounding box, unpadded, which only crops and names the act, or
+    `None` when the entry cites no placing id, and `text`), `set_aside`
+    (`{id: reason}` for every id set aside with a reason) and `problems`
+    (every finding; any one holds the page). An entry with no placing
+    citation is not a problem here: it is published unplaced and held by the
+    accounting's rule (b); two entries on one region are `duplicate_regions`.
     """
     grammar = grammar_problems(answer)
     if grammar:
@@ -437,6 +552,7 @@ def validate_answer(answer: Any, candidates: Mapping[str, Box | None]) -> dict[s
     for raw in answer["acts"]:
         cited_ids, cite_problems = expand_cites(raw["cites"], candidates)
         problems.extend({**problem, "n": raw["n"]} for problem in cite_problems)
+        boxes = region_boxes(cited_ids, candidates)
         entries.append(
             {
                 "n": raw["n"],
@@ -444,9 +560,8 @@ def validate_answer(answer: Any, candidates: Mapping[str, Box | None]) -> dict[s
                 "label": raw.get("label"),
                 "cites": list(raw["cites"]),
                 "cited_ids": cited_ids,
-                "union_box_px": _union_box(
-                    [box for box in (candidates[i] for i in cited_ids) if box is not None]
-                ),
+                "region_boxes_px": boxes,
+                "union_box_px": _union_box(boxes),
                 "text": raw["text"],
                 "continues_from_previous_page": raw["continues_from_previous_page"],
                 "continues_to_next_page": raw["continues_to_next_page"],
@@ -471,20 +586,6 @@ def validate_answer(answer: Any, candidates: Mapping[str, Box | None]) -> dict[s
                 problems.append({"code": SET_ASIDE_WITHOUT_REASON, "id": identifier})
             elif identifier not in set_aside:
                 set_aside[identifier] = reason
-
-    by_box: dict[tuple[int, ...], list[int]] = {}
-    for entry in entries:
-        if entry["union_box_px"] is not None:
-            by_box.setdefault(_corners(entry["union_box_px"]), []).append(entry["n"])
-    for corners, ns in sorted(by_box.items()):
-        if len(ns) > 1:
-            problems.append(
-                {
-                    "code": DUPLICATE_REGION,
-                    "ns": sorted(ns),
-                    "union_box_px": _from_corners(*corners),
-                }
-            )
     return {"entries": entries, "set_aside": set_aside, "problems": problems}
 
 
@@ -547,7 +648,7 @@ def _census(
 
 
 def _read_detections(
-    detections: Mapping[str, Any], feed: Mapping[str, Any], candidates: Mapping[str, Box | None]
+    detections: Mapping[str, Any], feed: Mapping[str, Any]
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]] | None, str, bool]:
     if not isinstance(detections, Mapping) or set(detections) != _DETECTIONS_KEYS:
         raise ContractError("detections are not {surya, records, record_detector, record_census}")
@@ -557,6 +658,16 @@ def _read_detections(
     feed_surya = feed["surya"]
     shown_lines = [] if feed_surya is None else [line["id"] for line in feed_surya["lines"]]
     shown_blocks = [] if feed_surya is None else [block["id"] for block in feed_surya["blocks"]]
+    # Each detection the feed shows, with the sealed box the feed recorded for it
+    # (a block places nothing, but its box is still the detector's).
+    feed_boxes = (
+        {}
+        if feed_surya is None
+        else {
+            item["id"]: _box(item["box_px"], item["id"])
+            for item in feed_surya["lines"] + feed_surya["blocks"]
+        }
+    )
     surya = detections["surya"]
     lines = None
     if surya is None:
@@ -565,8 +676,8 @@ def _read_detections(
     else:
         if not isinstance(surya, Mapping) or set(surya) != _SURYA_KEYS:
             raise ContractError("detections surya is not {lines, blocks}")
-        lines = _census(surya["lines"], "Surya lines", candidates, shown_lines)
-        _census(surya["blocks"], "Surya blocks", candidates, shown_blocks)
+        lines = _census(surya["lines"], "Surya lines", feed_boxes, shown_lines)
+        _census(surya["blocks"], "Surya blocks", feed_boxes, shown_blocks)
     records = detections["records"]
     census = detections["record_census"]
     if (records is None) != (census is None):
@@ -736,30 +847,49 @@ class _NotMeasured(Exception):
         self.reason = reason
 
 
-@dataclass
-class _Deadline:
-    clock: Callable[[], float]
-    start: float
-    seconds: float
+class _WorkBudget:
+    """The alignment work one page's rule (e) may do, counted in steps.
 
-    def check(self) -> None:
-        if self.clock() - self.start >= self.seconds:
-            raise _NotMeasured("deadline")
+    A step is one range taken from a work list or one character pair the
+    alignment compares, or may compare. Work is charged before it is done, so
+    running out stops the rule before the work, and whether a page is measured
+    depends only on its inputs and the sealed policy, never on the machine.
+    """
+
+    def __init__(self, steps: int) -> None:
+        self.left = steps
+
+    def spend(self, steps: int) -> None:
+        self.left -= steps
+        if self.left < 0:
+            raise _NotMeasured("work-bound")
 
 
 def _longest_in_band(
-    matcher: SequenceMatcher, a: str, b: str, box: tuple[int, int, int, int], band: tuple[int, int]
+    matcher: SequenceMatcher,
+    a: str,
+    b: str,
+    box: tuple[int, int, int, int],
+    band: tuple[int, int],
+    budget: _WorkBudget,
 ) -> tuple[int, int, int]:
-    """The longest common run of `a[i0:i1]` and `b[j0:j1]` whose diagonal `i - j` is in `band`."""
+    """The longest common run of `a[i0:i1]` and `b[j0:j1]` whose diagonal `i - j` is in `band`.
+
+    The unbanded search is charged every pair of the box, the most it compares;
+    the banded scan each pair on the diagonals it walks.
+    """
     i0, i1, j0, j1 = box
     low, high = band
+    budget.spend((i1 - i0) * (j1 - j0))
     i, j, size = matcher.find_longest_match(i0, i1, j0, j1)
     if size == 0 or low <= i - j <= high:
         return i, j, size
     best = (i0, j0, 0)
     for diagonal in range(max(low, i0 - j1 + 1), min(high, i1 - 1 - j0) + 1):
+        start, stop = max(i0, j0 + diagonal), min(i1, j1 + diagonal)
+        budget.spend(max(0, stop - start))
         run = 0
-        for x in range(max(i0, j0 + diagonal), min(i1, j1 + diagonal)):
+        for x in range(start, stop):
             if a[x] == b[x - diagonal]:
                 run += 1
                 if run > best[2]:
@@ -777,7 +907,7 @@ def _direct_blocks(
     blo: int,
     bhi: int,
     policy: PageAccountingPolicy,
-    deadline: _Deadline,
+    budget: _WorkBudget,
 ) -> list[tuple[int, int, int]]:
     """Ratcliff-Obershelp matching blocks of at least `min_block_characters`, banded.
 
@@ -798,13 +928,13 @@ def _direct_blocks(
     blocks: list[tuple[int, int, int]] = []
     work = [(0, ahi - alo, 0, bhi - blo)]
     while work:
-        deadline.check()
+        budget.spend(1)
         i0, i1, j0, j1 = work.pop()
         if i0 >= i1 or j0 >= j1:
             continue
         corners = (i0 - j0, i1 - j1)
         band = (min(corners) - slack, max(corners) + slack)
-        i, j, size = _longest_in_band(matcher, sliced_a, sliced_b, (i0, i1, j0, j1), band)
+        i, j, size = _longest_in_band(matcher, sliced_a, sliced_b, (i0, i1, j0, j1), band, budget)
         if size < policy.min_block_characters:
             continue
         blocks.append((alo + i, blo + j, size))
@@ -887,7 +1017,7 @@ def _consistent_anchors(
 
 
 def _matching_blocks(
-    a: str, b: str, policy: PageAccountingPolicy, deadline: _Deadline
+    a: str, b: str, policy: PageAccountingPolicy, budget: _WorkBudget
 ) -> list[tuple[int, int, int]]:
     """Ordered, non-overlapping matching blocks of `a` against `b`, or `_NotMeasured`.
 
@@ -900,21 +1030,23 @@ def _matching_blocks(
     blocks: list[tuple[int, int, int]] = []
     work = [(0, len(a), 0, len(b))]
     while work:
-        deadline.check()
+        budget.spend(1)
         alo, ahi, blo, bhi = work.pop()
         if alo >= ahi or blo >= bhi:
             continue
         pairs = (ahi - alo) * (bhi - blo)
         if pairs <= policy.direct_alignment_max_pairs:
-            blocks.extend(_direct_blocks(a, b, alo, ahi, blo, bhi, policy, deadline))
+            blocks.extend(_direct_blocks(a, b, alo, ahi, blo, bhi, policy, budget))
             continue
+        # Anchoring reads each character of both ranges once per k-gram.
+        budget.spend((ahi - alo + bhi - blo) * policy.anchor_characters)
         anchors = _consistent_anchors(
             _anchor_blocks(a, b, alo, ahi, blo, bhi, policy.anchor_characters), policy
         )
         if not anchors:
             if pairs > policy.max_alignment_pairs:
                 raise _NotMeasured("size-bound")
-            blocks.extend(_direct_blocks(a, b, alo, ahi, blo, bhi, policy, deadline))
+            blocks.extend(_direct_blocks(a, b, alo, ahi, blo, bhi, policy, budget))
             continue
         blocks.extend(anchors)
         cursor_a, cursor_b = alo, blo
@@ -947,7 +1079,7 @@ class TextCoverage:
 
 
 def _text_coverage(
-    witness: str, reading: str, policy: PageAccountingPolicy, deadline: _Deadline
+    witness: str, reading: str, policy: PageAccountingPolicy, budget: _WorkBudget
 ) -> TextCoverage:
     """Align a normalized witness text with a normalized reading and count what is unread.
 
@@ -962,7 +1094,7 @@ def _text_coverage(
     counts, none is dropped after matching, so no gap is widened into credit.
     """
     threshold = policy.max_unread_characters
-    blocks = _matching_blocks(witness, reading, policy, deadline)
+    blocks = _matching_blocks(witness, reading, policy, budget)
     longest = total = matched = 0
     position = [0] * (len(witness) + 1)
     cursor_a = cursor_b = 0
@@ -1145,9 +1277,8 @@ def page_accounting(
     policy: PageAccountingPolicy,
     feed_ref: Any,
     page_reading_ref: Any,
-    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
-    """The `page-accounting.v1` payload for one page reading.
+    """The `page-accounting.v2` payload for one page reading.
 
     - `feed`: the `page-feed` payload (`page_id`, `page_ordinal`,
       `switches.witness_units`, `witnesses[]` with `letter`, `outcome` and
@@ -1157,12 +1288,14 @@ def page_accounting(
     - `witnesses`: every witness the run sealed for the page, whatever the
       feed's `witnesses` switch showed the model: `[{letter, outcome, blank,
       units}]`, `units[]` of `{id, box_px | None, text}` with ids of the
-      witness's own letter numbered `1..n`, and `blank` the witness's own
-      report that its page text is blank (its content health `blank`; `None`
-      when it did not read). A witness the feed shows is here with the same
-      outcome and the same units; one it hides is measured by rule (e) against
-      every reading on the page, and rule (c) does not apply to it (its units'
-      disposition is `not-shown`).
+      witness's own letter numbered `1..n`, and `blank` whether its retained
+      page text is blank, measured from that text (`None` when it did not
+      read, `read` and `genuinely-empty` being reading, or its retained
+      payload is not text). A
+      witness the feed shows is here with the same outcome and the same
+      units; one it hides is measured by rule (e) against every reading on
+      the page, and rule (c) does not apply to it (its units' disposition is
+      `not-shown`).
     - `detections`: the page's sealed detections, whatever the feed showed the
       model: `{"surya": {"lines": [...], "blocks": [...]}
       | None, "records": [...] | None, "record_detector": "configured" |
@@ -1182,7 +1315,6 @@ def page_accounting(
       `truncation-not-classified` (not measured, which holds).
     - `ink`: `{"runs": <ink-runs.v2 evidence> | None, "coverage_policy":
       <CoverageAuditPolicy resolved for this page>}`, or `None`.
-    - `clock`: the deadline's clock; a parameter so a test can expire it.
 
     A missing input is never a pass: without a Surya census rule (d), without
     ink runs rule (f), and without detector records from a configured detector,
@@ -1190,8 +1322,8 @@ def page_accounting(
     holds. The verdict does not depend on the
     order of any input list.
     """
-    candidates = feed_candidates(feed)
-    census_lines, records, detector, capped = _read_detections(detections, feed, candidates)
+    candidates = feed_candidates(feed, policy)
+    census_lines, records, detector, capped = _read_detections(detections, feed)
     parse_state = reading["parse_state"]
     finish_reason = reading["finish_reason"]
     if parse_state not in PARSE_STATES:
@@ -1262,13 +1394,13 @@ def page_accounting(
         }
         for unit in units
     ]
-    regions = {entry["n"]: entry["union_box_px"] for entry in entries if entry["union_box_px"]}
+    regions = {entry["n"]: entry["region_boxes_px"] for entry in entries}
     line_rows = [
         {
             "id": line["id"],
             "ref": line["ref"],
             "inside": sorted(
-                n for n, region in regions.items() if is_inside(line["box_px"], [region], policy)
+                n for n, region in regions.items() if is_inside(line["box_px"], region, policy)
             ),
         }
         for line in census_lines or []
@@ -1295,7 +1427,7 @@ def page_accounting(
         + [
             {"code": READING_UNPLACED, "n": entry["n"]}
             for entry in entries
-            if entry["union_box_px"] is None
+            if not entry["region_boxes_px"]
         ]
     )
 
@@ -1325,7 +1457,7 @@ def page_accounting(
 
     # (d) every detected line lies inside the reading regions or is set aside,
     # shown to the model or not.
-    all_regions = list(regions.values())
+    all_regions = [box for region in regions.values() for box in region]
     if census_lines is None:
         rules["d"] = _rule([{"code": UNREAD_LINE_NOT_MEASURED}])
     else:
@@ -1343,15 +1475,13 @@ def page_accounting(
             ]
         )
 
-    rules["e"] = _witness_text_rule(
-        sealed, units, entries, set_aside, cited_by, unit_boxes, policy, clock
-    )
+    rules["e"] = _witness_text_rule(sealed, units, entries, set_aside, cited_by, unit_boxes, policy)
     rules["f"] = _ink_rule(ink, all_regions)
     rules["g"] = _rule(incomplete_reading)
 
     # (h) two entries on one region hold; a line inside two regions is recorded.
     rules["h"] = _rule(
-        [p for p in problems if p["code"] == DUPLICATE_REGION]
+        duplicate_regions(entries, policy)
         + [
             {"code": SHARED_LINE, "id": row["id"], "ref": row["ref"], "inside": row["inside"]}
             for row in line_rows
@@ -1367,13 +1497,13 @@ def page_accounting(
 def _witness_findings(witnesses: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Each witness that did not read the page, or read it and gave no unit.
 
-    A witness that read the page and gave no unit holds unless its own report
-    says the page text is blank; then it is recorded.
+    A witness that read the page (`read` or `genuinely-empty`) and gave no unit
+    holds unless its retained page text is blank; then it is recorded.
     """
     findings = []
     for witness in witnesses:
         where = {"letter": witness["letter"], "outcome": witness["outcome"]}
-        if witness["outcome"] != WITNESS_READ:
+        if witness["outcome"] not in WITNESS_READING_OUTCOMES:
             findings.append({"code": WITNESS_NOT_READ, **where})
         elif not witness["units"]:
             code = WITNESS_READ_BLANK if witness["blank"] is True else WITNESS_READ_NO_UNITS
@@ -1389,7 +1519,6 @@ def _witness_text_rule(
     cited_by: Mapping[str, list[int]],
     unit_boxes: Mapping[str, Box | None],
     policy: PageAccountingPolicy,
-    clock: Callable[[], float],
 ) -> dict[str, Any]:
     """(e) Every witness unit's own text appears in the readings that cite it.
 
@@ -1424,13 +1553,9 @@ def _witness_text_rule(
     Every measured unit's run, shares and piece count are kept as
     `measurements`, so the proof run can set these thresholds from real pages.
     """
-    deadline = _Deadline(clock, clock(), policy.deadline_milliseconds / 1000)
+    budget = _WorkBudget(policy.max_alignment_steps)
     readings = {entry["n"]: normalized_text(entry["text"], unreadable=True) for entry in entries}
-    try:
-        texts, distinctive_by_unit = _distinctive_pieces(units, readings, policy.piece_characters)
-        deadline.check()
-    except _NotMeasured as error:
-        return _rule([{"code": WITNESS_TEXT_NOT_MEASURED, "reason": error.reason}])
+    texts, distinctive_by_unit = _distinctive_pieces(units, readings, policy.piece_characters)
     findings: list[dict[str, Any]] = _witness_findings(witnesses)
     measurements: list[dict[str, Any]] = []
     for unit in units:
@@ -1441,8 +1566,7 @@ def _witness_text_rule(
         scope = sorted(cited_by.get(identifier, readings))
         joined = "".join(readings[n] for n in scope)
         try:
-            deadline.check()
-            coverage = _text_coverage(witness, joined, policy, deadline)
+            coverage = _text_coverage(witness, joined, policy, budget)
         except _NotMeasured as error:
             findings.append(
                 {"code": WITNESS_TEXT_NOT_MEASURED, "id": identifier, "reason": error.reason}
@@ -1527,8 +1651,7 @@ def _record_rows(
                 entry["n"]
                 for entry in entries
                 if entry["kind"] == kind
-                and entry["union_box_px"] is not None
-                and is_inside(record["box_px"], [entry["union_box_px"]], policy)
+                and is_inside(record["box_px"], entry["region_boxes_px"], policy)
             )
             for kind in ("act", "other")
         }
@@ -1562,6 +1685,10 @@ def _detection_rule(
     one set aside `set-aside-record`: each an entry the reading did not
     establish as an act, held. One inside two act regions is `split-detection`,
     recorded: a detector record that merged two entries the Perlector read apart.
+    A detector that found no record at all below its cap on a page whose
+    reading establishes acts disagrees with the whole reading:
+    `no-detector-record-on-act-page`, held, naming the act entries. Its
+    record reader's page testimony there is that the page holds nothing.
 
     Without the detector's records for the page, or when the detector reached
     its detection cap (`record-detector-capped`), the rule is not measured,
@@ -1593,6 +1720,9 @@ def _detection_rule(
         }
     kinds = {entry["n"]: entry["kind"] for entry in entries}
     findings: list[dict[str, Any]] = list(unboxed)
+    acts = [entry["n"] for entry in entries if entry["kind"] == "act"]
+    if not rows and not unboxed and acts:
+        findings.append({"code": NO_RECORD_ON_ACT_PAGE, "acts": acts})
     inside_region: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
         where = {"id": row["id"], "ref": row["ref"], "box_px": row["box_px"]}

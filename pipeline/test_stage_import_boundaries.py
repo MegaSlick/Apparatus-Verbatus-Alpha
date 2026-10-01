@@ -269,33 +269,3 @@ def test_no_stage_imports_pipeline_by_its_dotted_path():
     assert not violations, "a stage imported pipeline/ by its dotted path:\n" + "\n".join(
         violations
     )
-
-
-def _is_forgery_import(root: str, full: str) -> bool:
-    """The reseal guard's one predicate: a route to the forgery helper, or a
-    dynamic import whose loads cannot be statically known. Kept as a named
-    function so the regression tests below exercise the predicate the guard
-    actually runs, not a local restatement of it."""
-    return root == "reseal_chain" or full.split(".")[-1] in ("reseal_chain", UNVERIFIABLE_FROMLIST)
-
-
-def test_production_stage_code_never_imports_the_reseal_forgery_helper():
-    """`reseal_chain` exists only to make test forgeries internally coherent.
-
-    Matched on the last dotted component rather than the root, so a qualified
-    `import_module("pipeline.6_archetypus.reseal_chain")` is caught here by name
-    as well as by the dotted-path test above — the two guards describe different
-    wrongs and the qualified form is both of them.
-    """
-    violations = [
-        f"{path} imports {full!r}"
-        for path in repository_python_files()
-        if _stage_of(path) is not None
-        and not Path(path).name.startswith("test_")
-        and Path(path).name != "reseal_chain.py"
-        for root, full in _imports_in(ROOT / path)
-        if _is_forgery_import(root, full)
-    ]
-    assert not violations, "production stage code imported a test forgery helper:\n" + "\n".join(
-        violations
-    )

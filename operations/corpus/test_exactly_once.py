@@ -15,6 +15,7 @@ from common.page_accounting import (
     page_accounting,
     validate_answer,
 )
+from common.page_path import ACT_REGION_SCHEMA, PAGE_READING_SCHEMA
 from common.residual_ink import INK_RUNS_SCHEMA
 from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD
 
@@ -94,15 +95,16 @@ def page(
 
     `acts` are answer entries without `n`; the feed has one DAI unit per box in
     `detector` (default: one per gold band), each one of the detector's sealed
-    records, and one Surya block per band.
+    records, and one Surya line and one Surya block per band. Acts are placed
+    by the lines: a block places nothing.
     """
     records = 3
     detector = detector if detector is not None else [band(k) for k in range(records)]
     feed = {
-        "schema": "perlector-page-feed.v1",
+        "schema": "perlector-page-feed.v2",
         "page_id": "page-1",
         "page_ordinal": 1,
-        "reading_unit": "page",
+        "page_size": {"w": 1000, "h": 1400},
         "switches": {"witness_units": "own"},
         "witnesses": [
             {
@@ -125,7 +127,7 @@ def page(
             }
         ],
         "surya": {
-            "lines": [],
+            "lines": [{"id": f"L{k + 1}", "box_px": band(k)} for k in range(records)],
             "blocks": [{"id": f"S{k + 1}", "box_px": band(k)} for k in range(records)],
         },
     }
@@ -135,7 +137,7 @@ def page(
     ]
     detections = {
         "surya": {
-            "lines": [],
+            "lines": [{**line, "ref": line["id"]} for line in feed["surya"]["lines"]],
             "blocks": [{**block, "ref": block["id"]} for block in feed["surya"]["blocks"]],
         },
         "records": [
@@ -163,6 +165,7 @@ def page(
         "set_aside": [],
     }
     reading = {
+        "schema": PAGE_READING_SCHEMA,
         "parse_state": "parsed",
         "finish_reason": "stop",
         "answer": answer,
@@ -181,7 +184,7 @@ def page(
         feed_ref=None,
         page_reading_ref=None,
     )
-    entries = validate_answer(answer, feed_candidates(feed))["entries"]
+    entries = validate_answer(answer, feed_candidates(feed, POLICY))["entries"]
     return {
         "page_sha256": PAGE_SHA,
         "feed": feed,
@@ -189,16 +192,23 @@ def page(
         "detections": detections,
         "reading": reading,
         "act_regions": [
-            {"n": e["n"], "kind": e["kind"], "union_box_px": e["union_box_px"]} for e in entries
+            {
+                "schema": ACT_REGION_SCHEMA,
+                "n": e["n"],
+                "kind": e["kind"],
+                "region_boxes_px": e["region_boxes_px"],
+                "union_box_px": e["union_box_px"],
+            }
+            for e in entries
         ],
-        "perlectios": [{"schema": "perlectio.v2", "n": e["n"], "text": e["text"]} for e in entries],
+        "perlectios": [{"schema": "perlectio.v3", "n": e["n"], "text": e["text"]} for e in entries],
         "accounting": accounting,
         "usage": {"prompt_tokens": 5100},
     }
 
 
 def one_act_each() -> list[dict]:
-    return [{"cites": [f"A{k + 1}", f"S{k + 1}"], "text": entry_text(k)} for k in range(3)]
+    return [{"cites": [f"A{k + 1}", f"L{k + 1}"], "text": entry_text(k)} for k in range(3)]
 
 
 def report(pages: list[dict], records: list[dict] | None = None) -> dict:
@@ -260,13 +270,14 @@ def test_a_detector_record_merging_two_entries_is_a_merge_case():
     Act 1's region holds two gold records, so both are merged, whatever act 2
     read. Rule (i) is silent (A1 is one record inside one region, the blind spot
     this report measures); rule (e) holds the page, since A1's text carries
-    record 1 and act 1, the only act citing it, reads only record 0.
+    record 1 and act 1, the only act citing it, reads only record 0; and rule
+    (h) holds it, since act 2's whole region lies inside act 1's.
     """
     wide = bx(100, band(0)["y"], 900, band(1)["y"] + band(1)["h"])
     acts = [
-        {"cites": ["A1", "S1"], "text": entry_text(0)},
-        {"cites": ["S2"], "text": entry_text(1)},
-        {"cites": ["A2", "S3"], "text": entry_text(2)},
+        {"cites": ["A1", "L1"], "text": entry_text(0)},
+        {"cites": ["L2"], "text": entry_text(1)},
+        {"cites": ["A2", "L3"], "text": entry_text(2)},
     ]
     result = report([page(acts, detector=[wide, band(2)])])
 
@@ -276,8 +287,8 @@ def test_a_detector_record_merging_two_entries_is_a_merge_case():
         "no-merge": {"records": 1, "exactly_once": 1},
     }
     assert result["records"]["by_outcome"] == {"exactly-once": 1, "merged": 2}
-    assert result["pages"]["hold_codes"] == {"witness-text-not-read": 1}
-    assert result["records"]["failures_caught_by_rule"] == {"e": 2}
+    assert result["pages"]["hold_codes"] == {"duplicate-region": 1, "witness-text-not-read": 1}
+    assert result["records"]["failures_caught_by_rule"] == {"e": 2, "h": 2}
     assert result["gate"]["uncaught_failures"] == 0
     assert result["merged_detection"]["fired_on_true_merge"] == 0
     assert result["merged_detection"]["silent_on_true_merge"] == 1
@@ -412,9 +423,9 @@ def test_a_catch_through_an_unplaced_region_only_is_reported_not_credited():
     box = band(1)
     held = {
         "act_regions": [
-            {"n": 1, "kind": "act", "union_box_px": band(0)},
-            {"n": 2, "kind": "act", "union_box_px": None},
-            {"n": 3, "kind": "act", "union_box_px": band(1)},
+            {"n": 1, "kind": "act", "region_boxes_px": [band(0)], "union_box_px": band(0)},
+            {"n": 2, "kind": "act", "region_boxes_px": [], "union_box_px": None},
+            {"n": 3, "kind": "act", "region_boxes_px": [band(1)], "union_box_px": band(1)},
         ],
         "accounting": {
             "units": [{"id": "C1", "disposition": "cited", "by": [2]}],
@@ -588,10 +599,53 @@ def test_page_records_are_read_from_a_tree_and_grouped_by_page(monkeypatch):
     }
     with pytest.raises(Refusal, match="not-page-read: perlectio 'act-2' is 'perlectio.v1'"):
         load_page_records(_Tree(records, {"call.json": call}))
+    records[(PERLECTOR, "perlectio", "act-2")]["payload"]["schema"] = "perlectio.v2"
 
-    records[(PERLECTOR, "page-feed", "f")]["payload"] = {**built["feed"], "reading_unit": "act"}
+    records[(PERLECTOR, "page-feed", "f")]["payload"] = {
+        **built["feed"],
+        "schema": "perlector-page-feed.v1",
+    }
     with pytest.raises(Refusal, match="not-page-read"):
         load_page_records(_Tree(records, {"call.json": call}))
+
+
+@pytest.mark.parametrize(
+    ("key", "schema"),
+    [
+        ((PERLECTOR, "act-region", "act-1"), "perlector-act-region.v1"),
+        ((PERLECTOR, "page-accounting", "p"), "page-accounting.v1"),
+        ((PERLECTOR, "page-reading", "r"), "perlector-page-reading.v1"),
+        ((PERLECTOR, "page-feed", "f"), "perlector-page-feed.v1"),
+    ],
+)
+def test_a_page_record_of_another_schema_is_refused_by_name(monkeypatch, key, schema):
+    """An act-region without `region_boxes_px`, or any page record of another shape, is refused."""
+    built = page(one_act_each())
+    records = {
+        (PERLECTOR, "page-feed", "f"): {"subject_id": "page-1", "payload": built["feed"]},
+        (PERLECTOR, "page-reading", "r"): {
+            "subject_id": "page-1",
+            "payload": {**built["reading"], "page_id": "page-1", "engine_call": None},
+        },
+        (PERLECTOR, "page-accounting", "p"): {
+            "subject_id": "page-1",
+            "payload": built["accounting"],
+        },
+        (PERLECTOR, "act-region", "act-1"): {
+            "subject_id": "act-1",
+            "payload": {**built["act_regions"][0], "page_id": "page-1"},
+        },
+    }
+    monkeypatch.setattr(
+        "operations.corpus.exactly_once.load_exemplar_page_shas", lambda tree: {1: PAGE_SHA}
+    )
+    assert len(load_page_records(_Tree(records, {}))[0]["act_regions"]) == 1
+
+    payload = {**records[key]["payload"], "schema": schema}
+    payload.pop("region_boxes_px", None)
+    records[key] = {**records[key], "payload": payload}
+    with pytest.raises(Refusal, match=f"not-page-read: {key[1]} '[^']+' is '{schema}', not "):
+        load_page_records(_Tree(records, {}))
 
 
 def test_the_sealed_policy_is_read_from_the_run():
@@ -601,3 +655,21 @@ def test_the_sealed_policy_is_read_from_the_run():
     run["sealed_config_digests"] = {"decoding": "c" * 64}
     with pytest.raises(Refusal, match="policy-mismatch: the run sealed no page-accounting"):
         sealed_policy_sha256(_Tree({}, {}, run))
+
+
+def test_a_record_between_an_act_s_cited_lines_is_not_inside_its_region():
+    """The region is the boxes the act names: the rectangle around L1 and L3 holds record 1,
+    the region does not, so record 1, which no act names, has no region."""
+    acts = [
+        {"cites": ["A1", "L1", "A3", "L3"], "text": entry_text(0) + " " + entry_text(2)},
+        {"cites": ["A2"], "text": "Le premier juin, rien."},
+    ]
+    built = page(acts, detector=[band(0), bx(0, 0, 10, 10), band(2)])
+    [region] = [r for r in built["act_regions"] if r["n"] == 1]
+    assert region["region_boxes_px"] == [band(0), band(2)]
+    assert region["union_box_px"] == bx(100, 100, 900, 1200)
+
+    rows = {row["record_id"]: row for row in report([built])["rows"]}
+
+    assert rows["rec-1"]["text"] == "no-region"
+    assert rows["rec-1"]["outcome"] == "lost"

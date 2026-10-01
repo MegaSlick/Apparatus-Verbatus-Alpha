@@ -1,8 +1,7 @@
 """DAI's own record detector, run in-process by the Designator.
 
 Teklia's YOLOv26-m OBB record detector finds the records DAI was trained to
-read. The Designator runs it itself, on the CPU and after its structure chair
-has closed, so no card is shared and one model is resident at a time. Two
+read. The Designator runs it itself, on the CPU, so no card is shared. Two
 detectors answer the same call: the Ultralytics runtime over the verified
 weights, and a fixture that returns the boxes a synthetic fixture declares.
 
@@ -35,6 +34,9 @@ RECORD_DETECTOR_WEIGHTS_SHA256 = "d866ef5b683aa2e9e2c934bead1de50b98f7da2cb1b511
 # it was trained on.
 RECORD_DETECTOR_CLASS_NAMES = {0: "record"}
 FIXTURE_ENGINE = "fixture"
+# The most records the fixture detector returns for one page: Ultralytics' own
+# predict default, which the in-process recipe also runs at.
+FIXTURE_MAX_DET = 300
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +87,10 @@ def _checked_detection(item: Mapping[str, Any]) -> dict[str, Any]:
 def fixture_record_detector(
     rows: Sequence[Mapping[str, Any]], identity: ChairIdentity, details: ServingDetails
 ) -> RecordDetector:
-    """Answer each page with the detections the synthetic fixture declares for it."""
+    """Answer each page with the detections the synthetic fixture declares for it.
+
+    At most `FIXTURE_MAX_DET` per page, the cap its run facts state.
+    """
 
     def detect(_page_png: bytes, page_ordinal: int) -> list[dict[str, Any]]:
         return [
@@ -96,7 +101,7 @@ def fixture_record_detector(
             }
             for row in rows
             if row.get("page_ordinal") == page_ordinal
-        ]
+        ][:FIXTURE_MAX_DET]
 
     return RecordDetector(
         run_facts={
@@ -104,6 +109,7 @@ def fixture_record_detector(
             "repo": identity.source_reference,
             "revision": identity.receipt_revision,
             "digest_manifest": identity.digest_manifest,
+            "max_det": FIXTURE_MAX_DET,
         },
         serving_details=details,
         _detect=detect,

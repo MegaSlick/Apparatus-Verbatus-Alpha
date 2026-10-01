@@ -43,8 +43,10 @@ transcribes anything and never adjudicates anything; every human-custody act sta
 - `canary.py` — a private, pass/fail check over a fetched run whose Door sealed a
   canary ledger. It reads private reference text locally, reports only stage
   booleans and named failures in a self-hashed verdict, and never places that
-  text in the run tree or export. Fetch-run saves the verdict under the private
-  canary root and sends one decision ping when a stage fails.
+  text in the run tree or export. The reader is checked page by page: the readings of
+  each canary page, joined in entry order, against that page's reference text, and the
+  export's `canary` block must name every one of them. Fetch-run saves the verdict under
+  the private canary root and sends one decision ping when a stage fails.
 
 Build a canary submission from an external RecordGold local set containing
 `pages/`, `gold.jsonl`, `page_manifest.jsonl`, and `fetch_receipt.json`:
@@ -89,14 +91,18 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   180) and 6,178 of 6,178 training records (6,153 at 0, 25 at 180); nothing under
   `OCR_Gold` is written.
 - `evaluate.py` — the one caller of `compare_page` that builds its hypotheses from a
-  real run: it reads the sealed Armarium export, re-digests every delivered text against
+  real run: it pairs the act-regions the page readings established their acts over
+  (`compare.load_pipeline_reading_acts`; the act-region of an `other` reading, or of an
+  unplaced one, which has no rectangle, is counted in `excluded_reading_regions`, and a
+  page with no reading has no region at all) with the reference boxes, reads the sealed
+  Armarium export, re-digests every delivered text against
   the Archetypus record that established it (`digest_of(text)`), maps each export
   category to the scorer's response state (a held, refused, blank or excluded act is an
   empty hypothesis against its reference -- counted, never dropped, never perfect), and
-  writes one validated, self-hashed `recordgold-evaluation.v1` record carrying run
+  writes one validated, self-hashed `recordgold-evaluation.v2` record carrying run
   configuration digests, export digest, reference ledger digest, the splits scored, and
   the whole denominator: every
-  reference record scored, missed or not attempted, every proposal region by export
+  reference record scored, missed or not attempted, every read act by export
   category, every unmatched pipeline act reported and not scored. **Two aggregate
   rates, each labelled**: `matched_pairs_only` is the arithmetic of the pairs the
   assignment made, which a missed act cannot move in either direction, and
@@ -115,8 +121,7 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   exactly as if those acts had been misread. `denominators.exported_acts_by_category`
   and `reference_records_scored_by_export_category` are where a reader separates the
   two.
-- `exactly_once.py` — the proof metric of a run read by page (`reading_unit =
-  "page"`). It reads the Perlector's `page-feed`, `page-reading`, `act-region`,
+- `exactly_once.py` — the proof metric of a run read by page. It reads the Perlector's `page-feed`, `page-reading`, `act-region`,
   `perlectio` and `page-accounting` records beside the admitted records of an
   admission ledger and their `gold.jsonl` text, and gives each gold record one
   outcome: **exactly once** (one `act` region holds at least half of it, holds no
@@ -125,7 +130,7 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   **lost** (no act region holds it, or its text is not read in any that does).
   "Inside" is `common/page_accounting.py`'s rule under the policy the run sealed;
   a policy other than the sealed one, or an accounting sealed under another, is
-  refused (`policy-mismatch`), and a perlectio that is not `perlectio.v2` is
+  refused (`policy-mismatch`), and a perlectio that is not `perlectio.v3` is
   refused (`not-page-read`); so is an admitted gold record with no text to
   measure. "Text read" is this tool's own measure, stricter than the accounting's
   rule (e): the gold text's character error rate against a holding act's reading
@@ -237,9 +242,9 @@ Teklia's annotation scope and must never be scored as a false positive on that
 account alone.
 
 Act identity follows the same discipline. `common/contracts/identities.py`
-binds an `act_*` identity to bounds the Designator itself minted; a RecordGold
-box was minted by Teklia's annotators, never by this project's own structure
-pass, so deriving an `act_*` from it would verify against its own bindings and
+binds an `act_*` identity to bounds this project's own reading minted; a
+RecordGold box was minted by Teklia's annotators, never by this pipeline, so
+deriving an `act_*` from it would verify against its own bindings and
 mean nothing. Reference acts are keyed instead by
 `physical_act_id(physical_page_id("recordgold", "<source>/<volume>",
 "<page>"), record_id)` — a `pac_` identity, disjoint from `act_*` by prefix,
@@ -256,9 +261,10 @@ distinct `source`/`volume` splits (`"Tours/geneanet"` joined with nothing, and
 ## The comparator is not a picker
 
 `compare.py` runs after a run tree is immutable, reads it read-only alongside a
-reference record set, computes IoU between every sealed proposal's region and
+reference record set, computes IoU between every pipeline act's region (the
+Perlector's act-regions) and
 every reference box, takes the assignment maximising total IoU under a
-predeclared threshold, and writes `reference-comparison.v1` recording the whole
+predeclared threshold, and writes `reference-comparison.v2` recording the whole
 matrix: matched pairs, unmatched reference acts (misses, scored), and
 unmatched pipeline acts (reported, never scored, because `completeness` already
 says they may be legitimately out of scope). Per-act CER/WER reuses the sealed

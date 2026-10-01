@@ -2,6 +2,8 @@
 the closed shapes and stop-reason vocabularies the live reading seam adds.
 """
 
+import pytest
+
 from common.contracts.serving import (
     CALLER_GENERATION_FIELDS,
     CHAIR_CALL_RECORD_FIELDS,
@@ -20,6 +22,7 @@ from common.contracts.serving import (
     SERVING_CONFIG_INPUTS_FIELDS,
     SERVING_CONFIG_INPUTS_SCHEMA,
     STOP_REASON_UNREPORTED,
+    reading_stop_reason,
 )
 from common.stage import _serving_config_inputs
 from operations.serving.config import CONFIG_INPUTS_SCHEMA, ServingConfigInputs
@@ -104,6 +107,16 @@ def test_the_two_engine_stop_vocabularies_are_frozensets_with_exact_members() ->
     # The two vocabularies never overlap: one engine word is never both a
     # complete stop and a cut-off in the same reading.
     assert not (ENGINE_STOP_COMPLETE & ENGINE_STOP_CUT_OFF)
+
+
+def test_a_reading_records_an_engine_finish_as_stop_length_or_none() -> None:
+    assert [reading_stop_reason(word) for word in ("stop", "length", None)] == [
+        "stop",
+        "length",
+        None,
+    ]
+    with pytest.raises(ValueError, match="neither a completion nor a cut"):
+        reading_stop_reason("tool_calls")
 
 
 def test_stop_reason_unreported_is_its_own_word_outside_both_vocabularies() -> None:

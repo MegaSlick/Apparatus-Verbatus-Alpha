@@ -45,6 +45,7 @@ from operations.corpus.local_admission import SCHEMA as LEDGER_SCHEMA
 from operations.corpus.local_admission import validate_local_admission_ledger
 from operations.corpus.reference import build_reference_page
 from operations.spike_perlector.models import OutputStatus
+from proof.build_fixture import ACTS, act_descriptor
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -298,8 +299,16 @@ def _orchestrate(run_root: Path, scenario: str) -> subprocess.CompletedProcess[s
 
 
 def _fixture_acts() -> list[dict]:
-    skeleton = tomllib.load((ROOT / "proof" / "skeleton_fixture.toml").open("rb"))
-    return [row for row in skeleton["act"] if row["page_ordinal"] == 1]
+    """The acts the fixture draws on page 1, with the text its witnesses read."""
+    return [
+        {
+            "key": act["key"],
+            **act_descriptor(act["page_ordinal"], act["proposal_ordinal"])["bounds"],
+            "text": act["text"],
+        }
+        for act in ACTS
+        if act["page_ordinal"] == 1
+    ]
 
 
 def _fixture_page() -> dict:
@@ -439,7 +448,7 @@ def _page_never_sealed() -> dict:
 def sealed_run(tmp_path_factory):
     """One orchestrated fixture run, shared by every integration case below."""
     run_root = tmp_path_factory.mktemp("runs")
-    completed = _orchestrate(run_root, "audit-reproof-cutoff")
+    completed = _orchestrate(run_root, "page-review")
     assert completed.returncode == 3, completed.stderr
     return RunTree(run_root, "r")
 
@@ -456,7 +465,7 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
     assert report["schema"] == SCHEMA
     assert report["fixture"] is True and report["label"] == FIXTURE_LABEL
     assert report["run"]["export_status"] == "partial"
-    assert report["run"]["scenario"] == "audit-reproof-cutoff"
+    assert report["run"]["scenario"] == "page-review"
     assert len(report["run"]["export_sha256"]) == 64
     assert report["run"]["sealed_config_method"] == SEAL_METHOD
     assert report["corpus"] == {
@@ -483,33 +492,29 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
     totals = report["denominators"]
     assert totals["run_pages_sealed"] == 2 and totals["run_pages_compared"] == 1
     assert totals["run_pages_without_reference"] == 1
-    assert totals["exported_acts_by_category"] == {"delivered": 1, "held-for-review": 1}
-    assert totals["proposed_acts"] == 2 and totals["proposal_regions"] == 3
-    assert totals["reference_records_scored"] == 2
-    assert totals["reference_records_scored_by_export_category"] == {
-        "delivered": 1,
-        "held-for-review": 1,
+    # The held reading on page 2 is counted by its export category and, having
+    # no rectangle, named among the regions the join left out.
+    assert totals["exported_acts_by_category"] == {"delivered": 2, "held-for-review": 1}
+    assert totals["read_acts"] == 2 and totals["reading_regions"] == 2
+    assert totals["excluded_reading_regions"] == {
+        "by_kind": {},
+        "by_origin": {"reading-unplaced": 1},
     }
+    assert totals["reference_records_scored"] == 2
+    assert totals["reference_records_scored_by_export_category"] == {"delivered": 2}
     assert totals["reference_records_missed"] == 0
     assert totals["reference_records_not_attempted"] == 0
     assert totals["pipeline_acts_unmatched"] == 0
 
     rows = {row["record_id"]: row for row in report["records"]}
-    held = rows["a1"]
-    assert held["outcome"] == "scored" and held["export_category"] == "held-for-review"
-    assert held["status"] == "unavailable"
-    assert held["cer"]["deletions"] == held["cer"]["reference_units"] > 0
-    assert held["cer"]["rate"] == {
-        "numerator": held["cer"]["reference_units"],
-        "denominator": held["cer"]["reference_units"],
-    }
-    delivered = rows["a2"]
-    assert delivered["outcome"] == "scored" and delivered["export_category"] == "delivered"
-    assert delivered["status"] == "complete"
-    assert delivered["cer"]["rate"]["numerator"] == 0 and delivered["wer"]["rate"]["numerator"] == 0
-    # The aggregate is the sum of both rows: the held act's whole reference is
-    # in the numerator, so a held act can never improve a score. With nothing
-    # missed, the two aggregates agree exactly.
+    for key in ("a1", "a2"):
+        delivered = rows[key]
+        assert delivered["outcome"] == "scored" and delivered["export_category"] == "delivered"
+        assert delivered["status"] == "complete"
+        assert delivered["cer"]["rate"]["numerator"] == 0
+        assert delivered["wer"]["rate"]["numerator"] == 0
+    # The aggregate is the sum of both rows. With nothing missed, the two
+    # aggregates agree exactly.
     assert report["aggregate"]["normalization_profile_id"] == "graphemic-v1"
     # The validator holds the profile to the declared vocabulary, not to the
     # constant this module happens to score with today: a report sealed under
@@ -522,9 +527,9 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
     with pytest.raises(CorpusRefusal, match="^malformed-record:"):
         validate_evaluation(_reseal(unknown))
     matched = report["aggregate"]["matched_pairs_only"]
-    assert matched["cer"]["rate"]["numerator"] == held["cer"]["reference_units"]
+    assert matched["cer"]["rate"]["numerator"] == 0
     assert matched["cer"]["rate"]["denominator"] == (
-        held["cer"]["reference_units"] + delivered["cer"]["reference_units"]
+        rows["a1"]["cer"]["reference_units"] + rows["a2"]["cer"]["reference_units"]
     )
     assert report["aggregate"]["including_missed_records"]["cer"] == matched["cer"]
     assert report["pages_without_reference"] == [
@@ -605,7 +610,7 @@ def test_a_pipeline_act_no_reference_record_covers_is_reported_and_not_scored(se
     )
     assert report["denominators"]["pipeline_acts_unmatched"] == 1
     (unmatched,) = report["unmatched_pipeline_acts"]
-    assert unmatched["export_category"] == "held-for-review"
+    assert unmatched["export_category"] == "delivered"
     assert "records-only" in unmatched["note"]
     # It moved no rate: the reference it would have been scored against is not
     # annotated, so scoring it would invent a denominator.

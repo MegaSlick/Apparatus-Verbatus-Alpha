@@ -23,18 +23,14 @@ import pytest
 
 from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity
-from common.contracts.outcomes import OutcomeClass, classify
-from common.contracts.stages import PERLECTOR
 from common.imaging import decode_grayscale_png
 from proof.build_fixture import (
     ACTS,
     CHURRO_PAGE_RESPONSES,
-    READER_GAPS,
-    RECOVERY_BOUNDS,
-    SCENARIO_TESTIMONY,
+    PAGE_TESTIMONY,
+    SCENARIOS,
     TESTIMONY,
     WITNESS_EMPTY,
-    WITNESS_FAILURES,
     WITNESS_MALFORMED,
     WITNESS_NOT_RUN,
     act_descriptor,
@@ -44,7 +40,7 @@ from proof.build_fixture import (
     toml_string,
     toml_value,
 )
-from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, PAGES, render_page
+from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, render_page
 
 PROOF_ROOT = Path(__file__).resolve().parent
 MODELS_CONFIG = PROOF_ROOT.parent / "config" / "models.toml"
@@ -145,19 +141,6 @@ def test_inline_toml_objects_refuse_keys_that_are_not_bare_safe(key):
         toml_value({key: "value"})
 
 
-def test_a_negative_reader_gap_offset_is_refused(monkeypatch):
-    """Python's slicing accepts a negative offset by counting from the end,
-    so `source_text[:row["offset"]]` could not tell a negative offset apart
-    from a legitimate one landing on the same prefix -- the bounds check
-    must reject it explicitly, the way it already rejects one past the end.
-    """
-    malformed = [{**READER_GAPS[0], "offset": -1}]
-    monkeypatch.setattr("proof.build_fixture.READER_GAPS", malformed)
-
-    with pytest.raises(ValueError, match=r"offset -1 is outside its"):
-        build_skeleton_fixture(render_all())
-
-
 # --- The pipeline's declaration agrees with the rendered geometry --------------
 
 
@@ -173,18 +156,9 @@ def test_declared_pages_match_the_rendered_pages(skeleton):
 
 def test_the_ink_free_page_is_restricted_to_its_integration_scenarios(skeleton):
     blank = next(page for page in skeleton["page"] if page["ordinal"] == 3)
-    # Two scenarios, the same page: one declares an empty witness response per
-    # chair for the minted fallback act and completes as a proved blank; the
-    # other declares none and must hold instead (Sol-S1).
+    # Two scenarios, the same page: one declares an empty response from every
+    # whole-page chair; the other declares none, so those chairs end `not-run`.
     assert blank["scenarios"] == ["ink-free-page", "ink-free-page-unwitnessed"]
-    # Both scenarios declare no recovery and no scenario-level holds: the
-    # unwitnessed act holds through the WITNESS shortfall alone, so a stray
-    # declaration here would let the red demonstration pass for the wrong
-    # reason.
-    for name in ("ink-free-page", "ink-free-page-unwitnessed"):
-        scenario = next(row for row in skeleton["scenario"] if row["name"] == name)
-        assert scenario["recover_acts"] == []
-        assert scenario["hold_acts"] == []
     source = next(page for page in ALL_PAGES if page["ordinal"] == 3)
     assert source["acts"] == ()
     _, _, rows = decode_grayscale_png(render_page(source))
@@ -193,70 +167,33 @@ def test_the_ink_free_page_is_restricted_to_its_integration_scenarios(skeleton):
     )
 
 
-def test_declared_acts_match_the_rendered_act_bounds(skeleton):
-    assert len(skeleton["act"]) == len(ACTS) == 2
-    for declared in skeleton["act"]:
-        source = act_descriptor(declared["page_ordinal"], declared["proposal_ordinal"])
-        assert {key: declared[key] for key in ("x", "y", "w", "h")} == source["bounds"]
-        assert declared["text"].startswith("SYNTHETIC ACT")
-
-
-def test_there_are_two_acts_and_exactly_one_cross_page_continuation(skeleton):
-    """Spec 01: two acts, one cross-page continuation. The continuation is a
-    region of an existing act, never a third act — an act that gained an identity
-    by turning a page would break "act identity survives recropping" at the one
-    place it is hardest to notice."""
-    assert len(skeleton["act"]) == 2
-    assert len(skeleton["continuation"]) == 1
-    continuation = skeleton["continuation"][0]
-    assert continuation["act_key"] in {act["key"] for act in ACTS}
-    assert continuation["page_ordinal"] == 2
-
-
-def test_every_recovery_region_stays_on_the_page_and_clear_of_the_other_act(skeleton):
-    """Every recrop must widen into margin without overlapping another act."""
-    assert len(skeleton["recovery"]) == len(ACTS) == 2
-    page = next(item for item in PAGES if item["ordinal"] == 1)
-    for recovery in skeleton["recovery"]:
-        assert recovery["x"] >= 0 and recovery["y"] >= 0
-        assert recovery["x"] + recovery["w"] <= page["width"]
-        assert recovery["y"] + recovery["h"] <= page["height"]
-
-        for act in ACTS:
-            if act["key"] == recovery["act_key"]:
-                continue
-            other = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])["bounds"]
-            disjoint = (
-                recovery["y"] + recovery["h"] <= other["y"]
-                or other["y"] + other["h"] <= recovery["y"]
-                or recovery["x"] + recovery["w"] <= other["x"]
-                or other["x"] + other["w"] <= recovery["x"]
-            )
-            assert disjoint, f"the {recovery['act_key']} recrop reaches into act {act['key']}"
-
-
-def test_every_recovery_region_differs_from_its_own_original_proposal(skeleton):
-    declared = {
-        row["act_key"]: {key: row[key] for key in ("x", "y", "w", "h")}
-        for row in skeleton["recovery"]
-    }
-    assert declared == RECOVERY_BOUNDS
+def test_the_fixture_declares_no_act_for_the_pipeline_to_be_told(skeleton):
+    """The page path finds its acts by reading whole pages, so the declaration
+    carries none; the builder's own acts only shape the drawn pages and the
+    witnesses' answers."""
+    assert "act" not in skeleton and "continuation" not in skeleton
     for act in ACTS:
-        original = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])["bounds"]
-        assert declared[act["key"]] != original
+        source = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])
+        assert act["text"].startswith("SYNTHETIC ACT"), source
 
 
 # --- Witness declarations leave no silent gap ----------------------------------
 
 
-def test_every_chair_has_testimony_declared_for_every_act(skeleton, models_config):
-    """A chair with no declared testimony would silently become an absence the
-    fixture never meant to describe."""
-    declared = {(row["act_key"], row["chair"]) for row in skeleton["testimony"]}
-    chairs = configured_witness_chairs(models_config)
-    expected = {(act["key"], chair) for act in ACTS for chair in chairs}
-    assert declared == expected
-    assert len(declared) == 6
+def test_every_whole_page_chair_has_a_response_declared_for_every_base_page(
+    skeleton, models_config
+):
+    """A chair with no declared response to a page would silently become an
+    absence the fixture never meant to describe. DAI answers record by record."""
+    chairs = set(configured_witness_chairs(models_config)) - {"attestator_2"}
+    declared = {
+        (row["page_ordinal"], row["chair"])
+        for table in ("testimony", "churro_page_response")
+        for row in skeleton[table]
+        if "scenario" not in row
+    }
+    assert declared == {(page, chair) for page in (1, 2) for chair in chairs}
+    assert {row["chair"] for row in skeleton["dai_record_response"]} == {"attestator_2"}
 
 
 def test_models_config_owns_the_live_chairs_floor_and_recipes(skeleton, models_config):
@@ -284,57 +221,52 @@ def test_models_config_owns_the_live_chairs_floor_and_recipes(skeleton, models_c
 
 
 def test_testimony_differs_from_the_established_text_somewhere(skeleton):
-    """Dissent must be exercisable. If every witness agreed with the reading
-    everywhere, the Perlectio's dissent record would be structurally untested."""
+    """Dissent must be exercisable: each chair's page text departs from the
+    established text of some act on that page."""
     texts = {act["key"]: act["text"] for act in ACTS}
-    disagreeing = [
-        row
+    for chair in ("attestator_2", "attestator_3"):
+        assert any(TESTIMONY[key][chair] != texts[key] for key in texts)
+    assert TESTIMONY["a1"]["attestator_1"] == texts["a1"]
+
+
+def test_the_page_testimony_is_declared_per_page_and_chair(skeleton):
+    assert skeleton["testimony"] == list(PAGE_TESTIMONY)
+    for row in skeleton["testimony"]:
+        assert "act_key" not in row
+        assert {"page_ordinal", "chair", "payload"} <= set(row)
+
+
+def test_chandra_page_text_is_the_join_of_its_placeholders(skeleton):
+    """Each placeholder binds one act's text to native geometry over that act;
+    the page text joins them, and a continuation-only page has none."""
+    rows = {
+        row["page_ordinal"]: row
         for row in skeleton["testimony"]
-        if "scenario" not in row and row["payload"] != texts[row["act_key"]]
+        if row["chair"] == "attestator_1" and "scenario" not in row
+    }
+    placeholders = [json.loads(raw) for raw in rows[1]["raw_responses"]]
+    assert "\n".join(item["markdown"] for item in placeholders) == rows[1]["payload"]
+    assert [item["blocks"] for item in placeholders] == [
+        [{"bbox": [20.25, 20.5, 180, 100.1]}],
+        [{"bbox": [20.25, 120.5, 180, 220.1]}],
     ]
-    assert len(disagreeing) == 4
-
-
-def test_fixture_testimonia_declare_native_payloads_not_the_retired_body_field(skeleton):
-    assert all("payload" in row and "reported" not in row for row in skeleton["testimony"])
-    scenario_rows = [row for row in skeleton["testimony"] if "scenario" in row]
-    assert scenario_rows == list(SCENARIO_TESTIMONY)
+    assert "raw_responses" not in rows[2]
+    assert rows[2]["payload"] == TESTIMONY["a2"]["attestator_1"]
 
 
 def test_scenario_specific_chandra_text_keeps_its_reported_layout(skeleton):
-    """A textual override must retain geometry that can attach its page witness."""
-    rows = [
+    """A self-report override must keep the geometry its base row reports."""
+    base = next(
         row
         for row in skeleton["testimony"]
-        if row.get("scenario") == "witness-capabilities" and row["chair"] == "attestator_1"
-    ]
-    assert [(row["scenario"], row["act_key"]) for row in rows] == [("witness-capabilities", "a1")]
-    raw = json.loads(rows[0]["raw_response"])
-    assert raw["markdown"] == rows[0]["payload"]
-    assert raw["blocks"] == [{"bbox": [20.25, 20.5, 180, 100.1]}]
-
-    # Structured native payloads remain uncoerced and therefore carry no
-    # invented textual-layout response.
-    structured = next(
-        row
-        for row in skeleton["testimony"]
-        if row.get("scenario") == "structured-witness" and row["chair"] == "attestator_1"
+        if row["chair"] == "attestator_1" and row["page_ordinal"] == 1 and "scenario" not in row
     )
-    assert isinstance(structured["payload"], dict)
-    assert "raw_response" not in structured
-
-
-def test_the_review_scenario_exercises_the_repaired_failed_state(skeleton, models_config):
-    """Validate the fixture's declared `failed` outcomes and configured chairs.
-
-    `test_the_failed_chair_is_visible_in_the_export` in the orchestrator acceptance
-    suite carries the end-to-end half by driving `failed` into the export.
-    """
-    failures = skeleton["witness_failure"]
-    assert failures == list(WITNESS_FAILURES)
-    assert {failure["scenario"] for failure in failures} == {"review", "reread-failure"}
-    assert all(failure["chair"] in configured_witness_chairs(models_config) for failure in failures)
-    assert failures[1]["attempt_ordinal"] == 2
+    override = next(
+        row for row in skeleton["testimony"] if row.get("scenario") == "witness-capabilities"
+    )
+    assert override["raw_responses"] == base["raw_responses"]
+    assert override["payload"] == base["payload"]
+    assert override["witness_reported"] == {"confidence": "high"}
 
 
 def test_the_declared_churro_page_responses_reach_a_page_scoped_chair(skeleton, models_config):
@@ -348,10 +280,8 @@ def test_the_declared_churro_page_responses_reach_a_page_scoped_chair(skeleton, 
     declared_pages = {page["ordinal"] for page in skeleton["page"]}
     rows = skeleton["churro_page_response"]
     assert rows == [dict(row) for row in CHURRO_PAGE_RESPONSES]
-    assert rows, "no scenario exercises the Churro page capture path"
     for row in rows:
-        assert set(row) == {
-            "scenario",
+        assert set(row) - {"scenario"} == {
             "page_ordinal",
             "chair",
             "raw_xml",
@@ -360,27 +290,20 @@ def test_the_declared_churro_page_responses_reach_a_page_scoped_chair(skeleton, 
         assert row["chair"] in page_chairs
         assert row["page_ordinal"] in declared_pages
         assert row["transport_stop_reason"]
-    keys = [(row["scenario"], row["page_ordinal"], row["chair"]) for row in rows]
+    keys = [(row.get("scenario"), row["page_ordinal"], row["chair"]) for row in rows]
     assert len(set(keys)) == len(keys), "two responses declared for one (scenario, page, chair)"
 
 
-def test_the_happy_scenario_declares_a_churro_response_per_page_matching_its_reading(skeleton):
-    """A declaration check, not a run: nothing here invokes an adapter or a stage.
-
-    The named property is that `happy` declares one Churro page response per
-    page for the Churro chair, and that each one reproduces the reading text
-    that scenario already asserts elsewhere -- so turning the capture path on
-    moved no act's reading. Whether the pipeline still *consumes* these rows is
-    the acceptance suite's pinned run, which would move its file count and
-    digest if the path were disabled.
-    """
-    happy = [row for row in skeleton["churro_page_response"] if row["scenario"] == "happy"]
-    assert {(row["page_ordinal"], row["chair"]) for row in happy} == {
+def test_the_base_churro_response_per_page_matches_its_reading(skeleton):
+    """A declaration check, not a run: Churro's unscoped answer to each page
+    reproduces the text of the acts on it, so the capture moves no reading."""
+    base = [row for row in skeleton["churro_page_response"] if "scenario" not in row]
+    assert {(row["page_ordinal"], row["chair"]) for row in base} == {
         (1, "attestator_3"),
         (2, "attestator_3"),
     }
     page_acts = {1: ("a1", "a2"), 2: ("a2",)}
-    for row in happy:
+    for row in base:
         joined = "\n".join(
             TESTIMONY[act_key][row["chair"]] for act_key in page_acts[row["page_ordinal"]]
         )
@@ -394,15 +317,13 @@ def test_the_churro_scenarios_declare_success_visible_truncation_and_parse_failu
     `churro-native` declares a parseable response and one the provider cut
     mid-element; `churro-truncation` declares the visibly cut but still closed
     one. That the parser then classifies each as parsed, failed, and truncated
-    is `test_feeding.py`'s and the acceptance pin's to prove, not this file's.
+    is `test_feeding.py`'s to prove, not this file's.
     """
     rows = {
         (row["page_ordinal"], row["chair"]): row
         for row in skeleton["churro_page_response"]
-        if row["scenario"] == "churro-native"
+        if row.get("scenario") == "churro-native"
     }
-    # The Churro fixture seam belongs to the churro-adapter chair alone; the
-    # visibly cut, still-parseable case lives in churro-truncation.
     assert set(rows) == {(1, "attestator_3"), (2, "attestator_3")}
     header = "[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]"
     complete = rows[(1, "attestator_3")]
@@ -416,7 +337,7 @@ def test_the_churro_scenarios_declare_success_visible_truncation_and_parse_failu
     truncation_rows = {
         (row["page_ordinal"], row["chair"]): row
         for row in skeleton["churro_page_response"]
-        if row["scenario"] == "churro-truncation"
+        if row.get("scenario") == "churro-truncation"
     }
     assert set(truncation_rows) == {(1, "attestator_3"), (2, "attestator_3")}
     truncated = truncation_rows[(2, "attestator_3")]
@@ -427,144 +348,53 @@ def test_the_churro_scenarios_declare_success_visible_truncation_and_parse_failu
 def test_fixture_declares_the_explicit_non_reading_and_malformed_attempts(skeleton):
     assert skeleton["witness_not_run"] == list(WITNESS_NOT_RUN)
     assert skeleton["witness_malformed"] == list(WITNESS_MALFORMED)
+    assert "witness_failure" not in skeleton
 
 
 def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
     names = [scenario["name"] for scenario in skeleton["scenario"]]
+    assert names == [name for name, _departure in SCENARIOS]
     assert names == [
         "happy",
         "witness-capabilities",
-        "review",
-        "continuation-recovery",
-        "coverage-recovery",
+        "page-review",
+        "page-no-act",
+        "page-other",
+        "page-unread",
+        "page-blank",
+        "page-review-other",
+        "page-unbroken",
+        "page-other-unbroken",
+        "page-no-act-unbroken",
+        "page-flags-disagree",
+        "page-runs-past-end",
         "churro-native",
         "churro-truncation",
-        "audit-change",
-        "reader-doubt",
-        "reader-doubt-malformed",
-        "reader-doubt-unreadable",
-        "audit-reproof-cutoff",
         "refused-page",
         "refused-first-page",
-        "truncated-reading",
         "genuinely-empty-witness",
-        "confirmed-blank",
-        "blank-with-dissent",
-        "engine-truncated-reading",
-        "no-readable-text-reading",
-        "structure-failure",
         "ink-free-page",
         "ink-free-page-unwitnessed",
-        "reread-failure",
-        "reread-success",
         "not-run-witness",
         "malformed-witness",
-        "structured-witness",
         "malformed-capabilities",
     ]
-    by_name = {scenario["name"]: scenario for scenario in skeleton["scenario"]}
-    assert by_name["happy"]["recover_acts"] == []
-    assert by_name["happy"]["hold_acts"] == []
-    assert by_name["witness-capabilities"]["recover_acts"] == []
-    assert by_name["witness-capabilities"]["hold_acts"] == []
-    assert by_name["review"]["recover_acts"] == ["a1"]
-    assert by_name["review"]["hold_acts"] == ["a2"]
-    # This is the only scenario that recrops the cross-page act.
-    assert by_name["continuation-recovery"]["recover_acts"] == ["a2"]
-    assert by_name["continuation-recovery"]["hold_acts"] == []
-    # Any declared route here would re-conflate it with the unclaimed-geometry origin.
-    assert by_name["coverage-recovery"]["recover_acts"] == []
-    assert by_name["coverage-recovery"]["hold_acts"] == []
-    # Churro-native differs through response declarations, not recovery policy.
-    assert by_name["churro-native"]["recover_acts"] == []
-    assert by_name["churro-native"]["hold_acts"] == []
-    # Churro-truncation's whole point is that a visibly cut but parseable
-    # response is retained as it came. A recovery route or a hold here would
-    # re-ask or withhold it, which is the thing the scenario exists to refuse
-    # (recovery recovers coverage, never content quality).
-    assert by_name["churro-truncation"]["recover_acts"] == []
-    assert by_name["churro-truncation"]["hold_acts"] == []
-    assert [
-        row for row in skeleton["native_observation"] if row.get("scenario") == "coverage-recovery"
-    ] == [
-        {
-            "scenario": "coverage-recovery",
-            "chair": "attestator_1",
-            "page_ordinal": 1,
-            "x": 0,
-            "y": 200,
-            "w": 10,
-            "h": 40,
-        }
-    ]
-    # The scenario's data, not only its presence in the name census: a wrong
-    # recover/hold declaration or a missing re-proof row would leave the
-    # audit-change path measuring nothing while this file stayed green.
-    assert by_name["audit-change"]["recover_acts"] == []
-    assert by_name["audit-change"]["hold_acts"] == []
-    assert skeleton["audit_reproof"] == [
-        {
-            "scenario": "audit-change",
-            "act_key": "a1",
-            "text": "SYNTHETIC ACT ONE alpha beta gamma!",
-        }
-    ]
-    # Nothing is held or recovered by configuration: the hold this scenario
-    # produces must come from the re-proof's own declared stop word (the
-    # `stop_reason` row below), or it would prove nothing about F1.
-    assert by_name["audit-reproof-cutoff"]["recover_acts"] == []
-    assert by_name["audit-reproof-cutoff"]["hold_acts"] == []
-    # The reader-doubt scenarios declare nothing by configuration either: what
-    # they carry is the reader's own report, and the hold each of the latter two
-    # produces must come from the schema refusing that report against the text
-    # actually published, or it proves nothing.
-    for name in ("reader-doubt", "reader-doubt-malformed", "reader-doubt-unreadable"):
-        assert by_name[name]["recover_acts"] == []
-        assert by_name[name]["hold_acts"] == []
-    assert by_name["refused-page"]["recover_acts"] == []
-    assert by_name["refused-page"]["hold_acts"] == []
-    assert by_name["refused-first-page"]["recover_acts"] == []
-    assert by_name["refused-first-page"]["hold_acts"] == []
-    # Nothing is held or recovered by configuration here: the hold this scenario
-    # produces must come from the reading outcome itself, or it would prove
-    # nothing about the guard.
-    assert by_name["truncated-reading"]["recover_acts"] == []
-    assert by_name["truncated-reading"]["hold_acts"] == []
-    assert by_name["genuinely-empty-witness"]["recover_acts"] == []
-    assert by_name["genuinely-empty-witness"]["hold_acts"] == []
-    assert by_name["confirmed-blank"]["recover_acts"] == []
-    assert by_name["confirmed-blank"]["hold_acts"] == []
-    assert by_name["blank-with-dissent"]["recover_acts"] == []
-    assert by_name["blank-with-dissent"]["hold_acts"] == []
-    assert by_name["engine-truncated-reading"]["recover_acts"] == []
-    assert by_name["engine-truncated-reading"]["hold_acts"] == []
-    assert by_name["no-readable-text-reading"]["recover_acts"] == []
-    assert by_name["no-readable-text-reading"]["hold_acts"] == []
-    # Nothing is held by configuration here either: the hold must come from the
-    # recorded structure failure, or the scenario would prove nothing.
-    assert by_name["structure-failure"]["recover_acts"] == []
-    assert by_name["structure-failure"]["hold_acts"] == []
-    for name in (
-        "reread-failure",
-        "reread-success",
-        "not-run-witness",
-        "malformed-witness",
-        "structured-witness",
-        "malformed-capabilities",
-    ):
-        assert by_name[name]["recover_acts"] == []
-        assert by_name[name]["hold_acts"] == []
+    # A scenario is its name; what it departs in lives in the tables that name it.
+    assert all(set(scenario) == {"name"} for scenario in skeleton["scenario"])
 
 
-def test_the_recorded_structure_failure_names_one_page_and_one_closed_reason(skeleton):
-    """Spec 06 test 4's fixture: a page the structure chair could not mark out."""
-    assert skeleton["structure_failure"] == [
-        {
-            "scenario": "structure-failure",
-            "page_ordinal": 1,
-            "reason_code": "recorded-fixture-structure-failure",
-        }
-    ]
+def test_every_scenario_declares_the_reader_s_answer_to_every_page_it_reads(skeleton):
+    """The page path reads every sealed page, so a scenario missing an answer
+    would refuse at the Perlector rather than say anything about its departure."""
+    answers = {(row["scenario"], row["page_ordinal"]) for row in skeleton["page_answer"]}
+    refused = {(row["scenario"], row["ordinal"]) for row in skeleton["page_refusal"]}
+    for name, _departure in SCENARIOS:
+        pages = [
+            page["ordinal"] for page in skeleton["page"] if name in page.get("scenarios", [name])
+        ]
+        for ordinal in pages:
+            if (name, ordinal) not in refused:
+                assert (name, ordinal) in answers, f"{name} has no answer for page {ordinal}"
 
 
 def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
@@ -572,197 +402,30 @@ def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
 ):
     rows = skeleton["witness_empty"]
     assert rows == list(WITNESS_EMPTY)
-    # Empty responses over marked-out acts need native geometry for blank
-    # corroboration; the minted recovery act is excluded because it must remain
-    # visibly under-witnessed.
-    chandra_empty_rows = [
-        row
-        for row in rows
-        if row["chair"] == "attestator_1" and row["act_key"] != "page-fallback:3"
-    ]
-    assert {(row["scenario"], row["act_key"]) for row in chandra_empty_rows} == {
-        ("confirmed-blank", "a1"),
-        ("blank-with-dissent", "a1"),
-    }
-    for row in chandra_empty_rows:
-        raw = json.loads(row["raw_response"])
-        assert raw["markdown"] == ""
-        assert len(raw["blocks"]) == 1
-
-    # Every other empty row is response-only, including the geometry-free
-    # Chandra response over the minted fallback act.
-    assert [
-        row for row in rows if row["chair"] != "attestator_1" or row["act_key"] == "page-fallback:3"
-    ] == [
-        {
-            "scenario": "genuinely-empty-witness",
-            "act_key": "a1",
-            "chair": "attestator_3",
-        },
-        # The minted fallback act over the ink-free page. These three rows are
-        # what `ink-free-page` used to get for free from the act's identity,
-        # with no response boundary consulted at all: three chairs recorded as
-        # having independently read a page none of them was asked about
-        # (Sol-S1). `ink-free-page-unwitnessed` is deliberately absent from
-        # this table, and its act must therefore hold.
-        {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_1"},
-        {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_2"},
-        {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_3"},
-        # (Held below to exactly the configured roster, derived rather than
-        # listed, so adding a fourth chair to models.toml turns this red.)
-        # Every configured chair, so `confirmed-blank` has a genuine unanimous
-        # absence for the Recensor's blank corroboration to confirm.
-        {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_2"},
-        {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_3"},
-        # Two of three: the third dissents by reporting its ordinary declared
-        # (non-empty) testimony instead.
-        {"scenario": "blank-with-dissent", "act_key": "a1", "chair": "attestator_2"},
-    ]
-    for row in rows:
-        assert row["chair"] in configured_witness_chairs(models_config)
-    # attestator_3 is absent from blank-with-dissent's witness_empty rows above,
-    # which is what makes it the dissenting chair -- but absence alone would
-    # equally describe a chair whose declared testimony was itself blank. The
-    # dissent this scenario exists to exercise requires real, non-empty text.
-    assert TESTIMONY["a1"]["attestator_3"].strip()
-
-    # Derived, not listed: the fallback act's empty responses must cover
-    # exactly the configured witness roster, one row per chair, so a roster
-    # change turns this red instead of silently under-witnessing the blank.
-    fallback_rows = [row for row in rows if row["scenario"] == "ink-free-page"]
-    assert sorted(row["chair"] for row in fallback_rows) == sorted(
-        configured_witness_chairs(models_config)
-    )
-    assert {row["act_key"] for row in fallback_rows} == {"page-fallback:3"}
-
-
-def test_the_declared_reading_failure_outcomes_are_never_completed_class(skeleton):
-    """Every declared reading-failure scenario drives a real hazard: a reading
-    that did not succeed. A declaration that named a completed-class outcome
-    would exercise nothing, whichever class it actually belongs to."""
-    failures = skeleton["reading_failure"]
-    assert len(failures) == 5
-    for row in failures:
-        assert row["act_key"] in {act["key"] for act in skeleton["act"]}
-        assert classify(PERLECTOR, row["outcome"]) is not OutcomeClass.COMPLETED
-
-    by_scenario = {row["scenario"]: row["outcome"] for row in failures}
-    # The exact scenario-to-outcome mapping, before classifying it: a fixture
-    # that quietly swapped which scenario carries which outcome could still
-    # pass the classification asserts below by accident.
-    assert by_scenario == {
-        "truncated-reading": "truncated",
-        "confirmed-blank": "no-readable-text",
-        "blank-with-dissent": "no-readable-text",
-        "no-readable-text-reading": "no-readable-text",
-        # The same unresolved outcome, with a reader that also reported a doubt
-        # over the act -- the two claims the producer must not publish together.
-        "reader-doubt-unreadable": "no-readable-text",
-    }
-    # `truncated` is FAILED-class and still carries text -- the hazard the
-    # Archetypus's own guard (spec 09) exists to refuse.
-    assert classify(PERLECTOR, by_scenario["truncated-reading"]) is OutcomeClass.FAILED
-    # `no-readable-text` is UNRESOLVED-class: the Perlector's own direct claim
-    # of absence, which the Recensor's blank confirmation may or may not be
-    # able to corroborate depending on what the witnesses say.
-    assert classify(PERLECTOR, by_scenario["confirmed-blank"]) is OutcomeClass.UNRESOLVED
-    assert classify(PERLECTOR, by_scenario["blank-with-dissent"]) is OutcomeClass.UNRESOLVED
-    # The sibling hazard: an act nothing could be read from at all is
-    # unresolved, not failed -- G2's "held until proved," never a refusal.
-    assert classify(PERLECTOR, by_scenario["no-readable-text-reading"]) is OutcomeClass.UNRESOLVED
-
-
-def test_the_declared_stop_reason_is_the_length_signal_for_a_known_scenario(skeleton):
-    """The one declared, fixture-only truncation signal
-    (`pipeline/4_perlector/truncation.py`): a stand-in for a real engine's own
-    stop-reason, authoritative for `truncated` when it says `length`."""
-    rows = skeleton["stop_reason"]
     assert rows == [
-        {"scenario": "engine-truncated-reading", "act_key": "a1", "stop_reason": "length"},
-        # Pass-scoped: Pass B completes and only the re-proof is cut off.
-        {
-            "scenario": "audit-reproof-cutoff",
-            "act_key": "a1",
-            "stop_reason": "length",
-            "pass_kind": "audit-reproof",
-        },
+        {"scenario": "genuinely-empty-witness", "page_ordinal": 1, "chair": "attestator_3"},
+        {"scenario": "ink-free-page", "page_ordinal": 3, "chair": "attestator_1"},
+        {"scenario": "ink-free-page", "page_ordinal": 3, "chair": "attestator_3"},
     ]
-    scenario_names = {scenario["name"] for scenario in skeleton["scenario"]}
-    for row in rows:
-        assert row["scenario"] in scenario_names
-        assert row["act_key"] in {act["key"] for act in skeleton["act"]}
-        assert row["stop_reason"] in {"stop", "length"}
-        assert row.get("pass_kind", "audit-reproof") == "audit-reproof"
+    # Derived, not listed: the ink-free page's empty responses cover every
+    # whole-page chair of the roster; DAI's detector census speaks for it there.
+    whole_page_chairs = set(configured_witness_chairs(models_config)) - {"attestator_2"}
+    fallback_rows = [row for row in rows if row["scenario"] == "ink-free-page"]
+    assert {row["chair"] for row in fallback_rows} == whole_page_chairs
 
 
-def test_the_declared_reader_doubt_reports_anchor_to_the_texts_they_are_declared_over(skeleton):
-    """F2's fixture rows are stated as a model would return them; the offsets
-    named here are the ones the tests downstream assert, so they are pinned."""
-    acts = {act["key"]: act["text"] for act in skeleton["act"]}
-    assert skeleton["reader_assessment"] == [
-        {"scenario": "reader-doubt", "act_key": "a1", "state": "assessed", "problem": ""},
-        {"scenario": "reader-doubt", "act_key": "a2", "state": "assessed", "problem": ""},
-        {"scenario": "reader-doubt-malformed", "act_key": "a1", "state": "assessed", "problem": ""},
-        {
-            "scenario": "audit-change",
-            "act_key": "a1",
-            "state": "assessed",
-            "problem": "",
-            "pass_kind": "perlectio",
-        },
-        {
-            "scenario": "audit-change",
-            "act_key": "a1",
-            "state": "assessed",
-            "problem": "",
-            "pass_kind": "audit-reproof",
-        },
-        {
-            "scenario": "reader-doubt-unreadable",
-            "act_key": "a1",
-            "state": "assessed",
-            "problem": "",
-        },
-    ]
-    # The complete ordered table, every row, before anything is read by key:
-    # `reader_doubt` is a many-row table (a reader may report several doubts on
-    # one act), so a repeated row is valid and must be seen, not folded away
-    # under one key.
-    assert [
-        (r["scenario"], r["act_key"], r.get("pass_kind"), r["start"], r["end"], r["alternatives"])
-        for r in skeleton["reader_doubt"]
-    ] == [
-        ("reader-doubt", "a1", None, 29, 34, ["gamna", "gaMma"]),
-        ("audit-change", "a1", "perlectio", 29, 34, ["gamma"]),
-        ("audit-change", "a1", "audit-reproof", 29, 35, ["gamma"]),
-        ("reader-doubt-malformed", "a1", None, 29, 99, []),
-        ("reader-doubt-unreadable", "a1", None, 29, 34, ["gamna"]),
-    ]
-    doubts = {(row["scenario"], row.get("pass_kind")): row for row in skeleton["reader_doubt"]}
-    assert acts["a1"][29:34] == "gamma"
-    assert doubts[("reader-doubt", None)]["start"] == 29
-    assert doubts[("reader-doubt", None)]["end"] == 34
-    assert doubts[("reader-doubt", None)]["alternatives"] == ["gamna", "gaMma"]
-    # Deliberately past the end of a 34-character text: the producer must refuse it.
-    assert doubts[("reader-doubt-malformed", None)]["end"] > len(acts["a1"])
-    reproof_text = next(
-        row["text"] for row in skeleton["audit_reproof"] if row["scenario"] == "audit-change"
-    )
-    assert reproof_text[29:35] == "gamma!"
-    assert doubts[("audit-change", "audit-reproof")]["end"] == 35
-    assert doubts[("audit-change", "perlectio")]["end"] == 34
-    # `reader-doubt-unreadable` declares its doubt for every pass (no `pass_kind`)
-    # and in bounds for the act's declared text -- which the `no-readable-text`
-    # outcome then empties, so the producer must refuse it against the text it
-    # actually publishes. Retrieved by key rather than left to the `==` above, so
-    # a row that lost its scenario or gained a pass kind fails here by name.
-    unreadable = doubts[("reader-doubt-unreadable", None)]
-    assert unreadable["act_key"] == "a1"
-    assert (unreadable["start"], unreadable["end"]) == (29, 34)
-    assert unreadable["alternatives"] == ["gamna"]
-    assert unreadable["confidence"] == "low"
-    assert unreadable["end"] <= len(acts["a1"])
-    assert skeleton["reader_gap"] == [
-        {"scenario": "reader-doubt", "act_key": "a1", "position": "internal", "offset": 23}
-    ]
-    assert acts["a1"][:23] == "SYNTHETIC ACT ONE alpha"
+def test_no_table_the_page_path_does_not_read_is_declared(skeleton):
+    """The act path's tables have no reader once every page is witnessed whole."""
+    for table in (
+        "chandra_anchor",
+        "prior_reading",
+        "audit_reproof",
+        "reader_assessment",
+        "reader_doubt",
+        "reader_gap",
+        "recovery",
+        "reading_failure",
+        "stop_reason",
+        "witness_failure",
+    ):
+        assert table not in skeleton

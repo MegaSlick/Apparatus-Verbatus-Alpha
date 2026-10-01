@@ -1,21 +1,14 @@
 """The run-level hard-failure cap, driven over the real orchestrator.
 
-Two hard failures in a run is an early warning and
-the run keeps going; more than two halts it at the next stage boundary, with
-whatever finished intact. Distinct from `pipeline/5_recensor/test_recovery_
-budget_exhaustion.py` and friends, which exercise the PER-ACT recovery budget —
-this is the separate, RUN-level mechanism `common/hard_failure.py` builds.
+Two hard failures in a run is an early warning and the run keeps going; more
+than two halts it at the next stage boundary, with whatever finished intact.
+This is the RUN-level mechanism `common/hard_failure.py` builds.
 
-The two-act synthetic fixture cannot organically produce three distinct hard
-failures (there are only two acts, and a `truncated` Perlectio no longer counts
-— see `config/hard_failure.toml`'s own comment: a dense page is not a damaged
-one, a distinction ruled by the old pipeline), so every hard failure
-here is forged directly onto a real tree — the same technique every tamper
-test in `test_orchestrator_acceptance.py` already uses to reach a state the
-happy path cannot. `truncated-reading` is still used as the driving scenario,
-deliberately: it puts one genuine, real `truncated` Perlectio on the tree
-alongside the forged failures, so these tests also stand as the end-to-end
-proof that a real truncation does not, by itself, move the tally.
+The synthetic fixture produces no counted hard failure of its own, so every one
+here is forged directly onto a real `happy` tree: an extra Perlector `failed`
+record under a subject no page reading names, the same technique the tamper
+tests in `test_orchestrator_acceptance.py` use to reach a state the fixture
+cannot.
 """
 
 import os
@@ -121,16 +114,14 @@ def has_any_artifact(tree: RunTree, stage: str) -> bool:
 
 def test_more_than_two_hard_failures_halts_the_run_at_the_next_checkpoint(tmp_path):
     root = tmp_path / "runs"
-    run_through_perlector(root, "r", "truncated-reading")
+    run_through_perlector(root, "r", "happy")
 
     tree = RunTree(root, "r")
-    # a1's `truncated` Perlectio is real but does not count (see module
-    # docstring); all three counted hard failures are forged.
     forge_perlector_failure(tree, "fake-hard-failure-subject-1")
     forge_perlector_failure(tree, "fake-hard-failure-subject-2")
     forge_perlector_failure(tree, "fake-hard-failure-subject-3")
 
-    result = orchestrate(root, "r", "truncated-reading")
+    result = orchestrate(root, "r", "happy")
     assert result.returncode == 4, result.stdout + result.stderr
     assert "halted at the" in result.stdout
     # Durable failure evidence already on the tree is found before any stage is
@@ -150,41 +141,24 @@ def test_more_than_two_hard_failures_halts_the_run_at_the_next_checkpoint(tmp_pa
 def test_re_running_a_halted_orchestration_halts_again_the_same_way(tmp_path):
     """Idempotent: recomputed from disk, so a retry without a real fix repeats it."""
     root = tmp_path / "runs"
-    run_through_perlector(root, "r", "truncated-reading")
+    run_through_perlector(root, "r", "happy")
     tree = RunTree(root, "r")
     forge_perlector_failure(tree, "fake-hard-failure-subject-1")
     forge_perlector_failure(tree, "fake-hard-failure-subject-2")
     forge_perlector_failure(tree, "fake-hard-failure-subject-3")
 
-    first = orchestrate(root, "r", "truncated-reading")
+    first = orchestrate(root, "r", "happy")
     door_manifest = tree.resolve(tree.manifest_path("door"))
     os.utime(door_manifest, ns=(1_000_000_000, 1_000_000_000))
-    second = orchestrate(root, "r", "truncated-reading")
+    second = orchestrate(root, "r", "happy")
     assert first.returncode == second.returncode == 4
     assert door_manifest.stat().st_mtime_ns == 1_000_000_000
     assert not has_any_artifact(tree, RECENSOR)
 
 
-def test_exactly_two_hard_failures_is_only_a_warning_and_the_run_continues(tmp_path):
-    root = tmp_path / "runs"
-    run_through_perlector(root, "r", "truncated-reading")
-    tree = RunTree(root, "r")
-    # a1's real `truncated` Perlectio does not count; two forged failures is
-    # exactly two, the named "early warning" -- the run must not stop early.
-    forge_perlector_failure(tree, "fake-hard-failure-subject-1")
-    forge_perlector_failure(tree, "fake-hard-failure-subject-2")
-
-    result = orchestrate(root, "r", "truncated-reading")
-    assert result.returncode in (0, 3), result.stdout + result.stderr
-    assert "early warning" in result.stdout
-    assert "halted at the" not in result.stdout
-    # The run reached the end of the sequence: Armarium produced its export.
-    assert has_any_artifact(tree, ARMARIUM)
-
-
 def test_zero_hard_failures_never_mentions_the_cap(tmp_path):
     root = tmp_path / "runs"
-    result = orchestrate(root, "r", "happy")
+    result = orchestrate(root, "r", "page-unbroken")
     assert result.returncode == 0, result.stderr
     assert "hard failure" not in result.stdout
     assert "halted" not in result.stdout
@@ -193,14 +167,14 @@ def test_zero_hard_failures_never_mentions_the_cap(tmp_path):
 def test_a_direct_stage_refuses_a_halted_run_before_it_writes(tmp_path):
     """Direct entry shares the run cap and must refuse before writes."""
     root = tmp_path / "runs"
-    run_through_perlector(root, "r", "truncated-reading")
+    run_through_perlector(root, "r", "happy")
     tree = RunTree(root, "r")
     forge_perlector_failure(tree, "fake-hard-failure-subject-1")
     forge_perlector_failure(tree, "fake-hard-failure-subject-2")
     forge_perlector_failure(tree, "fake-hard-failure-subject-3")
     rebind_perlector_seal(tree)
 
-    result = call_stage(root, "r", "truncated-reading", "pipeline/5_recensor/run.py")
+    result = call_stage(root, "r", "happy", "pipeline/5_recensor/run.py")
 
     assert result.returncode == 4
     assert "RunHalted" in result.stderr
@@ -211,14 +185,14 @@ def test_a_direct_stage_refuses_a_halted_run_before_it_writes(tmp_path):
 def test_the_direct_door_also_refuses_a_halted_run_without_replaying_bytes(tmp_path):
     """Door bypasses ``open_context``, so it must apply the same gate explicitly."""
     root = tmp_path / "runs"
-    run_through_perlector(root, "r", "truncated-reading")
+    run_through_perlector(root, "r", "happy")
     tree = RunTree(root, "r")
     forge_perlector_failure(tree, "fake-hard-failure-subject-1")
     forge_perlector_failure(tree, "fake-hard-failure-subject-2")
     forge_perlector_failure(tree, "fake-hard-failure-subject-3")
     before = snapshot(root)
 
-    result = call_stage(root, "r", "truncated-reading", "pipeline/1_exemplar/door.py")
+    result = call_stage(root, "r", "happy", "pipeline/1_exemplar/door.py")
 
     assert result.returncode == 4
     assert "door refuses to start" in result.stderr
@@ -242,27 +216,14 @@ def test_an_unmeasurable_direct_entry_cap_refuses_instead_of_writing(tmp_path):
     assert not has_any_artifact(tree, RECENSOR)
 
 
-def test_a_real_truncated_reading_alone_never_mentions_the_cap(tmp_path):
-    """A dense page is not a damaged one (a distinction carried over from the
-    old pipeline, into `config/hard_failure.toml`'s comment). One
-    genuine truncated Perlectio, with nothing forged, must not move the tally
-    at all -- the run proceeds exactly as an ordinary held act would."""
-    root = tmp_path / "runs"
-    result = orchestrate(root, "r", "truncated-reading")
-    assert result.returncode in (0, 3), result.stdout + result.stderr
-    assert "hard failure" not in result.stdout
-    assert "halted" not in result.stdout
-
-
-# --- The halt at a boundary reached mid-run ------------------------------------
+# --- The tally at a boundary reached mid-run -----------------------------------
 #
 # Every end-to-end test above forges its failures before the orchestrator starts,
 # so all of them trip at `resume-preflight` — the branch before the sequence loop.
 # The ruling's actual shape ("finishes that section but pauses") lives in the loop
-# body and in `drive_recovery`, and nothing reached either. The two-act synthetic
-# fixture cannot organically produce a third counted hard failure mid-run, and
-# adding a scenario that could would move `config_digest` and every pinned run-tree
-# digest with it. So the sequencing itself is driven directly instead.
+# body. A forged Perlector failure stops the page-read Recensor on its own, and
+# adding a scenario that produced one would move `config_digest` and every pinned
+# run-tree digest with it. So the sequencing itself is driven directly instead.
 
 
 def _breach(checkpoint_name: str) -> dict:
@@ -276,6 +237,50 @@ def _breach(checkpoint_name: str) -> dict:
     }
 
 
+def _argv(tmp_path: Path, *selection: str) -> list[str]:
+    return [
+        "run.py",
+        "--fixture",
+        FIXTURE,
+        "--scenario",
+        "happy",
+        "--run-id",
+        "r",
+        "--run-root",
+        str(tmp_path / "runs"),
+        *selection,
+    ]
+
+
+def test_exactly_two_hard_failures_is_only_a_warning_and_the_run_continues(
+    monkeypatch, tmp_path, capsys
+):
+    """Two is the named early warning: said at every boundary, and nothing stops."""
+    orchestrator = load_stage("orchestrator")
+    invoked: list[str] = []
+    monkeypatch.setattr(orchestrator, "invoke", lambda program, _args: invoked.append(program))
+    monkeypatch.setattr(
+        orchestrator,
+        "tally_hard_failures",
+        lambda _tree, _policy: {
+            "threshold": 2,
+            "count": 2,
+            "breached": False,
+            "by_kind": {"perlector:failed": ["a1", "a2"]},
+            "subjects": ["perlector:a1", "perlector:a2"],
+        },
+    )
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--from", "door", "--to", "recensor"))
+
+    assert orchestrator.main() == orchestrator.EXIT_COMPLETE
+    stages = ("door", "exemplar", "ink-map", "designator", "attestatores", "perlector", "recensor")
+    assert invoked == [orchestrator.STAGE_PROGRAMS[name] for name in stages]
+    printed = capsys.readouterr().out
+    assert printed.count("2 hard failure(s) so far") == len(stages)
+    assert "early warning" in printed
+    assert "halted" not in printed
+
+
 def test_a_breach_first_seen_at_a_stage_boundary_stops_the_rest_of_the_sequence(
     monkeypatch, tmp_path, capsys
 ):
@@ -287,29 +292,13 @@ def test_a_breach_first_seen_at_a_stage_boundary_stops_the_rest_of_the_sequence(
     """
     orchestrator = load_stage("orchestrator")
     invoked: list[str] = []
-    monkeypatch.setattr(
-        orchestrator, "invoke", lambda program, _args, **_extra: invoked.append(program)
-    )
+    monkeypatch.setattr(orchestrator, "invoke", lambda program, _args: invoked.append(program))
     monkeypatch.setattr(
         orchestrator,
         "checkpoint",
         lambda _args, name, _policy: _breach(name) if name == "designator" else None,
     )
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run.py",
-            "--fixture",
-            FIXTURE,
-            "--scenario",
-            "happy",
-            "--run-id",
-            "r",
-            "--run-root",
-            str(tmp_path / "runs"),
-        ],
-    )
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path))
 
     assert orchestrator.main() == orchestrator.EXIT_RUN_HALTED
     assert invoked == [
@@ -321,42 +310,6 @@ def test_a_breach_first_seen_at_a_stage_boundary_stops_the_rest_of_the_sequence(
     printed = capsys.readouterr().out
     assert "halted at the designator checkpoint" in printed
     assert "perlector:failed" in printed
-
-
-def test_a_breach_inside_a_recovery_round_stops_before_the_archetypus(monkeypatch, tmp_path):
-    """`drive_recovery` runs before the Archetypus; a breach there halts too.
-
-    Recovery re-invokes the Designator and the Perlector, so it is where a run
-    that is going wrong is most likely to cross the cap — and the one caller
-    whose halt return `main` has to honour before establishing any text.
-    """
-    orchestrator = load_stage("orchestrator")
-    invoked: list[str] = []
-    monkeypatch.setattr(
-        orchestrator, "invoke", lambda program, _args, **_extra: invoked.append(program)
-    )
-    monkeypatch.setattr(orchestrator, "checkpoint", lambda _args, _name, _policy: None)
-    monkeypatch.setattr(orchestrator, "drive_recovery", lambda _args, _policy: _breach("perlector"))
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run.py",
-            "--fixture",
-            FIXTURE,
-            "--scenario",
-            "happy",
-            "--run-id",
-            "r",
-            "--run-root",
-            str(tmp_path / "runs"),
-        ],
-    )
-
-    assert orchestrator.main() == orchestrator.EXIT_RUN_HALTED
-    assert orchestrator.STAGE_PROGRAMS["archetypus"] not in invoked
-    assert orchestrator.STAGE_PROGRAMS["armarium"] not in invoked
-    assert orchestrator.STAGE_PROGRAMS["recensor"] in invoked
 
 
 # --- The policy is sealed, and its point of use requires it ---------------------
@@ -382,7 +335,7 @@ def test_the_run_authority_names_the_hard_failure_policy_it_was_sealed_under(tmp
     from common.hard_failure import load_hard_failure_policy
 
     root = tmp_path / "runs"
-    assert orchestrate(root, "sealed", "happy").returncode == 0
+    assert orchestrate(root, "sealed", "page-unbroken").returncode == 0
 
     run = RunTree(root, "sealed").read_run()
     assert (
@@ -410,7 +363,7 @@ def test_a_hard_failure_policy_swapped_between_orchestrations_is_refused_on_resu
             "--fixture",
             FIXTURE,
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-id",
             "swapped",
             "--run-root",
@@ -446,7 +399,7 @@ def test_a_hard_failure_policy_swapped_between_orchestrations_is_refused_on_resu
             "--fixture",
             FIXTURE,
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-id",
             "swapped",
             "--run-root",

@@ -1,83 +1,56 @@
-"""Attestatores refuses an unverified crop before a chair is asked to read it."""
+"""Attestatores refuses an unverified Designator record crop before any page record names it."""
 
 import copy
-import subprocess
-import sys
-from pathlib import Path
 
 import pytest
 
-from common.chairs import ChairRegistry
 from common.contracts.canonical import canonical_bytes, self_hash
-from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.stages import DESIGNATOR
-from common.runtree.store import RunTree
-from conftest import load_stage
-
-ROOT = Path(__file__).resolve().parents[2]
-
+from common.contracts.errors import SchemaRefusal
+from common.contracts.stages import ATTESTATORES, DESIGNATOR
+from common.stage import open_context, stage_parser
+from conftest import load_stage, run_through
 
 attestatores = load_stage("3_attestatores")
-
-
-class _Context:
-    def __init__(self, tree):
-        self.tree = tree
-        self.run = tree.read_run()
-        self.registry = ChairRegistry.from_toml(ROOT / "config/models.toml")
+RUN_ID = "attestatores-boundary"
 
 
 @pytest.fixture
-def real_region(tmp_path):
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "happy",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--run-id",
-            "attestatores-boundary",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
+def designated(tmp_path):
+    root = tmp_path / "runs"
+    run_through(root, RUN_ID, "happy", "designator")
+    args = stage_parser("region boundary test").parse_args(
+        ["--run-root", str(root), "--run-id", RUN_ID, "--scenario", "happy"]
     )
-    assert result.returncode == 0, result.stderr
-    tree = RunTree(tmp_path / "runs", "attestatores-boundary")
-    entry = next(
-        entry for entry in tree.build_manifest(DESIGNATOR)["artifacts"] if entry["kind"] == "region"
-    )
-    return _Context(tree), tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+    return open_context(args, ATTESTATORES)
 
 
-def test_attestatores_verifies_crop_lineage_before_a_witness_reads_it(real_region, monkeypatch):
-    context, region = real_region
-    monkeypatch.setattr(attestatores, "validate_serving_provenance", lambda *args, **kwargs: None)
-
-    def refuse(*args, **kwargs):
-        raise ContractError("crop-lineage marker")
-
-    monkeypatch.setattr(attestatores, "verify_exemplar_crop_lineage", refuse)
-    with pytest.raises(ContractError, match="crop-lineage marker"):
-        attestatores.proposed_regions(context, region["subject_id"])
-
-
-def test_attestatores_names_a_designator_region_with_missing_provenance(real_region, monkeypatch):
-    context, region = real_region
-    missing = copy.deepcopy(region)
-    del missing["payload"]["provenance"]
-    missing["self_hash"] = self_hash(missing)
-    entry = next(
+def _first_region_entry(context):
+    return next(
         entry
         for entry in context.tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["artifact_id"] == region["artifact_id"]
+        if entry["kind"] == "detector-region"
     )
-    context.tree.resolve(entry["relative_path"]).write_bytes(canonical_bytes(missing))
-    monkeypatch.setattr(context.tree, "build_manifest", lambda stage: {"artifacts": [entry]})
 
-    with pytest.raises(SchemaRefusal, match="model provenance is not an object"):
-        attestatores.proposed_regions(context, region["subject_id"])
+
+def test_a_record_crop_that_does_not_rederive_from_its_page_is_refused(designated, monkeypatch):
+    monkeypatch.setattr(attestatores, "crop_png", lambda *_args: b"not the sealed crop")
+    with pytest.raises(SchemaRefusal, match="does not re-derive from its sealed page"):
+        attestatores.detector_units_by_page(designated)
+
+
+def test_a_record_crop_rewritten_under_its_record_is_refused_by_name(designated):
+    context = designated
+    entry = _first_region_entry(context)
+    region = context.tree.read_artifact(DESIGNATOR, "detector-region", entry["artifact_id"])
+    rewritten = copy.deepcopy(region)
+    rewritten["payload"]["provenance"] = {**rewritten["payload"]["provenance"], "chair": "other"}
+    rewritten["self_hash"] = self_hash({k: v for k, v in rewritten.items() if k != "self_hash"})
+    context.tree.resolve(entry["relative_path"]).write_bytes(canonical_bytes(rewritten))
+
+    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
+        attestatores.detector_units_by_page(context)
+    assert not [
+        entry
+        for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == "page-testimonium"
+    ]

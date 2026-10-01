@@ -14,7 +14,6 @@ from pathlib import Path
 
 from common.chairs.config import parse_models_config
 from common.stage import (
-    DESIGNATOR_CHAIR,
     PERLECTOR_CHAIR,
     SECONDARY_PROPOSER_CHAIR,
     unaddressed_chairs,
@@ -53,7 +52,6 @@ def test_the_shipped_models_toml_has_nothing_unaddressed():
 def test_an_absent_secondary_proposer_is_addressed_by_its_own_absence():
     config = _config(
         {
-            DESIGNATOR_CHAIR: _configured(DESIGNATOR_CHAIR),
             PERLECTOR_CHAIR: _configured(PERLECTOR_CHAIR),
             SECONDARY_PROPOSER_CHAIR: _absent(),
         }
@@ -66,7 +64,6 @@ def test_a_configured_secondary_proposer_is_addressed_not_flagged_partial():
     fix here, because the resolution path already exists before the flip."""
     config = _config(
         {
-            DESIGNATOR_CHAIR: _configured(DESIGNATOR_CHAIR),
             PERLECTOR_CHAIR: _configured(PERLECTOR_CHAIR),
             SECONDARY_PROPOSER_CHAIR: _configured(SECONDARY_PROPOSER_CHAIR),
         }
@@ -78,7 +75,6 @@ def test_a_genuinely_unaddressed_role_is_still_caught():
     """A regression guard on the fix itself: the check must not have gone vacuous."""
     config = _config(
         {
-            DESIGNATOR_CHAIR: _configured(DESIGNATOR_CHAIR),
             PERLECTOR_CHAIR: _configured(PERLECTOR_CHAIR),
             SECONDARY_PROPOSER_CHAIR: _absent(),
             "misspelt_role": _configured("misspelt_role"),

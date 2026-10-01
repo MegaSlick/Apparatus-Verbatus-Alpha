@@ -144,24 +144,18 @@ class ScheduledStage:
 # the fixture roster resolves to local snapshots and boots nothing, so a
 # schedule measured against it would under-report every real boot.
 #
-# Every configured chair runs on the pod of the stage that reads it,
-# `attestator_1` included: Chandra is served and read again here, in the
-# Attestatores' own call, never handed down from the Designator's reading.
+# Every configured chair runs on the pod of the stage that reads it.
 # `secondary_proposer` is DAI's own record detector: the Designator runs it
-# in-process on the CPU once its structure chair has closed, so it shares the
-# Designator's pod and never the card. `designator_surya` does the same in its
-# own environment, as a subprocess, once the structure chair has closed.
+# in-process on the CPU, so it needs the Designator's pod and never the card.
+# `designator_surya` does the same in its own environment, as a subprocess.
 COLLECTION_BOOT_SCHEDULE: tuple[ScheduledStage, ...] = (
     ScheduledStage("ingest-to-volume", False),
     ScheduledStage(
         "designator",
         True,
         (
-            ScheduledChair("designator_structure", "Chandra, structure and crop authority"),
-            ScheduledChair(
-                "secondary_proposer", "DAI's record detector, in-process on the CPU after Chandra"
-            ),
-            ScheduledChair("designator_surya", "Surya, a subprocess on the CPU after Chandra"),
+            ScheduledChair("secondary_proposer", "DAI's record detector, in-process on the CPU"),
+            ScheduledChair("designator_surya", "Surya, a subprocess on the CPU"),
         ),
     ),
     ScheduledStage(

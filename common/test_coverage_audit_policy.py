@@ -61,9 +61,9 @@ def test_the_shipped_block_loads_with_the_seal_of_its_own_file():
     assert config["gap_tolerance_px"] == 3
 
 
-def test_the_block_is_read_from_the_file_the_designator_is_sealed_under():
-    """One file, one digest, one seal -- not a second sealed name for two gates."""
-    assert DEFAULT_COVERAGE_AUDIT_CONFIG_PATH == ROOT / "config" / "designator_grouping.toml"
+def test_the_block_is_read_from_the_sealed_ink_map_policy():
+    """One file, one digest, one seal: the ink map's, beside the background policy."""
+    assert DEFAULT_COVERAGE_AUDIT_CONFIG_PATH == ROOT / "config" / "ink_map.toml"
     raw = tomllib.loads(DEFAULT_COVERAGE_AUDIT_CONFIG_PATH.read_bytes().decode("utf-8"))
     assert set(raw["coverage_audit"]) == set(COVERAGE_AUDIT_BP_FIELDS) | {
         "provenance",
@@ -75,11 +75,13 @@ def test_the_block_is_read_from_the_file_the_designator_is_sealed_under():
 
 
 def test_the_noise_floor_carries_its_own_unmeasured_provenance():
-    """The two gates are measured and say so; the two noise-floor values are
-    not, and must not sit under that claim. Each block speaks for itself."""
+    """The two gates carry their own measured sample, and the two noise-floor
+    values carry none; each block speaks for itself. The gates were measured
+    against a grouping that no longer runs, so neither block claims calibration."""
     raw = tomllib.loads(DEFAULT_COVERAGE_AUDIT_CONFIG_PATH.read_bytes().decode("utf-8"))
     audit = raw["coverage_audit"]
-    assert audit["provenance"]["calibrated_for_this_corpus"] is True
+    assert audit["provenance"]["calibrated_for_this_corpus"] is False
+    assert audit["provenance"]["sample_count"] == 44
     floor = audit[COVERAGE_NOISE_FLOOR_TABLE]["provenance"]
     assert floor["calibrated_for_this_corpus"] is False
     assert floor["sample_count"] == 0
@@ -198,14 +200,14 @@ def test_a_missing_table_is_refused_rather_than_defaulted():
         validate_coverage_audit_table(None)
 
 
-def test_a_file_without_the_designator_bounds_is_refused_by_name(tmp_path):
-    """This audit cannot resolve its own policy without the two it borrows."""
+def test_a_file_without_the_page_spanning_bounds_is_refused_by_name(tmp_path):
+    """This audit cannot resolve its own policy without the page-spanning bound and radius."""
     path = tmp_path / "partial.toml"
     path.write_text(
-        "[grouping]\n[coverage_audit]\nsubstantial_ink_area_bp = 4\nedge_band_bp = 100\n"
+        "[coverage_audit]\nsubstantial_ink_area_bp = 4\nedge_band_bp = 100\n"
         "[coverage_audit.noise_floor]\nminimum_ink_pixels = 24\nminimum_fraction_outside_bp = 200\n"
     )
-    with pytest.raises(ContractError, match=r"page_area_bp.*absolute|absolute.*page_area_bp"):
+    with pytest.raises(ContractError, match=r"missing \[page_spanning\] or \[connectivity\]"):
         load_coverage_audit_config(path)
 
 
@@ -222,7 +224,7 @@ def test_a_page_without_positive_integer_dimensions_is_refused():
 
 
 def _sealed_toml_without(block: str) -> str:
-    """The shipped grouping file with one provenance block dropped.
+    """The shipped ink-map file with one provenance block dropped.
 
     Built from the real file rather than hand-written, so this test cannot
     quietly stop describing the configuration the pipeline actually loads.
@@ -281,7 +283,7 @@ def test_a_provenance_block_claiming_calibration_without_samples_is_refused(tmp_
 
 
 def test_the_background_loader_refuses_a_policy_whose_block_lost_its_provenance(tmp_path):
-    """The Ink Map publishes under `[grouping.background]` before the Designator reads it.
+    """The Ink Map publishes under `[background]` before the Designator reads it.
 
     So the loader it calls asks where those numbers came from, as the
     coverage-audit loader above does for its own blocks.
@@ -289,7 +291,7 @@ def test_the_background_loader_refuses_a_policy_whose_block_lost_its_provenance(
     from common.background import load_background_config
 
     path = tmp_path / "no-background-provenance.toml"
-    path.write_text(_sealed_toml_without("[grouping.background.provenance]"), encoding="utf-8")
+    path.write_text(_sealed_toml_without("[background.provenance]"), encoding="utf-8")
 
-    with pytest.raises(ContractError, match=r"grouping\.background\.provenance"):
+    with pytest.raises(ContractError, match=r"no \[background\.provenance\] table"):
         load_background_config(path)

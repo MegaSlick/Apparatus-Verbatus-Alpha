@@ -28,7 +28,6 @@ from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Any, Final
 
-from .canonical import is_plain_int
 from .errors import ApprovalRefusal, FatalAccounting, SchemaRefusal
 from .stages import (
     ARCHETYPUS,
@@ -66,117 +65,6 @@ _A = ArmariumCategory
 # The witness outcomes that ARE a reading: narrower than the ATTESTATORES
 # COMPLETED class, which also holds an approval-bound `excluded`.
 WITNESS_READING_OUTCOMES: Final = frozenset({"read", "genuinely-empty"})
-INTERIM_GRANULARITY_BASIS: Final = "computed-act-attachment-alignment"
-# Act-granularity facts that each name their own attachment basis, as against
-# the weaker interim derivation.
-NATIVE_GRANULARITY_BASIS: Final = "native-per-chair-attachment-basis"
-LEGACY_GRANULARITY_BASIS: Final = "legacy-class-only"
-# Which evidence decided one attachment; the floor arithmetic below reads it.
-ATTACHMENT_BASES: Final = frozenset(
-    {"presented-region", "anchor-line", "geometric-overlap", "unattached"}
-)
-# The shortest contiguous run of the act's anchor line a witness must match for
-# the alignment to have LOCATED that line.  Measured against `align_to_anchor` on
-# a 145-character register line (reproduced by `test_contracts_algebra.py::
-# test_the_anchor_line_run_floor_sits_between_coincidence_and_a_real_reading`):
-# unrelated prose reaches 1, random text over the anchor's alphabet 3 to 5,
-# another act in the same formula 7, and a genuine reading 145, 25 and 14 at 0%,
-# 10% and 20% character error (8 to 10 at 30% to 50%, one sample each).  Total
-# matched coverage does not separate these; the longest run does.  It cannot
-# tell a misread line from another act's line in the same formula, and nothing
-# character-level can; it refuses coincidence.
-ANCHOR_LINE_RUN_FLOOR: Final = 8
-
-
-def anchor_line_located(alignment: Any) -> bool:
-    """Whether a page alignment placed THIS act's own anchor line in the witness text.
-
-    Not "the alignment succeeded". Four separate things have to hold, and each
-    of them is a different way the same record can be honest and still place
-    nothing here:
-
-    * `status == "aligned"` -- an unaligned record carries a reason and no span.
-      A continuation page is forced to `continuation-page-no-act-anchor` before
-      geometry is ever consulted (`pipeline/3_attestatores/run.py`), so this
-      basis can never arise on a page the act is not primary on, which is
-      correct: the anchor is derived from the act's own primary page.
-    * `anchor_basis == "act-anchor"` -- `no-page-anchor` and
-      `act-line-not-located` are aligned records that say, in the producer's own
-      vocabulary, that no line for this act was located. They exist for the
-      trivial attach a genuinely empty page reading gets.
-    * a positive-length `witness_span` -- the same trivial attach carries
-      `{"start": 0, "end": 0}`. A zero-length slice is not text this act was
-      placed in, and counting it would put a chair on the witness floor for a
-      reading that placed nothing.
-    * an `anchor_line_match` whose longest contiguous run reaches
-      `ANCHOR_LINE_RUN_FLOOR` (or the whole anchor line, where the line is
-      shorter than the floor).
-
-    The fourth gives the third its meaning: `align_to_anchor` keeps matching
-    blocks of size one, so any two coinciding characters make a positive span.
-
-    Defensive about shape rather than validating it: this is read from
-    untrusted retained evidence at three seams, and each of those seams
-    validates the alignment's full closed shape itself. What this must never do
-    is raise a bare `TypeError`/`KeyError` out of a derivation whose answer is
-    then compared against a producer's boolean.
-    """
-    if not isinstance(alignment, Mapping) or alignment.get("status") != "aligned":
-        return False
-    if alignment.get("anchor_basis") != "act-anchor":
-        return False
-    span = alignment.get("witness_span")
-    if not isinstance(span, Mapping):
-        return False
-    start, end = span.get("start"), span.get("end")
-    if not all(is_plain_int(bound) for bound in (start, end)):
-        return False
-    if end <= start:
-        return False
-    match = alignment.get("anchor_line_match")
-    if not isinstance(match, Mapping):
-        return False
-    anchor_characters = match.get("anchor_characters")
-    matched = match.get("matched_characters")
-    longest = match.get("longest_matched_run")
-    if not all(is_plain_int(value) for value in (anchor_characters, matched, longest)):
-        return False
-    # An incoherent measurement refuses rather than clamps.
-    if not 0 <= longest <= matched <= anchor_characters or anchor_characters <= 0:
-        return False
-    return longest >= min(ANCHOR_LINE_RUN_FLOOR, anchor_characters)
-
-
-def page_attachment_basis(*, reading: bool, geometry_overlaps: bool, alignment: Any) -> str:
-    """Which evidence attaches one page witness's reading to one act.
-
-    The one derivation, called by the producer (`pipeline/3_attestatores/run.py`)
-    and re-derived by both readers (the Perlector's `act_attachment_view` and the
-    Recensor's `act_attachment_facts`), so one rule cannot drift into three.
-
-    Geometry first: a chair that reported ink over the act's proposal attached on
-    its own evidence, and `anchor-line` would understate that.
-
-    The anchor line exists for page witnesses whose grammar carries no geometry
-    (Churro's `HistoricalDocument`), which could otherwise never attach.  Not a
-    picker: the anchor, from another chair's response, decides only
-    whether this chair's text was placed in this act, never whose reading is
-    right.  It does cost independence, and the live seam says so.  It also costs
-    forgery resistance: the readers take the recorded alignment as evidence, so a
-    forged attachment needs only a forged alignment, still behind the
-    Attestatores seal (`pipeline/4_perlector/test_comparability_seam.py`).  The
-    fix is a reader that re-derives the alignment, which needs text neither
-    reader holds.
-    """
-    if not reading:
-        return "unattached"
-    if geometry_overlaps:
-        return "geometric-overlap"
-    if anchor_line_located(alignment):
-        return "anchor-line"
-    return "unattached"
-
-
 # --- The vocabularies: outcome -> class, one closed set per stage ---------------
 
 VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
@@ -199,10 +87,6 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
     DESIGNATOR: {
         "proposed": _C.COMPLETED,
-        # Completed only because an approval record says so; `require_approval`
-        # below is what stops the word from being enough on its own.
-        "excluded": _C.COMPLETED,
-        "held": _C.UNRESOLVED,
         "failed": _C.FAILED,
     },
     ATTESTATORES: {
@@ -219,9 +103,6 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
     PERLECTOR: {
         "read": _C.COMPLETED,
-        # Silence does not prove a blank, so it stays unresolved.
-        "no-readable-text": _C.UNRESOLVED,
-        "truncated": _C.FAILED,
         "failed": _C.FAILED,
         "not-run": _C.UNRESOLVED,
         # A whole-page reading, or one entry of it, kept for review: read, but
@@ -230,7 +111,6 @@ VOCABULARIES: Final[dict[str, dict[str, OutcomeClass]]] = {
     },
     RECENSOR: {
         "accepted": _C.COMPLETED,
-        "recovery-requested": _C.UNRESOLVED,
         "confirmed-blank": _C.COMPLETED,
         "held-for-review": _C.UNRESOLVED,
         "failed": _C.FAILED,
@@ -288,8 +168,6 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (INK_MAP, "unclaimed-edge-ink"): None,
     (INK_MAP, "ink-not-measurable"): None,
     (DESIGNATOR, "proposed"): None,
-    (DESIGNATOR, "excluded"): _A.EXCLUDED_WITH_APPROVAL,
-    (DESIGNATOR, "held"): _A.HELD_FOR_REVIEW,
     (DESIGNATOR, "failed"): _A.REFUSED_WITH_REASON,
     # Every witness outcome is transitive. See the module docstring: this column
     # is where a picker would be born if any entry here were a category.
@@ -300,13 +178,10 @@ TERMINAL_CATEGORY: Final[dict[tuple[str, str], ArmariumCategory | None]] = {
     (ATTESTATORES, "not-run"): None,
     (ATTESTATORES, "excluded"): None,
     (PERLECTOR, "read"): None,
-    (PERLECTOR, "no-readable-text"): None,
-    (PERLECTOR, "truncated"): None,
     (PERLECTOR, "failed"): None,
     (PERLECTOR, "not-run"): None,
     (PERLECTOR, "held"): None,
     (RECENSOR, "accepted"): None,
-    (RECENSOR, "recovery-requested"): None,
     (RECENSOR, "confirmed-blank"): _A.CONFIRMED_BLANK,
     (RECENSOR, "held-for-review"): _A.HELD_FOR_REVIEW,
     (RECENSOR, "failed"): _A.REFUSED_WITH_REASON,
@@ -328,8 +203,8 @@ for _stage in VOCABULARIES:
             )
         TERMINAL_CATEGORY[(_stage, _outcome)] = None
 
-# The Perlector's failures are transitive on purpose: the Recensor may request
-# bounded recovery, and only its outcome terminates the act.
+# The Perlector's failures are transitive on purpose: only the Recensor's
+# review terminates the act.
 
 
 def classify(stage: str, outcome: Any) -> OutcomeClass:
@@ -479,42 +354,18 @@ def derive_record_text_status(text: Any, annotations: Any, uncertainty: Any) -> 
 # --- Witness coverage: outcomes aggregate into counts, never into text ----------
 
 
-# Why a configured chair did not count toward an act's witness floor, one count each.
-SHORTFALL_KINDS: Final = ("failed", "truncated", "unaligned", "unmeasured")
-
-
-def witness_failure_shortfall(shortfalls: Mapping[str, int]) -> bool:
-    """Whether a chair fell short for a reason other than the aligner stopping on its bound."""
-    return any(shortfalls.get(kind, 0) for kind in SHORTFALL_KINDS if kind != "unmeasured")
-
-
-def witness_coverage(
-    chair_outcomes: Mapping[str, str],
-    configured_floor: int,
-    *,
-    attachments: Mapping[str, Mapping[str, Any] | bool] | None = None,
-) -> dict[str, Any]:
-    """Aggregate one act's chair outcomes into the coverage record.
+def witness_coverage(chair_outcomes: Mapping[str, str], configured_floor: int) -> dict[str, Any]:
+    """Aggregate one unit's chair outcomes into the coverage counts.
 
     Returns counts and two flags, and deliberately returns no category and no
-    text. The caller may record this beside an act; nothing may branch the act's
-    reading on it.
+    text. The caller may record this beside a unit; nothing may branch the
+    unit's reading on it.
 
     `under_witnessed` is chairs reaching a completed-class outcome below the
     configured floor. Three chairs is the floor; the machinery tolerates fewer so
     one dead witness never kills a run, and a run below the floor is recorded as
     under-witnessed in the Recensor receipt and the export manifest, visibly,
-    every time.
-
-    A chair that is not attached with comparable text is one shortfall, in one of
-    two buckets. `unmeasured`: its fact says the aligner stopped on one of its own
-    bounds (`alignment_unmeasured`), so nobody knows whether it covered the act.
-    `unaligned`: every other such chair. Its reading was compared and did not
-    cover the act; or it was compared but could not be placed in this act alone
-    (overlapping another act's span, or no raw counterpart for the aligned span);
-    or there was no act anchor to compare it against (no Chandra page anchor, the
-    act's anchor line not located, a continuation page); or there was nothing to
-    compare (a non-reading outcome, an unattached chair, a report that is not text).
+    every time. A page review judges its own flag by `witnessed_count`.
     """
     if configured_floor < 0:
         raise FatalAccounting(f"configured witness floor {configured_floor} is negative")
@@ -526,100 +377,60 @@ def witness_coverage(
         klass = classify(ATTESTATORES, outcome)
         by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
         by_class[klass.value] += 1
-    attached_chairs: set[str] = set()
-    health_unrecorded = 0
-    shortfalls = dict.fromkeys(SHORTFALL_KINDS, 0)
-    # Whether act-granularity facts were supplied decides the arithmetic; the
-    # native basis is claimed only when every fact names the basis that decided it.
-    native_evidence = attachments is not None
-    if attachments is not None:
-        unknown = set(attachments) - set(chair_outcomes)
-        if unknown:
-            raise FatalAccounting(
-                f"act attachment facts name unconfigured chair(s) {sorted(unknown)}"
-            )
-        for chair, outcome in chair_outcomes.items():
-            fact = attachments.get(chair)
-            if fact is None:
-                fact = False
-            if isinstance(fact, bool):
-                # The shorthand measured no comparison, so it earns none.
-                fact = {"attached": fact, "comparable": False}
-            if (
-                not isinstance(fact, Mapping)
-                or not isinstance(fact.get("attached"), bool)
-                or not isinstance(fact.get("comparable"), bool)
-            ):
-                raise FatalAccounting(
-                    f"act attachment fact for {chair!r} has no boolean attached/comparable pair. "
-                    "The act-level witness floor cannot be derived from an ambiguous attachment. "
-                    "Rebuild the attachment from the retained Testimonia before retrying."
-                )
-            basis = fact.get("attachment_basis")
-            if type(basis) is not str or basis not in ATTACHMENT_BASES:
-                native_evidence = False
-            if fact.get("health_unrecorded") is True:
-                health_unrecorded += 1
-            truncated = fact.get("truncated")
-            if truncated is True:
-                shortfalls["truncated"] += 1
-            elif truncated not in (False, None):
-                raise FatalAccounting(
-                    f"act attachment fact for {chair!r} has invalid truncated state"
-                )
-            unmeasured = fact.get("alignment_unmeasured", False)
-            if not isinstance(unmeasured, bool):
-                raise FatalAccounting(
-                    f"act attachment fact for {chair!r} has invalid alignment_unmeasured state"
-                )
-            if outcome == "failed":
-                shortfalls["failed"] += 1
-            if not fact["attached"] or not fact["comparable"]:
-                shortfalls["unmeasured" if unmeasured else "unaligned"] += 1
-            elif outcome in WITNESS_READING_OUTCOMES and truncated is not True:
-                attached_chairs.add(chair)
-    else:
-        # Callers without attachment facts keep the class-level arithmetic.
-        attached_chairs = {
-            chair
-            for chair, outcome in chair_outcomes.items()
-            if classify(ATTESTATORES, outcome) is OutcomeClass.COMPLETED
-        }
-
-    completed = len(attached_chairs)
     return {
         "configured": len(chair_outcomes),
         "floor": configured_floor,
         "by_outcome": by_outcome,
         "by_class": by_class,
-        "under_witnessed": completed < configured_floor,
+        "under_witnessed": by_class[OutcomeClass.COMPLETED.value] < configured_floor,
         # An unanswered chair cannot sit inside a complete run.
         "unresolved_chairs": by_class[OutcomeClass.UNRESOLVED.value],
-        # Coverage facts, kept apart from the closed witness outcome vocabulary.
-        "page_granularity_only": sum(
-            1
-            for chair, outcome in chair_outcomes.items()
-            if outcome in WITNESS_READING_OUTCOMES and chair not in attached_chairs
-        ),
-        "health_unrecorded": health_unrecorded,
-        "shortfalls": shortfalls,
-        # The granularity of the evidence, never which evidence attached a chair:
-        # that is each chair's own `attachment_basis`.
-        "granularity_basis": (
-            NATIVE_GRANULARITY_BASIS
-            if native_evidence
-            else INTERIM_GRANULARITY_BASIS
-            if attachments is not None
-            else LEGACY_GRANULARITY_BASIS
-        ),
     }
 
 
-SILENT_PAGE_REASON: Final = (
-    "page {ordinal} was sealed and no act was marked out on it; silence cannot "
-    "distinguish a blank page from a detection failure, and a blank page is proved "
-    "rather than inferred"
+def witnessed_count(coverage: Mapping[str, Any]) -> int:
+    """The count a page review's `under_witnessed` flag is judged from.
+
+    Every witness reads the whole page, so it is the reading outcomes less the
+    truncated ones: reading outcomes, not the COMPLETED class, because that
+    class also holds approval exclusions that never looked at the ink.
+    """
+    reading_chairs = sum(
+        coverage["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
+    )
+    return reading_chairs - coverage["shortfalls"]["truncated"]
+
+
+# A run reads every sealed page whole, so a page reaches the aggregate through
+# its readings.
+PAGE_READ_SILENT_PAGE_REASON: Final = (
+    "page {ordinal} was sealed and read whole, yet the page-read denominator counts no "
+    "reading of it; a page no reading accounts for cannot be told from one nobody read"
 )
+NO_ACT_PAGE_HELD_REASON: Final = (
+    "page {ordinal} was read and carries no act; its other readings are {categories}, not "
+    "delivered, because they are held until the Recensor confirms that no act is on the "
+    "page; once it does, they are delivered in the other layer and the page counts as a "
+    "confirmed no-act page"
+)
+HELD_OTHER_ON_ACT_PAGE_REASON: Final = (
+    "page {ordinal} carries acts and other readings that are {categories}, not delivered; "
+    "an other reading held for review may be an act the reading did not establish, so the "
+    "page's readings are not all accounted for"
+)
+CONFIRMED_NO_ACT_PAGE_REASON: Final = (
+    "page {ordinal} was read and the Recensor confirmed it carries no act; its other "
+    "readings are delivered in the other layer"
+)
+UNPAIRED_CONTINUATION_REASON: Final = (
+    "act {act} says it {says}, and no continuation link pairs it with a reading across "
+    "that break; it is delivered as its own literal and may be only part of an act"
+)
+CONTINUATION_FLAGS: Final = ("continues_from_previous_page", "continues_to_next_page")
+_CONTINUATION_SAYS: Final = {
+    "continues_from_previous_page": "continues from the previous page",
+    "continues_to_next_page": "continues onto the next page",
+}
 
 NO_ATTRIBUTION_REASON: Final = (
     "the run supplied no act-to-page attribution, so no page could be checked for "
@@ -709,26 +520,6 @@ def _attributed_pages(
     return attributed
 
 
-def _attached_reading_count(act: str, record: Mapping[str, Any]) -> int:
-    """The attached-reading count `under_witnessed` was decided from.
-
-    Not the COMPLETED class count, which also holds `excluded` and page witnesses
-    that did not align into this act; derived as `common/recensor_receipt.py`
-    does, keyed on the recorded basis.  Raw indexing on purpose: a record
-    claiming `under_witnessed` without its fields is malformed, and the
-    Armarium's `_aggregate_from_basis` turns that `KeyError` into a refusal.
-    """
-    basis = record.get("granularity_basis", LEGACY_GRANULARITY_BASIS)
-    if basis in {INTERIM_GRANULARITY_BASIS, NATIVE_GRANULARITY_BASIS}:
-        reading_chairs = sum(
-            record["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
-        )
-        return reading_chairs - record["page_granularity_only"]
-    if basis == LEGACY_GRANULARITY_BASIS:
-        return record["by_class"]["completed"]
-    raise FatalAccounting(f"act {act} coverage names unknown granularity basis {basis!r}")
-
-
 def run_aggregate(
     act_categories: Mapping[str, ArmariumCategory],
     coverage_records: Mapping[str, Mapping[str, Any]] | None = None,
@@ -738,6 +529,9 @@ def run_aggregate(
     act_text_status: Mapping[str, str] | None = None,
     edge_hold_pages: Sequence[int] | None = None,
     continuation_joins: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    other_categories_by_page: Mapping[int, Sequence[str]] | None = None,
+    unpaired_continuations: Sequence[tuple[str, str]] = (),
 ) -> dict[str, Any]:
     """The run's own terminal state, and every reason it is not `complete`.
 
@@ -766,8 +560,16 @@ def run_aggregate(
 
     `edge_hold_pages` is page-scoped because no act can yet own the unclaimed
     ink, so a held page keeps the aggregate partial even if its acts were
-    delivered. Each `continuation_joins` row does the same for a page break the
-    geometry says an act may cross: its sides are delivered apart, unjoined.
+    delivered. Each `continuation_joins` row does the same for a page break an
+    answer's continuation flag names: its sides are delivered apart, unjoined.
+
+    A sealed page with no act row is a page whose readings are all `other` (`other_categories_by_page`
+    names their categories): held, with its reason, until every one is
+    delivered, which the Recensor allows only once it confirms no act is on the
+    page. On a page with acts, an `other` reading that was not delivered is
+    a reason too: it may be an act the reading did not establish. Each
+    `unpaired_continuations` row `(act, flag)` is a delivered act
+    whose continuation flag no link pairs, which keeps the run partial.
     """
     reasons: list[str] = []
     by_category: dict[str, int] = {}
@@ -820,7 +622,8 @@ def run_aggregate(
     for ordinal in sorted(set(edge_hold_pages or ())):
         reasons.append(
             f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
-            "Designator crop on the page claims, so its coverage is not reconciled"
+            "reading region on the page claims, so "
+            "its coverage is not reconciled"
         )
 
     for join in continuation_joins or ():
@@ -838,6 +641,14 @@ def run_aggregate(
                 crossing + f"no reconstruction was made ({join['not_reconstructed_reason']}), "
                 "and no act was joined"
             )
+
+    for act, flag in sorted(set(unpaired_continuations)):
+        if act not in act_categories or flag not in _CONTINUATION_SAYS:
+            raise FatalAccounting(
+                f"an unpaired continuation names {act!r} and {flag!r}, not a counted act and a "
+                "continuation flag"
+            )
+        reasons.append(UNPAIRED_CONTINUATION_REASON.format(act=act, says=_CONTINUATION_SAYS[flag]))
 
     for act in sorted(act_categories):
         category = act_categories[act]
@@ -881,9 +692,9 @@ def run_aggregate(
                 "was witnessed"
             )
         if record["under_witnessed"]:
-            completed = _attached_reading_count(act, record)
             reasons.append(
-                f"act {act} is under-witnessed ({completed} of a floor of {record['floor']})"
+                f"act {act} is under-witnessed ({witnessed_count(record)} of a floor of "
+                f"{record['floor']})"
             )
         if record["unresolved_chairs"]:
             reasons.append(
@@ -898,8 +709,26 @@ def run_aggregate(
         if outcome != "sealed":
             reason = page_census[ordinal].get("reason") or "no reason was recorded"
             reasons.append(f"page {ordinal} was {outcome}: {reason}")
+        elif pages_with_acts is not None and ordinal in pages_with_acts:
+            held = set((other_categories_by_page or {}).get(ordinal) or ()) - {
+                ArmariumCategory.DELIVERED.value
+            }
+            if held:
+                reasons.append(
+                    HELD_OTHER_ON_ACT_PAGE_REASON.format(
+                        ordinal=ordinal, categories=", ".join(sorted(held))
+                    )
+                )
         elif pages_with_acts is not None and ordinal not in pages_with_acts:
-            reasons.append(SILENT_PAGE_REASON.format(ordinal=ordinal))
+            others = (other_categories_by_page or {}).get(ordinal)
+            if not others:
+                reasons.append(PAGE_READ_SILENT_PAGE_REASON.format(ordinal=ordinal))
+            elif set(others) != {ArmariumCategory.DELIVERED.value}:
+                reasons.append(
+                    NO_ACT_PAGE_HELD_REASON.format(
+                        ordinal=ordinal, categories=", ".join(sorted(set(others)))
+                    )
+                )
 
     return {
         "status": "complete" if not reasons else "partial",

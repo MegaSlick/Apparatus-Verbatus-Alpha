@@ -1,8 +1,7 @@
 """Whether a page-read run read every RecordGold record exactly once.
 
-Reads a run tree read with `reading_unit = "page"` -- the Perlector's
-`page-feed`, `page-reading`, `act-region`, `perlectio` (`perlectio.v2`) and
-`page-accounting` records -- beside the admitted RecordGold records of its
+Reads a run tree -- the Perlector's `page-feed`, `page-reading`,
+`act-region`, `perlectio` and `page-accounting` records -- beside the admitted RecordGold records of its
 pages, and gives each gold record one outcome:
 
 - exactly once: one `act` region holds at least half of it, that region holds
@@ -67,6 +66,9 @@ from common.page_accounting import (
     load_page_accounting_policy,
     normalized_text,
 )
+from common.page_accounting import SCHEMA as PAGE_ACCOUNTING_SCHEMA
+from common.page_feed import SCHEMA as PAGE_FEED_SCHEMA
+from common.page_path import ACT_REGION_SCHEMA, PAGE_READING_SCHEMA, PERLECTIO_SCHEMA
 from common.runtree.store import RunTree
 from common.stage import run_sealed_config_digests
 
@@ -81,8 +83,14 @@ GATE_EXACTLY_ONCE_BP: Final = 9_500
 MAX_GOLD_CER_BP: Final = 2_000
 FIT_CONTEXT_TOKENS: Final = 65_536
 BASIS_POINTS: Final = 10_000
-PAGE_KINDS: Final = ("page-feed", "page-reading", "act-region", "perlectio", "page-accounting")
-PERLECTIO_V2: Final = "perlectio.v2"
+# The payload schema each page kind is read under; any other is refused `not-page-read`.
+PAGE_KIND_SCHEMAS: Final = {
+    "page-feed": PAGE_FEED_SCHEMA,
+    "page-reading": PAGE_READING_SCHEMA,
+    "act-region": ACT_REGION_SCHEMA,
+    "perlectio": PERLECTIO_SCHEMA,
+    "page-accounting": PAGE_ACCOUNTING_SCHEMA,
+}
 DETECTOR_RECORD: Final = "detector-record"
 EXACTLY_ONCE: Final = "exactly-once"
 LOST: Final = "lost"
@@ -166,13 +174,20 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
     Each page is `{page_sha256, feed, reading, act_regions, perlectios,
     accounting, usage}`: payloads as published; `usage` is the engine's usage
     from the page reading's call record, or `None` without a call. A tree with
-    no page feed, or a feed not read by page, is refused `not-page-read`.
+    no page feed, or a page record under another
+    schema than `PAGE_KIND_SCHEMAS` names, is refused `not-page-read`.
     """
     shas = load_exemplar_page_shas(tree)
-    by_kind: dict[str, list[dict[str, Any]]] = {kind: [] for kind in PAGE_KINDS}
+    by_kind: dict[str, list[dict[str, Any]]] = {kind: [] for kind in PAGE_KIND_SCHEMAS}
     for entry in tree.build_manifest(PERLECTOR)["artifacts"]:
         if entry["kind"] in by_kind:
             record = tree.read_artifact(PERLECTOR, entry["kind"], entry["artifact_id"])
+            schema = record["payload"].get("schema")
+            if schema != PAGE_KIND_SCHEMAS[entry["kind"]]:
+                raise Refusal(
+                    f"not-page-read: {entry['kind']} {record['subject_id']!r} is {schema!r}, "
+                    f"not {PAGE_KIND_SCHEMAS[entry['kind']]}"
+                )
             by_kind[entry["kind"]].append({"subject_id": record["subject_id"], **record})
     if not by_kind["page-feed"]:
         raise Refusal("not-page-read: the Perlector published no page-feed record")
@@ -180,8 +195,6 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
     pages: dict[str, dict[str, Any]] = {}
     for record in by_kind["page-feed"]:
         feed = record["payload"]
-        if feed.get("reading_unit") != "page":
-            raise Refusal(f"not-page-read: page feed {record['subject_id']!r} is not read by page")
         ordinal = feed["page_ordinal"]
         if ordinal not in shas:
             raise Refusal(f"malformed-record: page ordinal {ordinal} has no sealed Exemplar page")
@@ -213,11 +226,6 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
         page["act_regions"].append(record["payload"])
         act_pages[record["subject_id"]] = page
     for record in by_kind["perlectio"]:
-        if record["payload"].get("schema") != PERLECTIO_V2:
-            raise Refusal(
-                f"not-page-read: perlectio {record['subject_id']!r} is "
-                f"{record['payload'].get('schema')!r}, not {PERLECTIO_V2}"
-            )
         page = act_pages.get(record["subject_id"])
         if page is None:
             raise Refusal(f"malformed-record: perlectio {record['subject_id']!r} has no act region")
@@ -289,11 +297,11 @@ def _caught_by(
     anywhere) and no overlapping placed one is unplaced-only; one that names
     no region, box or cited unit holds the whole page.
     """
-    regions = {region["n"]: region["union_box_px"] for region in page["act_regions"]}
+    regions = {region["n"]: region["region_boxes_px"] for region in page["act_regions"]}
     overlapping = {
-        n for n, region in regions.items() if region is not None and _overlaps(region, box)
+        n for n, region in regions.items() if any(_overlaps(part, box) for part in region)
     }
-    unplaced = {n for n, region in regions.items() if region is None}
+    unplaced = {n for n, region in regions.items() if not region}
     cited_by = {row["id"]: row["by"] for row in page["accounting"]["units"]}
     located: set[str] = set()
     page_wide: set[str] = set()
@@ -394,9 +402,7 @@ def exactly_once_report(
         holding = [
             region
             for region in page["act_regions"]
-            if region["kind"] == "act"
-            and region["union_box_px"] is not None
-            and is_inside(box, [region["union_box_px"]], policy)
+            if region["kind"] == "act" and is_inside(box, region["region_boxes_px"], policy)
         ]
         text = (
             "no-region"
@@ -406,7 +412,7 @@ def exactly_once_report(
             else "not-read"
         )
         merged = any(
-            is_inside(other["box_px"], [region["union_box_px"]], policy)
+            is_inside(other["box_px"], region["region_boxes_px"], policy)
             for region in holding
             for other in others
         )
@@ -502,11 +508,11 @@ def exactly_once_report(
         }
         page_gold = gold_by_page.get(page["page_sha256"], [])
         for region in page["act_regions"]:
-            if region["union_box_px"] is None:
+            if not region["region_boxes_px"]:
                 continue
             true_merge = (
                 sum(
-                    is_inside(record["box_px"], [region["union_box_px"]], policy)
+                    is_inside(record["box_px"], region["region_boxes_px"], policy)
                     for record in page_gold
                 )
                 > 1

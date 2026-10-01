@@ -98,7 +98,9 @@ def _two_sealed_passes(tmp_path: Path) -> tuple[RunTree, dict, ChairRegistry, di
     first.finish()
 
     second = _context(tree, run, registry, bindings)
-    second.publish(kind="testimonium", subject_id="act-1", outcome="read", payload={"read": "ink"})
+    second.publish(
+        kind="page-testimonium", subject_id="page-1", outcome="read", payload={"read": "ink"}
+    )
     second.seal_boundary()
     second.finish()
 
@@ -110,9 +112,9 @@ def test_the_census_counts_this_stage_by_kind_and_outcome_and_excludes_the_bound
     """The census is the stage's own arithmetic, not a second run denominator."""
     tree, run, registry, bindings = _tree(tmp_path)
     context = _context(tree, run, registry, bindings)
-    context.publish(kind="testimonium", subject_id="a1", outcome="read", payload={})
-    context.publish(kind="testimonium", subject_id="a2", outcome="read", payload={})
-    context.publish(kind="testimonium", subject_id="a3", outcome="failed", payload={})
+    context.publish(kind="page-testimonium", subject_id="a1", outcome="read", payload={})
+    context.publish(kind="page-testimonium", subject_id="a2", outcome="read", payload={})
+    context.publish(kind="page-testimonium", subject_id="a3", outcome="failed", payload={})
     context.seal_boundary()
 
     seal = _stage_records(tree, ATTESTATORES, "stage-seal")[0]
@@ -121,8 +123,8 @@ def test_the_census_counts_this_stage_by_kind_and_outcome_and_excludes_the_bound
     # the seal itself writes — the fixpoint exclusion, asserted where it is
     # cheap to read rather than only inside a tree digest.
     assert seal["payload"]["census"] == [
-        {"kind": "testimonium", "outcome": "failed", "count": 1},
-        {"kind": "testimonium", "outcome": "read", "count": 2},
+        {"kind": "page-testimonium", "outcome": "failed", "count": 1},
+        {"kind": "page-testimonium", "outcome": "read", "count": 2},
     ]
 
 
@@ -132,8 +134,8 @@ def test_a_stage_cannot_seal_an_artifact_whose_input_bytes_changed(tmp_path):
     _digest, source = tree.put_blob(DESIGNATOR, b"the bytes the witness consumed")
     context = _context(tree, run, registry, bindings)
     context.publish(
-        kind="testimonium",
-        subject_id="act-1",
+        kind="page-testimonium",
+        subject_id="page-1",
         outcome="read",
         inputs=[context.input_ref(source.relative_path)],
         payload={"read": "ink"},
@@ -168,7 +170,7 @@ def test_a_blob_cannot_be_stored_after_the_boundary_is_sealed(tmp_path):
     """
     tree, run, registry, bindings = _tree(tmp_path)
     context = _context(tree, run, registry, bindings)
-    context.publish(kind="testimonium", subject_id="a1", outcome="read", payload={})
+    context.publish(kind="page-testimonium", subject_id="a1", outcome="read", payload={})
     context.seal_boundary()
 
     with pytest.raises(SchemaRefusal, match="witnessed blob inventory false"):
@@ -265,7 +267,7 @@ def test_the_consumer_refuses_a_deleted_seal_the_producer_is_never_asked_about(t
     testimonium = next(
         entry
         for entry in tree.build_manifest(ATTESTATORES, verify_inputs=False)["artifacts"]
-        if entry["kind"] == "testimonium"
+        if entry["kind"] == "page-testimonium"
     )
     tree.resolve(testimonium["relative_path"]).unlink()
 
@@ -547,7 +549,7 @@ def test_a_seal_the_stored_inventory_never_named_is_not_a_deletion(tmp_path):
         entry
         for entry in stored["artifacts"]
         if entry["artifact_id"] != _seal_ids(tree)[2]
-        and entry["kind"] not in {"testimonium", "decode-environment"}
+        and entry["kind"] not in {"page-testimonium", "decode-environment"}
     ]
     stored_path.write_text(json.dumps(stored), encoding="utf-8")
 

@@ -1,7 +1,7 @@
 """Armarium: where the output is written, and where the totals must reconcile.
 
 The pipeline ends here, so this is the last place a missing act could hide. Every
-act the proposal seal expected gets exactly one manifest category, and the
+reading the denominator counts gets exactly one manifest category, and the
 categories are the closed five the contracts define. An act in none of them is a
 fatal accounting imbalance and stops the run — never a warning, never a shrug.
 
@@ -19,8 +19,8 @@ which includes the witness roster the run was authorized with, not only the acts
     python pipeline/7_armarium/run.py --run-root <dir> --run-id <id>
 """
 
+import dataclasses
 import sys
-import unicodedata
 from pathlib import Path
 from typing import Final
 
@@ -39,48 +39,58 @@ from armarium_export import (  # noqa: E402
     build_armarium_bundle,
     continuation_join_row,
     edge_hold_pages_from_rows,
+    unpaired_continuations,
 )
 
-from common.alignment import sealed_dissent_budget  # noqa: E402
+from common import page_path  # noqa: E402
 from common.background import (  # noqa: E402
     validate_ink_not_measurable_payload,
     validate_measured_ink_map_payload,
 )
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.annotations import validate_annotations  # noqa: E402
-from common.contracts.canonical import digest_of, is_sha256, verify_self_hash  # noqa: E402
-from common.contracts.envelope import read_verified, validate_input_refs  # noqa: E402
+from common.contracts.canonical import verify_self_hash  # noqa: E402
+from common.contracts.envelope import read_verified  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
-from common.contracts.identities import is_well_formed  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
-    TEXT_STATUSES,
+    CONTINUATION_FLAGS,
     ArmariumCategory,
     derive_record_text_status,
-    require_approval,
     run_aggregate,
     terminal_category,
 )
-from common.contracts.prior_draft import budget_stopped_comparisons  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
     ARCHETYPUS,
     ARMARIUM,
     ATTESTATORES,
-    DESIGNATOR,
     EXEMPLAR,
     INK_MAP,
     PERLECTOR,
     RECENSOR,
 )
-from common.contracts.uncertainty import from_perlectio  # noqa: E402
-from common.contracts.uncertainty import validate as validate_uncertainty
-from common.cross_capture_coverage import validate_cross_capture_coverage  # noqa: E402
+from common.contracts.uncertainty import from_page_perlectio  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_corpus_seal,
-    verify_exemplar_crop_lineage,
+    verify_reading_region_lineage,
     verify_sealed_page_pixels,
 )
 from common.imaging import dimensions  # noqa: E402
-from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
+from common.page_accounting import require_page_accounting_policy  # noqa: E402
+from common.page_review import (  # noqa: E402
+    continuation_links,
+    current_page_reviews,
+    require_establishable,
+    review_coverage,
+    review_notes,
+    review_reason,
+    reviewed_rows,
+)
+from common.page_testimonia import (  # noqa: E402
+    chair_was_served,
+    current_page_testimonia,
+    declared_page_witness_chairs,
+    shown_page_witnesses,
+)
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
@@ -91,506 +101,29 @@ from common.residual_ink import (  # noqa: E402
 )
 from common.sealed_config import read_sealed_toml
 from common.stage import (  # noqa: E402
-    ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
     EXIT_HELD,
+    PAGE_REFUSED_CLASS,
     canary_ordinals,
-    expected_acts,
-    latest_attempt,
     open_stage_context,
-    reading_basis_regions,
-    recovery_region_count,
-    require_current_witness_basis,
+    reading_denominator,
     run_stage,
     stage_parser,
     submission_identity,
     unaddressed_chairs,
     validate_serving_provenance,
 )
-from common.testimony_content_coverage import (  # noqa: E402
-    validate_testimony_content_coverage,
-    validate_testimony_content_coverage_continuation,
-)
+from operations.serving.assembly import SERVING_READER  # noqa: E402
 
 DESCRIPTION = "Armarium: where the output is written, and where the totals must reconcile."
-
-_SOURCE_CITATION_FIELDS = frozenset(
-    {
-        "declared_path",
-        "declared_sha256",
-        "declared_bytes",
-        "ledger_sha256",
-        "container_page_index",
-    }
-)
-# Respelled rather than imported from `pipeline/6_archetypus/run.py`: stages talk
-# only through `common/` (`pipeline/test_stage_import_boundaries.py`), and the
-# export edge is meant to re-prove the producer's shape independently rather than
-# inherit it. `test_cross_capture_cluster_path.py` drives a real Archetypus record
-# through this projection, so the two spellings cannot drift unnoticed.
-_LOGICAL_RECORD_FIELDS = frozenset(
-    {
-        "logical_act_id",
-        "physical_page_components",
-        "member_local_acts",
-        "text",
-        "text_hash",
-        "status",
-        "text_status",
-        "regions",
-        "provenance",
-        "annotations",
-        "uncertainty",
-        "evidence_ref",
-        "cross_capture_dissent_ref",
-        "perlectio_ref",
-        "recensor_ref",
-        "self_hash",
-    }
-)
-_LOGICAL_COMPONENT_FIELDS = frozenset({"physical_page_id", "required_capture_sha256s"})
-_LOGICAL_MEMBER_FIELDS = frozenset(
-    {"act_id", "act_key", "page_id", "page_ordinal", "source_sha256", "proposal_refs"}
-)
-
-
-def logical_act_projection_entry(
-    record: dict, *, category: str, source_regions: list[dict], witnesses: list[dict]
-) -> dict:
-    """Project one clustered Archetypus record without selecting a member act.
-
-    The mature bundle codecs call their stable identity columns ``act_id`` and
-    ``act_key``.  For a logical record both are derived solely from
-    ``logical_act_id``; neither may contain a capture-local member key.  This
-    compatibility spelling is at the export edge only, while the immutable
-    Archetypus record and its index retain the explicit logical field.
-    """
-    if not isinstance(record, dict) or set(record) != _LOGICAL_RECORD_FIELDS:
-        raise SchemaRefusal(
-            "logical Armarium projection received an Archetypus outside its closed schema; "
-            "the projection is refused because added or missing fields can bypass conservation"
-        )
-    # A matching field set proves nothing about the bytes inside it, so this
-    # boundary re-derives the record's own integrity the way the image-local one
-    # does (`_archetypus_rows`'s `validate_record`, and
-    # `verify_established_record`'s self-hash and text_hash checks). Without the
-    # checks that follow, a forged, truncated, or memberless record projects as
-    # an established logical act.
-    if not verify_self_hash(record):
-        raise SchemaRefusal(
-            "logical Armarium projection record fails its self_hash; the projection is "
-            "refused because member, text, and evidence bytes must remain bound at export"
-        )
-    logical_id = record["logical_act_id"]
-    if not is_well_formed(logical_id) or not logical_id.startswith("pac_"):
-        raise SchemaRefusal(
-            "logical Armarium projection logical_act_id is not a physical-act identity; the "
-            "projection is refused because a normalization trick or local id cannot key a "
-            "clustered export"
-        )
-    if (
-        not isinstance(record["physical_page_components"], list)
-        or not record["physical_page_components"]
-    ):
-        raise SchemaRefusal("logical Armarium projection has no retained physical page components")
-    if not isinstance(record["member_local_acts"], list) or not record["member_local_acts"]:
-        raise SchemaRefusal("logical Armarium projection has no retained local members")
-    components = record["physical_page_components"]
-    component_pages = []
-    component_sources: set[str] = set()
-    for component in components:
-        if not isinstance(component, dict) or set(component) != _LOGICAL_COMPONENT_FIELDS:
-            raise SchemaRefusal(
-                "logical Armarium projection has a component outside its closed schema; the "
-                "projection is refused because its capture denominator cannot be verified"
-            )
-        page = component["physical_page_id"]
-        captures = component["required_capture_sha256s"]
-        if (
-            not is_well_formed(page)
-            or not page.startswith("ppg_")
-            or not isinstance(captures, list)
-            or not captures
-            # Element types before `set(...)`: an unhashable member would raise
-            # TypeError out of the dedupe itself; the projection must refuse.
-            or any(not is_sha256(source) for source in captures)
-            or captures != sorted(set(captures))
-        ):
-            raise SchemaRefusal(
-                "logical Armarium projection has a malformed component identity or capture "
-                "set; the projection is refused because required evidence is not canonical"
-            )
-        component_pages.append(page)
-        component_sources.update(captures)
-    if component_pages != sorted(set(component_pages)):
-        raise SchemaRefusal(
-            "logical Armarium projection repeats or misorders a physical-page component; the "
-            "projection is refused because one component cannot count twice"
-        )
-    members = record["member_local_acts"]
-    member_ids = []
-    member_keys = []
-    for member in members:
-        if not isinstance(member, dict) or set(member) != _LOGICAL_MEMBER_FIELDS:
-            raise SchemaRefusal(
-                "logical Armarium projection has a member outside its closed lineage schema; "
-                "the projection is refused because every local proposal must remain named"
-            )
-        act_id_value = member["act_id"]
-        act_key_value = member["act_key"]
-        page_id_value = member["page_id"]
-        ordinal = member["page_ordinal"]
-        proposal_refs = member["proposal_refs"]
-        source_value = member["source_sha256"]
-        if (
-            not is_well_formed(act_id_value)
-            or not act_id_value.startswith("act_")
-            # Element type before the `set(...)` over `source_sha256` below, as
-            # with the component captures: an unhashable digest would raise
-            # TypeError out of the dedupe and end the whole export run instead
-            # of refusing this one record by name.
-            or not is_sha256(source_value)
-            or not is_well_formed(page_id_value)
-            or not page_id_value.startswith("pg_")
-            or not isinstance(act_key_value, str)
-            or not act_key_value
-            or not act_key_value.isprintable()
-            or unicodedata.normalize("NFC", act_key_value) != act_key_value
-            or not isinstance(ordinal, int)
-            or isinstance(ordinal, bool)
-            or ordinal < 0
-            or not isinstance(proposal_refs, list)
-            or not proposal_refs
-            # Element types before `set(...)`, as with the component captures.
-            or not all(isinstance(reference, str) and reference for reference in proposal_refs)
-            or proposal_refs != sorted(set(proposal_refs))
-        ):
-            raise SchemaRefusal(
-                "logical Armarium projection has malformed member identity, key, ordinal, "
-                "source capture digest, or proposal evidence; the projection is refused "
-                "because member lineage is not canonical"
-            )
-        member_ids.append(act_id_value)
-        member_keys.append(act_key_value)
-    if member_ids != sorted(set(member_ids)) or len(member_keys) != len(set(member_keys)):
-        raise SchemaRefusal(
-            "logical Armarium projection repeats a member id/key or misorders its members; "
-            "the projection is refused because each proposal row must be conserved once"
-        )
-    member_sources = {member["source_sha256"] for member in members}
-    if not member_sources <= component_sources:
-        raise SchemaRefusal(
-            "logical Armarium projection has a member outside its required capture set; the "
-            "projection is refused because local ink cannot escape the clustered denominator"
-        )
-    text = record["text"]
-    if not isinstance(text, str) or record["text_hash"] != digest_of(text):
-        raise SchemaRefusal("logical Armarium projection text is not its one hashed string")
-    if record["status"] != "established":
-        raise SchemaRefusal("logical Armarium projection status is not the established literal")
-    if not isinstance(record["regions"], list) or not record["regions"]:
-        raise SchemaRefusal(
-            "logical Armarium projection record has no source regions; the projection is "
-            "refused because established text must stay anchored to ink"
-        )
-    if not isinstance(source_regions, list) or any(
-        not isinstance(region, dict) for region in source_regions
-    ):
-        raise SchemaRefusal(
-            "logical Armarium projection has malformed enriched source regions; the projection "
-            "is refused because its export citations cannot be matched to established crops"
-        )
-    retained_regions = [
-        {key: value for key, value in region.items() if key not in _SOURCE_CITATION_FIELDS}
-        for region in source_regions
-    ]
-    if retained_regions != record["regions"]:
-        raise SchemaRefusal(
-            "logical Armarium projection source regions do not equal the established region "
-            "basis; the projection is refused because no crop may vanish or be substituted "
-            "while source-file citations are attached"
-        )
-    if not isinstance(record["provenance"], dict) or not record["provenance"]:
-        raise SchemaRefusal(
-            "logical Armarium projection record has no model provenance; the projection is "
-            "refused because the reader identity and revision must travel with text"
-        )
-    validate_uncertainty(record["uncertainty"], text)
-    if validate_annotations(
-        record["annotations"], text, None, "logical Armarium annotation"
-    ) != record["annotations"] or record["text_status"] != derive_record_text_status(
-        text, record["annotations"], record["uncertainty"]
-    ):
-        raise SchemaRefusal(
-            "logical Armarium projection damage layers disagree with the one text; the "
-            "projection is refused because it would describe a different reading"
-        )
-    # The dissent is a sibling evidence record, never a text source.  Its
-    # validation here is a one-way consumer check: nothing is passed back into
-    # the Archetypus constructor.
-    parent_refs = [
-        record["cross_capture_dissent_ref"],
-        record["perlectio_ref"],
-        record["recensor_ref"],
-    ]
-    try:
-        validate_input_refs(parent_refs)
-    except SchemaRefusal as error:
-        raise SchemaRefusal(
-            "logical Armarium projection has a malformed or repeated parent reference; the "
-            "projection is refused because dissent, reading, and review must remain distinct "
-            "digest-bound evidence"
-        ) from error
-    if len({reference["relative_path"] for reference in parent_refs}) != 3:
-        raise SchemaRefusal(
-            "logical Armarium projection reuses one parent artifact path; the projection is "
-            "refused because dissent, reading, and review are distinct evidence records"
-        )
-    if category != ArmariumCategory.DELIVERED.value:
-        raise SchemaRefusal("logical Armarium projection only projects an established record")
-    # Consult §5.2: "every member local act and every capture/page attribution
-    # retained under that one logical entry."  Without it a clustered bundle
-    # exports one act row whose member captures appear nowhere in it, and the
-    # second capture's local act is simply gone -- silent loss at
-    # the last boundary.  Every member is carried, in canonical set order; none
-    # is promoted to the row's identity, which stays derived from
-    # `logical_act_id` alone.  §7.15's duplicate export -- a member act beside
-    # its own logical act -- is refused against exactly this list by
-    # `armarium_export._validate_projection`, so a member dropped here would
-    # also drop out of that check.  The loop above has already proved every
-    # member's id, key and ordinal, so this projects checked rows rather than
-    # validating them again.
-    membership = {
-        "member_local_act_ids": sorted(member["act_id"] for member in members),
-        "member_act_keys": sorted((member["act_key"] for member in members), key=act_key_sort_key),
-        "member_source_page_ordinals": sorted({member["page_ordinal"] for member in members}),
-        "physical_page_components": record["physical_page_components"],
-    }
-    return {
-        "act_id": logical_id,
-        "act_key": f"logical:{logical_id}",
-        "logical_act_id": logical_id,
-        "logical_membership": membership,
-        "category": category,
-        "canonical_clean_text": record["text"],
-        "text_status": record["text_status"],
-        "transcription_annotations": record["annotations"],
-        "provenance": record["provenance"],
-        "source_regions": source_regions,
-        "reason": None,
-        # Reading, review, and dissent, as the held path cites all three: a
-        # reader following evidence_refs from a delivered logical act must
-        # reach the review that accepted it, not only the sibling dissent.
-        "evidence_refs": sorted(
-            (
-                record["recensor_ref"],
-                record["perlectio_ref"],
-                record["cross_capture_dissent_ref"],
-            ),
-            key=lambda reference: reference["relative_path"],
-        ),
-        "witnesses": witnesses,
-        "perlectio_ref": record["perlectio_ref"],
-        "recensor_ref": record["recensor_ref"],
-        "dissent_ref": record["cross_capture_dissent_ref"],
-        "uncertainty": record["uncertainty"],
-    }
-
-
-def logical_cross_capture_review_entry(
-    *,
-    partition: dict,
-    logical_act: dict,
-    review: dict,
-    review_ref: dict[str, str],
-    witness_coverage: dict,
-    witnesses: list[dict],
-) -> dict:
-    """Project a clustered Recensor hold as one text-free review item."""
-    checked_partition = validate_physical_act_partition(partition)
-    if checked_partition["findings"]:
-        raise SchemaRefusal(
-            "logical Armarium review projection received an unresolved physical-act "
-            "partition; the review row is refused because no act census may be claimed over "
-            "an unresolved equivalence relation"
-        )
-    if not isinstance(logical_act, dict):
-        raise SchemaRefusal(
-            "logical Armarium review projection has no partition row; the review row is "
-            "refused because its logical subject and members are unknown"
-        )
-    logical_id = logical_act.get("logical_act_id")
-    rows = [row for row in checked_partition["logical_acts"] if row["logical_act_id"] == logical_id]
-    if len(rows) != 1 or rows != [logical_act]:
-        raise SchemaRefusal(
-            "logical Armarium review projection row is not the row its partition publishes; "
-            "the review row is refused because member provenance cannot be supplied by a "
-            "foreign or retracted partition row"
-        )
-    try:
-        validate_input_refs([review_ref])
-    except SchemaRefusal as error:
-        raise SchemaRefusal(
-            "logical Armarium review projection has no digest-bound Recensor reference; the "
-            "review row is refused because its terminal decision cannot be cited"
-        ) from error
-    if not isinstance(review, dict) or digest_of(review) != review_ref["sha256"]:
-        raise SchemaRefusal(
-            "logical Armarium review projection bytes do not match the Recensor reference; "
-            "the review row is refused because one decision cannot travel beside another's "
-            "digest"
-        )
-    payload = review.get("payload")
-    if review.get("outcome") != "held-for-review" or not isinstance(payload, dict):
-        raise SchemaRefusal(
-            "logical Armarium review projection did not receive a held-for-review payload; "
-            "the review row is refused because delivered and held acts have different "
-            "terminal paths"
-        )
-    reason = payload.get("reason")
-    coverage = payload.get("cross_capture_coverage")
-    if (
-        not isinstance(reason, str)
-        or not reason
-        or not isinstance(coverage, dict)
-        or coverage.get("logical_act_id") != logical_id
-        or not isinstance(coverage.get("findings"), list)
-        or not coverage["findings"]
-    ):
-        raise SchemaRefusal(
-            "logical Armarium review projection has no named cross-capture finding and "
-            "reason for this act; the review row is refused because a hold without its cause "
-            "would lose the finding at export"
-        )
-    finding_facts: list[tuple[str, str]] = []
-    for finding in coverage["findings"]:
-        if (
-            not isinstance(finding, dict)
-            or set(finding) != {"code", "physical_page_id"}
-            or not isinstance(finding["code"], str)
-            or not finding["code"]
-            or not isinstance(finding["physical_page_id"], str)
-            or not finding["physical_page_id"]
-        ):
-            raise SchemaRefusal(
-                "logical Armarium review projection has a malformed cross-capture finding; "
-                "the review row is refused because every finding must name both its code "
-                "and physical-page component"
-            )
-        finding_facts.append((finding["code"], finding["physical_page_id"]))
-    if len(finding_facts) != len(set(finding_facts)):
-        raise SchemaRefusal(
-            "logical Armarium review projection repeats a cross-capture finding for one "
-            "physical-page component; the review row is refused because duplicated evidence "
-            "cannot inflate the terminal finding census"
-        )
-    finding_labels = [f"{code}:{page}" for code, page in sorted(finding_facts)]
-    try:
-        checked_coverage = validate_cross_capture_coverage(coverage)
-    except (SchemaRefusal, TypeError) as error:
-        raise SchemaRefusal(
-            "logical Armarium review projection has malformed cross-capture coverage; the "
-            "review row is refused because an unvalidated visibility record cannot account "
-            "for the act's capture denominator"
-        ) from error
-    expected_components = {
-        component["physical_page_id"]: component["required_capture_sha256s"]
-        for component in logical_act["physical_page_components"]
-    }
-    measured_components = {
-        component["physical_page_id"]: component["required_capture_sha256s"]
-        for component in checked_coverage["components"]
-    }
-    if measured_components != expected_components:
-        raise SchemaRefusal(
-            "logical Armarium review projection coverage does not measure the partition's "
-            "physical-page components and captures; the review row is refused because a "
-            "finding about other evidence cannot hold this act"
-        )
-    # `under_witnessed` is required, not defaulted: a None here would let a
-    # reader confuse "the witness floor was met" with "nobody measured the
-    # witness floor". The image-local path indexes the key
-    # directly for the same reason.
-    if (
-        not isinstance(witness_coverage, dict)
-        or not isinstance(witness_coverage.get("under_witnessed"), bool)
-        or not isinstance(witnesses, list)
-    ):
-        raise SchemaRefusal(
-            "logical Armarium review projection has malformed witness accounting; the review "
-            "row is refused because cross-capture coverage cannot replace the chair denominator"
-        )
-    members = logical_act["member_local_acts"]
-    # Canonical set order, which `armarium_export._validate_logical_act_conservation`
-    # requires of every membership list it is handed. A validated partition row is
-    # already sorted-unique by act id, so sorting here changes nothing and keeps the
-    # requirement visible where the list is built.
-    membership = {
-        "member_local_act_ids": sorted(member["act_id"] for member in members),
-        "member_act_keys": sorted((member["act_key"] for member in members), key=act_key_sort_key),
-        "member_source_page_ordinals": sorted({member["page_ordinal"] for member in members}),
-        "physical_page_components": logical_act["physical_page_components"],
-    }
-    perlectio_ref = payload.get("perlectio_ref")
-    dissent_ref = payload.get("cross_capture_dissent_ref")
-    if perlectio_ref is None or dissent_ref is None:
-        raise SchemaRefusal(
-            "logical Armarium review projection is missing its Perlectio or cross-capture "
-            "dissent reference; the review row is refused because a visibility hold must "
-            "retain both the reading and its sibling evidence"
-        )
-    # Two passes on purpose: each reference alone first, so a malformed one is
-    # named as malformed, then the three together, so a repeated path is named as
-    # a repeat. Collapsing them reports the wrong fault for one of the two.
-    evidence_refs = [review_ref]
-    for reference in (perlectio_ref, dissent_ref):
-        try:
-            validate_input_refs([reference])
-        except SchemaRefusal as error:
-            raise SchemaRefusal(
-                "logical Armarium review projection has a malformed reading or dissent "
-                "reference; the review row is refused because its evidence chain cannot "
-                "be followed"
-            ) from error
-        evidence_refs.append(reference)
-    try:
-        validate_input_refs(evidence_refs)
-    except SchemaRefusal as error:
-        raise SchemaRefusal(
-            "logical Armarium review projection repeats or contradicts an evidence path; the "
-            "review row is refused because one artifact cannot stand for two parents"
-        ) from error
-    return {
-        "act_id": logical_id,
-        "act_key": f"logical:{logical_id}",
-        "logical_act_id": logical_id,
-        "logical_membership": membership,
-        "category": ArmariumCategory.HELD_FOR_REVIEW.value,
-        "canonical_clean_text": None,
-        "text_status": None,
-        "transcription_annotations": None,
-        "provenance": None,
-        "source_regions": [],
-        "reason": f"{reason}; cross-capture finding(s): {', '.join(finding_labels)}",
-        "evidence_refs": sorted(evidence_refs, key=lambda reference: reference["relative_path"]),
-        "witnesses": witnesses,
-        "perlectio_ref": perlectio_ref,
-        "recensor_ref": review_ref,
-        "dissent_ref": dissent_ref,
-        "uncertainty": None,
-        "under_witnessed": witness_coverage["under_witnessed"],
-        "witness_coverage": witness_coverage,
-        "cross_capture_coverage": coverage,
-    }
 
 
 def page_census(context) -> dict[int, dict]:
     """Every page's Exemplar outcome, by ordinal, reconciled against the sources.
 
-    This is the page-level conservation check the pipeline was missing: the
-    proposal seal only ever names acts that were marked out, so a page the door
-    refused left no hole in the act-level accounting at all. The census closes
-    that — every source the run declared must have exactly one page outcome, and
+    The act-level accounting counts readings, so a page the door refused leaves
+    no hole in it. The census closes that — every source the run declared must
+    have exactly one page outcome, and
     a page with none, or with two, is invariant #10's imbalance at the last
     boundary.
     """
@@ -707,11 +240,11 @@ def page_census(context) -> dict[int, dict]:
 def ink_map_page_rows(
     context, census: dict[int, dict], claimed_bounds: dict[int, list[dict]]
 ) -> tuple[dict, ...]:
-    """Re-measure the Ink Map against the Designator's actual cuts, and say so.
+    """Re-measure the Ink Map against the readings' actual regions, and say so.
 
-    The pre-proposal map cannot know whether edge ink belongs to an act. Its
-    lossless page-space runs let this final boundary apply the Designator's
-    recorded crop geometry to the *same measurement*, so a claimed edge mark
+    The Ink Map cannot know whether edge ink belongs to an act. Its
+    lossless page-space runs let this final boundary apply the verified
+    act-region geometry to the *same measurement*, so a claimed edge mark
     releases and a genuinely unclaimed one remains visible for review.
 
     One row per sealed page, carrying what was found and what was re-measured
@@ -722,17 +255,17 @@ def ink_map_page_rows(
     `remeasured: None`, because writing zeros would record a measurement that
     never occurred. The producer's closed edge summary and initial outcome are
     first reconciled with the retained runs against the original empty crop
-    set, independently of the later re-measurement against Designator cuts.
+    set, independently of the later re-measurement against the act-regions.
 
     The sealed `[coverage_audit]` policy is read here, out of the same file and
-    under the same `designator-grouping` seal every other reader of it proves
+    under the same `ink-map` seal every other reader of it proves
     its bytes against, and resolved for each page's own dimensions: the band
     this stage re-measures in and the gate it releases by have to be the ones
     the Ink Map's own finding was taken under, and a policy resolved for another
     page would make this a second detector rather than the same one.
     """
-    coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
-    context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
+    coverage_config = load_coverage_audit_config(context.args.ink_map_config)
+    context.require_sealed_config("ink-map", coverage_config["config_sha256"])
     found: dict[int, dict] = {}
     for entry in context.tree.build_manifest(INK_MAP)["artifacts"]:
         if entry["kind"] != "ink-map":
@@ -772,9 +305,7 @@ def ink_map_page_rows(
             # page's ink was unavailable to measure.
             try:
                 refusal = validate_ink_not_measurable_payload(payload)
-                context.require_sealed_config(
-                    "designator-grouping", refusal["background_config_sha256"]
-                )
+                context.require_sealed_config("ink-map", refusal["background_config_sha256"])
             except ContractError as error:
                 raise FatalAccounting(
                     f"ink-map page {ordinal} has an invalid sealed ink-not-measurable "
@@ -789,9 +320,7 @@ def ink_map_page_rows(
                 audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND,
                 ink_margin_bp=coverage_config["ink_margin_bp"],
             )
-            context.require_sealed_config(
-                "designator-grouping", measured["background_config_sha256"]
-            )
+            context.require_sealed_config("ink-map", measured["background_config_sha256"])
         except ContractError as error:
             raise FatalAccounting(
                 f"ink-map page {ordinal} has an invalid sealed measured payload. Restore the "
@@ -894,21 +423,8 @@ def ink_map_page_rows(
 # this survey exists to disclose; a caveat that stayed in `config/` and never
 # reached the bundle would be one the product does not carry.
 _CALIBRATED_CONFIG_ATTRIBUTES: Final = (
-    ("designator-padding", "designator_padding_config", "padding"),
     ("designator-geometry", "designator_geometry_config", "geometry"),
-    ("designator-grouping", "designator_grouping_config", "grouping"),
     ("perlector-protocol", "perlector_protocol_config", "truncation"),
-)
-# The Recensor's named absence codes for the act-visibility survey. Spelled
-# here rather than imported: `common/` owns nothing of them and a stage may not
-# import another stage's implementation module, so this is the reader's own
-# copy of a closed vocabulary, and `test_export.py` reconciles the two lists.
-_VISIBILITY_ABSENCE_CODES: Final = frozenset(
-    {
-        "act-visibility-survey-absent",
-        "cross-capture-registration-absent",
-        "act-visibility-survey-spans-two-pages",
-    }
 )
 
 
@@ -1000,351 +516,18 @@ def sealed_audit_round_cap(context) -> int:
     return cap
 
 
-def conservation_not_reconciled(
-    context, manifest_cache: dict[str, dict], sealed_ordinals: set[int]
-) -> dict[int, str]:
-    """Every sealed page whose ink this run never reconciled, with its reason.
-
-    `ink_measurable: false` is the Designator's own record of a page it cut and
-    read but could not reconcile -- `infer_background_evidence` refused, so conservation
-    never ran on it. A page whose record is missing the field entirely is
-    counted here too, and for the stronger reason: absent evidence may never
-    read cleaner than recorded unmeasurability.
-    """
-    unreconciled: dict[int, str] = {}
-    seen_ordinals: set[int] = set()
-    for entry in _cached_manifest(context, DESIGNATOR, manifest_cache)["artifacts"]:
-        if entry["kind"] != "conservation":
-            continue
-        record = context.tree.read_artifact(DESIGNATOR, "conservation", entry["artifact_id"])
-        payload = record["payload"]
-        ordinal = payload.get("page_ordinal")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise FatalAccounting(
-                f"the Designator conservation record {entry['artifact_id']} names no page "
-                "ordinal, so the export cannot say which page its ink facts describe"
-            )
-        if ordinal in seen_ordinals:
-            raise FatalAccounting(
-                "the Designator conservation inventory repeats a sealed page ordinal"
-            )
-        seen_ordinals.add(ordinal)
-        if payload.get("ink_measurable") is True:
-            continue
-        unreconciled[ordinal] = str(
-            payload.get("reason") or "the record states no reason for the unmeasured page"
-        )
-    if seen_ordinals != sealed_ordinals:
-        raise FatalAccounting(
-            "the Designator conservation ordinal census does not exactly cover the sealed page census"
-        )
-    return unreconciled
-
-
-def comparison_bounds_basis(
-    projected_acts: list[dict],
-    comparison_stops: dict[str, dict],
-    coverage_records: dict[str, dict],
-) -> dict:
-    """What the run's sealed comparison bounds stopped, counted from its own records.
-
-    Self-revisions and dissent rows over the delivered acts, whose established
-    readings this stage re-derives; and, over every exported act's coverage
-    record, the chairs left unmeasured because the aligner stopped on its own
-    bound, counted once per act after the chair's pages are merged.
-    """
-    delivered = sorted(
-        act["act_key"]
-        for act in projected_acts
-        if act["category"] == ArmariumCategory.DELIVERED.value
-    )
-    if set(comparison_stops) != set(delivered):
-        raise FatalAccounting(
-            "the comparison-bounds basis does not cover exactly the delivered acts; a "
-            "delivered reading whose comparisons were never read could hide a stopped one"
-        )
-    rows = [comparison_stops[act_key] for act_key in delivered]
-    unmeasured = 0
-    for act_key, record in coverage_records.items():
-        shortfalls = record.get("shortfalls") if isinstance(record, dict) else None
-        if not isinstance(shortfalls, dict) or "unmeasured" not in shortfalls:
-            raise FatalAccounting(
-                f"the coverage record of {act_key!r} carries no unmeasured shortfall count"
-            )
-        unmeasured += shortfalls["unmeasured"]
-    return {
-        "delivered_self_revisions_stopped": sum(row["self_revision_stopped"] for row in rows),
-        "delivered_dissent_rows_stopped": sum(len(row["dissent_chairs_stopped"]) for row in rows),
-        "act_witness_chairs_unmeasured": unmeasured,
-        "delivered_acts": rows,
-    }
-
-
-def not_measured_basis(
-    context,
-    manifest_cache: dict[str, dict],
-    census: dict[int, dict],
-    reviews: dict[str, dict],
-    projected_acts: list[dict],
-    canary_pages: set[int],
-    comparison_stops: dict[str, dict],
-    coverage_records: dict[str, dict],
-) -> dict:
-    """The run's own answer to "what did this run not measure?".
-
-    Every number below is read from a record this run wrote or a configuration
-    it sealed. Nothing here is a constant, and nothing is inferred from another
-    stage's word for it: `armarium_export` turns this into the bundle's closed
-    `not_measured` block and derives each status from these values alone.
-    """
-    unmeasured_coverage: list[str] = []
-    coverage_reasons: list[str] = []
-    capture_rows = 0
-    rows_with_named_absence = 0
-    absence_codes: set[str] = set()
-    acts_with_presentation = 0
-    for act_key in sorted(reviews):
-        payload = reviews[act_key]
-        content = payload.get("testimony_content_coverage")
-        try:
-            content = validate_testimony_content_coverage(content)
-            continuation = validate_testimony_content_coverage_continuation(
-                payload.get("testimony_content_coverage_continuation")
-            )
-        except SchemaRefusal as error:
-            raise FatalAccounting(
-                "a Recensor testimony-content measurement is malformed"
-            ) from error
-        # `shortfall: None` records a page whose testimony content coverage
-        # was not measured -- a continuation page most often. The shared
-        # validator already required this closed record.
-        if content["shortfall"] is None:
-            unmeasured_coverage.append(act_key)
-            reason = content.get("reason")
-            coverage_reasons.append(
-                str(reason)
-                if reason
-                else "this act's review records no measured page testimony coverage"
-            )
-        for row in continuation:
-            if row["shortfall"] is None:
-                if act_key not in unmeasured_coverage:
-                    unmeasured_coverage.append(act_key)
-                reason = row.get("reason")
-                coverage_reasons.append(
-                    str(reason)
-                    if reason
-                    else "this act's continuation-page coverage is recorded unmeasured"
-                )
-        if "cross_capture_coverage" not in payload:
-            raise FatalAccounting(
-                f"the Recensor review of {act_key!r} carries no cross-capture coverage field; "
-                "an absent record may not be exported as an instrument with no producer"
-            )
-        coverage = payload["cross_capture_coverage"]
-        if coverage is None:
-            continue
-        if not isinstance(coverage, dict):
-            raise FatalAccounting(
-                "a Recensor cross-capture coverage record is neither an object nor null"
-            )
-        try:
-            coverage = validate_cross_capture_coverage(coverage)
-        except (SchemaRefusal, TypeError) as error:
-            raise FatalAccounting(
-                "a Recensor cross-capture coverage record is malformed"
-            ) from error
-        acts_with_presentation += 1
-        for component in coverage.get("components", []):
-            for row in component.get("captures", []):
-                capture_rows += 1
-                codes = [
-                    code
-                    for code in row.get("finding_codes", [])
-                    if code in _VISIBILITY_ABSENCE_CODES
-                ]
-                if codes:
-                    rows_with_named_absence += 1
-                    absence_codes.update(codes)
-
-    sealed_pages = sorted(
-        ordinal
-        for ordinal, page in census.items()
-        if page.get("outcome") == "sealed" and ordinal not in canary_pages
-    )
-    all_sealed = {ordinal for ordinal, page in census.items() if page.get("outcome") == "sealed"}
-    unreconciled = {
-        ordinal: reason
-        for ordinal, reason in conservation_not_reconciled(
-            context, manifest_cache, all_sealed
-        ).items()
-        if ordinal not in canary_pages
-    }
-    with_spans = sum(
-        1
-        for act in projected_acts
-        if isinstance(act.get("uncertainty"), dict) and act["uncertainty"].get("uncertain_spans")
-    )
-    delivered = sum(
-        1 for act in projected_acts if act["category"] == ArmariumCategory.DELIVERED.value
-    )
-    # The reader's own doubt-report state per delivered act, read off the
-    # canonical layer each act already carries: how many readings were actually
-    # assessed for doubt, and how many came from a chair with no channel. An
-    # empty span list under `not-assessed` is an absence, not confidence.
-    #
-    # Both numbers are counted, neither is derived by subtraction: a delivered
-    # act in any third state would otherwise be counted as one with no doubt
-    # channel. `_validate_projection` refuses such an act outright, and these
-    # two counts are what it reconciles against, so a disagreement between the
-    # producer here and the validator there is itself refused.
-    assessed = 0
-    not_assessed = 0
-    for act in projected_acts:
-        if act["category"] != ArmariumCategory.DELIVERED.value:
-            continue
-        uncertainty = act.get("uncertainty")
-        assessment = uncertainty.get("assessment") if isinstance(uncertainty, dict) else None
-        state = assessment.get("state") if isinstance(assessment, dict) else None
-        if state == "assessed":
-            assessed += 1
-        elif state == "not-assessed":
-            not_assessed += 1
-    basis = {
-        "schema": NOT_MEASURED_BASIS_SCHEMA,
-        "page-testimony-content-coverage": {
-            "acts_total": len(reviews),
-            "acts_unmeasured": unmeasured_coverage,
-            "reasons": sorted(set(coverage_reasons)),
-        },
-        "page-ink-conservation": {
-            "pages_sealed": len(sealed_pages),
-            "pages_not_reconciled": sorted(unreconciled),
-            "reasons": sorted({reason for reason in unreconciled.values()}),
-        },
-        "act-visibility-survey": {
-            "acts_total": len(reviews),
-            "acts_with_capture_presentation": acts_with_presentation,
-            "capture_rows": capture_rows,
-            "rows_with_named_absence": rows_with_named_absence,
-            "absence_codes": sorted(absence_codes),
-        },
-        "perlector-uncertain-spans": {
-            "sealed_audit_round_cap": sealed_audit_round_cap(context),
-            "acts_delivered": delivered,
-            "acts_with_uncertain_spans": with_spans,
-            "acts_assessed": assessed,
-            "acts_not_assessed": not_assessed,
-        },
-        "designator-geometry-calibration": {"configurations": geometry_calibration_rows(context)},
-        "comparison-bounds": comparison_bounds_basis(
-            projected_acts, comparison_stops, coverage_records
-        ),
-    }
-    # The producer and the export's closed instrument list are two places that
-    # must name the same set; a key added to one and missed in the other would
-    # be a caveat the bundle silently stops carrying.
-    missing = [name for name in NOT_MEASURED_INSTRUMENTS if name not in basis]
-    if missing:
-        raise FatalAccounting(
-            f"the not-measured basis names no record for instrument(s) {missing}; the export "
-            "cannot omit a caveat because its producer forgot one"
-        )
-    return basis
-
-
 def _cached_manifest(context, stage: str, manifest_cache: dict[str, dict]) -> dict:
     """``context.tree.build_manifest(stage)``, read and revalidated once per run.
 
-    Reusing a manifest is only safe because Armarium never writes into
-    DESIGNATOR/RECENSOR/PERLECTOR/ARCHETYPUS during its own run, so their artifact
-    sets are static for the whole invocation. It is worth doing because
-    ``build_manifest`` walks a stage's whole artifact directory and revalidates every
-    envelope, binding and input each time it is called: on the two-act synthetic
-    fixture one run did that fifteen times, against a stated scale of tens of
-    thousands of acts.
+    Reusing a manifest is only safe because Armarium never writes into the stages
+    it reads during its own run, so their artifact sets are static for the whole
+    invocation. It is worth doing because ``build_manifest`` walks a stage's whole
+    artifact directory and revalidates every envelope, binding and input each time
+    it is called, once per row otherwise.
     """
     if stage not in manifest_cache:
         manifest_cache[stage] = context.tree.build_manifest(stage)
     return manifest_cache[stage]
-
-
-def pages_marked_out(context, manifest_cache: dict[str, dict]) -> dict[str, list[int]]:
-    """Every page ordinal the Designator actually cut a region on, per act.
-
-    The proposal seal names one primary `page_ordinal` per act, and that is not the
-    same question. An act running over a page break is cut on both sides, so its
-    far-side page *was* examined; a continuation page attributed to nobody would be
-    reported as silent when it is the best-covered page in the run. The regions are
-    the record of what was marked out, so they are what the page-coverage question
-    is answered from.
-
-    An act with no region at all — held because its own page never sealed — maps to
-    an empty list rather than being absent. That is a fact about the act, not a gap
-    in the attribution: the page it would have come from is refused in the census
-    and named there.
-    """
-    marked: dict[str, list[int]] = {act["act_id"]: [] for act in expected_acts(context)}
-    for entry in _cached_manifest(context, DESIGNATOR, manifest_cache)["artifacts"]:
-        if entry["kind"] != "region":
-            continue
-        region = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        act_id = region["subject_id"]
-        if act_id not in marked:
-            raise FatalAccounting(
-                f"the Designator cut a region for act {act_id}, which its own proposal seal "
-                "does not expect; a crop of an act nobody declared is invariant #10's imbalance"
-            )
-        try:
-            verified = verify_exemplar_crop_lineage(context.tree, context.run, region)
-        except ContractError as error:
-            raise FatalAccounting(
-                f"the Designator region {entry['artifact_id']} cannot be verified as a crop of "
-                "the Exemplar page it claims to mark out"
-            ) from error
-        ordinal = verified["source_page_ordinal"]
-        if ordinal not in marked[act_id]:
-            marked[act_id].append(ordinal)
-    return {act_id: sorted(ordinals) for act_id, ordinals in marked.items()}
-
-
-def claimed_bounds_by_page(context, manifest_cache: dict[str, dict]) -> dict[int, list[dict]]:
-    """Verified capture rectangles are the only geometry that can release a finding.
-
-    This walks the Designator regions a second time and verifies each crop
-    again, after `pages_marked_out` has already verified the same ones. The
-    duplicate decode is deliberate, not an oversight: the rectangles that
-    *release* an edge hold are verified by the function that uses them, so a
-    release can never rest on a verification performed somewhere else for
-    another purpose. `test_unit14b_edge_release.py` pins that independence
-    directly. Sharing one cached verification between the two walks would keep
-    those tests green while removing the property in production, which is the
-    shape of regression this stage exists to refuse.
-    """
-    claimed: dict[int, list[dict]] = {}
-    for entry in _cached_manifest(context, DESIGNATOR, manifest_cache)["artifacts"]:
-        if entry["kind"] != "region":
-            continue
-        region = context.tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        try:
-            verified = verify_exemplar_crop_lineage(context.tree, context.run, region)
-        except ContractError as error:
-            raise FatalAccounting(
-                f"the Designator region {entry['artifact_id']} cannot be verified as a crop of "
-                "the Exemplar page it claims to mark out. Its bounds therefore cannot release "
-                "any page ink. Restore the sealed Designator artifact or restart the run before "
-                "exporting."
-            ) from error
-        transform = region.get("payload", {}).get("transform")
-        bounds = transform.get("bounds") if isinstance(transform, dict) else None
-        if not isinstance(bounds, dict):
-            raise FatalAccounting(
-                "a verified Designator region has no crop bounds. It cannot claim any page ink, "
-                "so using it to release an edge hold would be unsupported. Restore the sealed "
-                "Designator artifact or restart the run before exporting."
-            )
-        claimed.setdefault(verified["source_page_ordinal"], []).append(bounds)
-    return claimed
 
 
 def artifacts_for(
@@ -1357,134 +540,12 @@ def artifacts_for(
     return records
 
 
-def continuation_joins(
-    context,
-    reviews: dict[str, dict],
-    projected_acts: list[dict],
-    manifest_cache: dict[str, dict],
-    selected_formats: tuple[str, ...],
-) -> tuple[dict, ...]:
-    """Each Designator continuation candidate as a join row over the delivered literals.
-
-    A candidate a named act's review does not cite is refused: the review is where the
-    Recensor saw it, so an uncited one reached no act's decision.
-    """
-    acts = {act["act_id"]: act for act in projected_acts}
-    delivered_texts = {
-        act_id: act["canonical_clean_text"]
-        for act_id, act in acts.items()
-        if act["category"] == ArmariumCategory.DELIVERED.value
-    }
-    candidates = []
-    for entry in _cached_manifest(context, DESIGNATOR, manifest_cache)["artifacts"]:
-        if entry["kind"] != "continuation-candidate":
-            continue
-        record = context.tree.read_artifact(DESIGNATOR, entry["kind"], entry["artifact_id"])
-        reference = context.artifact_ref(DESIGNATOR, entry["kind"], entry["artifact_id"])
-        payload = record["payload"]
-        sides = [[act["act_id"] for act in payload[side]] for side in ("acts_a", "acts_b")]
-        for act_id in sides[0] + sides[1]:
-            cited = reviews[acts[act_id]["act_key"]].get("continuation_candidate_refs", [])
-            if reference not in cited:
-                raise FatalAccounting(
-                    f"act {act_id}'s review does not cite Designator continuation candidate "
-                    f"{entry['artifact_id']}, which names it; a join no review saw is refused"
-                )
-        pages = (payload["page_a"]["page_ordinal"], payload["page_b"]["page_ordinal"])
-        candidates.append((pages, record["subject_id"], reference, sides))
-    rows = []
-    for index, (pages, _subject, reference, (head, tail)) in enumerate(sorted(candidates)):
-        rows.append(
-            continuation_join_row(
-                join_id=f"join-{pages[0]}-{pages[1]}-{index}",
-                candidate_ref=reference,
-                head_page_ordinal=pages[0],
-                tail_page_ordinal=pages[1],
-                head_act_ids=head,
-                tail_act_ids=tail,
-                delivered_texts=delivered_texts,
-                selected_formats=selected_formats,
-            )
-        )
-    return tuple(rows)
-
-
-def export_witnesses(context, reading: dict, act_id: str) -> list[dict]:
-    """Project the exact evidence-backed witnesses without exporting their words."""
-    payload = reading.get("payload")
-    basis = payload.get("basis") if isinstance(payload, dict) else None
-    testimonia = basis.get("testimonia") if isinstance(basis, dict) else None
-    if not isinstance(testimonia, list) or not testimonia:
-        raise FatalAccounting("an established Perlectio has no witness basis to retain at export")
-
-    dossier = payload.get("dossier") if isinstance(payload, dict) else None
-    attachment = dossier.get("act_attachment") if isinstance(dossier, dict) else None
-    # Required, like the witness basis above: an established reading that reaches
-    # export without its act-attachment view is one whose page-witness custody was
-    # never rechecked here. Guarding the check with `if attachment is not None`
-    # left the export boundary opt-out.
-    if not isinstance(attachment, dict):
-        raise FatalAccounting("an established Perlectio has no act-attachment evidence to retain")
-    reference = attachment.get("reference")
-    if not isinstance(reference, dict) or reference not in reading.get("inputs", []):
-        raise FatalAccounting("an established Perlectio has no direct act-attachment evidence")
-    context.tree.read_artifact_reference(
-        reference,
-        stage=ATTESTATORES,
-        kind="act-attachment",
-        subject_id=act_id,
-    )
-
-    witnesses: list[dict] = []
-    seen_chairs: set[str] = set()
-    for item in testimonia:
-        if not isinstance(item, dict):
-            raise FatalAccounting("an established Perlectio has a non-object witness basis entry")
-        chair, outcome, reference = item.get("chair"), item.get("outcome"), item.get("reference")
-        if not isinstance(chair, str) or not chair or not isinstance(outcome, str):
-            raise FatalAccounting("an established Perlectio has an untyped witness basis entry")
-        if chair in seen_chairs:
-            raise FatalAccounting("an established Perlectio names one witness more than once")
-        record = context.tree.read_artifact_reference(
-            reference,
-            stage=ATTESTATORES,
-            kind="testimonium",
-            subject_id=act_id,
-        )
-        testimony = record.get("payload")
-        if (
-            record.get("outcome") != outcome
-            or not isinstance(testimony, dict)
-            or testimony.get("chair") != chair
-            or item.get("artifact_id") != record.get("artifact_id")
-        ):
-            raise FatalAccounting(
-                "an established Perlectio's witness basis does not match its sealed Testimonium"
-            )
-        validate_serving_provenance(
-            context,
-            testimony.get("provenance"),
-            producer_stage=ATTESTATORES,
-            require_receipt=outcome in ATTEMPTED_WITNESS_OUTCOMES,
-        )
-        seen_chairs.add(chair)
-        witnesses.append(
-            {
-                "chair": chair,
-                "outcome": outcome,
-                "testimonium_ref": reference,
-                "provenance": testimony["provenance"],
-            }
-        )
-    return sorted(witnesses, key=lambda witness: witness["chair"])
-
-
 def export_source_regions(tree, regions: list[dict], census: dict[int, dict]) -> list[dict]:
     """Attach every delivered crop to the original filename-ledger page it used.
 
     A region's image digest proves the crop bytes, but an export needs the other
     half of the citation link too: which original source file/frame those bytes
-    came from.  The Perlector retains the Designator transform's Exemplar page
+    came from.  The act-region retains its transform's Exemplar page
     locator; reconcile it against the final census rather than trusting a bare
     ordinal in a downstream record.
     """
@@ -1540,261 +601,18 @@ def export_source_regions(tree, regions: list[dict], census: dict[int, dict]) ->
     return linked
 
 
-def categorize(
-    context, act_id: str, manifest_cache: dict[str, dict]
-) -> tuple[ArmariumCategory, dict, dict | None]:
-    """One category per act, derived from the stages rather than decided here.
-
-    The transition table is the authority: the Recensor's outcome either
-    terminates the act or hands it to the Archetypus, whose outcome terminates it.
-    This function routes; it does not judge.
-    """
-    reviews = artifacts_for(context, RECENSOR, "review", act_id, manifest_cache)
-    if not reviews:
-        raise FatalAccounting(f"act {act_id} reached the Armarium with no Recensor outcome")
-    review = latest_attempt(reviews, f"review of {act_id}", operation="recense")
-
-    terminal = terminal_category(RECENSOR, review["outcome"])
-    if terminal is not None:
-        # A held/refused/confirmed-blank/excluded act is terminal here, at the
-        # Recensor, and the Archetypus's own guard already refuses to establish
-        # one (pipeline/6_archetypus/run.py: "a stage may not resurrect a held
-        # act"). An Archetypus record existing anyway is therefore an artifact
-        # nothing published through that guard -- exactly the class of imbalance
-        # invariant #10 exists to catch, checked here rather than trusted absent,
-        # the same way an accepted act with no Archetypus is checked below.
-        orphaned = artifacts_for(context, ARCHETYPUS, "archetypus", act_id, manifest_cache)
-        if orphaned:
-            raise FatalAccounting(
-                f"act {act_id} is {review['outcome']!r} at the Recensor but carries an "
-                "Archetypus record anyway; a non-accepted act may not also be established"
-            )
-        return terminal, review, None
-
-    if review["outcome"] == "recovery-requested":
-        # The refusal stands: an act mid-recovery has no established reading to
-        # export, and exporting it as anything would be a partial delivered as
-        # complete. What the operator was not told is which of two shapes this
-        # is: a fixture run whose recovery has simply not been driven yet, which
-        # ends here again once it is, or a real submission, where no stage can
-        # cut the recrop and the run has no export at all. Both are named here
-        # rather than left to be derived from a stage a run away, and neither
-        # names a remedy this tree does not implement.
-        raise FatalAccounting(
-            f"act {act_id} has an outstanding recovery request; its recrop must be reread "
-            "before an Archetypus can exist. On the fixture route the Designator cuts that "
-            "recrop, dispatched by the orchestrator's recovery member, so the run reaches "
-            "here again once recovery has been driven. On a real submission it cannot: the "
-            "Designator refuses `--operation recover` by name, and re-running the Recensor "
-            "does not clear the request either, because it holds an act with an outstanding "
-            "request without republishing. A request found here on a real submission "
-            "predates the gate that now withholds it, and this run has no export; the "
-            "request artifact and its review keep the evidence, and a fresh run of the same "
-            "submission from the Door does not reach this state"
-        )
-
-    established = artifacts_for(context, ARCHETYPUS, "archetypus", act_id, manifest_cache)
-    if not established:
-        raise FatalAccounting(
-            f"act {act_id} was accepted by the Recensor but has no Archetypus. It "
-            "would leave the pipeline in no terminal set at all"
-        )
-    if len(established) != 1:
-        raise FatalAccounting(
-            f"act {act_id} was accepted by the Recensor but carries {len(established)} "
-            "Archetypus records. There is no rule for choosing one established text"
-        )
-    record = established[0]
-    return terminal_category(ARCHETYPUS, record["outcome"]), review, record
-
-
-def verify_established_record(
-    context, act: dict, review: dict, established: dict, manifest_cache: dict[str, dict]
-) -> dict:
-    """Reconcile an exportable Archetypus against its exact reviewed Perlectio.
-
-    The Archetypus is the first record to call one reading established.  It must
-    therefore carry a tamper-evident payload and digest-checked parents for both
-    the Recensor decision and the Perlectio it decided about.  Reconstructing
-    these links from whatever is latest would be a hidden selection of evidence.
-    """
-    payload = established.get("payload")
-    if not isinstance(payload, dict) or not verify_self_hash(payload):
-        raise FatalAccounting("an Archetypus payload fails its own self-hash before export")
-    expected_scalars = {
-        "act_id": act["act_id"],
-        "act_key": act["act_key"],
-        "page_id": act["page_id"],
-        "status": "established",
-    }
-    if any(payload.get(field) != value for field, value in expected_scalars.items()):
-        raise FatalAccounting("an Archetypus does not describe the act the export is categorizing")
-
-    review_ref = payload.get("recensor_ref")
-    reading_ref = payload.get("perlectio_ref")
-    if not isinstance(review_ref, dict) or not isinstance(reading_ref, dict):
-        raise FatalAccounting(
-            "an Archetypus lacks digest-checked Recensor and Perlectio parent references"
-        )
-    expected_review_ref = context.artifact_ref(RECENSOR, "review", review["artifact_id"])
-    if review_ref != expected_review_ref or review_ref not in established.get("inputs", []):
-        raise FatalAccounting(
-            "an Archetypus does not input the exact current Recensor review that accepted it"
-        )
-    checked_review = context.tree.read_artifact_reference(
-        review_ref,
-        stage=RECENSOR,
-        kind="review",
-        subject_id=act["act_id"],
-    )
-    if (
-        checked_review["artifact_id"] != review["artifact_id"]
-        or checked_review["outcome"] != "accepted"
-    ):
-        raise FatalAccounting("an Archetypus is not bound to an accepted Recensor review")
-
-    review_payload = checked_review.get("payload")
-    if not isinstance(review_payload, dict) or review_payload.get("perlectio_ref") != reading_ref:
-        raise FatalAccounting(
-            "an Archetypus names a Perlectio different from the one its Recensor review assessed"
-        )
-    if reading_ref not in established.get("inputs", []) or reading_ref not in checked_review.get(
-        "inputs", []
-    ):
-        raise FatalAccounting("the Perlectio parent is not a direct sealed input at every handoff")
-    reading = context.tree.read_artifact_reference(
-        reading_ref,
-        stage=PERLECTOR,
-        kind="perlectio",
-        subject_id=act["act_id"],
-    )
-    current = latest_attempt(
-        artifacts_for(context, PERLECTOR, "perlectio", act["act_id"], manifest_cache),
-        f"reading of {act['act_id']}",
-        operation="perlegere",
-    )
-    if current["artifact_id"] != reading["artifact_id"]:
-        raise FatalAccounting(
-            f"act {act['act_id']} has a newer Perlectio than the one its Archetypus and "
-            "Recensor review bind; export may not hide unreconciled evidence"
-        )
-    recovery_regions = recovery_region_count(
-        act["act_id"], artifacts_for(context, DESIGNATOR, "region", act["act_id"], manifest_cache)
-    )
-    readings = artifacts_for(context, PERLECTOR, "perlectio", act["act_id"], manifest_cache)
-    if len(readings) != recovery_regions + 1:
-        raise FatalAccounting(
-            f"act {act['act_id']} has {recovery_regions} recovery crop(s) but {len(readings)} "
-            "Perlectio attempt(s); export may not complete over an unre-read recrop"
-        )
-    # The witness side of the same question, and the one route into this stage
-    # that did not exist. Everything this stage says about an act is derived from
-    # the latest Recensor review and from the reading's own basis references;
-    # neither route passes back through `latest_per_chair`, so a Testimonium
-    # appended after the reading was established was structurally invisible at
-    # the point where the export decides to say `complete` -- and the sealed
-    # export went on saying it. The rule against losing anything silently is
-    # unconditional: `complete` is refused unless everything reconciles.
-    require_current_witness_basis(
-        act["act_id"],
-        reading,
-        artifacts_for(context, ATTESTATORES, "testimonium", act["act_id"], manifest_cache),
-        f"the established Perlectio of {act['act_id']}",
-    )
-    reading_payload = reading.get("payload")
-    if not isinstance(reading_payload, dict):
-        raise FatalAccounting("an established Perlectio has no payload")
-    reading_regions = reading_basis_regions(reading, f"established Perlectio of {act['act_id']}")
-    # The older annotation layer, reconciled through the one shared validator
-    # rather than by raw equality. The Archetypus NORMALIZES what it seals — an
-    # `illegible` note may legally arrive without `witness_evidence` and the
-    # sealed form always carries it — so comparing the sealed (normalized) copy
-    # against the reading's raw one would refuse a perfectly correct record the
-    # day the first real annotation is produced. Both sides go through
-    # `validate_annotations` (witnesses=None: the roster lives in the reading's
-    # basis, and attribution was already checked where it was sealed), and the
-    # validated forms must be identical.
-    try:
-        sealed_annotations = validate_annotations(
-            payload.get("annotations"), payload.get("text", ""), None, "Archetypus annotation"
-        )
-        reading_annotations = validate_annotations(
-            reading_payload.get("annotations", []),
-            payload.get("text", ""),
-            None,
-            "accepted Perlectio annotation",
-        )
-    except SchemaRefusal as error:
-        raise FatalAccounting(
-            "an Archetypus damage layer cannot be reconciled with its accepted Perlectio"
-        ) from error
-    if (
-        payload.get("text") != reading_payload.get("text")
-        or payload.get("regions") != reading_regions
-        or payload.get("provenance") != reading_payload.get("provenance")
-        or payload.get("dissent_ref") != reading_ref
-        or sealed_annotations != reading_annotations
-    ):
-        raise FatalAccounting(
-            "an Archetypus does not exactly preserve the Perlectio its review accepted"
-        )
-    try:
-        expected_uncertainty = from_perlectio(reading_payload)
-    except SchemaRefusal as error:
-        raise FatalAccounting("an accepted Perlectio is malformed") from error
-    try:
-        if payload.get("uncertainty") != expected_uncertainty:
-            raise FatalAccounting(
-                "an Archetypus uncertainty layer differs from its accepted Perlectio"
-            )
-        validate_uncertainty(payload["uncertainty"], payload["text"])
-    except SchemaRefusal as error:
-        raise FatalAccounting("an Archetypus uncertainty layer is malformed") from error
-
-    # Recomputed from the two damage layers just proven equal to the reading's own,
-    # never read out of the record and believed. `text_status` is the field that
-    # says whether the one established reading is whole, and export had no opinion
-    # about it at all: a record could claim `established` over a text its own gap
-    # list says was partly unread, and every other check here would pass. This is
-    # also where that word enters the export -- the projection, the products, and
-    # the run aggregate all take it from this checked value.
-    try:
-        expected_text_status = derive_record_text_status(
-            payload.get("text"), payload.get("annotations"), payload.get("uncertainty")
-        )
-    except SchemaRefusal as error:
-        raise FatalAccounting(
-            "an Archetypus damage layer cannot be read for the status of its own text"
-        ) from error
-    if payload.get("text_status") != expected_text_status:
-        raise FatalAccounting(
-            f"an Archetypus claims text_status {payload.get('text_status')!r} over a reading "
-            f"whose own gaps and annotations say {expected_text_status!r}; a damaged act may "
-            "not leave the pipeline described as a whole one"
-        )
-
-    expected_inputs = [review_ref, reading_ref] + [
-        context.input_ref(region["image_path"]) for region in reading_regions
-    ]
-    if sorted(established.get("inputs", []), key=lambda item: item["relative_path"]) != sorted(
-        expected_inputs, key=lambda item: item["relative_path"]
-    ):
-        raise FatalAccounting("an Archetypus input set does not reconcile to its parent evidence")
-    return payload
-
-
 def missing_export_provenance(payload: object) -> str | None:
     """Name a reading that cannot travel as an exportable, cited result.
 
     This is deliberately narrower than the lineage checks in
-    ``verify_established_record``.  A damaged envelope or a disagreement with a
+    ``verify_established_page_record``.  A damaged envelope or a disagreement with a
     parent remains fatal accounting; an otherwise sealed established reading
     that simply lacks identity or region provenance is a refused unit with a
     visible review record, not a dropped one.
     """
     if not isinstance(payload, dict) or not verify_self_hash(payload):
         # This does not mean provenance is complete. A damaged envelope is fatal
-        # accounting, and `verify_established_record` immediately raises on this same
+        # accounting, and `verify_established_page_record` immediately raises on this same
         # self-hash. Returning None delegates to that check; callers must preserve the
         # order rather than treating this helper alone as an exportability decision.
         return None
@@ -1829,28 +647,6 @@ def export_evidence_refs(context, review: dict, established: dict | None) -> lis
     return sorted(references, key=lambda reference: reference["relative_path"])
 
 
-def exclusion_approval_ref(act: dict, category: ArmariumCategory) -> str | None:
-    """Carry an exclusion's recorded approval, or refuse it before export.
-
-    **This refuses every exclusion today, approved or not.** ``act`` is one row of
-    ``expected_acts()``, whose closed schema in ``common/stage.py`` has no
-    ``approval_ref`` field for ``act.get("approval_ref")`` to find. That is a safe
-    failure mode -- an export stops rather than admitting an unapproved exclusion --
-    but not a working one, and the boundary is here so that a bare
-    ``excluded-with-approval`` can never become an apparently complete export with
-    its required citation silently missing.
-
-    Making a real citation reach here needs a Designator-contract decision -- a
-    widened ``expected_acts()`` row, or its own published artifact read the way an
-    Archetypus record already is -- which is out of this stage's scope to invent.
-    """
-    if category is not ArmariumCategory.EXCLUDED_WITH_APPROVAL:
-        return None
-    approval_ref = act.get("approval_ref")
-    require_approval(ARMARIUM, category.value, approval_ref)
-    return approval_ref
-
-
 def export_run_identity(context) -> tuple[str | None, str | None, dict[str, str]]:
     """The manifest's run identity: a fixture id on a fixture run, a real
     submission's filename-ledger self-hash on a real one -- never both, never
@@ -1873,121 +669,413 @@ def export_run_identity(context) -> tuple[str | None, str | None, dict[str, str]
     return submission_id, fixture_id, run_identity
 
 
-def main(registry_factory=ChairRegistry.from_toml) -> int:
-    """Run under the explicitly supplied chair/config implementation."""
-    args = stage_parser(DESCRIPTION).parse_args()
-    context = open_stage_context(args, ARMARIUM, registry_factory=registry_factory)
-    submission_id, fixture_id, run_identity = export_run_identity(context)
-    formats = context.armarium_formats
-    if formats is None:
-        raise FatalAccounting("Armarium has no format projection bound to the run configuration")
-    # Verify the source ledger's final boundary before publishing even a reusable
-    # manifest entry. A seal damaged after Designator must stop export at once.
-    census = page_census(context)
-    canaries = canary_ordinals(context.run)
-    if not canaries <= set(census):
-        raise FatalAccounting("sealed canary ordinals are absent from the Exemplar page census")
-    real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
+# --- Page-read runs: the readings the Perlector established on each page it read whole
+#
+# The denominator is `common.stage.reading_acts`. Rows of kind `act` are the act
+# partition; rows of kind `other` are a separate, labelled layer that is never
+# counted as an act. A row standing for a page with no reading (`page-unread`,
+# `page-blank`) is an act-partition unit with no text, held or confirmed blank by
+# its review. Regions come from the Perlector's `act-region` records, each proven
+# from the Exemplar by `verify_reading_region_lineage`.
 
+
+def _page_category(
+    context, row: dict, review: dict, manifest_cache: dict[str, dict]
+) -> tuple[ArmariumCategory, dict | None]:
+    """One row's terminal category, from its review and (when accepted) its one Archetypus."""
+    established = artifacts_for(context, ARCHETYPUS, "archetypus", row["act_id"], manifest_cache)
+    outcome = review["outcome"]
+    terminal = terminal_category(RECENSOR, outcome)
+    if terminal is not None:
+        if established:
+            raise FatalAccounting(
+                f"{row['act_key']} is {outcome!r} at the Recensor but carries an Archetypus "
+                "record anyway; a reading not accepted may not also be established"
+            )
+        if terminal is ArmariumCategory.CONFIRMED_BLANK and row["class"] != "page-blank":
+            raise FatalAccounting(
+                f"{row['act_key']} is a {row['class']} row, and only a page read as blank can "
+                "be confirmed blank"
+            )
+        return terminal, None
+    if outcome != "accepted":
+        raise FatalAccounting(
+            f"{row['act_key']} has Recensor outcome {outcome!r}, which reaches no terminal "
+            "category; the export may not complete over an undecided reading"
+        )
+    # The denominator's disposition is binding: a held row is accepted only
+    # when the review releases exactly its releasable holds by name.
+    require_establishable(row, review)
+    if len(established) != 1:
+        raise FatalAccounting(
+            f"{row['act_key']} was accepted by the Recensor but carries {len(established)} "
+            "Archetypus records; exactly one established reading is exported"
+        )
+    return terminal_category(ARCHETYPUS, established[0]["outcome"]), established[0]
+
+
+def verify_established_page_record(
+    context, row: dict, review: dict, established: dict
+) -> tuple[dict, dict]:
+    """Reconcile a page-path Archetypus against its row, its review and its reading.
+
+    Returns the record's payload and the reading. The region is re-proven from
+    the Exemplar here, not read out of the record, and the damage layers are
+    recomputed from the reading.
+    """
+    payload = established.get("payload")
+    if not isinstance(payload, dict) or not verify_self_hash(payload):
+        raise FatalAccounting("an Archetypus payload fails its own self-hash before export")
+    expected = {
+        "act_id": row["act_id"],
+        "act_key": row["act_key"],
+        "page_id": row["page_id"],
+        "kind": row["kind"],
+        "status": "established",
+    }
+    if any(payload.get(field) != value for field, value in expected.items()):
+        raise FatalAccounting(
+            f"the Archetypus of {row['act_key']} does not describe the reading being exported"
+        )
+    review_ref = context.artifact_ref(RECENSOR, "review", review["artifact_id"])
+    reading_ref = row["perlectio_ref"]
+    region_ref = row["region_ref"]
+    if (
+        review["outcome"] != "accepted"
+        or payload.get("recensor_ref") != review_ref
+        or payload.get("perlectio_ref") != reading_ref
+        or payload.get("dissent_ref") != reading_ref
+        or review["payload"].get("perlectio_ref") != reading_ref
+        or reading_ref not in review.get("inputs", [])
+    ):
+        raise FatalAccounting(
+            f"the Archetypus of {row['act_key']} is not bound to the accepted review of its "
+            "counted reading"
+        )
+    reading = context.tree.read_artifact_reference(
+        reading_ref, stage=PERLECTOR, kind="perlectio", subject_id=row["act_id"]
+    )
+    reading_payload = reading.get("payload")
+    if not isinstance(reading_payload, dict) or reading_payload.get("act_region_ref") != region_ref:
+        raise FatalAccounting(f"the reading of {row['act_key']} names another act-region")
+    if (
+        reading.get("outcome") != "read"
+        or reading_payload.get("schema") != page_path.PERLECTIO_SCHEMA
+        or reading_payload.get("kind") != row["kind"]
+        or reading_payload.get("holds") != []
+        or reading_payload.get("page_holds") != []
+    ):
+        raise FatalAccounting(
+            f"the reading of {row['act_key']} is held or is not the row's own page reading, "
+            "yet an Archetypus established it"
+        )
+    region_record = context.tree.read_artifact_reference(
+        region_ref, stage=PERLECTOR, kind="act-region", subject_id=row["act_id"]
+    )
+    try:
+        region = verify_reading_region_lineage(context.tree, context.run, region_record)
+    except ContractError as error:
+        raise FatalAccounting(
+            f"the act-region of {row['act_key']} does not trace to the Exemplar: {error}"
+        ) from error
+    try:
+        annotations = validate_annotations(
+            reading_payload.get("annotations", []),
+            reading_payload.get("text"),
+            None,
+            f"the reading of {row['act_key']} annotations",
+        )
+        uncertainty = from_page_perlectio(reading_payload)
+        text_status = derive_record_text_status(payload.get("text"), annotations, uncertainty)
+    except SchemaRefusal as error:
+        raise FatalAccounting(
+            f"the damage layers of {row['act_key']} cannot be reconciled with its reading"
+        ) from error
+    if (
+        payload.get("text") != reading_payload.get("text")
+        or payload.get("regions") != [region]
+        or payload.get("provenance") != reading_payload.get("provenance")
+        or payload.get("annotations") != annotations
+        or payload.get("uncertainty") != uncertainty
+        or payload.get("text_status") != text_status
+    ):
+        raise FatalAccounting(
+            f"the Archetypus of {row['act_key']} does not exactly preserve the reading its "
+            "review accepted"
+        )
+    expected_inputs = [review_ref, reading_ref, region_ref, context.input_ref(region["image_path"])]
+    if sorted(established.get("inputs", []), key=lambda item: item["relative_path"]) != sorted(
+        expected_inputs, key=lambda item: item["relative_path"]
+    ):
+        raise FatalAccounting(
+            f"the Archetypus of {row['act_key']} does not input exactly its review, reading, "
+            "act-region and crop"
+        )
+    return payload, reading
+
+
+def export_page_witnesses(context, reading: dict, page_testimonia: list[dict]) -> list[dict]:
+    """The page witnesses a reading was shown, each its chair's current page Testimonium.
+
+    `page_testimonia` is the reading's page's entry in `current_page_testimonia`.
+    Each witness is exported under its chair, read from the Testimonium it
+    names, and the label the reader saw it under (a pseudonym when the run was
+    blinded).
+    """
+    payload = reading["payload"]
+    shown = shown_page_witnesses(
+        context,
+        reading,
+        page_testimonia,
+        f"the established page reading of {payload['page_id']} entry {payload.get('n')}",
+    )
+    witnesses = []
+    for witness in shown:
+        record = witness["testimonium"]
+        validate_serving_provenance(
+            context,
+            record["payload"].get("provenance"),
+            producer_stage=ATTESTATORES,
+            require_receipt=chair_was_served(context, record),
+        )
+        witnesses.append(
+            {
+                "chair": witness["chair"],
+                "witness_label": witness["witness_label"],
+                "outcome": record["outcome"],
+                "testimonium_ref": witness["testimonium_ref"],
+                "provenance": record["payload"]["provenance"],
+            }
+        )
+    return sorted(witnesses, key=lambda witness: witness["chair"])
+
+
+def reading_region_bounds_by_page(context, rows: list[dict]) -> dict[int, list[dict]]:
+    """The rectangles every placed reading (act or other) was cut from, proven from the Exemplar.
+
+    Only these may release unclaimed edge ink on the page path: the Perlector's
+    `act-region` records, each re-verified here by the function that uses it.
+    """
+    claimed: dict[int, list[dict]] = {}
+    for row in rows:
+        if row["region_ref"] is None or row["class"] != "reading":
+            continue
+        region = context.tree.read_artifact_reference(
+            row["region_ref"], stage=PERLECTOR, kind="act-region", subject_id=row["act_id"]
+        )
+        try:
+            verified = verify_reading_region_lineage(context.tree, context.run, region)
+        except ContractError as error:
+            raise FatalAccounting(
+                f"the act-region of {row['act_key']} cannot be verified as a crop of its page, "
+                "so its bounds cannot release any page ink"
+            ) from error
+        claimed.setdefault(verified["source_page_ordinal"], []).append(
+            verified["transform"]["bounds"]
+        )
+    return claimed
+
+
+def page_continuation_joins(
+    links: list[dict], projected_acts: list[dict], formats: tuple[str, ...]
+) -> tuple[dict, ...]:
+    """Each Recensor continuation link as a join row over the delivered literals.
+
+    Every flagged page break is a join, so each keeps the run partial with its
+    reason: an agreed link with both sides delivered is reconstructed; a side
+    with no `act` entry names no act (`side-names-no-act`); a link whose two
+    readings' flags disagree reconstructs nothing (`flags-disagree`). Each
+    link is one `page_review.continuation_links` proved to join `act` edges.
+    """
+    delivered_texts = {
+        act["act_id"]: act["canonical_clean_text"]
+        for act in projected_acts
+        if act["category"] == ArmariumCategory.DELIVERED.value
+    }
+    joins = []
+    for index, link in enumerate(links):
+        sides = [link["head_act_id"], link["tail_act_id"]]
+        head, tail = link["from_page_ordinal"], link["to_page_ordinal"]
+        joins.append(
+            continuation_join_row(
+                join_id=f"join-{head}-{tail}-{index}",
+                candidate_ref=link["ref"],
+                head_page_ordinal=head,
+                tail_page_ordinal=tail,
+                head_act_ids=[sides[0]] if sides[0] else [],
+                tail_act_ids=[sides[1]] if sides[1] else [],
+                delivered_texts=delivered_texts,
+                selected_formats=formats,
+                flags_disagree=not link["agreed"],
+            )
+        )
+    return tuple(joins)
+
+
+def page_accounting_rows(context, pages: dict[int, dict], real: set[int]) -> list[dict]:
+    """Each real sealed page's accounting: rule statuses, hold codes and policy digest.
+
+    The policy a page names must be the one this run sealed.
+    """
+    policy = require_page_accounting_policy(context, context.page_accounting_config_path)
+    rows = []
+    for ordinal in sorted(real):
+        page = pages[ordinal]
+        record = context.tree.read_artifact_reference(
+            page["accounting_ref"],
+            stage=PERLECTOR,
+            kind="page-accounting",
+            subject_id=page["page_id"],
+        )
+        payload = record["payload"]
+        if payload.get("policy_sha256") != policy.sha256:
+            raise FatalAccounting(
+                f"page {ordinal}'s accounting was measured under another page-accounting "
+                "policy than this run sealed"
+            )
+        rules = payload.get("rules")
+        if not isinstance(rules, dict) or not all(
+            isinstance(rule, dict) and isinstance(rule.get("status"), str)
+            for rule in rules.values()
+        ):
+            raise FatalAccounting(f"page {ordinal}'s accounting records no rule statuses")
+        rows.append(
+            {
+                "ordinal": ordinal,
+                "page_id": page["page_id"],
+                "rules": {name: rules[name]["status"] for name in sorted(rules)},
+                "hold_codes": sorted(set(payload["holds"])),
+                "policy_sha256": payload["policy_sha256"],
+                "accounting_ref": page["accounting_ref"],
+            }
+        )
+    return rows
+
+
+def page_not_measured_basis(context, pages: dict[int, dict], projected_acts: list[dict]) -> dict:
+    """What a page-read run did not measure, from its own records and sealed configurations."""
+    policy = require_page_accounting_policy(context, context.page_accounting_config_path)
+    thresholds = []
+    for field in dataclasses.fields(policy):
+        if field.name == "sha256":
+            continue
+        value = getattr(policy, field.name)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise FatalAccounting(
+                f"the sealed page-accounting threshold {field.name} is {value!r}, not an integer; "
+                "the export discloses every threshold and cannot state this one"
+            )
+        thresholds.append((field.name, value))
+    thresholds.sort()
+    audits = []
+    for page in pages.values():
+        reading = context.tree.read_artifact_reference(
+            page["reading_ref"], stage=PERLECTOR, kind="page-reading", subject_id=page["page_id"]
+        )
+        audit = reading["payload"].get("audit")
+        if not isinstance(audit, dict) or not isinstance(audit.get("state"), str):
+            raise FatalAccounting(
+                f"page {page['page_ordinal']}'s reading records no audit state; the export "
+                "cannot say whether Pass C ran on it"
+            )
+        audits.append(audit["state"])
+    delivered = [
+        act for act in projected_acts if act["category"] == ArmariumCategory.DELIVERED.value
+    ]
+    states = [act["uncertainty"]["assessment"]["state"] for act in delivered]
+    basis = {
+        "schema": NOT_MEASURED_BASIS_SCHEMA,
+        "perlector-uncertain-spans": {
+            "sealed_audit_round_cap": sealed_audit_round_cap(context),
+            "acts_delivered": len(delivered),
+            "acts_with_uncertain_spans": sum(
+                1 for act in delivered if act["uncertainty"].get("uncertain_spans")
+            ),
+            "acts_assessed": states.count("assessed"),
+            "acts_not_assessed": states.count("not-assessed"),
+        },
+        "designator-geometry-calibration": {"configurations": geometry_calibration_rows(context)},
+        # The page accounting's policy carries no calibration record; every value
+        # in it is a starting value (`config/page_accounting.toml`).
+        "page-accounting-thresholds": {
+            "policy_sha256": policy.sha256,
+            "thresholds": [{"name": name, "value": value} for name, value in thresholds],
+            "calibrated_for_this_corpus": False,
+            "sample_count": None,
+        },
+        "perlector-pass-c": {
+            "pages_read": len(audits),
+            "pages_audit_not_run": audits.count("not-run"),
+            "sealed_audit_round_cap": sealed_audit_round_cap(context),
+        },
+    }
+    missing = [name for name in NOT_MEASURED_INSTRUMENTS if name not in basis]
+    if missing:
+        raise FatalAccounting(f"the page-read not-measured basis names no record for {missing}")
+    return basis
+
+
+def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> int:
+    """Export the run: acts, the other layer, page rows, and the page accounting."""
+    submission_id, fixture_id, run_identity = export_run_identity(context)
+    real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
+    denominator = reading_denominator(context)
+    pages, rows = denominator["pages"], denominator["acts"]
+    # A refused page is the census's to report, with the Door's reason; it is
+    # never reviewed and never counted.
+    for row in rows:
+        if row["class"] == PAGE_REFUSED_CLASS:
+            _require_refused_in_census(row, census)
+    rows = reviewed_rows(rows)
+    reviews = current_page_reviews(context, rows)
+    links = continuation_links(context, rows)
+    testimonia = current_page_testimonia(context)
+    manifest_cache: dict[str, dict] = {}
     categories: dict[str, ArmariumCategory] = {}
     coverages: dict[str, dict] = {}
-    # One entry per *delivered* act: what its Archetypus record says about its own
-    # text. A held act has no record for a status to describe, so it has no entry
-    # here, and `run_aggregate` refuses one.
     act_text_status: dict[str, str] = {}
-    # The page each act was marked out on, straight from the proposal seal, so the
-    # aggregate can tell a sealed page that produced nothing from one that produced
-    # acts. Without it a silent page reconciles behind its busy neighbours.
     act_pages: dict[str, list[int]] = {}
-    manifest_cache: dict[str, dict] = {}
-    # Each act's Recensor review payload, kept for the not-measured basis: the
-    # two page-level facts the export must qualify its own `complete` with --
-    # testimony content coverage and the act-visibility survey -- exist only
-    # inside these reviews.
-    reviews: dict[str, dict] = {}
-    marked_out_pages = pages_marked_out(context, manifest_cache)
-    delivered: list[dict] = []
-    review_items: list[dict] = []
+    # Each delivered act's raised continuation flags, so one no link pairs is named.
+    continuation_flags: dict[str, list[str]] = {}
     projected_acts: list[dict] = []
-    expected = expected_acts(context)
+    projected_others: list[dict] = []
+    delivered: list[dict] = []
+    non_delivered: list[dict] = []
     canary_acts: list[dict] = []
-    dissent_budget = sealed_dissent_budget(context)
-    # Per delivered act: which of its reading's comparisons the sealed dissent
-    # budget stopped, for the not-measured ledger.
-    comparison_stops: dict[str, dict] = {}
-
-    for act in expected:
-        act_key = act["act_key"]
-        # The seal names the act's own page even when conservation held it
-        # before a crop could be made. Regions add any continuation pages.
-        act_ordinals = {act["page_ordinal"], *marked_out_pages[act["act_id"]]}
-        if act_ordinals & canaries and not act_ordinals <= canaries:
-            raise FatalAccounting(
-                "an act touches both canary and real pages; export cannot drop a real page"
-            )
-        category, review, established = categorize(context, act["act_id"], manifest_cache)
-        if act_ordinals & canaries:
+    for row in rows:
+        review = reviews[row["act_id"]]
+        category, established = _page_category(context, row, review, manifest_cache)
+        if row["page_ordinal"] in canaries:
             canary_entry = {
-                "act_id": act["act_id"],
-                "act_key": act_key,
+                "act_id": row["act_id"],
+                "act_key": row["act_key"],
                 "category": category.value,
-                "page_ordinals": sorted(act_ordinals),
+                "page_ordinals": [row["page_ordinal"]],
             }
             context.publish(
                 kind="manifest-entry",
-                subject_id=act["act_id"],
+                subject_id=row["act_id"],
                 outcome=category.value,
                 payload=canary_entry,
             )
             canary_acts.append(canary_entry)
             continue
-
-        # The seal's own word is binding: an act the Designator held terminates
-        # as held, and an export that categorized it any other way would have
-        # quietly outvoted the record of why it could not be marked out.
-        sealed_terminal = terminal_category(DESIGNATOR, act["outcome"])
-        if sealed_terminal is not None and category is not sealed_terminal:
-            raise FatalAccounting(
-                f"act {act['act_id']} is {act['outcome']!r} at the proposal seal "
-                f"(terminal category {sealed_terminal.value}) but the export "
-                f"derived {category.value}; the seal and the export may not "
-                "disagree about a terminal act"
-            )
-
         entry = {
-            "act_id": act["act_id"],
-            "act_key": act["act_key"],
+            "act_id": row["act_id"],
+            "act_key": row["act_key"],
+            "kind": row["kind"],
+            "class": row["class"],
+            "page_ordinal": row["page_ordinal"],
             "category": category.value,
-            "under_witnessed": review["payload"]["coverage"]["under_witnessed"],
-            "witness_coverage": review["payload"]["coverage"],
-            # Restated here, not left in the Recensor tree, because this is the
-            # record the export publishes about the act. A continuation page's
-            # testimony content coverage carries no verdict -- the Perlector
-            # declares the page unanchorable, so the diff has no span union to
-            # take -- and an export that delivered the act while saying nothing
-            # about that would be a partial result wearing a complete one's face.
-            # Indexed, not `.get`: every review shape this stage
-            # can read writes the field, and a review without it is a stale or
-            # foreign record this stage should refuse over rather than paper.
-            #
-            # The detailed continuation rows remain in the retained Recensor review.
-            # The ZIP carries their derived unmeasured-act disclosure and its retained-run
-            # evidence location; it does not replay per-page Recensor evidence.
-            "testimony_content_coverage_continuation": review["payload"][
-                "testimony_content_coverage_continuation"
-            ],
+            "hold_codes": row["hold_codes"],
+            "witness_coverage": review_coverage(review),
+            "review_notes": review_notes(review),
             "evidence_refs": export_evidence_refs(context, review, established),
         }
-        approval_ref = exclusion_approval_ref(act, category)
-        if approval_ref is not None:
-            entry["approval_ref"] = approval_ref
-
         if established is not None and category is ArmariumCategory.DELIVERED:
             refusal = missing_export_provenance(established.get("payload"))
             if refusal is None:
-                payload = verify_established_record(
-                    context, act, review, established, manifest_cache
-                )
+                payload, reading = verify_established_page_record(context, row, review, established)
                 try:
                     validate_serving_provenance(
                         context,
@@ -1998,52 +1086,20 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 except SchemaRefusal as error:
                     refusal = f"the established reading's provenance was refused: {error}"
                 else:
-                    provenance = payload["provenance"]
-                    source_regions = export_source_regions(context.tree, payload["regions"], census)
-                    reading = context.tree.read_artifact_reference(
-                        payload["perlectio_ref"],
-                        stage=PERLECTOR,
-                        kind="perlectio",
-                        subject_id=act["act_id"],
-                    )
-                    witnesses = export_witnesses(context, reading, act["act_id"])
-                    try:
-                        revision_stopped, dissent_stopped = budget_stopped_comparisons(
-                            reading.get("payload"),
-                            dissent_budget,
-                            f"the established Perlectio of {act['act_id']}",
-                        )
-                    except SchemaRefusal as error:
-                        raise FatalAccounting(str(error)) from error
-                    # Each witness row says whether the budget stopped its dissent, so
-                    # a verifier recounts the stops from the rows it exports.
-                    if not set(dissent_stopped) <= {witness["chair"] for witness in witnesses}:
-                        raise FatalAccounting(
-                            f"the established Perlectio of {act['act_id']} records a stopped "
-                            "dissent row for a chair outside its witness basis"
-                        )
-                    for witness in witnesses:
-                        witness["dissent_stopped"] = witness["chair"] in dissent_stopped
-                    comparison_stops[act_key] = {
-                        "act_key": act_key,
-                        "self_revision_stopped": revision_stopped,
-                        "dissent_chairs_stopped": dissent_stopped,
-                    }
                     entry.update(
                         {
-                            # The Archetypus's own field. Nothing else may reach here.
                             "text": payload["text"],
-                            # The two things the record says *about* that text, which
-                            # travel with it or the export describes a damaged act as
-                            # a whole one: the status verified above, and the older
-                            # annotation layer carried whole rather than replaced.
                             "text_status": payload["text_status"],
                             "transcription_annotations": payload["annotations"],
-                            "provenance": provenance,
-                            "source_regions": source_regions,
+                            "provenance": payload["provenance"],
+                            "source_regions": export_source_regions(
+                                context.tree, payload["regions"], census
+                            ),
                             "perlectio_ref": payload["perlectio_ref"],
                             "recensor_ref": payload["recensor_ref"],
-                            "witnesses": witnesses,
+                            "witnesses": export_page_witnesses(
+                                context, reading, testimonia.get(row["page_id"], [])
+                            ),
                             "dissent_ref": payload["dissent_ref"],
                             "uncertainty": payload["uncertainty"],
                         }
@@ -2053,85 +1109,63 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 category = ArmariumCategory.REFUSED_WITH_REASON
                 entry["category"] = category.value
                 entry["reason"] = refusal
-                review_items.append(entry)
-        elif established is not None:
-            refused_payload = established.get("payload")
-            entry["reason"] = (
-                refused_payload.get("reason", "")
-                if isinstance(refused_payload, dict)
-                else review["payload"].get("reason", "")
+                non_delivered.append(entry)
+        else:
+            reason = review_reason(review)
+            if not reason and row["hold_codes"]:
+                reason = f"holds: {', '.join(row['hold_codes'])}"
+            entry["reason"] = reason
+            non_delivered.append(entry)
+        is_delivered = category is ArmariumCategory.DELIVERED
+        projected = {
+            "act_id": row["act_id"],
+            "act_key": row["act_key"],
+            "category": category.value,
+            "canonical_clean_text": entry.get("text") if is_delivered else None,
+            "text_status": entry.get("text_status"),
+            "transcription_annotations": entry.get("transcription_annotations"),
+            "provenance": entry.get("provenance"),
+            "source_regions": entry.get("source_regions", []),
+            "reason": entry.get("reason"),
+            "evidence_refs": entry["evidence_refs"],
+            "witnesses": entry.get("witnesses", []),
+            "perlectio_ref": entry.get("perlectio_ref"),
+            "recensor_ref": entry.get("recensor_ref"),
+            "dissent_ref": entry.get("dissent_ref"),
+            "approval_ref": None,
+            "uncertainty": entry.get("uncertainty"),
+        }
+        if row["kind"] == "other":
+            projected_others.append({**projected, "page_ordinal": row["page_ordinal"]})
+        else:
+            categories[row["act_key"]] = category
+            coverages[row["act_key"]] = entry["witness_coverage"]
+            act_pages[row["act_key"]] = sorted(
+                {row["page_ordinal"]}
+                | {region["source_page_ordinal"] for region in entry.get("source_regions", [])}
             )
-            review_items.append(entry)
-        else:
-            entry["reason"] = review["payload"].get("reason", "")
-            review_items.append(entry)
-
-        categories[act_key] = category
-        coverages[act_key] = review["payload"]["coverage"]
-        reviews[act_key] = review["payload"]
-        act_pages[act_key] = marked_out_pages[act["act_id"]]
-        if category is ArmariumCategory.DELIVERED:
-            canonical_clean_text = entry.get("text")
-            if not isinstance(canonical_clean_text, str):
-                raise FatalAccounting(
-                    "a delivered Armarium entry has no literal Archetypus text; an export "
-                    "may not substitute or fall back to another reading"
-                )
-            # Checked the same way and for the same reason as the literal beside it:
-            # a delivered act reaching the aggregate with no status would be counted
-            # as merely unmeasured, and this stage has just verified one.
-            text_status = entry.get("text_status")
-            if not isinstance(text_status, str) or text_status not in TEXT_STATUSES:
-                raise FatalAccounting(
-                    "a delivered Armarium entry has no established-text status; an act the "
-                    "pipeline knows is damaged may not be aggregated as an unmeasured one"
-                )
-            act_text_status[act_key] = text_status
-        else:
-            canonical_clean_text = None
-        projected_acts.append(
-            {
-                "act_id": entry["act_id"],
-                "act_key": entry["act_key"],
-                "category": category.value,
-                # This is intentionally the same literal object value just read
-                # from the Archetypus; no writer receives another text source.
-                "canonical_clean_text": canonical_clean_text,
-                # Beside the literal, never instead of it, and `None` for an act
-                # with no established reading exactly as the literal is: an
-                # absent status is "this act has no record", not "this act was
-                # whole".
-                "text_status": entry.get("text_status"),
-                "transcription_annotations": entry.get("transcription_annotations"),
-                "provenance": entry.get("provenance"),
-                "source_regions": entry.get("source_regions", []),
-                "reason": entry.get("reason"),
-                "evidence_refs": entry["evidence_refs"],
-                "witnesses": entry.get("witnesses", []),
-                "perlectio_ref": entry.get("perlectio_ref"),
-                "recensor_ref": entry.get("recensor_ref"),
-                "dissent_ref": entry.get("dissent_ref"),
-                "approval_ref": entry.get("approval_ref"),
-                "uncertainty": entry.get("uncertainty"),
-            }
-        )
-
+            if is_delivered:
+                act_text_status[row["act_key"]] = entry["text_status"]
+                raised = [flag for flag in CONTINUATION_FLAGS if row[flag] is True]
+                if raised:
+                    continuation_flags[row["act_key"]] = raised
+            projected_acts.append(projected)
         context.publish(
             kind="manifest-entry",
-            subject_id=act["act_id"],
+            subject_id=row["act_id"],
             outcome=category.value,
             payload=entry,
-            approval_ref=entry.get("approval_ref"),
         )
 
-    unaddressed = list(unaddressed_chairs(context.registry.config))
-    # The aggregate and terminal ledger must derive from the same edge holds;
-    # computing the aggregate first could report complete beside a held page.
     all_ink_map_pages = ink_map_page_rows(
-        context, census, claimed_bounds_by_page(context, manifest_cache)
+        context, census, reading_region_bounds_by_page(context, rows)
     )
     ink_map_pages = [row for row in all_ink_map_pages if row["ordinal"] not in canaries]
-    joins = continuation_joins(context, reviews, projected_acts, manifest_cache, formats.formats)
+    joins = page_continuation_joins(links, projected_acts, formats.formats)
+    unaddressed = list(unaddressed_chairs(context.registry.config))
+    other_categories_by_page: dict[int, list[str]] = {}
+    for other in projected_others:
+        other_categories_by_page.setdefault(other["page_ordinal"], []).append(other["category"])
     aggregate = run_aggregate(
         categories,
         coverages,
@@ -2141,15 +1175,17 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         act_text_status=act_text_status,
         edge_hold_pages=edge_hold_pages_from_rows(ink_map_pages),
         continuation_joins=joins,
+        other_categories_by_page=other_categories_by_page,
+        unpaired_continuations=unpaired_continuations(
+            continuation_flags,
+            list(joins),
+            {act["act_id"]: act["act_key"] for act in projected_acts},
+        ),
     )
-    expected_count = len(expected) - len(canary_acts)
-    if len(categories) != expected_count:
-        raise FatalAccounting(
-            f"the seal expected {expected_count} acts and the export categorized "
-            f"{len(categories)}. Conservation failed at the last boundary"
-        )
-
-    pages = [
+    real_sealed = {
+        ordinal for ordinal, page in real_census.items() if page.get("outcome") == "sealed"
+    }
+    page_rows = [
         {
             "ordinal": ordinal,
             **{
@@ -2168,56 +1204,37 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             config_digest=context.config_digest,
             aggregate=aggregate,
             acts=tuple(projected_acts),
-            pages=tuple(pages),
+            pages=tuple(page_rows),
             source_manifest=tuple(
                 row for row in context.run["source_manifest"] if row["ordinal"] not in canaries
             ),
-            expected_acts=expected_count,
+            expected_acts=len(projected_acts),
             witness_chairs=tuple(context.witness_chairs),
             witness_floor=context.witness_floor,
             aggregate_basis={
                 "coverage_records": coverages,
                 "unaddressed_chairs": unaddressed,
                 "act_pages": act_pages,
-                # Non-text, and the reason the exported `partial` over a damaged act
-                # is recomputable on a clean machine rather than merely asserted.
                 "act_text_status": act_text_status,
+                "continuation_flags": continuation_flags,
+                "page_witness_chairs": sorted(declared_page_witness_chairs(context)),
             },
             ink_map_pages=ink_map_pages,
-            not_measured_basis=not_measured_basis(
+            not_measured_basis=page_not_measured_basis(
                 context,
-                manifest_cache,
-                census,
-                reviews,
+                {ordinal: page for ordinal, page in pages.items() if ordinal in real_sealed},
                 projected_acts,
-                canaries,
-                comparison_stops,
-                coverages,
             ),
             continuation_joins=joins,
+            other_readings=tuple(projected_others),
+            page_accounting=tuple(page_accounting_rows(context, pages, real_sealed)),
         ),
         formats,
         context.tree.read_bytes,
     )
     bundle_ref = context.retain(bundle.data)
-
-    # The terminal ledger's status, not the run aggregate's, is what this stage
-    # reports. The ledger accounts three unit types -- source, sealed page, act --
-    # and folds the aggregate's own reasons into its own, so it is never *less*
-    # partial than the aggregate and is partial in one case the aggregate is not:
-    # a sealed page whose acts all reached a completed category but disagree about
-    # which one is `held-for-review` in the ledger (`_page_ledger_category` errs
-    # toward "a human must look") while every act reconciles for `run_aggregate`.
-    # Reporting the aggregate there would have exited 0 and published an `export`
-    # outcome of `delivered` over a bundle whose own `claims.status` said `partial`
-    # and named the held page -- "a partial result always looks
-    # partial" broken by the run's own two measurements disagreeing. No run this
-    # repository can produce reaches that case today, because the two categories it
-    # needs come from Designator `excluded` and Recensor `confirmed-blank` outcomes
-    # that no stage emits; it is reachable and proven at the projection boundary,
-    # which is where spec 11's five-category accounting is proven at all.
     export_status = bundle.manifest["claims"]["status"]
-
+    by_key = lambda item: act_key_sort_key(item["act_key"])  # noqa: E731
     context.publish(
         kind="export",
         subject_id="export",
@@ -2230,28 +1247,22 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             **run_identity,
             "scenario": context.scenario,
             "aggregate": aggregate,
-            "expected_acts": expected_count,
-            "delivered": sorted(delivered, key=lambda item: act_key_sort_key(item["act_key"])),
-            # Every non-delivered act, not only held/refused review items: a
-            # confirmed-blank or excluded-with-approval act (COMPLETED-class) lands
-            # here too. The bundle's own review-items.jsonl filters correctly to
-            # held/refused (armarium_export.py::_review_records); this internal
-            # accounting field is named for what it actually holds.
+            "expected_acts": len(projected_acts),
+            "delivered": sorted((item for item in delivered if item["kind"] == "act"), key=by_key),
             "non_delivered": sorted(
-                review_items, key=lambda item: act_key_sort_key(item["act_key"])
+                (item for item in non_delivered if item["kind"] == "act"), key=by_key
             ),
-            # The page-level record beside the act-level one: every source the
-            # run declared, with the Exemplar's outcome for it. A page that was
-            # refused is named here and in the aggregate's reasons, never only
-            # implied by an act count that came up short.
-            "pages": pages,
+            # The labelled other layer, never counted in `expected_acts`.
+            "other_readings": sorted(
+                (item for item in delivered + non_delivered if item["kind"] == "other"),
+                key=by_key,
+            ),
+            "pages": page_rows,
             **(
                 {
                     "canary": {
                         "ordinals": sorted(canaries),
-                        "acts": sorted(
-                            canary_acts, key=lambda item: act_key_sort_key(item["act_key"])
-                        ),
+                        "acts": sorted(canary_acts, key=by_key),
                     }
                 }
                 if canaries
@@ -2271,10 +1282,37 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         },
         inputs=[bundle_ref],
     )
-
     context.seal_boundary()
     context.finish()
     return EXIT_COMPLETE if export_status == "complete" else EXIT_HELD
+
+
+def _require_refused_in_census(row: dict, census: dict[int, dict]) -> None:
+    """A `page-refused` row must stand for a page the census has refused."""
+    page = census.get(row["page_ordinal"])
+    if page is None or page.get("outcome") == "sealed":
+        raise FatalAccounting(
+            f"{row['act_key']} stands for a refused page, but the census has page "
+            f"{row['page_ordinal']} {'sealed' if page else 'absent'}"
+        )
+
+
+def main(registry_factory=ChairRegistry.from_toml) -> int:
+    """Run under the explicitly supplied chair/config implementation."""
+    args = stage_parser(DESCRIPTION).parse_args()
+    context = open_stage_context(
+        args, ARMARIUM, registry_factory=registry_factory, serving_reader=SERVING_READER
+    )
+    formats = context.armarium_formats
+    if formats is None:
+        raise FatalAccounting("Armarium has no format projection bound to the run configuration")
+    # Verify the source ledger's final boundary before publishing even a reusable
+    # manifest entry. A damaged Exemplar seal must stop export at once.
+    census = page_census(context)
+    canaries = canary_ordinals(context.run)
+    if not canaries <= set(census):
+        raise FatalAccounting("sealed canary ordinals are absent from the Exemplar page census")
+    return _export(context, formats, census, canaries)
 
 
 if __name__ == "__main__":

@@ -67,7 +67,7 @@ def test_the_default_surface_notifier_sends_nothing_and_says_nothing(tmp_path: P
     surface = _surface(tmp_path, output=messages)
 
     assert surface.notifier is notify_bridge.silent
-    surface.run(run_id="silent-run")
+    surface.run(run_id="silent-run", scenario="page-unbroken")
     assert not any("Phone notification" in line for line in messages)
     assert notify_bridge.silent("milestone", "anything").attempted is False
 
@@ -83,7 +83,7 @@ def test_run_and_export_completion_are_milestones_and_a_hold_is_a_decision(
 
     surface = _surface(tmp_path)
     surface.notifier = notifier
-    surface.run(run_id="notified-run")
+    surface.run(run_id="notified-run", scenario="page-unbroken")
     surface.export(run_id="notified-run")
 
     assert [event for event, _ in sent] == ["milestone", "milestone"]
@@ -102,7 +102,7 @@ def test_a_held_run_sends_a_decision_when_it_stops_not_afterwards(tmp_path: Path
     surface.notifier = notifier
 
     with pytest.raises(OperatorError):
-        surface.run(run_id="held-run", scenario="review")
+        surface.run(run_id="held-run", scenario="page-review")
 
     assert [event for event, _ in sent] == ["decision"]
     assert "needs a decision" in sent[0][1]
@@ -117,7 +117,7 @@ def test_a_raising_notifier_cannot_fail_the_verb_that_triggered_it(tmp_path: Pat
         raise RuntimeError("the notifier itself is broken")
 
     surface.notifier = explodes
-    outcome = surface.run(run_id="broken-notifier-run")
+    outcome = surface.run(run_id="broken-notifier-run", scenario="page-unbroken")
 
     assert outcome.state == "complete"
     assert any("NOT DELIVERED" in line for line in messages)
@@ -144,7 +144,7 @@ def test_notification_does_not_replace_the_terminal_result(tmp_path: Path) -> No
     source, manifest = _manifest(tmp_path)
     _launch(surface, spend)
     surface.upload(source, sealed_manifest=manifest)
-    surface.run(run_id="terminal-result-run")
+    surface.run(run_id="terminal-result-run", scenario="page-unbroken")
 
     assert any("Run complete." in line for line in messages)
     assert [event for event, _ in sent] == ["milestone"]

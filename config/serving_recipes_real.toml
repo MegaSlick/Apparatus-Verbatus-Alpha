@@ -22,7 +22,7 @@
 #
 # THIS CATALOGUE RETIRES THE PER-TIER PIXEL LADDER.  Each witness chair now sees its own
 # *trained* geometry at every tier, not a generic per-tier budget that matched
-# no chair: Chandra (`designator_structure` and `attestator_1`) 3,136 /
+# no chair: Chandra (`attestator_1`) 3,136 /
 # 6,291,456 px (`chandra/model/util.py::scale_to_fit`'s own `max_size`) at
 # `max_model_len = 18,000` (the vendor's own `--max-model-len`); Churro
 # (`attestator_3`) 401,408 / 4,014,080 px (its `preprocessor_config.json` and
@@ -48,22 +48,13 @@
 # largest any row now asks for), `context_cap = 32,768` at every tier but
 # `generic-80gb-plus`, which is 65,536 for the Perlector's page reading (admits Churro's
 # 25,000-token generation bound, and at `generic-80gb-plus` the Perlector's
-# two-view page-fallback act, 20,400 image tokens alone); `engine_memory_fraction = "0.90"` at `generic-24gb` only (0.58 had
+# whole-page reading); `engine_memory_fraction = "0.90"` at `generic-24gb` only (0.58 had
 # no derivation anywhere in this tree or the old pipeline, which never served
 # below 0.85 on a comparable card, and under `residency = "single"` it was a
 # co-residency leftover that only ever subtracted pixels).
 # `operations/serving/test_serving_catalogue_capacity.py` reads this file and
-# asserts that every row it ships passes -- at one and at two capture views for
-# the Perlector -- and that none exceeds its tier's `context_cap`.
-#
-# ONE MEASURED SHAPE STILL DOES NOT FIT, and it is recorded rather than papered
-# over: a two-capture-view *page-fallback* act -- an act whose bounds are the
-# whole page, seen from two captures -- sends four page-sized images, which at
-# the 80 GB+ tier's `max_pixels` is 20,400 prompt tokens before a word of
-# prompt.  Its token count fits the smaller tiers' contexts, but its weights
-# rule those tiers out.  The 80 GB+ row has a 65,536-token context, sized for a
-# whole-page reading (its own comment has the arithmetic); the pinned capacity
-# case says the act request fits that row.
+# asserts that every witness row admits a dense page, that the Perlector row
+# admits a dense whole-page reading, and that none exceeds its tier's `context_cap`.
 #
 # CHURRO'S ANSWER BOUND IS THE VENDOR'S OWN, AND EVERY TIER HOLDS IT.  The live
 # chair is asked in the system string the vendor's own registry resolves for
@@ -90,17 +81,16 @@
 # context, and each chair's is now sized to what its own trained geometry
 # needs.
 #
-# `enable_prefix_caching = false` FOR THE TWO HYBRID-ATTENTION CHECKPOINTS,
-# WHICH SERVE THREE CHAIRS.  Chandra-2 (`designator_structure`, `attestator_1`)
-# has only 8 full-attention layers of 32, and the Perlector's Qwen3.8-27B only
-# 16 of 64; the rest are linear/recurrent layers that keep per-sequence state
+# `enable_prefix_caching = false` FOR THE TWO HYBRID-ATTENTION CHAIRS.
+# Chandra-2 (`attestator_1`) has only 8 full-attention layers of 32, and the
+# Perlector's Qwen3.8-27B only 16 of 64; the rest are linear/recurrent layers that keep per-sequence state
 # rather than per-token KV.  vLLM 0.30.0 supports prefix caching on these and
 # turns it on when no flag says otherwise; with it on, the recurrent layers
 # run in `mamba_cache_mode = "align"`, which reserves two state pages per
 # sequence instead of one (`vllm/v1/kv_cache_interface.py`,
 # `MambaSpec.max_memory_usage_bytes`).  That memory comes out of what these
-# rows budget for KV and concurrent sequences.  So these seven rows set it false, the argv carries
-# `--no-enable-prefix-caching`, and `manager.start` refuses a hybrid row with
+# rows budget for KV and concurrent sequences.  So these four rows set it
+# false, the argv carries `--no-enable-prefix-caching`, and `manager.start` refuses a hybrid row with
 # it on.  DAI and Churro are ordinary Qwen2.5-VL (full attention throughout)
 # and keep prefix caching on.
 #
@@ -122,7 +112,7 @@
 # reading samples under comes from a file by default.  `"vllm"` still reads the
 # file's `eos_token_id`s: `try_get_generation_config` loads it under both
 # settings and `SamplingParams.update_from_generation_config` adds the ids as
-# stop tokens, so the Designator keeps Chandra's 248044, the Perlector its
+# stop tokens, so Attestator 1 keeps Chandra's 248044, the Perlector its
 # second id 248044, and DAI and Churro theirs.  The file's bytes are pinned by
 # the chair's verified snapshot manifest.
 
@@ -150,14 +140,14 @@
 #
 # Rows cover every configured chair in models-real.toml at every tier in
 # pod_placement.toml.  The secondary proposer is DAI's own record detector, run
-# `kind = "in-process"` by the Designator on the CPU after the structure chair
-# has closed: no server, no port, no share of the card.  Its `imgsz`, `conf_bp`,
+# `kind = "in-process"` by the Designator on the CPU: no server, no port, no
+# share of the card.  Its `imgsz`, `conf_bp`,
 # `iou_bp` and `max_det` are Ultralytics' own predict defaults for this
 # checkpoint (imgsz from the checkpoint's own training arguments), written out
 # so the sealed catalogue says what the detector was asked with; none is tuned.
 # Surya is run `kind = "subprocess"` by the Designator in its own locked
-# environment (operations/serving/surya), on the CPU, once the structure chair
-# has closed. Its thread count and time allowances are planning values, not
+# environment (operations/serving/surya), on the CPU, before the record detector
+# loads. Its thread count and time allowances are planning values, not
 # measurements of a pod.
 # The common stage parser seals the selected catalogue's content, so using
 # this catalogue cannot silently share a run authority with the fixture-only
@@ -191,7 +181,7 @@
 # completed inference probe; on expiry the chair is killed and PREFLIGHT goes
 # red.  It should cover weight bytes / volume read rate + torch.compile +
 # profiling and warm-up + margin.  At generic-24gb, Chandra
-# (`designator_structure`, `attestator_1`) uses 600 s after its ~220 s cold
+# (`attestator_1`) uses 600 s after its ~220 s cold
 # RTX 4090 measurement; Churro (`attestator_3`) after its measurement of up to
 # ~210 s on a loaded host; and DAI (`attestator_2`) after its ~60 s measurement
 # (all 2026-09-27).
@@ -206,102 +196,7 @@
 # fresh volume.
 schema = "serving-recipes.v1"
 
-# Chandra fills the Designator structure chair and Attestator 1.  They have
-# separate rows because a chair, not merely a model repository, is the serving
-# contract and receipt identity.
-[[profiles]]
-kind = "vllm"
-recipe = "unproven-real-designator"
-chair = "designator_structure"
-tier = "generic-24gb"
-host = "127.0.0.1"
-port = 8101
-served_model_id = "designator-structure"
-dtype = "bfloat16"
-seed = 0
-required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 18000
-max_num_seqs = 1
-max_num_batched_tokens = 8192
-gpu_memory_utilization = "0.85"
-min_pixels = 3136
-max_pixels = 6291456
-patch_size = 16
-merge_size = 2
-enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
-enforce_eager = false
-trust_remote_code = false
-enable_tower_connector_lora = false
-max_lora_rank = 64
-generation_config = "vllm"
-preflight_state = "unproven"
-startup_timeout_seconds = 600  # 24 GB RTX 4090 measurement; see header
-poll_interval_seconds = 2
-request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
-readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
-
-[[profiles]]
-kind = "vllm"
-recipe = "unproven-real-designator"
-chair = "designator_structure"
-tier = "generic-48gb"
-host = "127.0.0.1"
-port = 8101
-served_model_id = "designator-structure"
-dtype = "bfloat16"
-seed = 0
-required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 18000
-max_num_seqs = 2
-max_num_batched_tokens = 8192
-gpu_memory_utilization = "0.78"
-min_pixels = 3136
-max_pixels = 6291456
-patch_size = 16
-merge_size = 2
-enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
-enforce_eager = false
-trust_remote_code = false
-enable_tower_connector_lora = false
-max_lora_rank = 64
-generation_config = "vllm"
-preflight_state = "unproven"
-startup_timeout_seconds = 600  # EXTRAPOLATED from designator_structure 24 GB RTX 4090 measurement; see header
-poll_interval_seconds = 2
-request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
-readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
-
-[[profiles]]
-kind = "vllm"
-recipe = "unproven-real-designator"
-chair = "designator_structure"
-tier = "generic-80gb-plus"
-host = "127.0.0.1"
-port = 8101
-served_model_id = "designator-structure"
-dtype = "bfloat16"
-seed = 0
-required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-max_model_len = 18000
-max_num_seqs = 4
-max_num_batched_tokens = 8192
-gpu_memory_utilization = "0.88"
-min_pixels = 3136
-max_pixels = 6291456
-patch_size = 16
-merge_size = 2
-enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
-enforce_eager = false
-trust_remote_code = false
-enable_tower_connector_lora = false
-max_lora_rank = 64
-generation_config = "vllm"
-preflight_state = "unproven"
-startup_timeout_seconds = 600  # EXTRAPOLATED from designator_structure 24 GB RTX 4090 measurement; see header
-poll_interval_seconds = 2
-request_timeout_seconds = 600  # UNMEASURED planning value: no real reading has been timed
-readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
-
+# Chandra fills Attestator 1.
 [[profiles]]
 kind = "vllm"
 recipe = "unproven-real-attestatores"

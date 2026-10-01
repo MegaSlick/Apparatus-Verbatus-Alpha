@@ -7,6 +7,7 @@ fake cgroup directory, so nothing here reaches RunPod or depends on the test mac
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import threading
@@ -286,10 +287,33 @@ def test_cgroup_v1_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     assert "no GPU, CPU or network work" not in log_of(state)
 
 
+def wait_for(condition, what, limit=30):
+    """Waits for an observable condition, failing with `what` when the generous limit passes."""
+    deadline = time.monotonic() + limit
+    while not condition():
+        assert time.monotonic() < deadline, f"timed out waiting for {what}"
+        time.sleep(0.05)
+
+
 def test_a_deadline_rewritten_while_running_ignores_garbage_and_honours_an_extension(pod):
     env, calls, state = pod
     env["FAKE_GPU_UTIL"] = "80"
-    state.mkdir()
+    # The guard's clock is a file the test sets, so each step waits on what the guard did
+    # rather than on how fast it runs; every date +%s call is counted as a tick happening.
+    clock = state.parent / "clock"
+    ticks = state.parent / "clock-reads"
+    start = int(time.time())
+    clock.write_text(f"{start}\n")
+    fake_date = Path(env["PATH"].split(":")[0]) / "date"
+    fake_date.write_text(
+        "#!/bin/sh\n"
+        'if [ "$*" = "+%s" ]; then\n'
+        f'  echo >> "{ticks}"\n'
+        f'  exec cat "{clock}"\n'
+        "fi\n"
+        f'exec {shutil.which("date")} "$@"\n'
+    )
+    fake_date.chmod(0o755)
     deadline = state / "deadline-testpod"
     staging = state / "deadline-testpod.new"
 
@@ -297,29 +321,29 @@ def test_a_deadline_rewritten_while_running_ignores_garbage_and_honours_an_exten
         staging.write_text(f"{value}\n")
         staging.replace(deadline)
 
-    def schedule():
-        time.sleep(1)
-        rewrite("soon")
-        time.sleep(1.5)
-        rewrite(int(time.time()) + 3600)
-        time.sleep(3.5)
-        rewrite(int(time.time()))
-
-    started = time.monotonic()
-    writer = threading.Thread(target=schedule)
-    writer.start()
+    process = subprocess.Popen(["sh", str(GUARD), "0.001", "30"], env=env, start_new_session=True)
     try:
-        # The first deadline is 3.6 s out; only the extension keeps the pod past it.
-        run_until(
-            ["sh", str(GUARD), "0.001", "30"], env, lambda: "pod delete testpod" in lines(calls)
-        )
+        wait_for(lambda: "armed for pod testpod" in log_of(state), "the guard to arm")
+        # 0.001 hours is 3 whole seconds on the guard's clock.
+        assert f"deadline {start + 3}," in log_of(state)
+        rewrite("soon")
+        wait_for(lambda: "ignored deadline file value 'soon'" in log_of(state), "garbage ignored")
+        rewrite(start + 3600)
+        wait_for(lambda: f"deadline now {start + 3600}" in log_of(state), "the extension")
+        # Well past the first deadline: only the extension keeps the pod through these ticks.
+        clock.write_text(f"{start + 60}\n")
+        seen = len(lines(ticks))
+        wait_for(lambda: len(lines(ticks)) >= seen + 3, "ticks past the first deadline")
+        assert "pod delete testpod" not in lines(calls)
+        rewrite(start + 60)
+        wait_for(lambda: "pod delete testpod" in lines(calls), "the delete")
     finally:
-        writer.join()
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
     log = log_of(state)
-    assert "ignored deadline file value 'soon'" in log
     assert log.count("deadline now") == 2
-    assert "approved time is up" in log
-    assert time.monotonic() - started > 5.5
+    assert f"deadline now {start + 60}" in log
+    assert "deleting pod testpod: approved time is up" in log
 
 
 def test_the_rest_api_deletes_the_pod_when_both_runpodctl_forms_fail(pod, tmp_path):

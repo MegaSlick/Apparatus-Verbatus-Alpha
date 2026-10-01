@@ -1,10 +1,8 @@
-"""Chandra's native whole-page image presentation, shared by both callers.
+"""Chandra's native whole-page image presentation, as Attestator 1 shows a page.
 
 The pinned vendor pipeline converts an input page to RGB, applies
 ``chandra/model/util.py::scale_to_fit`` and serializes the result as PNG before
-the image is put on the wire.  The Designator and Attestator 1 both serve that
-same model, so they share this pixel operation rather than carrying two copies
-that can drift.
+the image is put on the wire.
 
 Source: ``datalab-to/chandra`` at
 ``d4f7467435aa4137d9539f000ddf0b7ced3eb43f`` (Apache-2.0), specifically
@@ -22,11 +20,6 @@ from common.imaging_ports import scale_to_fit_chandra
 
 PRESENT_OPERATION: Final = "chandra-scale-to-fit.v1"
 PRESENT_COLOUR_MODE: Final = "rgb"
-STRUCTURE_REQUEST_IMAGE_KIND: Final = "structure-request-image"
-STRUCTURE_REQUEST_IMAGE_SCHEMA: Final = "designator-structure-request-image.v1"
-STRUCTURE_REQUEST_IMAGE_FIELDS: Final = frozenset(
-    {"schema", "page_id", "page_ordinal", "source_image_ref", "presented"}
-)
 
 
 def render_page(page_bytes: bytes, bounds: Mapping[str, int]) -> tuple[bytes, tuple[int, int]]:

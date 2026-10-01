@@ -1,23 +1,19 @@
 """Shared residual-ink measurement for the early Ink Map and late Recensor.
 
 Ink is derived from the sealed page independently of stage claims. Coverage is
-the Designator's declared ``transform.bounds``, clipped here so a later
-geometry refusal is not pre-empted by this measurement. The early Ink Map
-passes empty coverage for the pre-proposal denominator; the Recensor passes
-every proposal and recovery region. This module invents no act, requests no
-recovery and holds no run.
+the boxes a caller declares, clipped here so a later geometry refusal is not
+pre-empted by this measurement. The early Ink Map passes empty coverage for the
+whole page's denominator; the Recensor passes the Perlector's reading regions.
+This module invents no act, requests no recovery and holds no run.
 
 The paper value comes from `common.background.infer_background_evidence`
-under the Designator's sealed `[grouping.background]` policy, so the audit and
-the stage it audits threshold against the same paper. The
-contrast stays this module's own: an audit sharing the Designator's margin
-would restate it rather than check it.
+under the sealed `[background]` policy of `config/ink_map.toml`, so every
+reader thresholds against the same paper. The contrast stays this module's
+own.
 
-The page-spanning component the Designator withholds from grouping
-(`pipeline/2_designator/grouping.partition_page_spanning`) held 35 to 87 per
+The page-spanning component held 35 to 87 per
 cent of audited ink on 44 real pages, so counting it flagged every page. It is
-re-derived here at the page's own derived margin, because the Designator's record
-carries only whole-page boxes, and taken out of `total_ink_pixels` and
+derived here at the page's own derived margin and taken out of `total_ink_pixels` and
 `outside_ink_pixels`; `page_ink_pixels` and `page_spanning_ink_pixels` keep the
 whole-page figure. It is cut at the derived margin rather than at this module's
 looser contrast, which merges writing touching it into the component and hides
@@ -36,10 +32,12 @@ from typing import Any, Final, TypedDict
 
 from common.background import (
     BASIS_POINTS,
-    DEFAULT_BACKGROUND_CONFIG_PATH,
+    DEFAULT_INK_MAP_CONFIG_PATH,
+    INK_MAP_TABLES,
     BackgroundPolicy,
     _ink_threshold,
     infer_background_evidence,
+    load_background_config,
     round_half_up_bp,
     validate_background_table,
 )
@@ -54,12 +52,9 @@ from common.sealed_config import read_sealed_toml
 MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 
 #: A pixel this many levels below the page's own inferred background is ink.
-#: Kept at or above the Designator conservation denominator's margin (2), so
-#: this audit never calls ink a pixel that accounting dismissed, the one
-#: disagreement that could lose ink silently (pinned by
-#: `common/test_designator_recensor_ink_calibration.py`). A reasoned default,
-#: not measured on real pages. Below a page's derived margin it counts more ink
-#: than the Designator's primary scan does; that is why the gates are fractions.
+#: It sits below a
+#: photographed page's derived margin (median 66), so there it counts more ink
+#: than a scan at the derived margin does; that is why the gates are fractions.
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
 
 #: Fraction of the page's own ink outside every region that flags it, in basis
@@ -102,10 +97,10 @@ class CoverageAuditPolicy(TypedDict):
     minimum_fraction_outside_bp: int
 
 
-#: Beside `[grouping.background]` under the one `designator-grouping` seal: the
-#: component this audit removes must be the one the Designator withheld, which
-#: holds only while both read one `page_spanning_area_bp`.
-DEFAULT_COVERAGE_AUDIT_CONFIG_PATH: Final = DEFAULT_BACKGROUND_CONFIG_PATH
+#: Beside `[background]` under the one `ink-map` seal.
+DEFAULT_COVERAGE_AUDIT_CONFIG_PATH: Final = DEFAULT_INK_MAP_CONFIG_PATH
+# Named in every provenance refusal this module raises.
+_OWNER: Final = "the ink-map configuration"
 
 COVERAGE_AUDIT_BP_FIELDS: Final = (SUBSTANTIAL_INK_AREA_BP_FIELD, EDGE_BAND_BP_FIELD)
 
@@ -118,22 +113,22 @@ COVERAGE_NOISE_FLOOR_FIELDS: Final = (MINIMUM_INK_PIXELS_FIELD, MINIMUM_FRACTION
 def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]") -> dict[str, int]:
     """The sealed coverage-audit values (two gates and the noise floor), checked and returned.
 
-    Here rather than in the Designator's loader: three stages run under this
-    block, and a value one would refuse all three must.
+    One validator for every stage that runs under this block, so a value one
+    would refuse all must.
     """
     if not isinstance(table, dict):
-        raise ContractError(f"the grouping configuration has no {where} table")
+        raise ContractError(f"the ink-map configuration has no {where} table")
     unexpected = sorted(
         set(table) - set(COVERAGE_AUDIT_BP_FIELDS) - {"provenance", COVERAGE_NOISE_FLOOR_TABLE}
     )
     if unexpected:
         raise ContractError(
-            f"the grouping configuration's {where} carries unknown field(s) "
+            f"the ink-map configuration's {where} carries unknown field(s) "
             f"{unexpected}; an unread policy field cannot be applied"
         )
     missing = sorted((set(COVERAGE_AUDIT_BP_FIELDS) | {COVERAGE_NOISE_FLOOR_TABLE}) - set(table))
     if missing:
-        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
+        raise ContractError(f"the ink-map configuration's {where} is missing field(s) {missing}")
     values = {name: table[name] for name in COVERAGE_AUDIT_BP_FIELDS}
     values.update(
         validate_coverage_noise_floor_table(
@@ -144,7 +139,7 @@ def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]"
         0 < values[SUBSTANTIAL_INK_AREA_BP_FIELD] <= BASIS_POINTS
     ):
         raise ContractError(
-            f"the grouping configuration's {where} {SUBSTANTIAL_INK_AREA_BP_FIELD} is not a "
+            f"the ink-map configuration's {where} {SUBSTANTIAL_INK_AREA_BP_FIELD} is not a "
             f"basis-point integer in 1..{BASIS_POINTS}; a gate of zero "
             "flags every page that carries a single unclaimed pixel and says nothing"
         )
@@ -152,7 +147,7 @@ def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]"
         0 < values[EDGE_BAND_BP_FIELD] < BASIS_POINTS // 2
     ):
         raise ContractError(
-            f"the grouping configuration's {where} {EDGE_BAND_BP_FIELD} is not a basis-point "
+            f"the ink-map configuration's {where} {EDGE_BAND_BP_FIELD} is not a basis-point "
             f"integer strictly between 0 and {BASIS_POINTS // 2}; a band of zero has no strip "
             "to measure and a band of half the shorter side leaves the page no centre, so "
             "the perimeter measure would be a whole-page measure under another name"
@@ -165,27 +160,27 @@ def validate_coverage_noise_floor_table(
 ) -> dict[str, int]:
     """The two sealed noise-floor values, checked against their bounds and returned."""
     if not isinstance(table, dict):
-        raise ContractError(f"the grouping configuration has no {where} table")
+        raise ContractError(f"the ink-map configuration has no {where} table")
     unexpected = sorted(set(table) - set(COVERAGE_NOISE_FLOOR_FIELDS) - {"provenance"})
     if unexpected:
         raise ContractError(
-            f"the grouping configuration's {where} carries unknown field(s) "
+            f"the ink-map configuration's {where} carries unknown field(s) "
             f"{unexpected}; an unread policy field cannot be applied"
         )
     missing = sorted(set(COVERAGE_NOISE_FLOOR_FIELDS) - set(table))
     if missing:
-        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
+        raise ContractError(f"the ink-map configuration's {where} is missing field(s) {missing}")
     values = {name: table[name] for name in COVERAGE_NOISE_FLOOR_FIELDS}
     if not is_plain_int(values[MINIMUM_INK_PIXELS_FIELD]) or values[MINIMUM_INK_PIXELS_FIELD] <= 0:
         raise ContractError(
-            f"the grouping configuration's {where} {MINIMUM_INK_PIXELS_FIELD} is not a positive "
+            f"the ink-map configuration's {where} {MINIMUM_INK_PIXELS_FIELD} is not a positive "
             "integer; a floor of zero flags every page that carries a single stray pixel"
         )
     if not is_plain_int(values[MINIMUM_FRACTION_OUTSIDE_BP_FIELD]) or not (
         0 < values[MINIMUM_FRACTION_OUTSIDE_BP_FIELD] <= BASIS_POINTS
     ):
         raise ContractError(
-            f"the grouping configuration's {where} {MINIMUM_FRACTION_OUTSIDE_BP_FIELD} is not a "
+            f"the ink-map configuration's {where} {MINIMUM_FRACTION_OUTSIDE_BP_FIELD} is not a "
             f"basis-point integer in 1..{BASIS_POINTS}; a fraction of zero fires on every page "
             "that clears the noise floor"
         )
@@ -200,41 +195,22 @@ def load_coverage_audit_config(
     Refused loudly rather than defaulted: a gate silently taken as unlimited
     would change which pages are held with no config line saying so.
     """
-    config, digest = read_sealed_toml(path, "coverage-audit configuration")
-    grouping = config.get("grouping")
-    if not isinstance(grouping, dict):
-        raise ContractError("the coverage-audit configuration has no [grouping] table")
-    page_area = grouping.get("page_area_bp")
-    absolute = grouping.get("absolute")
-    if not isinstance(page_area, dict) or not isinstance(absolute, dict):
-        raise ContractError(
-            "the coverage-audit configuration is missing [grouping.page_area_bp] or "
-            "[grouping.absolute]; this audit takes the page-spanning bound and the "
-            "stroke-connectivity radius from the same file the Designator withheld under"
-        )
-    spanning = page_area.get("page_spanning_area_bp")
-    gap = absolute.get("gap_tolerance_px")
-    if not is_plain_int(spanning) or not 0 < spanning <= BASIS_POINTS:
-        raise ContractError(
-            "the coverage-audit configuration's [grouping.page_area_bp] page_spanning_area_bp "
-            f"is not a basis-point integer in 1..{BASIS_POINTS}"
-        )
-    if not is_plain_int(gap) or gap < 0:
-        raise ContractError(
-            "the coverage-audit configuration's [grouping.absolute] gap_tolerance_px is not a "
-            "non-negative integer"
-        )
+    config, digest = read_sealed_toml(path, "ink-map configuration", INK_MAP_TABLES)
+    spanning, gap = page_spanning_policy(config)
     # The page-spanning split is cut at the page's derived margin, so a reader
     # checking a recorded margin needs the sealed fraction it derives from.
-    ink_margin_bp = validate_background_table(grouping.get("background"))["ink_margin_bp"]
+    ink_margin_bp = validate_background_table(config.get("background"))["ink_margin_bp"]
     audit = config.get("coverage_audit")
     values = validate_coverage_audit_table(audit)
     # Only a shipped file must declare provenance; the table validators also
     # take bare tables built in code.
-    validate_provenance_block(audit.get("provenance"), where="[coverage_audit.provenance]")
+    validate_provenance_block(
+        audit.get("provenance"), where="[coverage_audit.provenance]", owner=_OWNER
+    )
     validate_provenance_block(
         audit[COVERAGE_NOISE_FLOOR_TABLE].get("provenance"),
         where=f"[coverage_audit.{COVERAGE_NOISE_FLOOR_TABLE}.provenance]",
+        owner=_OWNER,
     )
     return {
         "config_sha256": digest,
@@ -243,6 +219,55 @@ def load_coverage_audit_config(
         "gap_tolerance_px": gap,
         "ink_margin_bp": ink_margin_bp,
     }
+
+
+def ink_map_config_digest(path: str | Path = DEFAULT_INK_MAP_CONFIG_PATH) -> str:
+    """The seal of an ink-map configuration every reader would accept, read whole."""
+    background = load_background_config(path)
+    coverage = load_coverage_audit_config(path)
+    if background["config_sha256"] != coverage["config_sha256"]:
+        raise ContractError("the ink-map configuration changed while it was being read")
+    return coverage["config_sha256"]
+
+
+def page_spanning_policy(config: dict[str, Any]) -> tuple[int, int]:
+    """`(page_spanning_area_bp, gap_tolerance_px)` from a loaded ink-map configuration.
+
+    The bound above which one connected component is page-spanning, and the
+    stroke-connectivity radius it is found at; each table carries its own
+    provenance.
+    """
+    page_spanning = config.get("page_spanning")
+    connectivity = config.get("connectivity")
+    if not isinstance(page_spanning, dict) or not isinstance(connectivity, dict):
+        raise ContractError(
+            "the ink-map configuration is missing [page_spanning] or [connectivity]; this "
+            "audit takes the page-spanning bound and the stroke-connectivity radius from them"
+        )
+    for table, name, where in (
+        (page_spanning, "page_spanning_area_bp", "[page_spanning]"),
+        (connectivity, "gap_tolerance_px", "[connectivity]"),
+    ):
+        if set(table) != {name, "provenance"}:
+            raise ContractError(
+                f"the ink-map configuration's {where} is not exactly {name} and its provenance"
+            )
+        validate_provenance_block(
+            table["provenance"], where=f"{where[:-1]}.provenance]", owner=_OWNER
+        )
+    spanning = page_spanning["page_spanning_area_bp"]
+    gap = connectivity["gap_tolerance_px"]
+    if not is_plain_int(spanning) or not 0 < spanning <= BASIS_POINTS:
+        raise ContractError(
+            "the ink-map configuration's [page_spanning] page_spanning_area_bp "
+            f"is not a basis-point integer in 1..{BASIS_POINTS}"
+        )
+    if not is_plain_int(gap) or gap < 0:
+        raise ContractError(
+            "the ink-map configuration's [connectivity] gap_tolerance_px is not a "
+            "non-negative integer"
+        )
+    return spanning, gap
 
 
 def resolve_coverage_audit_policy(
@@ -336,8 +361,8 @@ def page_background(
 ) -> dict[str, Any]:
     """This page's paper value and the level this audit thresholds it at.
 
-    The paper value is the shared inference's, the identical call the
-    Designator makes on the identical bytes. `ink_margin` and `dark_mode` decide
+    The paper value is the shared inference's, the identical call every ink
+    reader makes on the identical bytes. `ink_margin` and `dark_mode` decide
     nothing here; they are recorded so a reader can tell a disagreement about
     paper from one about sensitivity. Raises `BackgroundInferenceRefusal` when the
     paper cannot be inferred or is too dark to express this contrast.
@@ -364,10 +389,9 @@ def page_spanning_components(
 ) -> tuple[list[dict[str, Any]], bytearray]:
     """This page's page-spanning components, and a page-sized 0/1 mask of their pixels.
 
-    The question `pipeline/2_designator/grouping.partition_page_spanning` asks,
-    on the same bytes at the same margin, gap tolerance and bound, so the
-    component removed here is the one that stage withheld. The mask is needed
-    because such a component's bounding box is the whole page.
+    Asked on the same bytes at the same margin, gap tolerance and bound by every
+    reader. The mask is needed because such a component's bounding box is the
+    whole page.
 
     One labelling costs about as much as the rest of `residual_ink` (up to
     1.83 s and 207 MB on an 18.4-megapixel page), so `ink_map_page` labels
@@ -439,8 +463,8 @@ def residual_ink(
 ) -> dict[str, Any]:
     """How much of this page's own ink sits outside every region cut for it.
 
-    `covered` is every proposal and recovery region cut for this page, in page
-    pixels as the Designator recorded them. Out-of-page bounds are clipped, not
+    `covered` is every reading region claimed on this page, in page pixels; the
+    Ink Map's own whole-page measure passes none. Out-of-page bounds are clipped, not
     refused, so a later stage's own geometry refusal is still reached. Both
     policies must be resolved for this page's own dimensions.
 
@@ -486,7 +510,7 @@ def _residual_counts(
         covered_bits = _row_bits(covered_mask, y, width)
         spanning_bits = _row_bits(spanning_mask, y, width)
         page_ink += ink_row.count(1)
-        # The component is found at the Designator's margin, so its mask may hold
+        # The component is found at the page's derived margin, so its mask may hold
         # pixels this audit does not call ink; only this audit's ink is removed.
         spanning_ink += (ink_bits & spanning_bits).bit_count()
         audited_bits = ink_bits & ~spanning_bits
@@ -524,10 +548,10 @@ def _audited_runs(
 def edge_ink_from_runs(
     evidence: dict[str, Any], covered: list[Bounds], *, coverage_policy: CoverageAuditPolicy
 ) -> dict[str, Any]:
-    """Re-measure the edge finding against later Designator cuts.
+    """Re-measure the edge finding against the regions later read on the page.
 
-    The initial measure precedes all proposals, so it is a candidate finding. A
-    later crop may release it only under the same band and gates over these
+    The initial measure precedes every reading, so it is a candidate finding. A
+    later reading region may release it only under the same band and gates over these
     retained runs; only the coverage mask may change. `coverage_policy` must be
     resolved for this page's own dimensions.
     """

@@ -23,7 +23,9 @@ ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
-def _run(tmp_path: Path, *, scenario: str = "happy", expected_exit: int = 0) -> tuple[Path, str]:
+def _run(
+    tmp_path: Path, *, scenario: str = "page-unbroken", expected_exit: int = 0
+) -> tuple[Path, str]:
     root = tmp_path / "runs"
     completed = subprocess.run(
         [
@@ -77,7 +79,7 @@ def test_semi_mode_refuses_an_intermediate_boundary_that_cannot_hold() -> None:
 
 
 def test_review_run_seals_attestatores_before_the_terminal_hold(tmp_path: Path) -> None:
-    root, run_id = _run(tmp_path, scenario="review", expected_exit=3)
+    root, run_id = _run(tmp_path, scenario="page-review", expected_exit=3)
     tree = RunTree(root, run_id)
     assert any(
         entry["kind"] == "stage-seal" for entry in tree.build_manifest("attestatores")["artifacts"]
@@ -183,24 +185,22 @@ def test_every_advanceable_boundary_is_a_driver_member_in_the_same_order() -> No
     """`held_advance_boundaries` indexes `STAGES`; the driver indexes its own sequence.
 
     A semi range is resolved independently over `SEQUENCE_NAMES` and `STAGES`,
-    so their boundary order must agree. `recovery` remains a legal driver member
-    but has no stage program or completion boundary.
+    so their boundary order must agree, member for member.
     """
 
     from pipeline.orchestrator.run import SEQUENCE_NAMES
 
-    assert tuple(name for name in SEQUENCE_NAMES if name in STAGES) == STAGES
-    assert set(SEQUENCE_NAMES) - set(STAGES) == {"recovery"}
+    assert SEQUENCE_NAMES == STAGES
 
 
 def test_a_range_endpoint_with_no_boundary_names_the_boundaries_that_do() -> None:
     with pytest.raises(ApprovalRefusal) as refusal:
         advance.held_boundaries_for_mode(
-            "semi", stage="recensor", from_stage="designator", to_stage="recovery"
+            "semi", stage="recensor", from_stage="designator", to_stage="not-a-stage"
         )
 
     detail = str(refusal.value)
-    assert "'recovery'" in detail and "owns no stage completion boundary" in detail
+    assert "'not-a-stage'" in detail and "owns no stage completion boundary" in detail
     assert all(boundary in detail for boundary in STAGES)
 
 

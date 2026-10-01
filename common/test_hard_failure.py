@@ -252,8 +252,6 @@ def test_the_tally_is_zero_over_an_empty_run(tmp_path):
                 for stage, outcome, reason in sorted(policy["reason_kinds"])
             },
         },
-        "instrument_by_kind": {},
-        "instrument_count": 0,
         "subjects": [],
     }
 
@@ -325,29 +323,6 @@ def test_the_ruled_cap_is_tallied_per_shard_run_not_across_run_trees(tmp_path):
     assert all(tally["breached"] is False for tally in tallies)
 
 
-def test_instrument_arm_failures_are_visible_but_do_not_spend_the_ruled_cap(tmp_path):
-    tree = make_run(tmp_path)
-    for kind in ("lectio-nuda", "lectio-prior", "primed-without-prior"):
-        publish(
-            tree,
-            stage=PERLECTOR,
-            kind=kind,
-            subject=f"act_{kind}",
-            outcome="failed",
-            adapter_revision="fake-perlector-v0",
-        )
-    policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
-    tally = tally_hard_failures(tree, policy)
-    assert tally["count"] == 0
-    assert tally["breached"] is False
-    assert tally["instrument_by_kind"]["perlector:failed"] == [
-        "act_lectio-nuda",
-        "act_lectio-prior",
-        "act_primed-without-prior",
-    ]
-    assert tally["instrument_count"] == 3
-
-
 def test_a_production_perlectio_failure_still_spends_the_ruled_cap(tmp_path):
     tree = make_run(tmp_path)
     publish(
@@ -360,36 +335,6 @@ def test_a_production_perlectio_failure_still_spends_the_ruled_cap(tmp_path):
     )
     tally = tally_hard_failures(tree, load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH))
     assert tally["count"] == 1
-    assert tally["instrument_by_kind"] == {}
-    assert tally["instrument_count"] == 0
-
-
-def test_a_subject_failing_on_both_arms_appears_in_both_lists_and_spends_the_cap(tmp_path):
-    """The partition's documented delicate case: the instrument arm neither
-    excuses nor doubles the production incident for the same subject."""
-
-    tree = make_run(tmp_path)
-    publish(
-        tree,
-        stage=PERLECTOR,
-        kind="perlectio",
-        subject="act_both_arms",
-        outcome="failed",
-        adapter_revision="fake-perlector-v0",
-    )
-    publish(
-        tree,
-        stage=PERLECTOR,
-        kind="lectio-nuda",
-        subject="act_both_arms",
-        outcome="failed",
-        adapter_revision="fake-perlector-v0",
-    )
-    tally = tally_hard_failures(tree, load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH))
-    assert tally["count"] == 1
-    assert tally["by_kind"]["perlector:failed"] == ["act_both_arms"]
-    assert tally["instrument_by_kind"]["perlector:failed"] == ["act_both_arms"]
-    assert tally["instrument_count"] == 1
 
 
 def test_exactly_two_hard_failures_is_an_early_warning_and_does_not_breach(tmp_path):
@@ -549,26 +494,6 @@ def test_an_ordinary_held_for_review_never_counts(tmp_path):
 
 
 # --- Reason-scoped kinds: the old pipeline's own hard/soft split -----------------
-
-
-def test_a_truncated_reading_never_counts_toward_the_run_level_cap(tmp_path):
-    """The old pipeline's own ruled distinction (`page_health.py`):
-    a dense page is not a damaged one. Three truncated Perlectiones is heavy
-    per-act recovery traffic, never evidence the run itself is going wrong."""
-    tree = make_run(tmp_path)
-    for ordinal in (1, 2, 3):
-        publish(
-            tree,
-            stage=PERLECTOR,
-            kind="perlectio",
-            subject=f"act_000000000000000{ordinal}",
-            outcome="truncated",
-            adapter_revision="fake-perlector-v0",
-        )
-    policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
-    tally = tally_hard_failures(tree, policy)
-    assert tally["count"] == 0
-    assert tally["breached"] is False
 
 
 def test_a_door_refusal_for_an_unmatched_reason_does_not_count(tmp_path):

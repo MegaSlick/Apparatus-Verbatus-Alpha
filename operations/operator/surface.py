@@ -1217,7 +1217,6 @@ class OperatorSurface:
         models_config: str | Path | None = None,
         serving_recipes_config: str | Path | None = None,
         witness_context_config: str | Path | None = None,
-        blind_read: str = "off",
     ) -> RunOutcome:
         if submission_folder is None:
             for flag, value in (
@@ -1240,7 +1239,7 @@ class OperatorSurface:
         started_at = utc_stamp(self.now())
         prior_state = self._prior_run_state(run_id)
         if submission_folder is None:
-            pages, acts, declared_ok = _declared_work(self.workspace, scenario)
+            pages, declared_ok = _declared_work(self.workspace, scenario)
             if not declared_ok:
                 # The orchestrator reads the same fixture, so refuse before
                 # starting a run that would fail out of sight.
@@ -1274,7 +1273,7 @@ class OperatorSurface:
         self.present(opening)
 
         if submission_folder is None:
-            self.present(f"Working next: {', '.join(acts)}.")
+            self.present("Working next: reading each page; the page reading names its acts.")
             self.present(
                 "This rehearsal uses declared synthetic pages, not an uploaded real submission."
             )
@@ -1287,7 +1286,6 @@ class OperatorSurface:
                 data_gate_policy=data_gate_policy,
             ),
             *roster_argv,
-            *(["--blind-read", blind_read] if blind_read != "off" else []),
         ]
         command = [
             sys.executable,
@@ -1315,7 +1313,6 @@ class OperatorSurface:
             "run_id": run_id,
             "scenario": scenario,
             "fixture": fixture,
-            "blind_read": blind_read,
             "started_at": started_at,
             "argv": list(command),
             "repository_commit": commit,
@@ -4248,20 +4245,21 @@ def _door_module(workspace: Path):
             del sys.modules[name]
 
 
-def _declared_work(workspace: Path, scenario: str) -> tuple[list[str], list[str], bool]:
-    """Name the pages and acts this scenario declares, before any run record exists.
+def _declared_work(workspace: Path, scenario: str) -> tuple[list[str], bool]:
+    """Name the pages this scenario declares, before any run record exists.
 
-    Intent only; `_exported_work` reports what actually happened. Pages are
-    filtered by the door's own scenario gating. The third element is `False`
-    when the fixture could not be read; an unknown `--scenario` is raised
-    instead, since it is the argument's fault, not the checkout's.
+    Intent only; `_exported_work` reports what actually happened. Acts are not
+    declared: the page reading names them. Pages are filtered by the door's own
+    scenario gating. The second element is `False` when the fixture could not
+    be read; an unknown `--scenario` is raised instead, since it is the
+    argument's fault, not the checkout's.
     """
 
     try:
         fixture = load_fixture(str(workspace / "proof"))
         door = _door_module(workspace)
     except Exception:
-        return ["the declared pages"], ["the declared acts"], False
+        return ["the declared pages"], False
     try:
         active_pages = door.fixture_pages_for_scenario(fixture, scenario)
     except ContractError as error:
@@ -4272,16 +4270,12 @@ def _declared_work(workspace: Path, scenario: str) -> tuple[list[str], list[str]
         ) from error
     # A malformed row is also an unreadable fixture.
     try:
-        active_ordinals = {page["ordinal"] for page in active_pages}
         pages = [f"page {page['ordinal']}" for page in active_pages]
-        acts = [
-            f"act {act['key']}" for act in fixture["act"] if act["page_ordinal"] in active_ordinals
-        ]
     except Exception:
-        return ["the declared pages"], ["the declared acts"], False
-    if pages and acts and all(isinstance(value, str) for value in pages + acts):
-        return pages, acts, True
-    return ["the declared pages"], ["the declared acts"], False
+        return ["the declared pages"], False
+    if pages:
+        return pages, True
+    return ["the declared pages"], False
 
 
 def _exported_work(

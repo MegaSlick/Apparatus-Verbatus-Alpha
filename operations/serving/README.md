@@ -185,7 +185,7 @@ tokens; the file's bytes are pinned by the chair's verified snapshot manifest.
 
 ## Hybrid-attention prefix caching
 
-Chandra-2 (`datalab-to/chandra-ocr-2`, serving `attestator_1` and `designator_structure`)
+Chandra-2 (`datalab-to/chandra-ocr-2`, serving `attestator_1`)
 and the Perlector (`Qwen/Qwen3.8-27B`) are hybrid Mamba/attention (`qwen3_5`) checkpoints.
 `manager.start` refuses either with `enable_prefix_caching` on, because of memory: with
 it on, vLLM 0.30.0 runs the recurrent layers in `mamba_cache_mode = "align"`, which
@@ -344,8 +344,7 @@ sends them unchanged.
 
 - **The image part comes before the text part** in a chair's user turn: each chair's chat
   template emits parts in list order, and each was fine-tuned with the vision block first
-  (`pipeline/3_attestatores/live_witness.py::_user_content`,
-  `pipeline/2_designator/structure_pass.py::page_request`).
+  (`pipeline/3_attestatores/live_witness.py::_user_content`).
 - **`max_tokens` is `min(the chair's declared upstream bound, max_model_len − the request's
   image and prompt cost)`**, with the second term expressed by sending no field
   (`common/request_capacity.py::sendable_max_tokens`): our own count of the remainder could
@@ -368,10 +367,7 @@ sends them unchanged.
    `ServiceHandle.request_reading`. The client takes the sealed decoding policy the stage
    loaded (refused unless it seals to the recorded digest) and selects the row by its own
    `identity.role`: `config/decoding.toml`'s `chair_decoding`, the chair's makers'
-   recommendation. Two request fields select within the sealed policy and belong to one
-   chair each: the Designator structure chair's `structure_attempt_ordinal` picks the
-   attempt's values on Chandra's retry schedule, and the Perlector's `variance_arm` picks
-   that arm's seed; every other request sends the profile's seed. Both are on the call
+   recommendation. Every request sends the profile's seed. Both are on the call
    record's `generation_sent`, and `sampling_effective` beside them holds what the pinned
    engine samples under (`common.decoding.engine_effective_sampling`: vLLM 0.30.0 raises a
    temperature in (0, 0.01) to 0.01, as for Churro's 1e-06, and a greedy request runs at
@@ -388,8 +384,7 @@ sends them unchanged.
    `ChairResponse`, never an exception, because a malformed witness body is evidence, not a
    stage abort. Write one `chair-call-record.v3` (fields in
    `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`) and return. Every stage reader of a
-   call record (the Designator's structure attempts and minted acts, every Testimonium's
-   serving call, every Perlector reading, re-proof and failed Perlectio) holds its
+   call record (every Testimonium's serving call, every Perlector page reading) holds its
    generation fields, sampling and seed to the sealed row through one check,
    `common.decoding.verify_call_sampling`; a reader holding only the stage context calls it
    through `common.stage.verify_retained_call_sampling`. A call record written under a
@@ -408,7 +403,7 @@ rather than repeat a request whose engine-side completion is unknown.
 
 **Chandra native calls.** `prepare_chandra_native` / `read_chandra_native` is the one narrow
 exception, for page-scoped `attestator_1` with adapter `chandra.v1` under the exact
-`decoding.v5` recipe. Each prepared dispatch sends Attestator 1's sealed row with one of
+`decoding.v6` recipe. Each prepared dispatch sends Attestator 1's sealed row with one of
 seven declared temperature/top-p pairs (`common.decoding.chair_attempt_decoding`, from the
 client's one decoding policy), and the stage must publish and pass a durable attempt-intent reference before the
 POST; `chandra-native-call-record.v2` binds it, so the three identical 0.8/0.95 attempts stay
@@ -449,7 +444,7 @@ the other tiers hold. A tier with no row is re-raised as
 
 `fakes.py` holds a fake endpoint and builders for stage tests against `ChairClient`
 (`ScriptedAnswer`, `FakeEndpoint`, `FakeLauncher`, `FakeProcess`, `FakePackages`,
-`FakeRegistry`, `FakeBlobStore`, `fake_serving_factory`, and the structure-chair builders).
+`FakeRegistry`, `FakeBlobStore` and `fake_serving_factory`).
 They mirror `test_manager.py`'s own fakes rather than sharing them.
 
 - `ScriptedAnswer.finish_reason` distinguishes `None` (a JSON `null`) from the `ABSENT`
@@ -465,27 +460,6 @@ They mirror `test_manager.py`'s own fakes rather than sharing them.
 - `sticky_after_stop` keeps `/health` answering after the process is told to exit, for tests
   that need `handle.stop()` to fail.
 
-The structure-chair builders (`structure_box_1000`, `structure_layout_block`,
-`structure_answer_body`, `structure_blank_page_body`, `scripted_structure_answer`,
-`scripted_structure_refusal`, `scripted_structure_cut_off`) take rectangles in the sealed
-page's pixels and return **Chandra's layout HTML**, whose `data-bbox` values are found by
-search over the 0–1000 grid and checked through `common.structure_answer.to_page_bounds`
-itself, so the builder cannot agree with a converter that changed. Each builder reads its
-body back through `common/chandra_layout.py::parse_layout_html` and checks the rectangles,
-so a drifted builder fails in the builder, not three stages later.
-
-- `structure_layout_block` writes one top-level `<div>`, for answers rectangles cannot
-  express: a bad or missing `data-bbox`, a label outside the vendor's nineteen,
-  `Blank-Page`.
-- `structure_blank_page_body` is a page the chair reports blank; this grammar has no
-  empty-list shape, and a body with no `<div>` is a refusal.
-- `scripted_structure_refusal` is keyed by `PARSE_OUTCOMES` code and covers the two
-  outcomes a body's shape can reach; the other four are wire-byte properties tested in
-  `common/test_chandra_layout.py`.
-- `scripted_structure_cut_off` truncates an answer before its first block closes and sets
-  the `length` stop word, as an overrun of `max_model_len` looks. The truncated body still
-  parses (with an `unclosed-block` finding), so the page is held on the stop word alone.
-
 ## End to end
 
 `pipeline/test_live_reading_seam_e2e.py` runs the whole seam: the real stage programs carry
@@ -495,18 +469,10 @@ live the same way it would be on a card — a temporary catalogue with `kind = "
 all four chairs at all three tiers — so the selector under test is the sealed one.
 
 - **A live run reaches a sealed terminal export**, with every reading naming the exact bytes
-  its engine sent. The export is **held for review**, and that is the rules working: Churro
-  reads its vendor's `HistoricalDocument` grammar, which has no coordinates, so it does not
-  attach and two witnesses fall short of the floor of three. Attaching a witness without
-  geometry is the Perlector's `anchor-line` basis, not yet built. Even then, one scripted run
-  over a fixture is not a proven pipeline.
+  its engine sent. The export is **held for review**, and that is the rules working: the
+  fixture's pages carry an act across their break, so the run is partial for that labelled
+  reconstruction. One scripted run over a fixture is not a proven pipeline.
 - **Two independent drivers reach the same fixture tree byte for byte**: the orchestrator's
   subprocess chain, and this suite's driver pointed at the committed fixture catalogue with
   `--placement-tier` and in-process stage `main`s. Whether the fixture tree itself moved is
   `pipeline/orchestrator/test_orchestrator_acceptance.py`'s `HAPPY_RUN_TREE_DIGEST` to say.
-
-`pipeline/test_structure_chair_e2e.py` starts one stage earlier, with the Designator's live
-pass against a scripted `designator_structure` chair, so the acts downstream are ones a
-*model* drew. It imports the live-seam driver rather than copying it; only the catalogue
-differs. Its export is held for the same Churro reason, which shows that replacing declared
-acts with proposed ones moved the denominator, not the coverage.

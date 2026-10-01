@@ -1,8 +1,8 @@
 """The Perlector's page path, proven end to end on the synthetic fixture and fake serving.
 
-A run sealed with `reading_unit = "page"` reads every sealed page whole: a
+A run reads every sealed page whole: a
 `page-feed`, a `page-reading`, the page's `page-accounting` and, for a parsed
-and valid answer, one `act-region` and one `perlectio.v2` per entry, each
+and valid answer, one `act-region` and one `perlectio.v3` per entry, each
 naming the accounting and held when the page is. The fixture tests run the
 real chain as subprocesses; the live tests run the stage in this process
 against `operations/serving/fakes.py`, as `test_live_perlector.py` does.
@@ -21,7 +21,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import page_feed
 import page_run
 import pytest
 from test_live_perlector import (
@@ -34,10 +33,13 @@ from test_live_perlector import (
     _TreeBlobs,
 )
 
+from common import page_feed, page_path
 from common.alignment import load_dissent_limits
-from common.contracts.canonical import digest_bytes, digest_of
+from common.background import DEFAULT_INK_MAP_CONFIG_PATH
+from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
-from common.contracts.identities import act_bindings, region_id, verify
+from common.contracts.identities import act_bindings, artifact_id, region_id, verify
+from common.contracts.stages import PERLECTOR, RECENSOR
 from common.decoding import (
     chair_decoding,
     engine_effective_sampling,
@@ -45,17 +47,27 @@ from common.decoding import (
     recorded_wire_decimals,
 )
 from common.exemplar_boundary import read_sealed_page
+from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.imaging import crop_png
 from common.page_accounting import is_inside, load_page_accounting_policy, placement_boxes
+from common.page_witness_units import DAI
 from common.runtree.store import RunTree
-from common.stage import DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH
-from conftest import file_bytes_snapshot, load_stage, programs_through
+from common.stage import open_context, reading_acts, stage_parser
+from conftest import (
+    file_bytes_snapshot,
+    floor_models_config,
+    load_stage,
+    programs_through,
+    rewitness_stage_boundary,
+)
+from operations.serving.assembly import SERVING_READER
 from operations.serving.config import profile_preflight_digest
 from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
 
 ROOT = Path(__file__).resolve().parents[2]
 BUDGET = load_dissent_limits()[0].max_comparison_steps
 PERLECTOR_PROGRAM = "pipeline/4_perlector/run.py"
+MODELS = ROOT / "config" / "models.toml"
 CHAIN = programs_through("attestatores")
 FIXTURE = tomllib.loads((ROOT / "proof" / "skeleton_fixture.toml").read_text(encoding="utf-8"))
 PAGE_ANSWERS = {
@@ -63,7 +75,6 @@ PAGE_ANSWERS = {
     for row in FIXTURE["page_answer"]
     if row["scenario"] == "happy"
 }
-TIERS = ("generic-24gb", "generic-48gb", "generic-80gb-plus")
 POLICY = load_page_accounting_policy()
 
 perlector = load_stage("4_perlector")
@@ -73,9 +84,8 @@ perlector = load_stage("4_perlector")
 
 
 def _page_protocol(directory: Path, **feed: Any) -> Path:
-    """The shipped protocol sealed to read whole pages, with any `[feed]` switch changed."""
+    """The shipped protocol, which reads whole pages, with any `[feed]` switch changed."""
     text = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
-    text = text.replace('reading_unit = "act"', 'reading_unit = "page"')
     for key, value in feed.items():
         head, table = text.split("[feed]\n")
         lines = [
@@ -161,32 +171,14 @@ def _union(boxes: list[dict[str, int]]) -> dict[str, int]:
 
 
 def _roster(base: Path, *replacements: tuple[str, str]) -> Path:
-    """The shipped roster with chair blocks replaced, beside its fixture snapshots."""
-    config_root = base / "chair-config"
-    shutil.copytree(ROOT / "config" / "model-fixtures", config_root / "model-fixtures")
-    shutil.copytree(ROOT / "config" / "manifests", config_root / "manifests")
-    text = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
+    """The committed roster with chair blocks replaced, beside its fixture snapshots."""
+    path = floor_models_config(base / "chair-config", 3)
+    text = path.read_text(encoding="utf-8")
     for old, new in replacements:
         assert old in text
         text = text.replace(old, new)
-    path = config_root / "models.toml"
     path.write_text(text, encoding="utf-8")
     return path
-
-
-_STRUCTURE_DIGEST = tomllib.loads((ROOT / "config" / "models.toml").read_text(encoding="utf-8"))[
-    "chairs"
-]["designator_structure"]["digest_manifest"]
-
-
-def _configured_block(chair: str, recipe: str) -> str:
-    """A chair standing on the structure chair's fixture snapshot, as the stage-2 tests do."""
-    return (
-        f'[chairs.{chair}]\nstate = "configured"\nsource = "local-repository"\n'
-        f'path = "designator_structure"\ndigest_manifest = "{_STRUCTURE_DIGEST}"\n'
-        f'manifest = "manifests/designator_structure.json"\nserving_recipe = "{recipe}"\n'
-        'license_note = "fixture identity only; no model weights or model license apply"\n'
-    )
 
 
 def _chair_block(chair: str) -> str:
@@ -200,33 +192,7 @@ _ABSENT_SURYA = (
     '[chairs.designator_surya]\nstate = "absent"\n'
     'reason = "no Surya detector is configured for this test run"\n'
 )
-_ABSENT_DETECTOR = (
-    '[chairs.secondary_proposer]\nstate = "absent"\n'
-    'reason = "no secondary proposer is configured for the offline walking skeleton"\n'
-)
 _NO_SURYA = (_chair_block("designator_surya"), _ABSENT_SURYA)
-_DETECTOR = (_ABSENT_DETECTOR, _configured_block("secondary_proposer", "fake-secondary-v0"))
-
-
-def _fixture_rows(recipe: str, chair: str) -> str:
-    return "".join(
-        f'\n[[profiles]]\nkind = "fixture"\nrecipe = "{recipe}"\nchair = "{chair}"\n'
-        f'tier = "{tier}"\ndescription = "fixture rows under test"\n'
-        for tier in TIERS
-    )
-
-
-_DETECTOR_ROWS = _fixture_rows("fake-secondary-v0", "secondary_proposer")
-
-
-def _fixture_catalogue(base: Path, rows: str) -> Path:
-    path = base / "chair-config" / "serving_recipes.toml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8") + rows,
-        encoding="utf-8",
-    )
-    return path
 
 
 # --- the fixture page path --------------------------------------------------------
@@ -237,6 +203,15 @@ def page_tree(tmp_path_factory) -> tuple[Path, Path]:
     base = tmp_path_factory.mktemp("page-reading")
     protocol = _page_protocol(base / "config")
     _chain(base / "runs", protocol, through_perlector=True)
+    return base / "runs", protocol
+
+
+@pytest.fixture(scope="module")
+def review_page_tree(tmp_path_factory) -> tuple[Path, Path]:
+    """The `page-review` scenario read whole: page 1 as `happy`, page 2's entry citing no box."""
+    base = tmp_path_factory.mktemp("page-reading-review")
+    protocol = _page_protocol(base / "config")
+    _chain(base / "runs", protocol, through_perlector=True, scenario="page-review")
     return base / "runs", protocol
 
 
@@ -256,7 +231,6 @@ def test_every_sealed_page_is_read_whole_into_a_feed_a_reading_and_its_acts(page
         assert payload["answer"] == json.loads(PAGE_ANSWERS[payload["page_ordinal"]])
         assert payload["audit"]["state"] == "not-run"
         assert payload["engine_call"] is None and payload["capacity"] is None
-        assert payload["reading_unit"] == "page"
     feed = feeds[0]["payload"]
     # The fixture roster runs Surya in stage 2, so every feed shows its census.
     assert feed["surya"]["census_ref"] is not None and "absent" not in feed["surya"]
@@ -264,12 +238,13 @@ def test_every_sealed_page_is_read_whole_into_a_feed_a_reading_and_its_acts(page
     assert feed["witness_testimony"] == "present"
     assert [(row["letter"], row["witness_label"]) for row in feed["witnesses"]] == [
         ("A", "attestator_1"),
-        ("B", "attestator_3"),
+        ("B", "attestator_2"),
+        ("C", "attestator_3"),
     ]
     assert len(_records(root, "act-region")) == len(_records(root, "perlectio")) == 3
-    # The act path read nothing: no reading of a Designator act was published.
+    # Every Perlectio is a page-path reading.
     assert all(
-        record["payload"]["schema"] == "perlectio.v2" for record in _records(root, "perlectio")
+        record["payload"]["schema"] == "perlectio.v3" for record in _records(root, "perlectio")
     )
 
 
@@ -279,12 +254,20 @@ def test_each_placed_act_region_is_the_union_of_its_cited_boxes_cut_from_the_ink
     feeds = {record["subject_id"]: record["payload"] for record in _records(root, "page-feed")}
     readings = {record["subject_id"]: record for record in _records(root, "page-reading")}
     placed = [r for r in _records(root, "act-region") if r["payload"]["union_box_px"]]
-    assert sorted(region["payload"]["n"] for region in placed) == [1, 2]
+    assert sorted((r["payload"]["page_ordinal"], r["payload"]["n"]) for r in placed) == [
+        (1, 1),
+        (1, 2),
+        (2, 1),
+    ]
     for region in placed:
         payload = region["payload"]
-        boxes = placement_boxes(feeds[payload["page_id"]])
+        boxes = placement_boxes(feeds[payload["page_id"]], load_page_accounting_policy())
         assert set(payload["cited_ids"]) <= set(boxes)
         cited = [boxes[identifier] for identifier in payload["cited_ids"] if boxes[identifier]]
+        # The region is each placing box once, in first-cited order; the union crops it.
+        assert payload["region_boxes_px"] == [
+            box for index, box in enumerate(cited) if box not in cited[:index]
+        ]
         assert payload["union_box_px"] == _union(cited)
         attempt = readings[payload["page_id"]]["attempt_id"]
         verify(
@@ -330,9 +313,9 @@ def test_every_act_record_names_its_page_accounting_published_before_it(page_tre
             assert payload["page_holds"] == account["payload"]["holds"]
             held = bool(payload["page_holds"] or payload["holds"])
             assert record["outcome"] == ("held" if held else "read")
-    # Page 1 is read whole and covered; page 2's one entry is unplaced and held.
+    # Both pages are read whole and covered, so nothing holds an act.
     outcomes = {(r["payload"]["page_ordinal"], r["outcome"]) for r in _records(root, "perlectio")}
-    assert outcomes == {(1, "read"), (2, "held")}
+    assert outcomes == {(1, "read"), (2, "read")}
 
 
 def test_a_perlectio_carries_clean_text_doubt_dissent_truncation_and_autopsia(page_tree):
@@ -349,8 +332,9 @@ def test_a_perlectio_carries_clean_text_doubt_dissent_truncation_and_autopsia(pa
     assert payload["autopsia"] is True
     rows = {row["letter"]: row for row in payload["dissent"]}
     assert rows["A"]["cited_units"] == ["A1"] and rows["A"]["departed"] is False
-    # Churro's line reads "... alpha beta": it stops short, so the reading departs.
+    # DAI's record reads "gamna" and Churro's line "... alpha beta": both depart.
     assert rows["B"]["cited_units"] == ["B1"] and rows["B"]["departed"] is True
+    assert rows["C"]["cited_units"] == ["C1"] and rows["C"]["departed"] is True
     assert payload["holds"] == [] and payload["page_holds"] == []
     assert first["outcome"] == "read"
     last = next(
@@ -361,8 +345,8 @@ def test_a_perlectio_carries_clean_text_doubt_dissent_truncation_and_autopsia(pa
     assert last["payload"]["continues_to_next_page"] is True
 
 
-def test_an_entry_citing_no_boxed_id_is_held_unplaced_with_no_crop(page_tree):
-    root, _protocol = page_tree
+def test_an_entry_citing_no_boxed_id_is_held_unplaced_with_no_crop(review_page_tree):
+    root, _protocol = review_page_tree
     [region] = [r for r in _records(root, "act-region") if r["payload"]["page_ordinal"] == 2]
     payload = region["payload"]
     assert region["outcome"] == "held"
@@ -389,86 +373,33 @@ def test_a_second_pass_and_a_fresh_run_leave_the_same_bytes_and_act_ids(page_tre
     )
 
 
-def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree):
-    """Page 1 is read whole and placed, and its readings cover every Surya line:
-    nothing holds it. Page 2's one entry cites no boxed id: it is unplaced, has
-    no region to measure truncation over, and the page's ink and Surya's lines
-    lie outside every reading region."""
+def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, review_page_tree):
+    """Each page is read whole and placed, and its readings cover every Surya line:
+    nothing holds it. In `page-review`, page 2's one entry cites no boxed id: it is
+    unplaced, has no region to measure truncation over, DAI's record goes
+    uncited and unread, and the page's ink and Surya's lines lie outside every
+    reading region."""
     root, _protocol = page_tree
     accounts = {r["payload"]["page_ordinal"]: r for r in _records(root, "page-accounting")}
     assert set(accounts) == {1, 2}
-    first = accounts[1]["payload"]
-    assert first["schema"] == "page-accounting.v1" and accounts[1]["outcome"] == "read"
-    assert first["holds"] == []
-    assert {unit["disposition"] for unit in first["units"]} == {"cited"}
-    assert first["rules"]["i"]["status"] == "not-applicable"
+    for account in accounts.values():
+        payload = account["payload"]
+        assert payload["schema"] == "page-accounting.v2" and account["outcome"] == "read"
+        assert payload["holds"] == []
+        assert {unit["disposition"] for unit in payload["units"]} == {"cited"}
+        # Every DAI record lies inside exactly one act region.
+        assert payload["rules"]["i"]["status"] == "pass"
+    root, _protocol = review_page_tree
+    accounts = {r["payload"]["page_ordinal"]: r for r in _records(root, "page-accounting")}
+    assert accounts[1]["payload"]["holds"] == []
     assert accounts[2]["payload"]["holds"] == [
         "reading-unplaced",
+        "record-not-read",
         "truncation-not-classified",
+        "unaccounted-witness-unit",
         "unread-ink",
         "unread-line",
     ]
-
-
-def test_the_recensor_refuses_a_page_read_tree_by_name(page_tree, tmp_path):
-    root, protocol = page_tree
-    copy = tmp_path / "runs"
-    shutil.copytree(root, copy)
-    result = _run("pipeline/5_recensor/run.py", copy, protocol)
-    assert result.returncode != 0
-    assert "page-read trees are not yet counted downstream" in result.stderr
-    assert not (copy / "r" / "5_recensor" / "artifacts").exists()
-
-
-def test_a_page_read_pass_refuses_to_read_one_act_by_name(page_tree, tmp_path):
-    root, protocol = page_tree
-    copy = tmp_path / "runs"
-    shutil.copytree(root, copy)
-    before = file_bytes_snapshot(copy)
-    result = _run(PERLECTOR_PROGRAM, copy, protocol, "--act", "act_0000000000000001")
-    assert result.returncode != 0
-    assert "run the pass without --act" in result.stderr
-    assert file_bytes_snapshot(copy) == before
-
-
-def test_the_orchestrator_reads_the_pages_and_stops_at_the_recensor(tmp_path):
-    protocol = _page_protocol(tmp_path / "config")
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline" / "orchestrator" / "run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "happy",
-            "--run-id",
-            "r",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--perlector-protocol-config",
-            str(protocol),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode != 0
-    assert "page-read trees are not yet counted downstream" in result.stdout + result.stderr
-    assert len(_records(tmp_path / "runs", "page-reading")) == 2
-    assert (tmp_path / "runs" / "r" / "4_perlector" / "artifacts" / "stage-seal").exists()
-
-
-def test_the_page_path_refuses_a_blind_read_or_a_sampled_control_by_name():
-    base = {"blind_read": "off", "nuda_per_mille": 0, "perlector_instrument_per_mille": 0}
-    page_run.refuse_unsupported_settings(SimpleNamespace(**base))
-    for name, value in (
-        ("blind_read", "fed"),
-        ("blind_read", "saved"),
-        ("nuda_per_mille", 5),
-        ("perlector_instrument_per_mille", 5),
-    ):
-        with pytest.raises(ContractError, match=name):
-            page_run.refuse_unsupported_settings(SimpleNamespace(**{**base, name: value}))
 
 
 # Each switch changes what the page is shown, so it changes the sealed feed and,
@@ -515,7 +446,7 @@ def test_each_feed_switch_changes_the_sealed_feed(page_tree, tmp_path, feed, pro
         ]
         paths = {ref["relative_path"] for ref in hidden["inputs"]}
         shown = {row["testimonium_ref"]["relative_path"] for row in hidden["payload"]["witnesses"]}
-        assert len(shown) == 1 and len(paths & _testimonium_paths(tmp_path / "runs", 1)) == 2
+        assert len(shown) == 1 and len(paths & _testimonium_paths(tmp_path / "runs", 1)) == 3
         [account] = [
             record
             for record in _records(tmp_path / "runs", "page-accounting")
@@ -614,28 +545,23 @@ def _detector_tree(
 ):
     """A page-read tree whose stage-2 record detector declared `detections`.
 
-    The fixture detector states no detection cap, so its records would leave
-    rule (i) unmeasured; here it states one (`max_det`), as the in-process
-    detector does, so the rule is measured over real stage-2 records. With
-    `max_det` None it states none, as the fixture detector does.
+    The fixture detector states its cap, 300, as the in-process detector does;
+    `max_det` states another, and None states none, so rule (i) is not
+    measured. DAI reads each cut record with the fixture's declared answer for
+    its page and ordinal.
     """
     protocol = _page_protocol(base / "config")
-    flags = (
-        "--models-config",
-        str(_roster(base, _DETECTOR)),
-        "--serving-recipes-config",
-        str(_fixture_catalogue(base, _DETECTOR_ROWS)),
-    )
     root = base / "runs"
-    _chain(root, protocol, *flags, programs=programs_through("ink-map"))
+    _chain(root, protocol, programs=programs_through("ink-map"))
     designator = load_stage("2_designator")
     original = designator.fixture_record_detector
 
     def declared(_rows, identity, details):
         detector = original(detections, identity, details)
-        if max_det is None:
-            return detector
-        return dataclasses.replace(detector, run_facts={**detector.run_facts, "max_det": max_det})
+        facts = {key: value for key, value in detector.run_facts.items() if key != "max_det"}
+        if max_det is not None:
+            facts["max_det"] = max_det
+        return dataclasses.replace(detector, run_facts=facts)
 
     monkeypatch.setattr(designator, "fixture_record_detector", declared)
     monkeypatch.chdir(ROOT)
@@ -652,14 +578,12 @@ def _detector_tree(
             "happy",
             "--perlector-protocol-config",
             str(protocol),
-            *flags,
         ],
     )
     assert designator.main() == 0
     _chain(
         root,
         protocol,
-        *flags,
         programs=programs_through("attestatores")[len(programs_through("designator")) :],
         through_perlector=True,
     )
@@ -738,32 +662,35 @@ def _first_page(root: Path) -> SimpleNamespace:
     )
 
 
+def _record_detections(context, page):
+    return page_path._record_detections(
+        context,
+        context.tree.build_manifest("designator")["artifacts"],
+        page.page_id,
+        page.ordinal,
+        page_path._dai_unit_ids(page.feed, page.witnesses),
+    )
+
+
+def _surya_census(context):
+    return page_path.sealed_surya_census(
+        context, context.tree.build_manifest("designator")["artifacts"]
+    )
+
+
 def test_each_detector_record_is_named_by_the_dai_unit_with_its_box(tmp_path, monkeypatch):
     """So a DAI unit set aside is a detector record set aside (rule (i), set-aside-record)."""
     root = _detector_tree(tmp_path, monkeypatch, _SPLIT_AND_COLLAPSED)
     page = _first_page(root)
-    records, census, references = page_run._record_detections(_reading_context(root), page)
+    records, census, references = _record_detections(_reading_context(root), page)
     assert census == {"detection_count": 3, "max_det": 300, "max_det_reached": False}
+    # With no DAI witness named, no record is named by a unit.
     assert [record.get("id") for record in records] == [None, None, None]
     assert references[0]["relative_path"].startswith("2_designator/artifacts/detector-page/")
-    # The fixture roster shows no DAI page witness; give page 1 one whose units are
-    # the two cut records, as DAI's own reading of them would be.
-    page.witnesses = [{"witness_label": "attestator_2", "adapter": page_feed.DAI}]
-    page.feed = {
-        **page.feed,
-        "witnesses": [
-            *page.feed["witnesses"],
-            {
-                "witness_label": "attestator_2",
-                "units": [
-                    {"id": f"D{n}", "box_px": record["box_px"]}
-                    for n, record in enumerate(records[:2], start=1)
-                ],
-            },
-        ],
-    }
-    records, _census, _references = page_run._record_detections(_reading_context(root), page)
-    assert [record.get("id") for record in records] == ["D1", "D2", None]
+    # DAI (B) read the two cut records; the collapsed one was never a unit.
+    page.witnesses = [{"witness_label": "attestator_2", "adapter": DAI}]
+    records, _census, _references = _record_detections(_reading_context(root), page)
+    assert [record.get("id") for record in records] == ["B1", "B2", None]
 
 
 @pytest.mark.parametrize(
@@ -786,7 +713,7 @@ def test_a_detector_census_its_records_contradict_is_refused(
             payload.update(edit)
 
     with pytest.raises(FatalAccounting, match=refusal):
-        page_run._record_detections(_reading_context(root, doctor), _first_page(root))
+        _record_detections(_reading_context(root, doctor), _first_page(root))
 
 
 def test_a_detector_record_no_census_names_is_refused(tmp_path, monkeypatch):
@@ -798,7 +725,7 @@ def test_a_detector_record_no_census_names_is_refused(tmp_path, monkeypatch):
             payload["detection_count"] -= 1
 
     with pytest.raises(FatalAccounting, match="that page .* detector-page does not name"):
-        page_run._record_detections(_reading_context(root, doctor), _first_page(root))
+        _record_detections(_reading_context(root, doctor), _first_page(root))
 
 
 def test_a_detector_that_reached_its_cap_holds_the_page_end_to_end(tmp_path, monkeypatch):
@@ -849,7 +776,7 @@ def test_a_surya_census_its_records_contradict_is_refused(page_tree, kind, edit,
             payload.update(edit)
 
     with pytest.raises(FatalAccounting, match=refusal):
-        page_run.sealed_surya_census(_reading_context(root, doctor))
+        _surya_census(_reading_context(root, doctor))
 
 
 def test_a_surya_detection_no_census_names_is_refused(page_tree):
@@ -861,7 +788,7 @@ def test_a_surya_detection_no_census_names_is_refused(page_tree):
             payload["line_count"] -= 1
 
     with pytest.raises(FatalAccounting, match="that no page census names"):
-        page_run.sealed_surya_census(_reading_context(root, doctor))
+        _surya_census(_reading_context(root, doctor))
 
 
 def test_two_ink_maps_for_one_page_are_refused(page_tree):
@@ -875,16 +802,24 @@ def test_two_ink_maps_for_one_page_are_refused(page_tree):
 
     context = _reading_context(root, manifest=twice)
     with pytest.raises(FatalAccounting, match="ink maps for page .*, not one"):
-        page_run._accounting_ink(context, _first_page(root))
+        _accounting_ink(context, _first_page(root))
 
 
 def _ink_context(root: Path, edit=None) -> SimpleNamespace:
     context = _reading_context(root, edit)
-    context.args = SimpleNamespace(
-        designator_grouping_config=DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH
-    )
+    context.args = SimpleNamespace(ink_map_config=DEFAULT_INK_MAP_CONFIG_PATH)
     context.require_sealed_config = lambda _name, _digest: None
     return context
+
+
+def _accounting_ink(context, page: SimpleNamespace):
+    return page_path._accounting_ink(
+        context,
+        context.tree.build_manifest("ink-map")["artifacts"],
+        page.page_id,
+        page.ordinal,
+        getattr(page, "page_size", None),
+    )
 
 
 def _sized_first_page(root: Path) -> SimpleNamespace:
@@ -903,7 +838,7 @@ def _sized_first_page(root: Path) -> SimpleNamespace:
 def test_the_ink_maps_runs_are_read_when_they_span_the_sealed_page(page_tree):
     root, _protocol = page_tree
     context = _ink_context(root)
-    ink, references = page_run._accounting_ink(context, _sized_first_page(root))
+    ink, references = _accounting_ink(context, _sized_first_page(root))
     assert ink is not None and len(references) == 1
 
 
@@ -913,7 +848,7 @@ def test_ink_runs_sized_for_another_page_are_refused(page_tree):
     page = _sized_first_page(root)
     page.page_size = (page.page_size[0] + 1, page.page_size[1])
     with pytest.raises(ContractError, match="not the sealed page"):
-        page_run._accounting_ink(context, page)
+        _accounting_ink(context, page)
 
 
 def test_ink_runs_that_disagree_with_their_edge_finding_are_refused(page_tree):
@@ -926,7 +861,7 @@ def test_ink_runs_that_disagree_with_their_edge_finding_are_refused(page_tree):
 
     context = _ink_context(root, recount)
     with pytest.raises(ContractError):
-        page_run._accounting_ink(context, _sized_first_page(root))
+        _accounting_ink(context, _sized_first_page(root))
 
 
 def test_a_malformed_ink_not_measurable_record_is_refused(page_tree):
@@ -948,19 +883,24 @@ def test_a_malformed_ink_not_measurable_record_is_refused(page_tree):
 
     context.tree.read_artifact = refused
     with pytest.raises(ContractError, match="ink-not-measurable payload is not closed"):
-        page_run._accounting_ink(context, _first_page(root))
+        _accounting_ink(context, _first_page(root))
 
 
 # --- the answer's entries -----------------------------------------------------------
 
 
-def test_entries_with_one_union_box_are_held_and_keep_their_own_ids():
-    box = {"x": 1, "y": 2, "w": 3, "h": 4}
-    feed = {
+def _one_unit_feed(box: dict[str, int]) -> dict:
+    return {
+        "page_size": {"w": 1000, "h": 1000},
         "switches": {"witness_units": "own"},
         "witnesses": [{"units": [{"id": "A1", "box_px": box, "text": "x"}]}],
         "surya": None,
     }
+
+
+def test_entries_on_one_region_are_held_and_keep_their_own_ids():
+    box = {"x": 1, "y": 2, "w": 3, "h": 4}
+    feed = _one_unit_feed(box)
     entry = {
         "kind": "act",
         "cites": ["A1"],
@@ -969,10 +909,10 @@ def test_entries_with_one_union_box_are_held_and_keep_their_own_ids():
         "continues_to_next_page": False,
     }
     answer = {"acts": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
-    entries = page_run.answer_entries(answer, feed)
+    entries = page_path.answer_entries(answer, feed, load_page_accounting_policy())
     assert [entry["holds"] for entry in entries] == [["duplicate-region"]] * 2
     assert [entry["union_box_px"] for entry in entries] == [box, box]
-    attempt = page_run.page_reading_attempt("pg_0000000000000001")
+    attempt = page_path.page_reading_attempt("pg_0000000000000001")
     ids = {
         digest_of(
             act_bindings(
@@ -986,14 +926,22 @@ def test_entries_with_one_union_box_are_held_and_keep_their_own_ids():
     assert len(ids) == 2
 
 
-def test_a_shared_union_box_does_not_hold_the_page_but_an_unknown_id_does():
-    validated = {
-        "problems": [
-            {"code": "duplicate-region", "ns": [1, 2]},
-            {"code": "unknown-id", "id": "Q7"},
-        ]
+def test_entries_on_one_region_do_not_hold_the_reading_whole_but_an_unknown_id_does():
+    feed = _one_unit_feed({"x": 1, "y": 2, "w": 3, "h": 4})
+    entry = {
+        "kind": "act",
+        "cites": ["A1"],
+        "text": "x",
+        "continues_from_previous_page": False,
+        "continues_to_next_page": False,
     }
-    assert [p["code"] for p in page_run.page_problems(validated)] == ["unknown-id"]
+    answer = {"acts": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
+    policy = load_page_accounting_policy()
+    assert page_path.answer_problems(answer, feed, "stop", policy) == []
+    answer["acts"][1]["cites"] = ["Q7"]
+    assert [p["code"] for p in page_path.answer_problems(answer, feed, "stop", policy)] == [
+        "unknown-id"
+    ]
 
 
 def test_dissent_does_not_count_a_witness_s_own_doubt_markers_as_departure():
@@ -1015,9 +963,9 @@ def test_dissent_does_not_count_a_witness_s_own_doubt_markers_as_departure():
             "testimonium": {"payload": {"format_capabilities": capabilities}},
         }
 
-    [marked] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(True)], BUDGET)
+    [marked] = page_path.page_dissent("Marie  Roy", feed, ["A1"], [witness(True)], BUDGET)
     assert marked["compared"] is True and marked["departed"] is False
-    [plain] = page_run._dissent("Marie  Roy", feed, ["A1"], [witness(False)], BUDGET)
+    [plain] = page_path.page_dissent("Marie  Roy", feed, ["A1"], [witness(False)], BUDGET)
     assert plain["departed"] is True
 
 
@@ -1054,16 +1002,16 @@ def test_page_path_dissent_goes_through_the_act_path_validator():
     for a witness with nothing to compare, a compared row carrying a budget,
     and a stopped row naming a budget the run never sealed."""
     feed, witnesses = _three_witness_feed()
-    rows = page_run._dissent("Marie  Roy", feed, ["A1"], witnesses, BUDGET)
+    rows = page_path.page_dissent("Marie  Roy", feed, ["A1"], witnesses, BUDGET)
     assert [row["compared"] for row in rows] == [True, False, False]
 
     def refused(forged, match, budget=BUDGET):
         with pytest.raises(SchemaRefusal, match=match):
-            page_run.validate_page_dissent(
+            page_path.validate_page_dissent(
                 forged, text="Marie  Roy", feed=feed, cited_ids=["A1"], max_comparison_steps=budget
             )
 
-    page_run.validate_page_dissent(
+    page_path.validate_page_dissent(
         rows, text="Marie  Roy", feed=feed, cited_ids=["A1"], max_comparison_steps=BUDGET
     )
     refused(rows[:2], "one row per shown witness")
@@ -1079,9 +1027,9 @@ def test_page_path_dissent_goes_through_the_act_path_validator():
     )
     refused([{**rows[0], "max_comparison_steps": BUDGET}, *rows[1:]], "closed compared-row schema")
 
-    stopped = page_run._dissent("Marie  Roy", feed, ["A1"], witnesses, 1)
+    stopped = page_path.page_dissent("Marie  Roy", feed, ["A1"], witnesses, 1)
     assert stopped[0]["compared"] == "unknown" and stopped[0]["max_comparison_steps"] == 1
-    page_run.validate_page_dissent(
+    page_path.validate_page_dissent(
         stopped, text="Marie  Roy", feed=feed, cited_ids=["A1"], max_comparison_steps=1
     )
     refused(stopped, "records a 1-step dissent budget, but this run sealed")
@@ -1091,12 +1039,12 @@ def test_the_page_path_refuses_to_publish_dissent_its_own_validator_refuses(monk
     """The producer checks what it built before it is published."""
     feed, witnesses = _three_witness_feed()
 
-    def drops_a_witness(text, testimonia, *, max_comparison_steps):
-        return [{"chair": "A", "compared": True}]
+    def a_malformed_row(text, reported, *, max_comparison_steps):
+        return {"compared": True}
 
-    monkeypatch.setattr(page_run, "dissent_against", drops_a_witness)
+    monkeypatch.setattr(page_path.dissent, "dissent_against", a_malformed_row)
     with pytest.raises(SchemaRefusal, match="page dissent\\[0\\]"):
-        page_run._dissent("Marie  Roy", feed, ["A1"], witnesses, BUDGET)
+        page_path.page_dissent("Marie  Roy", feed, ["A1"], witnesses, BUDGET)
 
 
 # --- live serving, against the fakes ------------------------------------------------
@@ -1104,8 +1052,8 @@ def test_the_page_path_refuses_to_publish_dissent_its_own_validator_refuses(monk
 
 def _catalogue(destination: Path, rows: str = "", **overrides: Any) -> Path:
     """The committed fixture catalogue with its Perlector row live, and any field changed."""
-    source = (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8")
-    head = source.split('[[profiles]]\nkind = "fixture"\nrecipe = "fake-perlector-v0"')[0]
+    committed = (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8")
+    head = committed.split('[[profiles]]\nkind = "fixture"\nrecipe = "fake-perlector-v0"')[0]
     row = {**_live_row(_perlector_identity()), **overrides}
     row["preflight_digest"] = profile_preflight_digest(row)
     body = "\n".join(f"{key} = {_toml_value(value)}" for key, value in row.items())
@@ -1130,8 +1078,8 @@ def _live_chain(
     feed: dict[str, Any] | None = None,
     **row: Any,
 ) -> _Live:
-    catalogue = _catalogue(base / "config", **row)
     protocol = _page_protocol(base / "config", **(feed or {}))
+    catalogue = _catalogue(base / "config", **row)
     _chain(base / "runs", protocol, "--serving-recipes-config", str(catalogue), scenario=scenario)
     return _Live(base / "runs", catalogue, protocol, scenario)
 
@@ -1177,6 +1125,8 @@ def _read_pages(tree: _Live, tmp_path, monkeypatch, *answers: ScriptedAnswer, ex
             TIER,
             "--perlector-protocol-config",
             str(tree.protocol),
+            "--models-config",
+            str(MODELS),
             *extra,
         ],
     )
@@ -1260,12 +1210,12 @@ def test_a_resumed_pass_refuses_a_reading_that_names_other_sampling(
 ):
     _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
     assert exit_code == 0
-    original = page_run.chair_decoding
+    original = page_path.chair_decoding
 
     def another_row(policy, chair):
         return {**original(policy, chair), "temperature": 0.0}
 
-    monkeypatch.setattr(page_run, "chair_decoding", another_row)
+    monkeypatch.setattr(page_path, "chair_decoding", another_row)
     with pytest.raises(ContractError, match="names sampling other than the sealed Perlector row"):
         _read_pages(live_tree, tmp_path / "again", monkeypatch)
 
@@ -1322,14 +1272,59 @@ def test_an_answer_that_cannot_stand_is_held_whole_with_no_act_record(
     assert exit_code == 0
     readings = _records(root, "page-reading")
     assert [r["payload"]["parse_state"] for r in readings] == [parse_state] * 2
+    outcome = "failed" if parse_state == "call-failed" else "held"
     for reading in readings:
-        assert reading["outcome"] == "held" and reading["payload"]["disposition"] == "held"
+        assert reading["outcome"] == outcome and reading["payload"]["disposition"] == "held"
         assert reading["payload"]["answer"] is None and reading["payload"]["problems"]
     assert _records(root, "act-region") == [] and _records(root, "perlectio") == []
     if parse_state == "call-failed":
         failure = readings[0]["payload"]["failure"]
         assert failure["code"] == "ENGINE_FINISH_REASON_UNRECOGNIZED"
         assert failure["raw_response_ref"] in readings[0]["inputs"]
+
+
+def test_a_failed_page_call_is_counted_unread_and_tallied_as_a_hard_failure(
+    live_tree, tmp_path, monkeypatch
+):
+    """A page whose call failed stays in the denominator as a held `page-unread`
+    unit, never zero acts, and its reading's `failed` outcome is what the
+    run-level hard-failure cap counts, so a page-read run whose calls keep
+    failing trips it."""
+    root = live_tree.root
+    transport = ScriptedAnswer(transport_failure="connection reset after dispatch")
+    unrecognized = ScriptedAnswer(content="{}", finish_reason="eos_token")
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, transport, unrecognized)
+    assert exit_code == 0
+    readings = _records(root, "page-reading")
+    assert [
+        (r["outcome"], r["payload"]["parse_state"], r["payload"]["disposition"]) for r in readings
+    ] == [("failed", "call-failed", "held")] * 2
+    codes = [r["payload"]["failure"]["code"] for r in readings]
+    assert codes[1] == "ENGINE_FINISH_REASON_UNRECOGNIZED"
+
+    rows = reading_acts(_denominator_context(live_tree))
+    assert [(row["act_key"], row["class"], row["disposition"]) for row in rows] == [
+        ("p1:unread", "page-unread", "held"),
+        ("p2:unread", "page-unread", "held"),
+    ]
+    for row, code in zip(rows, codes, strict=True):
+        assert {"page-unread", code} <= set(row["hold_codes"])
+
+    tally = tally_hard_failures(RunTree(root, "r"), load_hard_failure_policy())
+    assert tally["by_kind"]["perlector:failed"] == sorted(r["subject_id"] for r in readings)
+    assert tally["count"] == 2 and tally["breached"] is False
+
+
+def test_a_failed_page_call_recorded_as_held_is_refused_by_the_denominator(
+    live_tree, tmp_path, monkeypatch
+):
+    """A failed call recorded under the held outcome would hide it from the hard-failure cap."""
+    failing = ScriptedAnswer(content="{}", finish_reason="eos_token")
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, failing, failing)
+    assert exit_code == 0
+    _forge_reading(live_tree, 1, lambda payload: None, outcome="held")
+    with pytest.raises(FatalAccounting, match="not a page-path reading of this page"):
+        reading_acts(_denominator_context(live_tree))
 
 
 def test_a_parsed_answer_with_no_finish_reason_is_kept_and_held_whole(
@@ -1454,11 +1449,11 @@ def test_a_page_over_the_rows_capacity_is_held_whole_and_never_sent(tmp_path, mo
 
 
 def _without_testimony(monkeypatch, ordinal: int) -> None:
-    """Stage 3 serving no page Testimonium for one page, as for a page with no proposed act."""
+    """Stage 3 serving no page Testimonium for one page."""
     original = page_run.current_page_testimonia
 
-    def dropped(context, hooks, proposal_regions):
-        current = original(context, hooks, proposal_regions)
+    def dropped(context):
+        current = original(context)
         page_id = page_run.exemplar_page_ids(context)[ordinal]
         return {page: rows for page, rows in current.items() if page != page_id}
 
@@ -1516,7 +1511,7 @@ def test_a_resumed_pass_never_asks_a_read_page_again(live_tree, tmp_path, monkey
 def test_a_resumed_pass_adopts_its_sealed_measures_rather_than_measuring_again(
     live_tree, tmp_path, monkeypatch
 ):
-    """Rule (e) and dissent are bounded by a clock: a resume reads back what was sealed."""
+    """A resume reads back the sealed accounting and dissent rather than measuring again."""
     root = live_tree.root
     _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
     assert exit_code == 0
@@ -1526,10 +1521,138 @@ def test_a_resumed_pass_adopts_its_sealed_measures_rather_than_measuring_again(
         raise AssertionError("a sealed measure was computed again")
 
     monkeypatch.setattr(page_run.page_accounting, "page_accounting", never)
-    monkeypatch.setattr(page_run, "dissent_against", never)
+    monkeypatch.setattr(page_path, "page_dissent", never)
     _endpoint, exit_code = _read_pages(live_tree, tmp_path / "again", monkeypatch)
     assert exit_code == 0
     assert file_bytes_snapshot(root / "r" / "4_perlector") == before
+
+
+def test_the_denominator_reads_a_live_reading_again_from_its_retained_reply(
+    live_tree, tmp_path, monkeypatch
+):
+    """The page-read denominator re-derives each live answer from the engine's own bytes."""
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
+    assert exit_code == 0
+    for reading in _records(live_tree.root, "page-reading"):
+        payload = reading["payload"]
+        reply = page_path.retained_reply(
+            lambda path: (live_tree.root / "r" / path).read_bytes(),
+            payload["engine_call"],
+            SERVING_READER,
+        )
+        assert reply == {
+            "content": PAGE_ANSWERS[payload["page_ordinal"]],
+            "finish_reason": "stop",
+            "stop_reason": "stop",
+        }
+    args = stage_parser("page-read denominator").parse_args(
+        [
+            "--run-root",
+            str(live_tree.root),
+            "--run-id",
+            "r",
+            "--scenario",
+            live_tree.scenario,
+            "--serving-recipes-config",
+            str(live_tree.catalogue),
+            "--perlector-protocol-config",
+            str(live_tree.protocol),
+            "--models-config",
+            str(MODELS),
+        ]
+    )
+    acts = reading_acts(open_context(args, RECENSOR, serving_reader=SERVING_READER))
+    assert [act["act_key"] for act in acts] == ["p1:1", "p1:2", "p2:1"]
+
+
+def _denominator_context(tree: _Live, serving_reader=SERVING_READER):
+    args = stage_parser("page-read denominator").parse_args(
+        [
+            "--run-root",
+            str(tree.root),
+            "--run-id",
+            "r",
+            "--scenario",
+            tree.scenario,
+            "--serving-recipes-config",
+            str(tree.catalogue),
+            "--perlector-protocol-config",
+            str(tree.protocol),
+            "--models-config",
+            str(MODELS),
+        ]
+    )
+    return open_context(args, RECENSOR, serving_reader=serving_reader)
+
+
+def _forge_reading(tree: _Live, ordinal: int, change, outcome: str | None = None) -> None:
+    """Rewrite one page reading (and its outcome, when given) and rewitness the
+    Perlector's boundary, so only the denominator's own recomputation is left to
+    catch it."""
+    directory = tree.root / "r" / "4_perlector" / "artifacts" / "page-reading"
+    [path] = [
+        path
+        for path in directory.glob("*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["payload"]["page_ordinal"] == ordinal
+    ]
+    record = json.loads(path.read_text(encoding="utf-8"))
+    change(record["payload"])
+    if outcome is not None:
+        record["outcome"] = outcome
+    record["self_hash"] = self_hash({k: v for k, v in record.items() if k != "self_hash"})
+    path.write_bytes(canonical_bytes(record))
+    rewitness_stage_boundary(RunTree(tree.root, "r"), PERLECTOR)
+
+
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    [
+        (
+            lambda payload: payload.update(request_digest="0" * 64),
+            "records a request digest its feed's prompt and images do not give",
+        ),
+        (
+            lambda payload: payload["capacity"].update(max_tokens=1),
+            "records a capacity its sealed serving row does not give",
+        ),
+        (
+            lambda payload: payload["sampling"]["sent"].update(seed_note="x"),
+            "engine_call is not this page's request",
+        ),
+    ],
+    ids=["request-digest", "capacity", "sampling"],
+)
+def test_the_denominator_binds_a_live_reading_to_its_pages_request(
+    live_tree, tmp_path, monkeypatch, change, refusal
+):
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
+    assert exit_code == 0
+    _forge_reading(live_tree, 1, change)
+    with pytest.raises(FatalAccounting, match=refusal):
+        reading_acts(_denominator_context(live_tree))
+
+
+def test_a_context_without_a_serving_reader_refuses_a_live_reading(
+    live_tree, tmp_path, monkeypatch
+):
+    """A live call is read again or the run is refused; it is never taken from the record."""
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
+    assert exit_code == 0
+    with pytest.raises(FatalAccounting, match="no serving reader"):
+        reading_acts(_denominator_context(live_tree, serving_reader=None))
+
+
+def test_the_denominator_measures_a_capacity_refusal_again(tmp_path, monkeypatch):
+    tree = _live_chain(tmp_path / "small", max_model_len=400)
+    _endpoint, exit_code = _read_pages(tree, tmp_path, monkeypatch)
+    assert exit_code == 0
+    rows = reading_acts(_denominator_context(tree))
+    assert [row["act_key"] for row in rows] == ["p1:unread", "p2:unread"]
+    _forge_reading(
+        tree, 1, lambda payload: payload["capacity"]["capacity"].update(max_model_len=401)
+    )
+    with pytest.raises(FatalAccounting, match="records a capacity its sealed serving row"):
+        reading_acts(_denominator_context(tree))
 
 
 def test_a_resumed_pass_refuses_a_sealed_perlectio_with_invalid_dissent(
@@ -1643,7 +1766,7 @@ def test_a_pass_stopped_between_an_act_region_and_its_perlectio_resumes_the_rest
     live_tree, tmp_path, monkeypatch
 ):
     root = live_tree.root
-    original = page_run._dissent
+    original = page_path.page_dissent
     calls = []
 
     def stopped_at_the_second(*args, **kwargs):
@@ -1652,7 +1775,7 @@ def test_a_pass_stopped_between_an_act_region_and_its_perlectio_resumes_the_rest
             raise KeyboardInterrupt
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(page_run, "_dissent", stopped_at_the_second)
+    monkeypatch.setattr(page_path, "page_dissent", stopped_at_the_second)
     with pytest.raises(KeyboardInterrupt):
         _serial(live_tree, tmp_path, monkeypatch, *_answers())
     regions = [r for r in _records(root, "act-region") if r["payload"]["page_ordinal"] == 1]
@@ -1660,7 +1783,7 @@ def test_a_pass_stopped_between_an_act_region_and_its_perlectio_resumes_the_rest
     assert len(regions) == 2
     [kept_path] = (root / "r" / "4_perlector" / "artifacts" / "perlectio").glob("*.json")
     kept_bytes = kept_path.read_bytes()
-    monkeypatch.setattr(page_run, "_dissent", original)
+    monkeypatch.setattr(page_path, "page_dissent", original)
     endpoint, exit_code = _serial(live_tree, tmp_path / "again", monkeypatch, _answers()[1])
     assert exit_code == 0 and len(_chat_requests(endpoint)) == 1
     assert kept_path.read_bytes() == kept_bytes
@@ -1675,23 +1798,22 @@ def test_a_retained_accounting_measured_from_other_inputs_is_not_adopted(
 ):
     _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, *_answers())
     assert exit_code == 0
-    original = page_run._accounting_detections
+    original = page_path.accounting_inputs
 
-    def one_more_input(state, page):
-        detections, references = original(state, page)
-        extra = state.context.artifact_ref("exemplar", "page", page.page_record["artifact_id"])
-        return detections, [*references, extra]
+    def one_more_input(context, **kwargs):
+        measured, references = original(context, **kwargs)
+        page = artifact_id("exemplar", "page", kwargs["feed"]["page_id"])
+        return measured, [*references, context.artifact_ref("exemplar", "page", page)]
 
-    monkeypatch.setattr(page_run, "_accounting_detections", one_more_input)
+    monkeypatch.setattr(page_path, "accounting_inputs", one_more_input)
     with pytest.raises(ContractError, match="retained page accounting was measured from other"):
         _read_pages(live_tree, tmp_path / "again", monkeypatch)
 
 
 def test_a_retained_page_reading_or_perlectio_from_other_inputs_is_not_adopted():
-    state = SimpleNamespace(context=SimpleNamespace(config_digest="now"))
+    state = SimpleNamespace(context=SimpleNamespace())
     page = SimpleNamespace(page_id="pg_0000000000000001", feed_ref={"relative_path": "f"})
     reading = {
-        "config_digest": "now",
         "payload": {
             "schema": page_run.PAGE_READING_SCHEMA,
             "feed_ref": {"relative_path": "f"},
@@ -1700,15 +1822,22 @@ def test_a_retained_page_reading_or_perlectio_from_other_inputs_is_not_adopted()
         },
     }
     page_run._check_adopted(state, page, reading)
-    for changed in ({"config_digest": "then"}, {"payload": {**reading["payload"], "feed_ref": {}}}):
+    for changed in (
+        {"payload": {**reading["payload"], "feed_ref": {}}},
+        {"payload": {**reading["payload"], "schema": "perlector-page-reading.v0"}},
+    ):
         with pytest.raises(ContractError, match="retained page reading .* not adopted"):
             page_run._check_adopted(state, page, {**reading, **changed})
-    expected = {"page_accounting_ref": {"relative_path": "a"}}
-    page_run._check_adopted_perlectio({"payload": dict(expected)}, expected, "act_1")
-    with pytest.raises(ContractError, match="retained perlectio .* not adopted"):
-        page_run._check_adopted_perlectio(
-            {"payload": {"page_accounting_ref": {"relative_path": "b"}}}, expected, "act_1"
-        )
+    expected = {"page_accounting_ref": {"relative_path": "a"}, "text": "Marie Roy"}
+    sealed = {**expected, "dissent": []}
+    page_run._check_adopted_perlectio({"payload": sealed}, expected, "act_1")
+    for changed in (
+        {"page_accounting_ref": {"relative_path": "b"}},
+        {"text": "Marie Roi"},
+        {"added": True},
+    ):
+        with pytest.raises(ContractError, match="retained perlectio .* not adopted"):
+            page_run._check_adopted_perlectio({"payload": {**sealed, **changed}}, expected, "act_1")
 
 
 def test_the_page_deadline_refusal_speaks_in_pages(live_tree, tmp_path, monkeypatch):
@@ -1724,7 +1853,7 @@ def test_the_page_deadline_refusal_speaks_in_pages(live_tree, tmp_path, monkeypa
     message = str(refused.value)
     per_page = page_run.planned_seconds_per_page(12288)
     assert f"at {per_page}s a page" in message and "reading 2 pages" in message
-    assert "--act" not in message and "a call" not in message
+    assert "a call" not in message
     assert _records(live_tree.root, "reader-sent") == []
 
 
@@ -1740,7 +1869,7 @@ def test_under_flat_witnesses_the_accounting_measures_the_regions_the_stage_cut(
     tree = _live_chain(tmp_path / "flat", feed={"witness_units": "flat"})
     answer = json.loads(PAGE_ANSWERS[1])
     answer["acts"][0]["cites"] = ["A1", "B1", "L1"]
-    answer["acts"][1]["cites"] = ["A2", "B2", "L5-L9"]
+    answer["acts"][1]["cites"] = ["A2", "B2", "L5", "L6", "L7", "L8", "L9"]
     _endpoint, exit_code = _read_pages(
         tree, tmp_path, monkeypatch, _scripted(answer), _answers()[1]
     )
@@ -1750,15 +1879,17 @@ def test_under_flat_witnesses_the_accounting_measures_the_regions_the_stage_cut(
     )
     lines = {line["id"]: line["box_px"] for line in feed["surya"]["lines"]}
     units = {unit["id"]: unit["box_px"] for row in feed["witnesses"] for unit in row["units"]}
-    regions = {
-        r["payload"]["n"]: r["payload"]["union_box_px"]
+    published = {
+        r["payload"]["n"]: r["payload"]
         for r in _records(tree.root, "act-region")
         if r["payload"]["page_ordinal"] == 1
     }
-    assert regions[1] == lines["L1"]
-    assert regions[2] == _union([lines[f"L{i}"] for i in range(5, 10)])
-    # Shown in its own units, the witness would have widened the region by its box.
-    assert regions[1] != _union([lines["L1"], units["A1"]])
+    regions = {n: payload["region_boxes_px"] for n, payload in published.items()}
+    assert regions[1] == [lines["L1"]]
+    assert regions[2] == [lines[f"L{i}"] for i in range(5, 10)]
+    assert published[2]["union_box_px"] == _union(regions[2])
+    # Shown in its own units, the witness would have added its box to the region.
+    assert units["A1"] not in regions[1]
     account = next(
         r["payload"]
         for r in _records(tree.root, "page-accounting")
@@ -1766,7 +1897,7 @@ def test_under_flat_witnesses_the_accounting_measures_the_regions_the_stage_cut(
     )
     for row in account["lines"]:
         expected = sorted(
-            n for n, box in regions.items() if is_inside(lines[row["id"]], [box], POLICY)
+            n for n, boxes in regions.items() if is_inside(lines[row["id"]], boxes, POLICY)
         )
         assert row["inside"] == expected
     unread = sorted(

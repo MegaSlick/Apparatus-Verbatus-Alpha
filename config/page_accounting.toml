@@ -74,11 +74,16 @@ max_alignment_pairs = 4000000
 # measured, which holds. Starting value; to be measured on the proof run.
 max_characters = 200000
 
-# Wall-clock budget for one page's witness-text rule; running out is not
-# measured, which holds. A dense synthetic page (20 entries, 12,000 characters
-# per witness, three witnesses) took well under a second. Starting value; to
-# be measured on the proof run.
-deadline_milliseconds = 30000
+# Alignment work one page's witness-text rule may do, in steps: one range taken
+# from a work list, or one character pair compared or bounded as compared.
+# Running out is not measured, which holds. Counted, not timed, so the same
+# page under the same policy is measured the same way on every machine. A
+# dense synthetic page (20 entries, 13,100 characters per witness, two
+# witnesses as own units and two flat, 30% character error) took 8.8 million
+# steps, and at 40 entries and 26,100 characters 17.6 million. Twenty
+# 2,000-letter units over a two-letter alphabet ran out in about 6.5 seconds.
+# Starting value; to be measured on the proof run.
+max_alignment_steps = 100000000
 
 [identity]
 # A unit's distinctive pieces are its normalized pieces of this many letters
@@ -121,3 +126,23 @@ min_distinctive_share_bp = 3500
 # was at least 4,800 from each of 900 synthetic baptism readings. Starting
 # value; to be measured on the proof run.
 max_short_unit_distance_bp = 4000
+
+[region]
+# Two entries are one region (`duplicate-region`, which holds both) when the
+# ink both claim is more than this share (basis points) of the smaller
+# region's area: one region inside the other, or the same ink named by other
+# ids. Half lets an act of two lines share one line with its neighbour, which
+# rule (h) records as a shared line. Starting value; to be measured on the
+# proof run.
+max_shared_share_bp = 5000
+
+# Most of the page's area (basis points) a witness unit's box may claim per
+# normalized character of its text; a unit over it places nothing. Rule (e)
+# holds a reading to a unit's text and to nothing else under its box, so a
+# short text on a large box would lend its entry ink no rule shows was read.
+# Estimated, not measured: a written register line, with the space between
+# lines, takes about 3 to 12 per character from a small hand to a large one,
+# and the synthetic proof pages print about 85. At one hundred a unit needs
+# fifty characters to claim a column, so a folio number on a column-sized box
+# places nothing. Starting value; to be measured on the proof run.
+max_unit_area_per_character_bp = 100

@@ -1,10 +1,8 @@
-"""R2 geometry adapters, one-receipt Chandra custody, and additive resolution.
+"""The record detector's geometry: its sealed policy and its source-preserving proposals.
 
-This module deliberately has no model imports.  The adapters accept fixture-shaped
-model outputs and turn them into closed, source-preserving records.  A live caller
-may supply the same shapes later, but no source is selected, ranked, or rewritten:
-the resolver derives a deterministic union/hierarchy record from every retained raw
-proposal and represents overlap and occlusion as review facts.
+This module has no model imports. `yolo_obb` turns the detector's quantized
+oriented boxes into closed records that keep each box and derive its crop by
+the sealed policy; nothing is selected, ranked or rewritten.
 """
 
 from __future__ import annotations
@@ -12,31 +10,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
-# One-receipt Chandra custody lives in common/chandra_custody.py (a stage may
-# not import another stage's module); re-exported here under this module's
-# own names. See that module for the current signatures.
-from common.chandra_custody import (  # noqa: F401  (re-export)
-    RESPONSE_BLOB_PREFIX,
-    read_retained_chandra_response,
-    retain_chandra_response,
-)
 from common.contracts.canonical import digest_of, is_plain_int, is_sha256
-from common.contracts.envelope import build_envelope, validate_envelope
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.identities import artifact_id
-from common.contracts.stages import DESIGNATOR
+from common.contracts.stages import DESIGNATOR, writing_directory
+from common.runtree.store import BLOBS_DIR
 from common.sealed_config import read_sealed_toml
 
 POLICY_SCHEMA: Final = "designator-geometry-policy.v1"
 RAW_PROPOSAL_SCHEMA: Final = "designator-raw-proposal.v1"
-OCCLUSION_SCHEMA: Final = "designator-occlusion.v1"
-RESOLUTION_SCHEMA: Final = "designator-geometry-resolution.v1"
 DEFAULT_POLICY_PATH: Final = (
     Path(__file__).resolve().parents[2] / "config" / "designator_geometry.toml"
 )
-_SOURCES: Final = frozenset({"yolo-obb", "chandra-layout"})
-# What a raw proposal's `observed_ordinals` count: YOLO and Chandra are each one
-# call, so their ordinals index the detections within that one retained response.
+_SOURCES: Final = frozenset({"yolo-obb"})
+# Where a retained detector output lives: this stage's own blobs.
+RESPONSE_BLOB_PREFIX: Final = f"{writing_directory(DESIGNATOR)}/{BLOBS_DIR}/"
+# What a raw proposal's `observed_ordinals` count: the detector is one call per
+# page, so its ordinals index the detections within that one retained output.
 _RESPONSE_DETECTION: Final = "response-detection"
 _OBSERVATION_UNITS: Final = frozenset({_RESPONSE_DETECTION})
 
@@ -109,9 +98,7 @@ def _validate_geometry_policy(value: object) -> dict[str, Any]:
 def _polygon_points(value: object, what: str) -> list[dict[str, int]]:
     """The shape of a page polygon (>= 3 distinct points), independent of page extent.
 
-    Shared by raw-proposal and occlusion validation so both require the same
-    minimum shape; the page-extent check stays with each caller that can
-    actually ask it (`_polygon` has a transform, `validate_occlusion` doesn't).
+    The page-extent check is `_polygon`'s, which has the page size.
     """
     if not isinstance(value, list) or len(value) < 3:
         raise SchemaRefusal(f"{what} is not a polygon")
@@ -275,38 +262,6 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
     return record
 
 
-def validate_occlusion(payload: object) -> dict[str, Any]:
-    fields = {
-        "schema",
-        "occlusion_id",
-        "page_id",
-        "page_ordinal",
-        "polygon",
-        "z_relationship",
-        "review_state",
-        "receipt_ref",
-    }
-    record = _closed(payload, fields, "occlusion")
-    if (
-        record["schema"] != OCCLUSION_SCHEMA
-        or not isinstance(record["occlusion_id"], str)
-        or not record["occlusion_id"]
-        or not isinstance(record["page_id"], str)
-        or not record["page_id"]
-        or not is_plain_int(record["page_ordinal"])
-        or record["page_ordinal"] < 0
-    ):
-        raise SchemaRefusal("occlusion lacks page lineage")
-    # No page extent here to check against; the resolver checks it later.
-    _polygon_points(record["polygon"], "occlusion polygon")
-    if record["z_relationship"] not in {"unknown", "above-ink", "below-ink"} or record[
-        "review_state"
-    ] not in {"open", "reviewed"}:
-        raise SchemaRefusal("occlusion has invalid z relationship or review state")
-    _ref(record["receipt_ref"], "receipts/sha256/", "occlusion receipt reference")
-    return record
-
-
 def _proposal_id(source: str, page_id: str, geometry: list[dict[str, int]], score_bp: int) -> str:
     # Identity excludes observed_ordinals (accumulated as repeated detections
     # union, so an id built from a first-seen value wouldn't reproduce from the
@@ -378,11 +333,23 @@ def yolo_obb(
     response_ref: dict[str, str],
     detections: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Adapt OBB fixture output without loss: retain OBB and derive sealed crop policy."""
+    """Adapt OBB detections without loss: retain OBB and derive sealed crop policy.
+
+    Each detection carries `ordinal`, its index in the retained detector response,
+    so a proposal's `observed_ordinals` name detections in that response even when
+    the caller passes only some of them.
+    """
     checked = load_geometry_policy_record(policy)
     union: dict[str, dict[str, Any]] = {}
-    for ordinal, detection in enumerate(detections):
-        item = _closed(detection, {"obb", "score_bp"}, "YOLO OBB detection")
+    previous = -1
+    for detection in detections:
+        item = _closed(detection, {"ordinal", "obb", "score_bp"}, "YOLO OBB detection")
+        ordinal = item["ordinal"]
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal <= previous:
+            raise SchemaRefusal(
+                "YOLO OBB detection ordinals must be increasing non-negative integers"
+            )
+        previous = ordinal
         points = _polygon(item["obb"], page_w, page_h, "YOLO OBB")
         if len(points) != 4:
             raise SchemaRefusal("YOLO OBB must contain exactly four corners")
@@ -411,61 +378,6 @@ def yolo_obb(
     return [union[proposal_id] for proposal_id in sorted(union)]
 
 
-def chandra_layout(
-    *,
-    page_id: str,
-    page_ordinal: int,
-    page_w: int,
-    page_h: int,
-    config_sha256: str,
-    receipt_ref: dict[str, str],
-    response_ref: dict[str, str],
-    regions: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Split only geometry from a retained Chandra response; textual fields fail closed."""
-    union: dict[str, dict[str, Any]] = {}
-    for ordinal, region in enumerate(regions):
-        item = _closed(region, {"bbox_1000", "score_bp"}, "Chandra layout region")
-        box = item["bbox_1000"]
-        if (
-            not isinstance(box, list)
-            or len(box) != 4
-            or any(not is_plain_int(value) or not 0 <= value <= 1000 for value in box)
-        ):
-            raise SchemaRefusal("Chandra bbox is not four integer 0-1000 coordinates")
-        x0, y0, x1, y1 = box
-        if x1 <= x0 or y1 <= y0:
-            raise SchemaRefusal("Chandra bbox is empty")
-        points = [
-            {"x": x0 * page_w // 1000, "y": y0 * page_h // 1000},
-            {"x": min(page_w - 1, (x1 * page_w + 999) // 1000 - 1), "y": y0 * page_h // 1000},
-            {
-                "x": min(page_w - 1, (x1 * page_w + 999) // 1000 - 1),
-                "y": min(page_h - 1, (y1 * page_h + 999) // 1000 - 1),
-            },
-            {"x": x0 * page_w // 1000, "y": min(page_h - 1, (y1 * page_h + 999) // 1000 - 1)},
-        ]
-        _retain_by_content_identity(
-            union,
-            _raw(
-                "chandra-layout",
-                page_id,
-                page_ordinal,
-                points,
-                page_w,
-                page_h,
-                item["score_bp"],
-                receipt_ref,
-                response_ref,
-                config_sha256,
-                _RESPONSE_DETECTION,
-                [ordinal],
-                "aabb",
-            ),
-        )
-    return [union[proposal_id] for proposal_id in sorted(union)]
-
-
 def load_geometry_policy_record(policy: object) -> dict[str, Any]:
     """Validate a previously loaded policy before a caller trusts its toggle."""
     if not isinstance(policy, dict) or set(policy) != {
@@ -480,225 +392,3 @@ def load_geometry_policy_record(policy: object) -> dict[str, Any]:
         {field: policy[field] for field in ("schema", "yolo_obb", "provenance")}
     )
     return policy
-
-
-def raw_proposal_envelope(
-    *,
-    run_id: str,
-    subject_id: str,
-    config_digest: str,
-    adapter_revision: str,
-    inputs: list[dict[str, str]],
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    checked = validate_raw_proposal(payload)
-    if subject_id != checked["proposal_id"]:
-        raise SchemaRefusal("raw proposal envelope subject is not its proposal identity")
-    return build_envelope(
-        run_id=run_id,
-        artifact_id=artifact_id(DESIGNATOR, "raw-proposal", subject_id),
-        subject_id=subject_id,
-        stage=DESIGNATOR,
-        kind="raw-proposal",
-        outcome="proposed",
-        config_digest=config_digest,
-        adapter_revision=adapter_revision,
-        inputs=inputs,
-        payload=checked,
-    )
-
-
-def occlusion_envelope(
-    *,
-    run_id: str,
-    subject_id: str,
-    config_digest: str,
-    adapter_revision: str,
-    inputs: list[dict[str, str]],
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    checked = validate_occlusion(payload)
-    if subject_id != checked["occlusion_id"]:
-        raise SchemaRefusal("occlusion envelope subject is not its occlusion identity")
-    return build_envelope(
-        run_id=run_id,
-        artifact_id=artifact_id(DESIGNATOR, "occlusion", subject_id),
-        subject_id=subject_id,
-        stage=DESIGNATOR,
-        kind="occlusion",
-        outcome="proposed",
-        config_digest=config_digest,
-        adapter_revision=adapter_revision,
-        inputs=inputs,
-        payload=checked,
-    )
-
-
-def _overlap(left: Bounds, right: Bounds) -> bool:
-    return (
-        left["x"] < right["x"] + right["w"]
-        and right["x"] < left["x"] + left["w"]
-        and left["y"] < right["y"] + right["h"]
-        and right["y"] < left["y"] + left["h"]
-    )
-
-
-def _contains(outer: Bounds, inner: Bounds) -> bool:
-    return (
-        outer["x"] <= inner["x"]
-        and outer["y"] <= inner["y"]
-        and outer["x"] + outer["w"] >= inner["x"] + inner["w"]
-        and outer["y"] + outer["h"] >= inner["y"] + inner["h"]
-    )
-
-
-def resolve(
-    raw_envelopes: list[dict[str, Any]], occlusion_envelopes: list[dict[str, Any]]
-) -> dict[str, Any]:
-    """Derive the union/hierarchy record directly from source envelopes.
-
-    Sorting fixes output order only; it never selects or discards a proposal,
-    and overlap remains an explicit ambiguity relation.
-    """
-    return validate_resolution(
-        _derive_resolution(raw_envelopes, occlusion_envelopes), raw_envelopes, occlusion_envelopes
-    )
-
-
-def validate_resolution(
-    record: object, raw_envelopes: list[dict[str, Any]], occlusion_envelopes: list[dict[str, Any]]
-) -> dict[str, Any]:
-    """Refuse a derived record unless recomputing it from source gives exact bytes."""
-    fields = {
-        "schema",
-        "page_id",
-        "page_ordinal",
-        "raw_proposal_refs",
-        "occlusion_refs",
-        "union_aabbs",
-        "containment",
-        "ambiguities",
-        "partition",
-    }
-    checked = _closed(record, fields, "geometry resolution")
-    if checked["schema"] != RESOLUTION_SCHEMA:
-        raise SchemaRefusal("geometry resolution has unknown schema")
-    # Recompute independently rather than accept a restatement merely because
-    # its own predicates agree with each other.
-    expected = _derive_resolution(raw_envelopes, occlusion_envelopes)
-    if checked != expected:
-        raise SchemaRefusal(
-            "geometry resolution diverges from its raw proposal and occlusion sources"
-        )
-    return checked
-
-
-def _derive_resolution(
-    raw_envelopes: list[dict[str, Any]], occlusion_envelopes: list[dict[str, Any]]
-) -> dict[str, Any]:
-    raws = []
-    for item in raw_envelopes:
-        envelope = validate_envelope(item)
-        if envelope["stage"] != DESIGNATOR or envelope["kind"] != "raw-proposal":
-            raise SchemaRefusal("resolver received a non-raw-proposal envelope")
-        raws.append((envelope, validate_raw_proposal(envelope["payload"])))
-    occlusions = []
-    for item in occlusion_envelopes:
-        envelope = validate_envelope(item)
-        if envelope["stage"] != DESIGNATOR or envelope["kind"] != "occlusion":
-            raise SchemaRefusal("resolver received a non-occlusion envelope")
-        occlusions.append((envelope, validate_occlusion(envelope["payload"])))
-    if not raws:
-        raise SchemaRefusal("resolver has no raw proposal denominator")
-    page = (raws[0][1]["page_id"], raws[0][1]["page_ordinal"])
-    if any(
-        (payload["page_id"], payload["page_ordinal"]) != page for _envelope, payload in raws
-    ) or any(
-        (payload["page_id"], payload["page_ordinal"]) != page for _envelope, payload in occlusions
-    ):
-        raise SchemaRefusal("resolver source records do not share one page lineage")
-    # Page lineage isn't the same fact as pixel extent: pin one extent and
-    # refuse a mismatch, since every coordinate below assumes one shared grid.
-    page_w = raws[0][1]["page_transform"]["page_width_px"]
-    page_h = raws[0][1]["page_transform"]["page_height_px"]
-    if any(
-        (payload["page_transform"]["page_width_px"], payload["page_transform"]["page_height_px"])
-        != (page_w, page_h)
-        for _envelope, payload in raws
-    ):
-        raise SchemaRefusal("resolver raw proposals do not share one page pixel extent")
-    # The deferred extent check validate_occlusion couldn't make on its own.
-    for _envelope, occlusion in occlusions:
-        if any(
-            not (0 <= point["x"] < page_w and 0 <= point["y"] < page_h)
-            for point in occlusion["polygon"]
-        ):
-            raise SchemaRefusal("occlusion polygon falls outside the shared page extent")
-    ordered = sorted(raws, key=lambda row: row[1]["proposal_id"])
-    ids = [payload["proposal_id"] for _envelope, payload in ordered]
-    if len(ids) != len(set(ids)):
-        raise SchemaRefusal("resolver received duplicate raw proposal identities")
-    containment, overlaps = [], []
-    for index, (_envelope, left) in enumerate(ordered):
-        for _other_envelope, right in ordered[index + 1 :]:
-            # Equal AABBs each "contain" the other; recording one as outer would
-            # invent a parent-child hierarchy from sort order. Recorded as an
-            # ambiguity instead; containment stays a strict relation.
-            if left["aabb"] == right["aabb"]:
-                overlaps.append(
-                    {
-                        "left": left["proposal_id"],
-                        "right": right["proposal_id"],
-                        "state": "coincident-aabb",
-                    }
-                )
-            elif _contains(left["aabb"], right["aabb"]):
-                containment.append({"outer": left["proposal_id"], "inner": right["proposal_id"]})
-            elif _contains(right["aabb"], left["aabb"]):
-                containment.append({"outer": right["proposal_id"], "inner": left["proposal_id"]})
-            elif _overlap(left["aabb"], right["aabb"]):
-                overlaps.append(
-                    {
-                        "left": left["proposal_id"],
-                        "right": right["proposal_id"],
-                        "state": "ambiguous-overlap",
-                    }
-                )
-    occlusion_ids = sorted(payload["occlusion_id"] for _envelope, payload in occlusions)
-    # An id claimed twice would make `occlusion_refs` and `occlusion_ids` fall
-    # out of correspondence, and a reviewer could not tell which occlusion a
-    # partition entry actually names.
-    if len(occlusion_ids) != len(set(occlusion_ids)):
-        raise SchemaRefusal("resolver received duplicate occlusion identities")
-    return {
-        "schema": RESOLUTION_SCHEMA,
-        "page_id": page[0],
-        "page_ordinal": page[1],
-        "raw_proposal_refs": [
-            {"artifact_id": envelope["artifact_id"], "self_hash": envelope["self_hash"]}
-            for envelope, _payload in ordered
-        ],
-        "occlusion_refs": [
-            {"artifact_id": envelope["artifact_id"], "self_hash": envelope["self_hash"]}
-            for envelope, _payload in sorted(occlusions, key=lambda row: row[1]["occlusion_id"])
-        ],
-        "union_aabbs": [
-            {"proposal_id": payload["proposal_id"], "aabb": payload["aabb"]}
-            for _envelope, payload in ordered
-        ],
-        "containment": containment,
-        "ambiguities": overlaps,
-        "partition": [
-            {
-                "proposal_id": proposal_id,
-                # Deliberately over-broad: ANY occlusion on the page marks EVERY
-                # proposal "review", not only those whose AABB geometrically
-                # intersects it, since a tight filter could let a misjudged
-                # occlusion silently clear a proposal it should have flagged. A
-                # geometric narrowing is future work, not a default.
-                "disposition": "review" if occlusion_ids else "accepted-coverage",
-                "occlusion_ids": occlusion_ids,
-            }
-            for proposal_id in ids
-        ],
-    }

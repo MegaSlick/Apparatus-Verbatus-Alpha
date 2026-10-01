@@ -1,18 +1,15 @@
 """One page, one paper value: the background inference every stage that reads ink runs.
 
-The Designator, the Ink Map and the Recensor threshold the same pixels, and all
-three take paper from this inference over the page's own two grey-level
-population modes, never from the raw histogram mode: on a photographed opening
-that mode is the bezel, near zero, and an audit thresholded below it counts no
-ink over a page full of writing, so the cross-stage containment pin would hold
-over an empty set.
+Every stage that thresholds ink infers paper here, from a page's own two
+grey-level population modes rather than its raw histogram mode: on a
+photographed opening the raw mode is the bezel, near-zero, and an audit taken
+below it counts no ink over a page full of writing.
 
-All three stages get the same background, the same derived ink margin, and the
-same refusal by name. What is shared is the
-background, not the sensitivity: each caller keeps its own margin below it
-(the Designator's derived margin, its `SECONDARY_MARGIN = 2`, the audit's
-`MINIMUM_CONTRAST_BELOW_BACKGROUND = 40`) so the three numbers stay comparable
-without the audit restating the stage it audits.
+So every caller gets the same background, the same derived ink margin, and the
+same refusal by name. What is shared is the background, not the sensitivity:
+each caller keeps its own margin below it (the derived margin, the audit's
+`MINIMUM_CONTRAST_BELOW_BACKGROUND = 40`) so the numbers stay comparable
+without the audit restating the scan it audits.
 
 This module may not import a stage (`pipeline/test_stage_import_boundaries.py`):
 it reads the sealed policy's own bytes and takes everything else as arguments.
@@ -29,28 +26,17 @@ from common.sealed_config import read_sealed_toml
 # Fraction points below a page's inferred background value, deducted from it to
 # get the level at or below which a pixel counts as ink.
 #
-# The floor under the margin each page derives for itself (`_derived_ink_margin`),
-# so it is the scan margin of every page whose two modes are too close to derive
-# a larger one, and the level `_settle_background_evidence`'s plausibility probe
-# is measured at, since it is the one level every page shares. Lives here
-# rather than in `structure.py` because all three ink-thresholding stages
-# reach it through this module, and because the AST pin in
-# `common/test_designator_recensor_ink_calibration.py` reads it as a source
-# literal against the sealed `max_ink_bp` measured at this level.
+# Not the margin any scan runs at: it is the *floor* under the margin each page
+# derives for itself (`_derived_ink_margin`), and the level
+# `_settle_background_evidence`'s plausibility probe is measured at, since the
+# floor is the most permissive threshold a scan can ever apply.
+# `common/test_ink_calibration.py` pins it as a source literal against the
+# sealed `max_ink_bp` measured at this level.
 PRIMARY_MARGIN: Final = 20
 
-# Deliberately not derived or configured: a fixed 2 below background is
-# smaller than any derived margin, so the Designator's secondary scan and
-# conservation, and the Perlector's page-fallback reader, are strictly more
-# sensitive than the primary scan on every page, never the reverse. A derived
-# value could invert that on some page, trading a visible over-count for a
-# possible silent loss.
-SECONDARY_MARGIN: Final = 2
-
 # The denominator of every basis-point fraction this module is handed. The
-# sealed policy states its fractions in the same basis points
-# `config/designator_grouping.toml` uses everywhere else; spelling the
-# denominator once here keeps the arithmetic in one place.
+# sealed policy (`config/ink_map.toml`) states its fractions in basis points;
+# spelling the denominator once here keeps the arithmetic in one place.
 BASIS_POINTS: Final = 10000
 
 
@@ -312,11 +298,6 @@ def infer_background_evidence(
     (found on real material, proxy `da9e07ec...`; `_derived_ink_margin` can
     only place a threshold for one dominant population). A per-region
     background is the repair, and a different unit.
-
-    Conservation separately reconciles at the more sensitive, non-derived
-    `SECONDARY_MARGIN`; a page `_ink_threshold` refuses at that margin is
-    likewise still cut and read, and holds the run rather than reporting an
-    unmade measurement.
     """
     if width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to infer a background from")
@@ -450,24 +431,23 @@ def _settle_background_evidence(
     return evidence
 
 
-#: Names this policy refuses wherever they appear: `PRIMARY_MARGIN` and
-#: `SECONDARY_MARGIN`, absolute 8-bit offsets an AST pin in
-#: `common/test_designator_recensor_ink_calibration.py` reads as source
-#: literals, which a per-run config value would make unenforceable statically.
-FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
+#: Names this policy refuses wherever they appear: `PRIMARY_MARGIN` is an
+#: absolute 8-bit offset `common/test_ink_calibration.py` reads as a source
+#: literal, which a per-run config value would make unenforceable statically.
+FORBIDDEN_NAMES: Final = ("primary_margin",)
 
 
 def refuse_forbidden_names(fields: dict, where: str) -> None:
-    """Refuse a grouping-configuration table that names a pinned margin."""
+    """Refuse a sealed policy table that names a pinned margin."""
     found = sorted(name for name in FORBIDDEN_NAMES if name in fields)
     if found:
         raise ContractError(
-            f"the grouping configuration's {where} carries forbidden field(s) {found}; "
-            "primary_margin/secondary_margin are absolute 8-bit ink-intensity offsets pinned "
-            "as module constants in common/background.py and may never become a per-run "
-            "config value. What is sealed instead is [grouping.background] ink_margin_bp, the "
-            "fraction of a page's own two-mode distance that derives its margin: a population "
-            "fraction, which scales with the page, and not an offset"
+            f"the sealed policy table {where} carries forbidden field(s) {found}; "
+            "primary_margin is an absolute 8-bit ink-intensity offset pinned "
+            "as a module constant in common/background.py and may never become a per-run "
+            "config value. What is sealed instead is the ink map's [background] ink_margin_bp, "
+            "the fraction of a page's own two-mode distance that derives its margin: a "
+            "population fraction, which scales with the page, and not an offset"
         )
 
 
@@ -526,9 +506,9 @@ def validate_measured_ink_map_payload(
     page-spanning component is removed, but its run geometry alone cannot
     establish the background predicate that selected those pixels. This
     envelope does: it names the page's complete audit background and the sealed
-    grouping bytes that selected it. `ink_margin` must be the margin the sealed
-    `ink_margin_bp` derives from the recorded paper and dark modes, since the
-    page-spanning split behind every count was cut at it.
+    ink-map policy bytes that selected it. `ink_margin` must be the margin the
+    sealed `ink_margin_bp` derives from the recorded paper and dark modes, since
+    the page-spanning split behind every count was cut at it.
     """
     if not isinstance(payload, dict):
         raise ContractError("the measured ink-map record has no object payload")
@@ -611,20 +591,20 @@ def round_half_up_bp(dimension: int, bp: int) -> int:
     Pure integer arithmetic, never a float, so the amount actually applied is
     deterministic and independent of Python's float rounding rules.
 
-    This is the project's one basis-point rounding rule;
-    `pipeline/2_designator/geometry._pad_amount` delegates here, so a page's
-    band and a page's padding cannot come to round differently.
+    This is the project's one basis-point rounding rule, so no two fractions
+    of a page can come to round differently.
     """
     return (dimension * bp + BASIS_POINTS // 2) // BASIS_POINTS
 
 
-# The shared sealed policy lives in the Designator-named configuration, and its
-# three readers bind the same sealed values into their records.
-DEFAULT_BACKGROUND_CONFIG_PATH: Final = (
-    Path(__file__).resolve().parents[1] / "config" / "designator_grouping.toml"
-)
+# The sealed ink-measurement policy: background inference, the page-spanning
+# bound, the connectivity radius and the coverage audit. Sealed as `ink-map`.
+DEFAULT_INK_MAP_CONFIG_PATH: Final = Path(__file__).resolve().parents[1] / "config" / "ink_map.toml"
+INK_MAP_SEALED_NAME: Final = "ink-map"
+# The file's closed top-level tables.
+INK_MAP_TABLES: Final = ("background", "page_spanning", "connectivity", "coverage_audit")
 
-# The four basis-point fields of `[grouping.background]`, in file order.
+# The four basis-point fields of `[background]`, in file order.
 BACKGROUND_BP_FIELDS: Final = (
     "band_bp",
     "max_interior_dark_bp",
@@ -633,34 +613,30 @@ BACKGROUND_BP_FIELDS: Final = (
 )
 
 
-def validate_background_table(
-    table: Any, *, where: str = "[grouping.background]"
-) -> dict[str, int]:
+def validate_background_table(table: Any, *, where: str = "[background]") -> dict[str, int]:
     """The four sealed values, checked against their bounds and returned.
 
-    Bounds live here, not only in the Designator's own loader, because the Ink
-    Map runs *before* the Designator and would otherwise publish a whole
-    stage's records under an unread or forbidden field before anything caught
-    it. Provenance is checked by the loaders, since a table built in code
-    carries none.
+    Every reader of the policy validates it here, so all refuse the same
+    malformed value. Provenance is checked by the loaders, since a table built
+    in code carries none.
     """
     if not isinstance(table, dict):
-        raise ContractError(f"the grouping configuration has no {where} table")
+        raise ContractError(f"the ink-map configuration has no {where} table")
     refuse_forbidden_names(table, where)
     unexpected = sorted(set(table) - set(BACKGROUND_BP_FIELDS) - {"provenance"})
     if unexpected:
         raise ContractError(
-            f"the grouping configuration's {where} carries unknown field(s) "
+            f"the ink-map configuration's {where} carries unknown field(s) "
             f"{unexpected}; an unread policy field cannot be applied"
         )
     missing = sorted(set(BACKGROUND_BP_FIELDS) - set(table))
     if missing:
-        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
+        raise ContractError(f"the ink-map configuration's {where} is missing field(s) {missing}")
     values = {name: table[name] for name in BACKGROUND_BP_FIELDS}
     for name in ("max_interior_dark_bp", "max_ink_bp"):
         if not is_plain_int(values[name]) or not 0 <= values[name] <= BASIS_POINTS:
             raise ContractError(
-                f"the grouping configuration's {where} {name} is not a basis-point "
+                f"the ink-map configuration's {where} {name} is not a basis-point "
                 f"integer in 0..{BASIS_POINTS}"
             )
     # Structural, not a taste: `_dark_distribution` measures at the midpoint of
@@ -673,7 +649,7 @@ def validate_background_table(
         or not 0 < values["ink_margin_bp"] < BASIS_POINTS // 2
     ):
         raise ContractError(
-            f"the grouping configuration's {where} ink_margin_bp is not a "
+            f"the ink-map configuration's {where} ink_margin_bp is not a "
             f"basis-point integer strictly between 0 and {BASIS_POINTS // 2}; zero derives "
             "no margin at all and leaves every page on PRIMARY_MARGIN, and half or "
             "more puts this page's ink threshold at or below the level the dark-distribution measurement "
@@ -682,7 +658,7 @@ def validate_background_table(
         )
     if not is_plain_int(values["band_bp"]) or not 0 < values["band_bp"] < BASIS_POINTS // 2:
         raise ContractError(
-            f"the grouping configuration's {where} band_bp is not a basis-point "
+            f"the ink-map configuration's {where} band_bp is not a basis-point "
             f"integer strictly between 0 and {BASIS_POINTS // 2}; a band of zero has no "
             "border to measure and a band of half the page has no interior to compare it against"
         )
@@ -695,7 +671,7 @@ def validate_background_table(
     for name in ("max_interior_dark_bp", "max_ink_bp"):
         if values[name] == BASIS_POINTS:
             raise ContractError(
-                f"the grouping configuration's {where} {name} is "
+                f"the ink-map configuration's {where} {name} is "
                 f"{BASIS_POINTS} basis points, which refuses nothing: a bound at the top of "
                 "its own range is the test turned off, and this policy is sealed into a run "
                 "as something that decides"
@@ -704,24 +680,21 @@ def validate_background_table(
 
 
 def load_background_config(
-    path: str | Path = DEFAULT_BACKGROUND_CONFIG_PATH,
+    path: str | Path = DEFAULT_INK_MAP_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The sealed background policy and the seal of the file it was read from.
 
-    For the two stages that need this block and nothing else around it; the
-    Designator reads the same file through `load_grouping_config` and
-    validates this block the same way, so the three stages cannot come to run
-    under different numbers. Refused loudly rather than defaulted: a bound
-    silently taken as unlimited would change what an audit calls ink with
+    Every stage that infers a page's paper value reads it here, so none can come
+    to run under different numbers. Refused loudly rather than defaulted: a
+    bound silently taken as unlimited would change what an audit calls ink with
     nobody able to point at a config line that said so.
     """
-    config, digest = read_sealed_toml(path, "background configuration")
-    grouping = config.get("grouping")
-    if not isinstance(grouping, dict):
-        raise ContractError("the background configuration has no [grouping] table")
-    background = validate_background_table(grouping.get("background"))
+    config, digest = read_sealed_toml(path, "ink-map configuration", INK_MAP_TABLES)
+    background = validate_background_table(config.get("background"))
     validate_provenance_block(
-        grouping["background"].get("provenance"), where="[grouping.background.provenance]"
+        config["background"].get("provenance"),
+        where="[background.provenance]",
+        owner="the ink-map configuration",
     )
     return {"config_sha256": digest, "background": background}
 
@@ -729,14 +702,9 @@ def load_background_config(
 def resolve_background_policy(config: dict[str, Any], width: int, height: int) -> BackgroundPolicy:
     """One page's own resolved background-inference policy.
 
-    Separate from the Designator's `resolve_thresholds` and deliberately not a
-    field of `GroupingThresholds`: background inference runs before any
-    threshold touches any geometry, so folding it in would move every existing
-    page record's published bytes for a value that pass never used.
-
-    `config` is either a whole loaded grouping config or this module's own
-    `load_background_config` result, since both carry the sealed block under
-    `background` -- which is what keeps one resolver for three stages.
+    Background inference runs before any threshold touches any geometry. `config` is
+    anything carrying the sealed block under `background`, as
+    `load_background_config`'s result does.
     """
     if not is_plain_int(width) or not is_plain_int(height) or width <= 0 or height <= 0:
         raise ContractError(f"page {width}x{height} does not have positive integer dimensions")

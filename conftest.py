@@ -24,7 +24,7 @@ from common.stage import _stage_seal_payload, latest_attempt
 ROOT = Path(__file__).resolve().parent
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     if "CI" in os.environ:
         return
     skip_local = pytest.mark.skip(reason="hostile_local runs in CI only")
@@ -335,10 +335,9 @@ def rewitness_stage_boundary(tree, stage: str) -> None:
             record = json.loads(path.read_text(encoding="utf-8"))
             if _repoint_retained_references(tree, record):
                 payload = record.get("payload")
-                # A producer that seals its payload separately -- the Designator's
-                # proposal-seal denominator does -- must have that inner hash
-                # recomputed too, or the reader stops on the denominator's own
-                # self-hash instead of on the check the calling test names.
+                # A producer that seals its payload separately must have that
+                # inner hash recomputed too, or the reader stops on the payload's
+                # own self-hash instead of on the check the calling test names.
                 if isinstance(payload, dict) and "self_hash" in payload:
                     payload["self_hash"] = self_hash(payload)
                 record["self_hash"] = self_hash(record)
@@ -412,3 +411,152 @@ def _notification_sink() -> None:
     """No test session may page his phone, whatever a caller forgot to inject."""
 
     os.environ["NTFY_TOPIC"] = NOTIFY_TEST_SINK_TOPIC
+
+
+def floor_models_config(directory: Path, floor: int) -> Path:
+    """The live model config with its witness floor set to `floor`, written under `directory`."""
+    shutil.copytree(ROOT / "config" / "model-fixtures", directory / "model-fixtures")
+    shutil.copytree(ROOT / "config" / "manifests", directory / "manifests")
+    live = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
+    assert "\nwitness_floor = 3\n" in live
+    path = directory / "models.toml"
+    path.write_text(live.replace("\nwitness_floor = 3\n", f"\nwitness_floor = {floor}\n"), "utf-8")
+    assert tomllib.loads(path.read_text(encoding="utf-8"))["witness_floor"] == floor
+    return path
+
+
+def build_page_tree(
+    base: Path,
+    scenario: str,
+    run_id: str = "r",
+    *,
+    floor: int = 3,
+    **options,
+) -> tuple[Path, dict[str, object]]:
+    """A fixture tree read page by page, through the Perlector; returns (root, stage options).
+
+    The committed protocol and roster read page by page. The options, which
+    every later stage of the run takes too, set the witness floor to `floor`
+    when it is not the committed one; `options` adds others (for example
+    `witness_context="blinded"`).
+    """
+    if floor != 3:
+        options = {"models_config": floor_models_config(base / "models", floor), **options}
+    root = base / "runs"
+    for program in programs_through("perlector"):
+        result = run_stage(root, run_id, scenario, program, **options)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+    return root, options
+
+
+def page_context(root: Path, run_id: str, scenario: str, options: dict[str, object], stage=None):
+    """A page-read tree's context under `options`, opened as `stage` (the Recensor's by default)."""
+    from common.contracts.stages import RECENSOR
+    from common.stage import open_context, stage_parser
+
+    args = stage_parser("page-read test").parse_args(
+        [
+            "--run-root",
+            str(root),
+            "--run-id",
+            run_id,
+            "--scenario",
+            scenario,
+            *(
+                item
+                for name, value in options.items()
+                for item in (f"--{name.replace('_', '-')}", str(value))
+            ),
+        ]
+    )
+    return open_context(args, stage or RECENSOR)
+
+
+def _stage_records(root: Path, run_id: str, stage_dir: str, kind: str) -> list[tuple[Path, dict]]:
+    directory = root / run_id / stage_dir / "artifacts" / kind
+    return [
+        (path, json.loads(path.read_text(encoding="utf-8")))
+        for path in sorted(directory.glob("*.json"))
+    ]
+
+
+def _write_record(path: Path, record: dict) -> None:
+    record["self_hash"] = self_hash(
+        {key: value for key, value in record.items() if key != "self_hash"}
+    )
+    path.write_bytes(canonical_bytes(record))
+
+
+# --- Recensor decisions the fixture cannot reach -------------------------------------
+#
+# Page-read tests run the real Recensor. These forge its records only for a
+# decision it does not make on the fixture's pages, each rewitnessed as a
+# Recensor that made it; the partition receipt is not rewritten, since no
+# stage after the Recensor reads it.
+
+
+def forge_page_review(root: Path, run_id: str, act_key: str, outcome: str, **payload) -> None:
+    """Give the real Recensor's review of `act_key` another outcome and payload fields."""
+    from common.contracts.stages import RECENSOR
+    from common.runtree.store import RunTree
+
+    [(path, record)] = [
+        (path, record)
+        for path, record in _stage_records(root, run_id, "5_recensor", "review")
+        if record["payload"]["act_key"] == act_key
+    ]
+    record["outcome"] = outcome
+    record["payload"].update(payload)
+    _write_record(path, record)
+    rewitness_stage_boundary(RunTree(root, run_id), RECENSOR)
+
+
+def forge_continuation_links(
+    root: Path,
+    run_id: str,
+    scenario: str,
+    options: dict[str, object],
+    links: list[tuple[str, str, bool]],
+) -> None:
+    """Replace the real Recensor's continuation links with `(head_key, tail_key, agreed)` rows.
+
+    Each is written in the `recensor-continuation-link.v1` shape between the two
+    named readings, inputting both.
+    """
+    from common.contracts.identities import attempt_id
+    from common.contracts.stages import RECENSOR
+    from common.page_review import CONTINUATION_LINK_KIND, CONTINUATION_LINK_SCHEMA
+    from common.stage import reading_acts
+
+    context = page_context(root, run_id, scenario, options)
+    for path, _record in _stage_records(root, run_id, "5_recensor", CONTINUATION_LINK_KIND):
+        path.unlink()
+    rows = {row["act_key"]: row for row in reading_acts(context)}
+    for head_key, tail_key, agreed in links:
+        head, tail = rows[head_key], rows[tail_key]
+        subject = f"page-break:{head['page_ordinal']}:{tail['page_ordinal']}"
+        record = context.envelope(
+            kind=CONTINUATION_LINK_KIND,
+            subject_id=subject,
+            outcome="accepted" if agreed else "held-for-review",
+            attempt=attempt_id(subject, "link", 1),
+            inputs=[head["perlectio_ref"], tail["perlectio_ref"]],
+            payload={
+                "schema": CONTINUATION_LINK_SCHEMA,
+                "from_page_ordinal": head["page_ordinal"],
+                "to_page_ordinal": tail["page_ordinal"],
+                "from_act_id": head["act_id"],
+                "from_act_key": head_key,
+                "to_act_id": tail["act_id"],
+                "to_act_key": tail_key,
+                "continues_to_next_page": head["continues_to_next_page"] is True,
+                "continues_from_previous_page": tail["continues_from_previous_page"] is True,
+                "agreed": agreed,
+            },
+        )
+        path = context.tree.resolve(
+            context.tree.artifact_path(RECENSOR, CONTINUATION_LINK_KIND, record["artifact_id"])
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(canonical_bytes(record))
+    rewitness_stage_boundary(context.tree, RECENSOR)

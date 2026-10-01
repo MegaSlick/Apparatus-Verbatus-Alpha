@@ -8,11 +8,10 @@ import pytest
 
 from common.request_capacity import (
     PAGE_ANSWER_ENTRY_SKELETON,
+    PAGE_ANSWER_LINE_CITE,
     PAGE_ANSWER_WRAPPER,
     PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS,
     PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST,
-    PERLECTOR_PROMPT_OVERHEAD_TOKENS,
-    PERLECTOR_PROMPT_TEMPLATE_DIGEST,
     PROMPT_TOKENS_ADMITTING_BASES,
     PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
     RequestCapacityRefusal,
@@ -20,7 +19,6 @@ from common.request_capacity import (
     page_prompt_charge,
     page_request_capacity,
     perlector_page_prompt_bound,
-    perlector_prompt_bound,
 )
 
 ROW = SimpleNamespace(
@@ -33,7 +31,7 @@ ROW = SimpleNamespace(
     patch_size=16,
     merge_size=2,
 )
-MEASURE = {"longest_witness_characters": 12_000, "act_entries": 20}
+MEASURE = {"longest_witness_characters": 12_000, "act_entries": 20, "surya_lines": 0}
 
 
 def _fixed(text):
@@ -62,17 +60,9 @@ def _admit(
     )
 
 
-def test_the_fixed_page_prose_is_charged_at_the_act_rate_named_as_carried():
+def test_the_fixed_page_prose_is_charged_at_the_carried_rate():
     tokens, basis = _bound("x" * 10_000)
-    act_tokens, _ = perlector_prompt_bound(
-        "x" * 10_000, template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST
-    )
-    # The same rate and margin as the act prompt; only the chat overhead differs
-    # (two images at most, the render and its overlay, not the act path's thirty-two).
-    assert (
-        tokens - PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS
-        == act_tokens - PERLECTOR_PROMPT_OVERHEAD_TOKENS
-    )
+    assert tokens - PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS == 4334
     assert tokens == 56 + 4334
     assert basis == PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED
     assert PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED in PROMPT_TOKENS_ADMITTING_BASES
@@ -109,25 +99,43 @@ def test_the_answer_reserve_is_the_longest_witness_text_plus_each_entrys_scaffol
     characters = 12_000 + 20 * len(PAGE_ANSWER_ENTRY_SKELETON) + len(PAGE_ANSWER_WRAPPER)
     expected = -(-characters * 4127 * 105 // (10_000 * 100))
     assert page_answer_bound(
-        longest_witness_characters=12_000, act_entries=20, page_max_tokens=12288
+        longest_witness_characters=12_000, act_entries=20, surya_lines=0, page_max_tokens=12288
     ) == (expected, False)
     assert expected == 6903
+
+
+def test_each_shown_surya_line_is_reserved_one_cite_of_its_own():
+    """Lines are cited one by one, never by a range, so each costs its own id."""
+    characters = (
+        12_000
+        + 20 * len(PAGE_ANSWER_ENTRY_SKELETON)
+        + 120 * len(PAGE_ANSWER_LINE_CITE)
+        + len(PAGE_ANSWER_WRAPPER)
+    )
+    expected = -(-characters * 4127 * 105 // (10_000 * 100))
+    assert page_answer_bound(
+        longest_witness_characters=12_000, act_entries=20, surya_lines=120, page_max_tokens=12288
+    ) == (expected, False)
+    assert expected > 6903
 
 
 def test_a_page_with_no_witness_text_reserves_the_whole_cap():
     for entries in (0, 20):
         assert page_answer_bound(
-            longest_witness_characters=0, act_entries=entries, page_max_tokens=12288
+            longest_witness_characters=0,
+            act_entries=entries,
+            surya_lines=entries,
+            page_max_tokens=12288,
         ) == (12288, False)
 
 
 def test_an_estimate_above_the_cap_is_clamped_to_it_and_recorded():
     assert page_answer_bound(
-        longest_witness_characters=300_000, act_entries=20, page_max_tokens=12288
+        longest_witness_characters=300_000, act_entries=20, surya_lines=0, page_max_tokens=12288
     ) == (12288, True)
     roomy = SimpleNamespace(**{**vars(ROW), "max_model_len": 65536})
     # A looping witness never refuses the page for good: it is admitted on the cap.
-    admitted = _admit(roomy, measure={"longest_witness_characters": 300_000, "act_entries": 20})
+    admitted = _admit(roomy, measure={**MEASURE, "longest_witness_characters": 300_000})
     assert admitted["answer_reserve"]["tokens"] == 12288
     assert admitted["answer_reserve"]["reserve_clamped"] is True
     assert admitted["capacity"]["answer_budget"] == 12288

@@ -9,7 +9,7 @@ absent chair stays in the roster, resolves to a value rather than an exception,
 and is one fewer configured witness against a floor that does not shrink to match.
 
 The end of that sentence — that a run carries the absence all the way into its
-export — is `test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor`
+export — is `test_an_explicitly_absent_witness_counts_against_the_floor_on_every_page`
 in `pipeline/orchestrator/test_orchestrator_acceptance.py`, over the real stage
 programs. This file covers the registry's half.
 """

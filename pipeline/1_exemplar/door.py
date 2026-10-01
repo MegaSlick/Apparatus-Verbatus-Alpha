@@ -57,11 +57,12 @@ from image_formats import (  # noqa: E402
     sniff,
 )
 
-from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH, load_alignment_limits  # noqa: E402
+from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH, load_dissent_limits  # noqa: E402
 from common.armarium_formats import (  # noqa: E402
     DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     bind_armarium_formats,
 )
+from common.background import DEFAULT_INK_MAP_CONFIG_PATH  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
     real_ingress_record,
@@ -91,6 +92,7 @@ from common.page_accounting import (  # noqa: E402
     load_page_accounting_policy,
 )
 from common.recovery import load_recovery_policy  # noqa: E402
+from common.residual_ink import ink_map_config_digest  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.sealed_config import read_sealed_toml  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -1717,24 +1719,18 @@ def fixture_submission(args, registry) -> int:
         args.scenario,
         pdf_render_config_path=args.pdf_render_config,
         pdf_render_config_sha256=pdf_render_binding.config_sha256,
-        designator_padding_config_path=args.designator_padding_config,
         designator_geometry_config_path=args.designator_geometry_config,
-        designator_grouping_config_path=args.designator_grouping_config,
         alignment_config_path=args.alignment_config,
         page_accounting_config_path=args.page_accounting_config,
+        ink_map_config_path=args.ink_map_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
-        nuda_per_mille=args.nuda_per_mille,
-        nuda_approval_ref=args.nuda_approval_ref,
-        perlector_instrument_per_mille=args.perlector_instrument_per_mille,
-        perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
-        blind_read=args.blind_read,
         serving_recipes_config_path=args.serving_recipes_config,
         decoding_config_path=args.decoding_config,
     )
@@ -1917,29 +1913,19 @@ def real_submission(args, registry) -> int:
         args.formats_config,
         pdf_render_config_sha256=pdf_render_binding.config_sha256,
         data_handling_config_sha256=data_policy_binding.config_sha256,
-        designator_padding_config_sha256=read_sealed_toml(
-            args.designator_padding_config, "Designator padding configuration"
-        )[1],
         designator_geometry_config_sha256=read_sealed_toml(
             args.designator_geometry_config, "Designator geometry configuration"
         )[1],
-        designator_grouping_config_sha256=read_sealed_toml(
-            args.designator_grouping_config, "Designator grouping configuration"
-        )[1],
         alignment_config_path=args.alignment_config,
         page_accounting_config_path=args.page_accounting_config,
+        ink_map_config_path=args.ink_map_config,
         serving_recipes_config_path=args.serving_recipes_config,
         triage_document_digests=triage_digests,
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
-        nuda_per_mille=args.nuda_per_mille,
-        nuda_approval_ref=args.nuda_approval_ref,
-        perlector_instrument_per_mille=args.perlector_instrument_per_mille,
-        perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
         decoding_config_path=args.decoding_config,
-        blind_read=args.blind_read,
         mechanics_qualification=getattr(args, "mechanics_qualification", False),
         canary_ledger=canary_ledger,
     )
@@ -2083,22 +2069,16 @@ def _real_bindings(
     *,
     pdf_render_config_sha256: str,
     data_handling_config_sha256: str,
-    designator_padding_config_sha256: str,
     designator_geometry_config_sha256: str,
-    designator_grouping_config_sha256: str,
     alignment_config_path=DEFAULT_ALIGNMENT_CONFIG_PATH,
     page_accounting_config_path=DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
+    ink_map_config_path=DEFAULT_INK_MAP_CONFIG_PATH,
     triage_document_digests: dict[str, str] | None = None,
     witness_context: str = "named",
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
-    nuda_per_mille: int = 0,
-    nuda_approval_ref: str = "",
-    perlector_instrument_per_mille: int = 0,
-    perlector_instrument_approval_ref: str = "",
     perlector_protocol_config_path=DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     perlector_audit_config_path=DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     decoding_config_path=DEFAULT_DECODING_CONFIG_PATH,
-    blind_read: str = "off",
     mechanics_qualification: bool = False,
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -2123,14 +2103,10 @@ def _real_bindings(
         models,
         witness_context=witness_context,
         witness_context_config_path=witness_context_config_path,
-        nuda_per_mille=nuda_per_mille,
-        nuda_approval_ref=nuda_approval_ref,
-        perlector_instrument_per_mille=perlector_instrument_per_mille,
-        perlector_instrument_approval_ref=perlector_instrument_approval_ref,
-        blind_read=blind_read,
     )
-    _, alignment_config_sha256 = load_alignment_limits(alignment_config_path)
+    _, alignment_config_sha256 = load_dissent_limits(alignment_config_path)
     page_accounting_config_sha256 = load_page_accounting_policy(page_accounting_config_path).sha256
+    ink_map_config_sha256 = ink_map_config_digest(ink_map_config_path)
     _decoding_policy, decoding_config_sha256 = load_decoding_policy(decoding_config_path)
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
     adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
@@ -2171,11 +2147,10 @@ def _real_bindings(
                 "armarium_formats": armarium_formats.to_record(),
                 "recovery_policy": recovery_policy,
                 "hard_failure_policy": hard_failure_policy,
-                "designator_padding_config_sha256": designator_padding_config_sha256,
                 "designator_geometry_config_sha256": designator_geometry_config_sha256,
-                "designator_grouping_config_sha256": designator_grouping_config_sha256,
                 "alignment_config_sha256": alignment_config_sha256,
                 "page_accounting_config_sha256": page_accounting_config_sha256,
+                "ink_map_config_sha256": ink_map_config_sha256,
                 "triage_modes_config_sha256": triage_modes_config_sha256,
                 # Triage decisions shape pixels, so a re-run triage pass under one
                 # run id is refused by name. Empty without split decisions.
@@ -2188,13 +2163,8 @@ def _real_bindings(
                 # fixture path, so a bad declaration refuses before any paid work.
                 "witness_context_regime": witness_context,
                 "witness_context_declaration_sha256": witness_context_declaration_sha256,
-                "nuda_per_mille": nuda_per_mille,
-                "nuda_approval_ref": nuda_approval_ref,
-                "perlector_instrument_per_mille": perlector_instrument_per_mille,
-                "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
                 "perlector_protocol_config_sha256": perlector_protocol_config_sha256,
                 "perlector_audit_config_sha256": perlector_audit_config_sha256,
-                "blind_read": blind_read,
                 "serving_config_inputs": {
                     "schema": SERVING_CONFIG_INPUTS_SCHEMA,
                     "serving_recipes_sha256": serving_recipes_config_digest,
@@ -2206,11 +2176,10 @@ def _real_bindings(
         # Named as on the fixture path, so point-of-use rechecks find them on
         # real runs too.
         "sealed_config_digests": {
-            "designator-padding": designator_padding_config_sha256,
             "designator-geometry": designator_geometry_config_sha256,
-            "designator-grouping": designator_grouping_config_sha256,
             "alignment": alignment_config_sha256,
             "page-accounting": page_accounting_config_sha256,
+            "ink-map": ink_map_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
             "decoding": decoding_config_sha256,
             "perlector-protocol": perlector_protocol_config_sha256,
@@ -2232,11 +2201,6 @@ def _real_bindings(
             "run-policy": real_run_policy_digest(
                 witness_context=witness_context,
                 witness_context_declaration_sha256=witness_context_declaration_sha256,
-                nuda_per_mille=nuda_per_mille,
-                nuda_approval_ref=nuda_approval_ref,
-                perlector_instrument_per_mille=perlector_instrument_per_mille,
-                perlector_instrument_approval_ref=perlector_instrument_approval_ref,
-                blind_read=blind_read,
                 mechanics_qualification=mechanics_qualification,
             ),
             **({"canary-ledger": canary_ledger["self_hash"]} if canary_ledger else {}),

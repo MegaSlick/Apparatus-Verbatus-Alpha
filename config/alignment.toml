@@ -1,26 +1,13 @@
-# Alignment limits. Their values are sealed at run creation and rechecked at
-# the point of use. Values are operational bounds, never similarity thresholds.
-[limits]
-max_characters = 100000
-max_character_pairs = 100000000
-# The matcher's work, in steps: one witness character scanned or one anchor
-# position visited by `find_longest_match`. Counted, not timed, so the same
-# page under the same limits aligns the same way on every machine. An
-# unaligned page witness is not comparable and leaves the act's witness floor.
-# Covered, with room to spare: a page at the pair ceiling made of register acts
-# of 150 characters or more, even when every act repeats one formula verbatim
-# and the witness misreads the same word in each. Not covered: shorter units
-# repeated verbatim across the ceiling, such as 60-character index rows, which
-# stop here and are counted unmeasured, a named hold. Degenerate chair
-# responses the bounds admit (a repetition loop, two different low-entropy
-# strings) stop here too.
-max_alignment_steps = 500000000
-
-# The Perlector's dissent and self-revision comparisons: one act's reading
-# against one witness's act-length report or against the reading's own prior
-# draft, in the same steps. Sized to clear act-length text with room to spare,
-# a formula act and a noisy or unrelated witness included; a degenerate report
-# stops here. A comparison that would pass it is recorded as not measured,
-# never guessed.
+# The Perlector's dissent comparison budget. Its value is sealed at run creation
+# and rechecked at the point of use. It is an operational bound, never a
+# similarity threshold.
+#
+# The matcher's work, in steps: one character scanned or one position visited by
+# `find_longest_match`. Counted, not timed, so the same comparison under the same
+# budget finishes the same way on every machine. One entry's reading is compared
+# against the units of one witness it cites; sized to clear act-length text with
+# room to spare, a formula act and a noisy or unrelated witness included. A
+# degenerate report stops here. A comparison that would pass it is recorded as
+# not measured, never guessed.
 [dissent]
 max_comparison_steps = 100000000

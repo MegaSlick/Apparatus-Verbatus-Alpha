@@ -67,11 +67,10 @@ comparison has no counterpart on the real route and the name-by-name recheck of
 the sealed map takes its place. Without these three names that recheck would
 cover neither the model roster (only inside `config_digest`, via
 `models.to_record()`), nor the Armarium's format projection, nor the run-level
-reading knobs — the witness-context regime and its declaration, the Lectio nuda
-rate and approval reference, the Perlector instrument rate and approval
-reference, and `blind_read`, which `real_run_policy_digest` closes under one
+reading knobs — the witness-context regime, its declaration's sha256 and
+`mechanics_qualification`, which `real_run_policy_digest` closes under one
 name. A real run resumed with a different `--models-config` would otherwise
-publish stage-3 testimony naming one model and stage-4 dossiers naming another,
+publish stage-3 testimony naming one model and stage-4 page readings naming another,
 every check green, which is provenance broken silently on the one path that
 will ever carry real material.
 
@@ -412,13 +411,6 @@ shard and must not add a corpus-wide aggregate that would silently change the ru
 unit. Two hard failures in each of several shards remain warnings in each run; the
 third within any one shard halts that run at its next checkpoint. Nothing links a
 continuation that crosses a shard boundary: each run sees only its own pages.
-
-**Recovery does not re-render a derivative page.** A recovery pass reads the same
-sealed Exemplar page, re-verifies its master/recipe lineage at the ordinary boundary,
-and cuts a new Designator region from those already sealed pixels. The deterministic
-crop and write-once publication paths accept a byte-identical replay. There is no
-recovery call site that invokes the Door renderer, so split fan-out neither expands
-the recovery budget nor collides with the derivative page artifact.
 
 **Early failures still keep the post-split denominator.** An unreadable, oversized,
 or undecodable frame receives one refused ordinal per part already declared by its

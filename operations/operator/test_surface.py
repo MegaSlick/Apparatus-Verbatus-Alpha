@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import contextlib
 import errno
 import hashlib
 import json
@@ -1331,7 +1330,7 @@ def test_six_words_end_to_end_and_status_is_strictly_read_only(tmp_path: Path) -
     assert launched.record is not None
     boot_receipt = surface.boot()
     upload_receipt = surface.upload(source, sealed_manifest=manifest)
-    outcome = surface.run(run_id="six-word-run")
+    outcome = surface.run(run_id="six-word-run", scenario="page-unbroken")
     bundle = surface.export(run_id="six-word-run")
     prepared_close = surface.prepare_close()
     close = surface.close(prepared_close, prepared_close.phrase)
@@ -1345,7 +1344,7 @@ def test_six_words_end_to_end_and_status_is_strictly_read_only(tmp_path: Path) -
     lease = LeaseStore(surface.state_root / str(launch_receipt["lease"])).load()
     assert lease is not None and lease.phase == "closed-verified"
     assert any("page 1" in line and "page 2" in line for line in messages)
-    assert any("act a1" in line and "act a2" in line for line in messages)
+    assert any("Acts accounted for: act " in line for line in messages)
     assert any("I CONFIRM PAID POD" in line for line in messages)
     assert any("Charges captured through" in line for line in messages)
     assert any("ongoing price is $" in line for line in messages)
@@ -1986,17 +1985,17 @@ def test_laptop_crash_leaves_resumable_pages_and_acts(tmp_path: Path) -> None:
     surface = _surface(tmp_path, faults=Faults(laptop_crash=True), output=messages)
 
     with pytest.raises(OperatorError) as interruption:
-        surface.run(run_id="laptop-crash-run")
+        surface.run(run_id="laptop-crash-run", scenario="page-unbroken")
 
     assert interruption.value.code is ErrorCode.RUN_INTERRUPTED
     interrupted = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]
     assert interrupted["state"] == "interrupted-recoverable"
-    resumed = surface.run(run_id="laptop-crash-run")
+    resumed = surface.run(run_id="laptop-crash-run", scenario="page-unbroken")
 
     assert resumed.state == "complete"
     assert any("Resuming run laptop-crash-run" in line for line in messages)
     assert any("page 1" in line for line in messages)
-    assert any("act a1" in line for line in messages)
+    assert any("Acts accounted for: act " in line for line in messages)
 
 
 def test_failed_close_is_loud_then_can_be_rechecked(tmp_path: Path) -> None:
@@ -2453,24 +2452,6 @@ def _argv_value(command: list[str], flag: str) -> str:
     return command[command.index(flag) + 1]
 
 
-@pytest.mark.parametrize("blind_read", ["off", "fed", "saved"])
-def test_the_blind_read_setting_reaches_the_orchestrator_and_the_run_receipt(
-    tmp_path: Path, blind_read: str
-) -> None:
-    surface, observed = _recording_surface(tmp_path)
-
-    with contextlib.suppress(OperatorError):
-        surface.run(run_id="blind-read-run", blind_read=blind_read)
-
-    command, _cwd = observed[0]
-    if blind_read == "off":
-        assert "--blind-read" not in command
-    else:
-        assert _argv_value(command, "--blind-read") == blind_read
-    receipts = surface._run_receipts()
-    assert receipts and {payload["blind_read"] for _path, payload in receipts} == {blind_read}
-
-
 def test_real_ingress_paths_are_made_absolute_against_the_operators_own_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2708,9 +2689,9 @@ def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path:
             data_gate_policy=tmp_path / "data-gate-policy.json",
         )
 
-    declared_pages, declared_acts, declared_ok = _declared_work(ROOT, "happy")
+    declared_pages, declared_ok = _declared_work(ROOT, "happy")
     assert declared_ok, "the declared fixture is unreadable; this test proves nothing"
-    for name in declared_pages + declared_acts:
+    for name in declared_pages:
         assert not any(name in line for line in messages), (
             f"a real run was narrated with the declared fixture's {name!r}"
         )
@@ -3531,7 +3512,7 @@ def test_re_exporting_a_run_after_the_tree_changed_does_not_overwrite_the_first_
     surface = _surface(tmp_path)
     launched = _launch(surface, _spend_policy(tmp_path))
     assert launched.record is not None
-    surface.run(run_id="re-export-run")
+    surface.run(run_id="re-export-run", scenario="page-unbroken")
 
     contents = iter([b"first export bytes", b"second export bytes; run tree since changed"])
 
@@ -4303,7 +4284,7 @@ def test_status_repeats_the_recorded_values_exactly_and_never_recomputes_them(
     assert launched.record is not None
     surface.boot()
     surface.upload(source, sealed_manifest=manifest)
-    surface.run(run_id="byte-for-byte-run")
+    surface.run(run_id="byte-for-byte-run", scenario="page-unbroken")
     surface.export(run_id="byte-for-byte-run")
     prepared_close = surface.prepare_close()
     surface.close(prepared_close, prepared_close.phrase)
@@ -5592,7 +5573,6 @@ def test_verdict_save_failure_says_the_verdict_was_not_saved(tmp_path, monkeypat
 # chair client is built in. Read from source below rather than
 # imported, since a stage module pulls the whole serving stack in behind it.
 _SERVING_STAGE_SOURCES = {
-    "designator": "pipeline/2_designator/run.py",
     "attestatores": "pipeline/3_attestatores/run.py",
     "perlector": "pipeline/4_perlector/run.py",
 }

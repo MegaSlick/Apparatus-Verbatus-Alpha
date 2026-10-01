@@ -13,7 +13,7 @@ import pytest
 
 from common.background import load_background_config, resolve_background_policy
 from common.contracts.errors import ContractError, FatalAccounting
-from common.contracts.stages import DESIGNATOR, INK_MAP
+from common.contracts.stages import INK_MAP
 from common.residual_ink import (
     edge_ink_from_runs,
     ink_map_page,
@@ -24,8 +24,8 @@ from common.sealed_config import read_sealed_toml
 from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
-GROUPING_CONFIG = ROOT / "config/designator_grouping.toml"
-GROUPING_CONFIG_DIGEST = read_sealed_toml(GROUPING_CONFIG, "config")[1]
+INK_MAP_CONFIG = ROOT / "config/ink_map.toml"
+INK_MAP_CONFIG_DIGEST = read_sealed_toml(INK_MAP_CONFIG, "config")[1]
 
 
 _RUNS = {"schema": "ink-runs.v2", "width": 40, "height": 2, "rows": [[], []]}
@@ -45,12 +45,12 @@ _BACKGROUND = {
     "ink_margin": 73,
     "contrast_below_background": 40,
     "ink_threshold": 180,
-    "config_sha256": GROUPING_CONFIG_DIGEST,
+    "config_sha256": INK_MAP_CONFIG_DIGEST,
 }
 
 
 def _edge_for_runs(evidence: dict) -> dict:
-    config = load_coverage_audit_config(GROUPING_CONFIG)
+    config = load_coverage_audit_config(INK_MAP_CONFIG)
     policy = resolve_coverage_audit_policy(config, evidence["width"], evidence["height"])
     measured = edge_ink_from_runs(evidence, [], coverage_policy=policy)
     return {
@@ -117,11 +117,11 @@ class _Context(SimpleNamespace):
             raise ContractError(f"sealed {name} digest does not match the Ink Map payload")
 
 
-def _context(records: dict[str, list[dict]], digest=GROUPING_CONFIG_DIGEST):
+def _context(records: dict[str, list[dict]], digest=INK_MAP_CONFIG_DIGEST):
     return _Context(
         tree=_Tree(records),
-        run={"sealed_config_digests": {"designator-grouping": digest}},
-        args=SimpleNamespace(designator_grouping_config=str(GROUPING_CONFIG)),
+        run={"sealed_config_digests": {"ink-map": digest}},
+        args=SimpleNamespace(ink_map_config=str(INK_MAP_CONFIG)),
     )
 
 
@@ -204,8 +204,8 @@ def test_same_outcome_run_loss_is_refused_before_a_crop_can_release_it():
     width = height = 100
     rows = [bytearray([230] * width) for _ in range(height)]
     rows[0][:80] = bytearray([0] * 80)
-    background_config = load_background_config(GROUPING_CONFIG)
-    coverage_config = load_coverage_audit_config(GROUPING_CONFIG)
+    background_config = load_background_config(INK_MAP_CONFIG)
+    coverage_config = load_coverage_audit_config(INK_MAP_CONFIG)
     background_policy = resolve_background_policy(background_config, width, height)
     coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
     produced = ink_map_page(
@@ -319,8 +319,8 @@ def test_a_structural_component_may_contain_no_ink_at_the_audits_stricter_contra
     rows = [bytearray([230] * width) for _ in range(height)]
     for coordinate in range(width):
         rows[coordinate][coordinate] = 205
-    background_config = load_background_config(GROUPING_CONFIG)
-    coverage_config = load_coverage_audit_config(GROUPING_CONFIG)
+    background_config = load_background_config(INK_MAP_CONFIG)
+    coverage_config = load_coverage_audit_config(INK_MAP_CONFIG)
     background_policy = resolve_background_policy(background_config, width, height)
     coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
     produced = ink_map_page(
@@ -348,7 +348,7 @@ def test_a_structural_component_may_contain_no_ink_at_the_audits_stricter_contra
     )
     record["payload"]["background"] = {
         **produced["background"],
-        "config_sha256": GROUPING_CONFIG_DIGEST,
+        "config_sha256": INK_MAP_CONFIG_DIGEST,
     }
     assert armarium.ink_map_page_rows(
         _context({INK_MAP: [record]}), _sealed_census(width, height), {}
@@ -435,49 +435,33 @@ def test_a_page_ordinal_that_is_not_an_integer_is_refused():
 def test_a_crop_that_no_longer_verifies_cannot_release_an_edge_finding(monkeypatch):
     """A stale crop is not evidence of coverage, whatever its recorded bounds.
 
-    `claimed_bounds_by_page` is the ONLY source of the rectangles a release is
-    measured against, and it re-verifies each one against the Exemplar page it
-    claims to be a crop of. A region whose lineage no longer checks out would
-    otherwise release a page on pixels nobody can prove were ever cut.
+    `reading_region_bounds_by_page` is the ONLY source of the rectangles a
+    release is measured against, and it re-verifies each act-region against the
+    Exemplar page it claims to be a crop of. A region whose lineage no longer
+    checks out would otherwise release a page on pixels nobody can prove were
+    ever cut.
     """
     armarium = load_stage("7_armarium")
-    region = {
-        "artifact_id": "region-1",
-        "subject_id": "act-1",
-        "payload": {
-            "transform": {"source_page_ordinal": 1, "bounds": {"x": 0, "y": 0, "w": 40, "h": 2}}
-        },
-    }
-    context = _context({DESIGNATOR: [region]})
-
+    bounds = {"x": 0, "y": 0, "w": 40, "h": 2}
+    row = {"act_id": "act-1", "act_key": "p1-e1", "class": "reading", "region_ref": {"r": 1}}
+    unplaced = {**row, "act_key": "p1-e2", "class": "reading-unplaced", "region_ref": None}
+    context = SimpleNamespace(
+        run={},
+        tree=SimpleNamespace(read_artifact_reference=lambda *_args, **_kwargs: {"payload": {}}),
+    )
     monkeypatch.setattr(
         armarium,
-        "verify_exemplar_crop_lineage",
-        lambda *_args: {"source_page_ordinal": 1},
+        "verify_reading_region_lineage",
+        lambda *_args: {"source_page_ordinal": 1, "transform": {"bounds": bounds}},
     )
-    assert armarium.claimed_bounds_by_page(context, {}) == {1: [{"x": 0, "y": 0, "w": 40, "h": 2}]}
+    assert armarium.reading_region_bounds_by_page(context, [row, unplaced]) == {1: [bounds]}
 
     def stale(*_args):
         raise ContractError("the crop bytes do not match the sealed page region")
 
-    monkeypatch.setattr(armarium, "verify_exemplar_crop_lineage", stale)
+    monkeypatch.setattr(armarium, "verify_reading_region_lineage", stale)
     with pytest.raises(FatalAccounting, match="cannot be verified as a crop"):
-        armarium.claimed_bounds_by_page(context, {})
-
-
-def test_a_verified_region_with_no_bounds_is_refused_not_skipped(monkeypatch):
-    """A region that verifies but states no rectangle releases nothing silently."""
-    armarium = load_stage("7_armarium")
-    region = {
-        "artifact_id": "region-1",
-        "subject_id": "act-1",
-        "payload": {"transform": {"source_page_ordinal": 1}},
-    }
-    monkeypatch.setattr(
-        armarium, "verify_exemplar_crop_lineage", lambda *_args: {"source_page_ordinal": 1}
-    )
-    with pytest.raises(FatalAccounting, match="no crop bounds"):
-        armarium.claimed_bounds_by_page(_context({DESIGNATOR: [region]}), {})
+        armarium.reading_region_bounds_by_page(context, [row])
 
 
 def test_an_unmeasurable_page_stays_in_the_denominator_and_can_never_be_held():
@@ -499,7 +483,7 @@ def test_an_unmeasurable_page_stays_in_the_denominator_and_can_never_be_held():
             "page_ordinal": 1,
             "ink_measurable": False,
             "background_refusal": "the page is majority ink",
-            "background_config_sha256": GROUPING_CONFIG_DIGEST,
+            "background_config_sha256": INK_MAP_CONFIG_DIGEST,
         },
     }
     rows = armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})

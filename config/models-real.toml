@@ -39,16 +39,6 @@ armarium = "unproven-real-armarium"
 [witness_framings]
 attestator_3 = "registry-v0.3.0"
 
-[chairs.designator_structure]
-state = "configured"
-source = "huggingface"
-repo = "datalab-to/chandra-ocr-2"
-revision = "af93b47dba1b47b6640c86ccf487ed2260ab9a09"
-digest_manifest = "6bfe1e4192a251e1f1aced58e720f6ce9c5b915d12f766b09a79e22433e79230"
-manifest = "manifests/chandra-ocr-2.json"
-serving_recipe = "unproven-real-designator"
-license_note = "Revenue-capped; competitive use barred. Accepted under the research track (2026-08-20)"
-
 [chairs.attestator_1]
 state = "configured"
 source = "huggingface"
@@ -87,9 +77,9 @@ witness_scope = "page"
 
 # DAI's own project's record detector (Teklia, YOLOv26-m OBB, trained on the
 # same RecordGold corpus as DAI). Each witness sees the page the way it was
-# trained: DAI reads crops of the records this detector finds, never the
-# Designator's act crops. Its records are page-scoped evidence with no
-# authority over acts; they only give DAI its units.
+# trained: DAI reads crops of the records this detector finds. Its records
+# are page-scoped evidence with no authority over acts; they only give DAI its
+# units.
 [chairs.secondary_proposer]
 state = "configured"
 source = "huggingface"

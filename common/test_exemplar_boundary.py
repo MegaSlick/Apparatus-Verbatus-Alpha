@@ -1,7 +1,7 @@
 """The shared Exemplar boundary check, exercised at its own interface.
 
-`common/exemplar_boundary.py` is what the Designator runs before it crops and what
-the Armarium runs before it exports. `pipeline/2_designator/test_exemplar_boundary.py`
+`common/exemplar_boundary.py` is what the Designator runs before it reads a page
+and what the Armarium runs before it exports. `pipeline/2_designator/test_exemplar_boundary.py`
 covers it end to end by damaging a real run tree, which is the right test for the
 cases damage can reach: a deleted page, a rewritten corpus seal, altered or missing
 pixels.
@@ -38,11 +38,11 @@ from PIL import Image
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.stages import DESIGNATOR, EXEMPLAR
+from common.contracts.stages import EXEMPLAR, PERLECTOR
 from common.exemplar_boundary import (
     _validate_exemplar_transform,
     sealed_page_bytes,
-    verify_exemplar_crop_lineage,
+    verify_reading_region_lineage,
     verify_sealed_page_pixels,
 )
 from common.imaging import decode_grayscale_png, encode_grayscale_png
@@ -62,7 +62,7 @@ def sealed(tmp_path):
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-root",
             str(tmp_path / "runs"),
             "--run-id",
@@ -154,13 +154,14 @@ def test_a_door_admission_bound_to_a_different_run_refuses(sealed):
 
 # --- the crop lineage check ------------------------------------------------------
 #
-# Opus-F3. `verify_exemplar_crop_lineage` re-derives a crop from the sealed page
+# Opus-F3. `verify_reading_region_lineage` re-derives a crop from the sealed page
 # and compares. It compared raw bytes, which made the check's verdict depend on
 # which zlib build re-derived it: the audit's demonstration shimmed
 # `zlib.compress` to emit a valid stream at a different level -- precisely what a
 # different zlib build legitimately does -- and every crop in the run was refused
 # as "a Designator region does not trace to its Exemplar page", with the pixels
-# untouched and reproducing exactly. A benign environment change reported as
+# untouched and reproducing exactly. The check is shared by every crop this
+# pipeline cuts from a sealed page; it is exercised here on the Perlector's. A benign environment change reported as
 # tampered evidence is both a false alarm and a lost one.
 #
 # Two changes, and these tests hold both. `crop_png` no longer writes bytes a
@@ -171,7 +172,7 @@ def test_a_door_admission_bound_to_a_different_run_refuses(sealed):
 
 @pytest.fixture
 def cropped(tmp_path):
-    """One real synthetic run, and the first act region the Designator cut."""
+    """One real synthetic run, and the first act region the Perlector cut."""
     result = subprocess.run(
         [
             sys.executable,
@@ -179,7 +180,7 @@ def cropped(tmp_path):
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-root",
             str(tmp_path / "runs"),
             "--run-id",
@@ -194,11 +195,11 @@ def cropped(tmp_path):
     region = next(
         record
         for record in (
-            tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-            for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
-            if entry["kind"] == "region"
+            tree.read_artifact(PERLECTOR, "act-region", entry["artifact_id"])
+            for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+            if entry["kind"] == "act-region"
         )
-        if record["payload"]["origin"] == "proposal"
+        if record["payload"]["image_path"] is not None
     )
     return tree, tree.read_run(), region
 
@@ -207,16 +208,19 @@ def restated(tree, region, crop_bytes):
     """The same region record, naming a crop stored under different bytes.
 
     This is what a run tree sealed by another encoder looks like from here: the
-    record names its own crop's digest, and the blob under that digest holds
-    exactly the bytes that encoder wrote. The on-disk region artifact is left
-    alone deliberately -- the act-identity binding reads *it* to check the
-    Designator's proposal seal, and rewriting it would change what these tests
-    are about.
+    record names its own crop's digest, as its payload and its inputs, and the
+    blob under that digest holds exactly the bytes that encoder wrote.
     """
-    digest, published = tree.put_blob(DESIGNATOR, crop_bytes)
+    digest, published = tree.put_blob(PERLECTOR, crop_bytes)
+    old = {
+        "relative_path": region["payload"]["image_path"],
+        "sha256": region["payload"]["image_sha256"],
+    }
+    new = {"relative_path": published.relative_path, "sha256": digest}
     substituted = copy.deepcopy(region)
     substituted["payload"]["image_path"] = published.relative_path
     substituted["payload"]["image_sha256"] = digest
+    substituted["inputs"] = [new if ref == old else ref for ref in substituted["inputs"]]
     return substituted
 
 
@@ -238,7 +242,7 @@ def test_the_crop_the_run_wrote_verifies(cropped):
     """The check passes on the real thing, so a failure below means what it says."""
     tree, run, region = cropped
 
-    verified = verify_exemplar_crop_lineage(tree, run, region)
+    verified = verify_reading_region_lineage(tree, run, region)
 
     assert verified["region_id"] == region["payload"]["region_id"]
 
@@ -256,7 +260,7 @@ def test_the_same_crop_written_by_another_encoder_is_not_forged_evidence(cropped
     other_encoding = reframed(crop, optimize=False, compress_level=1)
     assert other_encoding != crop
 
-    verified = verify_exemplar_crop_lineage(tree, run, restated(tree, region, other_encoding))
+    verified = verify_reading_region_lineage(tree, run, restated(tree, region, other_encoding))
 
     assert verified["verified_dimensions"] == {
         "w": region["payload"]["transform"]["bounds"]["w"],
@@ -275,7 +279,7 @@ def test_the_same_crop_under_this_pipelines_previous_encoder_still_verifies(crop
     previous = encode_grayscale_png(width, height, rows)
     assert previous != crop
 
-    verify_exemplar_crop_lineage(tree, run, restated(tree, region, previous))
+    verify_reading_region_lineage(tree, run, restated(tree, region, previous))
 
 
 def test_a_single_changed_pixel_is_still_refused_by_name(cropped):
@@ -289,7 +293,7 @@ def test_a_single_changed_pixel_is_still_refused_by_name(cropped):
         tampered.save(output, format="PNG")
 
     with pytest.raises(ContractError, match="pixels are not the exact crop"):
-        verify_exemplar_crop_lineage(tree, run, restated(tree, region, output.getvalue()))
+        verify_reading_region_lineage(tree, run, restated(tree, region, output.getvalue()))
 
 
 def test_a_crop_carrying_payload_beside_its_pixels_is_refused(cropped):
@@ -309,7 +313,7 @@ def test_a_crop_carrying_payload_beside_its_pixels_is_refused(cropped):
     )
 
     with pytest.raises(ContractError, match="carries content beyond the crop itself"):
-        verify_exemplar_crop_lineage(tree, run, restated(tree, region, smuggled))
+        verify_reading_region_lineage(tree, run, restated(tree, region, smuggled))
 
 
 def test_a_crop_that_is_not_an_image_at_all_refuses_as_that(cropped):
@@ -318,7 +322,7 @@ def test_a_crop_that_is_not_an_image_at_all_refuses_as_that(cropped):
     tree, run, region = cropped
 
     with pytest.raises(ContractError, match="not a decodable image"):
-        verify_exemplar_crop_lineage(tree, run, restated(tree, region, b"not a png at all"))
+        verify_reading_region_lineage(tree, run, restated(tree, region, b"not a png at all"))
 
 
 # --- Transform values are closed as well as their record shapes ----------------

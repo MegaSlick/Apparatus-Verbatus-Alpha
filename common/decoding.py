@@ -22,7 +22,6 @@ from common.contracts.serving import (
 from common.sealed_config import read_sealed_toml
 
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
-_PERLECTOR_BOUNDS = ("reading_max_tokens", "reproof_max_tokens", "page_max_tokens")
 # Every sampling field a chair's row may carry, each a top-level field of the
 # pinned vLLM 0.30.0 `ChatCompletionRequest`. Only the sealed table puts them on
 # the wire; a caller's request may not name them.
@@ -79,21 +78,12 @@ VLLM_ENGINE = "vllm==0.30.0"
 _VLLM_MAX_TEMP = 1e-2
 _VLLM_SAMPLING_EPS = 1e-5
 _VLLM_GREEDY_OVERRIDES: dict[str, int | float] = {"top_p": 1.0, "top_k": 0, "min_p": 0.0}
-# The two arms of the sampling-variance experiment, in the order their seeds
-# are derived: the arm at index i sends `variance_experiment.seed + i`.
-VARIANCE_ARMS = ("lectio-prior", "lectio-nuda")
-_MAX_SEED = 2**63 - 1
 _PROVENANCE_FIELDS = frozenset({"source", "revision", "verification"})
-READING_CHAIRS = frozenset(
-    {"designator_structure", "attestator_1", "attestator_2", "attestator_3", "perlector"}
-)
-# The chairs Chandra fills. Chandra's own pipeline sends the pinned recipe's
-# temperature and top_p to a vLLM server and nothing else, so their rows must be
+READING_CHAIRS = frozenset({"attestator_1", "attestator_2", "attestator_3", "perlector"})
+# The chair Chandra fills. Chandra's own pipeline sends the pinned recipe's
+# temperature and top_p to a vLLM server and nothing else, so its row must be
 # the recipe's first request over vLLM's defaults, and cannot drift from it.
-_CHANDRA_CHAIRS = ("designator_structure", "attestator_1")
-# The structure chair's coverage recovery sends, at attempt n, the pinned Chandra
-# recipe's own request n: the maker's recovery from a degenerate page.
-STRUCTURE_RECOVERY_SCHEDULE = "chandra-native-retry"
+_CHANDRA_CHAIR = "attestator_1"
 _LOAD_RECOVERY = (
     " No run or stage artifact was written. Restore or correct the decoding file and retry"
 )
@@ -116,10 +106,8 @@ def _validate_decoding_policy(policy: Any) -> None:
 
     The exact, closed Chandra native inference recipe is required for Attestator 1.
     `chair_decoding` holds one row per reading chair with its makers' sampling
-    values and where they were read. `structure` is the Designator's coverage
-    recovery policy; the section is required, since `common/stage.py` binds the
-    name `structure` to the sealed seal of this configuration on every structural
-    seal. `variance_experiment` seeds the two sampling-variance arms.
+    values and where they were read. `perlector_generation` caps one whole-page
+    reading's output.
     """
     if not isinstance(policy, dict):
         raise ContractError("decoding configuration is not a table")
@@ -129,66 +117,36 @@ def _validate_decoding_policy(policy: Any) -> None:
         "decoding.v2",
         "decoding.v3",
         "decoding.v4",
+        "decoding.v5",
     }:
         raise ContractError(f"sealed under {schema}, which this build no longer reads; re-run")
-    if schema != "decoding.v5":
+    if schema != "decoding.v6":
         raise ContractError("decoding configuration has an unsupported schema")
     expected_sections = {
         "schema",
         "chair_decoding",
-        "variance_experiment",
-        "structure",
         "perlector_generation",
         "chandra_native_inference",
     }
     if set(policy) != expected_sections:
         raise ContractError("decoding configuration has the wrong closed schema")
-    variance = policy["variance_experiment"]
-    structure = policy["structure"]
-    if not isinstance(structure, dict) or set(structure) != {
-        "recovery_schedule",
-        "recovery_max_attempts",
-    }:
-        raise ContractError("decoding structure must declare only its coverage recovery")
-    if (
-        structure["recovery_schedule"] != STRUCTURE_RECOVERY_SCHEDULE
-        or not isinstance(structure["recovery_max_attempts"], int)
-        or isinstance(structure["recovery_max_attempts"], bool)
-        or not 1 <= structure["recovery_max_attempts"] <= 3
-    ):
-        raise ContractError(
-            f"decoding structure recovery must declare the {STRUCTURE_RECOVERY_SCHEDULE!r} "
-            "schedule and an integer maximum in 1..3"
-        )
     generation = policy["perlector_generation"]
     if (
         not isinstance(generation, dict)
-        or set(generation) != set(_PERLECTOR_BOUNDS)
-        or any(
-            not isinstance(value, int) or isinstance(value, bool) or value < 1
-            for value in generation.values()
-        )
+        or set(generation) != {"page_max_tokens"}
+        or not isinstance(generation["page_max_tokens"], int)
+        or isinstance(generation["page_max_tokens"], bool)
+        or generation["page_max_tokens"] < 1
     ):
         raise ContractError(
-            "decoding perlector_generation must declare positive integer output bounds "
-            "for a reading, for a re-proof and for a whole-page reading"
+            "decoding perlector_generation must declare a positive integer output bound "
+            "for a whole-page reading"
         )
     try:
         validate_policy_record(policy["chandra_native_inference"])
     except ContractError as error:
         raise ContractError(str(error)) from error
     _validate_chair_decoding(policy["chair_decoding"])
-    if not isinstance(variance, dict) or set(variance) != {"seed"}:
-        raise ContractError("decoding variance_experiment has the wrong closed schema")
-    if (
-        not isinstance(variance["seed"], int)
-        or isinstance(variance["seed"], bool)
-        or not 0 <= variance["seed"] <= _MAX_SEED - len(VARIANCE_ARMS)
-    ):
-        raise ContractError(
-            "decoding variance_experiment seed must be a nonnegative integer that leaves every "
-            "arm's seed within vLLM's 64-bit range"
-        )
 
 
 def _validate_chair_decoding(table: Any) -> None:
@@ -241,12 +199,11 @@ def _validate_chair_decoding(table: Any) -> None:
                     f"{interval}{', and an integer' if field == 'top_k' else ''}; got {value!r}"
                 )
     first_chandra_request = {**VLLM_REQUEST_DEFAULTS, **wire_parameters(1)}
-    for chair in _CHANDRA_CHAIRS:
-        if _sampling_values(table[chair]) != first_chandra_request:
-            raise ContractError(
-                f"decoding chair_decoding.{chair} must equal the first request of the pinned "
-                f"Chandra recipe over vLLM's defaults, {first_chandra_request!r}"
-            )
+    if _sampling_values(table[_CHANDRA_CHAIR]) != first_chandra_request:
+        raise ContractError(
+            f"decoding chair_decoding.{_CHANDRA_CHAIR} must equal the first request of the "
+            f"pinned Chandra recipe over vLLM's defaults, {first_chandra_request!r}"
+        )
 
 
 def _sampling_values(row: Mapping[str, Any]) -> dict[str, int | float]:
@@ -270,10 +227,9 @@ def chair_attempt_decoding(
 ) -> dict[str, int | float]:
     """The sampling values one attempt of a chair sends.
 
-    Attempt one is the chair's row. Only the two Chandra chairs have later
-    attempts, and each sends the row with the pinned recipe's temperature and
-    top_p for its ordinal: the structure chair within its sealed recovery
-    ceiling, Attestator 1's native page route within the recipe's own seven.
+    Attempt one is the chair's row. Only Attestator 1's Chandra native page
+    route has later attempts, each the row with the pinned recipe's temperature
+    and top_p for its ordinal, within the recipe's own seven.
     """
     row = chair_decoding(policy, chair)
     if (
@@ -286,30 +242,12 @@ def chair_attempt_decoding(
         )
     if attempt_ordinal == 1:
         return row
-    ceiling = {
-        "designator_structure": policy["structure"]["recovery_max_attempts"],
-        "attestator_1": CHANDRA_MAX_ATTEMPTS,
-    }.get(chair)
-    if ceiling is None or attempt_ordinal > ceiling:
+    if chair != _CHANDRA_CHAIR or attempt_ordinal > CHANDRA_MAX_ATTEMPTS:
         raise ContractError(
             f"decoding has no attempt {attempt_ordinal} for chair {chair!r}; only the Chandra "
-            "chairs retry, within their sealed ceilings"
+            "chair retries, within its recipe's ceiling"
         )
     return {**row, **wire_parameters(attempt_ordinal)}
-
-
-def variance_arm_seed(policy: Mapping[str, Any], arm: str) -> int:
-    """The seed one arm of the sampling-variance experiment sends.
-
-    Lectio nuda and the lectio-prior draft are the same request, so under one
-    seed they would be one draw; each arm's own seed makes them two.
-    """
-    _validate_decoding_policy(policy)
-    if arm not in VARIANCE_ARMS:
-        raise ContractError(
-            f"{arm!r} is not an arm of the variance experiment; the arms are {list(VARIANCE_ARMS)}"
-        )
-    return policy["variance_experiment"]["seed"] + VARIANCE_ARMS.index(arm)
 
 
 def engine_effective_sampling(sampling: Mapping[str, int | float]) -> dict[str, int | float]:
@@ -401,9 +339,8 @@ def verify_call_sampling(
     `generation_sent` may carry only a caller's generation fields, sampling
     fields and the seed; its sampling fields must be exactly the attempt's
     sealed values, and `sampling_effective` the pinned engine's reading of them.
-    `expected_seed` is the seed the call sent: a variance arm's
-    (`variance_arm_seed`), otherwise the serving receipt's. A Chandra native
-    request sends none, and its reader says so with `None`.
+    `expected_seed` is the seed the call sent: the serving receipt's. A Chandra
+    native request sends none, and its reader says so with `None`.
     """
     refuse_retired_call_record(call.get("schema"), subject=f"a {chair} call record")
     expected = chair_attempt_decoding(policy, chair, attempt_ordinal)
@@ -436,23 +373,6 @@ def verify_call_sampling(
             f"a {chair} call record's sampling_effective is not what {VLLM_ENGINE} samples "
             "under for the sealed values"
         )
-
-
-def structure_recovery_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the attempt ceiling and sampling schedule sealed into the run."""
-    _validate_decoding_policy(policy)
-    structure = policy["structure"]
-    return {
-        "max_attempts": structure["recovery_max_attempts"],
-        "sampling_schedule": structure["recovery_schedule"],
-    }
-
-
-def perlector_max_tokens(policy: Mapping[str, Any]) -> tuple[int, int]:
-    """Return the sealed output bounds of a Perlector reading and of its re-proof."""
-    _validate_decoding_policy(policy)
-    generation = policy["perlector_generation"]
-    return generation["reading_max_tokens"], generation["reproof_max_tokens"]
 
 
 def perlector_page_max_tokens(policy: Mapping[str, Any]) -> int:

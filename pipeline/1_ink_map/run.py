@@ -1,24 +1,22 @@
-"""Ink map: measure every sealed page before the Designator proposes acts.
+"""Ink map: measure every sealed page before any page is read.
 
 One ``ink-map`` record is written for every sealed Exemplar page, including a
-page on which this measure finds no ink; proposals do not exist yet. The record
-is bounded evidence: ``unclaimed-edge-ink`` names an edge signal without holding
-anything; the Armarium decides the hold by re-measuring the retained runs
-against the Designator's verified crops.
+page on which this measure finds no ink. The record is bounded evidence:
+``unclaimed-edge-ink`` names an edge signal without holding anything; the
+Armarium decides the hold by re-measuring the retained runs against the
+reading's claimed regions.
 
 This stage infers each page's paper value through
-``common.background``, the same inference and the same sealed
-``[grouping.background]`` policy the Designator's structure pass runs under, and
-proves the bytes it read against the run's own ``designator-grouping`` seal. The
+``common.background``, the same inference and the same sealed ``[background]``
+policy (``config/ink_map.toml``) every later reader runs under, and proves the
+bytes it read against the run's own ``ink-map`` seal. The
 page's raw histogram mode is not used: on a photographed opening that mode is
 the bezel, which would map every such page as carrying approximately no ink at
 all. A page is published as ``ink-not-measurable`` -- present in the census,
 with its refusal named and no counts -- rather than as a page that measured
 clean, for either of two reasons: the shared inference refuses its paper, or
 the paper it infers is too dark for this audit's own contrast
-(``MINIMUM_CONTRAST_BELOW_BACKGROUND``) to leave any level to count as ink. The
-second happens on pages the Designator measures, since its own floor margin is
-smaller.
+(``MINIMUM_CONTRAST_BELOW_BACKGROUND``) to leave any level to count as ink.
 """
 
 import sys
@@ -52,7 +50,7 @@ from common.stage import (  # noqa: E402
     stage_parser,
 )
 
-DESCRIPTION = "Ink map: measure every sealed page before the Designator proposes acts."
+DESCRIPTION = "Ink map: measure every sealed page before any page is read."
 
 
 def sealed_pages(context):
@@ -147,17 +145,17 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # ingress evidence is not a closed fixture-or-real record must still stop
     # here.
     parse_ingress_record(context.run.get("ingress"))
-    # The same file the Designator loads and the same digest the run sealed at
-    # binding time. Read once for the whole run: the policy is per-page only in
-    # its two band widths, which `resolve_background_policy` derives from each
-    # page's own dimensions below.
-    background_config = load_background_config(context.args.designator_grouping_config)
-    context.require_sealed_config("designator-grouping", background_config["config_sha256"])
+    # The sealed ink-map policy and the digest the run sealed at binding time.
+    # Read once for the whole run: the policy is per-page only in its two band
+    # widths, which `resolve_background_policy` derives from each page's own
+    # dimensions below.
+    background_config = load_background_config(context.args.ink_map_config)
+    context.require_sealed_config("ink-map", background_config["config_sha256"])
     # `[coverage_audit]` out of the same file and under the same seal: the two
     # gates this stage's finding is decided by, and the page-spanning bound it
     # splits its counts on. Read once for the run for the same reason.
-    coverage_config = load_coverage_audit_config(context.args.designator_grouping_config)
-    context.require_sealed_config("designator-grouping", coverage_config["config_sha256"])
+    coverage_config = load_coverage_audit_config(context.args.ink_map_config)
+    context.require_sealed_config("ink-map", coverage_config["config_sha256"])
     for ordinal, page, page_path in sealed_pages(context):
         image_bytes = measured_page_bytes(context.tree, ordinal, page)
         try:

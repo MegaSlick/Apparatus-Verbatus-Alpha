@@ -1,8 +1,7 @@
 """Chandra's page-witness adapter: the vendor's own preprocessing, prompt,
 message shape and output grammar, adopted verbatim and pinned by digest. The
-grammar reader lives in `common/chandra_layout.py`, shared with the
-Designator's structure pass, so the two readers of one page cannot disagree
-about what a `data-bbox` means.
+grammar reader lives in `common/chandra_layout.py`, so every reader of a
+Chandra answer agrees about what a `data-bbox` means.
 
 Two answer shapes exist, only one a grammar: the live answer is HTML, read
 under parser name `html`. The committed fixture's synthetic rows still declare
@@ -200,10 +199,8 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     `native_witness.py::validate_presented_page_binding` replays these same
     steps against the sealed page and refuses a digest mismatch.
 
-    Only a whole-page presentation is resized and recorded; a `region`
-    presentation (an act view of this page witness) is returned unchanged,
-    since no chair was ever shown those pixels. Unlike DAI's crop step, an
-    identity-sized target still records the vendor operation here, because
+    Only a whole page is presented. Unlike DAI's crop step, an identity-sized
+    target still records the vendor operation here, because
     `chandra-scale-to-fit.v1` names the vendor function -- which runs on every
     call, sometimes returning the size it was given -- not a resampler that
     may or may not have run.
@@ -211,7 +208,7 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
 
     validate_presented(presentation)
     if presentation["kind"] != "page":
-        return presentation
+        raise SchemaRefusal("Chandra reads whole pages; it is never shown a crop of one")
     transform = presentation["transform"]
     page_id = transform["source_page_id"]
     _, page_bytes = read_sealed_page(context.tree, page_id, what="Chandra")
@@ -219,7 +216,7 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     validate_presented(presentation, page_size=dimensions(page_bytes))
     bounds = dict(transform["bounds"])
     try:
-        # Shared so this chair and the Designator's own Chandra call agree.
+        # The vendor's own page render, so the chair sees what Chandra's runner sends.
         model_image, target = render_page(page_bytes, bounds)
     except ValueError as error:
         # Name load_image's conversion failure here rather than raise a bare error.

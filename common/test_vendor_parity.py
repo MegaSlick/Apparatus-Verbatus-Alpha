@@ -493,7 +493,7 @@ class VendorRequestShapeRefusal(AssertionError):
 # parts for DAI and Churro (it renders identically to a bare string, and the
 # vendors send the list).
 CHAIR_VENDOR_SYSTEMS: Final[Mapping[str, Mapping[str, Any]]] = {
-    "designator_structure": {
+    "attestator_1": {
         "adapter": "chandra.v1",
         "prompt_fields": ("user",),
         "user_parts": ("image_url", "text"),
@@ -503,15 +503,6 @@ CHAIR_VENDOR_SYSTEMS: Final[Mapping[str, Mapping[str, Any]]] = {
         # (`common/request_capacity.py`) sends the row term by sending no field
         # at all, so whether this key is owed depends on the row -- checked
         # below, against the same strictly-less-than rule, not listed here.
-        "required_generation_sent": (),
-        "allowed_generation_sent": ("max_tokens",),
-    },
-    "attestator_1": {
-        "adapter": "chandra.v1",
-        "prompt_fields": ("user",),
-        "user_parts": ("image_url", "text"),
-        "generation_ceiling": 12_384,
-        "ceiling_source": "chandra/settings.py:14 Settings.MAX_OUTPUT_TOKENS",
         "required_generation_sent": (),
         "allowed_generation_sent": ("max_tokens",),
     },

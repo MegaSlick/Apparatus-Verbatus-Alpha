@@ -492,7 +492,9 @@ def test_churro_page_capture_is_full_page_xml_and_surfaces_transport_truncation(
         },
     )
 
-    result = attestatores.captured_churro_page_attempt(context, 1, "attestator_1", "churro.v1")
+    result = attestatores.captured_churro_page_attempt(
+        context, context.fixture["churro_page_response"][0], "attestator_1", "churro.v1"
+    )
 
     assert result is not None
     attempt, capture = result
@@ -541,7 +543,9 @@ def test_churro_page_capture_keeps_repetition_finding_after_raw_capture(monkeypa
         return {"kind": "post-hoc-repetition", "unit_characters": 24, "repeats": 3}
 
     monkeypatch.setattr(feeding, "detect_repetition", detector)
-    _, capture = attestatores.captured_churro_page_attempt(context, 1, "attestator_1", "churro.v1")
+    _, capture = attestatores.captured_churro_page_attempt(
+        context, context.fixture["churro_page_response"][0], "attestator_1", "churro.v1"
+    )
 
     assert capture["findings"] == [
         {
@@ -582,7 +586,9 @@ def test_churro_page_capture_of_malformed_xml_keeps_raw_bytes_and_is_unrecordabl
         },
     )
 
-    result = attestatores.captured_churro_page_attempt(context, 1, "attestator_1", "churro.v1")
+    result = attestatores.captured_churro_page_attempt(
+        context, context.fixture["churro_page_response"][0], "attestator_1", "churro.v1"
+    )
 
     assert result is not None
     attempt, capture = result
@@ -614,7 +620,9 @@ def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
                 ]
             },
         )
-        return attestatores.captured_churro_page_attempt(context, 1, "attestator_1", "churro.v1")
+        return attestatores.captured_churro_page_attempt(
+            context, context.fixture["churro_page_response"][0], "attestator_1", "churro.v1"
+        )
 
     cut, _ = _capture("<output></output>", "length")
     assert cut.outcome == "failed"
@@ -676,7 +684,7 @@ def test_a_declared_response_no_page_chair_could_be_asked_for_is_refused():
                 1,
                 {
                     "attestator_1": _chair("attestator_1"),
-                    "attestator_2": _chair("attestator_2", scope="act"),
+                    "attestator_2": _chair("attestator_2"),
                 },
             ),
             page_chairs,
@@ -722,7 +730,10 @@ def test_churro_declaration_preflight_allows_one_default_overridden_by_one_scena
     )
 
     attestatores.validate_declared_churro_page_responses(context, {"attestator_1"})
-    assert attestatores.churro_page_capture(context, 1, "attestator_1") is rows[1]
+    assert attestatores.declared_page_response(context, 1, "attestator_1", 1) == (
+        "churro_page_response",
+        rows[1],
+    )
 
 
 @pytest.mark.parametrize(
@@ -774,12 +785,8 @@ def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
             ],
         },
     )
-    index = attestatores.AttemptIndex(False, {}, {})
-
     with pytest.raises(attestatores.SchemaRefusal, match="different model boundary"):
-        attestatores.preflight_appendable_ordinals(
-            context, [], 1, {}, index, resume_incomplete_pass=False
-        )
+        attestatores.preflight(context, [], 1, {}, fixture=True)
 
 
 def test_one_scenarios_declared_response_is_not_another_scenarios_default():
@@ -801,10 +808,15 @@ def test_one_scenarios_declared_response_is_not_another_scenarios_default():
         },
     ]
     context = _Context(scenario="happy", fixture={"churro_page_response": rows})
-    assert attestatores.churro_page_capture(context, 1, "attestator_1") is None
+
+    def declared():
+        found = attestatores.declared_page_response(context, 1, "attestator_1", 1)
+        return None if found is None else found[1]
+
+    assert declared() is None
 
     context.scenario = "churro-native"
-    assert attestatores.churro_page_capture(context, 1, "attestator_1") is rows[0]
+    assert declared() is rows[0]
 
     rows.append(
         {
@@ -815,9 +827,9 @@ def test_one_scenarios_declared_response_is_not_another_scenarios_default():
         }
     )
     context.scenario = "happy"
-    assert attestatores.churro_page_capture(context, 1, "attestator_1") is rows[2]
+    assert declared() is rows[2]
     context.scenario = "churro-native"
-    assert attestatores.churro_page_capture(context, 1, "attestator_1") is rows[0]
+    assert declared() is rows[0]
 
 
 def _repetition_by_construction(raw: bytes) -> dict | None:
@@ -1004,10 +1016,8 @@ def test_dai_carried_request_bytes_and_uncertainty_tokens_are_not_normalized():
 def test_dai_declares_its_own_format_capabilities():
     """DAI's grammar carries a doubt and no geometry, and says exactly that.
 
-    The uncertainty flag is true only because the Perlector can now derive a
-    bracket-marker comparison view for an act-scoped chair that declares it
-    (`pipeline/4_perlector/run.py::dissent_testimonia`, U12). Declared before
-    that wiring it would have put this chair at `compared: "unknown"` for good.
+    Dissent strips the doubt markers of a chair that declares uncertainty
+    (`common/page_path.py::_comparison_text`).
     """
     assert dict(DAI_FORMAT_CAPABILITIES) == {
         "can_express_uncertainty": True,
@@ -1197,10 +1207,10 @@ def test_dai_model_view_refuses_rehashed_limits_that_change_the_sealed_ceiling()
         validate_dai_model_view(view)
 
 
-def test_schedule_is_stage_major_chair_outer_act_inner_and_refuses_duplicate_chairs():
+def test_schedule_is_stage_major_chair_outer_page_inner_and_refuses_duplicate_chairs():
     schedule = stage_major_schedule(
         "parish-7",
-        [{"act_id": "a2", "page_ordinal": 1}, {"act_id": "a1", "page_ordinal": 0}],
+        [{"unit_id": "a2", "page_ordinal": 1}, {"unit_id": "a1", "page_ordinal": 0}],
         ["attestator_3", "attestator_1"],
     )
     assert schedule == [
@@ -1208,59 +1218,63 @@ def test_schedule_is_stage_major_chair_outer_act_inner_and_refuses_duplicate_cha
             "policy": SCHEDULING_POLICY,
             "parish_id": "parish-7",
             "chair": "attestator_1",
-            "act_id": "a1",
+            "unit_id": "a1",
         },
         {
             "policy": SCHEDULING_POLICY,
             "parish_id": "parish-7",
             "chair": "attestator_1",
-            "act_id": "a2",
+            "unit_id": "a2",
         },
         {
             "policy": SCHEDULING_POLICY,
             "parish_id": "parish-7",
             "chair": "attestator_3",
-            "act_id": "a1",
+            "unit_id": "a1",
         },
         {
             "policy": SCHEDULING_POLICY,
             "parish_id": "parish-7",
             "chair": "attestator_3",
-            "act_id": "a2",
+            "unit_id": "a2",
         },
     ]
     with pytest.raises(SchemaRefusal, match="repeats a chair"):
-        stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_1", "attestator_1"])
+        stage_major_schedule(
+            "parish-7", [{"unit_id": "a1", "page_ordinal": 1}], ["attestator_1", "attestator_1"]
+        )
 
 
-def test_schedule_refuses_a_repeated_act_for_the_same_reason_it_refuses_a_chair():
-    with pytest.raises(SchemaRefusal, match="repeats an act"):
+def test_schedule_refuses_a_repeated_unit_for_the_same_reason_it_refuses_a_chair():
+    with pytest.raises(SchemaRefusal, match="repeats a unit"):
         stage_major_schedule(
             "parish-7",
-            [{"act_id": "a1", "page_ordinal": 0}, {"act_id": "a1", "page_ordinal": 1}],
+            [{"unit_id": "a1", "page_ordinal": 0}, {"unit_id": "a1", "page_ordinal": 1}],
             ["attestator_1", "attestator_2"],
         )
 
 
 @pytest.mark.parametrize(
-    ("acts", "chairs", "message"),
+    ("units", "chairs", "message"),
     [
-        ([{"act_id": "a1"}], ["attestator_1", ""], "chair identity is blank"),
-        ([{"act_id": "a1"}], ["attestator_1", 7], "chair identity is blank"),
-        (["a1"], ["attestator_1"], "act has no identity"),
-        ([{"act_id": "a1", "page_ordinal": "0"}], ["attestator_1"], "ordinal is not an integer"),
-        ([{"act_id": "a1", "page_ordinal": True}], ["attestator_1"], "ordinal is not an integer"),
+        ([{"unit_id": "a1", "page_ordinal": 1}], ["attestator_1", ""], "chair identity is blank"),
+        ([{"unit_id": "a1", "page_ordinal": 1}], ["attestator_1", 7], "chair identity is blank"),
+        (["a1"], ["attestator_1"], "unit has no identity"),
+        ([{"unit_id": "a1", "page_ordinal": "0"}], ["attestator_1"], "ordinal is not an integer"),
+        ([{"unit_id": "a1", "page_ordinal": True}], ["attestator_1"], "ordinal is not an integer"),
     ],
 )
-def test_schedule_refuses_malformed_rows_instead_of_failing_inside_a_sort(acts, chairs, message):
+def test_schedule_refuses_malformed_rows_instead_of_failing_inside_a_sort(units, chairs, message):
     with pytest.raises(SchemaRefusal, match=message):
-        stage_major_schedule("parish-7", acts, chairs)
+        stage_major_schedule("parish-7", units, chairs)
 
 
-def test_stage_major_execution_refuses_a_schedule_that_serves_one_act_twice():
-    schedule = stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_1"])
+def test_stage_major_execution_refuses_a_schedule_that_serves_one_unit_twice():
+    schedule = stage_major_schedule(
+        "parish-7", [{"unit_id": "a1", "page_ordinal": 1}], ["attestator_1"]
+    )
     residency = SingleChairResidency(lambda chair: chair, lambda *_: None)
-    with pytest.raises(SchemaRefusal, match="serves one act twice"):
+    with pytest.raises(SchemaRefusal, match="serves one unit twice"):
         execute_stage_major_schedule(
             [schedule[0], dict(schedule[0])], residency=residency, serve=lambda *_: None
         )
@@ -1270,7 +1284,7 @@ def test_stage_major_execution_refuses_a_schedule_that_serves_one_act_twice():
 def test_stage_major_execution_never_exposes_two_resident_chairs():
     schedule = stage_major_schedule(
         "parish-7",
-        [{"act_id": "a2", "page_ordinal": 1}, {"act_id": "a1", "page_ordinal": 0}],
+        [{"unit_id": "a2", "page_ordinal": 1}, {"unit_id": "a1", "page_ordinal": 0}],
         ["attestator_2", "attestator_1"],
     )
     loaded = set()
@@ -1296,8 +1310,8 @@ def test_stage_major_execution_never_exposes_two_resident_chairs():
         with pytest.raises(SchemaRefusal, match="while chair"):
             with residency.occupy("attestator_9"):
                 raise AssertionError("a nested second chair must never load")
-        events.append(("serve", row["chair"], row["act_id"]))
-        return row["act_id"]
+        events.append(("serve", row["chair"], row["unit_id"]))
+        return row["unit_id"]
 
     assert execute_stage_major_schedule(schedule, residency=residency, serve=serve) == [
         "a1",
@@ -1319,11 +1333,11 @@ def test_stage_major_execution_never_exposes_two_resident_chairs():
     ]
 
 
-@pytest.mark.parametrize("failing_act", ["a1", "a2"])
-def test_stage_major_execution_unloads_before_propagating_an_act_failure(failing_act):
+@pytest.mark.parametrize("failing_unit", ["a1", "a2"])
+def test_stage_major_execution_unloads_before_propagating_a_unit_failure(failing_unit):
     schedule = stage_major_schedule(
         "parish-7",
-        [{"act_id": "a1", "page_ordinal": 0}, {"act_id": "a2", "page_ordinal": 1}],
+        [{"unit_id": "a1", "page_ordinal": 0}, {"unit_id": "a2", "page_ordinal": 1}],
         ["attestator_1"],
     )
     loaded = set()
@@ -1339,10 +1353,10 @@ def test_stage_major_execution_unloads_before_propagating_an_act_failure(failing
     residency = SingleChairResidency(load, unload)
 
     def serve(_resource, row):
-        if row["act_id"] == failing_act:
-            raise RuntimeError("fixture act failure")
+        if row["unit_id"] == failing_unit:
+            raise RuntimeError("fixture unit failure")
 
-    with pytest.raises(RuntimeError, match="fixture act failure"):
+    with pytest.raises(RuntimeError, match="fixture unit failure"):
         execute_stage_major_schedule(schedule, residency=residency, serve=serve)
     assert loaded == set()
     assert residency.resident is None
@@ -1360,14 +1374,18 @@ def test_stage_major_execution_refuses_reentry_and_fails_closed_on_unload_failur
         raise RuntimeError("unload not verified")
 
     residency = SingleChairResidency(load, unload)
-    schedule = stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_1"])
+    schedule = stage_major_schedule(
+        "parish-7", [{"unit_id": "a1", "page_ordinal": 1}], ["attestator_1"]
+    )
     with pytest.raises(RuntimeError, match="unload not verified"):
         execute_stage_major_schedule(schedule, residency=residency, serve=lambda *_: None)
     assert residency.resident == "attestator_1"
     assert loaded == {"attestator_1"}
     with pytest.raises(SchemaRefusal, match="while chair 'attestator_1' is resident"):
         execute_stage_major_schedule(
-            stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_2"]),
+            stage_major_schedule(
+                "parish-7", [{"unit_id": "a1", "page_ordinal": 1}], ["attestator_2"]
+            ),
             residency=residency,
             serve=lambda *_: None,
         )
@@ -1406,7 +1424,9 @@ def test_stage_major_execution_fails_closed_when_the_load_itself_fails():
     residency = SingleChairResidency(load, unload)
     with pytest.raises(RuntimeError, match="did not map"):
         execute_stage_major_schedule(
-            stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_1"]),
+            stage_major_schedule(
+                "parish-7", [{"unit_id": "a1", "page_ordinal": 1}], ["attestator_1"]
+            ),
             residency=residency,
             serve=lambda *_: None,
         )
@@ -1414,7 +1434,9 @@ def test_stage_major_execution_fails_closed_when_the_load_itself_fails():
     assert unloads == [], "no unload may be claimed for a resource that never loaded"
     with pytest.raises(SchemaRefusal, match="while chair 'attestator_1' is resident"):
         execute_stage_major_schedule(
-            stage_major_schedule("parish-7", [{"act_id": "a1"}], ["attestator_2"]),
+            stage_major_schedule(
+                "parish-7", [{"unit_id": "a1", "page_ordinal": 1}], ["attestator_2"]
+            ),
             residency=residency,
             serve=lambda *_: None,
         )
@@ -1447,7 +1469,9 @@ def test_model_view_refuses_a_parser_it_cannot_run_instead_of_recording_pending(
 
 def test_stage_major_execution_refuses_a_schedule_that_returns_to_a_prior_chair():
     schedule = stage_major_schedule(
-        "parish-7", [{"act_id": "a1"}, {"act_id": "a2"}], ["attestator_1", "attestator_2"]
+        "parish-7",
+        [{"unit_id": "a1", "page_ordinal": 1}, {"unit_id": "a2", "page_ordinal": 2}],
+        ["attestator_1", "attestator_2"],
     )
     tampered = [schedule[0], schedule[2], schedule[1], schedule[3]]
     residency = SingleChairResidency(lambda chair: chair, lambda *_: None)

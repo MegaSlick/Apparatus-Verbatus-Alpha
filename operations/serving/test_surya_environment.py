@@ -81,7 +81,7 @@ def _profile():
 
 
 def _identity():
-    return load_models_toml(ROOT / "config" / "models.toml").chairs["designator_structure"]
+    return load_models_toml(ROOT / "config" / "models.toml").chairs["designator_surya"]
 
 
 def _pages() -> tuple[dict[int, bytes], dict[int, tuple[int, int]]]:
