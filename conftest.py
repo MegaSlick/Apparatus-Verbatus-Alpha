@@ -151,6 +151,29 @@ def run_through(root: Path, run_id: str, scenario: str, last: str) -> None:
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
 
+HELD_RECENSOR_STOP = "stopped at a held recensor, before the archetypus"
+
+
+def advance_held_recensor(root: Path, run_id: str) -> None:
+    """Record a person's advance of the Recensor's current seal, as the advance worker does.
+
+    A run whose Recensor holds anything stops before the Archetypus; with this
+    record the next run passes that seal and exports, naming every hold.
+    """
+    from common.runtree.store import RunTree
+    from operations.operator.advance import record_advance, stored_boundary
+
+    tree = RunTree(root, run_id)
+    _seal, digest = stored_boundary(tree, "recensor")
+    record_advance(
+        tree,
+        "recensor",
+        reason="export with every hold named",
+        expected_digest=digest,
+        timestamp="2026-10-01T12:00:00Z",
+    )
+
+
 def stage_artifacts(tree, stage: str, kind: str, subject: str | None = None) -> list[dict]:
     """Read artifacts of one kind, optionally scoped to a subject."""
     return [
@@ -368,6 +391,8 @@ def rewitness_boundary():
 def orchestrated_run(tmp_path_factory):
     """`copy(destination, run_id, scenario, expected_exit=0)` lays a fixture orchestrator run
     at `destination`, running the orchestrator once per run id and scenario per session.
+    `past_held_recensor=True` carries a run that stops at a held Recensor on to its export,
+    through a recorded advance of the Recensor's seal (`advance_held_recensor`).
 
     The run tree holds no wall-clock time and no path of its own, so a copy is the tree a
     fresh run there would write (pipeline/orchestrator/test_orchestrated_run_copy.py holds
@@ -378,12 +403,26 @@ def orchestrated_run(tmp_path_factory):
     built: dict[tuple[str, str], tuple[Path, subprocess.CompletedProcess[str]]] = {}
     environment = dict(os.environ)
 
-    def copy(destination: Path, run_id: str, scenario: str, expected_exit: int = 0) -> Path:
-        if (run_id, scenario) not in built:
+    def copy(
+        destination: Path,
+        run_id: str,
+        scenario: str,
+        expected_exit: int = 0,
+        *,
+        past_held_recensor: bool = False,
+    ) -> Path:
+        key = (run_id, scenario, past_held_recensor)
+        if key not in built:
             root = tmp_path_factory.mktemp("orchestrated") / "runs"
             with mock.patch.dict(os.environ, environment, clear=True):
-                built[run_id, scenario] = root, run_orchestrator(root, run_id, scenario)
-        root, result = built[run_id, scenario]
+                result = run_orchestrator(root, run_id, scenario)
+                if past_held_recensor:
+                    # Held at its Recensor, the run exports once a person advances that seal.
+                    assert HELD_RECENSOR_STOP in result.stdout, result.stdout + result.stderr
+                    advance_held_recensor(root, run_id)
+                    result = run_orchestrator(root, run_id, scenario)
+                built[key] = root, result
+        root, result = built[key]
         assert result.returncode == expected_exit, result.stderr
         shutil.copytree(root, destination, symlinks=True)
         return destination

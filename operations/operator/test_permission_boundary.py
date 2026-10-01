@@ -41,8 +41,11 @@ _EXPORT_REF = {"relative_path": "7_armarium/artifacts/export/art_test.json", "sh
 def _make_run(
     orchestrated_run, tmp_path: Path, *, scenario: str = "page-unbroken"
 ) -> tuple[Path, str]:
-    expected_exit = 3 if scenario == "page-review" else 0
-    return orchestrated_run(tmp_path / "runs", "reviewed", scenario, expected_exit), "reviewed"
+    held = scenario == "page-review"
+    root = orchestrated_run(
+        tmp_path / "runs", "reviewed", scenario, 3 if held else 0, past_held_recensor=held
+    )
+    return root, "reviewed"
 
 
 def _boundary_digest(run_root: Path, run_id: str, stage: str = "armarium") -> str:

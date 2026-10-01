@@ -47,7 +47,13 @@ from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa
 from common.background import DEFAULT_INK_MAP_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
-from common.contracts.stages import ATTESTATORES, CONIECTOR, INK_MAP  # noqa: E402
+from common.contracts.stages import (  # noqa: E402
+    ARCHETYPUS,
+    ATTESTATORES,
+    CONIECTOR,
+    INK_MAP,
+    RECENSOR,
+)
 from common.credentials import looks_like_credential_env  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -55,6 +61,7 @@ from common.hard_failure import (  # noqa: E402
     tally_hard_failures,
 )
 from common.page_accounting import DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH  # noqa: E402
+from common.page_review import held_by_recensor  # noqa: E402
 from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH  # noqa: E402
 from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
@@ -71,6 +78,8 @@ from common.stage import (  # noqa: E402
     EXIT_RUN_HALTED,
     RUN_MODES,
     WITNESS_CONTEXT_REGIMES,
+    boundary_advanced,
+    current_stage_seal,
     load_fixture,
     require_sealed_config,
     run_sealed_config_digests,
@@ -865,9 +874,28 @@ def run_sequence(
     mode: str,
     hard_failure_policy: dict,
 ) -> int:
-    """Run one contiguous selection without persisting its driver mode."""
+    """Run one contiguous selection without persisting its driver mode.
+
+    In every mode, a Recensor that holds anything stops the run before the
+    Archetypus, so nothing is established or exported over a hold no person
+    has looked at. The Coniector, which reads only the Perlector's readings,
+    still runs when the selection includes it, so what is left needs no model.
+    The run continues past the Recensor once nothing is held, or once an
+    advance record passes its current seal.
+    """
+    held_recensor: list[dict] | None = None
+    ran_after_hold: list[str] = []
     for name in names:
+        if held_recensor is not None and name != CONIECTOR:
+            continue
+        if name == ARCHETYPUS and held_recensor is None:
+            held = recensor_holds(args)
+            if held:
+                held_recensor = held
+                continue
         result = invoke(STAGE_PROGRAMS[name], args)
+        if held_recensor is not None:
+            ran_after_hold.append(name)
         if result == EXIT_RUN_HALTED:
             return _halt(args, _entry_halt(args, name, hard_failure_policy))
         if name == "door" and result in (EXIT_COMPLETE, EXIT_HELD):
@@ -886,8 +914,14 @@ def run_sequence(
         # does, so its export names every hold; the Armarium is terminal either way.
         if mode in ("semi", "manual") and result == EXIT_HELD and names[-1] != "armarium":
             print(f"run {args.run_id}: {mode} mode stopped at held {name}")
+            if name == RECENSOR:
+                report_held_recensor(args, held_by_recensor(_run_tree(args)), ran_after_hold)
             return EXIT_HELD
 
+    if held_recensor is not None:
+        print(f"run {args.run_id}: stopped at a held recensor, before the archetypus")
+        report_held_recensor(args, held_recensor, ran_after_hold)
+        return EXIT_HELD
     if names[-1] != "armarium":
         return EXIT_COMPLETE
     # Armarium has no successor, so its own seal is proved here. The export comes
@@ -899,6 +933,48 @@ def run_sequence(
     for line in lines:
         print(f"  - {line}")
     return EXIT_COMPLETE if status == "complete" else EXIT_HELD
+
+
+def recensor_holds(args) -> list[dict]:
+    """What the Recensor holds that stops this run before the Archetypus; empty to continue.
+
+    Its current holds (`common.page_review.held_by_recensor`), unless a
+    person's advance record passes the Recensor's current seal
+    (`common.stage.boundary_advanced`), which the run then says it relied on.
+    """
+    tree = _run_tree(args)
+    # An unsealed Recensor is the Archetypus's to refuse, by name, at its entry.
+    if current_stage_seal(tree, RECENSOR) is None:
+        return []
+    held = held_by_recensor(tree)
+    if held and boundary_advanced(tree, RECENSOR):
+        print(
+            f"run {args.run_id}: the recensor holds {len(held)} item(s); an advance record "
+            "passes its current seal, so the run continues and the export names every hold"
+        )
+        return []
+    return held
+
+
+def report_held_recensor(args, held: list[dict], ran_after_hold: list[str]) -> None:
+    """Say what a held Recensor holds and how the run goes on from it."""
+    print(
+        f"  the recensor holds {len(held)} item(s), and nothing is exported until they are decided:"
+    )
+    for item in held:
+        codes = ", ".join(item["hold_codes"])
+        print(f"  - {item['what']} ({item['subject_id']})" + (f": {codes}" if codes else ""))
+    if ran_after_hold:
+        print(
+            f"  {', '.join(ran_after_hold)} ran after the hold: it reads only the perlector's "
+            "readings, so what is left needs no model"
+        )
+    print(
+        "  next: record operator review decisions in this run, then resume it from the "
+        "recensor (--from recensor --to armarium), which applies them; it continues past the "
+        "recensor once nothing is held, or once `verbatus advance --stage recensor` passes "
+        "its current seal"
+    )
 
 
 def terminal_report(export: dict) -> tuple[str, list[str]]:

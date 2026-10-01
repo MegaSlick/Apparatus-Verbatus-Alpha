@@ -39,6 +39,9 @@ APPROVER: Final = "project-lead"
 # decision that can move a staged run forward, and readers must be able to find
 # it without treating a free-text label as authority.
 ACTIONS: Final = ("advance", "exclusion", "salvage-promotion", "review", "other")
+ADVANCE_ACTION: Final = "advance"
+# An advance names one stage boundary as its one subject: this prefix and the stage.
+ADVANCE_SUBJECT_PREFIX: Final = "stage-boundary:"
 
 SCHEMA_V0: Final = "approval-record.v0"
 SCHEMA_V1: Final = "approval-record.v1"

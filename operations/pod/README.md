@@ -312,9 +312,12 @@ orchestrator and records it in the report. `--stage` runs one boundary, `--from`
 selects Door through Attestatores on a cheap card; `--models big` resumes Perlector
 through Armarium on a big card, after verifying this run's sealed Attestatores
 stage on the volume before bootstrap. The two model toggles use the same range validation.
-Any range is the orchestrator's semi mode, which stops at the first held stage: a real run
-whose Recensor holds acts for review stops there, before Archetypus and Armarium. No
-selection is the auto mode, which carries a held Recensor through to the Armarium.
+Any range is the orchestrator's semi mode, which stops at the first held stage. In every
+mode, auto included, a run whose Recensor holds anything stops there, before Archetypus
+and Armarium, after running the Coniector when the selection includes it
+(`pipeline/orchestrator/CONTRACT.md`, "A held Recensor stops every mode"), so nothing
+left needs a GPU: the operator decides, and the run resumes from the Recensor off the
+pod.
 
 - **`--mechanics-qualification`** is needed for any real-roster run today. Every row in
   `config/serving_recipes_real.toml` is `preflight_state = "unproven"`; PREFLIGHT may serve
@@ -360,8 +363,11 @@ selection is the auto mode, which carries a held Recensor through to the Armariu
 
 **Without `--no-hold`, it holds only for a finished full run.** A selection ending before Armarium records
 `selection-complete` and returns at once so the pod timer closes the card. A held
-selection ending before Armarium also closes promptly. A full `complete` or terminal
-`held` holds toward the hard deadline (paid idle time), because the pod timer
+selection ending before Armarium also closes promptly, and so does a full run held
+before its export (a held Attestatores or Recensor; `reached_export` finds no sealed
+Armarium export), since it waits for a person, not for the card. A full `complete`, or a
+`held` run whose export is sealed, holds toward the hard deadline (paid idle time),
+because the pod timer
 treats an early exit as non-green. The hold does no work and touches no keep-alive, so the
 pod guard deletes the pod once its idle window passes and the hold ends there;
 `held_to_hard_deadline` records the choice to hold, and the last tick in the `-hold.json`
@@ -671,9 +677,8 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   > $V/pod-run-$RUN.out 2>&1 < /dev/null &
 ```
 
-- **No selection: the full auto run.** `--models big` is a semi-mode range and stops at
-  a held Recensor, before Archetypus and Armarium; a first proof run should reach the
-  Armarium.
+- **No selection: the full auto run.** It stops at a held Recensor, before Archetypus
+  and Armarium, as `--models big` does; a first proof run should reach the Armarium.
 - **`--store-root`** names the model store on the volume. If the weights were
   materialized under another root on this volume, name that one; a new root downloads
   every chair's weights onto the volume during the paid bootstrap.

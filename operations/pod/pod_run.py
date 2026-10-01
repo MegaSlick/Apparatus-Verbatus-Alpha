@@ -45,7 +45,8 @@ bootstrap report, not the run report.
 **A full terminal run holds to the deadline.**
 ``pod_timer.run_with_bootstrap`` treats any child exit before the hard deadline
 -- exit 0 included -- as ``completed-early`` and closes the pod with a non-green
-timer report, so after a full ``complete`` or ``held`` run this process holds to the
+timer report, so after a full ``complete`` run, or a ``held`` one whose export is
+sealed, this process holds to the
 shared hard deadline exactly as ``bootstrap_main`` does, re-journaling a
 liveness line beside the run report.  That hold is paid idle time between a
 finished run and the deadline, because ``pod_timer`` reads any earlier exit as
@@ -57,6 +58,12 @@ last tick records when the hold actually ended.
 A selected range ending before Armarium records ``selection-complete`` when it
 completes, and returns at once when it holds. The pod timer closes the card;
 the run tree remains on the volume for the next selection.
+
+**A run that holds before its export returns at once too.**  A held
+Attestatores, or a Recensor that holds anything, stops a full run before the
+Armarium; the next step is a person's review, not more GPU work, so the pod is
+not kept waiting for it. Only a held run whose Armarium export is sealed
+(``reached_export``) holds to the deadline.
 
 **Nothing the run printed dies with the pod.**  The orchestrator's stdout and
 stderr -- and, through inheritance, every stage's -- are teed into a bounded,
@@ -138,6 +145,7 @@ from common.stage import (
     real_run_policy_digest,
     run_sealed_config_digests,
     validate_witness_context_bindings,
+    verify_final_seal,
     verify_predecessor_seal,
 )
 from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
@@ -241,6 +249,20 @@ _ORCHESTRATOR_EXITS = {
 # evidence are on the *volume*, which outlives the pod and is read by
 # `verbatus fetch-run` over S3 with no pod running at all.
 _HOLD_AFTER_EXITS = frozenset({EXIT_COMPLETE, EXIT_HELD})
+
+
+def reached_export(run_root: Path, run_id: str) -> bool:
+    """Whether the run's Armarium export is sealed, so a held run ended where a full run ends.
+
+    A run held before its export (at a held Attestatores or Recensor) waits for
+    a person, and the pod must not bill while it waits. Any failure to prove the
+    export is read as not reached: the worst that costs is a pod closed early.
+    """
+    try:
+        verify_final_seal(RunTree(run_root, run_id))
+    except (ContractError, KeyError, OSError, TypeError, ValueError):
+        return False
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -1730,7 +1752,17 @@ def main(
         else:
             failure_detail = absence if failure_detail is None else f"{failure_detail}. {absence}"
     state = _STATE_FOR_EXIT[exit_code]
-    holding = exit_code in _HOLD_AFTER_EXITS and not plan.ends_before_armarium and not plan.no_hold
+    held_before_export = (
+        exit_code == EXIT_HELD
+        and not plan.ends_before_armarium
+        and not reached_export(plan.run_root, plan.run_id)
+    )
+    holding = (
+        exit_code in _HOLD_AFTER_EXITS
+        and not plan.ends_before_armarium
+        and not held_before_export
+        and not plan.no_hold
+    )
     if plan.no_hold:
         hold_detail = (
             f"the run ended {state}; --no-hold returns now and asks the pod guard to delete "
@@ -1747,6 +1779,13 @@ def main(
         hold_detail = (
             "the selected stages completed; returning at once so the pod timer closes the "
             "pod. The run tree is on the volume, which outlives the pod, for the next selection"
+        )
+    elif held_before_export:
+        hold_detail = (
+            "the run held before its Armarium export, waiting for a person's review; "
+            "returning at once so the pod timer closes the pod rather than billing idle time "
+            "while it waits. The run tree and every record are on the volume, which outlives "
+            "the pod, and `verbatus fetch-run` brings them home"
         )
     elif exit_code == EXIT_HELD:
         hold_detail = (

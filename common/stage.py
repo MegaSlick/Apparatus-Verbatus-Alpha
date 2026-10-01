@@ -37,7 +37,12 @@ from common.background import DEFAULT_INK_MAP_CONFIG_PATH
 from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig, ServingDetails, is_sha256
 from common.chairs.protocol import ChairProtocol
 from common.chairs.registry import ChairRegistry
-from common.contracts.approval import REAL_INGRESS, parse_ingress_record
+from common.contracts.approval import (
+    ADVANCE_ACTION,
+    ADVANCE_SUBJECT_PREFIX,
+    REAL_INGRESS,
+    parse_ingress_record,
+)
 from common.contracts.canonical import (
     canonical_bytes,
     digest_bytes,
@@ -75,6 +80,7 @@ from common.contracts.stages import (
     EXEMPLAR,
     INK_MAP,
     PERLECTOR,
+    RECENSOR,
     SEAL_PREDECESSORS,
     SIDE_SEALS,
     STAGES,
@@ -207,9 +213,50 @@ def stage_manifest(context, stage: str) -> dict[str, Any]:
 # presents them.  Selection remains an invocation choice, never run-tree bytes.
 RUN_MODES: Final = TRIAGE_MODES
 
-# Stages that can return EXIT_HELD after sealing whatever the mode.
+# Boundaries a run stops at whatever the mode: the Attestatores and the Armarium
+# when they exit held, and a Recensor that holds anything, before the Archetypus,
+# until an advance passes its current seal (`boundary_advanced`).
 # `test_advance_modes.py` checks this against the driver's source.
-ALWAYS_HELD_BOUNDARIES: Final = frozenset({ATTESTATORES, ARMARIUM})
+ALWAYS_HELD_BOUNDARIES: Final = frozenset({ATTESTATORES, RECENSOR, ARMARIUM})
+
+
+def current_stage_seal(tree: RunTree, stage: str) -> tuple[dict[str, Any], str] | None:
+    """A stage's current stored seal and the sha256 of its bytes, or None when it has none.
+
+    Read, not verified: the digest is what an advance record binds, taken from
+    the immutable bytes rather than rebuilt from the payload, and the stage
+    that reads this seal next verifies it.
+    """
+    manifest = tree.build_manifest(stage, verify_inputs=False)
+    seals = [
+        tree.read_artifact(stage, "stage-seal", entry["artifact_id"])
+        for entry in manifest["artifacts"]
+        if entry["kind"] == "stage-seal"
+    ]
+    if not seals:
+        return None
+    seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
+    data = tree.read_bytes(tree.artifact_path(stage, "stage-seal", seal["artifact_id"]))
+    return seal, digest_bytes(data)
+
+
+def boundary_advanced(tree: RunTree, stage: str) -> bool:
+    """Whether a person's advance record passes `stage`'s current sealed boundary.
+
+    An advance binds the seal digest it was shown, so a re-seal (a Recensor
+    pass that applied new decisions, say) leaves it bound to a boundary that
+    is no longer current, and it passes nothing.
+    """
+    current = current_stage_seal(tree, stage)
+    if current is None:
+        return False
+    subject = f"{ADVANCE_SUBJECT_PREFIX}{stage}"
+    return any(
+        record["action"] == ADVANCE_ACTION
+        and record["subject_ids"] == [subject]
+        and record["target_version_hash"] == current[1]
+        for _reference, record in tree.approval_records()
+    )
 
 
 def _named_boundary(name: str, role: str) -> str:

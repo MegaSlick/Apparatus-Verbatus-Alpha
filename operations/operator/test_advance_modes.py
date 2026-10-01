@@ -38,8 +38,10 @@ def _run(
         ("semi", "perlector", "designator", "perlector", {"attestatores", "perlector"}),
         ("semi", "designator", "door", "designator", {"designator"}),
         # Armarium's own terminal report can hold before the driver consults
-        # mode too, so auto can advance it just like Attestatores.
-        ("auto", "armarium", None, None, {"attestatores", "armarium"}),
+        # mode too, so auto can advance it just like Attestatores, and a Recensor
+        # that holds anything stops every mode before the Archetypus.
+        ("auto", "armarium", None, None, {"attestatores", "recensor", "armarium"}),
+        ("semi", "recensor", "perlector", "archetypus", {"recensor", "archetypus"}),
     ),
 )
 def test_staged_mode_semantics_name_every_boundary_that_can_wait(
@@ -71,6 +73,12 @@ def test_review_run_seals_attestatores_before_the_terminal_hold(
 def test_mode_independent_driver_holds_match_advance_boundaries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Each stage exits held, followed by its successor in the sequence, in auto mode.
+
+    A stage the driver stops at whatever the mode is one whose successor is
+    never invoked. The Recensor's hold is read from its records before the
+    Archetypus, so the probe says the Recensor holds exactly when it exited held.
+    """
     from pipeline.orchestrator import run as driver
 
     stopped: set[str] = set()
@@ -81,8 +89,9 @@ def test_mode_independent_driver_holds_match_advance_boundaries(
     monkeypatch.setattr(driver, "_require_sealed_hard_failure_policy", lambda *_args: None)
     monkeypatch.setattr(driver, "verify_final_seal", lambda *_args: {})
     monkeypatch.setattr(driver, "terminal_report", lambda _export: ("partial", []))
+    monkeypatch.setattr(driver, "report_held_recensor", lambda *_args: None)
 
-    for stage in STAGES:
+    for index, stage in enumerate(driver.SEQUENCE_NAMES):
         visited: list[str] = []
 
         def invoke(
@@ -92,16 +101,25 @@ def test_mode_independent_driver_holds_match_advance_boundaries(
             visited.append(name)
             return EXIT_HELD if name == stage else 0
 
+        def recensor_holds(_args: object, *, visited: list[str] = visited, stage: str = stage):
+            held = stage == "recensor" and "recensor" in visited
+            return [{"subject_id": "probe", "what": "probe", "hold_codes": []}] if held else []
+
         monkeypatch.setattr(driver, "invoke", invoke)
+        monkeypatch.setattr(driver, "recensor_holds", recensor_holds)
         args = type("Args", (), {"run_root": str(tmp_path), "run_id": "probe"})()
-        names = (
-            (stage,) if stage == "armarium" else (stage, "exemplar" if stage == "door" else "door")
-        )
+        names = driver.SEQUENCE_NAMES[index : index + 2]
         result = driver.run_sequence(args, names, "auto", {})
         if result == EXIT_HELD and visited == [stage]:
             stopped.add(stage)
 
     assert stopped == ALWAYS_HELD_BOUNDARIES
+
+
+def test_advance_accepts_the_recensor_boundary_in_auto_mode() -> None:
+    """An unattended run stops at a held Recensor, so a person may advance it there."""
+    held = advance.held_boundaries_for_mode("auto", stage="recensor")
+    assert "recensor" in held
 
 
 def test_attestatores_final_tally_hold_seals_and_stops(

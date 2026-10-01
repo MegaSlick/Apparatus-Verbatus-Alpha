@@ -320,6 +320,41 @@ def require_current_review_decisions(context) -> dict[str, Any] | None:
     return recorded
 
 
+def held_by_recensor(tree) -> list[dict[str, Any]]:
+    """Everything the Recensor's current records hold, read from the run tree alone.
+
+    Each held unit's current review as `{subject_id, what, hold_codes}`, with
+    `what` its unit key, then each held continuation link as `{subject_id,
+    what: "continuation link", hold_codes: []}`: the same held total the
+    Recensor exits held on, so a driver can tell a held Recensor from its
+    records without opening a stage.
+    """
+    reviews: dict[str, list[dict[str, Any]]] = {}
+    links: list[dict[str, Any]] = []
+    for entry in tree.build_manifest(RECENSOR, verify_inputs=False)["artifacts"]:
+        if entry["kind"] == REVIEW_KIND:
+            reviews.setdefault(entry["subject_id"], []).append(
+                tree.read_artifact(RECENSOR, REVIEW_KIND, entry["artifact_id"])
+            )
+        elif entry["kind"] == CONTINUATION_LINK_KIND and entry["outcome"] == HELD:
+            links.append(
+                {"subject_id": entry["subject_id"], "what": "continuation link", "hold_codes": []}
+            )
+    held = []
+    for subject_id, records in sorted(reviews.items()):
+        review = latest_attempt(records, f"review of {subject_id}", operation=REVIEW_OPERATION)
+        if review.get("outcome") == HELD:
+            payload = _payload(review)
+            held.append(
+                {
+                    "subject_id": subject_id,
+                    "what": payload.get("act_key"),
+                    "hold_codes": list(payload.get("hold_codes") or []),
+                }
+            )
+    return held + sorted(links, key=lambda link: link["subject_id"])
+
+
 def review_coverage(review: Mapping[str, Any]) -> dict[str, Any]:
     """The witness-coverage record the Recensor measured for the unit's page."""
     coverage = _payload(review).get("coverage")

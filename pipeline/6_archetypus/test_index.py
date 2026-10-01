@@ -119,7 +119,7 @@ def test_every_index_row_carries_its_records_status_and_text_hash(established_ru
 
 def test_the_held_act_never_appears_in_the_index(orchestrated_run, tmp_path):
     root = tmp_path / "runs"
-    orchestrated_run(root, "r", "page-review", 3)
+    orchestrated_run(root, "r", "page-review", 3, past_held_recensor=True)
     tree = RunTree(root, "r")
     index = _index(tree)
 

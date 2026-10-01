@@ -26,9 +26,10 @@ def _rehearsal_messages(tmp_path: Path, *, scenario: str) -> list[str]:
     Uses the real runner (the actual orchestrator subprocess over the tiny
     synthetic fixture), not a stub, because the closing narration reads the
     export a real run writes. Both scenarios used here end held for review
-    (a continuation join across the page break, and for `page-review` a held
-    act too), so the run must raise exactly `RUN_HELD`, after every narration
-    line is printed; any other refusal fails the test.
+    (`happy` at its export, over a continuation join across the page break;
+    `page-review` at its held Recensor, before any export), so the run must
+    raise exactly `RUN_HELD`, after every narration line is printed; any other
+    refusal fails the test.
     """
 
     messages: list[str] = []
@@ -65,8 +66,17 @@ def test_narration_names_only_the_two_pages_the_scenario_touches(
     messages = _rehearsal_messages(tmp_path, scenario=scenario)
 
     assert "Run started. Checking page 1, page 2." in messages, messages
-    assert any(
-        line.startswith("Pages accounted for: page 1, page 2 (2 total).") for line in messages
-    ), messages
-    _assert_totals_match_names(messages)
+    if scenario == "page-review":
+        # Its Recensor holds, so the run stops before the Archetypus and no export
+        # exists to account for pages; the stop and what holds it are said instead.
+        assert (
+            f"Hold reason: run g21-{scenario}: stopped at a held recensor, before the archetypus"
+            in messages
+        ), messages
+        assert any(line.startswith("  - p2:1 (") for line in messages), messages
+    else:
+        assert any(
+            line.startswith("Pages accounted for: page 1, page 2 (2 total).") for line in messages
+        ), messages
+        _assert_totals_match_names(messages)
     assert not any("page 3" in line for line in messages), messages

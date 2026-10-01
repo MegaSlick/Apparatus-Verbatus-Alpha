@@ -23,7 +23,7 @@ import pytest
 
 from common.contracts.canonical import digest_bytes
 from common.runtree.store import RunTree
-from operations.operator import cli, review, review_text
+from operations.operator import advance, cli, review, review_text
 from operations.operator.errors import ErrorCode, OperatorError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1198,17 +1198,38 @@ def test_a_gap_names_the_chairs_that_corroborate_it():
     assert "gap (internal) at 6; corroborated by attestator_1, attestator_2" in text
 
 
+def _advance_the_recensor(run_root: Path) -> None:
+    """A person's advance of the Recensor's current seal, recorded as the worker records it."""
+    tree = RunTree(run_root, RUN_ID)
+    _seal, digest = advance.stored_boundary(tree, "recensor")
+    advance.record_advance(
+        tree,
+        "recensor",
+        reason="export with the held readings named",
+        expected_digest=digest,
+        timestamp="2026-10-01T12:00:00Z",
+    )
+
+
 @pytest.fixture(scope="module")
 def exported_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """One run carried through the Armarium, holding at least one reading.
 
-    `page-review` holds a reading at the Recensor, so the run is partial, exits
-    3, and writes an export that delivers some readings and not others -- the
-    pair this screen has to show after the export.
+    `page-review` holds a reading at the Recensor, so the run stops there,
+    before the Archetypus. An advance of the Recensor's seal lets the resumed
+    run export: partial, exit 3, delivering some readings and not others --
+    the pair this screen has to show after the export.
     """
     run_root = tmp_path_factory.mktemp("exported") / "runs"
     completed = _orchestrate(run_root, scenario="page-review")
     assert completed.returncode == 3, completed.stderr
+    assert "stopped at a held recensor, before the archetypus" in completed.stdout
+    _advance_the_recensor(run_root)
+    resumed = _orchestrate(
+        run_root, "--from", "recensor", "--to", "armarium", scenario="page-review"
+    )
+    assert resumed.returncode == 3, resumed.stderr
+    assert "an advance record passes its current seal" in resumed.stdout
     return run_root
 
 

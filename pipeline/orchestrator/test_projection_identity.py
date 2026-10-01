@@ -43,6 +43,7 @@ from common.contracts.canonical import digest_of
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, RECENSOR
 from common.runtree.store import RunTree
+from conftest import HELD_RECENSOR_STOP, advance_held_recensor
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -93,6 +94,11 @@ def export_of(tree: RunTree) -> dict:
 def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, scenario, exit_code):
     root = tmp_path / "runs"
     result = orchestrate(root, "r", scenario)
+    if scenario == "page-review":
+        # Held at its Recensor, it exports once a person advances that seal.
+        assert HELD_RECENSOR_STOP in result.stdout, result.stdout
+        advance_held_recensor(root, "r")
+        result = orchestrate(root, "r", scenario)
     # The scenario's own exit, not "either": a held happy run or a completed
     # review run is a wrong result this test must not read past.
     assert result.returncode == exit_code, result.stderr

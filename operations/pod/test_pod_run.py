@@ -1085,6 +1085,40 @@ def test_big_models_maps_to_perlector_through_armarium(tmp_path: Path, monkeypat
     assert _report(ws)["plan"]["bootstrap"]["preflight_roles"] == ["perlector"]
 
 
+def test_a_full_run_held_before_its_export_closes_without_paid_idle_time(tmp_path: Path) -> None:
+    """A run stopped at a held Recensor waits for a person, so the pod must not bill.
+
+    The fake orchestrator writes no run tree, so no Armarium export is sealed:
+    exactly a full run that stopped before its export. It returns at once with
+    its final report, the records it names, and no hold record, so the pod
+    timer closes the card (`pod_timer.run_with_bootstrap` on exit 3).
+    """
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(returncode=orchestrator.EXIT_HELD),
+    )
+    assert code == EXIT_HELD
+    assert clock.seconds == 0
+    report = _report(ws)
+    assert report["state"] == "held"
+    assert report["held_to_hard_deadline"] is False
+    assert report["hold_detail"].startswith("the run held before its Armarium export")
+    assert report["records_missing"] == []
+    assert report["finished_at"] is not None
+    assert not (ws.volume / "pod-run-report-hold.json").exists()
+
+
+def test_reached_export_reads_only_a_sealed_armarium_export(tmp_path: Path) -> None:
+    """No run tree, or a tree with no Armarium seal, is a run that stopped before its export."""
+    assert pod_run.reached_export(tmp_path / "runs", "absent") is False
+
+
 def test_a_held_selection_closes_without_paid_idle_time(tmp_path: Path, monkeypatch) -> None:
     ws = _prepared(tmp_path)
     monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
@@ -1343,11 +1377,17 @@ def test_forwards_bootstrap_cache_and_trial_triage_inputs_to_the_orchestrator(
     [(3, EXIT_HELD, "held"), (4, EXIT_HALTED, "halted"), (1, EXIT_FAILED, "failed")],
 )
 def test_a_partial_run_never_exits_zero_and_the_report_names_its_state(
-    tmp_path: Path, orchestrator_exit: int, expected_exit: int, state: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    orchestrator_exit: int,
+    expected_exit: int,
+    state: str,
 ) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
     runner = RecordedRunner(returncode=orchestrator_exit)
+    # A held run that reached its sealed export: the terminal hold.
+    monkeypatch.setattr(pod_run, "reached_export", lambda run_root, run_id: True)
 
     exit_code = main(
         _run_argv(ws),

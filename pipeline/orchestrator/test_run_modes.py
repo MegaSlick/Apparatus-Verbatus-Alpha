@@ -14,8 +14,8 @@ from common import stage as stage_module
 from common.chairs.model_store import StoreRoleFetcher
 from common.contracts.errors import ContractError
 from common.stage import EXIT_HELD
+from conftest import HELD_RECENSOR_STOP, advance_held_recensor, load_stage
 from conftest import file_bytes_snapshot as snapshot
-from conftest import load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -222,44 +222,101 @@ def test_semi_mode_stops_at_a_named_hold(tmp_path):
     assert "semi mode stopped at held recensor" in result.stdout
 
 
-def test_a_range_ending_at_the_armarium_runs_through_a_held_recensor(tmp_path):
-    """A held boundary inside a range that ends at the export does not stop it,
-    as in auto mode, so the export names the hold instead of never being written."""
-    root = tmp_path / "runs"
-    result = drive(root, "r", "page-review", "--from", "door", "--to", "armarium")
-
+def _stopped_at_the_held_recensor(root: Path, result: subprocess.CompletedProcess) -> None:
+    """Held before the Archetypus: the holds named, the Coniector run, nothing established."""
     assert result.returncode == EXIT_HELD, result.stdout + result.stderr
-    assert "stopped at held" not in result.stdout
-    assert "run r: partial" in result.stdout
-    assert "act p2:1 is held-for-review" in result.stdout
-    assert (root / "r" / "7_armarium" / "artifacts").is_dir()
+    assert HELD_RECENSOR_STOP in result.stdout
+    assert "p2:1 (" in result.stdout and "--from recensor --to armarium" in result.stdout
+    assert (root / "r" / "4b_coniector").is_dir()
+    assert not (root / "r" / "6_archetypus").exists()
+    assert not (root / "r" / "7_armarium").exists()
 
 
-def test_the_big_models_range_writes_the_export_over_a_held_recensor(tmp_path):
-    """`pod_run --models big` runs perlector..armarium after the witnesses' own range."""
+@pytest.mark.parametrize(
+    "selection",
+    [(), ("--all",), ("--from", "door", "--to", "armarium")],
+    ids=["auto", "all", "semi-to-armarium"],
+)
+def test_a_held_recensor_stops_every_run_before_the_archetypus(tmp_path, selection):
+    """Unattended or ranged to the export, a held Recensor stops the run before export."""
+    root = tmp_path / "runs"
+    _stopped_at_the_held_recensor(root, drive(root, "r", "page-review", *selection))
+
+
+def test_a_manual_archetypus_over_a_held_recensor_stops_too(tmp_path):
+    root = tmp_path / "runs"
+    drive(root, "r", "page-review", "--from", "door", "--to", "recensor")
+    result = drive(root, "r", "page-review", "--stage", "archetypus")
+    assert result.returncode == EXIT_HELD, result.stdout + result.stderr
+    assert HELD_RECENSOR_STOP in result.stdout
+    assert not (root / "r" / "6_archetypus").exists()
+
+
+def test_the_big_models_range_stops_at_a_held_recensor_then_resumes_after_an_advance(tmp_path):
+    """`pod_run --models big` runs perlector..armarium after the witnesses' own range.
+
+    It stops at the held Recensor with the Coniector done, so nothing left needs
+    a GPU; after a person advances the Recensor's seal, a resume from the
+    Recensor exports and names every hold.
+    """
     root = tmp_path / "runs"
     first = drive(root, "r", "page-review", "--from", "door", "--to", "attestatores")
     assert first.returncode == 0, first.stdout + first.stderr
 
-    result = drive(root, "r", "page-review", "--from", "perlector", "--to", "armarium")
+    held = drive(root, "r", "page-review", "--from", "perlector", "--to", "armarium")
+    _stopped_at_the_held_recensor(root, held)
 
+    advance_held_recensor(root, "r")
+    result = drive(root, "r", "page-review", "--from", "recensor", "--to", "armarium")
     assert result.returncode == EXIT_HELD, result.stdout + result.stderr
-    assert "stopped at held" not in result.stdout
+    assert "an advance record passes its current seal" in result.stdout
+    assert "run r: partial" in result.stdout
     assert "act p2:1 is held-for-review" in result.stdout
 
 
+def test_an_advance_bound_to_an_earlier_recensor_seal_passes_nothing(tmp_path):
+    """A Recensor pass that re-seals (new decisions, say) leaves an earlier advance stale."""
+    from common.contracts.approval import build_approval_record
+    from common.runtree.store import RunTree
+
+    root = tmp_path / "runs"
+    drive(root, "r", "page-review")
+    # An advance of the Recensor that binds a digest its current seal does not have.
+    RunTree(root, "r").write_approval_record(
+        build_approval_record(
+            ["stage-boundary:recensor"],
+            "advance",
+            "advanced before the last pass",
+            "0" * 64,
+            "2026-10-01T12:00:00Z",
+        )
+    )
+    result = drive(root, "r", "page-review", "--from", "recensor", "--to", "armarium")
+    assert result.returncode == EXIT_HELD, result.stdout + result.stderr
+    assert HELD_RECENSOR_STOP in result.stdout
+
+
 def test_a_held_armarium_reports_its_terminal_reasons_under_every_mode(tmp_path):
-    """Armarium holds must retain the terminal report's named partial reasons."""
+    """Armarium holds must retain the terminal report's named partial reasons.
+
+    Each run first stops at its held Recensor; a person's advance of that seal
+    lets each mode reach the Armarium.
+    """
     automatic = tmp_path / "automatic"
     manual = tmp_path / "manual"
     semi = tmp_path / "semi"
 
+    drive(automatic, "r", "page-review", "--all")
+    advance_held_recensor(automatic, "r")
     all_result = drive(automatic, "r", "page-review", "--all")
     assert all_result.returncode == EXIT_HELD
     assert "run r: partial" in all_result.stdout
     assert "act p2:1 is held-for-review" in all_result.stdout
 
-    for stage in SEQUENCE[:-1]:
+    for stage in SEQUENCE[: SEQUENCE.index("recensor") + 1]:
+        drive(manual, "r", "page-review", "--stage", stage)
+    advance_held_recensor(manual, "r")
+    for stage in SEQUENCE[SEQUENCE.index("recensor") + 1 : -1]:
         drive(manual, "r", "page-review", "--stage", stage)
     manual_result = drive(manual, "r", "page-review", "--stage", "armarium")
     assert manual_result.returncode == EXIT_HELD
@@ -267,6 +324,7 @@ def test_a_held_armarium_reports_its_terminal_reasons_under_every_mode(tmp_path)
     assert "act p2:1 is held-for-review" in manual_result.stdout
 
     drive(semi, "r", "page-review", "--from", "door", "--to", "recensor")
+    advance_held_recensor(semi, "r")
     semi_result = drive(semi, "r", "page-review", "--from", "archetypus", "--to", "armarium")
     assert semi_result.returncode == EXIT_HELD
     assert "run r: partial" in semi_result.stdout
