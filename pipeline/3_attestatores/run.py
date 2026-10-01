@@ -203,8 +203,6 @@ def _confidence_problem(value: Any, path: str = "witness_reported") -> str | Non
 
 # Checked by name because the shared parser gives `--operation` no `choices`; a
 # mistyped operation would otherwise run the whole pass and exit 0.
-OPERATIONS = frozenset({"initial"})
-
 # A witness response is untrusted: deep nesting would raise an uncaught
 # `RecursionError` in `_native_problem` and kill the whole run, not one attempt.
 # Real output nests a few levels, so this is headroom.
@@ -6227,17 +6225,6 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
         help="append this ordinal for every act/chair, or repeat the current one byte-identically",
     )
     args = parser.parse_args()
-    if args.operation not in OPERATIONS:
-        raise ContractError(
-            f"the Attestatores has no {args.operation!r} operation; it implements "
-            f"{sorted(OPERATIONS)}. An unknown operation would otherwise run a whole pass "
-            "and report success"
-        )
-    if args.act:
-        raise ContractError(
-            "--act names one act, and a whole pass reads every configured chair on every "
-            "page; it cannot narrow to it"
-        )
     context = open_stage_context(args, ATTESTATORES, registry_factory=registry_factory)
     real = real_ingress(context)
     # A witness reading is a model decode, so its decoding policy must be sealed.

@@ -100,7 +100,6 @@ from common.decoding import (
     recorded_sampling,
     refuse_retired_call_record,
     structure_recovery_policy,
-    variance_arm_seed,
     verify_call_sampling,
 )
 from common.durability import is_unpublished_blob_temporary
@@ -1292,29 +1291,8 @@ def _serving_config_inputs(value: object, label: str) -> dict[str, str]:
     }
 
 
-class _StageArgumentParser(argparse.ArgumentParser):
-    """Shared operation-argument refusal for stage programs.
-
-    ``--chair`` is shared argv so orchestration passes one shape, but only the
-    Attestatores implements it; other stages refuse it before touching the run.
-    """
-
-    def __init__(self, *args, accepts_chair: bool, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self._accepts_chair = accepts_chair
-
-    def parse_args(self, args=None, namespace=None) -> argparse.Namespace:
-        parsed = super().parse_args(args, namespace)
-        if parsed.chair is not None and not self._accepts_chair:
-            raise ContractError(
-                "--chair is implemented only by the Attestatores reread operation; "
-                "this stage does not accept it"
-            )
-        return parsed
-
-
-def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.ArgumentParser:
-    parser = _StageArgumentParser(description=description, accepts_chair=accepts_chair)
+def stage_parser(description: str) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--run-id", required=True)
     # No `choices`: the fixture declares scenarios, and `scenario_for` refuses others.
@@ -1409,18 +1387,6 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         "--witness-context-config",
         default=str(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH),
         help="the Perlector-owned factual witness-context declaration this run seals",
-    )
-    parser.add_argument("--operation", default="initial")
-    parser.add_argument(
-        "--act", default=None, help="one act id, for a recovery or reread operation"
-    )
-    parser.add_argument(
-        "--recovery-request",
-        default=None,
-        help="the exact Recensor recovery-request artifact a Designator recrop answers",
-    )
-    parser.add_argument(
-        "--chair", default=None, help="one chair role, for an Attestatores reread operation"
     )
     parser.add_argument(
         "--placement-tier",
@@ -3674,22 +3640,18 @@ def verify_retained_call_sampling(
     chair: str,
     *,
     attempt_ordinal: int = 1,
-    variance_arm: str | None = None,
     sends_seed: bool = True,
 ) -> None:
     """Hold one retained call record to its chair's sealed decoding row and seed.
 
-    The seed the call must have sent is `variance_arm`'s for a Perlector
-    sampling-variance arm, none when `sends_seed` is false (a Chandra native
-    request), and otherwise its serving receipt's. For a reader that holds only
+    The seed the call must have sent is none when `sends_seed` is false (a
+    Chandra native request), and otherwise its serving receipt's. For a reader that holds only
     the stage context and the parsed record; raises `ContractError`.
     """
     policy, _digest = sealed_decoding_policy(context)
     expected_seed: int | None
     if not sends_seed:
         expected_seed = None
-    elif variance_arm is not None:
-        expected_seed = variance_arm_seed(policy, variance_arm)
     else:
         receipt_ref = call.get("receipt_ref")
         if not isinstance(receipt_ref, Mapping):

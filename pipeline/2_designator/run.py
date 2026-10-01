@@ -2969,28 +2969,24 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None, surya_r
     context, real_input = _open(args, registry_factory)
     surya = surya_detection.SURYA_SUBPROCESS if surya_runner is None else surya_runner
 
-    if args.operation == "initial":
-        # The sealed serving catalogue picks the pass, never a flag or the route:
-        # offline runs drive the live pass over fixture pages, and real input
-        # under the fixture chair is refused.
-        mode, _identity = structure_pass.structure_serving_mode(context, args)
-        if mode == "fixture":
-            if real_input:
-                page_records(context)
-                raise ContractError(
-                    "a real submission may not be marked out by the fixture structure chair; "
-                    "select a live catalogue. The Designator proved its Ink Map boundary and "
-                    "reconciled the Exemplar filename ledger, and no proposals or holds were "
-                    "fabricated"
-                )
-            held = initial_pass(context)
-        elif mode == "live":
-            held = live_initial_pass(context, serving_factory, args.placement_tier, surya)
-        else:  # pragma: no cover - serving_mode_for closes the vocabulary
-            raise ContractError(f"unknown serving mode {mode!r} for the structure chair")
-    else:
-        # The shared parser has no `choices=`, so refuse a typo here.
-        raise ContractError(f"--operation {args.operation!r} is not 'initial'")
+    # The sealed serving catalogue picks the pass, never a flag or the route:
+    # offline runs drive the live pass over fixture pages, and real input
+    # under the fixture chair is refused.
+    mode, _identity = structure_pass.structure_serving_mode(context, args)
+    if mode == "fixture":
+        if real_input:
+            page_records(context)
+            raise ContractError(
+                "a real submission may not be marked out by the fixture structure chair; "
+                "select a live catalogue. The Designator proved its Ink Map boundary and "
+                "reconciled the Exemplar filename ledger, and no proposals or holds were "
+                "fabricated"
+            )
+        held = initial_pass(context)
+    elif mode == "live":
+        held = live_initial_pass(context, serving_factory, args.placement_tier, surya)
+    else:  # pragma: no cover - serving_mode_for closes the vocabulary
+        raise ContractError(f"unknown serving mode {mode!r} for the structure chair")
 
     context.seal_boundary()
     context.finish()

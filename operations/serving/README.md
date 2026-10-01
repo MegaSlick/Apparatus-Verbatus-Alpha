@@ -349,10 +349,9 @@ sends them unchanged.
    `ServiceHandle.request_reading`. The client takes the sealed decoding policy the stage
    loaded (refused unless it seals to the recorded digest) and selects the row by its own
    `identity.role`: `config/decoding.toml`'s `chair_decoding`, the chair's makers'
-   recommendation. Two request fields select within the sealed policy and belong to one
-   chair each: the Designator structure chair's `structure_attempt_ordinal` picks the
-   attempt's values on Chandra's retry schedule, and the Perlector's `variance_arm` picks
-   that arm's seed; every other request sends the profile's seed. Both are on the call
+   recommendation. One request field selects within the sealed policy: the Designator
+   structure chair's `structure_attempt_ordinal` picks the attempt's values on Chandra's
+   retry schedule; every request sends the profile's seed. Both are on the call
    record's `generation_sent`, and `sampling_effective` beside them holds what the pinned
    engine samples under (`common.decoding.engine_effective_sampling`: vLLM 0.27.1 raises a
    temperature in (0, 0.01) to 0.01, as for Churro's 1e-06, and a greedy request runs at
@@ -370,7 +369,7 @@ sends them unchanged.
    stage abort. Write one `chair-call-record.v3` (fields in
    `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`) and return. Every stage reader of a
    call record (the Designator's structure attempts and minted acts, every Testimonium's
-   serving call, every Perlector reading, re-proof and failed Perlectio) holds its
+   serving call, every Perlector page reading) holds its
    generation fields, sampling and seed to the sealed row through one check,
    `common.decoding.verify_call_sampling`; a reader holding only the stage context calls it
    through `common.stage.verify_retained_call_sampling`. A call record written under a
@@ -450,7 +449,7 @@ The structure-chair builders (`structure_box_1000`, `structure_layout_block`,
 `structure_answer_body`, `structure_blank_page_body`, `scripted_structure_answer`,
 `scripted_structure_refusal`, `scripted_structure_cut_off`) take rectangles in the sealed
 page's pixels and return **Chandra's layout HTML**, whose `data-bbox` values are found by
-search over the 0–1000 grid and checked through `common.structure_answer.to_page_bounds`
+search over the 0–1000 grid and checked through `common.chandra_layout.to_page_bounds`
 itself, so the builder cannot agree with a converter that changed. Each builder reads its
 body back through `common/chandra_layout.py::parse_layout_html` and checks the rectangles,
 so a drifted builder fails in the builder, not three stages later.

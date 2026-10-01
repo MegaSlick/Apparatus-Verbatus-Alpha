@@ -393,17 +393,6 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, r
     ]
 
 
-def test_a_page_read_pass_refuses_to_read_one_act_by_name(page_tree, tmp_path):
-    root, protocol = page_tree
-    copy = tmp_path / "runs"
-    shutil.copytree(root, copy)
-    before = file_bytes_snapshot(copy)
-    result = _run(PERLECTOR_PROGRAM, copy, protocol, "--act", "act_0000000000000001")
-    assert result.returncode != 0
-    assert "run the pass without --act" in result.stderr
-    assert file_bytes_snapshot(copy) == before
-
-
 # Each switch changes what the page is shown, so it changes the sealed feed and,
 # where it changes the text, page 1's prompt (page 2 has one unboxed unit per
 # witness, which no witness switch changes). The fixture page is smaller than

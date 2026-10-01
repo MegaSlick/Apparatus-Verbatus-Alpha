@@ -150,10 +150,8 @@ def _validate_identity(identity: ChairIdentity) -> None:
 
     if type(witness_adapter) is not str or witness_adapter not in KNOWN_WITNESS_ADAPTER_NAMES:
         raise ReceiptRefusal(identity.role, "identity has no exact declared witness_adapter name")
-    if type(witness_scope) is not str or witness_scope not in {"page", "act"}:
-        raise ReceiptRefusal(
-            identity.role, "identity witness_scope must be exactly 'page' or 'act'"
-        )
+    if witness_scope != "page":
+        raise ReceiptRefusal(identity.role, "identity witness_scope must be exactly 'page'")
 
 
 def _validate_details(identity: ChairIdentity, details: ServingDetails) -> None:

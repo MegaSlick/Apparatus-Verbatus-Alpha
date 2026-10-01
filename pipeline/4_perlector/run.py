@@ -255,7 +255,7 @@ def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict
     if call is None:
         raise SchemaRefusal("a live reading's call record is not a JSON object")
     try:
-        verify_retained_call_sampling(context, call, "perlector", variance_arm=None)
+        verify_retained_call_sampling(context, call, "perlector")
     except ContractError as error:
         raise SchemaRefusal(
             f"a live reading's call record is not its sealed request: {error}"
@@ -636,12 +636,6 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
     context.require_sealed_config("perlector-audit", audit_sha256)
     # The Designator's proposal seal is checked whole before anything is published.
     expected_acts(context)
-    if args.act:
-        raise ContractError(
-            f"asked to read act {args.act}, but the Perlector reads every sealed page whole "
-            "and names its own acts, so there is no Designator act to read alone; run the "
-            "pass without --act"
-        )
     return _Pass(
         context=context,
         args=args,

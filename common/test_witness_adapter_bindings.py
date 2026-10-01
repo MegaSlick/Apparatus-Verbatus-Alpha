@@ -376,7 +376,8 @@ def test_adapter_rows_travel_in_the_resolved_provenance_record():
     (
         ("perlector", {"witness_adapter": "churro.v1", "witness_scope": "page"}, "non-Attestator"),
         ("attestator_1", {"witness_adapter": "unknown.v1"}, "exact declared"),
-        ("attestator_1", {"witness_scope": "crop"}, "exactly 'page' or 'act'"),
+        ("attestator_1", {"witness_scope": "crop"}, "exactly 'page'"),
+        ("attestator_1", {"witness_scope": "act"}, "exactly 'page'"),
     ),
 )
 def test_receipt_reader_validates_witness_fields_inside_a_nested_identity(role, changes, message):

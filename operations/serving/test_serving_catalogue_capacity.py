@@ -22,9 +22,9 @@ from common.churro_document import CHURRO_PROMPT_VARIANTS
 from common.request_capacity import (
     DECLARED_ANSWER_BOUND_TOKENS,
     MEASURED_PROMPT_TOKENS,
-    PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
-    act_answer_budget,
+    PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST,
     dense_page_answer_budget,
+    page_request_capacity,
     request_fits,
     row_image_geometry,
     sendable_max_tokens,
@@ -50,8 +50,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 REAL_RECIPES = REPO_ROOT / "config" / "serving_recipes_real.toml"
 REAL_PLACEMENT = REPO_ROOT / "config" / "pod_placement.toml"
 
-# A 300-dpi A4 scan as each chair is actually shown it.  DAI is act-scoped and
-# its adapter's own width ceiling (`pipeline/3_attestatores/feeding.dai_dimensions`:
+# A 300-dpi A4 scan as each chair is actually shown it.  DAI reads one record at a
+# time and its adapter's own width ceiling (`pipeline/3_attestatores/feeding.dai_dimensions`:
 # width <= 1500) binds before any serving row's `max_pixels`, so the page it is
 # charged for is 1500x2122.  Every other chair
 # is shown the sealed page unchanged.
@@ -60,23 +60,12 @@ PAGE_AS_PRESENTED = {
     "attestator_1": A4_300DPI,
     "attestator_2": (1500, 2122),
     "attestator_3": A4_300DPI,
-    "perlector": A4_300DPI,
 }
-# The Perlector's region crop, modelled as `TOKEN_COST_REPORT.md` section 7
-# models it: full page width by one sixth of page height.
-ACT_REGION_CROP = (2480, 584)
-# The Perlector's prompt has no fixed text to seal, so what stands in for a
-# measured constant here is what the seam actually admits on: the sealed
-# tokens-per-character bound over the representative dossier of
-# `TOKEN_COST_REPORT.md` section 5. Weighing the shipped rows against the floor
-# would ask whether they can serve a request smaller than any the reader lets
-# through.
 PROMPT_TOKENS = {
     # The default framing's cost per chair: `MEASURED_PROMPT_TOKENS` carries
     # one entry per framing a chair can be asked in, and the first is the one a
     # run sends unless it names another (`churro.DEFAULT_FRAMING`).
     **{chair: entries[0].tokens for chair, entries in MEASURED_PROMPT_TOKENS.items()},
-    "perlector": PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
 }
 # The comment above is true only because entry 0 happens to be Churro's
 # default framing's own measurement today; nothing enforces the order, so a
@@ -101,51 +90,19 @@ def _shipped_rows():
     return rows
 
 
-def _request_shapes(row):
-    """Every request shape this row must be able to serve, as the seam sends it.
-
-    The four page chairs send one image and reserve a dense page's answer.  The
-    Perlector is the one chair whose request is not one image: it sends every
-    region crop and then every page render, one pair per capture view
-    (`pipeline/4_perlector/live_reader.py`), and reserves one act's reading
-    unless the act's own crop is page-sized -- a page-fallback act, whose
-    reading is a page of text.  Testing it at one image and one act's answer
-    would have described a request this pipeline never sends.
-
-    The two-capture-view page-fallback act is deliberately absent here and
-    pinned on its own below: it is the one measured shape a shipped row cannot
-    serve, and asserting it fits would be false.
-    """
-
-    chair = row.chair
-    page = PAGE_AS_PRESENTED[chair]
-    if chair != "perlector":
-        return [("a dense A4 page", [page], dense_page_answer_budget(chair))]
-    act = act_answer_budget(chair)
-    fallback = dense_page_answer_budget(chair)
-    return [
-        ("one capture view, ordinary act", [ACT_REGION_CROP, page], act),
-        (
-            "two capture views, ordinary act",
-            [ACT_REGION_CROP, ACT_REGION_CROP, page, page],
-            act,
-        ),
-        ("one capture view, page-fallback act", [page, page], fallback),
-    ]
+def _witness_rows():
+    return [row for row in _shipped_rows() if row.chair != "perlector"]
 
 
 @pytest.mark.parametrize(
     "row,case",
-    [(row, case) for row in _shipped_rows() for case in _request_shapes(row)],
-    ids=lambda item: (
-        f"{item.chair}@{item.tier}" if hasattr(item, "chair") else item[0].replace(" ", "-")
-    ),
+    [(row, [PAGE_AS_PRESENTED[row.chair]]) for row in _witness_rows()],
+    ids=lambda item: f"{item.chair}@{item.tier}" if hasattr(item, "chair") else "page",
 )
-def test_catalogue_capacity_arithmetic_accepts_each_shipped_row_request_shape(row, case):
+def test_catalogue_capacity_arithmetic_accepts_each_witness_rows_dense_page(row, case):
     """The catalogue's own claim, checked against the arithmetic that falsified it."""
 
-    _label, images, answer_budget = case
-    record = request_fits(row, images, PROMPT_TOKENS[row.chair], answer_budget)
+    record = request_fits(row, case, PROMPT_TOKENS[row.chair], dense_page_answer_budget(row.chair))
     assert record["fits"] is True, record["reason"]
     assert record["headroom"] >= 0
 
@@ -209,25 +166,24 @@ def test_chandra_80gb_admits_its_native_bound_after_the_observed_page_three_prom
     assert sendable_max_tokens(row.chair, old_capacity) == {}
 
 
-def test_the_two_view_page_fallback_act_fits_the_supported_tiers_context():
-    """The one measured Perlector shape that used to overrun a shipped row."""
+def test_every_shipped_perlector_row_admits_a_dense_whole_page_reading():
+    """A legible A4 render, a dense page's witness text and its answer reserve."""
 
-    needs = {}
-    for row in _shipped_rows():
-        if row.chair != "perlector":
-            continue
-        page = PAGE_AS_PRESENTED["perlector"]
-        record = request_fits(
+    rows = [row for row in _shipped_rows() if row.chair == "perlector"]
+    assert [row.tier for row in rows] == ["generic-80gb-plus"]
+    text = "x" * 40_000
+    for row in rows:
+        admitted = page_request_capacity(
             row,
-            [page, page, page, page],
-            PROMPT_TOKENS["perlector"],
-            dense_page_answer_budget("perlector"),
+            image_sizes=((1978, 2560),),
+            prompt_text=text,
+            prompt_parts=[(text, False)],
+            template_digest=PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST,
+            answer_measure={"longest_witness_characters": 12_000, "act_entries": 20},
+            page_max_tokens=12288,
         )
-        needs[row.tier] = (record["need"], record["fits"])
-    assert needs == {
-        # 4x5,100 + 1,173 + 1,318, against 32,768
-        "generic-80gb-plus": (22891, True),
-    }
+        assert admitted["capacity"]["fits"] is True
+        assert admitted["capacity"]["headroom"] >= 0
 
 
 def test_smaller_perlector_tiers_name_the_measured_refusal():
