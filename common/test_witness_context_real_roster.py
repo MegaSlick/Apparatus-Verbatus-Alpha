@@ -482,3 +482,17 @@ def test_a_roster_without_witness_roles_records_that_absence(tmp_path):
     assert validation.verified_present_roles == ()
     assert validation.role_profiles == ()
     assert validation.source_sha256 == digest_bytes(b"{}")
+
+
+def test_no_page_path_code_shows_a_training_domain_to_the_reader():
+    """The declaration is sealed and checked against the roster, and its sentences
+    are not part of the page feed or prompt. A change that starts showing them
+    changes what the Perlector reads, and this test and the declaration's header
+    change with it."""
+    root = Path(__file__).resolve().parents[1]
+    readers = sorted(
+        str(path.relative_to(root))
+        for path in [*(root / "common").glob("page_*.py"), *(root / "pipeline").rglob("*.py")]
+        if not path.name.startswith("test_") and "training_domain" in path.read_text("utf-8")
+    )
+    assert readers == []

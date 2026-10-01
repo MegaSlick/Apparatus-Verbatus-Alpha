@@ -1,5 +1,6 @@
 """The re-ask budget: a ruled ceiling in code, and the run's sealed record in use."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -104,3 +105,17 @@ def test_the_run_authority_names_the_recovery_policy_it_was_sealed_under(tmp_pat
         run["sealed_config_digests"]["recovery"]
         == load_recovery_policy(recovery_path)["config_sha256"]
     )
+
+
+def test_the_budget_is_sealed_ahead_of_the_re_ask_that_spends_it():
+    """A deliberate forward binding: every run seals its re-ask budget at the Door,
+    and no stage re-asks a page yet. When a stage starts reading
+    `StageContext.recovery_policy`, this test goes and config/recovery.toml says so."""
+    root = Path(__file__).resolve().parents[1]
+    readers = sorted(
+        str(path.relative_to(root))
+        for folder in ("pipeline", "operations")
+        for path in (root / folder).rglob("*.py")
+        if not path.name.startswith("test_") and ".recovery_policy" in path.read_text("utf-8")
+    )
+    assert readers == []

@@ -3,9 +3,8 @@
 # `config/models-real.toml` is selected with `--models-config`, and paired with it
 # for the same reason the serving catalogue is: the fixture declaration at
 # `config/witness_context.toml` describes every chair as a synthetic fixture, and
-# under the `named` regime that sentence is what the Perlector is told about the
-# witness whose testimony it is reading, so getting it wrong here would tell
-# the reader something false about its own witnesses.
+# the run seals the declaration it was given, so a real run sealed with the
+# fixture sentences would record something false about its own witnesses.
 # `common/stage.py::validate_witness_context_bindings` refuses a
 # non-fixture roster that leaves this file at the fixture default.
 #
@@ -14,9 +13,8 @@
 # preferred order -- spec_08's "witness identity and factual context only... never
 # pipeline-asserted worth."
 #
-# Every sentence below is the researched vendor fact formerly kept in the
-# default declaration. It is selected only with the real roster; no fixture
-# dossier presents it as a fact about a local snapshot.
+# Every sentence below is a researched vendor fact, selected only with the real
+# roster, so no fixture run records it as a fact about a local snapshot.
 
 # datalab-to/chandra-ocr-2 (config/models-real.toml). Pinned Hugging Face
 # config revision af93b47dba1b47b6640c86ccf487ed2260ab9a09 records architecture
