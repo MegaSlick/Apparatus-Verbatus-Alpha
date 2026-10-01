@@ -178,7 +178,11 @@ def test_every_shipped_perlector_row_admits_a_dense_whole_page_reading():
             prompt_text=text,
             prompt_parts=[(text, False)],
             template_digest=PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST,
-            answer_measure={"longest_witness_characters": 12_000, "act_entries": 20},
+            answer_measure={
+                "longest_witness_characters": 12_000,
+                "act_entries": 20,
+                "surya_lines": 120,
+            },
             page_max_tokens=12288,
         )
         assert admitted["capacity"]["fits"] is True

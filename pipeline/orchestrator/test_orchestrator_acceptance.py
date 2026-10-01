@@ -285,6 +285,7 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         decoding_config=ROOT / "config" / "decoding.toml",
         pdf_render_config=ROOT / "config" / "pdf_render.toml",
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
+        alignment_config=ROOT / "config" / "alignment.toml",
         page_accounting_config=ROOT / "config" / "page_accounting.toml",
         ink_map_config=ROOT / "config" / "ink_map.toml",
         # `config/armarium_formats.toml` until now, which is a file that has

@@ -29,6 +29,7 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         serving_recipes_config="config/serving_recipes.toml",
         pdf_render_config="config/pdf_render.toml",
         designator_geometry_config="config/designator_geometry.toml",
+        alignment_config="config/alignment.toml",
         page_accounting_config="config/page_accounting.toml",
         ink_map_config="config/ink_map.toml",
         formats_config="config/formats.toml",

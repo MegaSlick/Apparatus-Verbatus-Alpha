@@ -42,6 +42,7 @@ def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
         serving_recipes_config=ROOT / "config" / "serving_recipes.toml",
         pdf_render_config=ROOT / "config" / "pdf_render.toml",
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
+        alignment_config=ROOT / "config" / "alignment.toml",
         page_accounting_config=ROOT / "config" / "page_accounting.toml",
         ink_map_config=ROOT / "config" / "ink_map.toml",
         formats_config=ROOT / "config" / "formats.toml",

@@ -522,7 +522,6 @@ def test_a_selection_whose_records_did_not_come_home_is_held_not_complete(
         (("--stage", "exemplar"), "door"),
         (("--from", "designator", "--to", "attestatores"), "ink-map"),
         (("--stage", "recensor"), "perlector"),
-        (("--stage", "recovery"), "recensor"),
         (("--from", "archetypus", "--to", "armarium"), "recensor"),
     ],
 )

@@ -18,6 +18,7 @@ SEALED_CONFIG_FLAGS = (
     "--decoding-config",
     "--pdf-render-config",
     "--designator-geometry-config",
+    "--alignment-config",
     "--page-accounting-config",
     "--ink-map-config",
     "--perlector-protocol-config",

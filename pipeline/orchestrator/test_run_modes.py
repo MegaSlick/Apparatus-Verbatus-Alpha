@@ -73,6 +73,7 @@ def test_store_root_reaches_a_stage_registry(tmp_path, monkeypatch) -> None:
         "serving_recipes_config",
         "pdf_render_config",
         "designator_geometry_config",
+        "alignment_config",
         "page_accounting_config",
         "ink_map_config",
         "formats_config",
