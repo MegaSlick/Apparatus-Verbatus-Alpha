@@ -2262,6 +2262,34 @@ _AGGREGATE_BASIS_FIELDS: Final = (
     "continuation_flags",
     "page_witness_chairs",
 )
+# Present only on a run whose Recensor applied operator review decisions.
+_REVIEW_DECISIONS_BASIS_FIELD: Final = "review_decisions"
+
+
+def review_aggregate_arguments(basis: Any) -> dict[str, Any]:
+    """`run_aggregate`'s review arguments from a basis's `review_decisions`; none when absent.
+
+    `{clearances, page_holds}`: the `review_clearances` rows, and each page
+    still held after review as `{page, codes}`. `run_aggregate` checks the
+    rows themselves; a clearance or page hold only adds a reason, so a
+    package cannot read as complete by carrying one.
+    """
+    if basis is None:
+        return {}
+    if (
+        not isinstance(basis, dict)
+        or set(basis) != {"clearances", "page_holds"}
+        or not isinstance(basis["clearances"], list)
+        or not isinstance(basis["page_holds"], list)
+        or not all(
+            isinstance(row, dict) and set(row) == {"page", "codes"} for row in basis["page_holds"]
+        )
+    ):
+        raise SchemaRefusal("an Armarium aggregate's review decisions are malformed")
+    holds = {row["page"]: row["codes"] for row in basis["page_holds"]}
+    if len(holds) != len(basis["page_holds"]):
+        raise SchemaRefusal("an Armarium aggregate's review decisions name a page twice")
+    return {"review_clearances": basis["clearances"], "review_page_holds": holds}
 
 
 def _validated_continuation_flags(flags: Any, categories: dict[str, str]) -> dict[str, list[str]]:
@@ -2324,8 +2352,11 @@ def _aggregate_from_basis(
     to act key); its `page_witness_chairs` are checked by
     `_validate_witness_accounting`.
     """
-    if not isinstance(basis, dict) or set(basis) != set(_AGGREGATE_BASIS_FIELDS):
+    if not isinstance(basis, dict) or set(basis) - {_REVIEW_DECISIONS_BASIS_FIELD} != set(
+        _AGGREGATE_BASIS_FIELDS
+    ):
         raise SchemaRefusal("an Armarium aggregate has no recognized accounting basis")
+    review = review_aggregate_arguments(basis.get(_REVIEW_DECISIONS_BASIS_FIELD))
     by_page: dict[int, list[str]] = {}
     for other in others:
         by_page.setdefault(other["page_ordinal"], []).append(other["category"])
@@ -2368,6 +2399,7 @@ def _aggregate_from_basis(
             continuation_joins=continuation_joins,
             other_categories_by_page=by_page,
             unpaired_continuations=unpaired,
+            **review,
         )
     # The basis may come from an untrusted package and `run_aggregate` reads
     # coverage-record keys nothing above checks. The cause stays chained.

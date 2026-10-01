@@ -306,11 +306,21 @@ accounts for it at all, because silence cannot tell a blank page from a detectio
 failure. A page with no act row is decided by its other readings ("Pages with no
 act" below).
 
-**`excluded-with-approval` is projection-only.** No stage emits an exclusion, so
-no exported row carries one; the category is exercised correctly and adversarially at
-the projection layer
+**`excluded-with-approval` comes only from an operator decision.** A Recensor review
+is `excluded` only when a current `approval-record.v1` excludes its unit
+(`pipeline/5_recensor/CONTRACT.md`, "Operator review decisions"); its manifest entry
+and projected row carry the review's `approval_ref`, the stored decision, and no text.
+The category is also exercised adversarially at the projection layer
 (`test_excluded_act_requires_and_carries_its_approval_reference`,
 `test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_act_agrees`).
+
+**Operator review decisions are reasons, never machine checks.** When the Recensor
+recorded a `review-decisions` record, the aggregate takes its clearances as
+`review_clearances` (units named by act key) and its held pages as
+`review_page_holds`, each a named reason, so a run a person cleared stays `partial`.
+`aggregate_basis.review_decisions` (`{clearances, page_holds: [{page, codes}]}`) carries
+them, present only on such a run, and the clean verifier recomputes the aggregate with
+them.
 `confirmed-blank` reaches the export only on a `page-blank` row whose review confirms
 it.
 
