@@ -56,3 +56,11 @@ def systemic(held_pages: int, pages: int, policy: dict[str, Any]) -> bool:
 def alarm_line(run_id: str, held_pages: list[int], pages: int, policy: dict[str, Any]) -> str:
     """The one line a run's report and its notification carry when the alarm fires."""
     return f"run {run_id}: {systemic_reason(held_pages, pages, policy['max_held_page_share'])}"
+
+
+def systemic_notice(run_id: str, line: str) -> str:
+    """The one-line `decision` notification for a run whose alarm line (`alarm_line`) sounded."""
+    return (
+        f"Verbatus run {run_id} has a systemic problem and needs a decision: "
+        f"{line.removeprefix(f'run {run_id}: systemic: ')}"
+    )

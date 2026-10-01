@@ -11,6 +11,7 @@ reason the terminal report names.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -66,13 +67,30 @@ def test_a_held_share_above_the_sealed_limit_stops_the_run_with_the_systemic_ala
     assert lines[stop + 1] == line
 
 
+def test_the_stop_record_names_the_systemic_alarm_for_a_caller_without_the_transcript(
+    tmp_path,
+):
+    """The pod route reads the alarm from here to send it to the phone."""
+    stop = tmp_path / "stop.json"
+    result = _orchestrate(tmp_path / "runs", "--stop-record", str(stop))
+    assert result.returncode == EXIT_HELD, result.stderr
+    [line] = [line for line in result.stdout.splitlines() if "systemic:" in line]
+    assert json.loads(stop.read_text(encoding="utf-8"))["systemic"] == line
+
+
 def test_a_held_share_at_the_sealed_limit_raises_no_alarm(tmp_path):
+    stop = tmp_path / "stop.json"
     result = _orchestrate(
-        tmp_path / "runs", "--review-config", str(_review_config(tmp_path, "1/2"))
+        tmp_path / "runs",
+        "--review-config",
+        str(_review_config(tmp_path, "1/2")),
+        "--stop-record",
+        str(stop),
     )
     assert result.returncode == EXIT_HELD, result.stderr
     assert "stopped at a held recensor, before the archetypus" in result.stdout
     assert "systemic:" not in result.stdout
+    assert json.loads(stop.read_text(encoding="utf-8"))["systemic"] is None
 
 
 def test_a_sealed_run_cannot_be_resumed_under_another_review_policy(tmp_path):

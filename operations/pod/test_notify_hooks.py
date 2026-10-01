@@ -10,7 +10,7 @@ import pytest
 from common.test_credentials import FILES_AND_HOSTS, OPAQUE, PASSING_VALUES, SHAPED_VALUES
 from operations.notify.client import NOTIFY_SCRIPT, NotifyOutcome
 
-from .notify_hooks import notify_balance, notify_close, notify_launch
+from .notify_hooks import notify_balance, notify_close, notify_launch, notify_systemic
 
 
 @dataclass
@@ -93,6 +93,25 @@ def test_notify_balance_reads_as_account_scoped_with_no_lease() -> None:
     notify_balance(balance_usd="76.50", spend_rate_usd_per_hr="1.99", runner=runner)
 
     assert "account" in runner.calls[0][3]
+
+
+def test_notify_systemic_sends_the_alarm_as_a_decision() -> None:
+    """The same line `verbatus run --notify` sends for a systemic run on this computer."""
+    from common.review_policy import systemic_notice
+
+    runner = FakeRunner()
+    line = "run r1: systemic: 2 of 3 page(s) are held after the recensor"
+
+    outcome = notify_systemic(run_id="r1", alarm_line=line, runner=runner)
+
+    assert outcome == NotifyOutcome(True, True, "delivered")
+    [argv] = runner.calls
+    assert argv[:3] == ["sh", str(NOTIFY_SCRIPT), "decision"]
+    assert argv[3] == systemic_notice("r1", line)
+    assert argv[3] == (
+        "Verbatus run r1 has a systemic problem and needs a decision: "
+        "2 of 3 page(s) are held after the recensor"
+    )
 
 
 # --- the no-secret rule -------------------------------------------------------

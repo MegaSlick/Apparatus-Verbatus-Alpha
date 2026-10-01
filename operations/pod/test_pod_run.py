@@ -141,6 +141,8 @@ class RecordedRunner:
     # leaves none, a bool says whether this invocation reached its export, and
     # text is written as it stands.
     stop: bool | str | None = None
+    # The systemic alarm line the stop record names, or None.
+    systemic: str | None = None
     calls: list[tuple[list[str], Path, dict[str, str]]] = field(default_factory=list)
     supervision: list[dict[str, object]] = field(default_factory=list)
 
@@ -184,6 +186,7 @@ class RecordedRunner:
                         "run_id": argv[argv.index("--run-id") + 1],
                         "exit_code": self.returncode,
                         "exported": self.stop,
+                        "systemic": self.systemic,
                     }
                 ),
                 encoding="utf-8",
@@ -1158,6 +1161,86 @@ def test_only_this_invocations_stop_record_saying_exported_reads_as_reached(
     for unreadable in ("[]", "{", "\udcff", "null"):
         path.write_text(unreadable, encoding="utf-8", errors="surrogateescape")
         assert pod_run.exported_this_invocation(path, "r") is False, unreadable
+
+
+def test_only_this_invocations_stop_record_names_its_systemic_alarm(tmp_path: Path) -> None:
+    path = tmp_path / "stop.json"
+    line = "run r: systemic: 1 of 2 page(s) are held after the recensor"
+
+    def stop(**fields: object) -> str | None:
+        record = {"schema": STOP_RECORD_SCHEMA, "run_id": "r", "exit_code": 3, **fields}
+        path.write_text(json.dumps(record), encoding="utf-8")
+        return pod_run.systemic_this_invocation(path, "r")
+
+    assert pod_run.systemic_this_invocation(path, "r") is None  # no record
+    assert stop(systemic=line) == line
+    assert stop(systemic=None) is None
+    assert stop(systemic="  ") is None
+    assert stop(systemic=3) is None
+    assert stop(systemic=line, run_id="another") is None
+    path.write_text("{", encoding="utf-8")
+    assert pod_run.systemic_this_invocation(path, "r") is None
+
+
+class NotifyRecorder:
+    """A notify runner that records each argv and answers green; no shell, no phone."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv):  # type: ignore[no-untyped-def]
+        import subprocess
+
+        self.calls.append(list(argv))
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+
+@pytest.mark.parametrize("exported", [False, True], ids=["held", "advanced-and-exported"])
+def test_a_systemic_run_on_the_pod_sends_the_alarm_as_a_decision(
+    tmp_path: Path, exported: bool
+) -> None:
+    """Held at the Recensor, or exported past it on an advance, the phone hears of it."""
+    from common.review_policy import systemic_notice
+
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    argv = _run_argv(ws)
+    run_id = argv[argv.index("--run-id") + 1]
+    line = f"run {run_id}: systemic: 2 of 2 page(s) are held after the recensor"
+    notify = NotifyRecorder()
+    code = main(
+        argv,
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(returncode=orchestrator.EXIT_HELD, stop=exported, systemic=line),
+        notify_runner=notify,
+    )
+    assert code == EXIT_HELD
+    [argv] = notify.calls
+    assert argv[2:] == ["decision", systemic_notice(run_id, line)]
+    report = _report(ws)
+    assert report["systemic"] == line
+    assert report["systemic_notification"] == "Phone notification: sent."
+
+
+def test_a_run_with_no_systemic_alarm_sends_no_decision(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    notify = NotifyRecorder()
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(returncode=orchestrator.EXIT_HELD, stop=False),
+        notify_runner=notify,
+    )
+    assert code == EXIT_HELD
+    assert notify.calls == []
+    assert "systemic" not in _report(ws)
 
 
 @pytest.mark.parametrize(

@@ -154,6 +154,8 @@ from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
 from common.stage import EXIT_FATAL as ORCHESTRATOR_FATAL
 from common.stage import EXIT_HELD as ORCHESTRATOR_HELD
 from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
+from operations.notify import client as notify_client
+from operations.pod.notify_hooks import notify_systemic
 from operations.serving.config import ServingConfigInputs
 from operations.serving.errors import ServingConfigurationError
 from operations.submit import gate
@@ -257,6 +259,30 @@ _ORCHESTRATOR_EXITS = {
 _HOLD_AFTER_EXITS = frozenset({EXIT_COMPLETE, EXIT_HELD})
 
 
+def _stop(stop_record: Path, run_id: str) -> dict | None:
+    """This invocation's stop record for this run, or None when it is missing or unreadable."""
+    try:
+        record = json.loads(stop_record.read_text(encoding="utf-8"))
+        if record.get("schema") == STOP_RECORD_SCHEMA and record.get("run_id") == run_id:
+            return record
+    except Exception:
+        pass
+    return None
+
+
+def systemic_this_invocation(stop_record: Path, run_id: str) -> str | None:
+    """The systemic alarm line this invocation's orchestrator printed, or None.
+
+    It sounds at a Recensor held on more of the run's pages than its sealed
+    review policy allows, and at a person's advance past that stop, so the run
+    reaches its export still carrying it. Read like `exported_this_invocation`:
+    no record, an unreadable one, or a line that is not text reads as none.
+    """
+    record = _stop(stop_record, run_id)
+    line = record.get("systemic") if record is not None else None
+    return line if isinstance(line, str) and line.strip() else None
+
+
 def exported_this_invocation(stop_record: Path, run_id: str) -> bool:
     """Whether this invocation's orchestrator says it reached a sealed Armarium export.
 
@@ -267,15 +293,8 @@ def exported_this_invocation(stop_record: Path, run_id: str) -> bool:
     or another run's is read as not reached, whatever goes wrong reading it: the
     worst that costs is a pod closed early.
     """
-    try:
-        record = json.loads(stop_record.read_text(encoding="utf-8"))
-        return (
-            record.get("schema") == STOP_RECORD_SCHEMA
-            and record.get("run_id") == run_id
-            and record.get("exported") is True
-        )
-    except Exception:
-        return False
+    record = _stop(stop_record, run_id)
+    return record is not None and record.get("exported") is True
 
 
 @dataclass(frozen=True, slots=True)
@@ -1539,6 +1558,7 @@ def main(
     sleeper: Callable[[float], None] = time.sleep,
     actions_factory: Callable[[Plan], BootstrapActions] = build_actions,
     runner: Runner = _run,
+    notify_runner: notify_client.Runner = notify_client.run,
 ) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     environment = os.environ if environ is None else environ
@@ -1728,6 +1748,7 @@ def main(
         transcript_failure = None
         transcript_dropped_bytes = 0
     exported = exported_this_invocation(stop_record, plan.run_id)
+    systemic = systemic_this_invocation(stop_record, plan.run_id)
     stop_directory.cleanup()
     exit_code = _ORCHESTRATOR_EXITS.get(orchestrator_exit, EXIT_FAILED)
     if exit_code == EXIT_COMPLETE and plan.ends_before_armarium:
@@ -1834,6 +1855,13 @@ def main(
         "hold_detail": hold_detail,
         "finished_at": _stamp(now()),
     }
+    if systemic is not None:
+        # The run stopped on, or exported past, more held pages than its sealed
+        # review policy allows: a person must decide, so the phone hears of it
+        # whatever happens to the pod next. A failed ping changes nothing.
+        notice = notify_systemic(run_id=plan.run_id, alarm_line=systemic, runner=notify_runner)
+        final = {**final, "systemic": systemic, "systemic_notification": notice.line()}
+        print(f"pod_run {plan.run_id}: {systemic}; {notice.line()}")
     _write_run_report(plan, final)
     if plan.no_hold:
         # After the final report, so a prompt delete cannot cost the run's record.
