@@ -624,5 +624,6 @@ independently looking up whatever reading now sorts latest.
   attempt be "recorded, retried within the recovery budget, never accepted"; an entry
   whose classification is `truncated` or `unknown` holds `reading-incomplete`, and a page
   cut off at the answer cap is held whole. Nothing is lost and no stale text is
-  established — the safe half of the requirement holds — but the bounded re-ask is not
-  built here.
+  established — the safe half of the requirement holds — but such an entry is never
+  re-asked: the page re-ask ("The re-ask") asks only about unaccounted ids, and a
+  truncated or unknown entry is excluded from it (`common/page_reask.py`, `NEVER`).
