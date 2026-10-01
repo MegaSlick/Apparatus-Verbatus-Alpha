@@ -380,6 +380,7 @@ def _finish(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | 
             page_id=page.page_id,
             stop_reason=payload["stop_reason"],
             truncation_policy=state.run.protocol_config["truncation"],
+            accounting_policy=state.accounting_policy,
         )
         if payload["disposition"] == READ
         else []
@@ -407,7 +408,9 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
     elif not state.live:
         row = page.fixture_row
         finish_reason = stop_reason = row.get("stop_reason", "stop")
-        parse_state, answer, problems = page_path.read_reply(row["answer"], stop_reason, page.feed)
+        parse_state, answer, problems = page_path.read_reply(
+            row["answer"], stop_reason, page.feed, state.accounting_policy
+        )
     else:
         receipt_ref = run.receipt_ref
         capacity = page.capacity
@@ -433,7 +436,7 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
             finish_reason, stop_reason = result["finish_reason"], result["stop_reason"]
             inputs += hooks.engine_call_inputs(context, engine_call, variance_arm=None)
             parse_state, answer, problems = page_path.read_reply(
-                result["content"], stop_reason, page.feed
+                result["content"], stop_reason, page.feed, state.accounting_policy
             )
     disposition = READ if parse_state == PARSED and not problems else HELD
     payload = {
@@ -579,6 +582,7 @@ def publish_act_records(
             "cited_ids": list(plan["cited_ids"]),
             "act_class": plan["act_class"],
             "page_reading_attempt": attempt,
+            "region_boxes_px": list(plan["region_boxes_px"]),
             "union_box_px": union,
             "region_id": region_id(act_id, crop["transform"]) if crop else None,
             "image_path": crop["image_path"] if crop else None,
@@ -697,6 +701,7 @@ def publish_page_accounting(
         if (
             page_path.refs_by_path(sealed["inputs"]) != page_path.refs_by_path(inputs)
             or not isinstance(payload, dict)
+            or payload.get("schema") != page_accounting.SCHEMA
             or payload.get("feed_ref") != page.feed_ref
             or payload.get("page_reading_ref") != reading_ref
             or payload.get("policy_sha256") != state.accounting_policy.sha256

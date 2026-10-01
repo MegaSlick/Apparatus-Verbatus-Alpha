@@ -79,10 +79,11 @@ UNIT_KINDS: Final = {CHANDRA: "layout-block", DAI: "detector-record", CHURRO: "l
 DETECTOR_RECORD_UNIT: Final = "detector-record"
 # The label of the unit holding a witness's text outside its own units.
 OUTSIDE_UNITS_LABEL: Final = "outside units"
-# The letters a witness may take, in order: every capital but `L` and `S`,
-# which name Surya's lines and blocks.
+# The letters of Surya's lines (`L`) and blocks (`S`) in a page feed's ids.
+DETECTION_LETTERS: Final = frozenset("LS")
+# The letters a witness may take, in order: every capital but the detection letters.
 WITNESS_LETTERS: Final = tuple(
-    letter for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if letter not in "LS"
+    letter for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if letter not in DETECTION_LETTERS
 )
 # The answer health of a witness that did not read, or whose answer shows nothing.
 NO_ANSWER_HEALTH: Final = {"truncated": None, "repetition": []}

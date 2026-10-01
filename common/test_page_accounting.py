@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from common import page_accounting as page_accounting_module
+from common import page_path, truncation
 from common.contracts.errors import ContractError
 from common.page_accounting import (
     DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
@@ -19,6 +20,7 @@ from common.page_accounting import (
     load_page_accounting_policy,
     normalized_text,
     page_accounting,
+    region_area,
     require_page_accounting_policy,
     validate_answer,
 )
@@ -124,6 +126,7 @@ def page(
     feed = {
         "page_id": "page-1",
         "page_ordinal": 1,
+        "page_size": {"w": WIDTH, "h": HEIGHT},
         "switches": {"witness_units": "own"},
         "witnesses": [
             {
@@ -175,7 +178,12 @@ def page(
                 "n": k + 1,
                 "kind": "act",
                 "label": "baptism",
-                "cites": [f"A{k + 1}", f"B{k + 1}", f"C{k + 1}", f"L{3 * k + 1}-L{3 * k + 3}"],
+                "cites": [
+                    f"A{k + 1}",
+                    f"B{k + 1}",
+                    f"C{k + 1}",
+                    *(f"L{3 * k + row + 1}" for row in range(3)),
+                ],
                 "text": noisy(t, reading_noise, seed + 900 + k),
                 "continues_from_previous_page": False,
                 "continues_to_next_page": False,
@@ -236,12 +244,6 @@ def add_line(case: dict, identifier: str | None, box: dict, *, shown: bool = Tru
     )
 
 
-def set_block_box(case: dict, identifier: str, box: dict) -> None:
-    for block in case["feed"]["surya"]["blocks"] + case["detections"]["surya"]["blocks"]:
-        if block["id"] == identifier:
-            block["box_px"] = box
-
-
 def unit_measure(record: dict, identifier: str) -> dict:
     [found] = [m for m in record["rules"]["e"]["measurements"] if m["id"] == identifier]
     return found
@@ -255,7 +257,7 @@ def test_a_clean_page_passes_every_rule():
 
     assert statuses(record) == {name: "pass" for name in RULE_NAMES}
     assert record["holds"] == []
-    assert record["schema"] == "page-accounting.v1"
+    assert record["schema"] == "page-accounting.v2"
     assert record["policy_sha256"] == POLICY.sha256
     assert record["units"][0] == {"id": "A1", "disposition": "cited", "by": [1]}
     assert record["lines"][:3] == [
@@ -431,7 +433,8 @@ def test_setting_aside_every_unit_of_an_act_holds_every_way():
     case["reading"]["answer"]["set_aside"].append({"id": "A3", "reason": "not an act"})
     case["reading"]["answer"]["set_aside"].append({"id": "B3", "reason": "not an act"})
     case["reading"]["answer"]["set_aside"].append({"id": "C3", "reason": "not an act"})
-    case["reading"]["answer"]["set_aside"].append({"id": "L7-L9", "reason": "not an act"})
+    for line in ("L7", "L8", "L9"):
+        case["reading"]["answer"]["set_aside"].append({"id": line, "reason": "not an act"})
     case["reading"]["answer"]["set_aside"].append({"id": "S3", "reason": "not an act"})
     del case["entry_truncation"][3]
 
@@ -690,8 +693,9 @@ def test_a_line_half_inside_a_region_is_inside():
 def merged_and_half_read() -> dict:
     """Witness A's second unit merged two records; the one act citing it read only one.
 
-    Every citation, line and pixel of ink is accounted for: only the text of the
-    second record, present in the witness and absent from every reading, shows it.
+    Every citation, line and pixel of ink is accounted for. The text of the
+    second record, present in the witness and absent from every reading, shows
+    it; so does the merged box, which lays act 2's region over all of act 3's.
     """
     case = page()
     merged = record_text(1) + " " + record_text(7)
@@ -705,10 +709,11 @@ def merged_and_half_read() -> dict:
     return case
 
 
-def test_a_merged_unit_read_only_in_half_holds_under_rule_e_and_nothing_else():
+def test_a_merged_unit_read_only_in_half_holds_under_rules_e_and_h_only():
     record = account(merged_and_half_read())
 
-    only_hold(record, "e", i="not-applicable")
+    only_hold(record, "e", h="hold", i="not-applicable")
+    assert codes(record, "h").count("duplicate-region") == 1
     [finding] = [
         f for f in record["rules"]["e"]["findings"] if f["code"] == "witness-text-not-read"
     ]
@@ -717,7 +722,7 @@ def test_a_merged_unit_read_only_in_half_holds_under_rule_e_and_nothing_else():
     assert "unread-run" in finding["reasons"]
     assert finding["unread_characters"] > POLICY.max_unread_characters
     assert finding["box_px"] == bx(100, 500, 900, 1100)
-    assert record["holds"] == ["witness-text-not-read"]
+    assert record["holds"] == ["duplicate-region", "witness-text-not-read"]
 
 
 def test_the_merged_unit_passes_once_both_records_are_read():
@@ -1105,6 +1110,7 @@ def test_a_dense_page_is_measured_within_the_sealed_budget():
     feed = {
         "page_id": "dense",
         "page_ordinal": 1,
+        "page_size": {"w": 1000, "h": 1200},
         "switches": {"witness_units": "own"},
         "witnesses": [
             {
@@ -1248,23 +1254,24 @@ def test_two_entries_on_one_region_hold_both():
 
     record = account(case)
 
+    region = 800 * 300 * 2  # bands 1 and 2; lines 4..6 lie inside band 1
     assert record["rules"]["h"]["status"] == "hold"
-    assert {"code": "duplicate-region", "ns": [2, 3], "union_box_px": bx(100, 500, 900, 1200)} in (
-        record["rules"]["h"]["findings"]
-    )
+    assert {
+        "code": "duplicate-region",
+        "ns": [2, 3],
+        "shared_px": region,
+        "smaller_region_px": region,
+    } in record["rules"]["h"]["findings"]
 
 
 def test_a_line_inside_two_regions_is_recorded_not_held():
     case = page()
     acts(case)[1]["cites"].append("L3")
-    # Record 1's band grows to reach line 4: the line now lies in both regions.
-    set_block_box(case, "S1", bx(100, 100, 900, 600))
-    acts(case)[0]["cites"].append("S1")
 
     record = account(case)
 
     assert record["rules"]["h"]["status"] == "pass"
-    assert {"code": "shared-line", "id": "L4", "ref": "surya-line-L4", "inside": [1, 2]} in (
+    assert {"code": "shared-line", "id": "L3", "ref": "surya-line-L3", "inside": [1, 2]} in (
         record["rules"]["h"]["findings"]
     )
     assert "shared-line" not in record["holds"]
@@ -1523,8 +1530,17 @@ CANDIDATES = {
 
 
 def test_a_range_expands_to_every_id_between_inclusive():
-    assert expand_cites(["L10-L13", "A2"], CANDIDATES) == (["L10", "L11", "L12", "L13", "A2"], [])
-    assert expand_cites(["L4-L4"], CANDIDATES) == (["L4"], [])
+    assert expand_cites(["A1-A3", "L2"], CANDIDATES) == (["A1", "A2", "A3", "L2"], [])
+    assert expand_cites(["A2-A2"], CANDIDATES) == (["A2"], [])
+
+
+@pytest.mark.parametrize("cite", ["L10-L13", "L4-L4", "S1-S3", "L19-L25"])
+def test_a_range_over_detections_is_a_problem_and_names_no_id(cite):
+    """Lines and blocks are numbered by the detector, not by column: cited one by one."""
+    ids, problems = expand_cites([cite, "A1"], CANDIDATES)
+
+    assert ids == ["A1"]
+    assert problems == [{"code": "detection-range", "cite": cite}]
 
 
 @pytest.mark.parametrize("cite", ["L13-L10", "L1-A3", "L1-", "L01", "l1", "L1 - L3", 7])
@@ -1536,10 +1552,10 @@ def test_a_malformed_citation_is_refused_not_guessed(cite):
 
 
 def test_a_range_past_the_last_id_is_unknown():
-    ids, problems = expand_cites(["L19-L25"], CANDIDATES)
+    ids, problems = expand_cites(["A2-A5"], CANDIDATES)
 
     assert ids == []
-    assert problems == [{"code": "unknown-id", "id": "L25"}]
+    assert problems == [{"code": "unknown-id", "id": "A5"}]
 
 
 def _entry(n: int, cites: list, **extra) -> dict:
@@ -1604,15 +1620,14 @@ def test_validation_names_every_problem():
     assert problem_codes(
         {
             "acts": [_entry(1, ["A1"])],
-            "set_aside": [{"id": "L1-L2", "reason": "r"}, {"id": "L2", "reason": "r"}],
+            "set_aside": [{"id": "A2-A3", "reason": "r"}, {"id": "A2", "reason": "r"}],
         }
     ) == ["set-aside-twice"]
     assert problem_codes(
         {"acts": [_entry(1, ["A1"])], "set_aside": [{"id": "L1", "reason": ""}]}
     ) == ["set-aside-without-reason"]
-    assert problem_codes({"acts": [_entry(1, ["A1"]), _entry(2, ["A1"])], "set_aside": []}) == [
-        "duplicate-region"
-    ]
+    # Two entries on one region are the accounting's rule (h), not an answer problem.
+    assert problem_codes({"acts": [_entry(1, ["A1"]), _entry(2, ["A1"])], "set_aside": []}) == []
 
 
 def test_edge_continuation_flags_and_an_unplaced_entry_are_valid():
@@ -1636,10 +1651,14 @@ def test_edge_continuation_flags_and_an_unplaced_entry_are_valid():
 
 
 def test_the_union_box_bounds_every_cited_box_unpadded():
-    validated = validate_answer({"acts": [_entry(1, ["L2-L4", "C1"])], "set_aside": []}, CANDIDATES)
+    answer = {"acts": [_entry(1, ["L4", "L2", "L3", "C1", "L2"])], "set_aside": []}
+    validated = validate_answer(answer, CANDIDATES)
 
-    assert validated["entries"][0]["cited_ids"] == ["L2", "L3", "L4", "C1"]
-    assert validated["entries"][0]["union_box_px"] == bx(0, 20, 10, 50)
+    [entry] = validated["entries"]
+    assert entry["cited_ids"] == ["L4", "L2", "L3", "C1"]
+    # The region is each placing box once, in first-cited order; the union only crops.
+    assert entry["region_boxes_px"] == [bx(0, 40, 10, 50), bx(0, 20, 10, 30), bx(0, 30, 10, 40)]
+    assert entry["union_box_px"] == bx(0, 20, 10, 50)
 
 
 def test_a_detector_record_with_no_box_is_reported_not_measured_never_dropped():
@@ -1661,7 +1680,7 @@ def test_a_flat_witness_places_nothing_so_the_accounting_reads_the_stage_s_regio
     """Under `witness_units = "flat"` the regions measured are the ones the stage cuts."""
     case = page()
     case["feed"]["switches"]["witness_units"] = "flat"
-    candidates = feed_candidates(case["feed"])
+    candidates = feed_candidates(case["feed"], POLICY)
     assert candidates["A1"] is None and candidates["B1"] is None
     assert candidates["L1"] == line_box(0, 0)
     for entry in acts(case):
@@ -1680,15 +1699,381 @@ def test_a_feed_with_a_repeated_malformed_or_skipped_id_is_refused():
     feed = page()["feed"]
     feed["surya"]["lines"].append({"id": "L1", "box_px": bx(0, 0, 1, 1)})
     with pytest.raises(ContractError, match="twice"):
-        feed_candidates(feed)
+        feed_candidates(feed, POLICY)
     feed = page()["feed"]
     feed["surya"]["lines"][0]["box_px"] = bx(5, 5, 5, 9)
     with pytest.raises(ContractError, match="box_px"):
-        feed_candidates(feed)
+        feed_candidates(feed, POLICY)
     feed = page()["feed"]
     feed["surya"]["lines"][4]["id"] = "L12"
     with pytest.raises(ContractError, match="without a gap"):
-        feed_candidates(feed)
+        feed_candidates(feed, POLICY)
+
+
+@pytest.mark.parametrize("text", ["", "SYNTHETIC ACT ONE alpha beta"])
+@pytest.mark.parametrize("units", ["own", "flat"])
+def test_a_malformed_unit_box_is_refused_whether_the_unit_places_or_not(text, units):
+    case = page()
+    case["feed"]["switches"]["witness_units"] = units
+    witness(case, "A")["units"][0].update(text=text, box_px=bx(5, 5, 5, 9))
+    with pytest.raises(ContractError, match="A1 box_px"):
+        feed_candidates(case["feed"], POLICY)
+
+
+# --- two-column pages: an entry's region is the ink it names, id by id -------------------
+#
+# Surya numbers lines roughly in raster order, so on a two-column page its ids
+# interleave the columns: here the odd lines are column 1 and the even lines
+# column 2, row by row. Its blocks interleave the same way.
+
+COLUMN_X = ((100, 450), (550, 900))
+
+
+def column_line(line: int) -> dict[str, int]:
+    """Line `L<line>`: odd lines down column 1, even lines down column 2, 100 px tall."""
+    x0, x1 = COLUMN_X[(line - 1) % 2]
+    top = 100 + 150 * ((line - 1) // 2)
+    return bx(x0, top, x1, top + 100)
+
+
+def column_block(block: int) -> dict[str, int]:
+    """Block `S<block>`: two rows of one column, alternating columns as the lines do."""
+    x0, x1 = COLUMN_X[(block - 1) % 2]
+    top = 100 + 300 * ((block - 1) // 2)
+    return bx(x0, top, x1, top + 250)
+
+
+def column_ink(boxes: list[dict[str, int]]) -> dict:
+    """Ink-run evidence with ink on every row of every box, edge to edge."""
+    rows: list[list[list[int]]] = [[] for _ in range(HEIGHT)]
+    for box in boxes:
+        for y in range(box["y"], box["y"] + box["h"]):
+            rows[y].append([box["x"], box["w"]])
+    for row in rows:
+        row.sort()
+    return {"schema": INK_RUNS_SCHEMA, "width": WIDTH, "height": HEIGHT, "rows": rows}
+
+
+def two_columns(
+    cites: list[list[str]],
+    *,
+    lines: int = 8,
+    blocks: list[dict[str, int]] | None = None,
+    set_aside: list[str] = (),
+) -> dict:
+    """A two-column page with Surya's lines and blocks only, and an entry per `cites` row.
+
+    No witness read the page, so no witness text covers any line: only the
+    geometry of rules (d), (f) and (h) can see a line left unread. The record
+    detector is absent, so rule (i) does not apply.
+    """
+    line_boxes = [column_line(k) for k in range(1, lines + 1)]
+    block_boxes = [column_block(k) for k in range(1, 5)] if blocks is None else blocks
+    feed = {
+        "page_id": "page-1",
+        "page_ordinal": 1,
+        "page_size": {"w": WIDTH, "h": HEIGHT},
+        "switches": {"witness_units": "own"},
+        "witnesses": [],
+        "surya": {
+            "lines": [{"id": f"L{k}", "box_px": box} for k, box in enumerate(line_boxes, 1)],
+            "blocks": [{"id": f"S{k}", "box_px": box} for k, box in enumerate(block_boxes, 1)],
+        },
+    }
+    answer = {
+        "acts": [
+            {
+                "n": n,
+                "kind": "act",
+                "cites": list(cited),
+                "text": "Le deux mai a été baptisé Jean Roy",
+                "continues_from_previous_page": False,
+                "continues_to_next_page": False,
+            }
+            for n, cited in enumerate(cites, 1)
+        ],
+        "set_aside": [{"id": identifier, "reason": "not an act"} for identifier in set_aside],
+    }
+    return {
+        "feed": feed,
+        "witnesses": feed["witnesses"],
+        "detections": {
+            "surya": {
+                kind: [{**item, "ref": f"surya-{item['id']}"} for item in feed["surya"][kind]]
+                for kind in ("lines", "blocks")
+            },
+            "records": None,
+            "record_detector": "absent",
+            "record_census": None,
+        },
+        "reading": {"parse_state": "parsed", "finish_reason": "stop", "answer": answer},
+        "entry_truncation": {n: "complete" for n in range(1, len(cites) + 1)},
+        "ink": {"runs": column_ink(line_boxes), "coverage_policy": COVERAGE_POLICY},
+    }
+
+
+COLUMN_ONE = ["L1", "L3", "L5", "L7"]
+COLUMN_TWO = ["L2", "L4", "L6", "L8"]
+
+
+def unread_lines(record: dict) -> list[str]:
+    """The ids rule (d) found unread, odd (column 1) then even (column 2), each in order."""
+    found = [f["id"] for f in record["rules"]["d"]["findings"] if f["code"] == "unread-line"]
+    return sorted(found, key=lambda line: (1 - int(line[1:]) % 2, int(line[1:])))
+
+
+def problem_codes_of(record: dict) -> list[str]:
+    return [finding["problem"]["code"] for finding in record["rules"]["a"]["findings"]]
+
+
+def test_a_line_range_on_two_columns_holds_the_reading_whole():
+    case = two_columns([["L1-L7"]])
+
+    record = account(case)
+
+    assert problem_codes_of(record) == ["detection-range"]
+    assert record["rules"]["a"]["findings"][0]["problem"] == {
+        "code": "detection-range",
+        "cite": "L1-L7",
+        "n": 1,
+    }
+    assert "page-answer-incomplete" in record["holds"]
+
+
+def test_one_column_cited_line_by_line_leaves_the_other_column_unread():
+    record = account(two_columns([COLUMN_ONE]))
+
+    assert unread_lines(record) == COLUMN_TWO
+    assert codes(record, "f") == ["unread-ink"]
+    assert record["rules"]["a"]["status"] == "pass"
+
+
+def test_both_columns_cited_line_by_line_read_the_page():
+    record = account(two_columns([COLUMN_ONE, COLUMN_TWO]))
+
+    assert {name: record["rules"][name]["status"] for name in "dfh"} == {
+        "d": "pass",
+        "f": "pass",
+        "h": "pass",
+    }
+    assert codes(record, "h") == []
+    assert {row["id"]: row["inside"] for row in record["lines"]} == {
+        **{line: [1] for line in COLUMN_ONE},
+        **{line: [2] for line in COLUMN_TWO},
+    }
+
+
+def test_an_act_wrapping_columns_claims_only_the_lines_it_names():
+    case = two_columns([["L5", "L7", "L2"], ["L1", "L3"]])
+
+    record = account(case)
+
+    assert unread_lines(record) == ["L4", "L6", "L8"]
+    entry = validate_answer(case["reading"]["answer"], feed_candidates(case["feed"], POLICY))[
+        "entries"
+    ][0]
+    assert entry["region_boxes_px"] == [column_line(5), column_line(7), column_line(2)]
+    assert region_area(entry["region_boxes_px"]) == 3 * 350 * 100
+    assert entry["union_box_px"] == bx(100, 100, 900, 650)
+
+
+def test_an_act_wrapping_columns_is_classified_over_its_lines_area_only():
+    """The truncation length signal's denominator is the lines named, not their rectangle."""
+    case = two_columns([["L5", "L7", "L2"], ["L1", "L3"]])
+    feed = {**case["feed"], "page_size": {"w": WIDTH, "h": HEIGHT}, "page_render": None}
+
+    plans = page_path.entry_plans(
+        case["reading"]["answer"],
+        feed,
+        page_id="pg_0123456789abcdef",
+        stop_reason="stop",
+        truncation_policy={
+            truncation.LENGTH_FLOOR_FIELD: 1,
+            truncation.LEGIBLE_PAGE_FIELD: 1,
+        },
+        accounting_policy=POLICY,
+    )
+
+    assert plans[0]["region_boxes_px"] == [column_line(5), column_line(7), column_line(2)]
+    assert plans[0]["truncation"]["measure"]["region_pixels"] == 3 * 350 * 100
+    assert plans[0]["union_box_px"] == bx(100, 100, 900, 650)
+
+
+def test_interleaved_blocks_are_cited_one_by_one_and_lend_no_area():
+    record = account(two_columns([["S1-S3"]]))
+    assert problem_codes_of(record) == ["detection-range"]
+
+    # Blocks S1 and S3 hold column 1; cited one by one they place nothing, so
+    # column 1 is read by its lines and column 2 stays unread.
+    record = account(two_columns([["S1", "S3", *COLUMN_ONE]], set_aside=["S2", "S4"]))
+    assert record["rules"]["a"]["status"] == "pass"
+    assert unread_lines(record) == COLUMN_TWO
+
+
+def test_a_whole_page_block_alone_places_nothing():
+    record = account(two_columns([["S1"]], blocks=[bx(0, 0, WIDTH, HEIGHT)]))
+
+    assert codes(record, "b") == ["reading-unplaced"]
+    assert unread_lines(record) == COLUMN_ONE + COLUMN_TWO
+
+
+def test_a_whole_page_block_shared_by_two_entries_lends_them_nothing():
+    """Two acts cite the page's one block beside column 1's lines; column 2 is uncited."""
+    case = two_columns([["S1", "L1", "L3"], ["S1", "L5", "L7"]], blocks=[bx(0, 0, WIDTH, HEIGHT)])
+
+    record = account(case)
+
+    assert unread_lines(record) == COLUMN_TWO
+    assert codes(record, "f") == ["unread-ink"]
+    assert "duplicate-region" not in codes(record, "h")
+    assert record["rules"]["a"]["status"] == "pass"
+
+
+def test_a_blank_page_with_its_block_set_aside_is_read():
+    case = two_columns([], lines=0, blocks=[bx(0, 0, WIDTH, HEIGHT)], set_aside=["S1"])
+
+    record = account(case)
+
+    assert record["rules"]["d"]["status"] == "pass"
+    assert record["rules"]["f"]["status"] == "pass"
+    assert record["holds"] == []
+
+
+def add_witness(case: dict, units: list[dict]) -> None:
+    """Witness A, read, with `units`, shown and sealed."""
+    case["feed"]["witnesses"].append(
+        {"letter": "A", "outcome": "read", "blank": False, "units": units}
+    )
+
+
+def test_a_textless_witness_unit_with_a_page_sized_box_places_nothing():
+    case = two_columns([["A1", *COLUMN_ONE], ["A1"]])
+    add_witness(case, [{"id": "A1", "box_px": bx(0, 0, WIDTH, HEIGHT), "text": " [[?]] "}])
+
+    assert feed_candidates(case["feed"], POLICY)["A1"] is None
+    record = account(case)
+
+    assert unread_lines(record) == COLUMN_TWO
+    assert codes(record, "b") == ["reading-unplaced"]
+    assert codes(record, "f") == ["unread-ink"]
+
+
+def test_a_witness_range_still_expands_and_places():
+    case = two_columns([["A1-A3", "L1", "L3", "L5"], ["L7", *COLUMN_TWO]])
+    add_witness(
+        case,
+        [
+            {"id": f"A{k}", "box_px": column_line(2 * k - 1), "text": f"ligne {k}"}
+            for k in (1, 2, 3)
+        ],
+    )
+
+    entry = validate_answer(case["reading"]["answer"], feed_candidates(case["feed"], POLICY))[
+        "entries"
+    ][0]
+    assert entry["cited_ids"] == ["A1", "A2", "A3", "L1", "L3", "L5"]
+    # A1..A3 lie on L1, L3 and L5, so each box is placed once.
+    assert entry["region_boxes_px"] == [column_line(1), column_line(3), column_line(5)]
+    record = account(case)
+    assert record["rules"]["d"]["status"] == "pass"
+    assert record["rules"]["b"]["status"] == "pass"
+
+
+def test_a_set_aside_line_range_holds_the_reading_whole():
+    record = account(two_columns([["L3", "L4", "L5", "L6", "L7", "L8"]], set_aside=["L1-L2"]))
+
+    assert problem_codes_of(record) == ["detection-range"]
+    [finding] = record["rules"]["a"]["findings"]
+    assert finding["problem"] == {"code": "detection-range", "cite": "L1-L2", "set_aside_index": 0}
+
+
+def duplicates(record: dict) -> list[list[int]]:
+    return [f["ns"] for f in record["rules"]["h"]["findings"] if f["code"] == "duplicate-region"]
+
+
+def test_an_entry_whose_region_lies_inside_another_s_holds_both():
+    every_line = [f"L{k}" for k in range(1, 9)]
+    record = account(two_columns([every_line, every_line[:7]]))
+    assert duplicates(record) == [[1, 2]]
+    assert record["rules"]["h"]["status"] == "hold"
+
+    # The same by a subset: two of column 1's lines inside all four.
+    record = account(two_columns([COLUMN_ONE, ["L1", "L3"], COLUMN_TWO]))
+    [finding] = [f for f in record["rules"]["h"]["findings"] if f["code"] == "duplicate-region"]
+    assert finding == {
+        "code": "duplicate-region",
+        "ns": [1, 2],
+        "shared_px": 2 * 350 * 100,
+        "smaller_region_px": 2 * 350 * 100,
+    }
+
+
+def test_one_region_named_by_other_witness_units_holds_both():
+    """A1..A2 are column 1's first two lines; B1, one box over both, names the same ink."""
+    case = two_columns([["A1-A2", *COLUMN_ONE[2:]], ["B1"], COLUMN_TWO])
+    add_witness(
+        case,
+        [
+            {"id": "A1", "box_px": column_line(1), "text": "le deux mai"},
+            {"id": "A2", "box_px": column_line(3), "text": "a été baptisé"},
+        ],
+    )
+    case["feed"]["witnesses"].append(
+        {
+            "letter": "B",
+            "outcome": "read",
+            "blank": False,
+            "units": [
+                {"id": "B1", "box_px": bx(100, 100, 450, 350), "text": "le deux mai a été baptisé"}
+            ],
+        }
+    )
+
+    record = account(case)
+
+    assert duplicates(record) == [[1, 2]]
+
+
+def test_an_act_sharing_one_line_with_a_two_line_neighbour_is_recorded_not_held():
+    record = account(two_columns([["L1", "L3", "L5"], ["L5", "L7"], COLUMN_TWO]))
+
+    assert duplicates(record) == []
+    assert codes(record, "h") == ["shared-line"]
+    assert record["rules"]["h"]["status"] == "pass"
+
+
+def test_one_block_shared_beside_different_lines_is_not_one_region():
+    record = account(two_columns([["S1", *COLUMN_ONE], ["S1", *COLUMN_TWO]]))
+
+    assert duplicates(record) == []
+    assert record["rules"]["h"]["status"] == "pass"
+
+
+def column_unit(text: str) -> list[dict]:
+    """Witness A's one unit: `text` on a box as tall as column 1."""
+    return [{"id": "A1", "box_px": bx(100, 100, 450, 1100), "text": text}]
+
+
+def test_a_short_text_on_a_column_sized_box_places_nothing():
+    case = two_columns([["A1", "L1"], ["L3", "L5", "L7"], COLUMN_TWO])
+    add_witness(case, column_unit("12"))
+
+    assert feed_candidates(case["feed"], POLICY)["A1"] is None
+    record = account(case)
+    entry = validate_answer(case["reading"]["answer"], feed_candidates(case["feed"], POLICY))
+    assert entry["entries"][0]["region_boxes_px"] == [column_line(1)]
+    assert duplicates(record) == []
+
+
+def test_a_unit_places_its_box_from_the_sealed_characters_per_area():
+    """Column 1's box is 2,500 basis points of the page: at 100 a character, 25 characters."""
+    assert POLICY.max_unit_area_per_character_bp == 100
+    assert 350 * 1000 * 10_000 == 2_500 * WIDTH * HEIGHT
+    box = column_unit("")[0]["box_px"]
+    for characters, places in ((24, False), (25, True)):
+        case = two_columns([["A1"]])
+        add_witness(case, column_unit("x" * characters))
+        assert (feed_candidates(case["feed"], POLICY)["A1"] == box) is places
 
 
 # --- the sealed policy ------------------------------------------------------------------

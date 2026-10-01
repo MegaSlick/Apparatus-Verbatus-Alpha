@@ -1015,3 +1015,40 @@ def test_a_links_inputs_bind_a_null_sides_page_reading():
     by_id = {row["act_id"]: row for row in rows}
     assert page_review.link_inputs(link, by_id, pages) == [rows[0]["perlectio_ref"], "reading-2"]
     assert page_review.link_inputs(link, by_id, {1: pages[1]}) == [rows[0]["perlectio_ref"]]
+
+
+def test_residual_ink_is_measured_against_each_region_box_not_their_rectangle():
+    """An entry citing lines in two columns covers those lines, never the gutter between."""
+    left, right = {"x": 10, "y": 10, "w": 40, "h": 10}, {"x": 150, "y": 30, "w": 40, "h": 10}
+    payloads = {
+        "a": {
+            "schema": "perlector-act-region.v2",
+            "region_boxes_px": [left, right],
+            "union_box_px": {"x": 10, "y": 10, "w": 180, "h": 30},
+        },
+        "b": {"schema": "perlector-act-region.v2", "region_boxes_px": [], "union_box_px": None},
+    }
+
+    class _Tree:
+        def read_artifact_reference(self, ref, *, stage, kind, subject_id):
+            assert (stage, kind) == (PERLECTOR, "act-region")
+            return {"payload": payloads[subject_id]}
+
+    context = type("Context", (), {"tree": _Tree()})()
+    acts = [
+        {"act_id": "a", "page_ordinal": 1, "region_ref": {"ref": "a"}},
+        {"act_id": "b", "page_ordinal": 1, "region_ref": {"ref": "b"}},
+        {"act_id": "c", "page_ordinal": 2, "region_ref": None},
+    ]
+
+    regions = page_review.reading_regions_by_page(context, {1: {}, 2: {}}, acts)
+
+    assert regions == {1: [left, right], 2: []}
+
+    # A region of another schema carries no region boxes to read; it is refused by name.
+    payloads["a"] = {
+        "schema": "perlector-act-region.v1",
+        "union_box_px": payloads["a"]["union_box_px"],
+    }
+    with pytest.raises(FatalAccounting, match="act a's act-region is 'perlector-act-region.v1'"):
+        page_review.reading_regions_by_page(context, {1: {}, 2: {}}, acts)

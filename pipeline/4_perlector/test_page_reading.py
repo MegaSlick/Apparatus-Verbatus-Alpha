@@ -283,9 +283,13 @@ def test_each_placed_act_region_is_the_union_of_its_cited_boxes_cut_from_the_ink
     ]
     for region in placed:
         payload = region["payload"]
-        boxes = placement_boxes(feeds[payload["page_id"]])
+        boxes = placement_boxes(feeds[payload["page_id"]], load_page_accounting_policy())
         assert set(payload["cited_ids"]) <= set(boxes)
         cited = [boxes[identifier] for identifier in payload["cited_ids"] if boxes[identifier]]
+        # The region is each placing box once, in first-cited order; the union crops it.
+        assert payload["region_boxes_px"] == [
+            box for index, box in enumerate(cited) if box not in cited[:index]
+        ]
         assert payload["union_box_px"] == _union(cited)
         attempt = readings[payload["page_id"]]["attempt_id"]
         verify(
@@ -402,7 +406,7 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, r
     assert set(accounts) == {1, 2}
     for account in accounts.values():
         payload = account["payload"]
-        assert payload["schema"] == "page-accounting.v1" and account["outcome"] == "read"
+        assert payload["schema"] == "page-accounting.v2" and account["outcome"] == "read"
         assert payload["holds"] == []
         assert {unit["disposition"] for unit in payload["units"]} == {"cited"}
         # Every DAI record lies inside exactly one act region.
@@ -934,13 +938,18 @@ def test_a_malformed_ink_not_measurable_record_is_refused(page_tree):
 # --- the answer's entries -----------------------------------------------------------
 
 
-def test_entries_with_one_union_box_are_held_and_keep_their_own_ids():
-    box = {"x": 1, "y": 2, "w": 3, "h": 4}
-    feed = {
+def _one_unit_feed(box: dict[str, int]) -> dict:
+    return {
+        "page_size": {"w": 1000, "h": 1000},
         "switches": {"witness_units": "own"},
         "witnesses": [{"units": [{"id": "A1", "box_px": box, "text": "x"}]}],
         "surya": None,
     }
+
+
+def test_entries_on_one_region_are_held_and_keep_their_own_ids():
+    box = {"x": 1, "y": 2, "w": 3, "h": 4}
+    feed = _one_unit_feed(box)
     entry = {
         "kind": "act",
         "cites": ["A1"],
@@ -949,7 +958,7 @@ def test_entries_with_one_union_box_are_held_and_keep_their_own_ids():
         "continues_to_next_page": False,
     }
     answer = {"acts": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
-    entries = page_path.answer_entries(answer, feed)
+    entries = page_path.answer_entries(answer, feed, load_page_accounting_policy())
     assert [entry["holds"] for entry in entries] == [["duplicate-region"]] * 2
     assert [entry["union_box_px"] for entry in entries] == [box, box]
     attempt = page_path.page_reading_attempt("pg_0000000000000001")
@@ -966,14 +975,22 @@ def test_entries_with_one_union_box_are_held_and_keep_their_own_ids():
     assert len(ids) == 2
 
 
-def test_a_shared_union_box_does_not_hold_the_page_but_an_unknown_id_does():
-    validated = {
-        "problems": [
-            {"code": "duplicate-region", "ns": [1, 2]},
-            {"code": "unknown-id", "id": "Q7"},
-        ]
+def test_entries_on_one_region_do_not_hold_the_reading_whole_but_an_unknown_id_does():
+    feed = _one_unit_feed({"x": 1, "y": 2, "w": 3, "h": 4})
+    entry = {
+        "kind": "act",
+        "cites": ["A1"],
+        "text": "x",
+        "continues_from_previous_page": False,
+        "continues_to_next_page": False,
     }
-    assert [p["code"] for p in page_path.page_problems(validated)] == ["unknown-id"]
+    answer = {"acts": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
+    policy = load_page_accounting_policy()
+    assert page_path.answer_problems(answer, feed, "stop", policy) == []
+    answer["acts"][1]["cites"] = ["Q7"]
+    assert [p["code"] for p in page_path.answer_problems(answer, feed, "stop", policy)] == [
+        "unknown-id"
+    ]
 
 
 def test_dissent_does_not_count_a_witness_s_own_doubt_markers_as_departure():
@@ -1860,7 +1877,7 @@ def test_under_flat_witnesses_the_accounting_measures_the_regions_the_stage_cut(
     tree = _live_chain(tmp_path / "flat", feed={"witness_units": "flat"})
     answer = json.loads(PAGE_ANSWERS[1])
     answer["acts"][0]["cites"] = ["A1", "B1", "L1"]
-    answer["acts"][1]["cites"] = ["A2", "B2", "L5-L9"]
+    answer["acts"][1]["cites"] = ["A2", "B2", "L5", "L6", "L7", "L8", "L9"]
     _endpoint, exit_code = _read_pages(
         tree, tmp_path, monkeypatch, _scripted(answer), _answers()[1]
     )
@@ -1870,15 +1887,17 @@ def test_under_flat_witnesses_the_accounting_measures_the_regions_the_stage_cut(
     )
     lines = {line["id"]: line["box_px"] for line in feed["surya"]["lines"]}
     units = {unit["id"]: unit["box_px"] for row in feed["witnesses"] for unit in row["units"]}
-    regions = {
-        r["payload"]["n"]: r["payload"]["union_box_px"]
+    published = {
+        r["payload"]["n"]: r["payload"]
         for r in _records(tree.root, "act-region")
         if r["payload"]["page_ordinal"] == 1
     }
-    assert regions[1] == lines["L1"]
-    assert regions[2] == _union([lines[f"L{i}"] for i in range(5, 10)])
-    # Shown in its own units, the witness would have widened the region by its box.
-    assert regions[1] != _union([lines["L1"], units["A1"]])
+    regions = {n: payload["region_boxes_px"] for n, payload in published.items()}
+    assert regions[1] == [lines["L1"]]
+    assert regions[2] == [lines[f"L{i}"] for i in range(5, 10)]
+    assert published[2]["union_box_px"] == _union(regions[2])
+    # Shown in its own units, the witness would have added its box to the region.
+    assert units["A1"] not in regions[1]
     account = next(
         r["payload"]
         for r in _records(tree.root, "page-accounting")
@@ -1886,7 +1905,7 @@ def test_under_flat_witnesses_the_accounting_measures_the_regions_the_stage_cut(
     )
     for row in account["lines"]:
         expected = sorted(
-            n for n, box in regions.items() if is_inside(lines[row["id"]], [box], POLICY)
+            n for n, boxes in regions.items() if is_inside(lines[row["id"]], boxes, POLICY)
         )
         assert row["inside"] == expected
     unread = sorted(

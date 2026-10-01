@@ -34,7 +34,7 @@ from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES, classify, witness_coverage
 from common.contracts.stages import ATTESTATORES, EXEMPLAR, PERLECTOR, RECENSOR
 from common.page_accounting import NOT_APPLICABLE, PASS
-from common.page_path import PAGE_ACCOUNTING_KIND, refs_by_path
+from common.page_path import ACT_REGION_SCHEMA, PAGE_ACCOUNTING_KIND, refs_by_path
 from common.page_review import (
     CONTINUATION_LINK_KIND,
     HELD,
@@ -170,8 +170,10 @@ def retained_text_blank(record: dict[str, Any]) -> bool | None:
 
 
 def reading_regions_by_page(context, pages: dict[int, dict], acts: list[dict]) -> dict[int, list]:
-    """Every reading region's union box by sealed page, `act` and `other` alike.
+    """Every reading region's boxes by sealed page, `act` and `other` alike.
 
+    A region is the boxes of the ids its entry cited (`region_boxes_px`), never
+    the rectangle around them, so ink between two cited columns stays residual.
     Every sealed page has an entry, one with no placed region an empty list, so
     its whole ink is measured against nothing.
     """
@@ -182,9 +184,13 @@ def reading_regions_by_page(context, pages: dict[int, dict], acts: list[dict]) -
         region = context.tree.read_artifact_reference(
             act["region_ref"], stage=PERLECTOR, kind="act-region", subject_id=act["act_id"]
         )
-        box = region["payload"].get("union_box_px")
-        if box is not None:
-            regions[act["page_ordinal"]].append(box)
+        schema = region["payload"].get("schema")
+        if schema != ACT_REGION_SCHEMA:
+            raise FatalAccounting(
+                f"act {act['act_id']}'s act-region is {schema!r}, not {ACT_REGION_SCHEMA}; "
+                "its region cannot be read as the boxes its entry cited"
+            )
+        regions[act["page_ordinal"]].extend(region["payload"]["region_boxes_px"])
     return regions
 
 

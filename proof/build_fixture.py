@@ -481,7 +481,9 @@ PAGE_ANSWERS = (
         "scenario": "happy",
         "page_ordinal": 2,
         "answer": {
-            "acts": [_page_entry(1, "a2", ["A1", "B1", "C1", "L1-L3"], from_previous=True)],
+            "acts": [
+                _page_entry(1, "a2", ["A1", "B1", "C1", "L1", "L2", "L3"], from_previous=True)
+            ],
             "set_aside": [],
         },
     },
@@ -499,7 +501,11 @@ PAGE_ANSWERS = (
         "scenario": "page-no-act",
         "page_ordinal": 2,
         "answer": {
-            "acts": [_page_entry(1, "a2", ["A1", "C1", "L1-L3"], from_previous=True, kind="other")],
+            "acts": [
+                _page_entry(
+                    1, "a2", ["A1", "C1", "L1", "L2", "L3"], from_previous=True, kind="other"
+                )
+            ],
             "set_aside": [],
         },
     },
@@ -524,7 +530,9 @@ PAGE_ANSWERS = (
         "scenario": "page-other",
         "page_ordinal": 2,
         "answer": {
-            "acts": [_page_entry(1, "a2", ["A1", "B1", "C1", "L1-L3"], from_previous=True)],
+            "acts": [
+                _page_entry(1, "a2", ["A1", "B1", "C1", "L1", "L2", "L3"], from_previous=True)
+            ],
             "set_aside": [],
         },
     },

@@ -63,8 +63,8 @@ PAGE_READING_KIND: Final = "page-reading"
 PAGE_ACCOUNTING_KIND: Final = "page-accounting"
 ACT_REGION_KIND: Final = "act-region"
 PERLECTIO_KIND: Final = "perlectio"
-PAGE_READING_SCHEMA: Final = "perlector-page-reading.v1"
-ACT_REGION_SCHEMA: Final = "perlector-act-region.v1"
+PAGE_READING_SCHEMA: Final = "perlector-page-reading.v2"
+ACT_REGION_SCHEMA: Final = "perlector-act-region.v2"
 PERLECTIO_SCHEMA: Final = "perlectio.v2"
 # Every kind the page path publishes, and no act-read run does.
 PAGE_PATH_KINDS: Final = frozenset(
@@ -333,7 +333,10 @@ def retained_reply(read_bytes, engine_call: Mapping[str, Any], reader: Any) -> d
 
 
 def read_reply(
-    content: str, stop_reason: str | None, feed: Mapping[str, Any]
+    content: str,
+    stop_reason: str | None,
+    feed: Mapping[str, Any],
+    accounting_policy: page_accounting.PageAccountingPolicy,
 ) -> tuple[str, Any, list[dict[str, Any]]]:
     """`(parse_state, answer, problems)` for a reply the engine finished or was cut on."""
     if stop_reason == "length":
@@ -349,23 +352,22 @@ def read_reply(
         )
     state, answer, problems = page_answer.parse_page_answer(content)
     if state == PARSED:
-        problems = answer_problems(answer, feed, stop_reason)
+        problems = answer_problems(answer, feed, stop_reason, accounting_policy)
     return state, answer, problems
 
 
 # --- the answer -----------------------------------------------------------------
 #
 # The answer is read by `common/page_accounting.py`'s `validate_answer` against
-# `feed_candidates`, the placement map the accounting measures against too.
-
-
-def page_problems(validated: dict[str, Any]) -> list[dict[str, Any]]:
-    """The problems that hold the page reading whole; a shared union box holds its entries."""
-    return [problem for problem in validated["problems"] if problem["code"] != DUPLICATE_REGION]
+# `feed_candidates`, the placement map the accounting measures against too, under
+# the sealed page-accounting policy.
 
 
 def answer_problems(
-    answer: Any, feed: Mapping[str, Any], stop_reason: str | None
+    answer: Any,
+    feed: Mapping[str, Any],
+    stop_reason: str | None,
+    accounting_policy: page_accounting.PageAccountingPolicy,
 ) -> list[dict[str, Any]]:
     """Everything that holds a parsed answer whole, from the answer, its feed and the finish.
 
@@ -373,9 +375,8 @@ def answer_problems(
     the engine gave no finish reason. A reply cut at the output cap is not a
     parsed answer (`cut-off`) and is never given here.
     """
-    problems = page_problems(
-        page_accounting.validate_answer(answer, page_accounting.feed_candidates(feed))
-    )
+    candidates = page_accounting.feed_candidates(feed, accounting_policy)
+    problems = page_accounting.validate_answer(answer, candidates)["problems"]
     if stop_reason is None:
         problems.append(
             {
@@ -387,14 +388,18 @@ def answer_problems(
     return problems
 
 
-def answer_entries(answer: dict[str, Any], feed: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Each entry of a valid answer: the entry, its expanded ids, union box and region holds."""
-    validated = page_accounting.validate_answer(answer, page_accounting.feed_candidates(feed))
+def answer_entries(
+    answer: dict[str, Any],
+    feed: Mapping[str, Any],
+    accounting_policy: page_accounting.PageAccountingPolicy,
+) -> list[dict[str, Any]]:
+    """Each entry of a valid answer: the entry, its expanded ids, region and region holds."""
+    candidates = page_accounting.feed_candidates(feed, accounting_policy)
+    validated = page_accounting.validate_answer(answer, candidates)
     shared = {
         n
-        for problem in validated["problems"]
-        if problem["code"] == DUPLICATE_REGION
-        for n in problem["ns"]
+        for finding in page_accounting.duplicate_regions(validated["entries"], accounting_policy)
+        for n in finding["ns"]
     }
     entries = []
     for act, entry in zip(answer["acts"], validated["entries"], strict=True):
@@ -403,7 +408,13 @@ def answer_entries(answer: dict[str, Any], feed: Mapping[str, Any]) -> list[dict
         if entry["n"] in shared:
             holds.append(DUPLICATE_REGION)
         entries.append(
-            {"act": act, "cited_ids": entry["cited_ids"], "union_box_px": union, "holds": holds}
+            {
+                "act": act,
+                "cited_ids": entry["cited_ids"],
+                "region_boxes_px": entry["region_boxes_px"],
+                "union_box_px": union,
+                "holds": holds,
+            }
         )
     return entries
 
@@ -415,12 +426,14 @@ def entry_plans(
     page_id: str,
     stop_reason: str | None,
     truncation_policy: Mapping[str, Any],
+    accounting_policy: page_accounting.PageAccountingPolicy,
 ) -> list[dict[str, Any]]:
-    """Each entry of a read answer as it is published, computed from the answer and feed alone.
+    """Each entry of a read answer as it is published, from the answer, feed and sealed policies.
 
-    Per entry: its act id and class, its union box, its text and doubt layers
-    (`reading_annotations.read_doubt_marks`), its truncation classification
-    over its region, and its own holds: the region's (`reading-unplaced`,
+    Per entry: its act id and class, its region's boxes and their union box,
+    its text and doubt layers (`reading_annotations.read_doubt_marks`), its
+    truncation classification over its region's area (the union of its boxes,
+    not the rectangle around them), and its own holds: the region's (`reading-unplaced`,
     `duplicate-region`, and `no-autopsia` when no page image was shown) and the
     reading's (`doubt-marks-malformed`, `reading-incomplete`,
     `entry-no-readable-text`). The page accounting reads the truncations from
@@ -430,7 +443,7 @@ def entry_plans(
     attempt = page_reading_attempt(page_id)
     autopsia = feed["page_render"] is not None
     plans = []
-    for entry in answer_entries(answer, feed):
+    for entry in answer_entries(answer, feed, accounting_policy):
         act, union = entry["act"], entry["union_box_px"]
         act_class = READING_CLASS if union is not None else UNPLACED_CLASS
         region_holds = list(entry["holds"])
@@ -443,7 +456,7 @@ def entry_plans(
         record = (
             truncation.classify(
                 text,
-                region_pixels=union["w"] * union["h"],
+                region_pixels=page_accounting.region_area(entry["region_boxes_px"]),
                 page_pixels=page_pixels,
                 truncation_policy=truncation_policy,
                 stop_reason=stop_reason,
@@ -465,6 +478,7 @@ def entry_plans(
                 ),
                 "act_class": act_class,
                 "cited_ids": list(entry["cited_ids"]),
+                "region_boxes_px": list(entry["region_boxes_px"]),
                 "union_box_px": union,
                 "region_holds": region_holds,
                 "reading_holds": reading_holds,

@@ -547,7 +547,8 @@ whose records enclosed no crop, is `not-run` and does not count. An act-scoped w
 unit and is not counted.
 
 **Residual ink.** `page_coverage_findings` measures every sealed page's own pixels
-against the union box of every reading region cut on it, `act` and `other` alike (a
+against every box of every reading region cut on it (each act-region's
+`region_boxes_px`, never the rectangle around them), `act` and `other` alike (a
 page with none against nothing), under the sealed `ink-map` policy, exactly as the act
 path measures Designator regions. `page_coverage` records the unit's page as checked,
 flagged or unmeasurable, and `ink` what was measured: the page's ink, page-spanning,

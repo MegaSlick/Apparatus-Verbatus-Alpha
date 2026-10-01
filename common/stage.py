@@ -2834,6 +2834,7 @@ def _entry_plans(
             page_id=page_id,
             stop_reason=payload.get("stop_reason"),
             truncation_policy=index.truncation_policy,
+            accounting_policy=index.accounting_policy,
         )
     except (ContractError, KeyError, TypeError, ValueError) as error:
         raise FatalAccounting(
@@ -2943,7 +2944,9 @@ def _verify_reply(
                 row = page_path.fixture_page_answer(context, ordinal)
                 content, finish = row["answer"], row.get("stop_reason", "stop")
                 stop = finish
-            parse_state, answer, problems = page_path.read_reply(content, stop, feed)
+            parse_state, answer, problems = page_path.read_reply(
+                content, stop, feed, index.accounting_policy
+            )
         except (ContractError, KeyError, TypeError, ValueError, OSError) as error:
             raise FatalAccounting(f"{what}'s reply cannot be read again: {error}") from error
         derived = {
@@ -3359,6 +3362,7 @@ def _verify_entries(
             "cited_ids": plan["cited_ids"],
             "act_class": plan["act_class"],
             "page_reading_attempt": attempt,
+            "region_boxes_px": plan["region_boxes_px"],
             "union_box_px": union,
             "page_reading_ref": refs["reading_ref"],
             "page_accounting_ref": refs["accounting_ref"],

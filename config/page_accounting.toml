@@ -126,3 +126,23 @@ min_distinctive_share_bp = 3500
 # was at least 4,800 from each of 900 synthetic baptism readings. Starting
 # value; to be measured on the proof run.
 max_short_unit_distance_bp = 4000
+
+[region]
+# Two entries are one region (`duplicate-region`, which holds both) when the
+# ink both claim is more than this share (basis points) of the smaller
+# region's area: one region inside the other, or the same ink named by other
+# ids. Half lets an act of two lines share one line with its neighbour, which
+# rule (h) records as a shared line. Starting value; to be measured on the
+# proof run.
+max_shared_share_bp = 5000
+
+# Most of the page's area (basis points) a witness unit's box may claim per
+# normalized character of its text; a unit over it places nothing. Rule (e)
+# holds a reading to a unit's text and to nothing else under its box, so a
+# short text on a large box would lend its entry ink no rule shows was read.
+# Estimated, not measured: a written register line, with the space between
+# lines, takes about 3 to 12 per character from a small hand to a large one,
+# and the synthetic proof pages print about 85. At one hundred a unit needs
+# fifty characters to claim a column, so a folio number on a column-sized box
+# places nothing. Starting value; to be measured on the proof run.
+max_unit_area_per_character_bp = 100

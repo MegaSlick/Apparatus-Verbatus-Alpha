@@ -1243,7 +1243,7 @@ run (committed `round_cap = 1`) can read pages.
   whole pixels (`page_witness_units._fixture_chandra_reading`).
 
 Every box on these records is the repository's `bounds` `{x, y, w, h}` in sealed-page
-pixels: the feed's `box_px`, an act-region's `union_box_px`, and every box the
+pixels: the feed's `box_px`, an act-region's `region_boxes_px` and `union_box_px`, and every box the
 accounting takes or reports. `common/page_accounting.py` reads corners from them
 internally and nowhere else.
 
@@ -1253,7 +1253,7 @@ Every sealed page's feed is built and published before any page is read, so a li
 pass counts exactly the pages it will send before its chair starts.
 
 `kind="page-feed"` (subject page_id, no attempt, outcome `read`): the
-`perlector-page-feed.v1` payload exactly as `page_feed.build_page_feed` returns it,
+`perlector-page-feed.v2` payload exactly as `page_feed.build_page_feed` returns it,
 with `witness_testimony` (`present` or `none`) and `prompt` null when the Perlector
 chair is absent or the feed shows nothing (`page_feed.shows_nothing`). Its inputs are
 every Testimonium of the sealed page-witness roster -- a witness the `witnesses`
@@ -1267,7 +1267,7 @@ page render and the sealed page it names, each re-derived from the bytes on disk
 `kind="page-reading"` (subject page_id, attempt `attempt_id(page_id, "page-read", 1)`):
 
 ```
-{schema: "perlector-page-reading.v1", page_id, page_ordinal, reading_unit: "page",
+{schema: "perlector-page-reading.v2", page_id, page_ordinal, reading_unit: "page",
  feed_ref, request_digest, engine_call | null, sampling | null, capacity | null,
  finish_reason, stop_reason, parse_state, answer | null, problems: [{code, detail}], failure | null,
  disposition: "read" | "held", audit, provenance}
@@ -1295,18 +1295,41 @@ page render and the sealed page it names, each re-derived from the bytes on disk
 - `disposition` is `read` only for `parsed` with no problem; outcome is `read` or
   `held` accordingly. A parsed answer is read by `common/page_accounting.py`'s
   `validate_answer` against `feed_candidates`, the feed's ids placed by
-  `placement_boxes` -- the one placement map, which the accounting measures against
-  too. The answer grammar is `common/page_answer.py`'s alone (one label rule: absent,
-  null, or non-blank text of at most 80 characters); the accounting calls it rather
-  than keeping its own. Any problem but `duplicate-region` holds the page with its
-  answer and problems (`unknown-id`, `malformed-range`, `cited-and-set-aside`,
+  `placement_boxes` under the sealed `page-accounting` policy -- the one placement
+  map, which the accounting measures against too. The answer grammar is
+  `common/page_answer.py`'s alone (one label rule: absent, null, or non-blank text of
+  at most 80 characters); the accounting calls it rather than keeping its own. Any
+  problem holds the page with its
+  answer and problems (`unknown-id`, `malformed-range`, `detection-range`, `cited-and-set-aside`,
   `set-aside-twice`, `set-aside-without-reason`, ...). A parsed answer whose engine
   gave no finish reason (`stop_reason` null) is kept and held with
-  `no-stop-reason`. Two entries sharing a union box are published, both held.
+  `no-stop-reason`. Two entries on one region are published, both held
+  (`page_accounting.duplicate_regions`): regions are compared as ink, and two are
+  one when the area both claim exceeds the policy's `max_shared_share_bp` of the
+  smaller, so one inside the other, or the same ink named by other ids, holds.
+- An entry's region is exactly the ink it names, id by id. A Surya line places an
+  entry, and so does a witness unit shown in its own units whose box its text
+  vouches for: non-empty normalized text, each character claiming at most the
+  policy's `max_unit_area_per_character_bp` of the page. A Surya block places nothing
+  (one block can be the whole page or hold several acts), nor does a textless unit, a
+  short text on a large box, or any unit of a witness shown `flat`. Citing a line is
+  checked no further than rule (d), which asks only that the line lie inside some
+  entry's region, the truncation length signal (rule g), and rule (e) where a witness
+  unit covers the same ink. The region is the list of the placing boxes, and
+  every "inside" test and region area reads their union, never the rectangle around
+  them. A range may name witness units only (`A2-A5`); Surya's lines and blocks are
+  numbered by the detector, which interleaves the columns of a two-column page, so
+  they are cited one by one, and a range over `L` or `S` ids, cited or set aside, is
+  `detection-range`, which holds the reading whole. The prompt says so, and says the
+  blocks are "in the reading order that detector predicted"; Surya's ids and order
+  are shown exactly as recorded.
+- The feed's `answer_measure` is `{longest_witness_characters, act_entries,
+  surya_lines}`: each shown Surya line is reserved one cite of its own.
 - `request_digest` = digest of `{image_sha256s, text_sha256}` of what was (or, in
   fixture mode, would be) sent; null when nothing was.
 - `capacity`: live only, `common.request_capacity.page_request_capacity`'s
-  `{capacity, answer_reserve, max_tokens}`, checked against the sealed serving row
+  `{capacity, answer_reserve, max_tokens}`, `answer_reserve` carrying the feed's
+  `answer_measure` (so `surya_lines` too, which is what v2 adds), checked against the sealed serving row
   before the chair starts; on a refusal `{capacity: <record>, answer_reserve: null,
   max_tokens: null}`. The request sends that `max_tokens` with
   `chat_template_kwargs: {enable_thinking: false}`.
@@ -1323,7 +1346,7 @@ page render and the sealed page it names, each re-derived from the bytes on disk
 `attempt_id(page_id, "page-read", n)`, so each reading of a page has its own
 accounting), published for every page
 that has a feed, whatever its reading's disposition, after the reading and before any
-act record: `common.page_accounting.page_accounting`'s `page-accounting.v1` payload
+act record: `common.page_accounting.page_accounting`'s `page-accounting.v2` payload
 under the sealed `page-accounting` policy (read at stage open through
 `require_page_accounting_policy`). Outcome `held` when its `holds` is non-empty, else
 `read`. Its inputs are the feed, the page reading, every page witness's Testimonium
@@ -1373,24 +1396,26 @@ held:
 `kind="act-region"` (subject act_id, attempt `attempt_id(act_id, "reading-region", 1)`):
 
 ```
-{schema: "perlector-act-region.v1", page_id, page_ordinal, reading_unit, n, kind,
+{schema: "perlector-act-region.v2", page_id, page_ordinal, reading_unit, n, kind,
  label, cites (as given), cited_ids (expanded, first-cited order), act_class,
- page_reading_attempt, union_box_px | null, region_id, image_path, image_sha256,
+ page_reading_attempt, region_boxes_px, union_box_px | null, region_id, image_path, image_sha256,
  transform, transform_digest, page_reading_ref, page_accounting_ref, feed_ref, holds,
  page_holds}
 ```
 
 - `act_id = act_id(page_id, act_class, {page_reading: <attempt>, n, union_box_px})`
   (`common/contracts/identities.py`, classes `reading` and `reading-unplaced`).
-- `union_box_px` is the union of the cited ids' sealed-page boxes as
-  `placement_boxes` gives them (a witness shown `flat` places nothing), unpadded. The
-  crop is cut from the sealed Exemplar by the Designator's own crop path
+- `region_boxes_px` is the entry's region: the sealed-page boxes of its placing ids as
+  `placement_boxes` gives them, each box once, in first-cited order. The page
+  accounting, the Recensor's residual-ink check and the corpus exactly-once measure
+  read it. `union_box_px` is the bounding box of those boxes, unpadded, and only crops
+  the act and names it in `act_id`. The crop is cut from the sealed Exemplar by the Designator's own crop path
   (`common.exemplar_boundary.cut_exemplar_crop`): `transform` is the closed crop
   transform, `region_id = region_id(act_id, transform)`, and the crop blob is an
   input.
-- `holds`: `reading-unplaced` (no cited id places: no crop, every crop field null,
-  class `reading-unplaced`), `duplicate-region` (another entry has the same union
-  box; both held), `no-autopsia` (no page image was shown).
+- `holds`: `reading-unplaced` (no cited id places: `region_boxes_px` empty, no crop, every crop field null,
+  class `reading-unplaced`), `duplicate-region` (another entry claims mostly the
+  same ink, `page_accounting.duplicate_regions`; both held), `no-autopsia` (no page image was shown).
 
 `kind="perlectio"` (subject act_id, attempt `perlector_attempt_id(act_id, "perlegere", 1)`):
 
@@ -1417,7 +1442,8 @@ held:
   under the run's sealed `[dissent] max_comparison_steps`; a row it stopped is
   `compared: "unknown"` and carries that budget, and `page_path.validate_page_dissent`
   refuses a record that loses a shown witness or names a budget the run never sealed.
-- `truncation` is `truncation.classify` over the union box's pixels against the page's;
+- `truncation` is `truncation.classify` over the region's pixels (the area of the union
+  of `region_boxes_px`, each pixel once) against the page's;
   null for an unplaced entry. A `truncated` or `unknown` classification adds hold
   `reading-incomplete`; the page accounting's rule (g) records an entry with no
   classification (an unplaced one) as `truncation-not-classified`, not measured,

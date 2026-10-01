@@ -13,8 +13,9 @@ reading_max_tokens = 4096
 reproof_max_tokens = 8192
 # A whole-page reading (`reading_unit = "page"`) answers every act on the page
 # in one JSON object, so it has its own cap. A dense synthetic page (20 acts,
-# about 12,000 characters per witness) reserves 6,903 tokens for its answer
-# (`common/request_capacity.py`, `page_answer_bound`); this leaves room above
+# about 12,000 characters per witness, 120 Surya lines each cited on its own)
+# reserves 7,319 tokens for its answer (`common/request_capacity.py`,
+# `page_answer_bound`); this leaves room above
 # that for doubt marks and long set-aside lists while still stopping a runaway
 # reply as a visible length cut-off.
 page_max_tokens = 12288

@@ -19,7 +19,8 @@ blocks, so a witness letter never makes an id ambiguous.
 The feed defines every id the Perlector may cite, and nothing recomputes them
 later: witness units `A1..An` (the unit's 1-based position in that witness's
 own order), Surya lines `L1..Ln` in Surya's order and Surya blocks `S1..Sn` in
-Surya's reading order.
+the order Surya predicted for them. Neither order follows the page's columns,
+so lines and blocks are cited one id at a time.
 
 ## Units, re-derived from retained bytes
 
@@ -40,9 +41,10 @@ what is shown changes: no unit box_1000, and the prompt shows each witness as
 one unit with no box, its units' texts joined, cited by the range of its unit
 ids. Such a witness places nothing: `common.page_accounting.placement_boxes`
 gives its units no box,
-so an entry's region comes only from boxed ids -- Surya's detections and the
-units of a boxed witness shown in its own units -- and two entries citing the
-same flat witness never share a region through it.
+so an entry's region comes only from placing ids -- Surya's lines and the
+units of a boxed witness shown in its own units whose text vouches for their
+box -- and two entries
+citing the same flat witness never share a region through it.
 
 Letters and labels are shown as the regime gives them. The blinded regime
 hides chair and model names (`witness_label` is a pseudonym, `chair` is
@@ -68,7 +70,7 @@ Churro's section names -- are part of its report and are shown as given.
     parts = page_prompt.prompt_parts(chair.serving_recipe, feed)  # what the capacity charges
     overlay = page_overlay.overlay_image(feed, context.tree.read_bytes)  # when drawn
     images = request_image_sizes(feed)   # what the capacity check charges
-    boxes = page_accounting.placement_boxes(feed)  # each id's box for an entry's region
+    boxes = page_accounting.placement_boxes(feed, policy)  # each id's box for an entry's region
     nothing = shows_nothing(feed)        # a feed a reading could not be made from
 
 Each `testimonium` must already have passed the page-Testimonium checks
@@ -132,7 +134,7 @@ from common.page_witness_units import (
 )
 from common.witness_regime import BLINDED, NAMED, REGIMES
 
-SCHEMA: Final = "perlector-page-feed.v1"
+SCHEMA: Final = "perlector-page-feed.v2"
 BOX_SCALE: Final = 1000
 
 # The Perlector protocol's table holding the feed switches.
@@ -423,19 +425,22 @@ def _witness_row(
 
 
 def answer_measure(
-    rows: list[tuple[str, list[dict[str, Any]]]], *, surya_blocks: int
+    rows: list[tuple[str, list[dict[str, Any]]]], *, surya_blocks: int, surya_lines: int
 ) -> dict[str, int]:
     """What the page's answer is reserved on, from what the feed shows of the page.
 
     `rows` is `(adapter, own units)` per shown witness whose outcome is `read`,
-    and `surya_blocks` the number of Surya blocks shown. The answer transcribes
+    `surya_blocks` the number of Surya blocks shown and `surya_lines` the
+    number of Surya lines shown. The answer transcribes
     the same ink the witnesses read, so its text is measured by the longest
     witness text, text outside its units included. Its entries are the page's
     likely act count: the most of Surya's blocks, DAI's detector records and
     Chandra's layout blocks, each about one act. A line witness's lines are
     fractions of acts and are not counted. With none of the three shown the
-    count is 0 and only the text is reserved; the reserve decides admission,
-    and the request is sent the page cap or the room left, whichever is less.
+    count is 0 and only the text is reserved. Every line shown is cited or
+    set aside by its own id, so each is one more cite. The reserve decides
+    admission, and the request is sent the page cap or the room left,
+    whichever is less.
     """
     longest = max((sum(len(unit["text"]) for unit in units) for _adapter, units in rows), default=0)
     act_sized = [
@@ -446,6 +451,7 @@ def answer_measure(
     return {
         "longest_witness_characters": longest,
         "act_entries": max([surya_blocks, *act_sized]),
+        "surya_lines": surya_lines,
     }
 
 
@@ -608,7 +614,7 @@ def build_page_feed(
     fixture_placeholders: bool = False,
     no_testimony: bool = False,
 ) -> dict[str, Any]:
-    """The `perlector-page-feed.v1` payload for one page, deterministic from sealed inputs.
+    """The `perlector-page-feed.v2` payload for one page, deterministic from sealed inputs.
 
     `roster` is the sealed page-witness roster (chair names) and `witnesses`
     one Testimonium per roster chair for this page, in any order: `{chair,
@@ -760,6 +766,7 @@ def assemble_page_feed(
             if witness["outcome"] == READ_OUTCOME
         ],
         surya_blocks=0 if feed["surya"] is None else len(feed["surya"]["blocks"]),
+        surya_lines=0 if feed["surya"] is None else len(feed["surya"]["lines"]),
     )
     if switches["page_overlay"] != "off":
         if page_render_bytes is None:

@@ -122,8 +122,9 @@ writer and the counter cannot read a page two ways:
   truncations, under the sealed policy); its payload and inputs must be the
   sealed ones exactly, and every hold code and disposition the rows carry is
   this recomputed verdict;
-- each entry (`page_path.entry_plans`): cited ids re-expanded, union box and
-  act id re-derived, text and doubt marks re-read, truncation re-classified,
+- each entry (`page_path.entry_plans`): cited ids re-expanded, its region
+  (`region_boxes_px`, the boxes every rule measures), union box and act id
+  re-derived, text and doubt marks re-read, truncation re-classified,
   and its own holds recomputed. Its `act-region` and `perlectio` must match
   the entry, name this reading, accounting and feed, carry the page's holds,
   and number the entries `1..k` with no record beyond them; every field of the

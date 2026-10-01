@@ -25,7 +25,7 @@ from common.native_witness import (
     capture_text_view,
     derive_churro_capture,
 )
-from common.page_accounting import placement_boxes
+from common.page_accounting import load_page_accounting_policy, placement_boxes
 from common.page_witness_units import OUTSIDE_UNITS_LABEL
 from common.request_capacity import (
     PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST,
@@ -363,7 +363,7 @@ def test_a_page_reading_protocol_with_a_witness_subset_loads(tmp_path):
 def test_the_default_feed_shows_each_witness_in_its_own_units():
     blobs = _Blobs()
     feed = feed_for(blobs)
-    assert feed["schema"] == "perlector-page-feed.v1"
+    assert feed["schema"] == "perlector-page-feed.v2"
     assert feed["reading_unit"] == "page"
     assert [row["letter"] for row in feed["witnesses"]] == ["A", "B", "C"]
     assert feed["page_size"] == {"w": 2550, "h": 3300}
@@ -399,7 +399,11 @@ def test_the_default_feed_shows_each_witness_in_its_own_units():
     # Blocks follow Surya's reading order, not the order they were handed in.
     assert [block["id"] for block in feed["surya"]["blocks"]] == ["S1", "S2"]
     assert feed["surya"]["blocks"][0]["box_px"]["y"] == 1650
-    assert feed["answer_measure"] == {"longest_witness_characters": 51, "act_entries": 3}
+    assert feed["answer_measure"] == {
+        "longest_witness_characters": 51,
+        "act_entries": 3,
+        "surya_lines": 3,
+    }
     page_feed.verify_feed_digest(feed)
 
 
@@ -800,15 +804,16 @@ def _dense_page(blobs: _Blobs, *, characters: int = 12_000, acts: int = 20, line
 @pytest.mark.parametrize(
     ("change", "need"),
     [
-        # 4,960 image + 46,278 prompt (every witness string and every id, box and
-        # coordinate row at one token per byte) + 6,903 answer.
-        ({}, 58_141),
-        # Without Surya's 140 rows.
-        ({"surya_lines": False, "surya_blocks": False}, 54_950),
+        # 4,960 image + 46,331 prompt (every witness string and every id, box and
+        # coordinate row at one token per byte) + 7,319 answer (6,903 for the
+        # witness text and entries, and one cite for each of Surya's 120 lines).
+        ({}, 58_610),
+        # Without Surya's 140 rows, whose lines the answer no longer cites either.
+        ({"surya_lines": False, "surya_blocks": False}, 54_961),
         # One line per witness, Surya still shown.
-        ({"witness_units": "flat"}, 54_834),
+        ({"witness_units": "flat"}, 55_303),
         # The overlay's second image costs another 4,960 tokens.
-        ({"page_overlay": "boxes"}, 63_167),
+        ({"page_overlay": "boxes"}, 63_636),
     ],
     ids=["default", "no-surya", "flat", "overlay"],
 )
@@ -977,9 +982,12 @@ def test_chandra_text_outside_its_blocks_is_a_unit_of_its_own_with_the_finding()
     assert sum(len(unit["text"]) for unit in chandra["units"]) == len("Registre") + len(
         "en marge : 12\nsignature"
     )
-    assert page_feed.answer_measure([("chandra.v1", chandra["units"])], surya_blocks=0) == {
+    assert page_feed.answer_measure(
+        [("chandra.v1", chandra["units"])], surya_blocks=0, surya_lines=0
+    ) == {
         "longest_witness_characters": 31,
         "act_entries": 1,
+        "surya_lines": 0,
     }
     assert "findings" not in text
 
@@ -1089,6 +1097,8 @@ def test_a_200_line_churro_only_page_is_reserved_on_its_likely_acts_under_the_ca
     assert len(feed["witnesses"][0]["units"]) == 200
     # Surya's twenty blocks, not Churro's two hundred lines.
     assert feed["answer_measure"]["act_entries"] == 20
+    # Every one of Surya's two hundred lines is cited by its own id.
+    assert feed["answer_measure"]["surya_lines"] == 200
     admitted = page_request_capacity(
         _perlector_row(65536),
         image_sizes=page_feed.request_image_sizes(feed),
@@ -1105,12 +1115,18 @@ def test_the_act_count_is_the_most_of_surya_blocks_dai_records_and_chandra_block
     units = [{"ordinal": index, "text": "x"} for index in range(4)]
     outside = [{"ordinal": None, "text": "y"}]
     rows = [("chandra.v1", units + outside), ("dai.v1", units[:2]), ("churro.v1", units * 50)]
-    assert page_feed.answer_measure(rows, surya_blocks=3) == {
+    assert page_feed.answer_measure(rows, surya_blocks=3, surya_lines=7) == {
         "longest_witness_characters": 200,
         "act_entries": 4,
+        "surya_lines": 7,
     }
-    assert page_feed.answer_measure(rows, surya_blocks=9)["act_entries"] == 9
-    assert page_feed.answer_measure([("churro.v1", units)], surya_blocks=0)["act_entries"] == 0
+    assert page_feed.answer_measure(rows, surya_blocks=9, surya_lines=0)["act_entries"] == 9
+    assert (
+        page_feed.answer_measure([("churro.v1", units)], surya_blocks=0, surya_lines=0)[
+            "act_entries"
+        ]
+        == 0
+    )
 
 
 # --- the prompt says what is shown and nothing else ---------------------------------------
@@ -1135,6 +1151,31 @@ def test_the_instruction_names_only_the_inputs_the_feed_shows():
     flat = page_prompt.page_reading_instruction(feed_for(_Blobs(), witness_units="flat"))
     assert "one unit with no box: cite it by the range of ids before its text" in flat
     assert "range of ids" not in default
+
+
+def test_a_range_is_a_witness_range_and_detections_are_cited_one_by_one():
+    """Surya's ids follow the detector, not the columns, so the prompt never shows a line range."""
+    default = page_prompt.page_reading_instruction(feed_for(_Blobs()))
+    assert "where a range of witness units such as A2-A5 stands for every unit" in default
+    assert "each detected line and block cited by its own id, never by a range" in default
+    assert "L10-L17" not in default and "<first unit id>-<last unit id>" in default
+    no_surya = page_prompt.page_reading_instruction(
+        feed_for(_Blobs(), surya_lines=False, surya_blocks=False)
+    )
+    assert "A2-A5" in no_surya and "never by a range" not in no_surya
+
+
+def test_the_citation_sentence_names_only_what_the_feed_shows():
+    lines_only = page_prompt.page_reading_instruction(feed_for(_Blobs(), surya_blocks=False))
+    assert "each detected line cited by its own id, never by a range" in lines_only
+    blocks_only = page_prompt.page_reading_instruction(feed_for(_Blobs(), surya_lines=False))
+    assert "each detected block cited by its own id, never by a range" in blocks_only
+    # The range example names a witness the page shows units for.
+    feed = feed_for(_Blobs())
+    assert [row["letter"] for row in feed["witnesses"]][:2] == ["A", "B"]
+    feed["witnesses"][0]["units"] = []
+    no_a = page_prompt.page_reading_instruction(feed)
+    assert "such as B2-B5 stands for every unit" in no_a and "A2-A5" not in no_a
 
 
 def test_non_act_text_is_read_as_other_and_set_aside_is_for_ink_not_read():
@@ -1396,11 +1437,11 @@ def _entry_union(boxes, cited):
 
 
 def test_a_flat_witness_places_nothing_so_two_entries_citing_it_keep_their_own_regions():
-    own = placement_boxes(feed_for(_Blobs()))
+    own = placement_boxes(feed_for(_Blobs()), load_page_accounting_policy())
     assert own["A1"] == {"x": 255, "y": 165, "w": 2040, "h": 231}
     assert own["C1"] is None and own["L1"] is not None
     feed = feed_for(_Blobs(), witness_units="flat")
-    boxes = placement_boxes(feed)
+    boxes = placement_boxes(feed, load_page_accounting_policy())
     ids = [unit["id"] for row in feed["witnesses"] for unit in row["units"]]
     assert all(boxes[identifier] is None for identifier in ids)
     # The sealed geometry stays on the feed for the accounting.
@@ -1482,11 +1523,13 @@ def test_a_raster_fallback_is_recorded_and_the_prompt_says_raster_order():
     assert len(feed["surya"]["blocks"]) == 2
     text = page_prompt.build_page_prompt("unproven-real-perlector", feed)
     assert "in raster order (top to bottom, then left to right), not a reading order" in text
-    assert "in its reading order" not in text
+    assert "in the reading order that detector predicted" not in text
     head = feed_for(blobs)
     assert head["surya"]["block_sequence"] == "surya-order-head"
     assert head["surya"]["block_sequence_reason"] is None
-    assert "in its reading order" in page_prompt.build_page_prompt("unproven-real-perlector", head)
+    assert "in the reading order that detector predicted" in page_prompt.build_page_prompt(
+        "unproven-real-perlector", head
+    )
 
 
 @pytest.mark.parametrize(

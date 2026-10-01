@@ -674,7 +674,7 @@ def _rate_bound_tokens(characters: int) -> int:
 # The carried rate is sealed against the page builder's own digest, so editing
 # the builder expires it.
 PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST: Final = (
-    "bc25d7ab6f7e3d4e22b76b0d7273e92d98bd2bcc34f13ca57707db734120fb81"
+    "4133f3538842f1a4c45b620d3a2863a5cf592c9fa7bb51f99292ed635ef17db1"
 )
 # Chat-template cost: 52 for the one turn plus 2 per image, charged at the most a
 # page request sends -- the page render and its overlay (`[feed] page_overlay`).
@@ -682,9 +682,11 @@ PERLECTOR_PAGE_MAX_IMAGES: Final = 2
 PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS: Final = 52 + 2 * PERLECTOR_PAGE_MAX_IMAGES
 
 # The page answer's reserve. The answer transcribes the same ink the witnesses
-# read, so its text is estimated at the page's longest witness text, and each act
-# entry adds its JSON scaffold: this skeleton, one entry with an empty text, a
-# three-word label and five cites. Both are estimated at the carried rate. The
+# read, so its text is estimated at the page's longest witness text, each act
+# entry adds its JSON scaffold -- this skeleton, one entry with an empty text, a
+# three-word label and five cites -- and each Surya line shown adds one cite of
+# its own, since lines are cited one by one, never by a range. All are
+# estimated at the carried rate. The
 # reserve decides admission only: it is the estimate or the page cap, whichever
 # is smaller (`reserve_clamped` records when the cap won, as for a looping
 # witness whose text runs far past any real page), and the `max_tokens` sent is
@@ -693,10 +695,11 @@ PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS: Final = 52 + 2 * PERLECTOR_PAGE_MAX_IMAGE
 # one longer than that stops as a visible length cut-off.
 PAGE_ANSWER_ENTRY_SKELETON: Final = (
     '{"n": 99, "kind": "other", "label": "baptism of a child", '
-    '"cites": ["A99", "B99", "C99", "L100-L199", "S99"], "text": "", '
+    '"cites": ["A99", "B99", "C99", "D100-D199", "S99"], "text": "", '
     '"continues_from_previous_page": false, "continues_to_next_page": false}, '
 )
 PAGE_ANSWER_WRAPPER: Final = '{"acts": [], "set_aside": []}'
+PAGE_ANSWER_LINE_CITE: Final = '"L999", '
 
 
 _WHITESPACE_RUN_SPLIT: Final = re.compile(r"(\s+)")
@@ -766,13 +769,17 @@ def perlector_page_prompt_bound(
 
 
 def page_answer_bound(
-    *, longest_witness_characters: int, act_entries: int, page_max_tokens: int
+    *,
+    longest_witness_characters: int,
+    act_entries: int,
+    surya_lines: int,
+    page_max_tokens: int,
 ) -> tuple[int, bool]:
     """``(tokens, reserve_clamped)``: the tokens reserved for one page's answer.
 
     The estimate is ``(longest_witness_characters + act_entries *
-    len(PAGE_ANSWER_ENTRY_SKELETON) + len(PAGE_ANSWER_WRAPPER))`` at the carried
-    rate, and the reserve is the estimate or the page cap, whichever is
+    len(PAGE_ANSWER_ENTRY_SKELETON) + surya_lines * len(PAGE_ANSWER_LINE_CITE)
+    + len(PAGE_ANSWER_WRAPPER))`` at the carried rate, and the reserve is the estimate or the page cap, whichever is
     smaller; ``reserve_clamped`` is true when the estimate was above the cap. A
     page with no witness text shown has nothing that measures its ink, so it
     reserves the whole page cap.
@@ -780,11 +787,15 @@ def page_answer_bound(
 
     longest = _nonnegative(longest_witness_characters, "longest_witness_characters")
     entries = _nonnegative(act_entries, "act_entries")
+    lines = _nonnegative(surya_lines, "surya_lines")
     cap = _positive(page_max_tokens, "page_max_tokens")
     if longest == 0:
         return cap, False
     estimate = _rate_bound_tokens(
-        longest + entries * len(PAGE_ANSWER_ENTRY_SKELETON) + len(PAGE_ANSWER_WRAPPER)
+        longest
+        + entries * len(PAGE_ANSWER_ENTRY_SKELETON)
+        + lines * len(PAGE_ANSWER_LINE_CITE)
+        + len(PAGE_ANSWER_WRAPPER)
     )
     return min(estimate, cap), estimate > cap
 
@@ -807,12 +818,12 @@ def page_request_capacity(
     ``page_prompt.build_page_prompt`` rendered and ``prompt_parts`` the same
     text in its pieces (``page_prompt.prompt_parts``); ``template_digest`` its
     ``BUILDER_SHA256``; ``answer_measure`` the feed's own ``answer_measure``
-    (``longest_witness_characters``, ``act_entries``); ``page_max_tokens`` the
+    (``longest_witness_characters``, ``act_entries``, ``surya_lines``); ``page_max_tokens`` the
     sealed ``[perlector_generation] page_max_tokens``.
 
     Returns ``{"capacity": <request-capacity record>, "answer_reserve":
-    {longest_witness_characters, act_entries, tokens, reserve_clamped,
-    page_max_tokens}, "max_tokens": min(page_max_tokens, context the prompt
+    {longest_witness_characters, act_entries, surya_lines, tokens,
+    reserve_clamped, page_max_tokens}, "max_tokens": min(page_max_tokens, context the prompt
     leaves)}``. The prompt charge is an upper bound on its reported text, so
     the context it leaves is never overstated. Raises
     :class:`RequestCapacityRefusal` carrying the record when the row cannot
@@ -823,10 +834,11 @@ def page_request_capacity(
     if not isinstance(answer_measure, Mapping) or set(answer_measure) != {
         "longest_witness_characters",
         "act_entries",
+        "surya_lines",
     }:
         raise RequestCapacityRefusal(
-            "a page request's answer measure is not exactly its longest witness text and its "
-            "act entries, so no answer reserve can be derived for it"
+            "a page request's answer measure is not exactly its longest witness text, its "
+            "act entries and its Surya lines, so no answer reserve can be derived for it"
         )
     images = list(image_sizes)
     if len(images) > PERLECTOR_PAGE_MAX_IMAGES:

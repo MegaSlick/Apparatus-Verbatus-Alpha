@@ -68,7 +68,7 @@ DOUBT_SENTENCE: Final = (
 # The answer's shape with placeholders only, so it suggests no reading.
 ANSWER_FORM: Final = (
     '{"acts": [{"n": 1, "kind": "<act or other>", "label": "<a few words>", '
-    '"cites": ["<id>", "<first id>-<last id>"], "text": "<the entry\'s text>", '
+    '"cites": ["<id>", "<first unit id>-<last unit id>"], "text": "<the entry\'s text>", '
     '"continues_from_previous_page": false, "continues_to_next_page": false}], '
     '"set_aside": [{"id": "<id>", "reason": "<short reason>"}]}'
 )
@@ -202,7 +202,7 @@ def _feed_parts(feed: dict[str, Any]) -> list[list[_Part]]:
         # A raster fallback is Surya's own top-to-bottom sort, not a reading
         # order, and the prompt says so.
         order = (
-            "in its reading order"
+            "in the reading order that detector predicted"
             if surya["block_sequence"] == SURYA_ORDER_HEAD
             else "in raster order (top to bottom, then left to right), not a reading order"
         )
@@ -279,9 +279,18 @@ def page_reading_instruction(feed: dict[str, Any]) -> str:
         'too, as an entry of kind "other". '
     )
     covers = "its ink covers" if shown["image"] else "it is read from"
+    ranges = []
+    if shown["witnesses"]:
+        letter = next(row["letter"] for row in feed["witnesses"] if row["units"])
+        ranges.append(
+            f"where a range of witness units such as {letter}2-{letter}5 stands for every "
+            "unit of that witness from the first to the last"
+        )
+    if detections:
+        detected = _listed([name for name in ("line", "block") if shown[f"{name}s"]])
+        ranges.append(f"each detected {detected} cited by its own id, never by a range")
     cite = (
-        f"cites, the ids of every {_listed(kinds)} {covers}, where a range such as "
-        "L10-L17 stands for every id of that letter from the first to the last; "
+        f"cites, the ids of every {_listed(kinds)} {covers}, {', and '.join(ranges)}; "
         if kinds
         else "cites, an empty list, since no ids are shown; "
     )

@@ -35,6 +35,7 @@ from common.contracts.stages import (
     RECENSOR,
 )
 from common.exemplar_boundary import verify_reading_region_lineage
+from common.page_accounting import load_page_accounting_policy
 from common.runtree.store import RunTree
 from common.stage import (
     COUNTED_READING_CLASSES,
@@ -219,7 +220,9 @@ def _fixture_says(monkeypatch, ordinal: int, answer: str, stop_reason: str | Non
 def _read_as(root: Path, ordinal: int, content: str, stop_reason: str | None) -> Callable:
     """A forge making page `ordinal`'s reading what stage 4 reads from `content`."""
     feed = _one(root, "page-feed", ordinal)[1]["payload"]
-    state, answer, problems = page_path.read_reply(content, stop_reason, feed)
+    state, answer, problems = page_path.read_reply(
+        content, stop_reason, feed, load_page_accounting_policy()
+    )
     read = state == "parsed" and not problems
 
     def forged(record):
@@ -265,6 +268,7 @@ def _reaccount(tree: tuple[Path, dict[str, Path], str], ordinal: int) -> list[st
             page_id=reading["subject_id"],
             stop_reason=payload["stop_reason"],
             truncation_policy=index.truncation_policy,
+            accounting_policy=index.accounting_policy,
         )
         if payload["disposition"] == "read"
         else []
@@ -814,13 +818,14 @@ def test_a_problem_without_a_string_code_is_refused(happy_tree, tmp_path):
             lambda p: p.update(union_box_px={**p["union_box_px"], "w": p["union_box_px"]["w"] + 1}),
             "union_box_px",
         ),
+        (lambda p: p.update(region_boxes_px=[]), "region_boxes_px"),
         (lambda p: p.update(n=2), "n"),
         (lambda p: p.update(cites=["A2", "B2"]), "cites"),
         (lambda p: p.update(cited_ids=["A1"]), "cited_ids"),
         (lambda p: p.update(page_holds=["unread-ink"]), "page_holds"),
         (lambda p: p.update(holds=[]), None),
     ],
-    ids=["union", "n", "cites", "cited-ids", "page-holds", "own-holds"],
+    ids=["union", "region-boxes", "n", "cites", "cited-ids", "page-holds", "own-holds"],
 )
 def test_a_forged_act_region_is_refused(happy_tree, review_tree, tmp_path, change, field):
     # Own holds are recomputed too: page-review's unplaced entry must say so.
