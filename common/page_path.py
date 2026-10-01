@@ -94,7 +94,9 @@ READ: Final = "read"
 HELD: Final = "held"
 # A page whose call failed is held for review like any unread page, and its
 # record's outcome is the Perlector's `failed`, so the run-level hard-failure
-# cap (`config/hard_failure.toml`, `(perlector, failed)`) counts it.
+# cap (`config/hard_failure.toml`, `(perlector, failed)`) counts it. A failed
+# re-ask call is `failed` too and counted the same, but its page stands on its
+# first reading, held under `reask-unread` rather than as `page-unread`.
 FAILED: Final = "failed"
 
 

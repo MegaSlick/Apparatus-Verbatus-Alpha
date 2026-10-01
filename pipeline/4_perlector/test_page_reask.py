@@ -29,6 +29,7 @@ from test_page_reading import (
     ROOT,
     _chain,
     _chat_requests,
+    _denominator_context,
     _live_chain,
     _page_protocol,
     _read_pages,
@@ -42,8 +43,10 @@ from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import act_bindings, artifact_id, attempt_id, verify
 from common.contracts.stages import PERLECTOR
+from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.request_capacity import RequestCapacityRefusal
 from common.runtree.store import RunTree
+from common.stage import reading_acts
 from conftest import file_bytes_snapshot, reask_recovery_config, rewitness_stage_boundary
 from operations.serving.fakes import ScriptedAnswer
 
@@ -708,6 +711,48 @@ def test_a_re_ask_over_the_rows_capacity_is_held_unread_and_never_sent(live, tmp
     last = _accounting(live.root, 1, 2)["payload"]
     [unread] = last["rules"]["j"]["findings"]
     assert unread["code"] == "reask-unread" and unread["parse_state"] == "refused-capacity"
+
+
+def test_a_failed_live_re_ask_call_is_failed_and_its_page_stands_on_its_first_reading(
+    live, tmp_path, monkeypatch
+):
+    """A re-ask whose engine call fails is a `failed` page-reading the hard-failure cap
+    counts once, and its page keeps exactly its first reading's acts, held under
+    `reask-unread` rather than counted as an unread page."""
+    root = live.root
+    transport = ScriptedAnswer(transport_failure="connection reset after dispatch")
+    _endpoint, exit_code = _read_pages(
+        live, tmp_path, monkeypatch, _first_act_only(), _page_two(), transport
+    )
+    assert exit_code == 0
+    second = _reading(root, 1, 2)
+    payload = second["payload"]
+    assert (second["outcome"], payload["parse_state"]) == ("failed", "call-failed")
+    failure = payload["failure"]
+    assert (failure["phase"], failure["kind"]) == ("page-reask", "transport")
+    assert failure["code"] and failure["call_record_ref"] is not None
+    assert failure["raw_response_ref"] is None
+    assert failure["call_record_ref"] in second["inputs"]
+    [unread] = _accounting(root, 1, 2)["payload"]["rules"]["j"]["findings"]
+    assert unread["code"] == "reask-unread" and unread["parse_state"] == "call-failed"
+
+    acts = _on_page(root, "perlectio", 1)
+    first_regions = _on_page(root, "act-region", 1)
+    assert len(acts) == 1 and len(first_regions) == 1
+    assert all("reading_attempt" not in r["payload"] for r in acts + first_regions)
+    assert first_regions[0]["payload"]["page_reading_attempt"] == (
+        _reading(root, 1, 1)["attempt_id"]
+    )
+
+    rows = reading_acts(_denominator_context(live))
+    page_one = [row for row in rows if row["act_key"].startswith("p1:")]
+    assert [(row["act_key"], row["reading_attempt"]) for row in page_one] == [("p1:1", 1)]
+    assert _names(page_one[0]["perlectio_ref"], acts[0])
+    assert "reask-unread" in page_one[0]["hold_codes"]
+
+    tally = tally_hard_failures(RunTree(root, "r"), load_hard_failure_policy())
+    assert tally["by_kind"]["perlector:failed"] == [second["subject_id"]]
+    assert tally["count"] == 1
 
 
 def test_a_re_ask_the_accounting_does_not_count_adds_no_act(recovers, tmp_path, monkeypatch):
