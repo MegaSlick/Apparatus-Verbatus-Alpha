@@ -508,9 +508,8 @@ Per page it records:
   sealed feed, the page's gold text standing in for three witnesses, Surya lines
   estimated from it);
 - `k`, `k_cap` and `k_capped`: the most crops round two fits, the cap it was
-  counted up to (`--max-crops`, or 0 for a page whose request is refused; the
-  protocol seals no image ceiling, so only the context the row leaves bounds k
-  below that), and whether k reached a cap above 0. Round two is
+  counted up to (`--max-crops`, or fewer if more would take the request past the
+  protocol's `max_images`), and whether k reached a cap above 0. Round two is
   the page request as admitted, plus the request's `max_tokens` for the
   round-one reply carried in context (the most the engine lets that reply run,
   so no real reply leaves fewer crops than k), two more chat turns
