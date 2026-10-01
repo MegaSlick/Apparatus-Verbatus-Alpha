@@ -108,7 +108,6 @@ import re
 from html.parser import HTMLParser
 from typing import Any, Final, TypedDict
 
-from common.contracts.canonical import digest_bytes
 from common.imaging import Bounds
 
 VENDOR_REPOSITORY: Final = "github.com/datalab-to/chandra"
@@ -435,12 +434,6 @@ def parse_bbox_attribute(value: str | None) -> tuple[list[int] | None, str | Non
     return box, None
 
 
-# Declared rules a Chandra reading's records name for how they read its answer:
-# box quantization onto sealed-page pixels, and the page join.
-QUANTIZATION_RULE: Final = "structure-answer.v1.box1000-floor-low-ceil-far.sealed-page-pixels"
-PAGE_TEXT_RULE: Final = "structure-answer.v1.newline-between-delivered-acts"
-
-
 def to_page_bounds(box_1000: list[int], page_w: int, page_h: int) -> Bounds:
     """A normalized `box_1000` as a sealed-page rectangle, low edges floored, far ceiled.
 
@@ -455,13 +448,8 @@ def to_page_bounds(box_1000: list[int], page_w: int, page_h: int) -> Bounds:
     return {"x": left, "y": top, "w": right - left + 1, "h": bottom - top + 1}
 
 
-def text_digest(text: str) -> str:
-    """The digest that lets a reader prove it derived the same text from the same bytes."""
-    return digest_bytes(text.encode("utf-8"))
-
-
 def join_delivered_texts(texts: list[str]) -> tuple[str, list[dict[str, int]]]:
-    """`PAGE_TEXT_RULE`: a newline only between delivered (non-empty) texts.
+    """A page's text: a newline only between delivered (non-empty) texts.
 
     Returns the page text and each input's `[start, end)` span in it; an empty
     text gets a zero-width span where it would have sat. Every Chandra reading
@@ -885,10 +873,9 @@ def parse_layout_html(raw: Any) -> ParsedLayout | dict[str, str]:
         bbox_raw = found["bbox_raw"]
         bbox, reason = parse_bbox_attribute(bbox_raw)
         if bbox is None:
-            # `label` is deliberately not repeated into the finding. It is the
-            # chair's own word for what it thinks a rectangle is -- a reading,
-            # unbounded in length, which this repository publishes as a digest
-            # and a length and never as text (`text_digest`).
+            # `label` is not repeated into the finding: it is the chair's own
+            # word for a rectangle, a reading of unbounded length, and a
+            # finding never carries reading text.
             # `ordinal` joins the finding to the block, which carries it.
             findings.append(
                 _finding("malformed-bbox", ordinal=ordinal, reason=reason, **_quoted(bbox_raw))
