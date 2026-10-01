@@ -1,8 +1,11 @@
 # Recensor
 
-Checks completeness, asks for recovery.
+Checks completeness.
 
-Reviews the page, the crops, the testimonia and the findings, and checks whether the text is complete. It establishes no text. Confirmed ink outside live crops can request a bounded fallback recrop; continuation shortfall and unsupported or incomplete readings are held for review. It recovers coverage, never quality.
+Reviews every unit a page-read run counts: the page witnesses against the floor, the
+page's ink against every region the reading placed, and the continuation flags at each
+page break. It establishes no text and asks for no recovery; a unit that cannot be
+accepted is held for review with every reason named.
 
 Read [CONTRACT.md](CONTRACT.md) for what this stage writes and where. That document
 is the interface — no other stage reads this one's code.
