@@ -2806,3 +2806,99 @@ def test_an_approval_reference_without_a_path_or_digest_is_refused(
     tree = make_run(tmp_path)
     with pytest.raises(ApprovalRefusal, match=message):
         tree.read_approval_record(ApprovalRecordReference(relative_path, sha256))
+
+
+# --- review_decision_records: every stored approval checked, none skipped ----------------
+
+
+def _review_decision(decision="hold"):
+    from common.contracts.approval import build_review_decision_record
+
+    return build_review_decision_record(
+        run_id="r1",
+        scope="unit",
+        subject_id="act_0123456789abcdef",
+        page_id="pg_0123456789abcdef",
+        decision=decision,
+        finding="text-misread" if decision == "hold" else None,
+        basis_digest="c" * 64,
+        reason="held by the test",
+        timestamp="2026-10-01T12:00:00Z",
+    )
+
+
+def test_review_decision_records_returns_decisions_and_passes_over_valid_receipts(tmp_path):
+    tree = make_run(tmp_path)
+    tree.write_run_receipt(make_receipt())
+    tree.write_approval_record(make_approval_record())
+    reference, _ = tree.write_approval_record(_review_decision())
+
+    found = tree.review_decision_records()
+
+    assert [ref.to_record() for ref, _record in found] == [reference.to_record()]
+    assert found[0][1]["review"]["decision"] == "hold"
+
+
+def test_an_edited_hold_decision_is_refused_not_skipped(tmp_path):
+    """Edited in place to another schema, it no longer hashes to its name."""
+    tree = make_run(tmp_path)
+    reference, _ = tree.write_approval_record(_review_decision())
+    path = tree.resolve(reference.relative_path)
+    edited = json.loads(path.read_bytes())
+    edited["schema"] = "approval-record.v9"
+    path.write_bytes(canonical_bytes(edited))
+
+    with pytest.raises(SchemaRefusal, match="digest"):
+        tree.review_decision_records()
+
+
+def test_a_renamed_edited_decision_that_is_no_approval_and_no_receipt_is_refused(tmp_path):
+    """Re-addressed under its new digest, it is still neither record this directory holds."""
+    tree = make_run(tmp_path)
+    reference, _ = tree.write_approval_record(_review_decision())
+    path = tree.resolve(reference.relative_path)
+    edited = json.loads(path.read_bytes())
+    edited["schema"] = "approval-record.v9"
+    data = canonical_bytes(edited)
+    path.unlink()
+    tree.resolve(tree.receipt_path(digest_bytes(data))).write_bytes(data)
+
+    with pytest.raises(ApprovalRefusal, match="neither a sound approval record"):
+        tree.review_decision_records()
+
+
+def test_a_decision_failing_its_self_hash_is_refused(tmp_path):
+    tree = make_run(tmp_path)
+    record = _review_decision()
+    record["reason"] = "edited after it was recorded"
+    data = canonical_bytes(record)
+    target = tree.resolve(tree.receipt_path(digest_bytes(data)))
+    target.parent.mkdir(parents=True)
+    target.write_bytes(data)
+
+    with pytest.raises(ApprovalRefusal):
+        tree.review_decision_records()
+
+
+def test_a_decision_not_stored_as_its_canonical_bytes_is_refused(tmp_path):
+    """Its readers cite it by the digest of its canonical form, which must name its file."""
+    tree = make_run(tmp_path)
+    data = json.dumps(_review_decision(), indent=2).encode("utf-8")
+    target = tree.resolve(tree.receipt_path(digest_bytes(data)))
+    target.parent.mkdir(parents=True)
+    target.write_bytes(data)
+
+    with pytest.raises(ApprovalRefusal, match="canonical bytes"):
+        tree.review_decision_records()
+
+
+def test_a_stray_name_in_the_receipts_directory_is_refused_even_with_no_decision(tmp_path):
+    """A renamed decision would otherwise vanish from every reader, releasing what it held."""
+    tree = make_run(tmp_path)
+    tree.write_run_receipt(make_receipt())
+    reference, _ = tree.write_approval_record(_review_decision())
+    path = tree.resolve(reference.relative_path)
+    path.rename(path.with_name("held.json"))
+
+    with pytest.raises(SchemaRefusal, match="not a content-addressed receipt"):
+        tree.review_decision_records()

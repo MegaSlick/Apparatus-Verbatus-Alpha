@@ -594,14 +594,19 @@ class RunTree:
             ) from error
         return validate_approval_record(decoded)
 
-    def review_decision_records(self) -> list[tuple[ApprovalRecordReference, dict[str, Any]]]:
-        """Every operator review decision stored in this run, each with its checked reference.
+    def approval_records(self) -> list[tuple[ApprovalRecordReference, dict[str, Any]]]:
+        """Every approval record stored in this run, each with its checked reference, in path order.
 
-        Review decisions share `receipts/sha256/` with serving receipts and the
-        other approval records; they are the `approval-record.v1` among them,
-        in path order. Each is read back through `read_approval_record`, so one
-        whose bytes no longer hash to its name, or fail their own self-hash, is
-        refused, never skipped. A dot-file is an unfinished write, not a record.
+        Approvals share `receipts/sha256/` with serving receipts. Every file
+        there is checked before anything is read from it: its name must be the
+        sha256 of its bytes, and its record must be a sound approval record,
+        stored as its canonical bytes, or a sound serving receipt. So an edited
+        or hand-written approval is
+        refused, never skipped as something else, and a valid serving receipt
+        is passed over. A name that is no digest is refused even in a run with
+        no approval, because only the content-addressed writers write here and
+        a renamed record would otherwise vanish from every reader. A dot-file
+        is an unfinished write, not a record.
         """
         directory = self.resolve(RECEIPTS_DIR)
         if not directory.is_dir():
@@ -614,15 +619,41 @@ class RunTree:
             digest = path.name.removesuffix(".json")
             if not path.name.endswith(".json") or not is_sha256(digest):
                 raise SchemaRefusal(f"{relative} is not a content-addressed receipt")
+            data = self._read_receipt_bytes(
+                relative, digest, SchemaRefusal, label="receipt", reference_label="receipt"
+            )
             try:
-                decoded = json.loads(self._read_record_bytes(relative).decode("utf-8"))
-            except (OSError, UnicodeDecodeError, ValueError, RecursionError) as error:
+                decoded = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError, RecursionError) as error:
                 raise SchemaRefusal(f"receipt {relative} could not be read: {error}") from error
-            if not isinstance(decoded, dict) or decoded.get("schema") != SCHEMA_V1:
+            try:
+                record = validate_approval_record(decoded)
+            except ApprovalRefusal as refusal:
+                try:
+                    validate_receipt(decoded)
+                except ContractError:
+                    raise ApprovalRefusal(
+                        f"{relative} is neither a sound approval record nor a sound serving "
+                        f"receipt: {refusal}"
+                    ) from refusal
                 continue
-            reference = ApprovalRecordReference(relative, digest)
-            found.append((reference, self.read_approval_record(reference)))
+            # Its writer stores canonical bytes, so a reader may cite a decision by
+            # the digest of its canonical form and name the same file.
+            if canonical_bytes(record) != data:
+                raise ApprovalRefusal(
+                    f"approval record {relative} is not stored as its canonical bytes"
+                )
+            found.append((ApprovalRecordReference(relative, digest), record))
         return found
+
+    def review_decision_records(self) -> list[tuple[ApprovalRecordReference, dict[str, Any]]]:
+        """Every operator review decision stored in this run: the `approval-record.v1` among
+        `approval_records`, so each is digest- and self-hash-checked before it is returned."""
+        return [
+            (reference, record)
+            for reference, record in self.approval_records()
+            if record["schema"] == SCHEMA_V1
+        ]
 
     def _read_receipt_bytes(
         self,
