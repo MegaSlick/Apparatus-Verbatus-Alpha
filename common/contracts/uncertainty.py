@@ -85,7 +85,7 @@ def from_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def from_page_perlectio(payload: dict[str, Any]) -> dict[str, Any]:
-    """The exportable uncertainty layer of a page reading's `perlectio.v2`.
+    """The exportable uncertainty layer of a page reading's `perlectio.v3`.
 
     Its lectio kind is `page-read`, whose self-revisions were not measured (`None`).
     """

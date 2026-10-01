@@ -359,11 +359,3 @@ def test_an_unmeasurable_page_holds_every_unit_on_it_through_main(page_tree, tmp
         assert review["outcome"] == "held-for-review"
         assert review["payload"]["page_coverage"]["unmeasurable_pages"]
         assert page_review.RESIDUAL_INK_NOT_MEASURABLE in review["payload"]["hold_codes"]
-
-
-def test_a_run_not_read_by_page_is_refused_before_any_review(page_tree, tmp_path, monkeypatch):
-    root = _copy(page_tree, tmp_path)
-    monkeypatch.setattr(RUN, "reading_denominator", lambda _context: {"reading_unit": "act"})
-    with pytest.raises(FatalAccounting, match="reviews only page-read runs"):
-        _run_main(root, monkeypatch)
-    assert _reviews(root) == []

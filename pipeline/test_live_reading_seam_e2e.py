@@ -57,7 +57,6 @@ from common.contracts.outcomes import (  # noqa: E402
 )
 from common.contracts.stages import ATTESTATORES, PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
-from common.perlector_audit import RESPONSE_SCHEMA as AUDIT_RESPONSE_SCHEMA  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import EXIT_COMPLETE, EXIT_HELD, verify_final_seal  # noqa: E402
 from operations.serving.assembly import retain_chair_bytes  # noqa: E402
@@ -431,48 +430,13 @@ class RecordingEndpoint(FakeEndpoint):
         return response
 
 
-_REPROOF_RESPONSE_MARKER = "Required response object, shown with unchanged replacements:\n"
-
-
-def _unchanged_reproof_response(body: bytes | None) -> str | None:
-    """Extract the unchanged exact-edit envelope from a rendered audit prompt."""
-    if body is None:
-        return None
-    request = json.loads(body)
-    for message in request.get("messages", []):
-        content = message.get("content", [])
-        parts = [{"type": "text", "text": content}] if isinstance(content, str) else content
-        for part in parts:
-            text = part.get("text") if isinstance(part, dict) else None
-            if isinstance(text, str) and _REPROOF_RESPONSE_MARKER in text:
-                response = text.rsplit(_REPROOF_RESPONSE_MARKER, 1)[1]
-                parsed = json.loads(response)
-                assert parsed["schema"] == AUDIT_RESPONSE_SCHEMA
-                return response
-    return None
-
-
 class VaryingReadingEndpoint(RecordingEndpoint):
-    """A reader endpoint whose answer content is derived from the pixels it was sent.
+    """A reader endpoint whose answer is derived from the pixels it was sent.
 
-    A fixed scripted answer, replayed for every reading POST, cannot say
-    whether a Perlectio is bound to *its own* engine response or to any
-    canonical one: sixty identical replies make every response blob
-    identical too. Hashing the images the request actually carries into the
-    content instead ties each answer to the act whose pixels asked for it,
-    while answering the same for the Pass A / Pass B calls of that one act.
-    Audit re-proof calls instead return the exact unchanged edit envelope the
-    production renderer included in that request.
-
-    **Why the delivered images and not the whole body.** Pass A and Pass B do
-    render the same request, but the audit re-proof does not: it appends every
-    reproof prompt to the same dossier (`live_reader.read`), so a whole-body
-    hash answers the re-proof with different text. That is not a re-proof this
-    seam may serve. The audit response must name exact requested locations and
-    original text; a changed tail digest would instead depend on the witness
-    text used to locate its flag. The delivered pixels are
-    the act's own bytes and are identical across its ordinary reading passes,
-    which is the property this endpoint needed all along.
+    A fixed scripted answer replayed for every page cannot show that a
+    Perlectio is bound to its own engine response: identical replies make every
+    response blob identical. Hashing the delivered images into the content ties
+    each answer to the page whose pixels asked for it.
     """
 
     def __init__(
@@ -491,19 +455,13 @@ class VaryingReadingEndpoint(RecordingEndpoint):
             if self._refusal is not None:
                 self.script(self._refusal)
                 return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
-            reproof_response = _unchanged_reproof_response(body)
             images = chat_image_bytes_all(json.loads(body)) if body is not None else []
             digest = hashlib.sha256(b"".join(images)).hexdigest()[:12] if images else "no-pixels"
             # Brackets keep the final character stable across reading passes;
             # a bare hex digest would sometimes end in the same character as
             # a scripted witness and move the testimony-diff flag's end.
-            content = reproof_response or f"{READING} [{digest}]"
-            assert reproof_response is not None or content.startswith(READING)
             self.script(
-                ScriptedAnswer(
-                    content=content,
-                    finish_reason="stop" if reproof_response is not None else self._finish_reason,
-                )
+                ScriptedAnswer(content=f"{READING} [{digest}]", finish_reason=self._finish_reason)
             )
         return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
 

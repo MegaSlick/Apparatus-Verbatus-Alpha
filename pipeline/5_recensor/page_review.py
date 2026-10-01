@@ -1,7 +1,6 @@
 """The Recensor's page path: one review for every unit a page-read run counts.
 
-Under the sealed `reading_unit = "page"` the Perlector read each sealed page
-whole and established the acts on it (`pipeline/4_perlector/CONTRACT.md`,
+The Perlector read each sealed page whole and established the acts on it (`pipeline/4_perlector/CONTRACT.md`,
 "Page reading"). The units counted here are `common.stage.reading_acts`, whose
 rows the shared denominator has already proven from the Perlector's records,
 page accounting and hold codes included. On top of each row this stage adds

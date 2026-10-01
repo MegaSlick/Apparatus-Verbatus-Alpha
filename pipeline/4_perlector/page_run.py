@@ -1,7 +1,6 @@
 """The Perlector's page path: each sealed page read whole, its answer made into act records.
 
-Stage 4 does not read the Designator's acts (`reading_unit = "page"`,
-`protocol.py`). It reads every sealed Exemplar page in one call, shown
+Stage 4 reads every sealed Exemplar page in one call, shown
 the page image and every witness's page broken into that witness's own units,
 and the Perlector establishes the acts itself (`common/page_feed.py`,
 `common/page_prompt.py`, `common/page_answer.py`). Per page, in the order published:
@@ -11,7 +10,7 @@ and the Perlector establishes the acts itself (`common/page_feed.py`,
     page-reading    (subject page_id)  the answer as given: parsed, or held whole
     page-accounting (subject page_id)  rules a-i over the reading (`common/page_accounting.py`)
     act-region      (subject act_id)   one per entry of a parsed, valid answer
-    perlectio       (subject act_id)   `perlectio.v2`, one per entry
+    perlectio       (subject act_id)   `perlectio.v3`, one per entry
 
 Every feed is built and published before any page is read, so a live pass
 counts exactly the pages it will send before its chair starts.
@@ -75,7 +74,6 @@ from common.page_path import (
     PARSED,
     PERLECTIO_KIND,
     READ,
-    READING_UNIT,
     REFUSED_CAPACITY,
 )
 from common.page_testimonia import (
@@ -417,7 +415,6 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
         "schema": PAGE_READING_SCHEMA,
         "page_id": page.page_id,
         "page_ordinal": page.ordinal,
-        "reading_unit": READING_UNIT,
         "feed_ref": page.feed_ref,
         "request_digest": (
             page_path.request_digest(page.text, page.image_sha256s) if attempted else None
@@ -545,7 +542,6 @@ def publish_act_records(
             "schema": ACT_REGION_SCHEMA,
             "page_id": page.page_id,
             "page_ordinal": page.ordinal,
-            "reading_unit": READING_UNIT,
             "n": act["n"],
             "kind": act["kind"],
             "label": act.get("label"),

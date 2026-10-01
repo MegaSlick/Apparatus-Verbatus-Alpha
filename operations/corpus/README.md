@@ -121,8 +121,7 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   exactly as if those acts had been misread. `denominators.exported_acts_by_category`
   and `reference_records_scored_by_export_category` are where a reader separates the
   two.
-- `exactly_once.py` — the proof metric of a run read by page (`reading_unit =
-  "page"`). It reads the Perlector's `page-feed`, `page-reading`, `act-region`,
+- `exactly_once.py` — the proof metric of a run read by page. It reads the Perlector's `page-feed`, `page-reading`, `act-region`,
   `perlectio` and `page-accounting` records beside the admitted records of an
   admission ledger and their `gold.jsonl` text, and gives each gold record one
   outcome: **exactly once** (one `act` region holds at least half of it, holds no
@@ -131,7 +130,7 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   **lost** (no act region holds it, or its text is not read in any that does).
   "Inside" is `common/page_accounting.py`'s rule under the policy the run sealed;
   a policy other than the sealed one, or an accounting sealed under another, is
-  refused (`policy-mismatch`), and a perlectio that is not `perlectio.v2` is
+  refused (`policy-mismatch`), and a perlectio that is not `perlectio.v3` is
   refused (`not-page-read`); so is an admitted gold record with no text to
   measure. "Text read" is this tool's own measure, stricter than the accounting's
   rule (e): the gold text's character error rate against a holding act's reading

@@ -1,8 +1,8 @@
 """The Perlector's page path, proven end to end on the synthetic fixture and fake serving.
 
-A run sealed with `reading_unit = "page"` reads every sealed page whole: a
+A run reads every sealed page whole: a
 `page-feed`, a `page-reading`, the page's `page-accounting` and, for a parsed
-and valid answer, one `act-region` and one `perlectio.v2` per entry, each
+and valid answer, one `act-region` and one `perlectio.v3` per entry, each
 naming the accounting and held when the page is. The fixture tests run the
 real chain as subprocesses; the live tests run the stage in this process
 against `operations/serving/fakes.py`, as `test_live_perlector.py` does.
@@ -226,7 +226,6 @@ def test_every_sealed_page_is_read_whole_into_a_feed_a_reading_and_its_acts(page
         assert payload["answer"] == json.loads(PAGE_ANSWERS[payload["page_ordinal"]])
         assert payload["audit"]["state"] == "not-run"
         assert payload["engine_call"] is None and payload["capacity"] is None
-        assert payload["reading_unit"] == "page"
     feed = feeds[0]["payload"]
     # The fixture roster runs Surya in stage 2, so every feed shows its census.
     assert feed["surya"]["census_ref"] is not None and "absent" not in feed["surya"]
@@ -240,7 +239,7 @@ def test_every_sealed_page_is_read_whole_into_a_feed_a_reading_and_its_acts(page
     assert len(_records(root, "act-region")) == len(_records(root, "perlectio")) == 3
     # Every Perlectio is a page-path reading.
     assert all(
-        record["payload"]["schema"] == "perlectio.v2" for record in _records(root, "perlectio")
+        record["payload"]["schema"] == "perlectio.v3" for record in _records(root, "perlectio")
     )
 
 

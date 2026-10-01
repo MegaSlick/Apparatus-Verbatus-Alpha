@@ -1,7 +1,7 @@
 """Whether a page-read run read every RecordGold record exactly once.
 
-Reads a run tree read with `reading_unit = "page"` -- the Perlector's
-`page-feed`, `page-reading`, `act-region`, `perlectio` (`perlectio.v2`) and
+Reads a run tree -- the Perlector's
+`page-feed`, `page-reading`, `act-region`, `perlectio` (`perlectio.v3`) and
 `page-accounting` records -- beside the admitted RecordGold records of its
 pages, and gives each gold record one outcome:
 
@@ -67,6 +67,8 @@ from common.page_accounting import (
     load_page_accounting_policy,
     normalized_text,
 )
+from common.page_feed import SCHEMA as PAGE_FEED_SCHEMA
+from common.page_path import PERLECTIO_SCHEMA
 from common.runtree.store import RunTree
 from common.stage import run_sealed_config_digests
 
@@ -82,7 +84,6 @@ MAX_GOLD_CER_BP: Final = 2_000
 FIT_CONTEXT_TOKENS: Final = 65_536
 BASIS_POINTS: Final = 10_000
 PAGE_KINDS: Final = ("page-feed", "page-reading", "act-region", "perlectio", "page-accounting")
-PERLECTIO_V2: Final = "perlectio.v2"
 DETECTOR_RECORD: Final = "detector-record"
 EXACTLY_ONCE: Final = "exactly-once"
 LOST: Final = "lost"
@@ -180,8 +181,11 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
     pages: dict[str, dict[str, Any]] = {}
     for record in by_kind["page-feed"]:
         feed = record["payload"]
-        if feed.get("reading_unit") != "page":
-            raise Refusal(f"not-page-read: page feed {record['subject_id']!r} is not read by page")
+        if feed.get("schema") != PAGE_FEED_SCHEMA:
+            raise Refusal(
+                f"not-page-read: page feed {record['subject_id']!r} is not a "
+                f"{PAGE_FEED_SCHEMA} page feed"
+            )
         ordinal = feed["page_ordinal"]
         if ordinal not in shas:
             raise Refusal(f"malformed-record: page ordinal {ordinal} has no sealed Exemplar page")
@@ -213,10 +217,10 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
         page["act_regions"].append(record["payload"])
         act_pages[record["subject_id"]] = page
     for record in by_kind["perlectio"]:
-        if record["payload"].get("schema") != PERLECTIO_V2:
+        if record["payload"].get("schema") != PERLECTIO_SCHEMA:
             raise Refusal(
                 f"not-page-read: perlectio {record['subject_id']!r} is "
-                f"{record['payload'].get('schema')!r}, not {PERLECTIO_V2}"
+                f"{record['payload'].get('schema')!r}, not {PERLECTIO_SCHEMA}"
             )
         page = act_pages.get(record["subject_id"])
         if page is None:

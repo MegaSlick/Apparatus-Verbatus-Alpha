@@ -292,9 +292,8 @@ def feed_for(
 # --- the protocol's feed table ----------------------------------------------------
 
 
-def test_the_shipped_protocol_reads_by_page_with_every_feed_input_on():
+def test_the_shipped_protocol_shows_every_feed_input():
     sealed, _digest = protocol.load(ROOT / "config" / "perlector_protocol.toml")
-    assert sealed["reading_unit"] == "page"
     assert sealed["feed"] == {
         "page_image": "legible",
         "witnesses": "all",
@@ -318,7 +317,6 @@ def _write(tmp_path, old: str, new: str):
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        ('reading_unit = "page"', 'reading_unit = "region"', "reading_unit"),
         ('crops = "off"', 'crops = "on-request"', "crops"),
         ('page_image = "legible"', 'page_image = "tiny"', "page_image"),
         ('witness_units = "own"', 'witness_units = "lines"', "witness_units"),
@@ -348,7 +346,7 @@ def test_the_feed_table_refuses_an_unknown_key_or_value(tmp_path, old, new, mess
 def test_a_page_reading_protocol_with_a_witness_subset_loads(tmp_path):
     path = _write(tmp_path, 'witnesses = "all"', 'witnesses = ["attestator_1"]')
     sealed, _digest = protocol.load(path)
-    assert (sealed["reading_unit"], sealed["feed"]["witnesses"]) == ("page", ["attestator_1"])
+    assert sealed["feed"]["witnesses"] == ["attestator_1"]
 
 
 # --- units, ids and the record ------------------------------------------------------
@@ -357,8 +355,8 @@ def test_a_page_reading_protocol_with_a_witness_subset_loads(tmp_path):
 def test_the_default_feed_shows_each_witness_in_its_own_units():
     blobs = _Blobs()
     feed = feed_for(blobs)
-    assert feed["schema"] == "perlector-page-feed.v1"
-    assert feed["reading_unit"] == "page"
+    assert feed["schema"] == "perlector-page-feed.v2"
+    assert "reading_unit" not in feed
     assert [row["letter"] for row in feed["witnesses"]] == ["A", "B", "C"]
     assert feed["page_size"] == {"w": 2550, "h": 3300}
     chandra, dai, churro = feed["witnesses"]

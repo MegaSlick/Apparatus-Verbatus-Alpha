@@ -1,6 +1,6 @@
 """The Perlector's page feed: everything one whole-page reading is shown.
 
-Under `reading_unit = "page"` the Perlector reads one page per call and
+The Perlector reads one page per call and
 establishes the acts itself. What it is shown is this feed: the page image
 (carried beside the text, not in it), each witness's page text broken into
 that witness's own units, and Surya's detected lines and blocks. Every input
@@ -116,7 +116,7 @@ from common.contracts.canonical import digest_of, is_plain_int
 from common.contracts.envelope import digest_ref, read_verified
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.native_witness import REPETITION_FINDING_KINDS
-from common.page_path import PAGE_TESTIMONIUM_KIND, READING_UNIT
+from common.page_path import PAGE_TESTIMONIUM_KIND
 from common.page_witness_units import (
     NO_ANSWER_HEALTH,
     READ_OUTCOME,
@@ -128,7 +128,7 @@ from common.page_witness_units import (
 from common.witness_regime import BLINDED, NAMED, REGIMES
 from operations.serving.surya_detector import contract as surya_contract
 
-SCHEMA: Final = "perlector-page-feed.v1"
+SCHEMA: Final = "perlector-page-feed.v2"
 BOX_SCALE: Final = 1000
 
 # The Perlector protocol's table holding the feed switches.
@@ -608,7 +608,7 @@ def build_page_feed(
     fixture_placeholders: bool = False,
     no_testimony: bool = False,
 ) -> dict[str, Any]:
-    """The `perlector-page-feed.v1` payload for one page, deterministic from sealed inputs.
+    """The `perlector-page-feed.v2` payload for one page, deterministic from sealed inputs.
 
     `roster` is the sealed page-witness roster (chair names) and `witnesses`
     one Testimonium per roster chair for this page, in any order: `{chair,
@@ -706,7 +706,7 @@ def assemble_page_feed(
     when it is off. `page_render_bytes` are the render's bytes, needed only
     when `page_overlay` is on, to draw the overlay and seal its digest.
 
-    Returns `{schema, page_id, page_ordinal, page_size: {w, h}, reading_unit,
+    Returns `{schema, page_id, page_ordinal, page_size: {w, h},
     witness_regime, switches, page_render, overlay, witness_testimony,
     witnesses, surya, answer_measure, prompt, feed_digest}`; `prompt` is `None`
     when `serving_recipe` is `None` or the feed shows nothing; `overlay` is `None` when the switch
@@ -744,7 +744,6 @@ def assemble_page_feed(
         "page_id": page_id,
         "page_ordinal": page_ordinal,
         "page_size": {"w": width, "h": height},
-        "reading_unit": READING_UNIT,
         "witness_regime": witness_regime,
         "switches": switches,
         "page_render": _checked_page_render(page_render, switches["page_image"], page_size),

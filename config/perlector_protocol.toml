@@ -1,18 +1,5 @@
-# R5a Perlector prior-draft protocol. Its values are sealed into each run.
-selection_rule = "digest-threshold-over-frame-page-seed-act.v1"
-page_shared_prefix_policy = "page-shared-prefix-first.v1"
-pass_b_fragment = "This is a prior reading. It may be correct, incomplete, or wrong. Independently reread the image, preserve what the ink supports, and change only what the image justifies."
-# Sealed transport ceiling for the offline Perlector fixture. A logical act
-# must fit in one request: callers hold with cluster-presentation-over-capacity
-# rather than split its captures into candidate readings.
-max_images = 32
-
-# What one Perlector call reads. `act` reads each act the Designator minted,
-# one call per act. `page` reads one whole page per call: the Perlector
-# establishes the acts itself from the page and the feed below
-# (`common/page_feed.py`), and every record the page path writes
-# echoes this value.
-reading_unit = "page"
+# The Perlector protocol: what one whole-page reading is shown and how its
+# truncation is judged. Its values are sealed into each run.
 
 # The truncation instrument's length signal (`common/truncation.py`).
 # A reading is length-suspicious when, scaled from its region to the whole page's
@@ -25,7 +12,7 @@ reading_unit = "page"
 # tripped it). A fraction of the page's own area asks the same question at every
 # scale, and the sealed value is what the run's config_digest records.
 #
-# The signal is judged only when the smallest page the act spans is at least
+# The signal is judged only when the smallest page the reading spans is at least
 # `legible_page_pixels`; otherwise it is recorded as not judged and votes neither
 # way. 100,000 px: below that no real register page is legible, while a 72-DPI
 # letter PDF (612x792 = 484,704, `pipeline/1_exemplar/pdf_render.py`) and every
@@ -43,29 +30,13 @@ statistic = "characters per page-equivalent. Padded and clamped: minimum 78, 0.5
 calibrated_for_this_corpus = false
 caveat = "MEASURED ON RECORDGOLD, NOT ON THE QUEBEC REGISTERS THIS INSTRUMENT SERVES; hence not claimed calibrated for this corpus. The honest acts it flags are very short acts (minimum 9 characters) in regions padded past them; those hold visibly as unknown for a reviewer, never as complete. It is one of three computed signals and never decides alone: one suspicious signal under a clean engine stop is unknown and holds; the engine's own length stop is authoritative whatever this says. It catches a reading that stops after a line or less of a four-line act crop; a full 76-character line cut from such a crop reads 634, which is inside the honest range (0.5th percentile 727 to 759), so both cannot hold and this floor gives up the second. Re-measure against the Quebec registers' own gold before relying on the floor there. pipeline/4_perlector/test_truncation.py pins the cut-off reading this floor catches, the honest density it must not flag, and the legibility gate below a 72-DPI letter page"
 
-# Neighbour clues (`pipeline/4_perlector/dossier.py::neighbour_entry`): each
-# witness reading of the acts just before and after an act, cut to this many
-# characters -- the end of the preceding act, the start of the following one.
-# 800 characters is about ten register lines, enough to show the formula and
-# names running up to the boundary while keeping a three-witness pair of
-# neighbours under ~5,000 characters of prompt. The fragment is pinned in
-# `protocol.py`; a different wording is refused.
-[neighbours]
-characters_per_row = 800
-fragment = "The neighbouring acts are the acts written just before and just after this one, as the witnesses read them; (tail) marks only the end of a reading and (head) only its beginning. They are context only: names, dates and formulas recur from act to act, and the boundary between two acts is where readings most often go wrong. Transcribe only this act's own ink and never copy a neighbour's text into it."
-
-# The whole-page render shown beside an act's crops (`common/page_render.py`).
-# maximum_edge makes the page's ink legible, not only its layout: 2,560 keeps a
-# 300-DPI letter leaf (2,550x3,300 -> 1,978x2,560, 5.06 MP) and A4 inside the 27B
-# Perlector row's max_pixels (5,299,200), so the chair sees exactly the rendered
-# pixels (4,960 image tokens for the letter page). A page the act's own crops
-# cover whole already reaches the reader at full resolution, so it is rendered
-# at covered_page_edge, a layout-only size costing about 800 tokens, and so is
-# every page of an act spanning more than one page. Every RecordGold gold act fits the row (max_model_len 32,768) under
-# this rule with neighbour clues, as it did at 1,024
-# (`operations/corpus/perlector_request_fit.py`); the shapes that do not are
-# pinned in `operations/serving/test_serving_catalogue_capacity.py`, and the
-# live reader refuses them before sending, never dropping or shrinking a page.
+# The whole-page render (`common/page_render.py`). maximum_edge makes the page's
+# ink legible, not only its layout: 2,560 keeps a 300-DPI letter leaf
+# (2,550x3,300 -> 1,978x2,560, 5.06 MP) and A4 inside the 27B Perlector row's
+# max_pixels (5,299,200), so the chair sees exactly the rendered pixels (4,960
+# image tokens for the letter page). covered_page_edge is the layout-only size
+# (about 800 tokens). The live reader refuses a request that does not fit its row
+# before sending, never dropping or shrinking a page.
 [page_context]
 maximum_edge = 2560
 covered_page_edge = 1024

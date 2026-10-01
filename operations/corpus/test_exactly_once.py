@@ -99,10 +99,9 @@ def page(
     records = 3
     detector = detector if detector is not None else [band(k) for k in range(records)]
     feed = {
-        "schema": "perlector-page-feed.v1",
+        "schema": "perlector-page-feed.v2",
         "page_id": "page-1",
         "page_ordinal": 1,
-        "reading_unit": "page",
         "switches": {"witness_units": "own"},
         "witnesses": [
             {
@@ -191,7 +190,7 @@ def page(
         "act_regions": [
             {"n": e["n"], "kind": e["kind"], "union_box_px": e["union_box_px"]} for e in entries
         ],
-        "perlectios": [{"schema": "perlectio.v2", "n": e["n"], "text": e["text"]} for e in entries],
+        "perlectios": [{"schema": "perlectio.v3", "n": e["n"], "text": e["text"]} for e in entries],
         "accounting": accounting,
         "usage": {"prompt_tokens": 5100},
     }
@@ -589,7 +588,10 @@ def test_page_records_are_read_from_a_tree_and_grouped_by_page(monkeypatch):
     with pytest.raises(Refusal, match="not-page-read: perlectio 'act-2' is 'perlectio.v1'"):
         load_page_records(_Tree(records, {"call.json": call}))
 
-    records[(PERLECTOR, "page-feed", "f")]["payload"] = {**built["feed"], "reading_unit": "act"}
+    records[(PERLECTOR, "page-feed", "f")]["payload"] = {
+        **built["feed"],
+        "schema": "perlector-page-feed.v1",
+    }
     with pytest.raises(Refusal, match="not-page-read"):
         load_page_records(_Tree(records, {"call.json": call}))
 

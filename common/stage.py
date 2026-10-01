@@ -2154,8 +2154,7 @@ def expected_acts(context) -> list[dict[str, Any]]:
 
 # --- the page-read denominator ------------------------------------------------------
 #
-# A run sealed with `reading_unit = "page"` counts the acts the Perlector
-# established on each page it read whole, not the Designator's expected acts.
+# A run counts the acts the Perlector established on each page it read whole.
 # The records are the Perlector's page path (`pipeline/4_perlector/CONTRACT.md`,
 # "Page reading"); what each says that decides the count or a hold -- the
 # feed, the reading's answer and problems, the accounting, each entry's
@@ -2164,9 +2163,6 @@ def expected_acts(context) -> list[dict[str, Any]]:
 # never trusted. The run tree binds every record read to this run's
 # configuration. The contract, including what is bound rather than
 # recomputed, is in `common/README.md`, "Page-read denominator".
-
-READING_UNIT_ACT: Final = "act"
-READING_UNIT_PAGE: Final = page_path.READING_UNIT
 
 READING_CLASS: Final = page_path.READING_CLASS
 READING_UNPLACED_CLASS: Final = page_path.UNPLACED_CLASS
@@ -2221,41 +2217,21 @@ READING_ACT_FIELDS: Final = frozenset(
 )
 
 
-def sealed_reading_unit(context) -> str:
-    """What one Perlector call read in this run, `act` or `page`, from its sealed protocol."""
-    return _sealed_perlector_protocol(context)[0]
-
-
-def _sealed_perlector_protocol(context) -> tuple[str, dict[str, Any]]:
+def _sealed_perlector_protocol(context) -> dict[str, Any]:
     protocol, digest = read_sealed_toml(
         context.perlector_protocol_config_path, "Perlector protocol declaration"
     )
     context.require_sealed_config("perlector-protocol", digest)
-    unit = protocol.get("reading_unit")
-    if unit not in (READING_UNIT_ACT, READING_UNIT_PAGE):
-        raise FatalAccounting(
-            f"the sealed Perlector protocol names reading_unit {unit!r}, neither 'act' nor "
-            "'page', so which records count as this run's acts cannot be decided"
-        )
-    return unit, protocol
+    return protocol
 
 
 def reading_denominator(context) -> dict[str, Any]:
-    """The acts every downstream count is taken over, chosen by the sealed reading unit.
+    """The acts every downstream count is taken over, verified once.
 
-    `{"reading_unit": "act", "acts": expected_acts(context)}` for a run whose
-    Perlector read Designator acts, and `{"reading_unit": "page", "pages":
-    page_readings rows, "acts": reading_acts rows}` for one that read pages
-    whole, verified once. The two are never mixed: an act-read tree holding
-    any page-path record, or a page-read tree holding a Perlectio of an act
-    the Designator cut, is refused, since either would count one page two ways.
+    `{"pages": page_readings rows, "acts": reading_acts rows}`.
     """
-    unit = sealed_reading_unit(context)
-    if unit == READING_UNIT_ACT:
-        _refuse_page_records_in_an_act_read_tree(context.tree)
-        return {"reading_unit": READING_UNIT_ACT, "acts": expected_acts(context)}
     pages, acts = _page_read_denominator(context)
-    return {"reading_unit": READING_UNIT_PAGE, "pages": pages, "acts": acts}
+    return {"pages": pages, "acts": acts}
 
 
 def page_readings(context) -> dict[int, dict[str, Any]]:
@@ -2297,23 +2273,6 @@ def _page_read_denominator(
     return copy.deepcopy(context.page_read_denominator)
 
 
-def _refuse_page_records_in_an_act_read_tree(tree: RunTree) -> None:
-    manifest = tree.build_manifest(PERLECTOR, verify_inputs=False)
-    for entry in manifest["artifacts"]:
-        kind = entry["kind"]
-        page_record = kind in page_path.PAGE_PATH_KINDS or (
-            kind == page_path.PERLECTIO_KIND
-            and _payload_of(_manifest_artifact(tree, PERLECTOR, entry)).get("schema")
-            == page_path.PERLECTIO_SCHEMA
-        )
-        if page_record:
-            raise FatalAccounting(
-                "the sealed Perlector protocol reads Designator acts, but the Perlector "
-                f"published a page-path {kind} ({entry['artifact_id']}); one run's acts are "
-                "counted one way, never both"
-            )
-
-
 def _verify_page_read_denominator(
     context,
 ) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
@@ -2340,9 +2299,9 @@ def _verify_page_read_denominator(
     return rows, acts
 
 
-# Every kind a page-read Perlector publishes: the page path's own, its
-# `perlectio.v2`, the `reader-sent` marker of a live page call and the stage
-# boundary records every stage writes. Any other kind is the act path's.
+# Every kind the Perlector publishes: the page path's own, its Perlectio, the
+# `reader-sent` marker of a live page call and the stage boundary records every
+# stage writes. Any other kind is refused.
 _PAGE_READ_TREE_KINDS: Final = page_path.PAGE_PATH_KINDS | {
     page_path.PERLECTIO_KIND,
     "reader-sent",
@@ -2364,9 +2323,8 @@ class _PageReadRecords:
         for entry in manifest["artifacts"]:
             if entry["kind"] not in _PAGE_READ_TREE_KINDS:
                 raise FatalAccounting(
-                    f"the sealed Perlector protocol reads whole pages, but the Perlector "
-                    f"published an act-path {entry['kind']} ({entry['artifact_id']}); one run's "
-                    "acts are counted one way, never both"
+                    f"the Perlector published a {entry['kind']} ({entry['artifact_id']}), a kind "
+                    "the page reading never writes, so this run's acts cannot be counted"
                 )
         self.by_kind: dict[str, list[dict[str, Any]]] = {
             kind: _stage_records(tree, PERLECTOR, kind, manifest=manifest)
@@ -2381,11 +2339,11 @@ class _PageReadRecords:
             schema = _payload_of(record).get("schema")
             if schema != page_path.PERLECTIO_SCHEMA:
                 raise FatalAccounting(
-                    f"the sealed Perlector protocol reads whole pages, but Perlectio "
-                    f"{record.get('artifact_id')!r} has schema {schema!r}, a reading of an act "
-                    "the Designator cut; one run's acts are counted one way, never both"
+                    f"Perlectio {record.get('artifact_id')!r} has schema {schema!r}, not the page "
+                    f"reading's {page_path.PERLECTIO_SCHEMA!r}, so this run's acts cannot be "
+                    "counted"
                 )
-        _unit, protocol = _sealed_perlector_protocol(context)
+        protocol = _sealed_perlector_protocol(context)
         self.protocol = protocol
         self.truncation_policy = protocol.get("truncation")
         self.accounting_policy = page_accounting.require_page_accounting_policy(
@@ -2503,7 +2461,6 @@ def _refused_page_row(
         payload.get("schema") == page_path.PAGE_READING_SCHEMA
         and payload.get("page_id") == page_id
         and payload.get("page_ordinal") == ordinal
-        and payload.get("reading_unit") == READING_UNIT_PAGE
         and payload.get("parse_state") == page_path.NOT_RUN
         and payload.get("disposition") == page_path.HELD
         and reading.get("outcome") == page_path.HELD
@@ -2563,7 +2520,6 @@ def _verify_page_reading(
         payload.get("schema") == page_path.PAGE_READING_SCHEMA
         and payload.get("page_id") == page_id
         and payload.get("page_ordinal") == ordinal
-        and payload.get("reading_unit") == READING_UNIT_PAGE
         and payload.get("disposition") in READING_DISPOSITIONS
         and reading.get("outcome") == payload.get("disposition")
         and payload.get("parse_state") in page_accounting.PARSE_STATES,
@@ -3147,7 +3103,6 @@ def _verify_entries(
             "schema": page_path.ACT_REGION_SCHEMA,
             "page_id": page_id,
             "page_ordinal": ordinal,
-            "reading_unit": READING_UNIT_PAGE,
             "n": n,
             "kind": act["kind"],
             "label": act.get("label"),

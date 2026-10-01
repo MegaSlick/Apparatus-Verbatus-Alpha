@@ -60,7 +60,7 @@ row is the census's and is never reviewed (`reviewed_rows`).
   through `RunTree.read_artifact_reference`, which refuses a reference whose actual
   bytes name a different stage or kind; that check is what makes a Testimonium or
   any other non-Perlectio artifact unable to reach this stage by being named. The
-  reading is the row's `perlectio.v2`, which the review must name and input; it must
+  reading is the row's `perlectio.v3`, which the review must name and input; it must
   be `read` with no `holds` or `page_holds`, of the row's kind, and not salvage-tier
   (`tier`, `source_tier` or `reading_tier` of `salvage` is refused). Its one region
   is the `act-region` the reading names (and the row counted), proven from the

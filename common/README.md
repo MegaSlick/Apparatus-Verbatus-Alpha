@@ -35,15 +35,11 @@ genuinely collide.
 ## Page-read denominator
 
 What a run counts is decided once, in `stage.py`, for every stage after the
-Perlector: `reading_denominator(context)` reads the sealed Perlector protocol's
-`reading_unit` and returns either `{"reading_unit": "act", "acts":
-expected_acts(context)}` (the Designator's proposal seal) or `{"reading_unit":
-"page", "pages": ..., "acts": ...}` (the acts the Perlector established on each
-page it read whole). The two are never mixed: an act-read tree holding any
-page-path record (`page-feed`, `page-reading`, `page-accounting`, `act-region`
-or a `perlectio.v2`), or a page-read tree holding any act-path record (any
-Perlector kind but the page path's, its `perlectio.v2`, a live call's
-`reader-sent` and the stage boundary records), is refused. `page_readings(context)` and `reading_acts(context)`
+Perlector: `reading_denominator(context)` returns `{"pages": ..., "acts": ...}`,
+the acts the Perlector established on each page it read whole. A Perlector record
+of any kind but the page path's (`page-feed`, `page-reading`, `page-accounting`,
+`act-region`, a `perlectio.v3`, a live call's `reader-sent` and the stage boundary
+records) is refused. `page_readings(context)` and `reading_acts(context)`
 give the two halves of the page form alone; each verifies the whole run, so a
 caller needing both takes `reading_denominator`, and one stage context is
 verified once however often it asks. The records they read are the Perlector's
@@ -73,7 +69,7 @@ Every submitted ordinal must have an Exemplar page.
 | `region_ref` | the entry's `act-region`; `None` for a page row |
 | `reading_ref` | the page's `page-reading` (a refused page's `not-run` reading) |
 | `accounting_ref` | the page's `page-accounting`; `None` for `page-refused` |
-| `perlectio_ref` | the entry's `perlectio.v2`; `None` for a page row |
+| `perlectio_ref` | the entry's `perlectio.v3`; `None` for a page row |
 | `hold_codes` | sorted: the recomputed page accounting's `holds`, the entry's own holds, and the page row's hold |
 | `continues_from_previous_page`, `continues_to_next_page` | the answer's flags; `None` for a page row |
 

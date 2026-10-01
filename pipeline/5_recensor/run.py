@@ -47,7 +47,6 @@ from common.residual_ink import (  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
-    READING_UNIT_PAGE,
     latest_attempt,
     open_stage_context,
     reading_denominator,
@@ -272,13 +271,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     """Run under the explicitly supplied chair/config implementation."""
     args = stage_parser(DESCRIPTION).parse_args()
     context = open_stage_context(args, RECENSOR, registry_factory=registry_factory)
-    denominator = reading_denominator(context)
-    if denominator["reading_unit"] != READING_UNIT_PAGE:
-        raise FatalAccounting(
-            f"this run reads by {denominator['reading_unit']!r}; the Recensor reviews only "
-            "page-read runs"
-        )
-    return review_a_page_read_run(context, denominator)
+    return review_a_page_read_run(context, reading_denominator(context))
 
 
 if __name__ == "__main__":

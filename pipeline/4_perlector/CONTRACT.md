@@ -4,7 +4,7 @@ The Perlector reads every sealed Exemplar page whole, once, and establishes the
 acts on it (`page_run.py`, opened by `run.py`). Per page it writes a `page-feed`,
 a `page-reading` and a `page-accounting` under `4_perlector/artifacts/`, and on a
 live pass a `reader-sent` record before the call leaves; per entry of a valid
-answer it writes one `act-region` and one `perlectio` (`perlectio.v2`). The
+answer it writes one `act-region` and one `perlectio` (`perlectio.v3`). The
 records are `skeleton.v1` envelopes with derived identities, attempt bindings,
 self-hashes and checked direct inputs. On the fixture route the answers come from
 the declared synthetic fixture and prove wiring only; they claim no model reading.
@@ -75,8 +75,7 @@ denominator; this stage records no second copy.
 
 ## Page reading
 
-The sealed protocol (`config/perlector_protocol.toml`) names `reading_unit = "page"`,
-and `protocol.load` refuses any other unit by name. This stage reads every Exemplar
+This stage reads every Exemplar
 page (`common.stage.exemplar_page_ids`), not only pages with a Designator act, once,
 and the Perlector establishes the acts on it.
 
@@ -143,7 +142,7 @@ Every sealed page's feed is built and published before any page is read, so a li
 pass counts exactly the pages it will send before its chair starts.
 
 `kind="page-feed"` (subject page_id, no attempt, outcome `read`): the
-`perlector-page-feed.v1` payload exactly as `page_feed.build_page_feed` returns it,
+`perlector-page-feed.v2` payload exactly as `page_feed.build_page_feed` returns it,
 with `witness_testimony` (`present` or `none`) and `prompt` null when the Perlector
 chair is absent or the feed shows nothing (`page_feed.shows_nothing`). Its inputs are
 every Testimonium of the sealed page-witness roster -- a witness the `witnesses`
@@ -157,7 +156,7 @@ page render and the sealed page it names, each re-derived from the bytes on disk
 `kind="page-reading"` (subject page_id, attempt `attempt_id(page_id, "page-read", 1)`):
 
 ```
-{schema: "perlector-page-reading.v1", page_id, page_ordinal, reading_unit: "page",
+{schema: "perlector-page-reading.v2", page_id, page_ordinal,
  feed_ref, request_digest, engine_call | null, sampling | null, capacity | null,
  finish_reason, stop_reason, parse_state, answer | null, problems: [{code, detail}], failure | null,
  disposition: "read" | "held", audit, provenance}
@@ -264,7 +263,7 @@ held:
 `kind="act-region"` (subject act_id, attempt `attempt_id(act_id, "reading-region", 1)`):
 
 ```
-{schema: "perlector-act-region.v1", page_id, page_ordinal, reading_unit, n, kind,
+{schema: "perlector-act-region.v2", page_id, page_ordinal, n, kind,
  label, cites (as given), cited_ids (expanded, first-cited order), act_class,
  page_reading_attempt, union_box_px | null, region_id, image_path, image_sha256,
  transform, transform_digest, page_reading_ref, page_accounting_ref, feed_ref, holds,
@@ -286,7 +285,7 @@ held:
 `kind="perlectio"` (subject act_id, attempt `perlector_attempt_id(act_id, "perlegere", 1)`):
 
 ```
-{schema: "perlectio.v2", page_id, page_ordinal, reading_unit, act_region_ref,
+{schema: "perlectio.v3", page_id, page_ordinal, act_region_ref,
  page_reading_ref, page_accounting_ref, feed_ref, n, kind, label, text,
  uncertain_spans, gaps, uncertainty_assessment, dissent, truncation | null, autopsia,
  continues_from_previous_page, continues_to_next_page, holds, page_holds, engine_call,
@@ -483,7 +482,7 @@ independently looking up whatever reading now sorts latest.
   span of a page reading is flagged or re-proved.
 - **Spec 08's contextual-suggestion flag is not built.** "A contextual suggestion (a year
   that must be 1805) may ride as a flag while the text stays what the pixels support" —
-  `perlectio.v2` has no field that could carry one, and nothing here produces one.
+  `perlectio.v3` has no field that could carry one, and nothing here produces one.
 - **A truncated or unknown reading is held, not retried.** Spec 08 asks that such an
   attempt be "recorded, retried within the recovery budget, never accepted"; an entry
   whose classification is `truncated` or `unknown` holds `reading-incomplete`, and a page

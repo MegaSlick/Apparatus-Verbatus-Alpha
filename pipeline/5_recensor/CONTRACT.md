@@ -9,8 +9,7 @@ refusal found at a later unit leaves no partial set of reviews behind.
 ## The units
 
 The Perlector reads each sealed page whole, and `page_review.py` reviews what it
-counts. `main` refuses a run whose sealed `reading_unit` is not `"page"`. The units
-are the denominator's `reading_acts` rows (`common/README.md`, "Page-read
+counts. The units are the denominator's `reading_acts` rows (`common/README.md`, "Page-read
 denominator"): an entry of a read page's answer (`reading` or `reading-unplaced`,
 `kind` `act` or `other`), a `page-unread` or `page-blank` page row. A `page-refused`
 row names a page the Exemplar refused and is not a counted unit; it gets no review.
