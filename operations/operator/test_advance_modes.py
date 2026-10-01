@@ -196,11 +196,11 @@ def test_every_advanceable_boundary_is_a_driver_member_in_the_same_order() -> No
 def test_a_range_endpoint_with_no_boundary_names_the_boundaries_that_do() -> None:
     with pytest.raises(ApprovalRefusal) as refusal:
         advance.held_boundaries_for_mode(
-            "semi", stage="recensor", from_stage="designator", to_stage="recovery"
+            "semi", stage="recensor", from_stage="designator", to_stage="not-a-stage"
         )
 
     detail = str(refusal.value)
-    assert "'recovery'" in detail and "owns no stage completion boundary" in detail
+    assert "'not-a-stage'" in detail and "owns no stage completion boundary" in detail
     assert all(boundary in detail for boundary in STAGES)
 
 
