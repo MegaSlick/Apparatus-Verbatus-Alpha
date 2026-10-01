@@ -309,6 +309,88 @@ def _uncertainty_lines(
     return lines
 
 
+def _entry_lines(act: dict[str, Any], field: str) -> list[str]:
+    """One act or other reading as the review screen prints it; `field` names its list."""
+    lines: list[str] = []
+    lines.append(
+        f"  {inert(act.get('act_key'))} ({inert(act.get('act_id'))}): {inert(act.get('category'))}"
+    )
+    if act.get("reason"):
+        lines.append(f"    reason: {_one_line(act.get('reason'), limit=600)}")
+    row = _object(act, "row", f"{field}[].row")
+    reading = _object(row, "reading", f"{field}[].row.reading")
+    if reading:
+        truncation = _object(reading, "truncation", f"{field}[].row.reading.truncation")
+        lines.append(
+            f"    reading: {inert(reading.get('outcome'))}; truncation "
+            f"{inert(truncation.get('classification'))}"
+        )
+        if isinstance(reading.get("text"), str):
+            lines.append(f"    machine reading: {_one_line(reading.get('text'), limit=300)}")
+        lines.extend(
+            _uncertainty_lines(
+                reading.get("uncertainty_assessment"),
+                spans=reading.get("uncertain_spans"),
+                gaps=reading.get("gaps"),
+                text=reading.get("text"),
+                label=f"{field}[].row.reading",
+                assessment_key="uncertainty_assessment",
+                outcome=reading.get("outcome"),
+            )
+        )
+    elif isinstance(row.get("text"), str):
+        lines.append(f"    delivered text: {_one_line(row.get('text'), limit=300)}")
+        # A delivered act has no Perlectio row in this view, so the
+        # doubt report is read off the canonical layer the export
+        # carries instead.
+        uncertainty = _object(row, "uncertainty", f"{field}[].row.uncertainty")
+        lines.extend(
+            _uncertainty_lines(
+                uncertainty.get("assessment"),
+                spans=uncertainty.get("uncertain_spans"),
+                gaps=uncertainty.get("gaps"),
+                text=row.get("text"),
+                label=f"{field}[].row.uncertainty",
+                assessment_key="assessment",
+                # A delivered act was read by definition; its text is the
+                # string this branch was entered on.
+                outcome="read",
+            )
+        )
+    review = _object(row, "review", f"{field}[].row.review")
+    if review:
+        lines.append(
+            f"    review: {inert(review.get('outcome'))} — "
+            f"{_one_line(review.get('reason'), limit=600)}"
+        )
+    review_ref = _object(row, "recensor_ref", f"{field}[].row.recensor_ref")
+    if review_ref:
+        lines.append(f"    review record: {inert(review_ref.get('relative_path'))}")
+    testimonia = _nested_rows(row, "testimonia", f"{field}[].row.testimonia")
+    if testimonia:
+        witnessed = ", ".join(
+            f"{inert(entry.get('chair'))} {inert(entry.get('outcome'))}"
+            + (
+                f" (attempt {inert(entry.get('attempt_ordinal'))})"
+                if entry.get("attempt_ordinal") is not None
+                else ""
+            )
+            for entry in testimonia
+        )
+        lines.append(f"    witnesses: {witnessed}")
+    crops = _nested_rows(act, "crops", f"{field}[].crops")
+    for crop in crops:
+        lines.append(
+            f"    crop {inert(crop.get('region_id'))} on page {inert(crop.get('ordinal'))}: "
+            f"{inert(crop.get('image_path'))} sha256 {_digest(crop.get('image_sha256'))}"
+        )
+    if not crops:
+        lines.append(f"    crops: {_one_line(act.get('crops_note') or 'none recorded', 300)}")
+    elif act.get("crops_note"):
+        lines.append(f"    crops: {_one_line(act.get('crops_note'), 300)}")
+    return lines
+
+
 def render(projection: dict[str, Any]) -> list[str]:
     """The operator's view of one run, in reading order.
 
@@ -402,83 +484,13 @@ def render(projection: dict[str, Any]) -> list[str]:
     else:
         lines.append(f"Acts ({len(acts)})")
     for act in acts:
-        lines.append(
-            f"  {inert(act.get('act_key'))} ({inert(act.get('act_id'))}): "
-            f"{inert(act.get('category'))}"
-        )
-        if act.get("reason"):
-            lines.append(f"    reason: {_one_line(act.get('reason'), limit=600)}")
-        row = _object(act, "row", "acts[].row")
-        reading = _object(row, "reading", "acts[].row.reading")
-        if reading:
-            truncation = _object(reading, "truncation", "acts[].row.reading.truncation")
-            lines.append(
-                f"    reading: {inert(reading.get('outcome'))}; truncation "
-                f"{inert(truncation.get('classification'))}"
-            )
-            if isinstance(reading.get("text"), str):
-                lines.append(f"    machine reading: {_one_line(reading.get('text'), limit=300)}")
-            lines.extend(
-                _uncertainty_lines(
-                    reading.get("uncertainty_assessment"),
-                    spans=reading.get("uncertain_spans"),
-                    gaps=reading.get("gaps"),
-                    text=reading.get("text"),
-                    label="acts[].row.reading",
-                    assessment_key="uncertainty_assessment",
-                    outcome=reading.get("outcome"),
-                )
-            )
-        elif isinstance(row.get("text"), str):
-            lines.append(f"    delivered text: {_one_line(row.get('text'), limit=300)}")
-            # A delivered act has no Perlectio row in this view, so the
-            # doubt report is read off the canonical layer the export
-            # carries instead.
-            uncertainty = _object(row, "uncertainty", "acts[].row.uncertainty")
-            lines.extend(
-                _uncertainty_lines(
-                    uncertainty.get("assessment"),
-                    spans=uncertainty.get("uncertain_spans"),
-                    gaps=uncertainty.get("gaps"),
-                    text=row.get("text"),
-                    label="acts[].row.uncertainty",
-                    assessment_key="assessment",
-                    # A delivered act was read by definition; its text is the
-                    # string this branch was entered on.
-                    outcome="read",
-                )
-            )
-        review = _object(row, "review", "acts[].row.review")
-        if review:
-            lines.append(
-                f"    review: {inert(review.get('outcome'))} — "
-                f"{_one_line(review.get('reason'), limit=600)}"
-            )
-        review_ref = _object(row, "recensor_ref", "acts[].row.recensor_ref")
-        if review_ref:
-            lines.append(f"    review record: {inert(review_ref.get('relative_path'))}")
-        testimonia = _nested_rows(row, "testimonia", "acts[].row.testimonia")
-        if testimonia:
-            witnessed = ", ".join(
-                f"{inert(entry.get('chair'))} {inert(entry.get('outcome'))}"
-                + (
-                    f" (attempt {inert(entry.get('attempt_ordinal'))})"
-                    if entry.get("attempt_ordinal") is not None
-                    else ""
-                )
-                for entry in testimonia
-            )
-            lines.append(f"    witnesses: {witnessed}")
-        crops = _nested_rows(act, "crops", "acts[].crops")
-        for crop in crops:
-            lines.append(
-                f"    crop {inert(crop.get('region_id'))} on page {inert(crop.get('ordinal'))}: "
-                f"{inert(crop.get('image_path'))} sha256 {_digest(crop.get('image_sha256'))}"
-            )
-        if not crops:
-            lines.append(f"    crops: {_one_line(act.get('crops_note') or 'none recorded', 300)}")
-        elif act.get("crops_note"):
-            lines.append(f"    crops: {_one_line(act.get('crops_note'), 300)}")
+        lines.extend(_entry_lines(act, "acts"))
+    other_readings = _rows(projection, "other_readings")
+    if other_readings:
+        lines.append("")
+        lines.append(f"Other readings ({len(other_readings)}; never counted as acts)")
+        for other in other_readings:
+            lines.extend(_entry_lines(other, "other_readings"))
 
     review_items = projection.get("review_items")
     lines.append("")
