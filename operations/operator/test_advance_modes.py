@@ -185,14 +185,12 @@ def test_every_advanceable_boundary_is_a_driver_member_in_the_same_order() -> No
     """`held_advance_boundaries` indexes `STAGES`; the driver indexes its own sequence.
 
     A semi range is resolved independently over `SEQUENCE_NAMES` and `STAGES`,
-    so their boundary order must agree. `recovery` remains a legal driver member
-    but has no stage program or completion boundary.
+    so their boundary order must agree, member for member.
     """
 
     from pipeline.orchestrator.run import SEQUENCE_NAMES
 
-    assert tuple(name for name in SEQUENCE_NAMES if name in STAGES) == STAGES
-    assert set(SEQUENCE_NAMES) - set(STAGES) == {"recovery"}
+    assert SEQUENCE_NAMES == STAGES
 
 
 def test_a_range_endpoint_with_no_boundary_names_the_boundaries_that_do() -> None:

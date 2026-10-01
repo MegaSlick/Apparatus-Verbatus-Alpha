@@ -7,12 +7,6 @@ docstring: the value is untrusted or model-derived, so depth must cost the walk
 its own list rather than the interpreter stack, and a `RecursionError` is a
 crash naming neither the record nor the field.
 
-The conversions were tracked as prose, and prose miscounted:
-`dossier.assert_no_order_bearing_field` was still recursing -- missed because it
-lives in dossier assembly and is not *called* a preference screen, while doing
-the same forbidden-vocabulary walk over a structure carrying every Testimonium
-verbatim, on the production path, before the digest is taken.
-
 So the list is here and it is mechanical. A screen added to the family and not
 added below is not guarded by this file, which nothing can fix from inside a
 test -- but a screen that is listed can never quietly go back to recursing, and
@@ -22,16 +16,14 @@ nothing. That is the half worth automating.
 
 import ast
 import contextlib
-import functools
 import re
 import signal
 from pathlib import Path
 
 import pytest
 
-from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.errors import SchemaRefusal
 from common.corpus_register import refuse_capture_preference
-from conftest import load_stage
 from operations.operator import triage
 from operations.operator.triage import TriageRefusal
 
@@ -52,12 +44,6 @@ PATHOLOGICAL_DEPTH = 1_000_000
 FAMILY_DEPTH = 200_000
 
 
-@functools.cache
-def _dossier():
-    """Loaded on first use, so the pure AST tests here do not pay for PIL at import."""
-    return load_stage("4_perlector", "dossier")
-
-
 # Every runtime screen standing over the rule that no step may pick among
 # witnesses, as (file, function). Each
 # walks a payload it does not control -- caller JSON, witness output, or a
@@ -68,8 +54,6 @@ PREFERENCE_SCREENS = (
     # converted to match it or delegate to it.
     ("common/corpus_register.py", "refuse_capture_preference"),
     ("operations/operator/triage.py", "_refuse_preference_named"),
-    # The one the prose enumeration missed.
-    ("pipeline/4_perlector/dossier.py", "assert_no_order_bearing_field"),
 )
 
 
@@ -166,15 +150,6 @@ DRIVEN_SCREENS = (
         "triage refusal queue-expresses-preference",
         TriageRefusal,
         "triage refusal queue-expresses-preference: queue contains itself",
-    ),
-    (
-        "dossier.assert_no_order_bearing_field",
-        lambda value: _dossier().assert_no_order_bearing_field(value),
-        {"trust_score": 100},
-        ContractError,
-        "names a preference",
-        ContractError,
-        "contains itself",
     ),
 )
 

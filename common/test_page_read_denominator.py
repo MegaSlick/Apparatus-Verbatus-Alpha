@@ -1200,22 +1200,20 @@ def test_a_record_changed_after_the_perlector_sealed_is_refused(happy_tree, tmp_
         reading_acts(context)
 
 
-# --- one run, one way of counting ---------------------------------------------------
+# --- only the page path's records ---------------------------------------------------
 
 
-def test_a_page_read_tree_holding_an_act_reading_is_refused_as_mixed(happy_tree, tmp_path):
+def test_a_perlectio_of_another_schema_is_refused(happy_tree, tmp_path):
     tree = _copy(happy_tree, tmp_path)
     _forge(
         tree[0], "perlectio", 1, 1, lambda record: record["payload"].update(schema="perlectio.v1")
     )
-    with pytest.raises(FatalAccounting, match="counted one way, never both"):
+    with pytest.raises(FatalAccounting, match="has schema 'perlectio.v1', not the page"):
         reading_denominator(_context(tree))
 
 
 @pytest.mark.parametrize("kind", ["audit-draft", "audit-finding"])
-def test_a_page_read_tree_holding_a_record_of_any_other_kind_is_refused_as_mixed(
-    happy_tree, tmp_path, kind
-):
+def test_a_perlector_record_of_any_other_kind_is_refused(happy_tree, tmp_path, kind):
     tree = _copy(happy_tree, tmp_path)
     source, record = _one(tree[0], "page-reading", 1)
     record["kind"] = kind
@@ -1224,7 +1222,9 @@ def test_a_page_read_tree_holding_a_record_of_any_other_kind_is_refused_as_mixed
     directory.mkdir()
     _write(directory / f"{record['artifact_id']}.json", record)
     rebind_stage_seal_artifact(RunTree(tree[0], RUN_ID), PERLECTOR)
-    with pytest.raises(FatalAccounting, match=f"published an act-path {kind}"):
+    with pytest.raises(
+        FatalAccounting, match=f"published a {kind} .*a kind the page reading never writes"
+    ):
         reading_denominator(_context(tree))
 
 

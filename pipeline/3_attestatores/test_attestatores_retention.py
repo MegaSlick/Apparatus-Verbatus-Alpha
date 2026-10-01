@@ -517,10 +517,11 @@ def test_a_whole_pass_may_not_skip_an_ordinal_over_any_seat(tmp_path):
     assert len(_testimonia(tree)) == before
 
 
-def test_an_operation_this_stage_does_not_implement_is_refused(tmp_path):
-    """`--operation` carries no argparse `choices` — the same parser serves every
-    stage — so an unrecognized one would fall through to the whole pass and exit 0
-    over an instruction it never carried out."""
+@pytest.mark.parametrize("flag", ["operation", "act", "chair"])
+def test_a_whole_pass_refuses_an_instruction_it_cannot_carry_out(tmp_path, flag):
+    """A whole pass reads every chair on every page; an operation, act or chair
+    beside it would be an instruction the stage did not carry out, so the parser
+    refuses it before anything is read or written."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
         invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
@@ -529,48 +530,10 @@ def test_an_operation_this_stage_does_not_implement_is_refused(tmp_path):
     before = len(_testimonia(tree))
 
     result = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        operation="reraed",
-        act=_act_id_for(tree, "a1"),
+        run_root, "retention", "happy", "pipeline/3_attestatores/run.py", **{flag: "x"}
     )
     assert result.returncode == 2
-    assert "has no 'reraed' operation" in result.stderr
-    assert len(_testimonia(tree)) == before
-
-
-def test_a_whole_pass_refuses_to_narrow_to_one_act_or_chair(tmp_path):
-    """A whole pass reads every chair on every page; an `--act` or `--chair` beside it
-    would be an instruction the operator gave and the stage did not carry out."""
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    assert (
-        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
-        == 0
-    )
-    before = len(_testimonia(tree))
-
-    narrowed = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        act=_act_id_for(tree, "a1"),
-    )
-    assert narrowed.returncode == 2
-    assert "cannot narrow to it" in narrowed.stderr
-
-    chair = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        chair="attestator_3",
-    )
-    assert chair.returncode == 2
-    assert "does not accept it" in chair.stderr
-
+    assert "unrecognized arguments" in result.stderr
     assert len(_testimonia(tree)) == before
 
 
