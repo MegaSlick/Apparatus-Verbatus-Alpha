@@ -539,23 +539,19 @@ def test_a_proposal_region_with_no_comparable_identity_is_refused(region_payload
         unpresented_region_ids(payload()["presented"], [{"payload": region_payload}])
 
 
-def test_page_payload_closure_is_shared_with_the_consumer_and_refuses_unhashable_roles():
+def test_page_payload_closure_is_shared_with_the_consumer_and_refuses_a_bool_page():
     value = payload()
     value.update(
         {
             "chair": "attestator_1",
-            "act_key": "page-1",
             "attempt_ordinal": 1,
-            "regions": [],
             "provenance": {},
             "format_capabilities": {},
             "witness_reported": None,
             "content_health": {},
             "unpresented_regions": [],
             "scope": "page",
-            "page_ordinal": 1,
-            "page_role": [],
-            "unjoined_act_attempts": [],
+            "page_ordinal": True,
         }
     )
     value["partition_disagreement"] = partition_disagreement(
@@ -657,9 +653,7 @@ def _page_with_churro_capture() -> dict:
     value.update(
         {
             "chair": "attestator_1",
-            "act_key": "page-1",
             "attempt_ordinal": 1,
-            "regions": [],
             "provenance": {},
             "format_capabilities": {},
             "witness_reported": None,
@@ -676,8 +670,6 @@ def _page_with_churro_capture() -> dict:
             "unpresented_regions": [],
             "scope": "page",
             "page_ordinal": 1,
-            "page_role": "primary",
-            "unjoined_act_attempts": [],
             "native_capture": {
                 "schema": "attestatores-model-view.v1",
                 "adapter": "churro.v1",
@@ -980,9 +972,7 @@ def _page_payload(**changes):
     value.update(
         {
             "chair": "attestator_1",
-            "act_key": "page-1",
             "attempt_ordinal": 1,
-            "regions": [],
             "provenance": {},
             "format_capabilities": {},
             "witness_reported": None,
@@ -990,8 +980,6 @@ def _page_payload(**changes):
             "unpresented_regions": [],
             "scope": "page",
             "page_ordinal": 1,
-            "page_role": "primary",
-            "unjoined_act_attempts": [],
         }
     )
     value.update(changes)

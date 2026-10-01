@@ -29,7 +29,7 @@ from operations.operator.errors import ErrorCode, OperatorError
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 RUN_ID = "r"
-SCENARIO = "audit-reproof-cutoff"
+SCENARIO = "happy"
 
 
 def _orchestrate(
@@ -461,11 +461,11 @@ def test_a_terminal_act_with_downstream_records_says_the_two_disagree():
     testimonium = {
         "stage": "attestatores",
         "artifact_id": "art_t",
-        "kind": "testimonium",
-        "subject_id": "act1",
+        "kind": "page-testimonium",
+        "subject_id": "p1",
         "outcome": "read",
         "record_ref": {
-            "relative_path": "3_attestatores/artifacts/testimonium/t.json",
+            "relative_path": "3_attestatores/artifacts/page-testimonium/t.json",
             "sha256": "",
         },
         "record": {"payload": {"chair": "chair-a", "attempt_ordinal": 1}},

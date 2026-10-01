@@ -33,7 +33,7 @@ from operations.submit.submit import build_manifest, walk_folder
 from .compare import compare_page_geometry, load_exemplar_page_shas, load_pipeline_proposal_acts
 from .local_admission import admit_local_set
 from .reference import validate_reference_page
-from .witness_evaluate import CHAIRS, attachment_index, sealed_page_bindings, witness_reading
+from .witness_evaluate import CHAIRS, page_witness_index, sealed_page_bindings, witness_reading
 
 MIN_ACTS_FOUND = 0.5
 MIN_SHARED_CHARACTERS = 0.4
@@ -206,12 +206,12 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
         try:
             proposals = load_pipeline_proposal_acts(tree)
             bindings = sealed_page_bindings(tree)
-            attachments = attachment_index(tree, sealed_pages=bindings)
+            witnessed = page_witness_index(tree, sealed_pages=bindings)
         except Exception as error:
             fail(DESIGNATOR, f"check-raised:{type(error).__name__}")
-            proposals, attachments = [], {}
+            proposals, witnessed = [], {}
 
-        matched: list[tuple[str, dict[str, Any], int]] = []
+        matched = 0
         for ordinal in sorted(ordinals):
             page = references.get(page_shas.get(ordinal))
             if page is None:
@@ -230,26 +230,20 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 continue
             if len(geometry["matched_pairs"]) < MIN_ACTS_FOUND * len(page["acts"]):
                 fail(DESIGNATOR, "fewer-than-half-gold-acts-found")
-            by_id = {act["physical_act_id"]: act for act in page["acts"]}
-            matched.extend(
-                (pair["pipeline_act_id"], by_id[pair["reference_physical_act_id"]], ordinal)
-                for pair in geometry["matched_pairs"]
-            )
+            matched += len(geometry["matched_pairs"])
         if not matched:
             fail(DESIGNATOR, "no-matched-canary-acts")
-            for chair in CHAIRS:
-                fail(chair, "no-canary-testimonium")
 
+        # Every witness reads the whole page, so each is checked on its page
+        # reading against the page's reference acts joined in order.
         for chair in CHAIRS:
-            for act_id, reference, ordinal in matched:
-                candidates = attachments.get(act_id, {}).get(chair, [])
-                candidates = [
-                    item
-                    for item in candidates
-                    if not item["attachment"]["page_witness"]
-                    or item["attachment"]["page_ordinal"] == ordinal
-                ]
-                if len(candidates) != 1:
+            for ordinal in sorted(ordinals):
+                page = references.get(page_shas.get(ordinal))
+                if page is None:
+                    continue
+                reference_text = "\n".join(act["text"] for act in page["acts"])
+                testimonium = witnessed.get(ordinal, {}).get(chair)
+                if testimonium is None:
                     fail(
                         chair,
                         "DAI failed on a page it was trained on"
@@ -258,12 +252,10 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                     )
                     continue
                 try:
-                    status, reading, _ = witness_reading(
-                        candidates[0]["attachment"], candidates[0]["testimonium"]
-                    )
+                    status, reading, _ = witness_reading(testimonium)
                     healthy = (
                         status == OutputStatus.COMPLETE
-                        and _shared(reference["text"], reading, status)
+                        and _shared(reference_text, reading, status)
                         and not _repeated(reading or "")
                     )
                 except Exception as error:

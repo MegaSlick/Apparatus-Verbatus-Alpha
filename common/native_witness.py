@@ -42,9 +42,7 @@ _OBSERVED_ENTRY_FIELDS: Final = frozenset({"ordinal", "bounds", "bounds_source",
 PAGE_TESTIMONIUM_REQUIRED_FIELDS: Final = frozenset(
     {
         "chair",
-        "act_key",
         "attempt_ordinal",
-        "regions",
         "provenance",
         "format_capabilities",
         "payload",
@@ -55,8 +53,6 @@ PAGE_TESTIMONIUM_REQUIRED_FIELDS: Final = frozenset(
         "unpresented_regions",
         "scope",
         "page_ordinal",
-        "page_role",
-        "unjoined_act_attempts",
     }
 )
 PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
@@ -75,9 +71,10 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
         "presentations",
         "unit_captures",
         "unit_call_refs",
+        # The retained call record of the one request a whole-page chair was sent.
+        "serving_call_ref",
     }
 )
-PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 
 # Each resizing operation's rounding rule; the key set is also the set of
 # operations that resize.  Chandra snaps to its 28-pixel grid, which is not `floor`.
@@ -702,14 +699,10 @@ def validate_page_testimonium_payload(
         raise SchemaRefusal("a page Testimonium is not its closed schema")
     if missing := sorted(PAGE_TESTIMONIUM_REQUIRED_FIELDS - set(payload)):
         raise SchemaRefusal(f"a page Testimonium lacks required field(s) {missing}")
-    page_role = payload["page_role"]
     if (
         payload["scope"] != "page"
         or not is_plain_int(payload["page_ordinal"])
         or payload["page_ordinal"] < 1
-        or not isinstance(page_role, str)
-        or page_role not in PAGE_ROLES
-        or not isinstance(payload["unjoined_act_attempts"], list)
     ):
         raise SchemaRefusal("a page Testimonium has invalid page scope facts")
     validate_unpresented_regions(payload)
@@ -748,6 +741,8 @@ def validate_page_testimonium_payload(
         _validate_unit_call_refs(payload, read_bytes)
     elif "presentations" in payload:
         raise SchemaRefusal("a page Testimonium shown several images names no unit call records")
+    if "serving_call_ref" in payload:
+        _validate_serving_call_ref(payload, read_bytes)
     validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated
 
@@ -795,6 +790,25 @@ def _validate_unit_call_refs(
             )
         if read_bytes is not None:
             read_verified(read_bytes, reference, "page Testimonium unit call record")
+
+
+def _validate_serving_call_ref(
+    payload: dict[str, Any], read_bytes: Callable[[str], bytes] | None
+) -> None:
+    """One retained call record for a chair sent the whole page in one request."""
+    if "unit_call_refs" in payload:
+        raise SchemaRefusal(
+            "a page Testimonium names both one serving call and a call per image; a chair "
+            "is sent either the whole page or one request per image"
+        )
+    reference = payload["serving_call_ref"]
+    digest_ref(reference, "a page Testimonium serving call record reference")
+    if reference["relative_path"] != _attestatores_blob_path(reference["sha256"]):
+        raise SchemaRefusal(
+            "a page Testimonium serving call record reference is not a closed blob reference"
+        )
+    if read_bytes is not None:
+        read_verified(read_bytes, reference, "page Testimonium serving call record")
 
 
 def _validate_churro_page_health(payload: dict[str, Any], capture: dict[str, Any]) -> None:

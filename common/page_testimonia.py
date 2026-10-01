@@ -189,12 +189,6 @@ def validate_page_testimonium_record(
     blank_testimony = is_detector_blank_testimony(context, record)
     attempted = chair_was_served(context, record)
     presented = payload["presented"]
-    if payload["regions"] != []:
-        raise SchemaRefusal(
-            "a page Testimonium carries act-region references. Its page evidence would acquire "
-            "an act identity the page record does not own. Keep act associations in the "
-            "digest-bound attachments"
-        )
     if blank_testimony:
         census = empty_detector_page(
             context, stage_manifest(context, DESIGNATOR)["artifacts"], record["subject_id"]
@@ -223,7 +217,11 @@ def validate_page_testimonium_record(
     if not attempted:
         # As in the act-scoped check: before the image-evidence refusal, which a
         # stripped record that kept its response would pass.
-        if payload.get("native_capture") is not None or payload.get("raw_response_refs"):
+        if (
+            payload.get("native_capture") is not None
+            or payload.get("raw_response_refs")
+            or "serving_call_ref" in payload
+        ):
             raise SchemaRefusal(
                 "a non-attempted page Testimonium retains a provider response. The record would "
                 "say the chair was not served while naming the bytes it answered with, outside "
@@ -276,6 +274,8 @@ def validate_page_testimonium_record(
         retained.extend(
             reference for reference in payload.get("unit_call_refs", []) if reference is not None
         )
+        if "serving_call_ref" in payload:
+            retained.append(payload["serving_call_ref"])
         # De-duplicated as the producer does: one response can reach the same blob
         # through both `raw_response_refs` and `native_capture`, and
         # `validate_input_refs` refuses a repeated path, so a doubled expectation could

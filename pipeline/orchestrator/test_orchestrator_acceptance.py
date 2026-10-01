@@ -1869,6 +1869,13 @@ def _reseal_with_extra_row(
     context.finish()
 
 
+def _first_act_consumer(root):
+    """The witnesses read pages, never the act denominator; the Perlector reads it first."""
+    witnessed = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    assert witnessed.returncode == 0, witnessed.stderr
+    return invoke_stage(root, "r", "happy", "pipeline/4_perlector/run.py")
+
+
 def test_a_well_formed_residual_act_extends_the_denominator_and_the_first_consumer_accepts_it(
     tmp_path,
 ):
@@ -1889,18 +1896,11 @@ def test_a_well_formed_residual_act_extends_the_denominator_and_the_first_consum
     row = _mint_test_residual_row(context, page_id, 1, 0, bounds, conservation_ref=conservation_ref)
     _reseal_with_extra_row(tree, context, row)
 
-    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
-    assert result.returncode == 0, result.stderr
-    testimonia = [
-        record
-        for record in artifacts(tree, ATTESTATORES, "testimonium")
-        if record["payload"]["act_key"] == "residual:1:0"
-    ]
-    # Held from the moment it exists: every configured chair still gets an
-    # explicit not-run, exactly as any other held act, and never a read —
-    # nothing witnessed this ink and this stage may not manufacture a witness.
-    assert len(testimonia) == 3
-    assert {record["outcome"] for record in testimonia} == {"not-run"}
+    result = _first_act_consumer(root)
+    # Held from the moment it exists: the Perlector reads the denominator whole
+    # and does not refuse the residual row.
+    assert result.returncode != EXIT_FATAL, result.stderr
+    assert "residual" not in result.stderr
 
 
 def test_a_self_consistent_residual_with_no_matching_conservation_component_is_refused(tmp_path):
@@ -1924,7 +1924,7 @@ def test_a_self_consistent_residual_with_no_matching_conservation_component_is_r
     row = _mint_test_residual_row(context, page_id, 1, 0, {"x": 1, "y": 1, "w": 2, "h": 2})
     _reseal_with_extra_row(tree, context, row)
 
-    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    result = _first_act_consumer(root)
     assert result.returncode == EXIT_FATAL
     assert "does not reference exactly one conservation" in result.stderr
 
@@ -1952,7 +1952,7 @@ def test_a_residual_whose_bounds_do_not_match_its_own_conservation_record_is_ref
     )
     _reseal_with_extra_row(tree, context, row)
 
-    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    result = _first_act_consumer(root)
     assert result.returncode == EXIT_FATAL
     assert "does not carry at those bounds" in result.stderr
 
@@ -1969,7 +1969,7 @@ def test_a_residual_act_claiming_to_be_proposed_is_refused(tmp_path):
     row["outcome"] = "proposed"
     _reseal_with_extra_row(tree, context, row)
 
-    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    result = _first_act_consumer(root)
     assert result.returncode == EXIT_FATAL
     assert "is not 'held'" in result.stderr
 
@@ -1986,7 +1986,7 @@ def test_a_residual_act_claiming_a_continuation_is_refused(tmp_path):
     row["has_continuation"] = True
     _reseal_with_extra_row(tree, context, row)
 
-    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    result = _first_act_consumer(root)
     assert result.returncode == EXIT_FATAL
     assert "has no declared continuation to claim" in result.stderr
 
@@ -2015,7 +2015,7 @@ def test_a_residual_act_whose_hold_bounds_do_not_verify_is_refused(tmp_path):
     )
     _reseal_with_extra_row(tree, context, row)
 
-    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    result = _first_act_consumer(root)
     assert result.returncode == EXIT_FATAL
     assert "does not verify against the residual class and bounds" in result.stderr
 
@@ -2040,7 +2040,7 @@ def test_a_residual_act_with_no_hold_record_is_refused(tmp_path):
     }
     _reseal_with_extra_row(tree, context, row, include_hold_evidence=False)
 
-    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    result = _first_act_consumer(root)
     assert result.returncode == EXIT_FATAL
     assert "published no hold record" in result.stderr
 
@@ -2067,7 +2067,7 @@ def test_a_conservation_residual_the_seal_never_minted_is_refused(tmp_path):
     context.seal_boundary()
     context.finish()
 
-    result = invoke_stage(root, "r", "happy", "pipeline/3_attestatores/run.py")
+    result = _first_act_consumer(root)
     assert result.returncode == EXIT_FATAL
     assert "accounts for no held act for" in result.stderr
 
@@ -2609,7 +2609,7 @@ HANDOFF_ARTIFACTS = (
     (EXEMPLAR, INK_MAP, "page"),
     (INK_MAP, DESIGNATOR, "ink-map"),
     (DESIGNATOR, ATTESTATORES, "region"),
-    (ATTESTATORES, PERLECTOR, "testimonium"),
+    (ATTESTATORES, PERLECTOR, "page-testimonium"),
     (PERLECTOR, RECENSOR, "perlectio"),
     (RECENSOR, ARCHETYPUS, "review"),
     (ARCHETYPUS, ARMARIUM, "archetypus"),
@@ -2959,7 +2959,7 @@ def test_a_stage_invoked_before_its_producer_refuses_rather_than_inventing(tmp_p
 
 @pytest.fixture(scope="module")
 def refused_first_page_run(tmp_path_factory):
-    """Page 1 is refused at the door; page 2 is sealed and has no witness."""
+    """Page 1 is refused at the door; page 2 is sealed and witnessed."""
     root = tmp_path_factory.mktemp("refused_first_page")
     result = orchestrate(root, "r", "refused-first-page")
     assert result.returncode == 3, result.stderr
@@ -2997,8 +2997,8 @@ def test_the_page_loss_is_named_and_the_run_is_partial(refused_first_page_run):
 
 
 def test_nothing_is_read_or_delivered_from_a_lost_page(refused_first_page_run):
-    """The lost page is named where its reading would be, and no reading pretends
-    to have seen it; the surviving page is held, never delivered on no witness."""
+    """The lost page is named where its reading would be, and no reading or witness
+    pretends to have seen it; the surviving page is read from its own witnesses."""
     _, tree, _ = refused_first_page_run
     readings = {
         record["payload"]["page_ordinal"]: record
@@ -3009,21 +3009,23 @@ def test_nothing_is_read_or_delivered_from_a_lost_page(refused_first_page_run):
     assert lost["outcome"] == "held"
     assert [problem["code"] for problem in lost["payload"]["problems"]] == ["page-not-sealed"]
     assert lost["payload"]["answer"] is None
-    assert artifacts(tree, PERLECTOR, "perlectio") == []
-    assert artifacts(tree, ARCHETYPUS, "archetypus") == []
+    witnessed = {
+        record["payload"]["page_ordinal"]
+        for record in artifacts(tree, ATTESTATORES, "page-testimonium")
+    }
+    assert witnessed == {2}, "no witness is shown a page the Door refused"
+    assert readings[2]["outcome"] == "read"
 
     export = export_of(tree)
-    assert export["delivered"] == []
-    assert [(item["act_key"], item["category"]) for item in export["non_delivered"]] == [
-        ("p2:unread", "held-for-review")
-    ]
-    assert export["expected_acts"] == 1
+    assert all(not item["act_key"].startswith("p1:") for item in export["delivered"])
     entries = [
         entry
         for entry in tree.build_manifest(ARMARIUM)["artifacts"]
         if entry["kind"] == "manifest-entry"
     ]
-    assert len(entries) == 1, "every counted unit still has exactly one category"
+    assert len(entries) == export["expected_acts"], (
+        "every counted unit still has exactly one category"
+    )
 
 
 def test_no_fixture_page_holds_for_edge_ink_now_that_the_band_is_a_fraction(tmp_path):

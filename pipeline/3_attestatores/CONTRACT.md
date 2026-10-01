@@ -85,6 +85,9 @@ holds the one composition — the `cut_note`-prefixed `reason` suffix and the
 `transport_stop_reason`-bearing `_unrecordable_health` basis — and both
 `captured_page_attempt` and `live_attempt_from_response` call it on their
 parse-failure branch, so the two cannot drift apart again. A DAI record
+response is evidence of the same kind as a whole-page one; a truncation fact
+the provider actually reported survives on both paths alike.
+
 **What a live record gains.** `native_capture` (the adapter's retained model
 view) is admitted on a page Testimonium and written only in live mode or for a
 fixture Churro page declared as raw bytes, so every other fixture record is
@@ -92,13 +95,14 @@ byte-for-byte what it was. `provenance.receipt_ref` names the receipt the
 chair's own client re-read at start, never a declared `fixture://` stand-in.
 `content_health.truncated` comes from the engine's stop word: `"stop"` →
 `false`, `"length"` → `true`, and an unreported word → `null` with
-`truncation_basis = "not-recorded"`. DAI's page record names each record's
-retained call record in `unit_call_refs`, and the tally holds each to the
-chair's sealed sampling row. A Chandra or Churro page record names no serving
-call: the shared page schema admits no `serving_call_ref`, so the call record of
-a whole-page request is an inventoried blob no record links, and its sampling
-is not re-checked by the tally. Closing that needs a field in
-`common/native_witness.py`'s page schema.
+`truncation_basis = "not-recorded"`. Every retained call record is linked
+from its page record and bound as an input: DAI's page record names each
+record's call in `unit_call_refs`, and a Chandra or Churro page record names
+its one request's call in `serving_call_ref`. The writer and the tally
+(`verify_page_call_sampling`) hold each call to the chair's sealed sampling
+row and its receipt's seed; a Chandra native page sends no seed and samples at
+its returned attempt's ordinal. A live page record that retains a response and
+names no serving call is refused, so no response's sampling goes unchecked.
 
 **Chandra is a served witness like the others, reading its vendor's own
 grammar.** Every witness runs its own full pass:
@@ -553,15 +557,15 @@ chair, attempt_ordinal, provenance, format_capabilities
 payload, witness_reported, content_health
 presented, observed, unpresented_regions
 scope = "page", page_ordinal
-act_key = "page-<N>", regions = [], page_role = "primary", unjoined_act_attempts = []
 reason, partition_disagreement, raw_response_refs, adapter_metadata,
-native_capture, native_inference, presentations, unit_captures, unit_call_refs
-                               only where the record has them
+native_capture, native_inference, presentations, unit_captures, unit_call_refs,
+serving_call_ref               only where the record has them
 ```
 
-The four constant fields are what the shared schema still requires; this stage
-writes them as constants because a page is witnessed as its own unit and names
-no act. The writer validates the exact shape, and the facts this stage computes
+A page record names no act: a record carrying an act field (`act_key`,
+`regions`, `page_role`, `unjoined_act_attempts`) is not the closed schema and is
+refused. `serving_call_ref` and `unit_call_refs` are never both present. The
+writer validates the exact shape, and the facts this stage computes
 (`validate_page_record_facts`), before it publishes.
 
 `payload` is the witness's JSON-native output, retained as its own shape. An
@@ -932,7 +936,7 @@ from part of what DAI was shown. Otherwise the page is `read`, or
 The stage's derived manifest is rebuilt from immutable page Testimonia, compared
 to its stored inventory, and each record is checked against the page schema, the
 facts this stage computes, the page roster, the shared page-record validator,
-its native capture's bytes and its unit call records' sampling. `attempt_tally()`
+its native capture's bytes and every retained call record's sampling. `attempt_tally()`
 returns `KNOWN` only when that inventory is whole. An absent, garbled, truncated
 or divergent inventory returns `UNKNOWN`, `count=null`, `hold=true`, and the
 check runs before anything is written, so a later pass over a damaged inventory
