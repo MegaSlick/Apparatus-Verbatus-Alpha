@@ -18,8 +18,8 @@ never about blankness.
 
 **Write-once is enforced a layer down**, by the run tree refusing different
 bytes under one identity; this stage adds only that it never tries -- a
-revised reading is a new run over the same Exemplar (4b), and human
-correction lives *above* this record (4a) as a different kind of thing.
+revised reading is a new run over the same Exemplar, and human correction
+lives *above* this record as a different kind of thing.
 
 **A held act reaches no Archetypus record at all**, and that absence is the
 evidence the Armarium reconciles against: an export showing a held act as
@@ -91,8 +91,8 @@ DESCRIPTION = "Archetypus: exactly one established reading per act, written once
 # second spelling that drifts. `derive_text_status` is re-exported because this
 # stage's tests exercise it directly.
 
-# Spec 10 maps onto the mature TEI P5/EpiDoc convention rather than inventing
-# markup: `<unclear cert="">` for characters that ARE in `text`, `<gap>` for a
+# The uncertainty layer maps onto the mature TEI P5/EpiDoc convention rather
+# than inventing markup: `<unclear cert="">` for characters that ARE in `text`, `<gap>` for a
 # zero-width anchor where none were read. Rendering either is the Armarium's
 # business at export time, deliberately not stored. The layer's closed
 # vocabularies and validator live in `common/contracts/annotations.py` and are
@@ -173,10 +173,10 @@ def _is_ref_shaped(value) -> bool:
 def validate_text_status(text: str, text_status: str, evidence_ref) -> None:
     """Refuse a status the text does not support.
 
-    Spec 10 test 3: an empty `text` with `established` status is refused at the
-    schema. `no_readable_text` is a positive finding and
-    requires its own evidence reference — an unlabeled empty string is never
-    proof that a page was blank (4c: exactly the silent loss this pipeline refuses).
+    An empty `text` with `established` status is refused at the schema.
+    `no_readable_text` is a positive finding and requires its own evidence
+    reference — an unlabeled empty string is never proof that a page was blank,
+    and taking it as one would be a silent loss.
     """
     if text_status not in TEXT_STATUSES:
         raise SchemaRefusal(f"text_status {text_status!r} is not one of {sorted(TEXT_STATUSES)}")
@@ -440,12 +440,13 @@ def establish_from_accepted_page_reading(
             f"{row['act_key']} would be established from a page reading that is held or is not "
             "the row's own reading; a held reading is never written"
         )
-    for field in ("tier", "source_tier", "reading_tier"):
-        if payload.get(field) == "salvage":
-            raise SchemaRefusal(
-                f"{row['act_key']} carries salvage-tier material, which can never become an "
-                "Archetypus"
-            )
+    # The closed Perlectio schema has no tier, salvage or annotation field, so
+    # anything carrying one is refused here rather than read past.
+    if set(payload) != page_path.PERLECTIO_FIELDS:
+        raise SchemaRefusal(
+            f"the page reading of {row['act_key']} carries fields other than the closed "
+            "Perlectio schema"
+        )
     region_ref = payload.get("act_region_ref")
     if region_ref != row["region_ref"] or region_ref not in reading.get("inputs", []):
         raise FatalAccounting(
@@ -470,11 +471,6 @@ def establish_from_accepted_page_reading(
     if not isinstance(text, str):
         raise SchemaRefusal("the accepted page reading has no string text")
     # A page reading records its doubt as spans and gaps; it has no annotation layer.
-    if "annotations" in payload:
-        raise SchemaRefusal(
-            f"the page reading of {row['act_key']} carries an annotation layer, which a page "
-            "reading does not record"
-        )
     annotations: list[dict] = []
     uncertainty = from_page_perlectio(payload)
     text_status = derive_record_text_status(text, annotations, uncertainty)
@@ -582,7 +578,7 @@ def build_index(context) -> dict:
 
 
 def validate_index(context, index, *, on_disk=None, accepted=None) -> dict:
-    """Spec 10 test 6, as a consumer check: 1:1 with the acts the Recensor accepted.
+    """A consumer check that the index is 1:1 with the acts the Recensor accepted.
 
     The index is derived and rewritable. That does not make a missing or
     duplicate row harmless where someone relies on it for accounting: it is

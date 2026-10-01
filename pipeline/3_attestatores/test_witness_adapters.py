@@ -316,8 +316,8 @@ def test_the_registry_binds_the_native_intake_contract_seams():
         if unit == page_witness_units.DETECTOR_RECORD_UNIT
     } == {"dai.v1"}
     # The reader each adapter's fixture posture uses where its declared rows are
-    # not in the grammar a served chair answers in. Chandra alone has one until
-    # U16 re-declares `proof/skeleton_fixture.toml`'s rows in the vendor
+    # not in the grammar a served chair answers in. Chandra alone has one,
+    # because `proof/skeleton_fixture.toml`'s Chandra rows are not in the vendor
     # grammar; the other two read their fixture rows through the same parser
     # their live answers take, so they declare none rather than an alias.
     assert {name: entry.fixture_parse for name, entry in adapters.RUNNABLE_ADAPTERS.items()} == {

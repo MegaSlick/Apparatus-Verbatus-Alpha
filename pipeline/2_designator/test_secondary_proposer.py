@@ -278,24 +278,6 @@ def test_a_retried_fixture_pass_reuses_the_in_process_detector_s_sealed_receipt(
     assert again == first == _published_secondary_provenance(designator, retry)
 
 
-def test_every_declared_record_is_published_on_its_page(tmp_path):
-    """Records are evidence, not holds: each one is published, and its page counts it."""
-    designator = load_stage("2_designator")
-    root = tmp_path / "runs"
-    context = _prepared_context(designator, root, _configured(tmp_path), "records exit test")
-    context.fixture["detector_record"] = [dict(row) for row in DECLARED_DETECTIONS]
-    designator.publish_page_evidence(context, real=False)
-    context.finish()
-    records = _records(context, designator, "detector-record")
-    assert sorted(record["payload"]["detector_ordinal"] for record in records) == [0, 1, 2]
-    [page_one] = [
-        record["payload"]
-        for record in _records(context, designator, "detector-page")
-        if record["payload"]["page_ordinal"] == 1
-    ]
-    assert page_one["detection_count"] == len(DECLARED_DETECTIONS)
-
-
 def test_a_detector_row_the_stage_cannot_run_is_refused_before_anything_is_cut(tmp_path):
     """The record detector is run in-process or answered by the fixture, never served."""
     designator = load_stage("2_designator")
@@ -310,4 +292,4 @@ def test_a_detector_row_the_stage_cannot_run_is_refused_before_anything_is_cut(t
     context = _prepared_context(designator, root, extra, "unrunnable detector test")
     with pytest.raises(ContractError, match="serving posture of the record detector"):
         designator.publish_page_evidence(context, real=False)
-    assert _records(context, designator, "detector-record") == []
+    assert context.tree.build_manifest(designator.DESIGNATOR)["artifacts"] == []

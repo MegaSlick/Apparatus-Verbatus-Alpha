@@ -1,10 +1,10 @@
-"""The proposed display convention, and the round trip spec 11 test 2 asks for.
+"""The proposed display convention, and its render -> strip round trip.
 
-Every span in this file is built by hand. The Archetypus record carries no
-uncertainty or gap layer yet, so there is no real one to render, and that is stated
-in `display.py` rather than left for a reader to discover. What these tests prove is
-that the convention *cannot* leak into the canonical field once such a layer lands:
-strip a rendering and you are back at the established text, byte for byte.
+Every span in this file is built by hand. The Archetypus record carries the
+canonical uncertainty layer, but no writer passes it to `render_display`, so the
+spans here are hand-built, as `display.py` states. What these tests prove is that
+the convention *cannot* leak into the canonical field: strip a rendering and you
+are back at the established text, byte for byte.
 """
 
 import pytest
