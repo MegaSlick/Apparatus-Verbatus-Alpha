@@ -773,20 +773,132 @@ def test_the_result_names_the_decision_set_it_applied():
 # --- more staleness ------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("name", "finding"), [("missed-act", None), ("hold", "other")])
-def test_a_stale_holding_page_decision_adds_no_hold(name, finding):
+@pytest.mark.parametrize(
+    ("name", "finding", "code"),
+    [
+        ("missed-act", None, "review-missed-act-carried"),
+        ("hold", "other", "review-page-hold-carried"),
+    ],
+)
+def test_a_stale_holding_page_decision_still_holds_its_page_carried(name, finding, code):
     derived = derived_review()
     record = decide(derived, "page", "page-1", name, finding=finding)
     changed = copy.deepcopy(derived)
     changed["units"][1]["payload"]["coverage"]["floor"] = 3
     result = apply_decisions(changed, [record])
     assert [s["stale_because"] for s in result["stale"]] == [BASIS_CHANGED]
-    assert result["pages"]["page-1"]["hold_codes"] == ["unread-line"]
-    assert not any(
-        code.startswith("review-")
-        for u in result["units"].values()
-        for code in u["payload"]["hold_codes"]
+    assert result["applied"] == []
+    assert [s["decision_hash"] for s in result["carried"]] == [record["self_hash"]]
+    assert result["pages"]["page-1"]["hold_codes"] == [code, "unread-line"]
+    assert result["pages"]["page-1"]["carried"] == [code]
+    for act_id in ("a1", "a2"):
+        reviewed = result["units"][act_id]
+        assert reviewed["outcome"] == "held-for-review"
+        assert code in reviewed["payload"]["hold_codes"]
+        assert reviewed["payload"][REVIEW_FIELD]["carried"] == [code]
+        assert "carried from stale operator decision" in reviewed["payload"]["reason"]
+    # No finding of a stale decision is presented as current.
+    assert result["units"]["a1"]["payload"][REVIEW_FIELD]["findings"] == []
+
+
+def test_a_stale_unit_hold_still_holds_its_unit_carried():
+    derived = derived_review()
+    record = decide(derived, "unit", "b1", "hold", finding="other")
+    changed = copy.deepcopy(derived)
+    changed["units"][2]["payload"]["coverage"]["floor"] = 3
+    result = apply_decisions(changed, [record])
+    assert [s["subject_id"] for s in result["stale"]] == ["b1"]
+    b1 = result["units"]["b1"]
+    assert b1["outcome"] == "held-for-review"
+    assert b1["payload"]["hold_codes"] == ["review-hold-carried"]
+    # A unit hold holds its unit, not its page.
+    assert 2 not in held_pages(result)
+
+
+def test_a_missed_act_recorded_before_an_exclusion_still_holds_the_page():
+    derived = derived_review()
+    missed = decide(derived, "page", "page-1", "missed-act")
+    exclusion = decide(derived, "unit", "a2", "exclude")
+    result = apply_decisions(derived, [missed, exclusion])
+    assert [(s["decision"], s["stale_because"]) for s in result["stale"]] == [
+        ("missed-act", BASIS_CHANGED)
+    ]
+    assert [s["decision"] for s in result["carried"]] == ["missed-act"]
+    assert held_pages(result)[1] == ["review-missed-act-carried", "unread-line"]
+    assert "review-missed-act-carried" in result["units"]["a1"]["payload"]["hold_codes"]
+    a2 = result["units"]["a2"]
+    assert a2["outcome"] == "excluded"
+    assert "its page stays held by review-missed-act-carried" in a2["payload"]["reason"]
+    # Deterministic and idempotent: order and repeats change nothing.
+    assert apply_decisions(derived, [exclusion, missed, missed]) == result
+
+    # A decision recorded against the current basis replaces the carried hold.
+    basis = current_basis(derived, [exclusion])
+    again = decide(derived, "page", "page-1", "missed-act", basis=basis)
+    renewed = apply_decisions(derived, [missed, exclusion, again])
+    assert renewed["carried"] == []
+    assert held_pages(renewed)[1] == ["review-missed-act", "unread-line"]
+
+
+def test_a_partial_exclusion_on_a_two_act_page_makes_no_missed_act_stale():
+    derived = derived_review()
+    early = decide(derived, "page", "page-1", "no-missed-act")
+    result = apply_decisions(derived, [early, decide(derived, "unit", "a2", "exclude")])
+    assert [(s["scope"], s["stale_because"]) for s in result["stale"]] == [("page", BASIS_CHANGED)]
+    assert result["carried"] == []
+    assert result["pages"]["page-1"]["cleared"] == []
+    assert held_pages(result)[1] == ["unread-line"]
+    assert result["units"]["a1"]["payload"]["hold_codes"] == [
+        "doubt-marks-malformed",
+        "unread-line",
+    ]
+    assert [r["subject_id"] for r in result["clearances"]] == ["a2"]
+
+
+def test_a_stale_or_conflicting_exclusion_is_not_an_excluded_act():
+    derived = derived_review()
+    stale_exclusion = decide(derived, "unit", "a1", "exclude")
+    changed = copy.deepcopy(derived)
+    changed["units"][0]["payload"]["coverage"]["floor"] = 3
+    assert current_basis(changed, [stale_exclusion])["pages"]["page-1"]["excluded_acts"] == []
+
+    conflicting = [
+        decide(derived, "unit", "a2", "exclude"),
+        decide(derived, "unit", "a2", "hold", finding="other"),
+    ]
+    basis = current_basis(derived, conflicting)
+    assert basis["pages"]["page-1"]["excluded_acts"] == []
+    assert (
+        basis["pages"]["page-1"]["basis_digest"]
+        == (current_basis(derived)["pages"]["page-1"]["basis_digest"])
     )
+    page = decide(derived, "page", "page-1", "missed-act")
+    result = apply_decisions(derived, conflicting + [page])
+    assert [s["decision"] for s in result["applied"]] == ["missed-act"]
+
+
+def test_a_page_decision_bound_to_exclusions_goes_stale_when_one_is_dropped():
+    derived = derived_review()
+    exclusions = [
+        decide(derived, "unit", "a1", "exclude"),
+        decide(derived, "unit", "a2", "exclude"),
+    ]
+    basis = current_basis(derived, exclusions)
+    assert basis["pages"]["page-1"]["excluded_acts"] == ["a1", "a2"]
+    confirmed = decide(derived, "page", "page-1", "no-missed-act", basis=basis)
+    assert [
+        s["decision"] for s in apply_decisions(derived, exclusions + [confirmed])["applied"]
+    ] == [
+        "no-missed-act",
+        "exclude",
+        "exclude",
+    ]
+    result = apply_decisions(derived, exclusions[:1] + [confirmed])
+    assert [(s["decision"], s["stale_because"]) for s in result["stale"]] == [
+        ("no-missed-act", BASIS_CHANGED)
+    ]
+    assert held_pages(result)[1] == ["unread-line"]
+    assert result["units"]["a2"]["payload"]["hold_codes"] == ["unread-line"]
 
 
 def test_a_page_decision_whose_page_is_gone_is_returned_unkept():

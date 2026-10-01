@@ -44,9 +44,21 @@ The API:
   decisions, a `decisions_digest` over the set it was given, the `clearances`
   the run aggregate names (`aggregate_clearances`), and the `requests` for a
   re-ask or re-shoot the driver acts on. A stale decision is kept inside the
-  review of every unit it concerns, never applied; one whose page is gone is
-  returned in `unkept` for the caller to record. Disagreeing current decisions
-  about one subject are kept as conflicting and hold it; none is applied.
+  review of every unit it concerns; one whose page is gone is returned in
+  `unkept` for the caller to record. Disagreeing current decisions about one
+  subject are kept as conflicting and hold it; none is applied.
+
+A stale decision never releases anything: a stale `release`, `exclude` or
+`no-missed-act` clears no hold, excludes no act and is not counted among a
+page's excluded acts, and a stale `re-ask` or `re-shoot` asks the driver for
+nothing. A stale decision that holds (a unit `hold`, a page `missed-act` or a
+page `hold`) still holds the subject it names while that subject is in the
+review and no current decision about it has been recorded: the subject carries
+a `-carried` hold code (`CARRIED_CODES`), listed in `carried`, until a person
+records a decision about it against the current basis. So an exclusion
+recorded after a missed act stales the missed act without losing the hold it
+raised. A re-ask or re-shoot is not carried: the re-read it asks for changes
+the basis by design, and the machine's own holds on the new reading stand.
 
 Decisions: a unit is released (its own holds cleared), excluded as not an act,
 held with a finding, or re-asked; an excluded unit's page keeps its page
@@ -133,6 +145,12 @@ CLEARING: Final = frozenset({(UNIT_SCOPE, "release"), (UNIT_SCOPE, "exclude")}) 
     (PAGE_SCOPE, "no-missed-act")
 }
 REQUESTS: Final = frozenset({"re-ask", "re-shoot"})
+# The hold code a stale holding decision carries onto its subject, by scope.
+CARRIED_CODES: Final = {
+    (UNIT_SCOPE, "hold"): "review-hold-carried",
+    (PAGE_SCOPE, "missed-act"): "review-missed-act-carried",
+    (PAGE_SCOPE, "hold"): "review-page-hold-carried",
+}
 
 
 _UNIT_FIELDS: Final = frozenset(
@@ -427,6 +445,7 @@ def apply_decisions(derived: Mapping[str, Any], decisions: Sequence[Any]) -> dic
     }
     applied = [summary for summary in summaries if summary["state"] == CURRENT]
     stale = [summary for summary in summaries if summary["state"] == STALE]
+    carried = [s for s in stale if _carried_code(s, basis, kinds) is not None]
     return {
         "decisions_digest": digest_of(sorted(s["record_sha256"] for s in summaries)),
         "units": units,
@@ -434,6 +453,7 @@ def apply_decisions(derived: Mapping[str, Any], decisions: Sequence[Any]) -> dic
         "applied": applied,
         "stale": stale,
         "conflicting": [s for s in summaries if s["state"] == CONFLICTING],
+        "carried": carried,
         "unkept": [summary for summary in stale if summary["page_id"] not in basis["pages"]],
         "clearances": _clearances(basis, units, pages, applied),
         "requests": _requests(basis, applied),
@@ -465,6 +485,46 @@ def _with_conflict(summary: dict[str, Any], kinds: Mapping[tuple[str, str], str]
     return summary
 
 
+def _carried_code(
+    summary: Mapping[str, Any],
+    basis: Mapping[str, Any],
+    kinds: Mapping[tuple[str, str], str],
+) -> str | None:
+    """The hold a stale holding decision still puts on its subject, or None.
+
+    Its subject must still be in the review, so the hold has something to
+    hold, and no current decision about it may be recorded: a person who
+    records one has decided against the current basis.
+    """
+    scope, subject = summary["scope"], summary["subject_id"]
+    if summary["state"] != STALE or (scope, subject) in kinds:
+        return None
+    if subject not in (basis["units"] if scope == UNIT_SCOPE else basis["pages"]):
+        return None
+    return CARRIED_CODES.get((scope, summary["decision"]))
+
+
+def _carried(
+    scope: str,
+    subject: str,
+    summaries: Iterable[Mapping[str, Any]],
+    kinds: Mapping[tuple[str, str], str],
+) -> list[str]:
+    """The hold codes stale holding decisions carry onto a subject that is in the review."""
+    if (scope, subject) in kinds:
+        return []
+    return sorted(
+        {
+            CARRIED_CODES[(scope, s["decision"])]
+            for s in summaries
+            if s["state"] == STALE
+            and s["scope"] == scope
+            and s["subject_id"] == subject
+            and (scope, s["decision"]) in CARRIED_CODES
+        }
+    )
+
+
 def _concerns_page(summary: Mapping[str, Any], page_id: str, units: Iterable[str]) -> bool:
     """A page decision about this page, or a unit decision on it whose unit is gone."""
     if summary["page_id"] != page_id:
@@ -482,7 +542,8 @@ def _page_result(
 
     A page whose every `act` entry an operator excluded holds its other
     entries as the machine does a page with no act, until a no-missed-act
-    decision confirms none of them is one.
+    decision confirms none of them is one. A stale missed-act or page hold
+    still holds the page, carried, while no current page decision is recorded.
     """
     kind = kinds.get((PAGE_SCOPE, page_id))
     codes = set(page["page_codes"])
@@ -491,7 +552,8 @@ def _page_result(
         codes.add(NO_ACT_ON_PAGE_HOLD)
     cleared = sorted(codes) if kind == "no-missed-act" else []
     added = [ADDED_CODES[(PAGE_SCOPE, kind)]] if (PAGE_SCOPE, kind) in ADDED_CODES else []
-    hold_codes = sorted((codes - set(cleared)) | set(added))
+    carried = _carried(PAGE_SCOPE, page_id, summaries, kinds)
+    hold_codes = sorted((codes - set(cleared)) | set(added) | set(carried))
     return {
         "page_ordinal": page["page_ordinal"],
         "basis_digest": page["basis_digest"],
@@ -499,6 +561,7 @@ def _page_result(
         "hold_codes": hold_codes,
         "cleared": cleared,
         "added": added,
+        "carried": carried,
         "raised": sorted(set(hold_codes) - set(page["page_codes"])),
         "decisions": [s for s in summaries if _concerns_page(s, page_id, page["units"])],
     }
@@ -529,7 +592,10 @@ def _unit_result(
     page_held = (set(entry["page_codes"]) - set(page["cleared"])) | set(page["raised"])
     if kind == "exclude":
         page_held -= {NO_ACT_ON_PAGE_HOLD}
-    hold_codes = sorted((set(entry["unit_codes"]) - set(cleared_unit)) | page_held | set(added))
+    carried = sorted(set(_carried(UNIT_SCOPE, act_id, own, kinds)) | set(page["carried"]))
+    hold_codes = sorted(
+        (set(entry["unit_codes"]) - set(cleared_unit)) | page_held | set(added) | set(carried)
+    )
     if kind == "exclude":
         outcome = EXCLUDED
     else:
@@ -545,6 +611,7 @@ def _unit_result(
         "scopes": {"unit": list(entry["unit_codes"]), "page": list(entry["page_codes"])},
         "cleared": {"unit": cleared_unit, "page": cleared_page},
         "added": added,
+        "carried": carried,
         "findings": findings,
         "decisions": touching,
     }
@@ -558,7 +625,8 @@ def _unit_result(
         findings=findings,
         stale=sum(s["state"] == STALE for s in touching),
         conflicting=sum(s["state"] == CONFLICTING for s in touching),
-        still=sorted(set(hold_codes) - set(added)),
+        carried=carried,
+        still=sorted(set(hold_codes) - set(added) - set(carried)),
     )
     return {
         "outcome": outcome,
@@ -577,6 +645,7 @@ def _reason(
     findings: list[str],
     stale: int,
     conflicting: int,
+    carried: list[str],
     still: list[str],
 ) -> str:
     """A reviewed unit's reason: what the review did, then what the machine found."""
@@ -603,10 +672,16 @@ def _reason(
     if stale:
         parts.append(
             f"{stale} operator decision(s) are stale, bound to facts that have since changed, "
-            "and are kept without being applied"
+            "and release nothing"
         )
-    if kind == "exclude" and (still or added):
-        parts.append(f"its page stays held by {', '.join(sorted(set(still) | set(added)))}")
+    if carried and kind != "exclude":
+        parts.append(
+            f"held by {', '.join(carried)}, carried from stale operator decision(s) until a "
+            "person records a decision against the current basis"
+        )
+    if kind == "exclude" and (still or added or carried):
+        held = sorted(set(still) | set(added) | set(carried))
+        parts.append(f"its page stays held by {', '.join(held)}")
     elif still:
         parts.append(f"still held by {', '.join(still)}")
     if not parts:
