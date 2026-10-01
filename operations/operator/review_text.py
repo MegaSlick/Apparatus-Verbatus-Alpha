@@ -391,6 +391,44 @@ def _entry_lines(act: dict[str, Any], field: str) -> list[str]:
     return lines
 
 
+def _review_decision_lines(projection: dict[str, Any]) -> list[str]:
+    """The operator review decisions the run stores, by what the Recensor's last pass did with each."""
+    decisions = _object(projection, "review_decisions")
+    if not decisions:
+        return []
+    stored = decisions.get("stored")
+    lines = ["", f"Operator review decisions ({inert(stored)} stored)"]
+    if not decisions.get("present"):
+        lines.append(
+            "  none recorded in this run"
+            if not stored
+            else "  the Recensor has not run since they were recorded; resume from the Recensor"
+        )
+        return lines
+    if decisions.get("current"):
+        lines.append("  the Recensor's last pass applied exactly the decisions stored now")
+    else:
+        lines.append(
+            "  the decisions stored now are not the set the Recensor's last pass applied; "
+            "resume from the Recensor before anything after it runs"
+        )
+    for state in ("applied", "stale", "conflicting", "carried", "unkept"):
+        rows = _nested_rows(decisions, state, f"review_decisions.{state}")
+        lines.append(f"  {state} ({len(rows)})")
+        for row in rows:
+            head = (
+                f"    {inert(row.get('decision'))} of {inert(row.get('scope'))} "
+                f"{inert(row.get('subject_id'))} on {inert(row.get('page_id'))}"
+            )
+            if row.get("finding"):
+                head += f", finding {inert(row.get('finding'))}"
+            if row.get("stale_because"):
+                head += f" (stale: {inert(row.get('stale_because'))})"
+            lines.append(head)
+            lines.append(f"      reason: {_one_line(row.get('reason'), limit=600)}")
+    return lines
+
+
 def render(projection: dict[str, Any]) -> list[str]:
     """The operator's view of one run, in reading order.
 
@@ -453,6 +491,8 @@ def render(projection: dict[str, Any]) -> list[str]:
         record_ref = _object(hold, "record_ref", "holds[].record_ref")
         if record_ref:
             lines.append(f"    record: {inert(record_ref.get('relative_path'))}")
+
+    lines.extend(_review_decision_lines(projection))
 
     pages = _rows(projection, "pages")
     declared = projection.get("pages_declared")

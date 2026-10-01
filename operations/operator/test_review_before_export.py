@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from common.contracts.approval import build_review_decision_record
 from common.contracts.canonical import digest_bytes
 from common.runtree.store import RunTree
 from operations.operator import advance, cli, review, review_text
@@ -1231,6 +1232,75 @@ def exported_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
     assert resumed.returncode == 3, resumed.stderr
     assert "an advance record passes its current seal" in resumed.stdout
     return run_root
+
+
+@pytest.fixture(scope="module")
+def held_recensor_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """`page-review` run unattended: it stops at its held Recensor, before the Archetypus."""
+    run_root = tmp_path_factory.mktemp("held-recensor") / "runs"
+    completed = _orchestrate(run_root, scenario="page-review")
+    assert completed.returncode == 3, completed.stderr
+    return run_root
+
+
+def test_a_run_stopped_at_a_held_recensor_says_how_a_decision_resolves_it(
+    held_recensor_run: Path,
+):
+    projected = _projection(held_recensor_run)
+    action = projected.next_action
+    assert action["resume_from"] == "recensor"
+    assert "stopped at a held Recensor, before the Archetypus" in action["summary"]
+    assert "--from recensor --to armarium" in action["summary"]
+    # A decision the Recensor applies resolves a hold; no new run is required.
+    assert "resolved only by a new" not in action["summary"]
+    assert "operator review decision recorded in this run" in action["summary"]
+    assert projected.review_decisions["stored"] == 0
+    text = "\n".join(review_text.render(dataclasses.asdict(projected)))
+    assert "Operator review decisions (0 stored)" in text
+    assert "none recorded in this run" in text
+
+
+def test_the_surface_shows_a_decision_no_pass_applied_then_its_state(
+    held_recensor_run: Path, tmp_path: Path
+):
+    """A decision recorded after the Recensor's pass is named, then shown stale once applied."""
+    run_root = tmp_path / "runs"
+    shutil.copytree(held_recensor_run, run_root)
+    tree = RunTree(run_root, RUN_ID)
+    held = next(hold for hold in _projection(run_root).holds if hold["act_key"] == "p2:1")
+    review_record = json.loads(tree.read_bytes(held["record_ref"]["relative_path"]))
+    page_reading = json.loads(
+        tree.read_bytes(review_record["payload"]["page_reading_ref"]["relative_path"])
+    )
+    tree.write_approval_record(
+        build_review_decision_record(
+            run_id=RUN_ID,
+            scope="unit",
+            subject_id=held["act_id"],
+            page_id=page_reading["subject_id"],
+            decision="hold",
+            finding="text-misread",
+            basis_digest=digest_bytes(b"a review this unit no longer has"),
+            reason="held after the Recensor's pass",
+            timestamp="2026-10-01T12:00:00Z",
+        )
+    )
+
+    stale = _projection(run_root)
+    assert stale.review_decisions["stored"] == 1
+    assert stale.review_decisions["current"] is False
+    assert "did not apply as a set" in stale.next_action["summary"]
+
+    resumed = _orchestrate(run_root, "--stage", "recensor", scenario="page-review")
+    assert resumed.returncode == 3, resumed.stderr
+    applied = _projection(run_root)
+    assert applied.review_decisions["current"] is True
+    assert [row["stale_because"] for row in applied.review_decisions["stale"]] == ["basis-changed"]
+    assert [row["decision"] for row in applied.review_decisions["carried"]] == ["hold"]
+    text = "\n".join(review_text.render(dataclasses.asdict(applied)))
+    assert "applied exactly the decisions stored now" in text
+    assert "stale (1)" in text
+    assert "hold of unit" in text
 
 
 def test_a_held_readings_text_and_doubt_survive_the_export(exported_run: Path):

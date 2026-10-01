@@ -25,6 +25,12 @@ from common.contracts.stages import (
     STAGES,
 )
 from common.page_answer import ACT_KINDS
+from common.page_review import (
+    REVIEW_DECISIONS_KIND,
+    REVIEW_DECISIONS_OPERATION,
+    REVIEW_DECISIONS_SUBJECT,
+)
+from common.review_decisions import decisions_digest
 from common.runtree.store import RUN_FILE, RunTree
 from common.stage import latest_attempt
 
@@ -133,6 +139,9 @@ class ReviewProjection:
     # The page reading's labelled `other` entries, shown in the same row shape
     # as `acts` but never counted among them, before and after export alike.
     other_readings: tuple[dict[str, Any], ...] = ()
+    # What the Recensor's last pass did with the run's operator review
+    # decisions, and whether it saw every decision stored now.
+    review_decisions: dict[str, Any] = field(default_factory=dict)
 
 
 class ReadOnlyRun:
@@ -295,6 +304,7 @@ class ReadOnlyRun:
                     ),
                 }
             holds = _holds(stage_records)
+            decisions = _review_decisions(tree, stage_records)
             declared_pages, declared_note = _declared_page_count(tree)
             return ReviewProjection(
                 tree.run_id,
@@ -311,7 +321,12 @@ class ReadOnlyRun:
                 progress=progress,
                 holds=holds,
                 next_action=_next_action(
-                    tree.run_id, progress, export, holds, _recorded_scenario(stage_records)
+                    tree.run_id,
+                    progress,
+                    export,
+                    holds,
+                    _recorded_scenario(stage_records),
+                    decisions,
                 ),
                 acts_denominator_note=acts_denominator_note,
                 pages_declared=declared_pages,
@@ -320,6 +335,7 @@ class ReadOnlyRun:
                 review_page_size=REVIEW_PAGE_SIZE,
                 pages_declared_note=declared_note,
                 other_readings=other_readings,
+                review_decisions=decisions,
             )
         except (ContractError, KeyError, OSError, TypeError, ValueError) as error:
             # The rendered detail keeps the underlying refusal's evidence
@@ -1041,6 +1057,64 @@ def _holds(stage_records: list[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
     return tuple(rows)
 
 
+_DECISION_STATES: tuple[str, ...] = ("applied", "stale", "conflicting", "carried", "unkept")
+
+
+def _review_decisions(tree: RunTree, stage_records: list[dict[str, Any]]) -> dict[str, Any]:
+    """The decision state the Recensor's `review-decisions` record names, as display rows.
+
+    `stored` counts the decisions in the run's receipts now, and `current`
+    says whether the record's pass applied exactly that set: a decision
+    recorded after it reached no review, and the Archetypus and the Armarium
+    refuse until the Recensor runs again.
+    """
+    stored = tree.review_decision_records()
+    digest_now = (
+        decisions_digest(reference.sha256 for reference, _record in stored) if stored else None
+    )
+    row = _latest(
+        stage_records,
+        RECENSOR,
+        REVIEW_DECISIONS_KIND,
+        REVIEW_DECISIONS_SUBJECT,
+        operation=REVIEW_DECISIONS_OPERATION,
+    )
+    if row is None:
+        return {
+            "present": False,
+            "stored": len(stored),
+            "current": digest_now is None,
+            "record_ref": None,
+            **{state: () for state in _DECISION_STATES},
+        }
+    payload = _payload_of(row, "the Recensor review-decisions record")
+    return {
+        "present": True,
+        "stored": len(stored),
+        "current": payload.get("decisions_digest") == digest_now,
+        "record_ref": row["record_ref"],
+        **{
+            state: tuple(
+                {
+                    name: summary.get(name)
+                    for name in (
+                        "decision",
+                        "scope",
+                        "subject_id",
+                        "page_id",
+                        "finding",
+                        "reason",
+                        "decision_hash",
+                        "stale_because",
+                    )
+                }
+                for summary in payload.get(state) or ()
+            )
+            for state in _DECISION_STATES
+        },
+    }
+
+
 _STAGE_STATE_WORDS: tuple[tuple[str, str], ...] = (
     ("sealed", "sealed"),
     ("unsealed", "wrote records and did not seal"),
@@ -1075,15 +1149,17 @@ def _next_action(
     export: dict[str, Any],
     holds: tuple[dict[str, Any], ...],
     scenario: str | None = None,
+    review_decisions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The one supported continuation, said plainly, and what `advance` is not.
 
     This reports; it does not act, and it never proposes a shortcut: a hold is
-    resolved by a new authorized run over the same sealed source, correction of
-    the text happens outside the pipeline, and `advance` records a person's
-    permission to pass one sealed stage boundary without certifying a reading
-    or clearing a hold. Saying so beside every hold is what keeps the boundary
-    permission and the act's resolution from being read as one thing.
+    resolved by an operator review decision the Recensor applies when the run
+    resumes from it, or by a new run; correction of the text happens outside
+    the pipeline, and `advance` records a person's permission to pass one
+    sealed stage boundary without certifying a reading or clearing a hold.
+    Saying so beside every hold is what keeps the boundary permission and the
+    act's resolution from being read as one thing.
     """
     resume_from = None
     census = f"Stage by stage: {_stage_census(progress)}."
@@ -1127,6 +1203,17 @@ def _next_action(
                 f"{census} No export record was found; treat the tree as evidence to "
                 "preserve and investigate before anything resumes."
             )
+        elif first["state"] == "not-run" and first["stage"] == ARCHETYPUS and holds:
+            summary = (
+                f"{census} The run stopped at a held Recensor, before the Archetypus: nothing "
+                "is established or exported until the holds below are decided. Record review "
+                "decisions about them in this run, then resume it from the Recensor (the "
+                f"orchestrator's `--from recensor --to armarium`, or {resume_command}"
+                f"{resume_where}); the Recensor applies every decision and the run continues "
+                "once nothing is held. To export with holds remaining, `advance` the Recensor "
+                "boundary first; the export then names every hold."
+            )
+            resume_from = RECENSOR
         elif first["state"] == "not-run":
             summary = (
                 f"{census} The supported continuation is to resume this run with "
@@ -1156,10 +1243,18 @@ def _next_action(
     if holds:
         summary += (
             f" {held_acts} act(s) are held or unresolved, listed below as {len(holds)} "
-            "record(s), each with its recorded reason. A hold is resolved only by a new "
-            "authorized run over the same sealed source: `advance` records permission to pass "
-            "one sealed stage boundary and neither certifies a reading nor clears a hold, and "
-            "any correction of the text happens outside the pipeline."
+            "record(s), each with its recorded reason. A hold is resolved by an operator "
+            "review decision recorded in this run, which the Recensor applies when the run "
+            "resumes from it, or by a new run over the same sealed source: `advance` records "
+            "permission to pass one sealed stage boundary and neither certifies a reading nor "
+            "clears a hold, and any correction of the text happens outside the pipeline."
+        )
+    if review_decisions and not review_decisions.get("current", True):
+        summary += (
+            f" This run stores {review_decisions.get('stored')} operator review decision(s) "
+            "that the Recensor's last pass did not apply as a set; resume the run from the "
+            "Recensor so they reach its reviews. The Archetypus and the Armarium refuse to run "
+            "until it has."
         )
     return {
         "summary": summary,
