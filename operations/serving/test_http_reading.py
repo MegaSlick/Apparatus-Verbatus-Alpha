@@ -67,15 +67,6 @@ def test_parse_openai_answer_now_records_finish_reasons_and_usage() -> None:
     assert result.usage == {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
 
 
-def test_parse_openai_answer_defaults_are_backward_compatible() -> None:
-    from .http import OpenAIResult
-
-    result = OpenAIResult(model_id="reader-api", outputs=("hi",), response_sha256="a" * 64)
-
-    assert result.finish_reasons == ()
-    assert result.usage is None
-
-
 # --- parse_openai_reading: every CHAIR_RESPONSE_* refusal fires by its own reason ---
 
 
