@@ -105,13 +105,13 @@ def test_the_floor_is_met_when_every_chair_it_counts_is_configured(tmp_path):
     assert status.meets_floor is True
 
 
-def test_the_absence_reaches_the_coverage_record_as_a_dead_chair(roster):
-    """The roster's own arithmetic and the act-level arithmetic have to agree.
+def test_a_dead_outcome_for_every_absent_role_leaves_the_page_under_witnessed(roster):
+    """The roster's own arithmetic and the page-level arithmetic agree.
 
     `witness_coverage` counts completed-class outcomes against the same floor, so
-    an absent chair recorded `dead` for an act lands in the failed class and forces
-    `under_witnessed` — which is what "counts against the witness floor" means
-    once the run is running rather than only being configured.
+    a `dead` outcome for each absent role lands in the failed class and forces
+    `under_witnessed`. The outcomes are built here; this checks the arithmetic,
+    not the code that records an absent chair's outcome.
     """
     status = roster.config.witness_floor_status()
     outcomes = {role: "read" for role in status.configured_roles}

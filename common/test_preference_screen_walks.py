@@ -290,11 +290,10 @@ def test_a_value_shared_between_siblings_is_not_a_cycle(
     assembled by reference -- the same condition dict under two views, one
     findings list named twice -- is a directed graph, not a loop, and refusing
     it would turn a screen written to catch a picker into a screen that rejects
-    ordinary well-formed input. Only ancestors on the current path are tracked,
-    so the shared value is walked at each of its positions.
+    ordinary well-formed input. Only ancestors on the current path are tracked.
 
-    Walked, not skipped: the forbidden field is buried inside the shared value,
-    and reaching it proves the second visit screened rather than short-circuited.
+    A clean shared value is accepted, and a forbidden field among siblings is
+    still refused.
     """
     shared: dict = {"leaf": 1}
     screen({"left": shared, "right": [shared, {"deeper": shared}]})
