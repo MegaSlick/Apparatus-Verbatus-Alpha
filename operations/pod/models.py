@@ -598,23 +598,17 @@ def _required_timer_arguments(
     # binds the launch token into it at sealing time, the same as the outer
     # path above. That binding is best-effort by design (a nested argv naming
     # no ``--report-path`` at all, e.g. the library-module placeholder the
-    # tests use, is left alone rather than having one invented for it) so
-    # nothing downstream re-validated the result -- a request shape the binder
-    # could not handle would reach the pod unbound and refuse only at plan
-    # time, after billing had already started. Re-validated here, at the same
-    # money-path gate as the outer path, so that gap is closed before create
-    # rather than found on the pod.
+    # tests use, is left alone rather than having one invented for it), so the
+    # result is re-validated here, at the same money-path gate as the outer
+    # path: a request shape the binder could not handle is refused before
+    # create rather than at plan time on a billing pod.
     #
     # Counted per half, not over the whole nested argv. ``pod_run`` -- the one
     # tracked entrypoint that runs the pipeline on a pod -- is itself a nested
     # argv of two halves joined by a literal ``--``: its own ``--report-path``
     # for the run report, then ``bootstrap_main``'s for the bootstrap report,
     # which ``pod_run.resolve_run_plan`` requires to be two different files.
-    # Counting both halves together refused every possible Boot B request
-    # before any preview, lease or provider call, which made the first real
-    # pipeline run unconstructible; no test composed a ``pod_run`` argv, so
-    # the suite stayed green over it. One ``--report-path`` per half is the
-    # rule, and every half is held to the same containment and token binding,
+    # One ``--report-path`` per half is the rule, and every half is held to the same containment and token binding,
     # because ``rebind_nested_flag`` rewrites every occurrence it finds.
     #
     # ``--journal`` is held to the same rules as ``--report-path``, because

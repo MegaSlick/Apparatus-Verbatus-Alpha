@@ -1,13 +1,7 @@
 """Residual-ink page coverage: proof at the pixel level.
 
-Each test builds its own small grayscale canvas directly (never the shared
-`proof/skeleton_fixture.toml`, whose fixture pages are engineered so every
-declared act's bounds exactly equal its painted ink -- by construction there is
-no coverage gap anywhere in that fixture to detect). The point of this module is
-exactly the geometry a hand-built canvas can prove without touching pipeline
-wiring at all; `test_confirmed_blank.py`-style end-to-end proof belongs to a
-scenario the Designator can genuinely miss something on, which the walking
-skeleton's synthetic proposer does not yet support (see CONTRACT.md).
+Each test builds its own canvas so the geometry is exact, without touching
+pipeline wiring at all.
 """
 
 import random
@@ -316,9 +310,7 @@ def test_a_substantial_absolute_miss_is_flagged_even_where_the_fraction_gate_wou
     rows = canvas(1200, 800)
     paint(rows, 0, 0, 400, 500)  # 200,000 covered ink pixels
     # The gate resolved for THIS page, which is what the sealed
-    # `substantial_ink_area_bp` means: 4 basis points of 1200x800 is 384 pixels,
-    # where the retired flat constant asked for 2,000 here and for the same
-    # 2,000 on a page sixteen times the size.
+    # `substantial_ink_area_bp` means: 4 basis points of 1200x800 is 384 pixels.
     outside = _coverage(1200, 800)["substantial_ink_pixels"]
     assert outside == 384
     paint(rows, 0, 600, outside // 4, 4)
@@ -332,9 +324,7 @@ def test_a_substantial_absolute_miss_is_flagged_even_where_the_fraction_gate_wou
 
 def test_a_large_enough_fraction_outside_coverage_is_flagged_even_with_other_ink_covered():
     # A page large enough that neither block's bounding box covers half of it:
-    # the audit withholds a page-spanning component the way the Designator's
-    # grouping does. The 200/300/120 below are this test's original 10/15/6
-    # shapes, scaled by 20 onto a 600x600 canvas.
+    # the audit withholds a page-spanning component.
     rows = canvas(600, 600)
     paint(rows, 0, 0, 200, 200)  # 40,000 covered ink pixels
     # Clear of the covered block by more than `gap_tolerance_px`, so the two do
@@ -429,13 +419,13 @@ def test_overlapping_and_clipped_bounds_cover_exactly_their_union():
     assert ink - union  # the case would prove nothing if everything were covered
 
 
-def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink():
-    """The map's early edge observation is not a hold after the crop re-measure.
+def test_a_preproposal_edge_finding_releases_when_act_region_bounds_claim_its_ink():
+    """The map's early edge observation is not a hold once act-region bounds claim its ink.
 
     **The fixture pages carry no such observation at all**, and that is asserted
     here rather than worked around: `edge_band_bp` resolves to 2 pixels on
     their 200x260 canvas, where these pages have no ink. So the release is
-    exercised on a page built to carry edge ink -- one act crop that reaches
+    exercised on a page built to carry edge ink -- one act region that reaches
     the page's own margin -- which is the shape a real page presents and the
     fixture does not.
     """
@@ -486,13 +476,9 @@ def test_a_preproposal_edge_finding_releases_when_designator_crops_claim_its_ink
 def test_the_two_edge_detectors_use_one_band_on_the_smallest_legal_pages(width, height):
     """One instrument, not two that disagree about what an edge is.
 
-    The Ink Map's edge finding floors its band at 1 so the smallest legal image still has
-    an edge. `edge_ink_from_runs` dropped that floor and computed 0, skipping
-    the perimeter measurement entirely. The Ink Map then flagged such a page
-    and the Armarium re-measured it clean, and
-    `pipeline/7_armarium/run.py::ink_map_page_rows` refuses that disagreement
-    with FatalAccounting -- so a single one-pixel-thin page blocked the whole
-    export while naming the wrong problem.
+    Both detectors floor the band at 1, so they agree on hairline pages. A
+    disagreement would be refused by `pipeline/7_armarium/run.py::ink_map_page_rows`
+    with FatalAccounting, blocking the whole export over one thin page.
     """
     rows = canvas(width, height)
     # A one-pixel image proves geometry only; longer thin pages also prove ink.

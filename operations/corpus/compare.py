@@ -15,9 +15,7 @@ reported as a MISS and every unmatched pipeline act is reported, not scored.
 
 `plan.py`'s own `records_per_page_distribution`, measured over the sealed row
 snapshot, is what `MAX_ACTS_PER_PAGE` is set against (1,165 pages, mean 6.59
-records/page, maximum 30) -- not the earlier 2.5-3.5 estimate,
-which this package had already replaced with a measurement before this cap
-was chosen (see `_best_assignment`).
+records/page, maximum 30; see `_best_assignment`).
 
 **IoU assignment.** For one page, every pipeline act's bounds -- the Perlector's
 act-regions, each the rectangle a page reading established its act over
@@ -254,9 +252,8 @@ def _best_assignment(
     include one. The assignment itself is `_max_weight_assignment`, an exact
     maximum-weight bipartite matching -- deterministic given a fixed input
     order (every caller sorts both lists by id before calling this). There is
-    no mask here, so there is no "lexicographically-earliest reference mask" to
-    break a tie toward as the old DP did; the replacement rule is the
-    Kuhn-Munkres loop's own augmenting order: rows (pipeline acts, already
+    no mask here; the tie rule is the Kuhn-Munkres loop's own augmenting
+    order: rows (pipeline acts, already
     sorted by `act_id`) are processed in ascending index, and among reduced
     costs tied for the augmenting step's minimum, the lowest column index
     (reference act, already sorted by `record_id`) wins -- pinned by
@@ -313,9 +310,7 @@ def load_exemplar_page_shas(tree: RunTree) -> dict[int, str]:
     for every Door-refused source, carrying no `source_sha256` at all, and a
     Door refusal inside an otherwise ordinary run is not a malformed page, it
     is a page with no digest by design -- and every field on what survives is
-    checked by name, never left to leave this function as a bare `KeyError`,
-    the way `load_pipeline_reading_acts`'s docstring says every other read in
-    this package refuses.
+    checked by name, never left to leave this function as a bare `KeyError`.
     """
     shas: dict[int, str] = {}
     manifest = tree.build_manifest(EXEMPLAR)
@@ -654,7 +649,7 @@ def compare_page(
     `{"act_id", "bounds", "page_sha256"}` -- so a run tree's own loader output can
     be handed to this function directly, with no reshaping in between. Every act
     is refused by name (`wrong-page`) unless its `page_sha256` matches
-    `reference_page["page"]["sha256"]`: this function no longer merely trusts a
+    `reference_page["page"]["sha256"]`: this function does not trust a
     caller-side filter to have already restricted the list to this page, which is
     also what closes the "no sealed page carries this ordinal" gap a caller-side
     filter alone could silently pass through. It can still be exercised directly

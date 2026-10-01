@@ -84,7 +84,12 @@ def build_holdout(rows: list[dict[str, Any]], source_row_snapshot_self_hash: str
         if row.get("split") != HELD_SPLIT:
             continue
         record_id = row["record_id"]
-        parsed = parse_record_url(row["record_url"])
+        try:
+            parsed = parse_record_url(row["record_url"])
+        except CorpusRefusal as error:
+            raise Refusal(
+                f"malformed-record: test row {record_id!r} record_url does not parse: {error}"
+            ) from error
         entries.setdefault(parsed.identifier, set()).add(record_id)
 
     held_identifiers = sorted(entries)

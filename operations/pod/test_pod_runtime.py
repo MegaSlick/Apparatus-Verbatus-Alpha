@@ -3621,8 +3621,7 @@ def test_empty_billing_is_unverified_not_zero_cost() -> None:
     assert report.captured_cost_usd is None
     assert report.manual_action is not None
     # The fake's own sentence is unique to its no-records path, so this cannot
-    # be satisfied by the evidence-error or capture-failed branches -- the two
-    # wrong reasons earlier versions of this test passed for.
+    # be satisfied by the evidence-error or capture-failed branches.
     assert "fake billing deliberately has no records" in report.last_detail
 
 

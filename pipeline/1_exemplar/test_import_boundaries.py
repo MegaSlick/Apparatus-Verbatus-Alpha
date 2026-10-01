@@ -50,12 +50,6 @@ DOOR_PRIVATE_MODULES = {
     ),
 }
 
-# Tracked but deliberately not parsed. `cleanroom/` holds presumed-contaminated
-# drafts nobody has reviewed yet — `pyproject.toml` excludes it from ruff and pytest
-# for the same reason, and parsing one here would be this test reading contaminated
-# code. Nothing in it can import anything either, because nothing in it runs.
-EXCLUDED_PREFIXES = ("cleanroom/",)
-
 
 def repository_python_files() -> list[str]:
     """Every `.py` path that belongs to this repository, from its root.
@@ -78,7 +72,7 @@ def repository_python_files() -> list[str]:
             f"door-private boundary was not checked at all: {error}"
         )
     paths = [path for path in result.stdout.split("\0") if path]
-    return sorted(path for path in paths if not path.startswith(EXCLUDED_PREFIXES))
+    return sorted(paths)
 
 
 def imports_module(path: Path, module: str) -> bool:

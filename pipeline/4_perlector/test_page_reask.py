@@ -367,7 +367,7 @@ def test_with_the_re_ask_off_a_page_stands_on_its_first_reading(tmp_path):
 def test_a_budget_above_one_is_refused_at_the_door(tmp_path):
     protocol = _page_protocol(tmp_path / "config")
     recovery = reask_recovery_config(tmp_path / "config", 2)
-    with pytest.raises(AssertionError, match=r"door\.py: .*page_level_reread 2, above the ruled"):
+    with pytest.raises(AssertionError, match=r"door\.py: .*page_level_reread 2, above the maximum"):
         _chain(tmp_path / "runs", protocol, "--recovery-config", str(recovery))
 
 

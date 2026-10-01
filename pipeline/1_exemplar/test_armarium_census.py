@@ -1,9 +1,8 @@
 """The final page census keeps the source page/frame locator from the Exemplar.
 
-This assembles only synthetic PDF bytes at runtime. It exercises the real door and
-Exemplar handoff, then calls the Armarium's pre-export census directly: System 03
-does not claim a real Designator model, so fabricating all later act artifacts just
-to reach an export would prove the wrong thing.
+This assembles only synthetic PDF bytes at runtime. It calls the Armarium's
+pre-export census directly after the real door and Exemplar, so only the census
+handoff is under test.
 """
 
 import subprocess

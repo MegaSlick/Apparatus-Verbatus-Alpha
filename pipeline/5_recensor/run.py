@@ -143,8 +143,8 @@ def page_coverage_findings(context, *, regions: dict[int, list[dict]]) -> dict[i
     """Residual-ink findings for every page in `regions`, once per run.
 
     `regions` maps a sealed page ordinal to the bounds counted as covering its
-    ink: every reading region cut on it, and every sealed page, one with no
-    region included. The input is the page image itself, never a witness or a
+    ink: every act-region on it, and every sealed page, one with no region
+    included. The input is the page image itself, never a witness or a
     reading.
     The paper value is `common.background`'s shared inference under the sealed
     `ink-map` background policy, never the page's own histogram mode, which on a photographed opening is the
@@ -165,7 +165,7 @@ def page_coverage_findings(context, *, regions: dict[int, list[dict]]) -> dict[i
         if page is None:
             raise FatalAccounting(
                 f"a region names source page {ordinal}, which the Exemplar did not seal; "
-                "a crop of unsealed pixels is invariant #10's imbalance"
+                "a region on unsealed pixels cannot be measured"
             )
         # Digest the bytes actually measured, not an earlier read.
         image_bytes = sealed_page_bytes(
@@ -221,8 +221,8 @@ def publish_review(
 ) -> dict:
     """Write a review only after rejecting witness-selection vocabulary.
 
-    A review's content can change between passes without the act recovering, because
-    page-wide facts come from every act on its page. So the prior review's ordinal is
+    A review's content can change between passes, because page-wide facts come from
+    every act on its page. So the prior review's ordinal is
     tried first (unchanged content reuses byte for byte), and a fresh ordinal is minted
     only when the store proves the content differs. The ordinal is stamped here, never
     trusted from the caller.

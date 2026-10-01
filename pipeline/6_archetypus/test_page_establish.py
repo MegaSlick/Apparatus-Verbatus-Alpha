@@ -17,8 +17,9 @@ from pathlib import Path
 
 import pytest
 
+from common import page_path
 from common.contracts.canonical import canonical_bytes, self_hash
-from common.contracts.stages import ARCHETYPUS, RECENSOR
+from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR
 from common.exemplar_boundary import verify_reading_region_lineage
 from common.page_review import current_page_reviews
 from common.page_testimonia import current_page_testimonia
@@ -229,17 +230,18 @@ def test_a_blinded_run_proves_custody_by_each_witness_s_testimonium(tmp_path_fac
 
 
 class _FeedTree:
-    """The run tree, with the page feed a reading names read through `change`."""
+    """The run tree, with every `kind` record (the page feed by default) read
+    through `change`."""
 
-    def __init__(self, tree, change):
-        self._tree, self._change = tree, change
+    def __init__(self, tree, change, kind="page-feed"):
+        self._tree, self._change, self._kind = tree, change, kind
 
     def __getattr__(self, name):
         return getattr(self._tree, name)
 
     def read_artifact_reference(self, reference, **where):
         record = self._tree.read_artifact_reference(reference, **where)
-        if where.get("kind") == "page-feed":
+        if where.get("kind") == self._kind:
             record = copy.deepcopy(record)
             self._change(record["payload"])
         return record
@@ -310,4 +312,58 @@ def test_the_constructor_refuses_a_reading_whose_witness_custody_fails(
     context, _rows, establish = _constructor(happy, tmp_path)
     context.tree = _FeedTree(context.tree, change)
     with pytest.raises(archetypus.FatalAccounting, match=refusal):
+        establish("p1:2")
+
+
+def test_every_sealed_perlectio_holds_exactly_the_closed_field_set(happy):
+    """`PERLECTIO_FIELDS` is the field set stage 4 actually seals."""
+    root, _options = happy
+    tree = RunTree(root, RUN_ID)
+    payloads = [
+        tree.read_artifact(PERLECTOR, page_path.PERLECTIO_KIND, entry["artifact_id"])["payload"]
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == page_path.PERLECTIO_KIND
+    ]
+    assert payloads
+    assert all(set(payload) == page_path.PERLECTIO_FIELDS for payload in payloads)
+
+
+def test_the_constructor_establishes_a_reading_the_re_ask_recovered(happy, tmp_path):
+    context, _rows, establish = _constructor(happy, tmp_path)
+    context.tree = _FeedTree(
+        context.tree,
+        lambda payload: payload.update(reading_attempt=page_path.REASK_READING, reading_n=1),
+        kind=page_path.PERLECTIO_KIND,
+    )
+    record, _inputs = establish("p1:2")
+    assert record["status"] == "established"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"reading_n": 1}, {"reading_attempt": 2}, {"reading_attempt": 1, "reading_n": 1}],
+    ids=["number-alone", "attempt-alone", "first-reading-attempt"],
+)
+def test_the_constructor_refuses_a_partial_or_first_reading_recovery_mark(happy, tmp_path, extra):
+    context, _rows, establish = _constructor(happy, tmp_path)
+    context.tree = _FeedTree(
+        context.tree, lambda payload: payload.update(extra), kind=page_path.PERLECTIO_KIND
+    )
+    with pytest.raises(archetypus.SchemaRefusal, match="other than the closed Perlectio schema"):
+        establish("p1:2")
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"tier": "salvage"}, {"annotations": []}],
+    ids=["salvage-tier", "annotation-layer"],
+)
+def test_the_constructor_refuses_a_reading_outside_the_closed_perlectio_schema(
+    happy, tmp_path, extra
+):
+    context, _rows, establish = _constructor(happy, tmp_path)
+    context.tree = _FeedTree(
+        context.tree, lambda payload: payload.update(extra), kind=page_path.PERLECTIO_KIND
+    )
+    with pytest.raises(archetypus.SchemaRefusal, match="other than the closed Perlectio schema"):
         establish("p1:2")

@@ -1,6 +1,6 @@
 """Byte-equality with the three vendor systems, provable on a laptop.
 
-The vendor systems ruling says each witness runs as its developers intended:
+Each witness runs as its developers intended:
 each vendor's own preprocessing, prompt bytes, message shape, generation values
 and output grammar are adopted verbatim and sha-pinned, and **no vendor package
 is installed in alpha**.  Those two sentences together are why this file exists.
@@ -42,18 +42,13 @@ comes out is over the same bytes either way.
 the shape as a checker — :func:`refuse_unless_vendor_request_shape` — proves the
 checker refuses each way of getting the shape wrong, and runs a conforming
 request through the client's own real refusal path.  The checker is public on
-purpose: the Wave 2 adapter tests, which may import ``common``, call it against
+purpose: the adapter tests, which may import ``common``, call it against
 the body their builder actually produces, and that is the join between this
 file's specification and the wire.
 
-**U1 and U2 are parallel units.**  The Chandra and Churro carried strings are
-theirs to place, in ``common/chandra_layout.py`` and ``common/churro_document.py``.
-Until those modules exist the tests that digest them are ``xfail``, conditioned
-on the module being *absent* rather than on the assertion failing — so the day a
-module lands, the test runs for real and a wrong byte is a red gate rather than
-a silent expected failure.  Those tests look the carried strings up **by their
-digest, not by a constant's name**, because the name is U1's and U2's choice and
-the bytes are the vendors'.
+The Chandra and Churro carried strings live in ``common/chandra_layout.py`` and
+``common/churro_document.py``.  The tests look them up **by their digest, not by
+a constant's name**, because the name is ours and the bytes are the vendors'.
 """
 
 from __future__ import annotations
@@ -61,7 +56,6 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.metadata
-import importlib.util
 import json
 import re
 import subprocess
@@ -193,10 +187,6 @@ DAI_GENERATION_CONFIG: Final[Mapping[str, Any]] = {
 FEEDING_SOURCE: Final = ROOT / "pipeline/3_attestatores/feeding.py"
 ATTESTATORES_RUN_SOURCE: Final = ROOT / "pipeline/3_attestatores/run.py"
 
-_CHANDRA_LAYOUT_PENDING: Final = importlib.util.find_spec("common.chandra_layout") is None
-_CHURRO_DOCUMENT_PENDING: Final = importlib.util.find_spec("common.churro_document") is None
-_PENDING_REASON: Final = "U1/U2 pending: the module carrying these vendor bytes does not exist yet"
-
 
 def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -221,8 +211,8 @@ def _function_body_digest(source: str, *, filename: str, function_name: str) -> 
 
 
 # How deep into a module-level container the string walk below goes.  Six is
-# far past any shape a carried-bytes table has taken (U2's is two: variant name,
-# then field) and shallow enough that a pathological object cannot turn the walk
+# far past any shape a carried-bytes table has taken (Churro's is two: variant
+# name, then field) and shallow enough that a pathological object cannot turn the walk
 # into the test's runtime.
 _MAX_CARRIED_DEPTH: Final = 6
 
@@ -232,8 +222,8 @@ def _module_string_constants(module: ModuleType) -> dict[str, str]:
 
     Bare module-level constants *and* the strings nested inside module-level
     mappings, sequences and sets all count, because placing the bytes is the
-    carrying unit's choice and both shapes are already in use: U1 carries
-    Chandra's prompt as a bare ``OCR_LAYOUT_PROMPT``, while U2 carries both
+    carrying module's choice and both shapes are in use: ``chandra_layout`` carries
+    Chandra's prompt as a bare ``OCR_LAYOUT_PROMPT``, while ``churro_document`` carries both
     Churro system messages inside a per-variant table beside their provenance
     (``CHURRO_PROMPT_VARIANTS[variant]["system"]``).  A walk that stopped at bare
     strings would fail this file's own tests on correct vendor bytes.
@@ -273,7 +263,6 @@ def _module_string_constants(module: ModuleType) -> dict[str, str]:
 # Test 1 — carried-bytes digests
 
 
-@pytest.mark.xfail(condition=_CHANDRA_LAYOUT_PENDING, reason=_PENDING_REASON, strict=False)
 def test_the_carried_chandra_prompt_is_the_vendors_own_rendered_bytes():
     """`OCR_LAYOUT_PROMPT` as `chandra/prompts.py` renders it at the pinned commit."""
     module = importlib.import_module("common.chandra_layout")
@@ -303,7 +292,6 @@ def test_the_carried_chandra_prompt_is_the_vendors_own_rendered_bytes():
     assert module.VENDOR_COMMIT == CHANDRA_CODE_COMMIT
 
 
-@pytest.mark.xfail(condition=_CHURRO_DOCUMENT_PENDING, reason=_PENDING_REASON, strict=False)
 def test_the_carried_churro_system_messages_are_the_vendors_own_bytes_per_variant():
     """Both prompt variants, digested, and the sent one distinguishable from the arm."""
     module = importlib.import_module("common.churro_document")
@@ -593,7 +581,7 @@ def refuse_unless_vendor_request_shape(
 ) -> None:
     """Refuse a wire body that is not the vendor system this chair runs.
 
-    Public so the Wave 2 adapter tests, which live under ``pipeline/`` and may
+    Public so the adapter tests, which live under ``pipeline/`` and may
     import ``common``, can hold their real builder to the same statement this
     file proves offline.  Raises :class:`VendorRequestShapeRefusal`; returns
     ``None`` when the body conforms.
@@ -717,8 +705,8 @@ def _serving_rows() -> dict[tuple[str, str], Mapping[str, Any]]:
 ROW_TIER: Final = "generic-24gb"
 # One representative cost per chair, small enough to leave headroom on any row
 # this catalogue has held.  The arithmetic under test is the `min`, not these
-# two numbers: U14 re-measures the real prompt costs and U15 moves the rows, and
-# neither may change what `min(ceiling, context - image - prompt)` means.
+# two numbers: re-measured prompt costs and moved rows may not change what
+# `min(ceiling, context - image - prompt)` means.
 SAMPLE_IMAGE_TOKENS: Final = 1_200
 SAMPLE_PROMPT_TOKENS: Final = 300
 
@@ -1170,7 +1158,7 @@ def test_no_vendor_ocr_distribution_is_installed():
     found = sorted({"chandra-ocr", "churro-ocr"} & installed)
 
     assert not found, (
-        f"{found} is installed. The vendor systems ruling installs no vendor package "
+        f"{found} is installed. No vendor package is installed "
         "in alpha, and this one is worse than dead weight here: "
         f"{_shadowing_import_line()} imports the bare name `chandra` after putting "
         "its own directory on sys.path[0], so `pipeline/3_attestatores/chandra.py` "
@@ -1180,15 +1168,14 @@ def test_no_vendor_ocr_distribution_is_installed():
 
 
 def test_no_vendor_source_sits_at_the_repository_root():
-    """The five untracked vendor files U0 deleted, guarded by name and by shape."""
+    """No vendor source file sits at the repository root, by name or by shape."""
     modules = sorted(path.name for path in ROOT.glob("*.py"))
 
     assert modules == ["conftest.py"], (
         f"the repository root holds {modules}. Only conftest.py belongs there: the "
-        "vendor's own __init__.py, hf.py, schema.py, util.py and vllm.py were sitting "
-        "here untracked, one `git add -A` from history, and they are what made "
+        "vendor's own files there would make "
         f"{_shadowing_import_line()} resolvable to vendor code. Vendor bytes are "
-        "fetched at boot and never stored (AGENTS.md, Settled)."
+        "fetched at boot and never stored."
     )
     for name in ("chandra", "churro_ocr", "churro"):
         assert not (ROOT / name).exists(), (
@@ -1229,7 +1216,7 @@ VENDOR_FILES: Final[Mapping[str, tuple[str, str]]] = {
     #
     # The design names `evaluation/xml_utils.py` at this commit too, and it is
     # deliberately not fetched: this file pins no bytes from it.  Churro's
-    # output grammar is U2's port, and grammar conformance is the design's
+    # output grammar is ported in `common/churro_document.py`, and grammar conformance is the design's
     # Offline test 3, which lives beside the parser in
     # `common/test_churro_document.py` rather than here (see this module's
     # docstring).  A fetch that asserted nothing about our tree would be
@@ -1309,8 +1296,8 @@ def _fetch(url: str, destination: Path) -> bytes:
 def test_the_carried_bytes_and_ports_equal_the_pinned_vendor_sources(request):
     """Fetch the pinned vendor files, diff everything against them, delete them.
 
-    Nothing fetched here is written into the tree: the standing ruling is that
-    vendor repositories are fetched at boot and never stored, and only the
+    Nothing fetched here is written into the tree: vendor repositories are
+    fetched at boot and never stored, and only the
     strings the design names as carried cross, with their digests recorded
     beside them.
 
@@ -1376,12 +1363,11 @@ def test_the_carried_bytes_and_ports_equal_the_pinned_vendor_sources(request):
         rendered = namespace["OCR_LAYOUT_PROMPT"]
         assert _digest(rendered) == CHANDRA_OCR_LAYOUT_PROMPT_SHA256
         assert len(rendered.encode("utf-8")) == CHANDRA_OCR_LAYOUT_PROMPT_BYTES
-        if not _CHANDRA_LAYOUT_PENDING:
-            module = importlib.import_module("common.chandra_layout")
-            assert rendered in _module_string_constants(module).values(), (
-                "the prompt this repository carries is not byte-equal to the one "
-                "chandra/prompts.py renders at the pinned commit"
-            )
+        module = importlib.import_module("common.chandra_layout")
+        assert rendered in _module_string_constants(module).values(), (
+            "the prompt this repository carries is not byte-equal to the one "
+            "chandra/prompts.py renders at the pinned commit"
+        )
 
         # --- Churro's profile registration, by AST rather than by import -----
         presets = ast.parse(payloads["churro_presets.py"].decode("utf-8"), filename="presets.py")
@@ -1427,14 +1413,13 @@ def test_the_carried_bytes_and_ports_equal_the_pinned_vendor_sources(request):
             "provenance the vendor does not have"
         )
 
-        if not _CHURRO_DOCUMENT_PENDING:
-            module = importlib.import_module("common.churro_document")
-            carried = set(_module_string_constants(module).values())
-            for variant, message in CHURRO_SYSTEM_MESSAGES.items():
-                assert message in carried, (
-                    f"the {variant!r} Churro system message this repository carries is "
-                    "not byte-equal to the vendor's own at the commit it names"
-                )
+        module = importlib.import_module("common.churro_document")
+        carried = set(_module_string_constants(module).values())
+        for variant, message in CHURRO_SYSTEM_MESSAGES.items():
+            assert message in carried, (
+                f"the {variant!r} Churro system message this repository carries is "
+                "not byte-equal to the vendor's own at the commit it names"
+            )
 
         # --- DAI's three carried files, byte for byte ------------------------
         assert (

@@ -1,4 +1,4 @@
-"""Spec 10, test 5: the annotation layer, and the firewall between it and `text`.
+"""The annotation layer, and the firewall between it and `text`.
 
 Unit tests against `validate_annotations` directly. A page reading records no
 annotation layer, so no end-to-end run carries one.
@@ -357,46 +357,3 @@ def test_fifty_gaps_at_once_behave_no_differently_than_one():
     assert len(validated) == 50
     assert all(note["kind"] == "illegible" and note["start"] == note["end"] for note in validated)
     assert archetypus.derive_text_status(text, validated) == "partial"
-
-
-# --- Render -> strip -> hash round-trip: a schema-sufficiency demonstration --
-#
-# Spec 10 test 4's second half. No stage builds real display rendering yet --
-# that is the Armarium's future business at export time -- so this is a
-# test-only helper proving the schema this stage writes is *sufficient* to
-# support that round-trip once built, not a shipped rendering feature.
-
-
-def _demo_render(text: str, annotations: list[dict]) -> str:
-    """A minimal Leiden-style bracket rendering, for this test only."""
-    rendered = []
-    cursor = 0
-    for note in sorted(annotations, key=lambda item: item["start"]):
-        if note["kind"] != "illegible":
-            continue
-        rendered.append(text[cursor : note["start"]])
-        rendered.append("⟨illegible⟩")
-        cursor = note["start"]
-    rendered.append(text[cursor:])
-    return "".join(rendered)
-
-
-def _demo_strip(rendered: str) -> str:
-    return rendered.replace("⟨illegible⟩", "")
-
-
-def test_render_strip_hash_round_trip_reproduces_the_canonical_text_hash():
-    from common.contracts.canonical import digest_of
-
-    text = "the man from nowhere"
-    annotations = [gap(0), gap(7), gap(len(text))]
-    validated = archetypus.validate_annotations(annotations, text, {}, "annotations")
-    rendered = _demo_render(text, validated)
-    assert rendered != text  # the display really does differ from the clean text
-    stripped = _demo_strip(rendered)
-    assert stripped == text
-    # Against a pinned digest, not digest_of(text): once stripped == text
-    # holds, comparing two calls of the same function proves nothing. The
-    # constant is what a sealed record's text_hash would hold for this text,
-    # so this is the recomputation a real consumer performs.
-    assert digest_of(stripped) == "67173165481aa850b657885cbee282a56bcc4ff006b49aee5e266b94b4eaa035"

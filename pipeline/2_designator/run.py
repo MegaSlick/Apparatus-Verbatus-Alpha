@@ -343,8 +343,8 @@ DETECTOR_QUANTIZATION = "obb-corner-floor-clamp.v1"
 DETECTOR_SCORE_QUANTIZATION = "score-round-half-even-bp.v1"
 DETECTOR_RECORD_KIND = "detector-record"
 DETECTOR_PAGE_KIND = "detector-page"
-# Its own kind, not `region`: every reader of `region` treats its subject as an
-# act and its bounds as act coverage, and a detector box is neither.
+# A detector box is page evidence, not an act or act coverage, so its crop has
+# its own kind.
 DETECTOR_REGION_KIND = "detector-region"
 
 

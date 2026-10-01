@@ -1,11 +1,8 @@
-"""F-new-1 (audit finding, mutation-of-mechanisms pass): `require_corpus_frame_shard`
-had no test anywhere in the suite -- not its refusal branch, not its point-of-use
-TOCTOU recheck.  A run whose page count exceeds the sealed shard limit, or whose
-config bytes changed between binding and the run-creation check, is exactly what
-the brief's tampering battery asks for ("the shard limit bypassed by editing config
-bytes after binding"); this file exercises the helper's own refusal branches
-directly, so it fails red if either of its two checks is weakened. It does NOT
-run the Door: the presence of both Door call sites is pinned separately by
+"""`require_corpus_frame_shard` refuses a page count over the sealed limit, a
+changed config and an unsealed one.
+
+These tests drive the helper's own refusal branches directly. They do not run
+the Door: the presence of both Door call sites is pinned separately by
 `pipeline/1_exemplar/test_door.py::test_each_door_path_enforces_the_shard_limit_at_run_creation`.
 """
 
@@ -24,13 +21,7 @@ REAL_DIGEST = load_corpus_frame_policy(DEFAULT_CORPUS_FRAME_CONFIG_PATH)[1]
 
 
 def test_a_page_count_above_the_sealed_shard_limit_is_refused():
-    """The shard boundary is a hard-failure unit, not merely sealed and ignored.
-
-    Before this test, no test anywhere in the suite drove `require_corpus_frame_
-    shard` past its limit (the fixture only ever has 2 pages); the enforcement
-    call in `pipeline/1_exemplar/door.py` could be deleted entirely and the full
-    suite would stay green.
-    """
+    """The shard boundary is a hard-failure unit, not merely sealed and ignored."""
     policy, _ = load_corpus_frame_policy(DEFAULT_CORPUS_FRAME_CONFIG_PATH)
     limit = policy["max_pages_per_shard"]
     with pytest.raises(ContractError, match="shard limit"):
@@ -46,8 +37,7 @@ def test_a_page_count_at_the_sealed_shard_limit_is_admitted():
 def test_a_shard_config_that_changed_since_binding_is_refused_before_use():
     """Point-of-use recheck: a `corpus-frame-shard` digest that no longer matches
     the config bytes on disk must refuse before the page-count comparison runs at
-    all, exactly as `designator-padding`'s `require_sealed_config` refuses a
-    config that changed between a run's binding check and the read that used it.
+    all.
     """
     with pytest.raises(ContractError, match="changed between run binding"):
         require_corpus_frame_shard(1, {"corpus-frame-shard": "0" * 64})

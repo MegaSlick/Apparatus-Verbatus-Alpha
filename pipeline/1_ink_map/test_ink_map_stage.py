@@ -323,7 +323,7 @@ class _PublishingContext:
         self.finished = False
         # The stage reads its background policy from the path its own parsed
         # argv names and proves the bytes against the run's seal, exactly as the
-        # Designator does. A stub without these two would be testing a stage
+        # page path's ink accounting does. A stub without these two would be testing a stage
         # that skipped both, which is the drift this stub's own comment warns
         # about.
         self.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
@@ -601,7 +601,7 @@ def test_the_stage_proves_the_background_policy_bytes_against_the_runs_own_seal(
     assert background["config_sha256"] == load_background_config()["config_sha256"]
     # Provenance, as fields rather than as a sentence: the paper value, where
     # it came from, the level this stage measured at, and the derived margin the
-    # Designator will measure the same page at.
+    # page path's ink accounting will measure the same page at.
     assert background["background_level"] == 230
     assert background["background_source"] == "inferred-modal"
     assert background["contrast_below_background"] == 40
@@ -731,8 +731,8 @@ def test_a_page_whose_paper_cannot_be_inferred_is_named_rather_than_mapped(monke
 def test_paper_too_dark_for_this_audits_contrast_is_not_measurable_here(monkeypatch):
     """The second cause of `ink-not-measurable`: the shared inference accepts the paper.
 
-    A uniform page at 30 infers paper 30 on the Designator's own terms (its
-    floor margin is 20), but 30 levels leave no room for this audit's 40, so
+    A uniform page at 30 infers paper 30 on the shared background inference's
+    own terms (its floor margin is 20), but 30 levels leave no room for this audit's 40, so
     no pixel could count as ink and the page is named rather than mapped clean.
     """
     from common.background import infer_background_evidence

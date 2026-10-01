@@ -196,9 +196,7 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
         or record["page_ordinal"] < 0
     ):
         raise SchemaRefusal("raw proposal has invalid source or page lineage")
-    if record["geometry_kind"] not in {"polygon", "obb", "aabb"} or not isinstance(
-        record["geometry"], list
-    ):
+    if record["geometry_kind"] != "obb" or not isinstance(record["geometry"], list):
         raise SchemaRefusal("raw proposal has unknown geometry")
     transform = _closed(
         record["page_transform"],
@@ -255,9 +253,7 @@ def validate_raw_proposal(payload: object) -> dict[str, Any]:
     crop_policy = record["crop_policy"]
     if crop_policy is not None:
         policy = _closed(crop_policy, {"mode", "loss_recorded"}, "raw proposal crop policy")
-        if policy["mode"] not in {"aabb-enclose", "rectify"} or not isinstance(
-            policy["loss_recorded"], bool
-        ):
+        if policy["mode"] != "aabb-enclose" or not isinstance(policy["loss_recorded"], bool):
             raise SchemaRefusal("raw proposal crop policy is malformed")
     return record
 
@@ -368,10 +364,7 @@ def yolo_obb(
             [ordinal],
             "obb",
         )
-        raw["crop_policy"] = {
-            "mode": "rectify" if checked["yolo_obb"]["rectify"] else "aabb-enclose",
-            "loss_recorded": checked["yolo_obb"]["rectify"],
-        }
+        raw["crop_policy"] = {"mode": "aabb-enclose", "loss_recorded": False}
         # crop_policy is attached after _raw builds the record, so re-validate
         # the whole thing rather than the intermediate shape no caller sees.
         _retain_by_content_identity(union, validate_raw_proposal(raw))

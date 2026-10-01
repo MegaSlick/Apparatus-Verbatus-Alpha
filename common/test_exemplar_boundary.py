@@ -154,20 +154,12 @@ def test_a_door_admission_bound_to_a_different_run_refuses(sealed):
 
 # --- the crop lineage check ------------------------------------------------------
 #
-# Opus-F3. `verify_reading_region_lineage` re-derives a crop from the sealed page
-# and compares. It compared raw bytes, which made the check's verdict depend on
-# which zlib build re-derived it: the audit's demonstration shimmed
-# `zlib.compress` to emit a valid stream at a different level -- precisely what a
-# different zlib build legitimately does -- and every crop in the run was refused
-# as "a Designator region does not trace to its Exemplar page", with the pixels
-# untouched and reproducing exactly. The check is shared by every crop this
-# pipeline cuts from a sealed page; it is exercised here on the Perlector's. A benign environment change reported as
-# tampered evidence is both a false alarm and a lost one.
-#
-# Two changes, and these tests hold both. `crop_png` no longer writes bytes a
-# library gets to choose (`common/test_imaging_determinism.py`), and the
-# comparison here is on the image, which is what invariant 3 asks for and what
-# lets a run tree sealed under an earlier encoder still verify.
+# `verify_reading_region_lineage` re-derives a crop from the sealed page and
+# compares decoded pixels, so a crop written by another valid encoder (a
+# different zlib build, a different compression level) still verifies, while
+# ancillary chunks travelling beside the pixels are refused separately. The
+# check is shared by every crop this pipeline cuts from a sealed page; it is
+# exercised here on the Perlector's.
 
 
 @pytest.fixture
@@ -248,12 +240,9 @@ def test_the_crop_the_run_wrote_verifies(cropped):
 
 
 def test_the_same_crop_written_by_another_encoder_is_not_forged_evidence(cropped):
-    """The audit's red demonstration, as durable as the encoder it survives.
-
-    Pillow's own PNG writer stands in for any other valid encoder: a different
-    zlib build, a wheel with a different bundled one, the compressor this
-    pipeline itself used before act crops were made deterministic. Every pixel
-    is the crop of the sealed page; only the stream framing differs.
+    """Pillow's own PNG writer stands in for any other valid encoder: a
+    different zlib build or a wheel with a different bundled one. Every pixel is
+    the crop of the sealed page; only the stream framing differs.
     """
     tree, run, region = cropped
     crop = sealed_crop(tree, region)
@@ -297,9 +286,8 @@ def test_a_single_changed_pixel_is_still_refused_by_name(cropped):
 
 
 def test_a_crop_carrying_payload_beside_its_pixels_is_refused(cropped):
-    """What the byte comparison used to refuse for free. Accepting two framings
-    of one image says nothing about a chunk travelling beside the picture, so
-    that is now said on its own."""
+    """Accepting two framings of one image says nothing about a chunk travelling
+    beside the picture, so that is refused on its own."""
     tree, run, region = cropped
     crop = sealed_crop(tree, region)
     tag, data = b"tEXt", b"note\x00anything at all"

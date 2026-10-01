@@ -6,8 +6,7 @@ in alpha and every fidelity claim has to be provable in the laptop gate. Only
 the geometry decision lives here; the pixels move through
 ``common/imaging.py``'s sealed ``resize_png_lanczos``.
 
-Both functions are **carried third-party logic**, named as carried under
-`cleanroom/README.md`'s citation rule, and both sources permit it:
+Both functions are **carried third-party logic**, and both sources permit it:
 
 * :func:`scale_to_fit_chandra` reproduces ``chandra/model/util.py::scale_to_fit``
   from ``github.com/datalab-to/chandra`` at

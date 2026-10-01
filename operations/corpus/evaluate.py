@@ -159,8 +159,7 @@ _AGGREGATE_FIELDS = frozenset(
 _CODE_REF_CHECK_FIELDS = frozenset({"state", "checkout_head"})
 # One closed row shape for all three outcomes. A missed or not-attempted record
 # carries `None` where a scored one carries a measurement, so a reader is never
-# left to infer which questions a row was even asked -- the same repair the
-# admission ledger's rows needed.
+# left to infer which questions a row was even asked.
 _RECORD_ROW_FIELDS = frozenset(
     {
         "physical_act_id",
@@ -435,7 +434,7 @@ def run_is_fixture(export_payload: Mapping[str, Any]) -> bool:
     The Armarium seals exactly one of `fixture_id` (fixture route) and
     `submission_id` (real ingress), and refuses a manifest naming both or
     neither. Reading that is a measurement; a `--fixture` flag the operator could
-    omit is not, and omitting it published a fixture score under the live label.
+    omit is not.
     """
     has_fixture = bool(
         isinstance(export_payload.get("fixture_id"), str) and export_payload["fixture_id"].strip()
@@ -764,8 +763,7 @@ def _validate_units(value: Any, what: str) -> None:
 def validate_evaluation(report: Any) -> dict[str, Any]:
     """Refuse an evaluation that is not exactly `recordgold-evaluation.v2`.
 
-    This is the artifact a person reads as the measurement, and it was the one
-    record in this package that nothing held to a shape.
+    This is the artifact a person reads as the measurement.
 
     **Closed exactly where a name is read**, and the docstring says so rather
     than claiming more: the top level, `run`, `corpus`,
@@ -981,8 +979,8 @@ def write_report(report: Mapping[str, Any], path: str | Path) -> Path:
 def load_reference_pages(path: str | Path) -> list[dict[str, Any]]:
     """One `reference-pages.jsonl`, refused by name rather than by traceback.
 
-    A missing file and a file that is not UTF-8 each refused under this module's
-    own vocabulary, as a line that is not JSON already was.
+    A missing file, a file that is not UTF-8 and a line that is not JSON are
+    each refused under this module's own vocabulary.
     """
     path = Path(path)
     if not path.is_file():

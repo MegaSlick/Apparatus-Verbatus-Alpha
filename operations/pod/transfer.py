@@ -247,14 +247,9 @@ def _open_verified_regular_file(path: Path, *, relative: str) -> BinaryIO:
     through the one descriptor opened here, never through the path again.
     """
 
-    # `O_NONBLOCK` beside `O_NOFOLLOW`, because the swap this guards against has
-    # two halves and only one was closed. A leaf replaced by a **symlink** was
-    # refused; a leaf replaced by a **FIFO** blocked on the open itself, before
-    # the `S_ISREG` check below could ever run — so `verbatus upload` printed its
-    # pre-transfer lines and then hung indefinitely, which is the one failure that
-    # tells an operator nothing at all. Reproduced end to end through the operator
-    # verb by the Opus read of this branch. Third site of a rule this branch has
-    # now fixed twice: `records.py`'s two readers were the first two.
+    # `O_NONBLOCK` beside `O_NOFOLLOW`: a leaf swapped for a FIFO would otherwise
+    # block the open itself, before the `S_ISREG` check below runs, and hang the
+    # transfer with no message to the operator.
     flags = os.O_RDONLY | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW

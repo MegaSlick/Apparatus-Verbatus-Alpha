@@ -24,6 +24,7 @@ from common.contracts.stages import (
     RECENSOR,
     STAGES,
 )
+from common.page_answer import ACT_KINDS
 from common.runtree.store import RUN_FILE, RunTree
 from common.stage import latest_attempt
 
@@ -129,6 +130,9 @@ class ReviewProjection:
     review_items_total: int | None = None
     review_page: int = 1
     review_page_size: int = REVIEW_PAGE_SIZE
+    # The page reading's labelled `other` entries, shown in the same row shape
+    # as `acts` but never counted among them, before and after export alike.
+    other_readings: tuple[dict[str, Any], ...] = ()
 
 
 class ReadOnlyRun:
@@ -245,6 +249,18 @@ class ReadOnlyRun:
                     )
                     for row in payload["non_delivered"]
                 )
+                other_readings = tuple(
+                    _act_row(
+                        tree,
+                        row,
+                        export_ref,
+                        budget,
+                        requires_crops=not isinstance(row, dict)
+                        or row.get("category") == "delivered",
+                        stage_records=stage_records,
+                    )
+                    for row in payload["other_readings"]
+                )
                 review_items, review_items_total = _review_items(
                     tree, payload, export_ref, review_page=review_page
                 )
@@ -257,8 +273,9 @@ class ReadOnlyRun:
                 # review), each row naming its own record. None of this is a
                 # delivered result, and `export` says so.
                 pages = _sealed_pages(tree, stage_records, budget)
-                acts = _progressive_acts(tree, stage_records, budget)
-                acts_denominator_note = _pre_export_acts_note(stage_records, acts)
+                acts = _progressive_acts(tree, stage_records, budget, "act")
+                other_readings = _progressive_acts(tree, stage_records, budget, "other")
+                acts_denominator_note = _pre_export_acts_note(stage_records, acts + other_readings)
                 review_items = None
                 review_items_total = None
                 export = {
@@ -302,6 +319,7 @@ class ReadOnlyRun:
                 review_page=review_page,
                 review_page_size=REVIEW_PAGE_SIZE,
                 pages_declared_note=declared_note,
+                other_readings=other_readings,
             )
         except (ContractError, KeyError, OSError, TypeError, ValueError) as error:
             # The rendered detail keeps the underlying refusal's evidence
@@ -374,7 +392,7 @@ def _armarium_payload(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
             detail=f"the Armarium export record {expected_path} payload is not an object",
         )
-    for name in ("pages", "delivered", "non_delivered"):
+    for name in ("pages", "delivered", "non_delivered", "other_readings"):
         if name not in payload or not isinstance(payload[name], list):
             raise OperatorError(
                 ErrorCode.CONSOLE_TREE_UNREADABLE,
@@ -891,8 +909,8 @@ _NO_READING_NOTE = (
     "the Perlector has not read the pages, so nothing in this tree counts this run's acts yet"
 )
 _PRE_EXPORT_ACTS_NOTE = (
-    "the entries the Perlector read; a page it could not read or found blank is counted "
-    "only by the export"
+    "the acts the Perlector read, its labelled other readings listed apart; a page it could "
+    "not read or found blank is counted only by the export"
 )
 
 
@@ -921,11 +939,14 @@ def _pages_without_entries(
 
 
 def _pre_export_acts_note(
-    stage_records: list[dict[str, Any]], acts: tuple[dict[str, Any], ...]
+    stage_records: list[dict[str, Any]], entries: tuple[dict[str, Any], ...]
 ) -> str:
-    """Why the pre-export act list is what it is, naming each page read without an entry."""
-    empty = _pages_without_entries(stage_records, acts)
-    if not acts and not empty:
+    """Why the pre-export act list is what it is, naming each page read without an entry.
+
+    `entries` is every entry read, acts and other readings alike.
+    """
+    empty = _pages_without_entries(stage_records, entries)
+    if not entries and not empty:
         return _NO_READING_NOTE
     if not empty:
         return _PRE_EXPORT_ACTS_NOTE
@@ -936,15 +957,26 @@ def _progressive_acts(
     tree: RunTree,
     stage_records: list[dict[str, Any]],
     budget: _ImageBudget,
+    kind: str,
 ) -> tuple[dict[str, Any], ...]:
-    """Every entry the Perlector read, from its sealed `act-region` records, in page order.
+    """Every entry of one `kind` the Perlector read, from its sealed `act-region`
+    records, in page order.
 
-    Each row says which later stage has not spoken about it. Before the
-    Perlector has read a page, the list is honestly empty.
+    `kind` is `act` or `other`, so the labelled other entries stay out of the
+    act list here exactly as the export keeps them out of its act layers. Each
+    row says which later stage has not spoken about it. Before the Perlector
+    has read a page, the list is honestly empty.
     """
     acts = []
     for row in _records_of(stage_records, PERLECTOR, "act-region"):
         payload = _payload_of(row, "the Perlector act-region record")
+        if payload.get("kind") not in ACT_KINDS:
+            raise SchemaRefusal(
+                f"{row['record_ref']['relative_path']}: act-region kind "
+                f"{payload.get('kind')!r} is neither 'act' nor 'other'"
+            )
+        if payload["kind"] != kind:
+            continue
         act = {
             "act_id": row["subject_id"],
             "act_key": f"p{payload.get('page_ordinal')}:{payload.get('n')}",

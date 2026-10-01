@@ -409,7 +409,7 @@ class PlainParser(argparse.ArgumentParser):
 
 
 def _annotate_unrecognized(message: str) -> str:
-    """Name the fix for the one unrecognized-arguments cause this is (F004).
+    """Name the fix for the one unrecognized-arguments cause this is.
 
     `message` is argparse's own wording, not this codebase's -- matched by
     prefix rather than parsed, so a wording this function does not

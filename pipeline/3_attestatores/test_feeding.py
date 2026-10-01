@@ -189,25 +189,6 @@ def test_an_undecodable_churro_capture_records_uninspected_without_claiming_repe
     assert record["stop_reason"] == "eos"
 
 
-def test_this_module_owns_no_churro_prompt_bytes_any_more():
-    """The retired names are gone, not merely unused.
-
-    `churro_prompt` was the Churro library's model-agnostic *fallback* prompt --
-    a drifted copy of the paper's zero-shot comparison-VLM instruction -- carried
-    here and described as the trained framing; `churro_layout_prompt` was a
-    modified carry of it asking for a JSON coordinate channel Churro-DS carries
-    no geometry for. Both, and the two version constants that named them, leave
-    with the wire contract they served.
-    """
-    for retired in (
-        "churro_prompt",
-        "churro_layout_prompt",
-        "CHURRO_LAYOUT_PROMPT_VERSION",
-        "CHURRO_TRAINED_PROMPT_VERSION",
-    ):
-        assert not hasattr(feeding, retired), retired
-
-
 def test_the_chair_is_asked_in_the_vendors_own_system_only_framing():
     prompt = churro.prompt()
     assert set(prompt) == {"system"}

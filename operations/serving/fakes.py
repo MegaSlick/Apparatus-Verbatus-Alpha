@@ -16,7 +16,6 @@ from typing import Any, Callable, Mapping, Sequence
 from common.chairs.errors import ServingRecipeRefusal
 from common.chairs.models import ChairIdentity, ServingDetails, VerifiedSnapshot
 from common.chairs.receipts import build_receipt
-from common.decoding import chair_decoding as sealed_chair_decoding
 from common.decoding import load_decoding_policy
 
 from .client import ChairClient, RetainBytes
@@ -303,23 +302,6 @@ def scripted_prompt_too_long(
     return ScriptedAnswer(status=400, body=json.dumps(payload).encode())
 
 
-def scripted_input_too_long(*, max_model_len: int, input_tokens: int) -> ScriptedAnswer:
-    """The refusal a real Perlector request got when its prompt overran the row.
-
-    Observed from vLLM 0.27.1 (a 34,741-token request against a 32,768
-    row): an HTTP 400 whose body is the nested envelope
-    ``{"error": {"message": ..., "type": "BadRequestError", "param": null,
-    "code": 400}}``.  ``scripted_prompt_too_long`` scripts the older flat
-    envelope; both are refused by name and retained, never parsed.
-    """
-
-    message = (
-        f"Input length ({input_tokens}) exceeds model's maximum context length ({max_model_len})."
-    )
-    payload = {"error": {"message": message, "type": "BadRequestError", "param": None, "code": 400}}
-    return ScriptedAnswer(status=400, body=json.dumps(payload, separators=(",", ":")).encode())
-
-
 class FakeLauncher:
     def __init__(self, endpoint: FakeEndpoint) -> None:
         self.endpoint = endpoint
@@ -390,12 +372,6 @@ class FakePublisher:
 def shipped_decoding_policy() -> tuple[dict[str, Any], str]:
     """The shipped decoding policy and its seal, as a stage's ``main`` loads them."""
     return load_decoding_policy()
-
-
-def shipped_chair_decoding(chair: str) -> dict[str, int | float]:
-    """One chair's sampling values from the shipped decoding policy."""
-    policy, _digest = load_decoding_policy()
-    return sealed_chair_decoding(policy, chair)
 
 
 def fake_serving_factory(

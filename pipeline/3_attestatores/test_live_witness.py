@@ -521,9 +521,8 @@ def test_a_page_that_fits_carries_its_capacity_record_onto_the_request():
     assert capacity["fits"] is True
     assert capacity["chair"] == "attestator_3"
     # Churro's own measured prompt cost and dense-page answer budget, not a
-    # guess. The prompt cost is re-measured for the vendor's registry-resolved
-    # system string, which is a single sentence where the retired layout
-    # instruction was a two-message brief.
+    # guess. The prompt cost is measured for the vendor's registry-resolved
+    # system string, a single sentence.
     assert capacity["prompt_tokens"] == 27
     # Measured over the vendor's own `HistoricalDocument` grammar.
     # Churro reserves the vendor's whole answer bound, not the measured page.
@@ -625,17 +624,16 @@ def test_every_measured_witness_prompt_constant_still_matches_the_prompt_that_is
     """
 
     chandra_module = sys.modules.get("chandra") or __import__("chandra")
-    # The vendor's own carried prompt bytes, re-measured for them: 593 over the
-    # 2,161-character `OCR_LAYOUT_PROMPT`, where this repository's retired
-    # instruction cost 256 over 934 characters.
+    # The vendor's own carried prompt bytes, measured for them: 593 over the
+    # 2,161-character `OCR_LAYOUT_PROMPT`.
     assert sealed_prompt_tokens("attestator_1", chandra_module.prompt()["user"]) == 593
     dai = feeding.dai_prompt()
     assert sealed_prompt_tokens("attestator_2", dai["system"], dai["user"]) == 84
     # Churro carries a constant per declared framing, because a run can ask it
     # in either and a framing whose cost nobody measured could not be sent at
     # all.  Both are sealed to their own text, so an edit to one does not
-    # silently borrow the other's number.  Both are the vendor's own bytes now:
-    # a single system sentence, where the retired pair were a two-message brief.
+    # silently borrow the other's number.  Both are the vendor's own bytes: a
+    # single system sentence.
     registry = churro.prompt("registry-v0.3.0")
     assert sealed_prompt_tokens("attestator_3", registry["system"]) == 27
     paper = churro.prompt("paper-harness-ed09bc7")
@@ -1110,9 +1108,8 @@ def _dai_identity_view_kwargs(*, crop_bytes: bytes = b"the designator's own reco
     one digest under two stage-owned paths, which is what a content-addressed
     store means by "the same retained blob": every image a witness is shown is
     inventoried under `3_attestatores/`, while the proposal crop it was cut
-    from lives under `2_designator/`. Held to the whole reference dict, as
-    `dai_model_view` once was, this record was refused after its response had
-    already come back.
+    from lives under `2_designator/`. Held to the whole reference dict, this
+    record would be refused after its response had already come back.
     """
 
     digest = digest_bytes(crop_bytes)
@@ -1188,7 +1185,7 @@ def test_live_attempt_from_response_read_on_a_complete_stop(tmp_path: Path):
 
 
 def test_format_capabilities_falls_back_to_the_blanket_default_when_undeclared(tmp_path: Path):
-    """`adapter.format_capabilities` read with the old default as fallback.
+    """`adapter.format_capabilities` read with the blanket default as fallback.
 
     `_stub_adapter` declares no `format_capabilities` attribute, so this seam
     must still record the blanket default, not raise `AttributeError` and not

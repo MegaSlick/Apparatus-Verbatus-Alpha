@@ -1,4 +1,4 @@
-"""The re-ask budget: a ruled ceiling in code, and the run's sealed record in use."""
+"""The re-ask budget: a ceiling in code, and the run's sealed record in use."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +9,7 @@ from common.contracts.errors import ContractError
 from common.contracts.stages import RECENSOR
 from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
-    RULED_ABSOLUTE_CAP,
+    REREAD_CEILING,
     load_recovery_policy,
 )
 from common.runtree.store import RunTree
@@ -28,18 +28,18 @@ def test_the_shipped_policy_bounds_re_asks_per_page():
 
 def test_the_ruled_ceiling_accepts_one_re_ask(tmp_path):
     policy = _policy(
-        tmp_path / "at-ceiling.toml", f"[budget]\npage_level_reread = {RULED_ABSOLUTE_CAP}\n"
+        tmp_path / "at-ceiling.toml", f"[budget]\npage_level_reread = {REREAD_CEILING}\n"
     )
 
-    assert load_recovery_policy(policy)["page_level_reread"] == RULED_ABSOLUTE_CAP == 1
+    assert load_recovery_policy(policy)["page_level_reread"] == REREAD_CEILING == 1
 
 
 def test_the_ruled_ceiling_refuses_more_re_asks(tmp_path):
     policy = _policy(
-        tmp_path / "over-ceiling.toml", f"[budget]\npage_level_reread = {RULED_ABSOLUTE_CAP + 1}\n"
+        tmp_path / "over-ceiling.toml", f"[budget]\npage_level_reread = {REREAD_CEILING + 1}\n"
     )
 
-    with pytest.raises(ContractError, match="above the ruled maximum"):
+    with pytest.raises(ContractError, match="above the maximum"):
         load_recovery_policy(policy)
 
 

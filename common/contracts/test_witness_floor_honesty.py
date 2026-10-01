@@ -48,9 +48,10 @@ def test_a_health_unrecorded_count_beyond_the_configured_chairs_is_refused():
         _validate_coverage(coverage)
 
 
-def test_a_non_integer_unaligned_shortfall_is_refused():
+@pytest.mark.parametrize("unaligned", [-1, "1", True])
+def test_an_unaligned_shortfall_that_is_not_a_count_is_refused(unaligned):
     """A shortfall class carries a count, and only a count."""
-    coverage = _base_coverage(shortfalls={"failed": 0, "truncated": 0, "unaligned": -1})
+    coverage = _base_coverage(shortfalls={"failed": 0, "truncated": 0, "unaligned": unaligned})
     with pytest.raises(SchemaRefusal, match="malformed shortfalls"):
         _validate_coverage(coverage)
 

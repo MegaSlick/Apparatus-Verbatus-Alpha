@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import secrets
 import subprocess
+import tomllib
 from decimal import Decimal
 from pathlib import Path
 from string import ascii_letters, digits
@@ -102,9 +103,15 @@ def test_the_rendered_golden_page_is_a_decodable_png_under_the_smallest_tier_cap
     with Image.open(page) as image:
         width, height = image.size
         assert image.format == "PNG"
-    # 1344 is generic-24gb's longest-edge cap (config/pod_placement.toml); the
-    # smoke refuses a page past the measured tier's square of it.
-    assert width * height <= 1344 * 1344
+    # The smoke refuses a page past the measured tier's square of its
+    # longest-edge cap, so the page fits under the smallest tier's.
+    placement = tomllib.loads(
+        (Path(__file__).resolve().parents[2] / "config" / "pod_placement.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    smallest_cap = min(tier["recipe"]["pixel_cap"] for tier in placement["tiers"])
+    assert width * height <= smallest_cap * smallest_cap
     # The witness is in the pixels and nowhere in the bytes as text: a page
     # that carried it as metadata would prove nothing about reading.
     assert witness.encode() not in encoded

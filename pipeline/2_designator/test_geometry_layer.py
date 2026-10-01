@@ -142,6 +142,27 @@ def test_proposal_identity_is_reproducible_without_first_seen_observation_proven
         validate_raw_proposal({**proposal, "proposal_id": "proposal_forged000000"})
 
 
+def test_a_raw_proposal_admits_only_the_obb_geometry_and_aabb_enclose_crop_it_is_made_with():
+    """The only proposer is YOLO OBB with an axis-aligned enclosing crop."""
+    obb = [{"x": 10, "y": 20}, {"x": 20, "y": 10}, {"x": 30, "y": 20}, {"x": 20, "y": 30}]
+    proposal = yolo_obb(
+        page_id="pg_fixture",
+        page_ordinal=0,
+        page_w=100,
+        page_h=100,
+        policy=load_geometry_policy(),
+        receipt_ref=RECEIPT,
+        response_ref=RESPONSE,
+        detections=[{"ordinal": 0, "obb": obb, "score_bp": 8000}],
+    )[0]
+    for kind in ("polygon", "aabb"):
+        with pytest.raises(SchemaRefusal, match="unknown geometry"):
+            validate_raw_proposal({**proposal, "geometry_kind": kind})
+    rectified = {**proposal, "crop_policy": {"mode": "rectify", "loss_recorded": True}}
+    with pytest.raises(SchemaRefusal, match="crop policy is malformed"):
+        validate_raw_proposal(rectified)
+
+
 def test_raw_proposal_transform_refuses_a_non_identity_scale_in_page_pixel_space():
     """page-pixels-to-page-pixels can only be 1:1."""
     proposal = yolo_obb(

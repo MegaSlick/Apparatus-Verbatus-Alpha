@@ -98,17 +98,11 @@ def test_a_pathological_payload_is_refused_by_this_module_not_by_the_interpreter
     """The walk this pipeline seals every artifact through may not be the thing
     that runs out of stack, and may not decide *where* by running out.
 
-    `canonical_bytes` did convert the `RecursionError` into a named refusal, so
-    nothing crashed. But the depth it refused at was wherever one of two
-    recursive walks exhausted itself: `_refuse_floats`'s Python frames near the
-    recursion limit, or `json.dumps`'s C encoder, which absorbs roughly 9,997
-    levels here and a different number elsewhere -- CPython's C recursion limit
-    is platform-dependent, the same fact `common/test_corpus_register.py`
-    records about the JSON parser. A hasher whose acceptance depends on which
-    machine ran it cannot promise the same content produces the same bytes.
-
-    So the walk carries its own list and its own declared bound, and a million
-    levels are answered in constant time by a refusal that names the limit.
+    A recursive walk would refuse wherever the interpreter's stack ran out, and
+    CPython's C recursion limit is platform-dependent, so acceptance would depend
+    on which machine ran it. The walk carries its own stack and declared bound,
+    so the refusal depth does not depend on the interpreter, and a million levels
+    are answered by a refusal that names the limit.
     """
     nested: object = "leaf"
     for _ in range(PATHOLOGICAL_DEPTH):
@@ -479,11 +473,10 @@ def test_missing_fields_are_refused():
 
 
 def test_a_hand_written_record_with_blank_fields_is_refused():
-    """The validator gates records read off disk, so it must be at least as
-    strict as the builder. It was not: a record written by hand with an empty
-    reason and an empty target version passed, and its self-hash verified —
-    because a hash covers whatever bytes were sealed, not whether they meant
-    anything."""
+    """The validator gates records read off disk, so it is at least as strict as
+    the builder: a resealed hand-written record with a blank field is refused,
+    though its self-hash verifies, because a hash covers whatever bytes were
+    sealed, not whether they meant anything."""
     checked = 0
     for field in ("reason", "target_version_hash", "timestamp"):
         record = sound_approval()

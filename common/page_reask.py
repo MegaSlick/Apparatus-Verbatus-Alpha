@@ -48,13 +48,13 @@ from common.page_accounting import (
     is_inside,
     validate_answer,
 )
-from common.recovery import RULED_ABSOLUTE_CAP
+from common.recovery import REREAD_CEILING
 
 # The findings a re-ask is asked about, and every other finding code.
 RE_ASKABLE: Final = frozenset({UNACCOUNTED_WITNESS_UNIT, UNREAD_LINE, RECORD_NOT_READ})
 NEVER: Final = (HOLD_CODES | NOT_MEASURED_CODES) - RE_ASKABLE
 # The most re-asks a page may have: the recovery loader's ruled ceiling.
-MAX_REASKS: Final = RULED_ABSOLUTE_CAP
+MAX_REASKS: Final = REREAD_CEILING
 
 
 def reask_budget(recovery_policy: Mapping[str, Any]) -> int:

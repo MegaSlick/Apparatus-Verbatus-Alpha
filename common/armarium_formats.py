@@ -1,8 +1,7 @@
 """The sealed configuration surface for Armarium export projections.
 
-The manifest is always written.  The listed formats are deliberately the ones
-Spec 11 names plainly; an Obsidian vault and uncertainty-display conventions are
-not included because those remain the project lead's decisions.
+The manifest is always written; `KNOWN_FORMATS` are the projections Armarium
+can emit.
 """
 
 from __future__ import annotations

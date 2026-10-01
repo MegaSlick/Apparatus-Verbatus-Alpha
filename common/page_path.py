@@ -70,6 +70,35 @@ PAGE_READING_SCHEMA: Final = "perlector-page-reading.v2"
 RETIRED_PAGE_READING_SCHEMAS: Final = frozenset({"perlector-page-reading.v1"})
 ACT_REGION_SCHEMA: Final = "perlector-act-region.v2"
 PERLECTIO_SCHEMA: Final = "perlectio.v3"
+# Every field a sealed Perlectio holds: what `expected_perlectio` names, and the
+# entry's `dissent` stage 4 publishes beside it.
+PERLECTIO_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "page_id",
+        "page_ordinal",
+        "act_region_ref",
+        "page_reading_ref",
+        "page_accounting_ref",
+        "feed_ref",
+        "n",
+        "kind",
+        "label",
+        "text",
+        "uncertain_spans",
+        "gaps",
+        "uncertainty_assessment",
+        "truncation",
+        "autopsia",
+        "continues_from_previous_page",
+        "continues_to_next_page",
+        "holds",
+        "page_holds",
+        "engine_call",
+        "provenance",
+        "dissent",
+    }
+)
 # Every kind the page reading publishes beside its Perlectios.
 PAGE_PATH_KINDS: Final = frozenset(
     {PAGE_FEED_KIND, PAGE_READING_KIND, PAGE_ACCOUNTING_KIND, ACT_REGION_KIND}
@@ -1063,6 +1092,22 @@ def expected_perlectio(
         "provenance": reading["provenance"],
         **recovered_fields(plan),
     }
+
+
+# What a Perlectio of an entry the re-ask recovered holds beyond `PERLECTIO_FIELDS`.
+RECOVERED_FIELDS: Final = frozenset({"reading_attempt", "reading_n"})
+
+
+def is_perlectio_field_set(payload: Mapping[str, Any]) -> bool:
+    """True when `payload` holds exactly a first reading's Perlectio fields, or those
+    and `RECOVERED_FIELDS` with the re-ask's `reading_attempt`."""
+    fields = set(payload)
+    if fields == PERLECTIO_FIELDS:
+        return True
+    return (
+        fields == PERLECTIO_FIELDS | RECOVERED_FIELDS
+        and payload["reading_attempt"] == REASK_READING
+    )
 
 
 def recovered_fields(plan: Mapping[str, Any]) -> dict[str, int]:
