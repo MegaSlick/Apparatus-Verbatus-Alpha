@@ -1,4 +1,4 @@
-"""Loss-accounted comparison views of witness text, and the sealed alignment limits.
+"""Loss-accounted comparison views of witness text.
 
 Each view strips what a witness wrapped around its reading and maps every kept
 character back to its raw offset, so nothing is lost silently.
@@ -8,23 +8,10 @@ from __future__ import annotations
 
 import html
 import unicodedata
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Final
 
-from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.errors import SchemaRefusal
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
-from common.sealed_config import read_sealed_toml
-
-DEFAULT_ALIGNMENT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "alignment.toml"
-
-
-@dataclass(frozen=True)
-class AlignmentLimits:
-    max_characters: int
-    max_character_pairs: int
-    timeout_seconds: int
-
 
 # The longest HTML5 named entity is `&CounterClockwiseContourIntegral;` at 33
 # characters; numeric references are shorter still. The bound matters because
@@ -194,27 +181,3 @@ def bracket_marker_view(raw: str) -> dict[str, Any]:
         "offset_map": offsets,
         "loss": {"marker_characters": removed_characters},
     }
-
-
-def load_alignment_limits(
-    path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
-) -> tuple[AlignmentLimits, str]:
-    record, digest = read_sealed_toml(path, "alignment configuration")
-    if (
-        set(record) != {"limits"}
-        or not isinstance(record["limits"], dict)
-        or set(record["limits"])
-        != {
-            "max_characters",
-            "max_character_pairs",
-            "timeout_seconds",
-        }
-    ):
-        raise ContractError("alignment configuration has the wrong closed schema")
-    values = record["limits"]
-    if any(
-        not isinstance(value, int) or isinstance(value, bool) or value <= 0
-        for value in values.values()
-    ):
-        raise ContractError("alignment limits must be positive integers")
-    return AlignmentLimits(**values), digest

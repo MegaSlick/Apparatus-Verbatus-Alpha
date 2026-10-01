@@ -1,6 +1,6 @@
-"""The Designator reconciles the Exemplar before cutting ink: most tests run
+"""The Designator reconciles the Exemplar before reading a page: most tests run
 the real orchestrator, damage only the Exemplar's written evidence, and check
-the Designator stops before publishing any new proposal. The missing-outcome
+the Designator stops before publishing any record. The missing-outcome
 test also damages the Ink Map's own accounting so the run reaches census
 reconciliation; the TOCTOU test below calls the Designator's internals
 directly, on pixels tampered after the upfront check.
@@ -266,8 +266,4 @@ def test_a_sealed_pixel_blob_tampered_after_the_upfront_check_is_still_caught(tm
     blob_path.write_bytes(output.getvalue())
 
     with pytest.raises(ContractError, match="changed under a sealed reference"):
-        designator.page_pixels(
-            context,
-            page_record,
-            grouping_policy=designator.grouping_config.load_grouping_config(),
-        )
+        designator._read_checked_page_bytes(context, page_record)

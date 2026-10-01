@@ -335,10 +335,9 @@ def rewitness_stage_boundary(tree, stage: str) -> None:
             record = json.loads(path.read_text(encoding="utf-8"))
             if _repoint_retained_references(tree, record):
                 payload = record.get("payload")
-                # A producer that seals its payload separately -- the Designator's
-                # proposal-seal denominator does -- must have that inner hash
-                # recomputed too, or the reader stops on the denominator's own
-                # self-hash instead of on the check the calling test names.
+                # A producer that seals its payload separately must have that
+                # inner hash recomputed too, or the reader stops on the payload's
+                # own self-hash instead of on the check the calling test names.
                 if isinstance(payload, dict) and "self_hash" in payload:
                     payload["self_hash"] = self_hash(payload)
                 record["self_hash"] = self_hash(record)

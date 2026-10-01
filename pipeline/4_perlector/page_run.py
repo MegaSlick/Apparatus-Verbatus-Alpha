@@ -718,7 +718,7 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         hooks=hooks,
         audit=audit_not_run(run.audit_policy, run.audit_sha256),
         page_chairs=declared_page_witness_chairs(context),
-        testimonia=current_page_testimonia(context, run.all_proposal_regions),
+        testimonia=current_page_testimonia(context),
         surya=page_path.sealed_surya_census(
             context, stage_manifest(context, DESIGNATOR)["artifacts"]
         ),

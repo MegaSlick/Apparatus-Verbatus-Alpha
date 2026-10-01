@@ -20,6 +20,7 @@ from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity
 from common.contracts.errors import SchemaRefusal
 from conftest import load_stage
+from proof.build_fixture import ACTS, act_descriptor
 
 PROOF_ROOT = Path(__file__).resolve().parent
 ROOT = PROOF_ROOT.parent
@@ -70,7 +71,12 @@ def declared_pages(skeleton: dict[str, Any]) -> dict[int, dict[str, Any]]:
 
 
 def acts_on_page(skeleton: dict[str, Any], ordinal: int) -> list[dict[str, Any]]:
-    return [act for act in skeleton["act"] if act["page_ordinal"] == ordinal]
+    """The bounds of the acts the fixture draws starting on one page."""
+    return [
+        act_descriptor(act["page_ordinal"], act["proposal_ordinal"])["bounds"]
+        for act in ACTS
+        if act["page_ordinal"] == ordinal
+    ]
 
 
 def pages_without_an_act(skeleton: dict[str, Any]) -> dict[int, dict[str, Any]]:

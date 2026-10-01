@@ -122,7 +122,7 @@ def _minimal_vllm_profile(*, chair: str, generation_config: str) -> dict[str, ob
 def test_generation_config_auto_is_refused_for_every_chair():
     """The rule the shipped rows are checked against above, held by the schema
     itself: a row naming `generation_config = "auto"` is refused, witness or not."""
-    for chair in ("attestator_2", "perlector", "designator_structure"):
+    for chair in ("attestator_1", "attestator_2", "perlector"):
         row = _minimal_vllm_profile(chair=chair, generation_config="auto")
         with pytest.raises(ServingConfigurationError, match=r"must be one of \['vllm'\]"):
             parse_serving_recipes({"schema": SCHEMA, "profiles": [row]})

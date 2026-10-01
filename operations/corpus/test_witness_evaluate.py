@@ -13,7 +13,7 @@ from operations.corpus import CorpusRefusal
 from operations.corpus.compare import (
     ReadOnlyRunTree,
     load_exemplar_page_shas,
-    load_pipeline_proposal_acts,
+    load_pipeline_reading_acts,
 )
 from operations.corpus.reference import build_reference_page
 from operations.corpus.test_evaluate import (
@@ -200,7 +200,7 @@ def _page_one_report(sealed_run: RunTree, reference: dict, witnesses=None) -> di
     read_only = ReadOnlyRunTree(sealed_run)
     proposals = [
         proposal
-        for proposal in load_pipeline_proposal_acts(read_only)
+        for proposal in load_pipeline_reading_acts(read_only)
         if proposal["page_sha256"] == reference["page"]["sha256"]
     ]
     if witnesses is None:

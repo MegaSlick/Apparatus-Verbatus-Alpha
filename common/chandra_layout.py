@@ -20,9 +20,8 @@ two things:
 
 It establishes no text and selects nothing: bytes in, one named
 reading out, with every unresolved fact carried beside it as a finding. The
-adapter deciding what a chair is asked is `pipeline/3_attestatores/chandra.py`;
-the Designator's structure pass reads the same grammar. Both call this; neither
-restates it.
+adapter deciding what a chair is asked is `pipeline/3_attestatores/chandra.py`,
+which calls this rather than restating it.
 
 **Provenance.** `github.com/datalab-to/chandra` at commit
 `d4f7467435aa4137d9539f000ddf0b7ced3eb43f` (`chandra-ocr 0.2.0`, Apache-2.0):
@@ -440,8 +439,8 @@ def parse_bbox_attribute(value: str | None) -> tuple[list[int] | None, str | Non
     return box, None
 
 
-# Declared rules the Designator's structure records name for how they read a
-# Chandra answer: box quantization onto sealed-page pixels, and the page join.
+# Declared rules a Chandra reading's records name for how they read its answer:
+# box quantization onto sealed-page pixels, and the page join.
 QUANTIZATION_RULE: Final = "structure-answer.v1.box1000-floor-low-ceil-far.sealed-page-pixels"
 PAGE_TEXT_RULE: Final = "structure-answer.v1.newline-between-delivered-acts"
 
@@ -449,12 +448,8 @@ PAGE_TEXT_RULE: Final = "structure-answer.v1.newline-between-delivered-acts"
 def to_page_bounds(box_1000: list[int], page_w: int, page_h: int) -> Bounds:
     """A normalized `box_1000` as a sealed-page rectangle, low edges floored, far ceiled.
 
-    The same rectangle `pipeline/2_designator/geometry_layer.py::chandra_layout`
-    encloses its four corner points in: ``x0*page_w//1000`` to
-    ``min(page_w-1, (x1*page_w+999)//1000 - 1)``, and likewise on y. A
-    Designator test holds the two equal over a grid of boxes wherever
-    `chandra_layout` returns a proposal; a one-pixel-wide box, which it refuses,
-    is pinned separately.
+    ``x0*page_w//1000`` to ``min(page_w-1, (x1*page_w+999)//1000 - 1)``, and
+    likewise on y.
     """
     x0, y0, x1, y1 = box_1000
     left = x0 * page_w // 1000

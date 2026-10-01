@@ -85,10 +85,8 @@ from common.imaging import crop_png, dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     REPORTED_BOUNDS_SOURCES,
     native_parse_refusal,
-    partition_disagreement,
     record_presentations,
     split_page_edge_overshoots,
-    unpresented_region_ids,
     validate_capture_text_view,
     validate_native_capture,
     validate_native_witness_geometry,
@@ -107,7 +105,6 @@ from common.page_testimonia import (  # noqa: E402
     NO_DETECTOR_RECORD_REASON,
     declared_page_witness_chairs,
     is_detector_blank_testimony,
-    sealed_proposal_regions,
     validate_page_testimonium_record,
     verify_page_native_capture,
 )
@@ -1364,15 +1361,6 @@ def fixture_page_attempt(
 # --- One page Testimonium ------------------------------------------------------------
 
 
-def page_proposals(proposals: list[dict[str, Any]], page_id: str) -> list[dict[str, Any]]:
-    """The sealed Designator proposals on one page, the regions a record must name unshown."""
-    return [
-        region
-        for region in proposals
-        if region["payload"]["transform"]["source_page_id"] == page_id
-    ]
-
-
 def _response_partition(
     context,
     *,
@@ -1468,9 +1456,8 @@ def page_testimonium_payload(
     attempt: Attempt,
     presented: dict[str, Any],
     observed: list[dict[str, Any]],
-    unpresented_regions: list[str],
     testimonium_id: str,
-    partition_disagreement: dict[str, Any] | None = None,
+    page_edge_overshoots: list[dict[str, Any]] | None = None,
     raw_response_refs: list[dict[str, str]] | None = None,
     adapter_metadata: dict[str, str] | None = None,
     presentations: list[dict[str, Any]] | None = None,
@@ -1488,7 +1475,6 @@ def page_testimonium_payload(
         "content_health": attempt.health,
         "presented": presented,
         "observed": observed,
-        "unpresented_regions": unpresented_regions,
         "scope": "page",
         "page_ordinal": page_ordinal,
     }
@@ -1497,7 +1483,7 @@ def page_testimonium_payload(
     _set_present(
         record,
         reason=attempt.reason,
-        partition_disagreement=partition_disagreement,
+        page_edge_overshoots=page_edge_overshoots,
         adapter_metadata=adapter_metadata,
         native_capture=attempt.native_capture,
         native_inference=attempt.native_inference,
@@ -1538,7 +1524,6 @@ def publish_page_testimonium(
     attempt: Attempt,
     ordinal: int,
     page_ids: dict[int, str],
-    proposals: list[dict[str, Any]],
     live: bool,
 ) -> None:
     """Seal one whole-page chair's Testimonium for one page: the only write path for it."""
@@ -1570,21 +1555,6 @@ def publish_page_testimonium(
         attempt=attempt,
         live=live,
     )
-    on_page = page_proposals(proposals, page_subject_id)
-    # Every proposal/observation pairing is kept; absent, not empty, for a page
-    # never presented, since zero proposals would be false.
-    disagreement = (
-        partition_disagreement(
-            {
-                "artifact_id": page_artifact_id,
-                "payload": {"presented": presented, "observed": observed},
-            },
-            on_page,
-            page_edge_overshoots=edge_overshoots,
-        )
-        if presented
-        else None
-    )
     payload = page_testimonium_payload(
         chair=chair,
         page_ordinal=page_ordinal,
@@ -1596,9 +1566,9 @@ def publish_page_testimonium(
         attempt=attempt,
         presented=presented,
         observed=observed,
-        unpresented_regions=unpresented_region_ids(presented, on_page),
         testimonium_id=page_artifact_id,
-        partition_disagreement=disagreement,
+        # Absent for a page never presented: no box was reported to reject.
+        page_edge_overshoots=edge_overshoots if presented else None,
         raw_response_refs=response_refs,
         adapter_metadata=declared_adapter_metadata(resolved, has_raw_response=bool(response_refs)),
     )
@@ -1809,13 +1779,11 @@ def _unknown_tally(reason: str) -> dict[str, Any]:
 def attempt_tally(
     context,
     *,
-    proposals: list[dict[str, Any]],
     pages: list[tuple[int, str]] | None = None,
 ) -> dict[str, Any]:
     """Compare the stored inventory with the rebuilt and validated page Testimonia.
 
-    ``proposals`` are the sealed Designator proposals each record must name
-    unshown. With ``pages``, every sealed page must carry a record from every
+    With ``pages``, every sealed page must carry a record from every
     roster chair; without it the pass that fills the denominator has not run
     yet. Any inventory damage or divergence makes the count UNKNOWN, and the
     caller holds.
@@ -1850,7 +1818,7 @@ def attempt_tally(
             chair = payload["chair"]
             if chair not in roster:
                 raise SchemaRefusal("a page Testimonium tally record names no roster page witness")
-            validate_page_testimonium_record(context, record, proposals)
+            validate_page_testimonium_record(context, record)
             if payload.get("native_capture") is not None:
                 verify_page_native_capture(
                     context,
@@ -2023,9 +1991,7 @@ def capacity_refusal_attempt(
 # DAI was trained on crops of the records its own project's detector finds, so
 # page-scoped it reads the Designator's `detector-region` crops of its page, one
 # request each, in the detector's own order. Its page Testimonium lists every
-# image it was shown; its text joins the unit readings so each act's owned
-# records are contiguous; and each act's slice comes from block ownership: a
-# record belongs to the act whose proposal it overlaps most, and to none on a tie.
+# image it was shown, and its text joins the unit readings in that order.
 
 DETECTOR_PAGE_KIND: Final = "detector-page"
 DETECTOR_RECORD_KIND: Final = "detector-record"
@@ -2319,7 +2285,6 @@ def publish_detector_page_testimonium(
     served: list[tuple[dict[str, Any], dict[str, Any], Attempt]],
     receipt_ref: dict[str, str] | None,
     page_ids: dict[int, str],
-    proposals: list[dict[str, Any]],
     detection_count: int | None,
 ) -> None:
     """Seal one DAI page record over every unit it read.
@@ -2344,7 +2309,6 @@ def publish_detector_page_testimonium(
     )
     adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
     capabilities = _declared_format_capabilities(adapter)
-    on_page = page_proposals(proposals, page_subject_id)
     if not served:
         if detection_count is None:
             raise FatalAccounting(
@@ -2380,7 +2344,6 @@ def publish_detector_page_testimonium(
             attempt=attempt,
             presented={},
             observed=[],
-            unpresented_regions=[],
             testimonium_id=page_artifact_id,
         )
         inputs: list[dict[str, str]] = [] if census is None else [census]
@@ -2415,15 +2378,7 @@ def publish_detector_page_testimonium(
             attempt=attempt,
             presented=presentations[0],
             observed=observed,
-            unpresented_regions=unpresented_region_ids(presentations, on_page),
             testimonium_id=page_artifact_id,
-            partition_disagreement=partition_disagreement(
-                {
-                    "artifact_id": page_artifact_id,
-                    "payload": {"presented": presentations[0], "observed": observed},
-                },
-                on_page,
-            ),
             raw_response_refs=raw_refs,
             presentations=presentations,
             unit_captures=[a.native_capture for _r, _p, a in served],
@@ -2459,7 +2414,6 @@ def _serve_detector_page(
     ordinal: int,
     units: list[dict[str, Any]],
     page_ids: dict[int, str],
-    proposals: list[dict[str, Any]],
 ) -> None:
     """One DAI page: one request per record, then the page record.
 
@@ -2508,7 +2462,6 @@ def _serve_detector_page(
         served=served,
         receipt_ref=dict(client.handle.receipt_reference),
         page_ids=page_ids,
-        proposals=proposals,
         detection_count=None,
     )
 
@@ -2522,7 +2475,6 @@ def detector_pages_to_read(
     sealed: dict[tuple[int, str], dict[str, Any]],
     detector: tuple[dict[int, list[dict[str, Any]]], dict[int, int]],
     page_ids: dict[int, str],
-    proposals: list[dict[str, Any]],
 ) -> tuple[int, list[int]]:
     """Settle every page a record reader needs no request for; return the rest to read.
 
@@ -2554,7 +2506,6 @@ def detector_pages_to_read(
                 served=[],
                 receipt_ref=None,
                 page_ids=page_ids,
-                proposals=proposals,
                 detection_count=detections_by_page[page_ordinal],
             )
             recorded += 1
@@ -3556,7 +3507,6 @@ def _serve_page_unit(
     page_ordinal: int,
     ordinal: int,
     page_ids: dict[int, str],
-    proposals: list[dict[str, Any]],
     framing: str | None = None,
 ) -> None:
     """One whole-page chair, one page: one request, then its sealed page record."""
@@ -3616,7 +3566,6 @@ def _serve_page_unit(
         attempt=attempt,
         ordinal=ordinal,
         page_ids=page_ids,
-        proposals=proposals,
         live=True,
     )
 
@@ -3670,7 +3619,6 @@ def fixture_pass(
     planned: dict[tuple[int, str], Attempt],
     *,
     page_ids: dict[int, str],
-    proposals: list[dict[str, Any]],
 ) -> int:
     """Publish the preflight-checked fixture answers, then each record reader's pages."""
     for (page_ordinal, chair), attempt in planned.items():
@@ -3682,7 +3630,6 @@ def fixture_pass(
             attempt=attempt,
             ordinal=ordinal,
             page_ids=page_ids,
-            proposals=proposals,
             live=False,
         )
     recorded = len(planned)
@@ -3705,7 +3652,6 @@ def fixture_pass(
             sealed=sealed,
             detector=detector,
             page_ids=page_ids,
-            proposals=proposals,
         )
         recorded += settled
         for page_ordinal in to_read:
@@ -3724,7 +3670,6 @@ def fixture_pass(
                 ),
                 receipt_ref=None,
                 page_ids=page_ids,
-                proposals=proposals,
                 detection_count=None,
             )
             recorded += 1
@@ -3737,7 +3682,6 @@ def live_pass(
     ordinal: int,
     *,
     page_ids: dict[int, str],
-    proposals: list[dict[str, Any]],
     serving_factory,
     tier: str,
 ) -> int:
@@ -3764,7 +3708,6 @@ def live_pass(
                 sealed=sealed,
                 detector=detector,
                 page_ids=page_ids,
-                proposals=proposals,
             )
         else:
             to_read[chair] = [
@@ -3805,7 +3748,6 @@ def live_pass(
                 ordinal=ordinal,
                 units=detector[0][page_ordinal],
                 page_ids=page_ids,
-                proposals=proposals,
             )
         else:
             _serve_page_unit(
@@ -3817,7 +3759,6 @@ def live_pass(
                 page_ordinal=page_ordinal,
                 ordinal=ordinal,
                 page_ids=page_ids,
-                proposals=proposals,
                 framing=framings[chair],
             )
         recorded += 1
@@ -3844,14 +3785,12 @@ def live_pass(
     return recorded
 
 
-def _finish_pass(
-    context, pages: list[tuple[int, str]], recorded: int, proposals: list[dict[str, Any]]
-) -> int:
+def _finish_pass(context, pages: list[tuple[int, str]], recorded: int) -> int:
     if recorded == 0:
         raise ContractError("no page witness produced an outcome for any sealed page")
     # The inventory precedes its tally; the boundary is sealed only afterward.
     context.finish()
-    tally = attempt_tally(context, proposals=proposals, pages=pages)
+    tally = attempt_tally(context, pages=pages)
     if tally["hold"]:
         print(f"Attestatores attempt tally UNKNOWN: {tally['reason']}", file=sys.stderr)
     context.seal_boundary()
@@ -3883,9 +3822,6 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     if real:
         require_every_witness_served(modes)
     live_chairs = sorted(chair for chair, mode in modes.items() if mode == "live")
-    # The Designator's sealed boundary is read before anything else: every page
-    # record names the proposals on its page.
-    proposals = sealed_proposal_regions(context)
     page_ids = exemplar_page_ids(context)
     pages = sealed_pages(context, page_ids)
     try:
@@ -3906,7 +3842,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     )
     if stored_inventory or has_stage_seal:
         # No page denominator here: this pass is what fills it.
-        prior_tally = attempt_tally(context, proposals=proposals)
+        prior_tally = attempt_tally(context)
         if prior_tally["hold"]:
             print(f"Attestatores attempt tally UNKNOWN: {prior_tally['reason']}", file=sys.stderr)
             return EXIT_HELD
@@ -3926,15 +3862,12 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
             pages,
             ordinal,
             page_ids=page_ids,
-            proposals=proposals,
             serving_factory=serving_factory,
             tier=args.placement_tier,
         )
     else:
-        recorded = fixture_pass(
-            context, pages, ordinal, planned, page_ids=page_ids, proposals=proposals
-        )
-    return _finish_pass(context, pages, recorded, proposals)
+        recorded = fixture_pass(context, pages, ordinal, planned, page_ids=page_ids)
+    return _finish_pass(context, pages, recorded)
 
 
 if __name__ == "__main__":

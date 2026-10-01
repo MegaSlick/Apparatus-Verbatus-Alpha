@@ -21,7 +21,7 @@ from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.stages import ARCHETYPUS, RECENSOR
 from common.exemplar_boundary import verify_reading_region_lineage
 from common.page_review import current_page_reviews
-from common.page_testimonia import current_page_testimonia, sealed_proposal_regions
+from common.page_testimonia import current_page_testimonia
 from common.runtree.store import RunTree
 from common.stage import NO_ACT_ON_PAGE_HOLD, reading_acts
 from conftest import (
@@ -253,7 +253,7 @@ def _constructor(tree_dir, tmp_path, scenario="happy", accept_held=()):
     context = page_context(root, RUN_ID, scenario, options)
     rows = {row["act_key"]: row for row in reading_acts(context)}
     reviews = current_page_reviews(context, list(rows.values()))
-    testimonia = current_page_testimonia(context, sealed_proposal_regions(context))
+    testimonia = current_page_testimonia(context)
 
     def establish(key, **row_changes):
         row = {**rows[key], **row_changes}

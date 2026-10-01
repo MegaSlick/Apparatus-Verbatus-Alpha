@@ -24,7 +24,6 @@ from typing import Any, Final
 
 from .canonical import digest_of, is_sha256
 from .errors import IdentityRefusal
-from .stages import DESIGNATOR
 
 # 64 bits: no practical collision in a run, yet comparable by eye in a listing.
 _DIGEST_CHARS: Final = 16
@@ -165,6 +164,8 @@ def page_id(origin: Any, transform: Any) -> str:
     return derive("page", page_bindings(origin, transform))
 
 
+# Rectangle-bound classes. No stage mints them now; corpus-register and gold
+# records minted under them stay readable.
 ACT_CLASSES: Final = frozenset({"proposal", "residual", "page-fallback", "page-residual"})
 # The classes the Perlector's whole-page reading mints (`common/page_path.py`,
 # `entry_plans`). An entry of a page reading is bound to that reading's attempt,
@@ -173,8 +174,7 @@ ACT_CLASSES: Final = frozenset({"proposal", "residual", "page-fallback", "page-r
 # entry that cites no boxed id: its box is `None`.
 READING_ACT_CLASSES: Final = frozenset({"reading", "reading-unplaced"})
 # The two classes the page-read denominator (`common.stage.reading_acts`) mints
-# for a page with no entry, each over the page rectangle, as `page-fallback`
-# is: `page-unread` for a page whose reading is not a parsed, valid answer, and
+# for a page with no entry, each over the page rectangle: `page-unread` for a page whose reading is not a parsed, valid answer, and
 # `page-blank` for a parsed, valid answer that names no entry. Each stands for the
 # page so it is never counted as zero acts; both are held.
 PAGE_READING_ROW_CLASSES: Final = frozenset({"page-unread", "page-blank"})
@@ -191,27 +191,19 @@ def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
     The class is a closed enum rather than a position in a list of proposals:
     one extra detected region on a page must not rename every act after it.
     That leaves the rectangle as the only thing separating two acts of one
-    class on one page, so each minter proves it cannot produce the same
-    rectangle twice — the Designator at `_refuse_duplicate_proposal_bounds`
-    and `hold_residual_act`.
+    class on one page, so a minter must never produce the same rectangle twice.
 
     The two page-reading classes (`READING_ACT_CLASSES`) bind a binding rather
     than a rectangle: the page reading's attempt, the entry's number `n` and its
     union box (`None` for `reading-unplaced`), so two entries sharing a union box
     still get two identities.
 
-    Four classes are minted over the *page rectangle* rather than over a
-    detected region, each separate because each says something different about
-    the same rectangle. A ``page-fallback`` act is proposed: the structure pass
-    found nothing, so the whole page is cut and sent downstream to be read. A
-    ``page-residual`` act is held: the page's own conservation reconciled more
-    unclaimed components than the sealed bound allows, so the page becomes one
-    review item instead of that many. A ``page-unread`` row stands for a page
-    whose reading is not a parsed, valid answer, and a ``page-blank`` row for a
-    read answer that names no entry (`PAGE_READING_ROW_CLASSES`); both are held.
-    One rectangle, one page, dispositions that cannot be folded together —
-    sharing a class would make a held page and a page on its way to the
-    Perlector share an identity.
+    Classes minted over the *page rectangle* rather than over a detected region
+    are each separate because each says something different about the same
+    rectangle. A ``page-unread`` row stands for a page whose reading is not a
+    parsed, valid answer, and a ``page-blank`` row for a read answer that names
+    no entry (`PAGE_READING_ROW_CLASSES`); both are held. One rectangle, one
+    page, dispositions that cannot be folded together.
 
     Validation lives here rather than in `act_id` so `verify()` — which is
     handed bindings rebuilt from a payload a stage read back — refuses a shape
@@ -375,6 +367,3 @@ def artifact_bindings(
 
 def artifact_id(stage: str, kind: str, subject: str, attempt: str | None = None) -> str:
     return derive("artifact", artifact_bindings(stage, kind, subject, attempt))
-
-
-PROPOSAL_SEAL_ID: Final = artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)

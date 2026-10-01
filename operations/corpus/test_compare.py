@@ -13,7 +13,7 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.canonical import self_hash as _self_hash
 from common.contracts.envelope import build_envelope
 from common.contracts.identities import act_id, artifact_id, attempt_id, page_id
-from common.contracts.stages import DESIGNATOR, EXEMPLAR
+from common.contracts.stages import EXEMPLAR, PERLECTOR
 from common.runtree.store import RunTree
 from operations.spike_perlector.models import OutputStatus
 
@@ -23,9 +23,9 @@ from .compare import (
     MAX_ACTS_PER_PAGE,
     ReadOnlyRunTree,
     compare_page,
-    count_excluded_designator_artifacts,
+    count_excluded_reading_regions,
     load_exemplar_page_shas,
-    load_pipeline_proposal_acts,
+    load_pipeline_reading_acts,
     validate_comparison,
 )
 from .reference import build_reference_page
@@ -130,35 +130,30 @@ def _refuse_page(tree: RunTree, *, ordinal: int, reason: str = "declared-hash-mi
     return identity
 
 
-def _propose_region(tree: RunTree, page_identity: str, *, ordinal: int, bounds: dict) -> str:
-    """Seal one Designator proposal region and return its `act_` identity."""
-    act_identity = act_id(page_identity, "proposal", bounds)
-    attempt = attempt_id(act_identity, "crop", 1)
-    transform = {
-        "operation": "crop",
-        "source_page_ordinal": ordinal,
-        "source_page_id": page_identity,
-        "bounds": bounds,
-    }
-    _publish(
-        tree,
-        artifact_id=artifact_id(DESIGNATOR, "region", act_identity, attempt),
-        subject_id=act_identity,
-        stage=DESIGNATOR,
-        kind="region",
-        outcome="proposed",
-        adapter_revision="fake-designator-v0",
-        inputs=[],
-        attempt=attempt,
-        payload={"origin": "proposal", "transform": transform, "raw_bounds": bounds},
+def _read_region(
+    tree: RunTree,
+    page_identity: str,
+    *,
+    ordinal: int,
+    bounds: dict,
+    kind: str = "act",
+    act_class: str = "reading",
+) -> str:
+    """Seal one Perlector act-region and return its `act_` identity.
+
+    The entry number is the region's own box's position on the page, so two
+    regions on one page never share an identity.
+    """
+    act_identity = act_id(
+        page_identity,
+        act_class,
+        {
+            "page_reading": attempt_id(page_identity, "page-read", 1),
+            "n": 1 + bounds["x"] + bounds["y"],
+            "union_box_px": bounds if act_class == "reading" else None,
+        },
     )
-    return act_identity
-
-
-def _recovery_region(tree: RunTree, page_identity: str, *, ordinal: int, bounds: dict) -> str:
-    """Seal one Designator *recovery* region -- never a proposal, must not enter the matrix."""
-    act_identity = act_id(page_identity, "residual", bounds)
-    attempt = attempt_id(act_identity, "crop", 1)
+    attempt = attempt_id(act_identity, "region", 1)
     transform = {
         "operation": "crop",
         "source_page_ordinal": ordinal,
@@ -167,15 +162,15 @@ def _recovery_region(tree: RunTree, page_identity: str, *, ordinal: int, bounds:
     }
     _publish(
         tree,
-        artifact_id=artifact_id(DESIGNATOR, "region", act_identity, attempt),
+        artifact_id=artifact_id(PERLECTOR, "act-region", act_identity, attempt),
         subject_id=act_identity,
-        stage=DESIGNATOR,
-        kind="region",
-        outcome="proposed",
-        adapter_revision="fake-designator-v0",
+        stage=PERLECTOR,
+        kind="act-region",
+        outcome="read",
+        adapter_revision="fake-perlector-v0",
         inputs=[],
         attempt=attempt,
-        payload={"origin": "recovery", "transform": transform, "raw_bounds": bounds},
+        payload={"kind": kind, "act_class": act_class, "transform": transform},
     )
     return act_identity
 
@@ -259,121 +254,6 @@ def test_load_exemplar_page_shas_refuses_a_duplicate_ordinal(tmp_path):
         load_exemplar_page_shas(tree)
 
 
-def test_load_pipeline_proposal_acts_excludes_recovery_regions(tmp_path):
-    tree = _make_run(tmp_path)
-    page_identity = _seal_page(tree, ordinal=1)
-    proposal_bounds = {"x": 90, "y": 90, "w": 210, "h": 90}
-    proposal_act = _propose_region(tree, page_identity, ordinal=1, bounds=proposal_bounds)
-    _recovery_region(tree, page_identity, ordinal=1, bounds={"x": 500, "y": 500, "w": 20, "h": 20})
-
-    acts = load_pipeline_proposal_acts(tree)
-    assert [act["act_id"] for act in acts] == [proposal_act]
-    assert acts[0]["bounds"] == proposal_bounds
-    assert acts[0]["page_sha256"] == PAGE_SOURCE_SHA256
-
-
-def test_load_pipeline_proposal_acts_reads_raw_bounds_not_the_padded_capture_rectangle(tmp_path):
-    """The IoU term must be the structural rectangle, never the padded capture crop.
-
-    `raw_bounds` and `transform.bounds` deliberately differ here, the way a real
-    padded proposal cut's do (`2_designator/run.py`'s `apply_padding`) -- if this
-    read the padded rectangle instead, `acts[0]["bounds"]` would come back as the
-    larger, padded box rather than the detected one.
-    """
-    tree = _make_run(tmp_path)
-    page_identity = _seal_page(tree, ordinal=1)
-    raw_bounds = {"x": 100, "y": 100, "w": 200, "h": 80}
-    padded_bounds = {"x": 50, "y": 50, "w": 300, "h": 180}
-    act_identity = act_id(page_identity, "proposal", raw_bounds)
-    attempt = attempt_id(act_identity, "crop", 1)
-    transform = {
-        "operation": "crop",
-        "source_page_ordinal": 1,
-        "source_page_id": page_identity,
-        "bounds": padded_bounds,
-    }
-    _publish(
-        tree,
-        artifact_id=artifact_id(DESIGNATOR, "region", act_identity, attempt),
-        subject_id=act_identity,
-        stage=DESIGNATOR,
-        kind="region",
-        outcome="proposed",
-        adapter_revision="fake-designator-v0",
-        inputs=[],
-        attempt=attempt,
-        payload={"origin": "proposal", "transform": transform, "raw_bounds": raw_bounds},
-    )
-
-    acts = load_pipeline_proposal_acts(tree)
-    assert acts[0]["bounds"] == raw_bounds
-    assert acts[0]["bounds"] != padded_bounds
-
-
-def test_load_pipeline_proposal_acts_refuses_an_unresolvable_page_ordinal(tmp_path):
-    tree = _make_run(tmp_path)
-    page_identity = page_id(
-        {"kind": "source", "sha256": PAGE_SOURCE_SHA256}, {"operation": "whole"}
-    )
-    # No Exemplar page sealed at all -- the region names an ordinal nothing seals.
-    _propose_region(tree, page_identity, ordinal=1, bounds={"x": 0, "y": 0, "w": 10, "h": 10})
-    with pytest.raises(CorpusRefusal, match="unresolvable-page-ordinal"):
-        load_pipeline_proposal_acts(tree)
-
-
-def test_load_pipeline_proposal_acts_refuses_a_region_with_no_usable_ordinal(tmp_path):
-    tree = _make_run(tmp_path)
-    page_identity = _seal_page(tree, ordinal=1)
-    bounds = {"x": 0, "y": 0, "w": 10, "h": 10}
-    act_identity = act_id(page_identity, "proposal", bounds)
-    attempt = attempt_id(act_identity, "crop", 1)
-    # transform carries no source_page_ordinal at all -- a shape an earlier
-    # Designator revision could have sealed.
-    _publish(
-        tree,
-        artifact_id=artifact_id(DESIGNATOR, "region", act_identity, attempt),
-        subject_id=act_identity,
-        stage=DESIGNATOR,
-        kind="region",
-        outcome="proposed",
-        adapter_revision="fake-designator-v0",
-        inputs=[],
-        attempt=attempt,
-        payload={"origin": "proposal", "transform": {"operation": "crop"}, "raw_bounds": bounds},
-    )
-    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
-        load_pipeline_proposal_acts(tree)
-
-
-def test_load_pipeline_proposal_acts_refuses_a_region_with_no_raw_bounds(tmp_path):
-    tree = _make_run(tmp_path)
-    page_identity = _seal_page(tree, ordinal=1)
-    bounds = {"x": 0, "y": 0, "w": 10, "h": 10}
-    act_identity = act_id(page_identity, "proposal", bounds)
-    attempt = attempt_id(act_identity, "crop", 1)
-    transform = {
-        "operation": "crop",
-        "source_page_ordinal": 1,
-        "source_page_id": page_identity,
-        "bounds": bounds,
-    }
-    # raw_bounds is entirely absent from the payload.
-    _publish(
-        tree,
-        artifact_id=artifact_id(DESIGNATOR, "region", act_identity, attempt),
-        subject_id=act_identity,
-        stage=DESIGNATOR,
-        kind="region",
-        outcome="proposed",
-        adapter_revision="fake-designator-v0",
-        inputs=[],
-        attempt=attempt,
-        payload={"origin": "proposal", "transform": transform},
-    )
-    with pytest.raises(CorpusRefusal, match="^malformed-record:"):
-        load_pipeline_proposal_acts(tree)
-
-
 def test_reads_only_through_a_read_only_wrapper(tmp_path):
     """The functions this module exposes over a run tree touch only read methods.
 
@@ -382,20 +262,20 @@ def test_reads_only_through_a_read_only_wrapper(tmp_path):
     """
     tree = _make_run(tmp_path)
     page_identity = _seal_page(tree, ordinal=1)
-    _propose_region(tree, page_identity, ordinal=1, bounds={"x": 90, "y": 90, "w": 210, "h": 90})
+    _read_region(tree, page_identity, ordinal=1, bounds={"x": 90, "y": 90, "w": 210, "h": 90})
 
     wrapped = ReadOnlyRunTree(tree)
     assert load_exemplar_page_shas(wrapped) == {1: PAGE_SOURCE_SHA256}
-    assert len(load_pipeline_proposal_acts(wrapped)) == 1
+    assert len(load_pipeline_reading_acts(wrapped)) == 1
 
 
 @pytest.mark.parametrize(
     "method,kwargs",
     [
         ("publish_artifact", {"envelope": {}}),
-        ("put_blob", {"stage": DESIGNATOR, "data": b""}),
-        ("write_manifest", {"stage": DESIGNATOR}),
-        ("write_index", {"stage": DESIGNATOR, "index": {}}),
+        ("put_blob", {"stage": PERLECTOR, "data": b""}),
+        ("write_manifest", {"stage": PERLECTOR}),
+        ("write_index", {"stage": PERLECTOR, "index": {}}),
         ("write_run_receipt", {"receipt": {}}),
         ("write_approval_record", {"record": {}}),
         ("write_recensor_partition_receipt", {"record": {}}),
@@ -637,20 +517,20 @@ def test_refuses_a_malformed_act_id():
 # --- Composition: the loader's own output feeds compare_page directly ---------
 
 
-def test_load_pipeline_proposal_acts_output_composes_straight_into_compare_page(tmp_path):
-    """`load_pipeline_proposal_acts(tree)` needs no reshaping before `compare_page`."""
+def test_load_pipeline_reading_acts_output_composes_straight_into_compare_page(tmp_path):
+    """`load_pipeline_reading_acts(tree)` needs no reshaping before `compare_page`."""
     tree = _make_run(tmp_path)
     page_identity = _seal_page(tree, ordinal=1)
     bounds = {"x": 100, "y": 100, "w": 200, "h": 80}
-    proposal_act = _propose_region(tree, page_identity, ordinal=1, bounds=bounds)
+    read_act = _read_region(tree, page_identity, ordinal=1, bounds=bounds)
 
     reference = _reference([_record("rec-1", bounds, text="Baptisé Jean")])
-    pipeline_acts = load_pipeline_proposal_acts(tree)
-    hypotheses = {proposal_act: (OutputStatus.COMPLETE, "Baptisé Jean")}
+    pipeline_acts = load_pipeline_reading_acts(tree)
+    hypotheses = {read_act: (OutputStatus.COMPLETE, "Baptisé Jean")}
 
     comparison = compare_page(reference, pipeline_acts, hypotheses)
     assert len(comparison["matched_pairs"]) == 1
-    assert comparison["matched_pairs"][0]["pipeline_act_id"] == proposal_act
+    assert comparison["matched_pairs"][0]["pipeline_act_id"] == read_act
     assert comparison["misses"] == []
 
 
@@ -920,14 +800,14 @@ def _exercised_compare_refusals(tmp_path: Path) -> dict[str, str]:
     unresolvable_page_identity = page_id(
         {"kind": "source", "sha256": PAGE_SOURCE_SHA256}, {"operation": "whole"}
     )
-    _propose_region(
+    _read_region(
         unresolvable_tree,
         unresolvable_page_identity,
         ordinal=1,
         bounds={"x": 0, "y": 0, "w": 10, "h": 10},
     )
     try:
-        load_pipeline_proposal_acts(unresolvable_tree)
+        load_pipeline_reading_acts(unresolvable_tree)
     except CorpusRefusal as error:
         exercised["unresolvable-page-ordinal"] = str(error)
 
@@ -964,31 +844,42 @@ def test_every_compare_refusal_reason_is_exercised(tmp_path):
 # --- Excluded-region provenance -------------------------------------------------
 
 
-def test_count_excluded_designator_artifacts_counts_by_kind_and_by_origin(tmp_path):
+def test_count_excluded_reading_regions_counts_by_kind_and_by_origin(tmp_path):
     tree = _make_run(tmp_path)
     page_identity = _seal_page(tree, ordinal=1)
-    _propose_region(tree, page_identity, ordinal=1, bounds={"x": 0, "y": 0, "w": 10, "h": 10})
-    _recovery_region(tree, page_identity, ordinal=1, bounds={"x": 20, "y": 20, "w": 10, "h": 10})
+    _read_region(tree, page_identity, ordinal=1, bounds={"x": 0, "y": 0, "w": 10, "h": 10})
+    _read_region(
+        tree, page_identity, ordinal=1, bounds={"x": 20, "y": 20, "w": 10, "h": 10}, kind="other"
+    )
+    _read_region(
+        tree,
+        page_identity,
+        ordinal=1,
+        bounds={"x": 40, "y": 40, "w": 10, "h": 10},
+        act_class="reading-unplaced",
+    )
 
-    counts = count_excluded_designator_artifacts(tree)
-    assert counts["by_kind"] == {}
-    assert counts["by_origin"] == {"recovery": 1}
+    counts = count_excluded_reading_regions(tree)
+    assert counts["by_kind"] == {"other": 1}
+    assert counts["by_origin"] == {"reading-unplaced": 1}
 
 
 def test_compare_page_carries_excluded_region_counts_into_the_record(tmp_path):
     tree = _make_run(tmp_path)
     page_identity = _seal_page(tree, ordinal=1)
     bounds = {"x": 100, "y": 100, "w": 200, "h": 80}
-    proposal_act = _propose_region(tree, page_identity, ordinal=1, bounds=bounds)
-    _recovery_region(tree, page_identity, ordinal=1, bounds={"x": 500, "y": 500, "w": 20, "h": 20})
+    read_act = _read_region(tree, page_identity, ordinal=1, bounds=bounds)
+    _read_region(
+        tree, page_identity, ordinal=1, bounds={"x": 500, "y": 500, "w": 20, "h": 20}, kind="other"
+    )
 
     reference = _reference([_record("rec-1", bounds, text="Baptisé Jean")])
-    pipeline_acts = load_pipeline_proposal_acts(tree)
-    hypotheses = {proposal_act: (OutputStatus.COMPLETE, "Baptisé Jean")}
-    excluded = count_excluded_designator_artifacts(tree)
+    pipeline_acts = load_pipeline_reading_acts(tree)
+    hypotheses = {read_act: (OutputStatus.COMPLETE, "Baptisé Jean")}
+    excluded = count_excluded_reading_regions(tree)
 
     comparison = compare_page(reference, pipeline_acts, hypotheses, excluded_region_counts=excluded)
-    assert comparison["excluded_region_counts"] == {"by_kind": {}, "by_origin": {"recovery": 1}}
+    assert comparison["excluded_region_counts"] == {"by_kind": {"other": 1}, "by_origin": {}}
 
 
 def test_compare_page_defaults_excluded_region_counts_to_an_explicit_empty_shape():

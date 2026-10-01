@@ -442,15 +442,6 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = Ma
         # Chandra's own `OCR_LAYOUT_PROMPT` (`common/chandra_layout.py`).  Its
         # size is the vendor's and is not to be trimmed: trimmed bytes would no
         # longer be the vendor's prompt.
-        "designator_structure": (
-            SealedPromptTokens(
-                tokens=593,
-                prompt_digest="025935f3e1de1acdfadd4c7d581ab17eb82e8caaffef7b64962621c80b7ca9a8",
-                repo="datalab-to/chandra-ocr-2",
-                revision="af93b47dba1b47b6640c86ccf487ed2260ab9a09",
-            ),
-        ),
-        # The same Chandra prompt as `designator_structure`.
         "attestator_1": (
             SealedPromptTokens(
                 tokens=593,
@@ -750,13 +741,12 @@ def page_request_capacity(
 # the whole page, the demanding case.  A row holds only for its chair's current response grammar, and nothing
 # checks that.
 #
-# Chandra's two rows (1645) are measured with apostrophes escaped as `&#x27;`
+# Chandra's row (1645) is measured with apostrophes escaped as `&#x27;`
 # (1506 written literally): the parser resolves character references, so the
 # dearer spelling is a valid answer, and under-reserving for it would cut off
 # an act.  Churro's (1905) is 67 `Line` elements at twelve words each.
 MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
-        "designator_structure": 1645,
         "attestator_1": 1645,
         "attestator_2": 1426,
         "attestator_3": 1905,
@@ -790,7 +780,6 @@ MEASURED_RECORD_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 # `pipeline/4_perlector/live_reader.py` sends none.
 DECLARED_ANSWER_BOUND_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
-        "designator_structure": 12_384,
         "attestator_1": 12_384,
         "attestator_2": 1_024,
         "attestator_3": 25_000,

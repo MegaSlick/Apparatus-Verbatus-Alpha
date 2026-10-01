@@ -97,7 +97,7 @@ class _RecordingContext:
         )
         self.blobs: dict[str, bytes] = {}
         # The sealed configuration paths the export reads for its
-        # `claims.not_measured` block: the three Designator geometry files whose
+        # `claims.not_measured` block: the Designator geometry file whose
         # `provenance` says whether their numbers were ever calibrated, and the
         # Perlector audit policy whose `round_cap` decides whether an uncertain
         # span was reachable at all. The shipped files, because this synthetic
@@ -105,9 +105,7 @@ class _RecordingContext:
         # invented paths would make the block's own honesty untestable here.
         config = ROOT / "config"
         self.args = SimpleNamespace(
-            designator_padding_config=config / "designator_padding.toml",
             designator_geometry_config=config / "designator_geometry.toml",
-            designator_grouping_config=config / "designator_grouping.toml",
             ink_map_config=config / "ink_map.toml",
             perlector_protocol_config=config / "perlector_protocol.toml",
         )
@@ -119,13 +117,7 @@ class _RecordingContext:
         # double refuse drift or an unsealed name instead of bypassing that
         # boundary.
         self.sealed_config_digests = {
-            "designator-padding": read_sealed_toml(self.args.designator_padding_config, "config")[
-                1
-            ],
             "designator-geometry": read_sealed_toml(self.args.designator_geometry_config, "config")[
-                1
-            ],
-            "designator-grouping": read_sealed_toml(self.args.designator_grouping_config, "config")[
                 1
             ],
             "ink-map": read_sealed_toml(self.args.ink_map_config, "config")[1],
@@ -275,7 +267,7 @@ def _sealed_page_census(context: _RecordingContext) -> dict[int, dict]:
 
 def test_recording_context_validates_a_config_before_recording_it() -> None:
     context = _RecordingContext()
-    name = "designator-grouping"
+    name = "designator-geometry"
     digest = context.sealed_config_digests[name]
 
     context.require_sealed_config(name, digest)
@@ -422,7 +414,6 @@ def _stub_page_export(monkeypatch, armarium, context, rows: list[dict], category
     )
     monkeypatch.setattr(armarium, "continuation_links", lambda *_args: [])
     monkeypatch.setattr(armarium, "current_page_testimonia", lambda *_args: {})
-    monkeypatch.setattr(armarium, "sealed_proposal_regions", lambda _context: [])
     monkeypatch.setattr(armarium, "_page_category", lambda *_args: (category, None))
     monkeypatch.setattr(armarium, "unaddressed_chairs", lambda _config: ())
     monkeypatch.setattr(armarium, "declared_page_witness_chairs", lambda _context: set())

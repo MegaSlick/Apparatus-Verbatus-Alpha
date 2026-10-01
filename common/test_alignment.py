@@ -3,14 +3,11 @@
 import pytest
 
 from common.alignment import (
-    DEFAULT_ALIGNMENT_CONFIG_PATH,
     bracket_marker_view,
-    load_alignment_limits,
     markup_text_view,
 )
-from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.errors import SchemaRefusal
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
-from common.sealed_config import read_sealed_toml
 from conftest import load_stage
 
 
@@ -94,49 +91,7 @@ def test_an_all_markup_input_normalizes_to_a_genuinely_zero_width_offset_map():
     assert view["offset_map"] == []
 
 
-# --- The limits loader: the only gate between config/alignment.toml and every run
-
-
-def test_the_loader_returns_the_sealed_limits_and_the_file_seal():
-    limits, digest = load_alignment_limits()
-    assert limits.max_characters > 0
-    assert limits.max_character_pairs > 0
-    assert limits.timeout_seconds > 0
-    assert digest == read_sealed_toml(DEFAULT_ALIGNMENT_CONFIG_PATH, "alignment")[1]
-
-
-def test_the_loader_refuses_an_unreadable_file(tmp_path):
-    with pytest.raises(ContractError, match="could not be read"):
-        load_alignment_limits(tmp_path / "absent.toml")
-
-
-def test_the_loader_refuses_an_unknown_or_missing_key(tmp_path):
-    misspelt = tmp_path / "misspelt.toml"
-    misspelt.write_text(
-        "[limits]\nmax_characters = 1\nmax_character_pairs = 1\ntimeout_second = 1\n"
-    )
-    with pytest.raises(ContractError, match="closed schema"):
-        load_alignment_limits(misspelt)
-    partial = tmp_path / "partial.toml"
-    partial.write_text("[limits]\nmax_characters = 1\n")
-    with pytest.raises(ContractError, match="closed schema"):
-        load_alignment_limits(partial)
-
-
-@pytest.mark.parametrize("bad", ['"3"', "true", "0", "-1", "1.5"])
-def test_the_loader_refuses_a_value_that_is_not_a_positive_integer(tmp_path, bad):
-    """`true` would parse as 1 and quietly cut every page alignment to one
-    second; a float or string is not a limit at all. The
-    loader is where those stop."""
-    path = tmp_path / "limits.toml"
-    path.write_text(
-        f"[limits]\nmax_characters = 1\nmax_character_pairs = 1\ntimeout_seconds = {bad}\n"
-    )
-    with pytest.raises(ContractError, match="positive integers"):
-        load_alignment_limits(path)
-
-
-# --- NFC composition and the offset map
+# --- Unicode normalisation keeps offsets on the raw text
 
 
 def test_nfc_composition_keeps_the_offset_map_pointing_at_the_raw_cluster():

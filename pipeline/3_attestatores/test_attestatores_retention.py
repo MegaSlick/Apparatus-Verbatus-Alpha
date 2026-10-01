@@ -94,9 +94,7 @@ def stage_context(run_root: Path, scenario: str = "happy"):
 
 
 def tally(run_root: Path, scenario: str = "happy", **kwargs) -> dict:
-    context = stage_context(run_root, scenario)
-    proposals = attestatores.sealed_proposal_regions(context)
-    return attestatores.attempt_tally(context, proposals=proposals, **kwargs)
+    return attestatores.attempt_tally(stage_context(run_root, scenario), **kwargs)
 
 
 def _page_records(tree: RunTree) -> list[dict]:
@@ -272,54 +270,17 @@ def test_a_resume_that_would_answer_a_sealed_page_differently_is_refused(tmp_pat
     assert _record_path(tree, sealed).read_bytes() == sealed_bytes
 
 
-def test_a_resume_over_a_lost_proposal_crop_refuses_by_name_before_any_write(tmp_path, monkeypatch):
-    """A crash mid-pass, then a lost Designator proposal before resume.
-
-    The proposals are read before anything else, so the resume names the lost
-    proposal and leaves the sealed record alone.
-    """
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    real_publish = attestatores.publish_page_testimonium
-
-    def crash_after_first_page(*args, **kwargs):
-        real_publish(*args, **kwargs)
-        raise RuntimeError("simulated process crash after one page response")
-
-    monkeypatch.setattr(attestatores, "publish_page_testimonium", crash_after_first_page)
-    monkeypatch.setattr(sys, "argv", _argv(run_root, "happy"))
-    with pytest.raises(RuntimeError, match="simulated process crash"):
-        attestatores.main()
-    (sealed,) = _page_records(tree)
-
-    def lost_crop(context):
-        raise attestatores.ContractError("a proposed region's crop is gone from the tree")
-
-    monkeypatch.setattr(attestatores, "publish_page_testimonium", real_publish)
-    monkeypatch.setattr(attestatores, "sealed_proposal_regions", lost_crop)
-
-    with pytest.raises(attestatores.ContractError, match="crop is gone"):
-        attestatores.main()
-    assert _page_records(tree) == [sealed], "the refused resume must not touch the sealed record"
-
-
-def test_a_whole_pass_resolves_each_page_once_and_reads_the_proposals_once(tmp_path, monkeypatch):
-    """Preflight and publication share the resolved attempts and the proposals.
+def test_a_whole_pass_resolves_each_page_once(tmp_path, monkeypatch):
+    """Preflight and publication share the resolved attempts.
 
     The append/collision history is one manifest walk, and the closing tally
     remains an independent rebuild.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
-    proposal_reads = 0
     attempt_calls = 0
     manifest_calls = 0
-    real_proposals = attestatores.sealed_proposal_regions
     real_attempt = attestatores.fixture_page_attempt
     real_build_manifest = RunTree.build_manifest
-
-    def counted_proposals(context):
-        nonlocal proposal_reads
-        proposal_reads += 1
-        return real_proposals(context)
 
     def counted_attempt(*args, **kwargs):
         nonlocal attempt_calls
@@ -332,7 +293,6 @@ def test_a_whole_pass_resolves_each_page_once_and_reads_the_proposals_once(tmp_p
             manifest_calls += 1
         return real_build_manifest(self, stage, **kwargs)
 
-    monkeypatch.setattr(attestatores, "sealed_proposal_regions", counted_proposals)
     monkeypatch.setattr(attestatores, "fixture_page_attempt", counted_attempt)
     monkeypatch.setattr(RunTree, "build_manifest", counted_manifest)
     monkeypatch.setattr(sys, "argv", _argv(run_root, "happy"))
@@ -344,7 +304,6 @@ def test_a_whole_pass_resolves_each_page_once_and_reads_the_proposals_once(tmp_p
     # Two pages for each of the two whole-page chairs; DAI reads its detector's
     # records instead.
     assert attempt_calls == 4
-    assert proposal_reads == 1
 
 
 def test_a_whole_pass_may_not_skip_an_ordinal_over_any_seat(tmp_path):
@@ -724,9 +683,11 @@ def test_a_crop_broken_after_the_designator_sealed_it_stops_at_that_boundary(tmp
     seal reads every blob back, so this is refused before any page is witnessed."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     entry = next(
-        entry for entry in tree.build_manifest(DESIGNATOR)["artifacts"] if entry["kind"] == "region"
+        entry
+        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
+        if entry["kind"] == "detector-region"
     )
-    region = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
+    region = tree.read_artifact(DESIGNATOR, "detector-region", entry["artifact_id"])
     tree.resolve(region["payload"]["image_path"]).write_bytes(b"broken crop bytes")
 
     result = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
@@ -1060,8 +1021,7 @@ def test_an_outer_manifest_accounting_imbalance_is_fatal_and_never_becomes_a_hol
     run_root, _tree = run_to_designator(tmp_path, "happy")
     run_attestatores(run_root)
     context = stage_context(run_root)
-    proposals = attestatores.sealed_proposal_regions(context)
-    assert attestatores.attempt_tally(context, proposals=proposals)["state"] == "KNOWN"
+    assert attestatores.attempt_tally(context)["state"] == "KNOWN"
 
     def imbalanced(_stage):
         raise attestatores.FatalAccounting("the outer manifest partition is broken")
@@ -1069,7 +1029,7 @@ def test_an_outer_manifest_accounting_imbalance_is_fatal_and_never_becomes_a_hol
     monkeypatch.setattr(context.tree, "build_manifest", imbalanced)
 
     with pytest.raises(attestatores.FatalAccounting, match="outer manifest partition"):
-        attestatores.attempt_tally(context, proposals=proposals)
+        attestatores.attempt_tally(context)
 
 
 def test_a_fatal_closing_tally_does_not_publish_a_completion_seal(tmp_path, monkeypatch):

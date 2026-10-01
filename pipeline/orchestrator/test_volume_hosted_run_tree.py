@@ -97,12 +97,12 @@ _REFERENCE_KEYS = frozenset({"relative_path", "sha256"})
 # count stayed comfortably above zero, and the test would go on reporting a
 # volume-hosted tree movable with an unverified set of references inside it.
 #
-# Measured on `synthetic-two-page-v0`, `page-review` scenario: a complete run
-# resolves 490 references, and the smallest tree this helper is asked about --
-# the staged door..attestatores tree the crash test starts from -- resolves 211.
-# The floor sits below that and far above zero, so it catches a class leaving
-# the check without tracking every ordinary change in fixture size.
-MINIMUM_RESOLVED_REFERENCES = 200
+# Measured on `synthetic-two-page-v0`, `page-review` scenario: the smallest
+# tree this helper is asked about -- the staged door..attestatores tree the
+# crash test starts from -- resolves 196. The floor sits below that and far
+# above zero, so it catches a class leaving the check without tracking every
+# ordinary change in fixture size.
+MINIMUM_RESOLVED_REFERENCES = 180
 
 
 def _references(value: object) -> Iterator[dict[str, str]]:

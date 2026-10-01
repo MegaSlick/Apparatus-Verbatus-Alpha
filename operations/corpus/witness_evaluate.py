@@ -2,8 +2,8 @@
 
 Every witness reads a whole page, so each chair is scored on its current sealed
 page Testimonium against the reference page's acts joined in reference order.
-Designator geometry is paired independently of witness and reference text, and
-a reference act no proposal matched is counted, never dropped.
+The Perlector's act geometry is paired independently of witness and reference text,
+and a reference act no read act matched is counted, never dropped.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from .compare import (
     ReadOnlyRunTree,
     compare_page_geometry,
     load_exemplar_page_shas,
-    load_pipeline_proposal_acts,
+    load_pipeline_reading_acts,
 )
 from .local_admission import validate_local_admission_ledger
 from .reference import validate_reference_page
@@ -458,7 +458,7 @@ def evaluate_run(
         if digest in ordinal_by_sha:
             raise Refusal("malformed-record: two sealed source pages carry the same sha256")
         ordinal_by_sha[digest] = ordinal
-    proposals = load_pipeline_proposal_acts(read_only)
+    proposals = load_pipeline_reading_acts(read_only)
     witnessed = page_witness_index(read_only, sealed_pages=sealed_pages)
     page_records = [
         read_only.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])

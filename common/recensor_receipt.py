@@ -6,10 +6,8 @@ Recensor has reviewed them.  Page-level blank proof, residual ink, and final
 Archetypus/Armarium categories require evidence this receipt does not pretend
 to own.
 
-v1 and v2 count the Designator's proposal acts (`proposal_seal_ref`,
-`expected_act_count`). v3 counts a page-read run's units
-(`common.stage.reading_acts`, the classes in `COUNTED_READING_CLASSES`;
-`expected_unit_count`): it names every sealed page's `page-reading` by its
+It counts a page-read run's units (`common.stage.reading_acts`, the classes in
+`COUNTED_READING_CLASSES`; `expected_unit_count`): it names every sealed page's `page-reading` by its
 page ordinal (`page_reading_refs`, `[{page_ordinal, reading_ref}]` in page
 order), every sealed page has at least one unit and every unit's page is one of
 them, and each item carries the unit's page disposition instead of a Designator
@@ -27,20 +25,19 @@ from typing import Any, Final
 
 from common.contracts.canonical import is_plain_int, is_sha256, self_hash, verify_self_hash
 from common.contracts.envelope import digest_ref
-from common.contracts.errors import FatalAccounting, ReceiptVersionMismatch, SchemaRefusal
+from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.outcomes import (
-    INTERIM_GRANULARITY_BASIS,
-    NATIVE_GRANULARITY_BASIS,
     WITNESS_READING_OUTCOMES,
     OutcomeClass,
     classify,
 )
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, RECENSOR
+from common.contracts.stages import ATTESTATORES, RECENSOR
 
-RECENSOR_PARTITION_RECEIPT_SCHEMA: Final = "recensor-partition-receipt.v1"
-RECENSOR_PARTITION_RECEIPT_SCHEMA_V2: Final = "recensor-partition-receipt.v2"
-RECENSOR_PARTITION_RECEIPT_SCOPE: Final = "proposal-acts-and-configured-witnesses"
 RECENSOR_PARTITION_RECEIPT_SCHEMA_V3: Final = "recensor-partition-receipt.v3"
+# Receipts over the Designator's proposal acts, which no run counts any more.
+RETIRED_RECENSOR_PARTITION_RECEIPT_SCHEMAS: Final = frozenset(
+    {"recensor-partition-receipt.v1", "recensor-partition-receipt.v2"}
+)
 RECENSOR_READING_RECEIPT_SCOPE: Final = "reading-acts-and-configured-witnesses"
 PAGE_DISPOSITIONS: Final = frozenset({"read", "held"})
 # `p<page ordinal>:<entry n>`, or the page row of a page with no entry.
@@ -59,48 +56,12 @@ _COMMON_FIELDS: Final = frozenset(
         "self_hash",
     }
 )
-_ACT_FIELDS: Final = frozenset({"proposal_seal_ref", "expected_act_count"})
 _READING_FIELDS: Final = frozenset(
     {"page_reading_refs", "expected_unit_count", "continuation_links"}
 )
 CONTINUATION_LINK_OUTCOMES: Final = frozenset({"accepted", "held-for-review"})
 _LINK_FIELDS: Final = frozenset({"subject_id", "link_ref", "outcome"})
-_SCOPE_BY_SCHEMA: Final = {
-    RECENSOR_PARTITION_RECEIPT_SCHEMA: RECENSOR_PARTITION_RECEIPT_SCOPE,
-    RECENSOR_PARTITION_RECEIPT_SCHEMA_V2: RECENSOR_PARTITION_RECEIPT_SCOPE,
-    RECENSOR_PARTITION_RECEIPT_SCHEMA_V3: RECENSOR_READING_RECEIPT_SCOPE,
-}
 _PARTITION_KEYS: Final = tuple(klass.value for klass in OutcomeClass)
-
-
-def build_recensor_partition_receipt(
-    *,
-    run_id: str,
-    config_digest: str,
-    proposal_seal_ref: dict[str, str],
-    items: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Build a receipt whose summary is mechanically derived from its items."""
-
-    checked_items = [dict(item) for item in items]
-    for item in checked_items:
-        _validate_item(item)
-    checked_items.sort(key=lambda item: item["act_id"])
-    reasons = _reasons(checked_items)
-    record: dict[str, Any] = {
-        "schema": RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
-        "run_id": run_id,
-        "config_digest": config_digest,
-        "scope": RECENSOR_PARTITION_RECEIPT_SCOPE,
-        "proposal_seal_ref": proposal_seal_ref,
-        "expected_act_count": len(checked_items),
-        "items": checked_items,
-        "by_partition_class": _partition_counts(checked_items),
-        "recensor_status": _status(reasons),
-        "reasons": reasons,
-    }
-    record["self_hash"] = self_hash(record)
-    return validate_recensor_partition_receipt(record)
 
 
 def build_recensor_reading_receipt(
@@ -125,12 +86,12 @@ def build_recensor_reading_receipt(
 
     checked_items = [dict(item) for item in items]
     for item in checked_items:
-        _validate_item(item, schema=RECENSOR_PARTITION_RECEIPT_SCHEMA_V3)
+        _validate_item(item)
     checked_items.sort(key=lambda item: item["act_id"])
     links = sorted((dict(link) for link in continuation_links), key=_link_order)
     for link in links:
         _validate_link(link)
-    reasons = _reasons(checked_items, schema=RECENSOR_PARTITION_RECEIPT_SCHEMA_V3, links=links)
+    reasons = _reasons(checked_items, links=links)
     record: dict[str, Any] = {
         "schema": RECENSOR_PARTITION_RECEIPT_SCHEMA_V3,
         "run_id": run_id,
@@ -155,63 +116,58 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
     """Validate the closed receipt schema and its derived summary."""
 
     schema = record.get("schema") if isinstance(record, dict) else None
-    reading = schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
-    denominator_fields = _READING_FIELDS if reading else _ACT_FIELDS
-    if not isinstance(record, dict) or set(record) != _COMMON_FIELDS | denominator_fields:
+    if isinstance(schema, str) and schema in RETIRED_RECENSOR_PARTITION_RECEIPT_SCHEMAS:
+        raise SchemaRefusal(
+            f"Recensor partition receipt was written as {schema}, which counts the Designator's "
+            "proposal acts this build no longer has; re-run the Recensor"
+        )
+    if not isinstance(record, dict) or set(record) != _COMMON_FIELDS | _READING_FIELDS:
         raise SchemaRefusal("Recensor partition receipt has the wrong closed schema")
-    if schema not in _SCOPE_BY_SCHEMA or not verify_self_hash(record):
+    if schema != RECENSOR_PARTITION_RECEIPT_SCHEMA_V3 or not verify_self_hash(record):
         raise SchemaRefusal("Recensor partition receipt has an invalid schema or self-hash")
     count = expected_count(record)
     if (
         not isinstance(record["run_id"], str)
         or not record["run_id"]
         or not is_sha256(record["config_digest"])
-        or record["scope"] != _SCOPE_BY_SCHEMA[schema]
+        or record["scope"] != RECENSOR_READING_RECEIPT_SCOPE
         or not _is_count(count)
         or not isinstance(record["items"], list)
         or count != len(record["items"])
     ):
         raise SchemaRefusal("Recensor partition receipt has invalid run or denominator facts")
-    if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3:
-        links = record["continuation_links"]
-        if not isinstance(links, list):
-            raise SchemaRefusal("Recensor partition receipt v3 continuation_links is not a list")
-        for link in links:
-            _validate_link(link)
-        subjects = [link["subject_id"] for link in links]
-        if subjects != sorted(
-            set(subjects), key=lambda subject: _link_order({"subject_id": subject})
-        ):
-            raise SchemaRefusal(
-                "Recensor partition receipt v3 continuation links are not one per page break, "
-                "in page order"
-            )
-    else:
-        _validate_reference(record["proposal_seal_ref"], "proposal-seal reference")
+    links = record["continuation_links"]
+    if not isinstance(links, list):
+        raise SchemaRefusal("Recensor partition receipt v3 continuation_links is not a list")
+    for link in links:
+        _validate_link(link)
+    subjects = [link["subject_id"] for link in links]
+    if subjects != sorted(set(subjects), key=lambda subject: _link_order({"subject_id": subject})):
+        raise SchemaRefusal(
+            "Recensor partition receipt v3 continuation links are not one per page break, "
+            "in page order"
+        )
     previous_act_id = ""
     for item in record["items"]:
-        _validate_item(item, schema=record["schema"])
+        _validate_item(item)
         act_id = item["act_id"]
         if not act_id or act_id <= previous_act_id:
             raise SchemaRefusal(
                 "Recensor partition receipt items must be strictly sorted by unique act identity"
             )
         previous_act_id = act_id
-    if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3:
-        _validate_page_readings(record)
+    _validate_page_readings(record)
     if record["by_partition_class"] != _partition_counts(record["items"]):
         raise SchemaRefusal("Recensor partition receipt partition counts do not reconcile")
-    reasons = _reasons(record["items"], schema=schema, links=record.get("continuation_links", []))
+    reasons = _reasons(record["items"], links=links)
     if record["reasons"] != reasons or record["recensor_status"] != _status(reasons):
         raise SchemaRefusal("Recensor partition receipt status does not derive from its items")
     return record
 
 
 def expected_count(record: dict[str, Any]) -> Any:
-    """The receipt's sealed denominator count: acts for v1 and v2, units for v3."""
-    if record.get("schema") == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3:
-        return record["expected_unit_count"]
-    return record["expected_act_count"]
+    """The receipt's sealed denominator count: the units it reviewed."""
+    return record["expected_unit_count"]
 
 
 def _link_order(link: dict[str, Any]) -> tuple[int, ...]:
@@ -309,28 +265,20 @@ def _status(reasons: list[str]) -> str:
     return "complete" if not reasons else "partial"
 
 
-def witnessed_count(coverage: dict[str, Any], *, page_read: bool = False) -> int:
-    """The count an act's `under_witnessed` flag is judged from.
+def witnessed_count(coverage: dict[str, Any]) -> int:
+    """The count a unit's `under_witnessed` flag is judged from.
 
-    With `page_granularity_only`: reading outcomes less page-only contributions,
-    which must reproduce `witness_coverage`'s own count exactly. Reading
-    outcomes, not the COMPLETED class, because that class also holds approval
-    exclusions that never looked at the ink. On a page-read run (v3), where
-    every witness reads the whole page: the reading outcomes less the
-    truncated ones. Otherwise (v1): the COMPLETED class.
+    Every witness reads the whole page, so it is the reading outcomes less the
+    truncated ones: reading outcomes, not the COMPLETED class, because that
+    class also holds approval exclusions that never looked at the ink.
     """
     reading_chairs = sum(
         coverage["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
     )
-    if page_read:
-        return reading_chairs - coverage["shortfalls"]["truncated"]
-    if "page_granularity_only" in coverage:
-        return reading_chairs - coverage["page_granularity_only"]
-    return coverage["by_class"][OutcomeClass.COMPLETED.value]
+    return reading_chairs - coverage["shortfalls"]["truncated"]
 
 
-def _validate_item(item: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V2) -> None:
-    reading = schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
+def _validate_item(item: Any) -> None:
     required = {
         "act_id",
         "act_key",
@@ -338,30 +286,30 @@ def _validate_item(item: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA
         "review_outcome",
         "partition_class",
         "coverage",
-    } | ({"page_disposition", "release_reason"} if reading else {"designator_outcome"})
+        "page_disposition",
+        "release_reason",
+    }
     if not isinstance(item, dict) or set(item) != required:
         raise SchemaRefusal("Recensor partition receipt item has the wrong closed schema")
     if not isinstance(item["act_id"], str) or not item["act_id"]:
         raise SchemaRefusal("Recensor partition receipt item has no act identity")
     if not isinstance(item["act_key"], str) or not item["act_key"]:
         raise SchemaRefusal("Recensor partition receipt item has no act key")
-    if reading and not _READING_ACT_KEY.fullmatch(item["act_key"]):
+    if not _READING_ACT_KEY.fullmatch(item["act_key"]):
         raise SchemaRefusal(
             f"Recensor partition receipt v3 item names act key {item['act_key']!r}, not "
             "p<page>:<n>, p<page>:unread or p<page>:blank"
         )
-    if reading and item["page_disposition"] not in PAGE_DISPOSITIONS:
+    if item["page_disposition"] not in PAGE_DISPOSITIONS:
         raise SchemaRefusal(
             f"Recensor partition receipt item names page_disposition "
             f"{item['page_disposition']!r}, not one of {sorted(PAGE_DISPOSITIONS)}"
         )
     try:
-        if not reading:
-            classify(DESIGNATOR, item["designator_outcome"])
         expected_class = classify(RECENSOR, item["review_outcome"]).value
     except FatalAccounting as error:
         raise SchemaRefusal(
-            "Recensor partition receipt item names an unknown Designator or Recensor outcome"
+            "Recensor partition receipt item names an unknown Recensor outcome"
         ) from error
     if item["partition_class"] != expected_class:
         raise SchemaRefusal(
@@ -370,13 +318,8 @@ def _validate_item(item: Any, *, schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA
             f"derives {expected_class!r}"
         )
     _validate_reference(item["review_ref"], "review reference")
-    if reading:
-        _validate_release(item)
-    _validate_coverage(
-        item["coverage"],
-        schema=schema,
-        require_complete_granularity=schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
-    )
+    _validate_release(item)
+    _validate_coverage(item["coverage"])
 
 
 def _validate_release(item: dict[str, Any]) -> None:
@@ -399,12 +342,7 @@ def _validate_release(item: dict[str, Any]) -> None:
         )
 
 
-def _validate_coverage(
-    coverage: Any,
-    *,
-    schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
-    require_complete_granularity: bool = False,
-) -> None:
+def _validate_coverage(coverage: Any) -> None:
     required = {
         "configured",
         "floor",
@@ -421,26 +359,15 @@ def _validate_coverage(
     }
     if not isinstance(coverage, dict):
         raise SchemaRefusal("Recensor partition receipt has malformed witness coverage")
-    present_granularity = set(coverage) & granularity_fields
-    if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3:
-        # Every witness of a page-read run reads the whole page, so no count is
-        # judged at act granularity: health and shortfalls, never attachment.
-        if present_granularity != {"health_unrecorded", "shortfalls"}:
-            raise SchemaRefusal(
-                "Recensor partition receipt v3 coverage carries exactly health_unrecorded and "
-                "shortfalls beside its counts; a page-read run attaches no witness to an act"
-            )
-    if schema == RECENSOR_PARTITION_RECEIPT_SCHEMA and present_granularity:
-        raise ReceiptVersionMismatch(
-            "receipt schema v1 cannot carry page-granularity coverage facts; use receipt version v2"
-        )
-    allowed = required | granularity_fields
-    if set(coverage) - allowed or not required <= set(coverage):
-        raise SchemaRefusal("Recensor partition receipt has malformed witness coverage")
-    if require_complete_granularity and not granularity_fields <= set(coverage):
+    # Every witness of a page-read run reads the whole page, so no count is
+    # judged at act granularity: health and shortfalls, never attachment.
+    if set(coverage) & granularity_fields != {"health_unrecorded", "shortfalls"}:
         raise SchemaRefusal(
-            "Recensor partition receipt v2 omits one or more required granularity facts"
+            "Recensor partition receipt v3 coverage carries exactly health_unrecorded and "
+            "shortfalls beside its counts; a page-read run attaches no witness to an act"
         )
+    if set(coverage) - (required | granularity_fields) or not required <= set(coverage):
+        raise SchemaRefusal("Recensor partition receipt has malformed witness coverage")
     for field in ("configured", "floor", "unresolved_chairs"):
         value = coverage[field]
         if not _is_count(value):
@@ -490,38 +417,20 @@ def _validate_coverage(
             f"Recensor partition receipt's under_witnessed is {coverage['under_witnessed']!r}, "
             "not a boolean"
         )
-    page_only = coverage.get("page_granularity_only", 0)
-    # Typed before `witnessed_count` subtracts it.
-    if not _is_count(page_only):
-        raise SchemaRefusal("Recensor partition receipt has invalid page_granularity_only count")
     reading_chairs = sum(by_outcome.get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES)
-    if page_only > reading_chairs:
+    # Typed before `witnessed_count` subtracts it.
+    shortfalls = coverage["shortfalls"]
+    truncated = shortfalls.get("truncated") if isinstance(shortfalls, dict) else None
+    if not _is_count(truncated) or truncated > reading_chairs:
         raise SchemaRefusal(
-            "Recensor partition receipt has more page-only contributions than chairs that read"
+            "Recensor partition receipt v3 counts truncated readings that are not a count "
+            "of chairs that read the page"
         )
-    # Only `page_granularity_only` decides the formula; the check always runs.
-    page_read = schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
-    if page_read:
-        # Typed before `witnessed_count` subtracts it.
-        shortfalls = coverage["shortfalls"]
-        truncated = shortfalls.get("truncated") if isinstance(shortfalls, dict) else None
-        if not _is_count(truncated) or truncated > reading_chairs:
-            raise SchemaRefusal(
-                "Recensor partition receipt v3 counts truncated readings that are not a count "
-                "of chairs that read the page"
-            )
-    witnessed = witnessed_count(coverage, page_read=page_read)
+    witnessed = witnessed_count(coverage)
     if coverage["under_witnessed"] != (witnessed < coverage["floor"]):
-        compared_label = (
-            "page read(s)"
-            if page_read
-            else "act-level completed read(s)"
-            if "page_granularity_only" in coverage
-            else "completed chair(s)"
-        )
         raise SchemaRefusal(
             f"Recensor partition receipt claims under_witnessed="
-            f"{coverage['under_witnessed']}, but {witnessed} {compared_label} "
+            f"{coverage['under_witnessed']}, but {witnessed} page read(s) "
             f"against a floor of {coverage['floor']} says otherwise"
         )
     derived_by_class = {key: 0 for key in _PARTITION_KEYS}
@@ -537,69 +446,37 @@ def _validate_coverage(
             f"Recensor partition receipt's by_class {by_class} does not fall out of its own "
             f"per-outcome counts, which classify as {derived_by_class}"
         )
-    if schema in (RECENSOR_PARTITION_RECEIPT_SCHEMA_V2, RECENSOR_PARTITION_RECEIPT_SCHEMA_V3):
-        # Permissive for partial v2 records; writers always emit all three.
-        health_unrecorded = coverage.get("health_unrecorded", 0)
-        shortfalls = coverage.get("shortfalls", {"failed": 0, "truncated": 0, "unaligned": 0})
-        if not _is_count(health_unrecorded):
-            raise SchemaRefusal("Recensor partition receipt has invalid health_unrecorded count")
-        if (
-            not isinstance(shortfalls, dict)
-            or set(shortfalls) != {"failed", "truncated", "unaligned"}
-            or not all(_is_count(value) for value in shortfalls.values())
-        ):
-            raise SchemaRefusal("Recensor partition receipt has malformed shortfalls")
-        configured = coverage["configured"]
-        if health_unrecorded > configured or any(
-            value > configured for value in shortfalls.values()
-        ):
-            raise SchemaRefusal(
-                "Recensor partition receipt counts more granularity facts than configured chairs"
-            )
-        if "granularity_basis" in coverage and coverage["granularity_basis"] not in {
-            INTERIM_GRANULARITY_BASIS,
-            NATIVE_GRANULARITY_BASIS,
-        }:
-            raise SchemaRefusal(
-                "Recensor partition receipt v2 does not name an honest granularity measurement basis"
-            )
-        if shortfalls["failed"] != by_outcome.get("failed", 0):
-            raise SchemaRefusal(
-                "Recensor partition receipt's failed shortfall does not derive from "
-                "its own failed witness outcomes"
-            )
+    health_unrecorded = coverage["health_unrecorded"]
+    if not _is_count(health_unrecorded):
+        raise SchemaRefusal("Recensor partition receipt has invalid health_unrecorded count")
+    if set(shortfalls) != {"failed", "truncated", "unaligned"} or not all(
+        _is_count(value) for value in shortfalls.values()
+    ):
+        raise SchemaRefusal("Recensor partition receipt has malformed shortfalls")
+    configured = coverage["configured"]
+    if health_unrecorded > configured or any(value > configured for value in shortfalls.values()):
+        raise SchemaRefusal(
+            "Recensor partition receipt counts more granularity facts than configured chairs"
+        )
+    if shortfalls["failed"] != by_outcome.get("failed", 0):
+        raise SchemaRefusal(
+            "Recensor partition receipt's failed shortfall does not derive from "
+            "its own failed witness outcomes"
+        )
 
 
 def _validate_reference(reference: Any, what: str) -> None:
     digest_ref(reference, f"Recensor partition receipt {what}")
 
 
-EMPTY_DENOMINATOR_REASON: Final = (
-    "the Designator proposed no acts at all, so this receipt has no denominator to "
-    "reconcile; a run that marked nothing out on its pages cannot be complete, "
-    "since a missed act is worse than a poorly read one"
-)
-
-
-def _reasons(
-    items: list[dict[str, Any]],
-    *,
-    schema: str = RECENSOR_PARTITION_RECEIPT_SCHEMA_V2,
-    links: list[dict[str, Any]] = (),
-) -> list[str]:
-    # An empty denominator is a reason, not a malformed receipt: refusing would
-    # hide the silent failure this boundary exists to show.
-    page_read = schema == RECENSOR_PARTITION_RECEIPT_SCHEMA_V3
-    if not items:
-        return [EMPTY_DENOMINATOR_REASON]
+def _reasons(items: list[dict[str, Any]], *, links: list[dict[str, Any]] = ()) -> list[str]:
     # A page-read run counts units: act entries, `other` entries and page rows.
-    counted = "unit" if page_read else "act"
+    counted = "unit"
     reasons: list[str] = []
     for item in items:
         act_id = item["act_id"]
         if (
-            page_read
-            and item["page_disposition"] == "held"
+            item["page_disposition"] == "held"
             and item["partition_class"] != OutcomeClass.COMPLETED.value
         ):
             reasons.append(f"unit {act_id} was held by its page reading and is not released")
@@ -607,17 +484,9 @@ def _reasons(
             reasons.append(f"{counted} {act_id} is {item['partition_class']} at the Recensor")
         coverage = item["coverage"]
         if coverage["under_witnessed"]:
-            measured = (
-                "page reads"
-                if page_read
-                else "act-level reads"
-                if "page_granularity_only" in coverage
-                else "completed chairs"
-            )
-            witnessed = witnessed_count(coverage, page_read=page_read)
             reasons.append(
                 f"{counted} {act_id} is under-witnessed "
-                f"({witnessed} {measured} of a floor of {coverage['floor']})"
+                f"({witnessed_count(coverage)} page reads of a floor of {coverage['floor']})"
             )
         if coverage["unresolved_chairs"]:
             reasons.append(

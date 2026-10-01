@@ -241,7 +241,6 @@ def write_live_catalogue(path: Path, registry, *, contexts: dict[str, int] | Non
     """
     rows: list[dict[str, Any]] = []
     for chair, recipe in (
-        ("designator_structure", "fake-designator-v0"),
         ("designator_surya", "fake-surya-v0"),
         ("secondary_proposer", "fake-secondary-proposer-v0"),
         ("perlector", "fake-perlector-v0"),

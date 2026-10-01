@@ -260,7 +260,7 @@ def dai_model_view(
     `2_designator/`; every image a witness is shown is published into
     `3_attestatores/`, so a byte-identical image legitimately appears at two
     stage-owned paths. Equal digests are equal pixels because
-    `verify_exemplar_crop_lineage` already proves the source crop is exactly
+    `_verify_detector_region` already proves the source crop is exactly
     `crop_png(sealed page, bounds)`, which `_dai_present` re-derives the same
     way. Requiring the whole dict to match instead refused every genuine
     no-resize DAI act after its response had already come back.

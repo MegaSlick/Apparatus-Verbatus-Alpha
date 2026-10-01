@@ -973,8 +973,8 @@ _NOT_MEASURED_RECORDED_IN: Final = {
         "carried beside the act record in this bundle"
     ),
     _GEOMETRY_CALIBRATION: (
-        "the `provenance` blocks of the sealed Designator padding, geometry and grouping "
-        "configurations and of the Perlector protocol's `[truncation]` table, whose digests "
+        "the `provenance` blocks of the sealed Designator geometry configuration and of the "
+        "Perlector protocol's `[truncation]` table, whose digests "
         "this run's `config_digest` binds"
     ),
     _PAGE_ACCOUNTING_THRESHOLDS: (
@@ -991,9 +991,7 @@ _NOT_MEASURED_RECORDED_IN: Final = {
 # export discloses those. The instrument name is already on every bundle, so
 # extend the list rather than rename it.
 _GEOMETRY_CONFIGURATION_NAMES: Final = (
-    "designator-padding",
     "designator-geometry",
-    "designator-grouping",
     "perlector-protocol",
 )
 

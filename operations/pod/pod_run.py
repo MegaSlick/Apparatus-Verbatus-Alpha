@@ -443,7 +443,7 @@ class RunPlan:
         selected = set(self.selected_stages())
         roles: set[str] = set()
         if "designator" in selected:
-            roles.update(("designator_structure", "secondary_proposer", "designator_surya"))
+            roles.update(("secondary_proposer", "designator_surya"))
         if selected & {"perlector", "recovery"}:
             roles.add("perlector")
         try:

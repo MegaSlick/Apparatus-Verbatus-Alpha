@@ -1228,11 +1228,11 @@ def test_a_page_over_the_rows_capacity_is_held_whole_and_never_sent(tmp_path, mo
 
 
 def _without_testimony(monkeypatch, ordinal: int) -> None:
-    """Stage 3 serving no page Testimonium for one page, as for a page with no proposed act."""
+    """Stage 3 serving no page Testimonium for one page."""
     original = page_run.current_page_testimonia
 
-    def dropped(context, proposal_regions):
-        current = original(context, proposal_regions)
+    def dropped(context):
+        current = original(context)
         page_id = page_run.exemplar_page_ids(context)[ordinal]
         return {page: rows for page, rows in current.items() if page != page_id}
 

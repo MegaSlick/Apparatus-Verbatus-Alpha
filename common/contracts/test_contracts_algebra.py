@@ -27,7 +27,6 @@ from common.contracts.outcomes import (
     witness_coverage,
 )
 from common.contracts.stages import ARMARIUM, ATTESTATORES, DESIGNATOR, INK_MAP, PERLECTOR, RECENSOR
-from common.recensor_receipt import _validate_coverage
 
 # The exact shape of the algebra as this spec defines it. Pinned as counts so that
 # adding a state without deciding its class and its terminal category fails here,
@@ -819,7 +818,7 @@ def test_one_fact_without_a_basis_withdraws_the_native_claim_for_the_whole_act()
 
 
 def test_granularity_identity_is_executable_for_interim_and_native_bases():
-    """The receipt's reading chairs minus page-only count equals the writer's attachments."""
+    """The reading chairs minus the page-only count equals the writer's attachments."""
     coverage = witness_coverage(
         {"s1": "read", "s2": "read", "s3": "genuinely-empty"},
         3,
@@ -835,17 +834,6 @@ def test_granularity_identity_is_executable_for_interim_and_native_bases():
         - coverage["page_granularity_only"]
         == 2
     )
-    for basis in (outcomes.INTERIM_GRANULARITY_BASIS, outcomes.NATIVE_GRANULARITY_BASIS):
-        candidate = {**coverage, "granularity_basis": basis}
-        _validate_coverage(candidate, require_complete_granularity=True)
-    # Widening the accepted set from one basis to two must not widen it to any
-    # string: an unnamed basis would let a receipt claim a measurement nothing
-    # in this pipeline performs.
-    with pytest.raises(SchemaRefusal, match="honest granularity measurement basis"):
-        _validate_coverage(
-            {**coverage, "granularity_basis": "invented-basis"},
-            require_complete_granularity=True,
-        )
 
 
 def test_an_attached_but_incomparable_witness_is_page_only_and_cannot_meet_the_floor():

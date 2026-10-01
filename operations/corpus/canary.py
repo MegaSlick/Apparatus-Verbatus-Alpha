@@ -30,7 +30,7 @@ from operations.spike_perlector.normalization import GRAPHEMIC_V1
 from operations.spike_perlector.scoring import score_response
 from operations.submit.submit import build_manifest, walk_folder
 
-from .compare import compare_page_geometry, load_exemplar_page_shas, load_pipeline_proposal_acts
+from .compare import compare_page_geometry, load_exemplar_page_shas, load_pipeline_reading_acts
 from .local_admission import admit_local_set
 from .reference import validate_reference_page
 from .witness_evaluate import CHAIRS, page_witness_index, sealed_page_bindings, witness_reading
@@ -204,12 +204,12 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
             fail(EXEMPLAR, "canary-page-or-reference-missing")
 
         try:
-            proposals = load_pipeline_proposal_acts(tree)
+            read_acts = load_pipeline_reading_acts(tree)
             bindings = sealed_page_bindings(tree)
             witnessed = page_witness_index(tree, sealed_pages=bindings)
         except Exception as error:
-            fail(DESIGNATOR, f"check-raised:{type(error).__name__}")
-            proposals, witnessed = [], {}
+            fail(PERLECTOR, f"check-raised:{type(error).__name__}")
+            read_acts, witnessed = [], {}
 
         matched = 0
         for ordinal in sorted(ordinals):
@@ -219,20 +219,16 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
             try:
                 geometry = compare_page_geometry(
                     page,
-                    [
-                        proposal
-                        for proposal in proposals
-                        if proposal["page_sha256"] == page_shas[ordinal]
-                    ],
+                    [act for act in read_acts if act["page_sha256"] == page_shas[ordinal]],
                 )
             except Exception as error:
-                fail(DESIGNATOR, f"check-raised:{type(error).__name__}")
+                fail(PERLECTOR, f"check-raised:{type(error).__name__}")
                 continue
             if len(geometry["matched_pairs"]) < MIN_ACTS_FOUND * len(page["acts"]):
-                fail(DESIGNATOR, "fewer-than-half-gold-acts-found")
+                fail(PERLECTOR, "fewer-than-half-gold-acts-found")
             matched += len(geometry["matched_pairs"])
         if not matched:
-            fail(DESIGNATOR, "no-matched-canary-acts")
+            fail(PERLECTOR, "no-matched-canary-acts")
 
         # Every witness reads the whole page, so each is checked on its page
         # reading against the page's reference acts joined in order.

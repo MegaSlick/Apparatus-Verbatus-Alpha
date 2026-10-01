@@ -65,7 +65,7 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
     monkeypatch.setattr(canary, "_references", lambda _root: {"a" * 64: reference})
     monkeypatch.setattr(canary, "load_exemplar_page_shas", lambda _tree: {2: "a" * 64})
     monkeypatch.setattr(
-        canary, "load_pipeline_proposal_acts", lambda _tree: [{"page_sha256": "a" * 64}]
+        canary, "load_pipeline_reading_acts", lambda _tree: [{"page_sha256": "a" * 64}]
     )
     monkeypatch.setattr(canary, "sealed_page_bindings", lambda _tree: {})
     monkeypatch.setattr(
