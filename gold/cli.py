@@ -245,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         record = ingest_manual_pick(args.run, read_json(args.pick))
         output = Path(args.output)
         with _locked_corpus(output.parent) as corpus:
-            # A stratum is a collection fact, not a property R0 can derive from one
+            # A stratum is a collection fact, not a property the run can derive from one
             # pick, so a second spelling of the same hand-picked page -- even one
             # that only restates `selection_basis`, since that field is bound into
             # `sample_digest` -- is refused here rather than counted twice.

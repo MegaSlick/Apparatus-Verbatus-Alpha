@@ -2,7 +2,7 @@
 
 `python -m gold.cli sample --run RUN.json --catalog catalog.json --plan plan.json
 --output-dir records/` creates a stratified, page-only human-gold sample.  The
-catalog has one `{ordinal, sha256, stratum, width, height}` row for every R0 source
+catalog has one `{ordinal, sha256, stratum, width, height}` row for every run source
 page.  A row's `sha256` is the digest that page binds into the run's
 `corpus_frame_membership` -- the Door's `computed_sha256` where it inspected the
 bytes, the submitted declaration only where it could not -- which for a raster is
@@ -45,7 +45,7 @@ retained *catalog*, but by `validate-corpus` rather than here — see Custody.
 that selection unchanged; it does not choose a replacement page.  The persisted
 sample's `set` is always the page-derived partition — calibration/locked-acceptance
 disjointness is enforced by construction, never by policing a human's claim — but
-a manual pick may predate the R0 frame and its seed, so the stated set can honestly
+a manual pick may predate the corpus frame and its seed, so the stated set can honestly
 disagree with it. That disagreement is never silently resolved
 either way: it is carried unchanged as `claimed_set` alongside the true `set`, so a
 predates-the-seed pick is ingested, not refused and sent back for a re-pick.
@@ -63,7 +63,7 @@ the manual and seeded records may coexist because they preserve different true
 selection provenance.
 
 `bind-instrument` creates an append-only `gold-instrument-membership.v1` record
-carrying a sample digest, an R0 act identity, and a protocol digest.
+carrying a sample digest, an act identity, and a protocol digest.
 
 Every act identity in this module — instrument membership, transcription, and
 adjudication — is checked for shape only (well-formed and `act_`-prefixed): gold
@@ -147,7 +147,7 @@ schema also embeds its source sample and carries only rectangles plus the requir
 `calibrated_for_this_corpus` flag.  `validate` checks all gold record schemas and
 self-hashes;
 for a sample, layout, or padding record, pass `--run` to prove the derived page and
-frame facts against the R0 authority again (an embedded sample is otherwise only
+frame facts against the run authority again (an embedded sample is otherwise only
 checked for internal self-consistency, not that it names a real run).
 `bind-instrument` accepts the same optional `--run`. A transcription, adjudication, or
 instrument membership names its sample only by digest, so `validate --run` refuses
@@ -158,8 +158,8 @@ version 2. Version 1 did not carry a page size and therefore cannot honestly mea
 "this rectangle lies on its page" under the new reader. Existing v1 bytes remain
 immutable evidence; this tool refuses rather than silently reinterpret them.
 
-`--run` proves the page facts R0 actually carries, which are its ordinal and
-sha256.  A page's `stratum`, `width`, and `height` are not among them: R0's
+`--run` proves the page facts the run actually carries, which are its ordinal and
+sha256.  A page's `stratum`, `width`, and `height` are not among them: the run's
 `source_manifest` records neither, so those three are catalog-declared, and what
 holds them honest is the catalog, not the run.  A rectangle is therefore proven
 on the page **the catalog says this is**, and `validate-corpus` is where that
@@ -238,7 +238,7 @@ after Unicode normalization and case-folding are refused even on a case-sensitiv
 filesystem, because they would collapse to one pathname on default APFS.
 
 Gold is therefore drawn **per corpus frame**: one run's sealed manifest is the
-frame, and R0 shards a corpus at its sealed shard limit, so a corpus split across
+frame, and the corpus frame shards a corpus at its sealed shard limit, so a corpus split across
 shards is sampled shard by shard and its records are validated shard by shard.
 Uniting several frames into one gold corpus is deliberately not built — the union
 would need its own seed, and inventing one now, before any corpus of that size has

@@ -215,7 +215,7 @@ def read_transcription_text(path: str | Path) -> str:
 
 
 class RunFrame(NamedTuple):
-    """What gold takes from one verified R0 run: its frame, pages and canaries."""
+    """What gold takes from one verified run: its frame, pages and canaries."""
 
     frame: dict[str, str]
     source: list[dict[str, Any]]
@@ -227,7 +227,7 @@ def _is_int(value: Any) -> bool:
 
 
 def _frame_seed(page_digest: str) -> str:
-    """The frame seed R0 derives from its page membership, never a free field."""
+    """The frame seed the run derives from its page membership, never a free field."""
     return digest_bytes(canonical_bytes({"page_digest": page_digest, "purpose": "frame"}))
 
 
@@ -279,14 +279,14 @@ def load_run_frame(path: str | Path) -> RunFrame:
         not verify_self_hash(run),
         "run authority fails its self-hash; its recorded seed and membership cannot be trusted",
     )
-    _refuse(run.get("schema") != SCHEMA_LABEL, "run authority is not the current R0 schema")
+    _refuse(run.get("schema") != SCHEMA_LABEL, "run authority is not the current run schema")
     pages = run.get("source_manifest")
     membership = run.get("corpus_frame_membership")
     _refuse(not isinstance(pages, list), "run authority has no source_manifest")
     _refuse(
         not isinstance(membership, dict)
         or set(membership) != {"frame_digest", "page_digest", "seed"},
-        "run corpus_frame_membership is not the closed R0 frame record",
+        "run corpus_frame_membership is not the closed corpus frame record",
     )
     for field in membership:
         _sha(membership[field], f"corpus_frame_membership.{field}")
@@ -306,15 +306,15 @@ def load_run_frame(path: str | Path) -> RunFrame:
     # rederivation proves the seed is the one this run's own pages produce.
     _refuse(
         membership["seed"] != _frame_seed(page_digest),
-        "R0 frame seed diverges from its derivation over the run's own pages",
+        "corpus frame seed diverges from its derivation over the run's own pages",
     )
     _refuse(
         membership["page_digest"] != page_digest,
-        "R0 frame page_digest diverges from run source_manifest",
+        "corpus frame page_digest diverges from run source_manifest",
     )
     _refuse(
         membership["frame_digest"] != frame_digest,
-        "R0 frame frame_digest diverges from run source_manifest",
+        "corpus frame frame_digest diverges from run source_manifest",
     )
     return RunFrame(dict(membership), source, canary_ordinals(run))
 
@@ -323,7 +323,7 @@ def set_for_page(page_sha256: str) -> str:
     """A content-driven partition: a page has one set across every corpus frame.
 
     The frame seed drives the within-stratum draw order in `_rank`. It must not
-    drive this boundary: R0 derives a new seed whenever frame membership changes,
+    drive this boundary: the run derives a new seed whenever frame membership changes,
     so a seed-partitioned page could otherwise move from calibration to locked
     acceptance when the same source page appeared in a later frame.
     """
@@ -628,14 +628,16 @@ def validate_sampling_draw(record: Any, run_path: str | Path | None = None) -> d
         members != expected, "sampling draw membership diverges from its seed, catalog, and plan"
     )
     if run is not None:
-        _refuse(frame != run.frame, "sampling draw frame diverges from the R0 run authority")
-        _refuse(source != run.source, "sampling draw catalog diverges from the R0 run membership")
+        _refuse(frame != run.frame, "sampling draw frame diverges from the run authority")
+        _refuse(
+            source != run.source, "sampling draw catalog diverges from the run's page membership"
+        )
     _refuse(not verify_self_hash(record), "sampling draw fails its self-hash")
     return record
 
 
 def verify_recorded_draw(records: Any, draw: Any, run_path: str | Path) -> list[dict[str, Any]]:
-    """Verify a draw only from its retained inputs, sample records, and R0 authority.
+    """Verify a draw only from its retained inputs, sample records, and run authority.
 
     Every sample handed in is validated, but only the seed-selected ones are
     reconciled against the draw's retained membership. A manual pick is not a
@@ -706,7 +708,7 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
     """Record the picker's choice without selecting or replacing it.
 
     A manual pick's stated `set` is the picker's provenance, not an assertion
-    this function polices: a manual pick may predate the R0 frame and its seed,
+    this function polices: a manual pick may predate the corpus frame and its seed,
     so there may have been no partition to check it against when it was made. The
     persisted sample's `set` is always the page-derived partition, so
     calibration and locked-acceptance membership remain disjoint; the
@@ -772,7 +774,7 @@ def bind_instrument(
     Perlector act record, so it cannot verify the act against the page reading
     that named it, and a well-formed but never-derived act id will pass. Pass
     `run_path` to additionally re-check the
-    bound sample's frame and page against the R0 run authority; it does not and
+    bound sample's frame and page against the run authority; it does not and
     cannot reach act existence.
     """
     validate_sample(sample, run_path)
@@ -931,7 +933,7 @@ def transcribe(
     Two of these, made independently, are what an adjudication reconciles. Like
     `bind_instrument` this carries the sample's digest rather than the sample, and
     checks the act identity for shape only; pass `run_path` to also re-check the
-    sample against the R0 run authority.
+    sample against the run authority.
     """
     validate_sample(sample, run_path)
     record = {
@@ -1199,18 +1201,18 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
     _refuse(not verify_self_hash(record), "sample fails its self-hash")
     if run_path is not None:
         run_frame, source, canaries = load_run_frame(run_path)
-        _refuse(frame != run_frame, "sample frame diverges from the R0 run authority")
+        _refuse(frame != run_frame, "sample frame diverges from the run authority")
         _refuse(page["ordinal"] in canaries, "sample names a canary page")
         _refuse(
             (page["ordinal"], page["sha256"]) not in {(p["ordinal"], p["sha256"]) for p in source},
-            "sample page is outside the R0 run authority",
+            "sample page is outside the run authority",
         )
     return record
 
 
 def validate_layout(record: Any, run_path: str | Path | None = None) -> dict[str, Any]:
     """Validate a page-layout gold record; pass `run_path` to also re-check its
-    embedded sample against the R0 run authority (the same re-check `validate_sample`
+    embedded sample against the run authority (the same re-check `validate_sample`
     offers standalone) rather than trusting the embedded sample's self-consistency
     alone."""
     result = _validate_page_bound_record(record, LAYOUT_SCHEMA, {"regions"}, run_path)
@@ -1247,7 +1249,7 @@ def validate_layout(record: Any, run_path: str | Path | None = None) -> dict[str
 
 def validate_padding(record: Any, run_path: str | Path | None = None) -> dict[str, Any]:
     """Validate a padding-rectangles gold record; `run_path` re-checks the embedded
-    sample against the R0 run authority, as `validate_layout` does."""
+    sample against the run authority, as `validate_layout` does."""
     result = _validate_page_bound_record(
         record, PADDING_SCHEMA, {"rectangles", "calibrated_for_this_corpus"}, run_path
     )
@@ -1316,7 +1318,7 @@ def _register_frame(frames: dict[str, dict[str, str]], frame: dict[str, str]) ->
         f"corpus frame digest {frame['frame_digest']} carries contradictory page_digest "
         "or seed facts across gold records. One frame identity therefore denotes two "
         "different authorities. Keep immutable records unchanged and separate the "
-        "frames, or regenerate an unpublished bad record from the R0 authority",
+        "frames, or regenerate an unpublished bad record from the run authority",
     )
 
 
@@ -1339,7 +1341,7 @@ def validate_corpus(
     to no authority, so one page described as `adverse` in a sample and `ordinary`
     in the layout record that embeds a differently-drawn sample would pass every
     per-record check while making the stratification unmeasurable. A page's pixel
-    size is the third of them — R0's `source_manifest` carries neither a stratum
+    size is the third of them — the run's `source_manifest` carries neither a stratum
     nor a geometry, so `--run` cannot reach either — and where the corpus retains
     a draw, the draw's whole retained catalog is the authority both are held to.
 
@@ -1439,7 +1441,7 @@ def validate_corpus(
             "and hold it for review",
         )
         # The retained whole catalog is the stratum and geometry authority even for
-        # manual picks; R0 carries neither fact, and an invented page size can make
+        # manual picks; the run carries neither fact, and an invented page size can make
         # any rectangle appear to be on-page.
         catalog_rows = {(row["ordinal"], row["sha256"]): row for row in draw["catalog"]}
         for sample in samples:

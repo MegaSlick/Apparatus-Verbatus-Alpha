@@ -220,7 +220,7 @@ def test_load_run_frame_refuses_a_non_positive_source_page_ordinal(tmp_path, ord
 def test_sample_refuses_a_page_or_frame_restated_differently_than_r0_authority(tmp_path):
     path, frame, pages = run_file(tmp_path)
     record = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
-    with pytest.raises(SchemaRefusal, match="outside the R0"):
+    with pytest.raises(SchemaRefusal, match="outside the run authority"):
         validate_sample(_forge_sample_outside_authority(record), path)
     broken_run = json.loads(path.read_text())
     broken_run["corpus_frame_membership"]["page_digest"] = _sha("0")
@@ -246,7 +246,7 @@ def test_manual_pick_is_ingested_without_reselection_and_records_claimed_set(tmp
 
 
 def test_manual_pick_predating_the_seed_is_still_ingested_with_an_honest_disagreement(tmp_path):
-    """A manual pick may predate the R0 frame and its seed, so the
+    """A manual pick may predate the corpus frame and its seed, so the
     stated set can honestly disagree with the page-derived partition once it is
     known. Ingestion must not refuse and force a re-pick (that would discard real
     annotation hours); it must record the disagreement, never silently resolve it
@@ -1096,7 +1096,7 @@ def _forge_sample_outside_authority(sample):
 def test_layout_and_padding_can_recheck_their_embedded_sample_against_run_authority(tmp_path):
     """A layout or padding record's embedded sample is only checked for internal
     self-consistency by default — it can restate a page/frame belonging to no real
-    R0 run and still validate. Passing --run (validate_layout/validate_padding's
+    run and still validate. Passing --run (validate_layout/validate_padding's
     run_path) closes that derived-record gap the same way it already does for a
     bare sample."""
     path, frame, pages = run_file(tmp_path)
@@ -1109,7 +1109,7 @@ def test_layout_and_padding_can_recheck_their_embedded_sample_against_run_author
     }
     layout["self_hash"] = self_hash(layout)
     assert validate_layout(layout) == layout
-    with pytest.raises(SchemaRefusal, match="outside the R0"):
+    with pytest.raises(SchemaRefusal, match="outside the run authority"):
         validate_layout(layout, path)
     padding = {
         "schema": PADDING_SCHEMA,
@@ -1119,7 +1119,7 @@ def test_layout_and_padding_can_recheck_their_embedded_sample_against_run_author
     }
     padding["self_hash"] = self_hash(padding)
     assert validate_padding(padding) == padding
-    with pytest.raises(SchemaRefusal, match="outside the R0"):
+    with pytest.raises(SchemaRefusal, match="outside the run authority"):
         validate_padding(padding, path)
 
 
@@ -1129,14 +1129,14 @@ def test_bind_instrument_can_recheck_its_sample_against_run_authority(tmp_path):
     forged = _forge_sample_outside_authority(sample)
     act = _act()
     assert bind_instrument(forged, act, _sha("e"))["sample_digest"] == forged["sample_digest"]
-    with pytest.raises(SchemaRefusal, match="outside the R0"):
+    with pytest.raises(SchemaRefusal, match="outside the run authority"):
         bind_instrument(forged, act, _sha("e"), path)
 
 
 def test_a_shared_manual_pick_has_one_set_across_three_frames(tmp_path):
     """The partition itself, not only the corpus validator, keeps membership stable.
 
-    R0 gives each frame a different seed. The same manually picked page must still
+    The run gives each frame a different seed. The same manually picked page must still
     have one set before the validator refuses combining the three distinct ranked
     sampling universes.
     """
