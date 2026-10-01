@@ -625,7 +625,6 @@ def _feed_render(
         source_page_id=page_id,
         source_page_ordinal=ordinal,
         page_context=protocol_config["page_context"],
-        crop_bounds=[],
         full_page=setting == "full",
         retain=retain,
     )

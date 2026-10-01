@@ -38,11 +38,11 @@ def test_a_protocol_declaration_missing_a_table_is_refused(tmp_path):
 
 def test_the_page_render_bounds_are_sealed_and_checked(tmp_path):
     sealed, _digest = protocol.load(PROTOCOL)
-    assert sealed["page_context"] == {"maximum_edge": 2560, "covered_page_edge": 1024}
+    assert sealed["page_context"] == {"maximum_edge": 2560}
     shipped = PROTOCOL.read_text(encoding="utf-8")
     for edited in (
         shipped.replace("maximum_edge = 2560", "maximum_edge = 0"),
-        shipped.replace("covered_page_edge = 1024", "covered_page_edge = 4096"),
+        shipped.replace("maximum_edge = 2560", "maximum_edge = 2560\ncovered_page_edge = 1024"),
     ):
         assert edited != shipped
         path = tmp_path / "protocol.toml"
