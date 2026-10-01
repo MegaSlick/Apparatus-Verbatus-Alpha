@@ -75,9 +75,11 @@ def test_a_failed_shortfall_equal_to_the_failed_outcomes_is_accepted():
     _validate_coverage(_one_failed_witness(1))
 
 
-def test_a_failed_shortfall_that_hides_a_failed_witness_is_refused():
+@pytest.mark.parametrize("failed_shortfall", [0, 2])
+def test_a_failed_shortfall_other_than_the_failed_outcomes_is_refused(failed_shortfall):
+    """Hiding the failed witness (0) and over-counting it (2) are both refused."""
     with pytest.raises(SchemaRefusal, match="failed shortfall does not derive"):
-        _validate_coverage(_one_failed_witness(0))
+        _validate_coverage(_one_failed_witness(failed_shortfall))
 
 
 def test_a_well_typed_unaligned_shortfall_is_refused():

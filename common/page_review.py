@@ -604,9 +604,9 @@ def page_breaks(
 
     The last first-reading `act` entry of page p and the first of page p+1
     (`common.page_edges.page_edges`) are the break's two sides; either side's
-    flag records the break, `agreed` only when both say so, and a break whose sides disagree is still recorded. A side with no
-    `act` entry (a page not read, blank, of `other` entries only, or outside
-    the run) is null. The link holds no unit and joins nothing.
+    flag records the break, `agreed` only when both say so, and a break whose
+    sides disagree is still recorded. A side with no `act` entry (a page not
+    read, blank, of `other` entries only, or outside the run) is null. The link holds no unit and joins nothing.
     """
     edges = page_edges.page_edges(page_edges.first_attempt_entries(acts))
     ordinals = sorted(pages)
