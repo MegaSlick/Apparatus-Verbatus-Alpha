@@ -246,7 +246,8 @@ def test_a_held_recensor_stops_every_run_before_the_archetypus(tmp_path, selecti
 
 def test_a_manual_archetypus_over_a_held_recensor_stops_too(tmp_path):
     root = tmp_path / "runs"
-    drive(root, "r", "page-review", "--from", "door", "--to", "recensor")
+    setup = drive(root, "r", "page-review", "--from", "door", "--to", "recensor")
+    assert setup.returncode == EXIT_HELD, setup.stdout + setup.stderr
     result = drive(root, "r", "page-review", "--stage", "archetypus")
     assert result.returncode == EXIT_HELD, result.stdout + result.stderr
     assert HELD_RECENSOR_STOP in result.stdout
@@ -261,7 +262,8 @@ def test_a_manual_archetypus_over_a_held_recensor_stops_too(tmp_path):
 def test_an_armarium_selection_over_a_held_recensor_stops_too(tmp_path, selection):
     """A selection that skips the Archetypus still stops before exporting over the hold."""
     root = tmp_path / "runs"
-    drive(root, "r", "page-review", "--from", "door", "--to", "recensor")
+    setup = drive(root, "r", "page-review", "--from", "door", "--to", "recensor")
+    assert setup.returncode == EXIT_HELD, setup.stdout + setup.stderr
     result = drive(root, "r", "page-review", *selection)
     assert result.returncode == EXIT_HELD, result.stdout + result.stderr
     assert "stopped at a held recensor, before the armarium" in result.stdout
@@ -331,7 +333,8 @@ def test_an_advance_bound_to_an_earlier_recensor_seal_passes_nothing(tmp_path):
     from common.stage import boundary_advanced, current_stage_seal
 
     root = tmp_path / "runs"
-    drive(root, "r", "page-review")
+    setup = drive(root, "r", "page-review")
+    assert setup.returncode == EXIT_HELD, setup.stdout + setup.stderr
     advance_held_recensor(root, "r")
     tree = RunTree(root, "r")
     _seal, advanced = current_stage_seal(tree, "recensor")
@@ -364,7 +367,8 @@ def test_a_held_stop_is_recorded_as_no_export_though_an_earlier_export_is_sealed
     from common.stage import verify_final_seal
 
     root = tmp_path / "runs"
-    drive(root, "r", "page-review")
+    setup = drive(root, "r", "page-review")
+    assert setup.returncode == EXIT_HELD, setup.stdout + setup.stderr
     advance_held_recensor(root, "r")
     exported = tmp_path / "exported.json"
     result = drive(

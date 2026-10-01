@@ -20,6 +20,7 @@ from zipfile import ZipFile
 import pytest
 
 from common.contracts.stages import CONIECTOR
+from common.page_review import held_by_recensor
 from common.reconstruction import load_reconstruction_policy
 from common.reconstruction_records import (
     CALL_FAILED,
@@ -32,6 +33,7 @@ from common.reconstruction_records import (
 from common.runtree.store import RunTree
 from common.stage import EXIT_COMPLETE, verify_final_seal
 from conftest import (
+    advance_held_recensor,
     build_page_tree,
     floor_models_config,
     load_stage,
@@ -63,6 +65,10 @@ def _config(directory: Path, *, mode: str = "on", consecutive: bool = False) -> 
 def _run(base: Path, scenario: str, **options) -> tuple[Path, dict]:
     root, options = build_page_tree(base, scenario, **options)
     for program in AFTER_PERLECTOR:
+        # A Recensor that holds anything is advanced, as a person would to export
+        # with every hold named; no later stage runs past it otherwise.
+        if program != AFTER_PERLECTOR[0] and held_by_recensor(RunTree(root, RUN_ID)):
+            advance_held_recensor(root, RUN_ID)
         result = run_stage(root, RUN_ID, scenario, program, **options)
         assert result.returncode in (0, 3), f"{program}: {result.stderr}"
     return root, options

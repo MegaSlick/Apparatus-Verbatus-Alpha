@@ -459,6 +459,12 @@ class ReadOnlyRunTree:
     def read_approval_record(self, reference: Any) -> dict[str, Any]:
         return self._tree.read_approval_record(reference)
 
+    def approval_records(self) -> list[tuple[Any, dict[str, Any]]]:
+        return self._tree.approval_records()
+
+    def review_decision_records(self) -> list[tuple[Any, dict[str, Any]]]:
+        return self._tree.review_decision_records()
+
     def read_recensor_partition_receipt(self) -> dict[str, Any]:
         return self._tree.read_recensor_partition_receipt()
 
