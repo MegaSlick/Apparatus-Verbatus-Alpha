@@ -31,26 +31,6 @@ width = 200
 height = 260
 scenarios = ["ink-free-page", "ink-free-page-unwitnessed"]
 
-[[act]]
-key = "a1"
-page_ordinal = 1
-proposal_ordinal = 0
-x = 20
-y = 20
-w = 160
-h = 80
-text = "SYNTHETIC ACT ONE alpha beta gamma"
-
-[[act]]
-key = "a2"
-page_ordinal = 1
-proposal_ordinal = 1
-x = 20
-y = 120
-w = 160
-h = 100
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
 [[native_observation]]
 chair = "attestator_3"
 page_ordinal = 1
@@ -142,14 +122,6 @@ label = "Text"
 raw_label = "Text"
 position = 0
 confidence_bp = 9500
-
-[[continuation]]
-act_key = "a2"
-page_ordinal = 2
-x = 20
-y = 20
-w = 160
-h = 60
 
 [[testimony]]
 page_ordinal = 1
@@ -384,10 +356,6 @@ name = "refused-first-page"
 [[scenario]]
 name = "genuinely-empty-witness"
 
-# structure-failure: The structure chair's recorded failure: the Designator holds page 1 visibly.
-[[scenario]]
-name = "structure-failure"
-
 # ink-free-page: A third, scenario-only page of uniform paper with no declared act; every chair reads it and returns nothing.
 [[scenario]]
 name = "ink-free-page"
@@ -582,16 +550,6 @@ page_ordinal = 2
 answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
 
 [[page_answer]]
-scenario = "structure-failure"
-page_ordinal = 1
-answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
-
-[[page_answer]]
-scenario = "structure-failure"
-page_ordinal = 2
-answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1-L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
-
-[[page_answer]]
 scenario = "genuinely-empty-witness"
 page_ordinal = 1
 answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
@@ -687,14 +645,6 @@ scenario = "malformed-witness"
 page_ordinal = 1
 chair = "attestator_3"
 reason = "fixture declares an invalid UTF-8 provider body"
-
-# A recorded structure-chair failure: the Designator holds the page and every
-# act that needed it, with the reason named, rather than skipping either.
-
-[[structure_failure]]
-scenario = "structure-failure"
-page_ordinal = 1
-reason_code = "recorded-fixture-structure-failure"
 
 # Per-scenario declared digests the checked-in bytes cannot match, so the
 # door refuses those pages through its real inspection path. The declared

@@ -9,9 +9,9 @@ import pytest
 from common.chairs import ChairRegistry
 from common.contracts.canonical import digest_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
+from common.contracts.stages import ATTESTATORES, EXEMPLAR
 from common.imaging import dimensions
-from common.native_witness import record_presentations, unpresented_region_ids
+from common.native_witness import record_presentations
 from common.runtree.store import RunTree
 from conftest import load_stage, run_stage, run_through
 
@@ -31,7 +31,6 @@ def _base():
         "payload": "native bytes remain elsewhere",
         "witness_reported": None,
         "content_health": {},
-        "unpresented_regions": [],
         "presented": {
             "kind": "page",
             "source_page_id": "page-1",
@@ -212,7 +211,6 @@ def test_dai_uncertainty_tokens_reach_a_closed_testimonium_verbatim():
         ),
         presented=presented,
         observed=observed,
-        unpresented_regions=[],
         testimonium_id="art_0123456789abcdef",
     )
 
@@ -236,52 +234,9 @@ class _Context:
         }
 
 
-def test_unpresented_regions_must_be_a_unique_list_of_region_ids():
-    for bad in ("rgn_1", [""], ["rgn_1", "rgn_1"], [1]):
-        payload = _base()
-        payload["unpresented_regions"] = bad
-        with pytest.raises(SchemaRefusal, match="unique list of region ids"):
-            attestatores.validate_page_testimonium_payload(payload)
-
-
-def test_a_record_with_no_presentation_at_all_cannot_name_an_unpresented_region():
-    """`presented: {}` is a chair that was never shown an image. Naming a crop
-    its presentation does not speak for would claim a presentation exists."""
-    payload = _base()
-    payload["presented"] = {}
-    payload["observed"] = []
-    payload["unpresented_regions"] = ["rgn_0123456789abcdef"]
-    with pytest.raises(SchemaRefusal, match="cannot name regions"):
-        attestatores.validate_page_testimonium_payload(payload)
-
-
 def _witnessed(tmp_path, run_id, scenario="happy"):
     run_through(tmp_path / "runs", run_id, scenario, "attestatores")
     return RunTree(tmp_path / "runs", run_id)
-
-
-def test_every_page_record_names_exactly_the_proposals_it_was_not_shown(tmp_path):
-    tree = _witnessed(tmp_path, "unpresented-scope")
-    proposals = [
-        tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == "region"
-    ]
-    named = set()
-    for record in _page_records(tree):
-        on_page = [
-            region
-            for region in proposals
-            if region["payload"]["origin"] == "proposal"
-            and region["payload"]["transform"]["source_page_id"] == record["subject_id"]
-        ]
-        payload = record["payload"]
-        assert payload["unpresented_regions"] == unpresented_region_ids(
-            record_presentations(payload), on_page
-        ), record["artifact_id"]
-        named.update(payload["unpresented_regions"])
-    # A whole page shows every proposal on it; DAI's record crops show some.
-    assert named <= {region["payload"]["region_id"] for region in proposals}
 
 
 def test_page_native_geometry_stays_with_the_chairs_that_report_it(tmp_path):
@@ -337,7 +292,6 @@ def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_
         },
     }
     forged["payload"]["observed"] = []
-    forged["payload"]["unpresented_regions"] = []
     forged["inputs"] = [context.input_ref(second["payload"]["image_path"])]
     forged["self_hash"] = self_hash(forged)
 

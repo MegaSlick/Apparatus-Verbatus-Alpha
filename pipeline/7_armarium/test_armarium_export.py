@@ -174,19 +174,9 @@ def _test_not_measured_basis(**overrides):
         "designator-geometry-calibration": {
             "configurations": [
                 {
-                    "configuration": "designator-padding",
-                    "calibrated_for_this_corpus": False,
-                    "sample_count": 4572,
-                },
-                {
                     "configuration": "designator-geometry",
                     "calibrated_for_this_corpus": False,
                     "sample_count": None,
-                },
-                {
-                    "configuration": "designator-grouping",
-                    "calibrated_for_this_corpus": False,
-                    "sample_count": 0,
                 },
                 # The truncation instrument's length floor: the one sealed
                 # configuration in this survey that is not Designator geometry.
@@ -3614,7 +3604,7 @@ def test_the_assessment_counts_must_partition_the_delivered_acts():
 def test_an_uncalibrated_geometry_configuration_is_a_caveat_on_the_act_boundaries():
     caveat = _entry(_block(_projection()), "designator-geometry-calibration")
     assert caveat["status"] == "not-measured"
-    assert caveat["detail"]["configurations"][0]["sample_count"] == 4572
+    assert caveat["detail"]["configurations"][0]["sample_count"] is None
 
     calibrated = replace(
         _projection(),
@@ -3623,19 +3613,9 @@ def test_an_uncalibrated_geometry_configuration_is_a_caveat_on_the_act_boundarie
                 "designator-geometry-calibration": {
                     "configurations": [
                         {
-                            "configuration": "designator-padding",
-                            "calibrated_for_this_corpus": True,
-                            "sample_count": 4572,
-                        },
-                        {
                             "configuration": "designator-geometry",
                             "calibrated_for_this_corpus": True,
                             "sample_count": None,
-                        },
-                        {
-                            "configuration": "designator-grouping",
-                            "calibrated_for_this_corpus": True,
-                            "sample_count": 10,
                         },
                         {
                             "configuration": "perlector-protocol",
@@ -3675,7 +3655,7 @@ def test_a_basis_missing_one_instrument_is_refused_before_a_product_byte_is_writ
 def test_a_geometry_basis_cannot_turn_a_string_or_empty_row_set_into_measurement():
     broken = _test_not_measured_basis()
     broken["designator-geometry-calibration"]["configurations"] = []
-    with pytest.raises(SchemaRefusal, match="must name 4 configurations"):
+    with pytest.raises(SchemaRefusal, match="must name 2 configurations"):
         _manifest_of(replace(_projection(), not_measured_basis=broken))
 
     broken = _test_not_measured_basis()

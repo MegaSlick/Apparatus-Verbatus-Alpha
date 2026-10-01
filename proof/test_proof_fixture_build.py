@@ -167,22 +167,14 @@ def test_the_ink_free_page_is_restricted_to_its_integration_scenarios(skeleton):
     )
 
 
-def test_declared_acts_match_the_rendered_act_bounds(skeleton):
-    assert len(skeleton["act"]) == len(ACTS) == 2
-    for declared in skeleton["act"]:
-        source = act_descriptor(declared["page_ordinal"], declared["proposal_ordinal"])
-        assert {key: declared[key] for key in ("x", "y", "w", "h")} == source["bounds"]
-        assert declared["text"].startswith("SYNTHETIC ACT")
-
-
-def test_there_are_two_acts_and_exactly_one_cross_page_continuation(skeleton):
-    """Spec 01: two acts, one cross-page continuation. The continuation is a
-    region of an existing act, never a third act."""
-    assert len(skeleton["act"]) == 2
-    assert len(skeleton["continuation"]) == 1
-    continuation = skeleton["continuation"][0]
-    assert continuation["act_key"] in {act["key"] for act in ACTS}
-    assert continuation["page_ordinal"] == 2
+def test_the_fixture_declares_no_act_for_the_pipeline_to_be_told(skeleton):
+    """The page path finds its acts by reading whole pages, so the declaration
+    carries none; the builder's own acts only shape the drawn pages and the
+    witnesses' answers."""
+    assert "act" not in skeleton and "continuation" not in skeleton
+    for act in ACTS:
+        source = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])
+        assert act["text"].startswith("SYNTHETIC ACT"), source
 
 
 # --- Witness declarations leave no silent gap ----------------------------------
@@ -381,7 +373,6 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "refused-page",
         "refused-first-page",
         "genuinely-empty-witness",
-        "structure-failure",
         "ink-free-page",
         "ink-free-page-unwitnessed",
         "not-run-witness",
@@ -404,17 +395,6 @@ def test_every_scenario_declares_the_reader_s_answer_to_every_page_it_reads(skel
         for ordinal in pages:
             if (name, ordinal) not in refused:
                 assert (name, ordinal) in answers, f"{name} has no answer for page {ordinal}"
-
-
-def test_the_recorded_structure_failure_names_one_page_and_one_closed_reason(skeleton):
-    """Spec 06 test 4's fixture: a page the structure chair could not mark out."""
-    assert skeleton["structure_failure"] == [
-        {
-            "scenario": "structure-failure",
-            "page_ordinal": 1,
-            "reason_code": "recorded-fixture-structure-failure",
-        }
-    ]
 
 
 def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(

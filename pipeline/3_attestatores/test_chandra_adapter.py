@@ -28,7 +28,6 @@ from common.imaging import (
 )
 from common.imaging_ports import scale_to_fit_chandra
 from common.native_witness import (
-    partition_disagreement,
     validate_capture_text_view,
     validate_native_capture,
     validate_observed,
@@ -560,7 +559,7 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
     `ceil` on a max edge means any block whose float edge sits fractionally past
     the sealed page derives a box the shared wall refuses.  That fact belongs to
     this block, not to a valid neighbouring block from the same retained response.
-    The durable page partition therefore carries the exact, out-of-page box as a
+    The durable page record therefore carries the exact, out-of-page box as a
     response-linked finding and retains the valid block in its ordinary observed
     list.  Clamping would instead hand a fallback crop retrospective witness
     coverage it never received.
@@ -593,14 +592,6 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
         }
     ]
 
-    disagreement = partition_disagreement(
-        {
-            "artifact_id": "page-testimonium",
-            "payload": {"presented": _presented(), "observed": surviving},
-        },
-        [],
-        page_edge_overshoots=overshoots,
-    )
     durable = attestatores.page_testimonium_payload(
         chair="attestator_1",
         page_ordinal=1,
@@ -609,16 +600,13 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
         attempt=_read_attempt(attestatores, "two"),
         presented=_presented(),
         observed=surviving,
-        unpresented_regions=[],
         testimonium_id="page-testimonium",
-        partition_disagreement=disagreement,
+        page_edge_overshoots=overshoots,
         raw_response_refs=[raw_ref],
         adapter_metadata={"geometry_quantization": chandra.QUANTIZATION_RULE},
     )
-    assert durable["partition_disagreement"]["observed_boxes"] == [
-        {"ordinal": 0, "bounds": {"x": 10, "y": 10, "w": 90, "h": 90}, "bounds_source": "native"}
-    ]
-    assert durable["partition_disagreement"]["page_edge_overshoots"] == [overshoots[0]]
+    assert durable["observed"] == surviving
+    assert durable["page_edge_overshoots"] == [overshoots[0]]
 
     # The shared wall remains the refusal: the finding preserves these exact
     # derived bounds, and they still cannot masquerade as an observation.
@@ -641,7 +629,7 @@ def test_one_response_derived_twice_does_not_double_count_its_overshoot():
     """A page may retain one response twice (the same placeholder bytes).
 
     Re-deriving an out-of-page block from that same response twice must not
-    double-count it: `validate_partition_disagreement` refuses one page-edge
+    double-count it: `validate_page_edge_overshoots` refuses one page-edge
     finding named twice, so an unrefined concatenation would abort the page's
     publish. The page writer dedupes by the finding's own identity --
     `(response_sha256, ordinal)` -- exactly as it dedupes response refs.
@@ -673,14 +661,6 @@ def test_one_response_derived_twice_does_not_double_count_its_overshoot():
         merged_observed.append({**item, "ordinal": len(merged_observed)})
 
     def _build(overshoots):
-        disagreement = partition_disagreement(
-            {
-                "artifact_id": "page-testimonium",
-                "payload": {"presented": _presented(), "observed": merged_observed},
-            },
-            [],
-            page_edge_overshoots=overshoots,
-        )
         return attestatores.page_testimonium_payload(
             chair="attestator_1",
             page_ordinal=1,
@@ -689,9 +669,8 @@ def test_one_response_derived_twice_does_not_double_count_its_overshoot():
             attempt=_read_attempt(attestatores, "two"),
             presented=_presented(),
             observed=merged_observed,
-            unpresented_regions=[],
             testimonium_id="page-testimonium",
-            partition_disagreement=disagreement,
+            page_edge_overshoots=overshoots,
             raw_response_refs=[raw_ref],
             adapter_metadata={"geometry_quantization": chandra.QUANTIZATION_RULE},
         )
@@ -712,7 +691,7 @@ def test_one_response_derived_twice_does_not_double_count_its_overshoot():
             seen.add(key)
             deduped.append(overshoot)
     durable = _build(deduped)
-    assert durable["partition_disagreement"]["page_edge_overshoots"] == first_overshoots
+    assert durable["page_edge_overshoots"] == first_overshoots
 
 
 @pytest.mark.parametrize(
@@ -799,7 +778,6 @@ def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record
         ),
         presented={},
         observed=[],
-        unpresented_regions=[],
         testimonium_id="page-testimonium",
         raw_response_refs=[retained["raw_response_ref"]],
         adapter_metadata={

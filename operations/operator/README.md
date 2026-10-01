@@ -121,12 +121,12 @@ It shows, in order:
 - **What you can do next** — the one supported continuation (`verbatus run --run-id <run>`
   and the stage it resumes from), or a warning not to resume while a writer may be active,
   or, for an invalid seal, that this is evidence to preserve, not a run to resume.
-- **Held or unresolved acts** — every act the Designator or Recensor left unresolved, with
-  its reason and source record. One act can give two rows (the Designator's hold and the
-  Recensor's review of it); each row says which.
+- **Held or unresolved acts** — every act the Recensor left unresolved, with its reason
+  and source record.
 - **Pages** and **Acts** — every page counted against the pages the run declared, and
-  every act the Designator's proposal seal expects, labelled by the stage that has not yet
+  every act the Perlector's page readings named, labelled by the stage that has not yet
   spoken or, once the Recensor has declined to accept, by that stage's own outcome word.
+  Before the Perlector has read, there are no acts to list, and the view says so.
   Each act carries its Perlector reading, its witnesses, and every crop's file and digest.
 - **Review queue** — only after an export, since the queue is part of the bundle.
 

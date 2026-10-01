@@ -377,18 +377,15 @@ def render(projection: dict[str, Any]) -> list[str]:
 
     holds = _rows(projection, "holds")
     lines.append("")
-    # Distinct acts, not hold records: one act held by the Designator and
-    # reviewed as held by the Recensor is two rows below and one act to
-    # resolve. `.get()`, not a subscript, like every other read in this
-    # function, so a malformed row is a `ProjectionShapeError`, never an
-    # uncaught exception.
+    # Distinct acts, not hold records. `.get()`, not a subscript, like every
+    # other read in this function, so a malformed row is a
+    # `ProjectionShapeError`, never an uncaught exception.
     held_acts = len({hold.get("act_id") for hold in holds})
     lines.append(f"Held or unresolved acts ({held_acts})")
     for hold in holds:
         examination = hold.get("audit_examination")
         audit_note = f"; audit examination {inert(examination)}" if examination else ""
-        # Unlabelled, two rows for one act (Designator held, Recensor
-        # reviewed) would read as two acts.
+        # The label names which record says the act is unresolved.
         label = hold.get("label")
         which = f" [{inert(label)}]" if label else ""
         lines.append(

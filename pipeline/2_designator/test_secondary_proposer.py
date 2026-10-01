@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 from common.contracts.errors import ContractError
-from common.contracts.identities import PROPOSAL_SEAL_ID
 from conftest import load_stage, programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -127,7 +126,7 @@ def test_declared_detections_become_page_evidence_that_decides_nothing(tmp_path)
         designator, tmp_path / "runs", _configured(tmp_path), "detector records test"
     )
     context.fixture["detector_record"] = [dict(row) for row in DECLARED_DETECTIONS]
-    assert designator.initial_pass(context) is False
+    designator.publish_page_evidence(context, real=False)
     context.finish()
     pages = _records(context, designator, "detector-page")
     by_page = {record["payload"]["page_ordinal"]: record["payload"] for record in pages}
@@ -171,13 +170,8 @@ def test_declared_detections_become_page_evidence_that_decides_nothing(tmp_path)
     blob = context.tree.read_bytes(region["image_path"])
     assert hashlib.sha256(blob).hexdigest() == region["image_sha256"]
 
-    # Records enter no act: neither the seal nor the regions see them.
-    seal = context.tree.read_artifact(designator.DESIGNATOR, "proposal-seal", PROPOSAL_SEAL_ID)
-    assert {row["act_key"] for row in seal["payload"]["expected_acts"]} == {"a1", "a2"}
-    assert all(
-        record["payload"]["origin"] != "detector"
-        for record in _records(context, designator, "region")
-    )
+    # Records enter no act: the stage cuts no act region.
+    assert _records(context, designator, "region") == []
 
 
 def test_a_detector_score_enters_its_record_and_proposal_rounded_half_to_even(
@@ -193,8 +187,8 @@ def test_a_detector_score_enters_its_record_and_proposal_rounded_half_to_even(
     real_secondary = designator.secondary_provenance
     corners = DECLARED_DETECTIONS[0]["corners"]
 
-    def scoring(context):
-        record, detector = real_secondary(context)
+    def scoring(context, *, real):
+        record, detector = real_secondary(context, real=real)
         return record, dataclasses.replace(
             detector,
             _detect=lambda _png, ordinal: (
@@ -204,7 +198,7 @@ def test_a_detector_score_enters_its_record_and_proposal_rounded_half_to_even(
 
     monkeypatch.setattr(designator, "secondary_provenance", scoring)
     assert round(0.00015 * 10_000) == 1
-    assert designator.initial_pass(context) is False
+    designator.publish_page_evidence(context, real=False)
     context.finish()
     [record] = _records(context, designator, "detector-record")
     assert record["payload"]["score_bp"] == 2
@@ -243,23 +237,23 @@ def test_a_retried_fixture_pass_reuses_the_in_process_detector_s_sealed_receipt(
         "bound_serving_recipes",
         lambda *_args: types.SimpleNamespace(for_identity=lambda *_a: None),
     )
-    first, _detector = designator.secondary_provenance(context)
+    first, _detector = designator.secondary_provenance(context, real=False)
     designator._publish_secondary_provenance(context, first)
     context.finish()
 
     retry = _designator_context(designator, root, extra, "secondary retry test")
-    again, _detector = designator.secondary_provenance(retry)
+    again, _detector = designator.secondary_provenance(retry, real=False)
     assert next(loads) == 2
     assert again == first == _published_secondary_provenance(designator, retry)
 
 
-def test_detector_records_alone_never_hold_the_designator(tmp_path):
-    """Records are evidence, not holds: a clean page with records still exits complete."""
+def test_every_declared_record_is_published_on_its_page(tmp_path):
+    """Records are evidence, not holds: each one is published, and its page counts it."""
     designator = load_stage("2_designator")
     root = tmp_path / "runs"
     context = _prepared_context(designator, root, _configured(tmp_path), "records exit test")
     context.fixture["detector_record"] = [dict(row) for row in DECLARED_DETECTIONS]
-    assert designator.initial_pass(context) is False
+    designator.publish_page_evidence(context, real=False)
     context.finish()
     records = _records(context, designator, "detector-record")
     assert sorted(record["payload"]["detector_ordinal"] for record in records) == [0, 1, 2]
@@ -284,5 +278,5 @@ def test_a_detector_row_the_stage_cannot_run_is_refused_before_anything_is_cut(t
     )
     context = _prepared_context(designator, root, extra, "unrunnable detector test")
     with pytest.raises(ContractError, match="serving posture of the record detector"):
-        designator.initial_pass(context)
-    assert _records(context, designator, "region") == []
+        designator.publish_page_evidence(context, real=False)
+    assert _records(context, designator, "detector-record") == []

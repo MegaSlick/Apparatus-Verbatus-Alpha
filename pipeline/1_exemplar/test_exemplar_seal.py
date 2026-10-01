@@ -1175,9 +1175,9 @@ def test_the_real_route_still_seals_behind_a_completed_door_and_reaches_the_desi
     """The only real path that works today, driven program by program.
 
     Door, Exemplar and Ink Map complete over a real submission opened through
-    the shared constructor, and the Designator reaches its honest real-input
-    refusal -- the ledger reconciled, nothing fabricated -- without ever
-    touching the refusing fixture accessor a real context now carries.
+    the shared constructor, and the Designator reconciles the sealed pages and
+    then refuses the fixture detector row by name before it reads anything --
+    without ever touching the refusing fixture accessor a real context carries.
     """
     run_root, door_argv = _real_submission(tmp_path, {"FS-1.png": png(4, 3), "FS-2.png": png(5, 2)})
 
@@ -1199,7 +1199,6 @@ def test_the_real_route_still_seals_behind_a_completed_door_and_reaches_the_desi
 
     boundary = _run_program(DESIGNATOR_CLI, run_root, "real")
     assert boundary.returncode == EXIT_FATAL
-    assert "reconciled the Exemplar filename ledger" in boundary.stderr
-    assert "no proposals or holds were fabricated" in boundary.stderr
+    assert "a fixture row answers only a synthetic run" in boundary.stderr
     assert "asked its context for fixture declarations" not in boundary.stderr
     assert "Traceback" not in boundary.stderr

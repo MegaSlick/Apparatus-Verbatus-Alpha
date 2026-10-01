@@ -274,10 +274,6 @@ class ChairRequest:
     caller never names a sampling field, ``model``, ``stream``, ``seed`` or
     ``n``.
 
-    ``structure_attempt_ordinal`` is the Designator structure chair's coverage
-    recovery attempt, which selects that attempt's sealed sampling values; it
-    belongs to that one chair and is otherwise ``None``.
-
     ``capacity`` is the caller's own
     ``common.request_capacity`` record for this request against the sealed row
     it is about to be sent to. The client neither computes nor checks it — only
@@ -303,7 +299,6 @@ class ChairRequest:
     generation_declared: Mapping[str, object]
     generation_sent: Mapping[str, object]
     capacity: Mapping[str, object] | None = None
-    structure_attempt_ordinal: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "messages", tuple(self.messages))
@@ -314,15 +309,6 @@ class ChairRequest:
             self, "generation_declared", MappingProxyType(dict(self.generation_declared))
         )
         object.__setattr__(self, "generation_sent", MappingProxyType(dict(self.generation_sent)))
-        if self.structure_attempt_ordinal is not None and (
-            not isinstance(self.structure_attempt_ordinal, int)
-            or isinstance(self.structure_attempt_ordinal, bool)
-            or self.structure_attempt_ordinal < 1
-        ):
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID",
-                "a Designator structure attempt ordinal must be a positive integer",
-            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,11 +518,6 @@ class ChairClient:
                 "page-scoped chandra.v1 reading route",
             )
         _refuse_unbuildable_request(request)
-        if request.structure_attempt_ordinal is not None:
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID",
-                "a Chandra native witness request follows only its own recipe's attempts",
-            )
         expected_wire = chandra_wire_fields()
         if request.generation_sent.get("chat_template_kwargs") != expected_wire[
             "chat_template_kwargs"
@@ -630,16 +611,8 @@ class ChairClient:
     def _sampling_and_seed(self, request: ChairRequest) -> tuple[dict[str, int | float], int]:
         """This request's sealed sampling values and seed, chosen by this client's chair."""
 
-        role = self._identity.role
-        if request.structure_attempt_ordinal is not None and role != "designator_structure":
-            raise ChairRequestRefusal(
-                "CHAIR_REQUEST_INVALID",
-                "only the Designator structure chair has coverage recovery attempts",
-            )
         try:
-            sampling = chair_attempt_decoding(
-                self._decoding_policy, role, request.structure_attempt_ordinal or 1
-            )
+            sampling = chair_decoding(self._decoding_policy, self._identity.role)
         except ContractError as error:
             raise ChairRequestRefusal("CHAIR_REQUEST_INVALID", str(error)) from error
         return sampling, self.handle.profile.seed

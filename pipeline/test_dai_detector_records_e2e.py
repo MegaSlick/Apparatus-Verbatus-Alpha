@@ -92,7 +92,6 @@ def _catalogue(path: Path, models: Path) -> Path:
             "description": "offline walking-skeleton fixture row",
         }
         for chair, recipe in (
-            ("designator_structure", "fake-designator-v0"),
             ("secondary_proposer", "fake-secondary-proposer-v0"),
             ("designator_surya", "fake-surya-v0"),
         )

@@ -45,7 +45,6 @@ FIXTURE_ROOT = ROOT / "proof"
 # so the whole skeleton has to receive the same implementation rather than
 # quietly switching back to the production registry halfway down.
 CHAIRS_THE_SKELETON_CALLS = {
-    "designator_structure",
     "attestator_1",
     "attestator_2",
     "attestator_3",

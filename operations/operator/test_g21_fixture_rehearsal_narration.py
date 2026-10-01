@@ -3,12 +3,12 @@ must never name a page or act the running scenario did not actually touch,
 and never disagree with the total printed beside it.
 
 `_declared_work` (operations/operator/surface.py) used to read every
-`[[page]]`/`[[act]]` row out of the single fixed fixture declaration file
+`[[page]]` row out of the single fixed fixture declaration file
 (`proof/skeleton_fixture.toml`) regardless of which `--scenario` was actually
 running. Two problems followed from that, and both are fixed now:
 
-1. The opening "Checking ..." and "Working next: ..." lines named a page or
-   act a scenario-gated fixture row never activates for this scenario (e.g.
+1. The opening "Checking ..." line named a page a scenario-gated fixture
+   row never activates for this scenario (e.g.
    page 3, gated to `ink-free-page`). Fixed by filtering `_declared_work`
    through `pipeline/1_exemplar/door.py::fixture_pages_for_scenario` -- the
    same question a real door application answers.

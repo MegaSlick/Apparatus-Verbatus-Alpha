@@ -11,15 +11,14 @@ from pathlib import Path
 from typing import Any
 
 from common.contracts.approval import validate_approval_record
-from common.contracts.canonical import digest_bytes, verify_self_hash
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.identities import PROPOSAL_SEAL_ID, artifact_id
+from common.contracts.identities import artifact_id
 from common.contracts.outcomes import OutcomeClass, classify
 from common.contracts.stages import (
     ARCHETYPUS,
     ARMARIUM,
     ATTESTATORES,
-    DESIGNATOR,
     EXEMPLAR,
     PERLECTOR,
     RECENSOR,
@@ -124,9 +123,8 @@ class ReviewProjection:
     # of page records found.
     pages_declared: int | None = None
     pages_declared_note: str | None = None
-    # None when the act denominator is the canonical seal alone; otherwise
-    # says why (no seal, or an extra seal record beside the canonical one) so
-    # a zero here never reads like "no acts".
+    # Before export, says what the act list counts and what it leaves to the
+    # export, so a zero here never reads like "no acts".
     acts_denominator_note: str | None = None
     review_items_total: int | None = None
     review_page: int = 1
@@ -218,17 +216,7 @@ class ReadOnlyRun:
             # One allowance shared by pages and crops, since both are verified
             # in the same pass.
             budget = _ImageBudget()
-            # Read once and shared by the act list, the seal-seeded holds, and
-            # the denominator note, so all three describe the same seal.
-            seal_found = _expected_acts(stage_records)
-            acts_denominator_note = (
-                seal_found[2]
-                if seal_found is not None
-                else (
-                    "the Designator has sealed no proposal, so nothing in this tree declares "
-                    "how many acts this run has"
-                )
-            )
+            acts_denominator_note = None
             armarium_state = next(row["state"] for row in progress if row["stage"] == ARMARIUM)
             export_rows = _export_rows(stage_records)
             if export_rows:
@@ -269,7 +257,8 @@ class ReadOnlyRun:
                 # review), each row naming its own record. None of this is a
                 # delivered result, and `export` says so.
                 pages = _sealed_pages(tree, stage_records, budget)
-                acts = _progressive_acts(tree, stage_records, budget, seal_found)
+                acts = _progressive_acts(tree, stage_records, budget)
+                acts_denominator_note = _PRE_EXPORT_ACTS_NOTE if acts else _NO_READING_NOTE
                 review_items = None
                 review_items_total = None
                 export = {
@@ -288,7 +277,7 @@ class ReadOnlyRun:
                         "them is a delivered result"
                     ),
                 }
-            holds = _holds(stage_records, seal_found)
+            holds = _holds(stage_records)
             declared_pages, declared_note = _declared_page_count(tree)
             return ReviewProjection(
                 tree.run_id,
@@ -411,7 +400,7 @@ def _verified_export_blob_digest(
     """Verify a claimed image path and digest without repairing a mismatch.
 
     `record_label` names the record whose claim is checked (the Armarium
-    export post-export, the Exemplar page or Designator region record
+    export post-export, the Exemplar page or Perlector act-region record
     pre-export); the check is the same either way: the recorded path must be
     the digest's own content address, and the bytes there must still hash to
     it.
@@ -708,60 +697,43 @@ def _sealed_pages(
     return tuple(rows)
 
 
+def _reading_region(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, Any] | None:
+    """The Perlector's `act-region` record of one act, or none before it read the page."""
+    rows = _records_of(stage_records, PERLECTOR, "act-region", act_id)
+    if len(rows) > 1:
+        raise SchemaRefusal(f"act {act_id} has {len(rows)} act-region records; it may have one")
+    return rows[0] if rows else None
+
+
 def _progressive_crops(
     tree: RunTree, stage_records: list[dict[str, Any]], act_id: str, budget: _ImageBudget
 ) -> list[dict[str, Any]]:
-    crops = []
-    for row in _records_of(stage_records, DESIGNATOR, "region", act_id):
-        payload = _payload_of(row, "the Designator region record")
-        transform = payload.get("transform") if isinstance(payload.get("transform"), dict) else {}
-        digest = _verified_export_blob_digest(
-            tree,
-            stage=DESIGNATOR,
-            path=payload.get("image_path"),
-            expected_digest=payload.get("image_sha256"),
-            description=f"act {act_id!r} region {payload.get('region_id')!r}",
-            export_ref=row["record_ref"],
-            budget=budget,
-            record_label="the Designator region record",
-        )
-        crops.append(
-            {
-                "ordinal": transform.get("source_page_ordinal"),
-                "region_id": payload.get("region_id"),
-                "image_path": payload["image_path"],
-                "image_sha256": digest,
-                "origin": payload.get("origin"),
-                "attempt_ordinal": payload.get("attempt_ordinal"),
-                "record_ref": row["record_ref"],
-            }
-        )
-    crops.sort(
-        key=lambda crop: (
-            not isinstance(crop["attempt_ordinal"], int),
-            crop["attempt_ordinal"] or 0,
-            str(crop["region_id"]),
-        )
+    """The crop the Perlector cut for one act, verified; none for an unplaced entry."""
+    row = _reading_region(stage_records, act_id)
+    if row is None:
+        return []
+    payload = _payload_of(row, "the Perlector act-region record")
+    if payload.get("image_path") is None:
+        return []
+    digest = _verified_export_blob_digest(
+        tree,
+        stage=PERLECTOR,
+        path=payload.get("image_path"),
+        expected_digest=payload.get("image_sha256"),
+        description=f"act {act_id!r} region {payload.get('region_id')!r}",
+        export_ref=row["record_ref"],
+        budget=budget,
+        record_label="the Perlector act-region record",
     )
-    return crops
-
-
-# An exclusion is `completed` only because an approval record says so, and
-# nothing here reads one, so the reason text below never claims an approval
-# was checked.
-_TERMINAL_DESIGNATOR_REASONS: dict[str, tuple[str, str]] = {
-    "excluded": (
-        "excluded by the Designator",
-        "the Designator recorded this act as excluded; that ends it here, and no witness, "
-        "reading or review will follow. An exclusion is valid only with a recorded approval, "
-        "which this surface does not read and does not claim",
-    ),
-    "failed": (
-        "failed at the Designator",
-        "the Designator could not mark this act out; that ends it here, and no witness, "
-        "reading or review will follow",
-    ),
-}
+    return [
+        {
+            "ordinal": payload.get("page_ordinal"),
+            "region_id": payload.get("region_id"),
+            "image_path": payload["image_path"],
+            "image_sha256": digest,
+            "record_ref": row["record_ref"],
+        }
+    ]
 
 
 def _projected_audit(audit: Any) -> Any:
@@ -818,14 +790,11 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
 
 
 def _act_page_id(stage_records: list[dict[str, Any]], act_id: str) -> str | None:
-    """The page the proposal seal places one act on, or none without a seal."""
-    for row in _records_of(stage_records, DESIGNATOR, "proposal-seal"):
-        if row["artifact_id"] != PROPOSAL_SEAL_ID:
-            continue
-        for act in _payload_of(row, "the proposal seal").get("expected_acts", []):
-            if isinstance(act, dict) and act.get("act_id") == act_id:
-                return act.get("page_id")
-    return None
+    """The page the Perlector read one act on, or none before it read the page."""
+    row = _reading_region(stage_records, act_id)
+    if row is None:
+        return None
+    return _payload_of(row, "the Perlector act-region record").get("page_id")
 
 
 def _testimonia_rows(
@@ -863,23 +832,10 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
     """What the stages that ran say about one act, and where it stands.
 
     The category names the furthest stage that has spoken about the act, in
-    pipeline order, and says plainly which has not. The Designator outcome is
-    read first, because `excluded` and `failed` end the act there with
-    nothing downstream to come. Any text shown is the Perlector's machine
-    reading, never an established or delivered one.
+    pipeline order, and says plainly which has not. Any text shown is the
+    Perlector's machine reading, never an established or delivered one.
     """
     act_id = act["act_id"]
-    designator_outcome = act.get("outcome")
-    designator_holds = []
-    for row in _records_of(stage_records, DESIGNATOR, "hold", act_id):
-        payload = _payload_of(row, "the Designator hold record")
-        designator_holds.append(
-            {
-                "reason_code": payload.get("reason_code"),
-                "reason": payload.get("reason"),
-                "record_ref": row["record_ref"],
-            }
-        )
     testimonia = _testimonia_rows(stage_records, act.get("page_id"))
     reading = _reading_row(stage_records, act_id)
     review_row = _latest(stage_records, RECENSOR, "review", act_id, operation="recense")
@@ -916,28 +872,7 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
             "record_ref": established_rows[0]["record_ref"],
         }
 
-    if designator_outcome in _TERMINAL_DESIGNATOR_REASONS:
-        # `excluded` and `failed` end the act at the Designator, so this is
-        # checked before any downstream record rather than after.
-        category, reason = _TERMINAL_DESIGNATOR_REASONS[designator_outcome]
-        # A terminal act that later stages still wrote records for is a
-        # disagreement, and the reader is told so rather than left to notice.
-        downstream = [
-            what
-            for what, present in (
-                ("witnesses", bool(testimonia)),
-                ("a reading", reading is not None),
-                ("a review", review is not None),
-                ("an established text", established is not None),
-            )
-            if present
-        ]
-        if downstream:
-            reason += (
-                f"; but this run also holds {', '.join(downstream)} for this act, which the "
-                "export would refuse as a disagreement with the seal"
-            )
-    elif established is not None:
+    if established is not None:
         category = "established, awaiting export"
         reason = (
             f"the Archetypus established this act's text ({established['text_status']}); "
@@ -955,39 +890,15 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
             f"the Perlector's latest reading of this act is {reading['outcome']!r}; the "
             "Recensor has not reviewed it"
         )
-    elif testimonia:
+    else:
         category = "witnessed, awaiting the Perlector"
         reason = (
             f"{len(testimonia)} page Testimonium record(s) are sealed for this act's page; "
             "the Perlector has not read it"
         )
-    elif designator_holds:
-        category = "held by the Designator"
-        reason = "; ".join(str(hold["reason"]) for hold in designator_holds)
-    elif designator_outcome == "held":
-        category = "held by the Designator"
-        reason = (
-            "the proposal seal records this act as held by the Designator, and no hold "
-            "record carrying the reason was found beside it"
-        )
-    elif designator_outcome == "proposed":
-        category = "marked out, awaiting witnesses"
-        reason = "the Designator marked this act out; no witness has reported on it"
-    else:
-        # Reachable the day the Designator's vocabulary widens: a word
-        # `classify` accepts but this surface has no sentence for yet.
-        raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE,
-            detail=(
-                f"act {act_id!r} carries Designator outcome {designator_outcome!r}, which is "
-                "in the stage's vocabulary but has no plain-language reading on this surface"
-            ),
-        )
     return {
-        "designator_outcome": designator_outcome,
         "page_ordinal": act.get("page_ordinal"),
         "page_id": act.get("page_id"),
-        "designator_holds": designator_holds,
         "testimonia": testimonia,
         "reading": reading,
         "review": review,
@@ -997,233 +908,67 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
     }
 
 
-_PROPOSAL_SEAL_ACT_FIELDS = frozenset(
-    {"act_id", "act_key", "page_id", "page_ordinal", "has_continuation", "outcome", "evidence"}
+_NO_READING_NOTE = (
+    "the Perlector has not read the pages, so nothing in this tree counts this run's acts yet"
 )
-
-
-def _seal_refusal(seal: dict[str, Any], said: str) -> OperatorError:
-    return OperatorError(
-        ErrorCode.CONSOLE_TREE_UNREADABLE,
-        detail=f"the Designator proposal seal {seal['record_ref']['relative_path']} {said}",
-    )
-
-
-def _expected_acts(
-    stage_records: list[dict[str, Any]],
-) -> tuple[dict[str, Any], list[dict[str, Any]], str | None] | None:
-    """The act denominator, read with the checks the pipeline reads it with.
-
-    `common/stage.py::expected_acts` is the one reader every downstream stage
-    uses, so the console must not show a shorter act list than the seal
-    itself claims. It cannot be called directly, since it needs a live
-    `StageContext` this read-only surface has no business constructing and
-    would re-open the tree for a second read. Reused instead are its checks
-    about the seal itself, through the same shared functions: the canonical
-    proposal-seal artifact id, `verify_self_hash`, `count` reconciling with
-    the rows, the closed field set and its types, no act id or key twice, and
-    `classify(DESIGNATOR, ...)` over each outcome. Not reproduced: the
-    real-ingress re-derivation of the denominator from the Designator's own
-    proposal evidence, which is a second independent read this surface has no
-    standing to perform; a seal that would fail it is shown as the tree
-    states it, and the stage that must agree with the evidence is the one
-    that refuses.
-
-    Returns the seal, its expected acts, and a note for the screen to print
-    beside the act count, or `None` when there is nothing to say about it.
-    """
-    seals = _records_of(stage_records, DESIGNATOR, "proposal-seal")
-    if not seals:
-        return None
-    # Selected by artifact id, the way the shared reader selects it, rather
-    # than by there being exactly one record in the directory: a foreign
-    # neighbour beside the denominator is named beside the act count, not
-    # cause to refuse the whole view.
-    canonical = [row for row in seals if row["artifact_id"] == PROPOSAL_SEAL_ID]
-    if not canonical:
-        raise _seal_refusal(
-            seals[0],
-            f"is artifact {seals[0]['artifact_id']}; this run has no canonical proposal seal "
-            f"{PROPOSAL_SEAL_ID}, so nothing declares how many acts it has",
-        )
-    if len(canonical) > 1:
-        # Two records under one canonical id is not a neighbour to name beside
-        # the count: it is two denominators, and nothing here picks between
-        # them.
-        raise _seal_refusal(
-            canonical[0],
-            f"is one of {len(canonical)} records stored under the canonical proposal-seal "
-            f"artifact {PROPOSAL_SEAL_ID} ("
-            f"{', '.join(row['record_ref']['relative_path'] for row in canonical)}); a run "
-            "declares its act count once, and this surface does not choose between two",
-        )
-    seal = canonical[0]
-    extra = [row for row in seals if row["artifact_id"] != PROPOSAL_SEAL_ID]
-    note = None
-    if extra:
-        note = (
-            f"{len(extra)} further proposal-seal record(s) are stored beside the canonical "
-            f"one ({', '.join(row['record_ref']['relative_path'] for row in extra)}); the "
-            "count below is the canonical seal's, and the others are not read"
-        )
-    payload = _payload_of(seal, "the Designator proposal seal")
-    if not verify_self_hash(payload):
-        raise _seal_refusal(seal, "does not verify against its own self-hash")
-    expected = payload.get("expected_acts")
-    count = payload.get("count")
-    if not isinstance(expected, list) or not expected:
-        raise _seal_refusal(seal, "names no expected acts")
-    if not isinstance(count, int) or isinstance(count, bool) or count != len(expected):
-        raise _seal_refusal(
-            seal,
-            f"declares count {count!r} over {len(expected)} expected-act row(s); the two do "
-            "not reconcile, so this surface cannot say how many acts the run has",
-        )
-    seen_ids: set[str] = set()
-    seen_keys: set[str] = set()
-    for act in expected:
-        if not isinstance(act, dict):
-            raise _seal_refusal(seal, "names an expected act that is not an object")
-        if set(act) != _PROPOSAL_SEAL_ACT_FIELDS:
-            raise _seal_refusal(
-                seal,
-                f"has an expected-act row with fields {sorted(act)}, not the closed "
-                f"denominator contract {sorted(_PROPOSAL_SEAL_ACT_FIELDS)}",
-            )
-        if not isinstance(act["act_id"], str) or not act["act_id"]:
-            raise _seal_refusal(seal, "names an expected act with no act_id")
-        if not isinstance(act["act_key"], str) or not act["act_key"]:
-            raise _seal_refusal(seal, f"names act {act['act_id']!r} with no act_key")
-        # The same field types the shared reader requires, in the same order.
-        if not isinstance(act["page_id"], str) or not act["page_id"]:
-            raise _seal_refusal(seal, f"names act {act['act_id']!r} with no page_id")
-        if not isinstance(act["page_ordinal"], int) or isinstance(act["page_ordinal"], bool):
-            raise _seal_refusal(
-                seal, f"names act {act['act_id']!r} with a page_ordinal that is not an integer"
-            )
-        if not isinstance(act["has_continuation"], bool):
-            raise _seal_refusal(
-                seal,
-                f"names act {act['act_id']!r} with a has_continuation that is not true or false",
-            )
-        if not isinstance(act["evidence"], list):
-            raise _seal_refusal(
-                seal, f"names act {act['act_id']!r} with an evidence value that is not a list"
-            )
-        if act["act_id"] in seen_ids or act["act_key"] in seen_keys:
-            raise _seal_refusal(
-                seal,
-                f"names act id {act['act_id']!r} or key {act['act_key']!r} more than once; a "
-                "duplicate is not an additional act",
-            )
-        seen_ids.add(act["act_id"])
-        seen_keys.add(act["act_key"])
-        # An outcome outside the closed vocabulary is fatal here too, never
-        # read as marked-out because the word was unfamiliar.
-        classify(DESIGNATOR, act["outcome"])
-    return seal, expected, note
+_PRE_EXPORT_ACTS_NOTE = (
+    "the entries the Perlector read; a page it could not read or found blank is counted "
+    "only by the export"
+)
 
 
 def _progressive_acts(
     tree: RunTree,
     stage_records: list[dict[str, Any]],
     budget: _ImageBudget,
-    found: tuple[dict[str, Any], list[dict[str, Any]], str | None] | None,
 ) -> tuple[dict[str, Any], ...]:
-    """Every act the Designator's proposal seal expects, from the sealed evidence.
+    """Every entry the Perlector read, from its sealed `act-region` records, in page order.
 
-    The denominator is the seal's own `expected_acts` -- the same list every
-    downstream stage reads through `common/stage.py::expected_acts` -- so an
-    act no later stage has spoken about is still a row here, labelled with
-    which stage has not spoken. No seal means the Designator has not run, and
-    the act list is honestly empty rather than invented from region records.
+    Each row says which later stage has not spoken about it. Before the
+    Perlector has read a page, the list is honestly empty.
     """
-    if found is None:
-        return ()
-    seal, expected, _note = found
     acts = []
-    for act in expected:
+    for row in _records_of(stage_records, PERLECTOR, "act-region"):
+        payload = _payload_of(row, "the Perlector act-region record")
+        act = {
+            "act_id": row["subject_id"],
+            "act_key": f"p{payload.get('page_ordinal')}:{payload.get('n')}",
+            "page_id": payload.get("page_id"),
+            "page_ordinal": payload.get("page_ordinal"),
+        }
         summary = _act_summary(stage_records, act)
         crops = _progressive_crops(tree, stage_records, act["act_id"], budget)
         acts.append(
             {
                 "act_id": act["act_id"],
-                "act_key": act.get("act_key"),
+                "act_key": act["act_key"],
                 "category": summary["category"],
                 "reason": summary["reason"],
                 "crops": crops,
-                "crops_note": (
-                    None if crops else "no Designator region record was found for this act"
-                ),
+                "crops_note": None if crops else "the Perlector cut no crop for this entry",
                 "row": summary,
-                "record_ref": seal["record_ref"],
-            }
-        )
-    return tuple(acts)
-
-
-def _holds(
-    stage_records: list[dict[str, Any]],
-    found: tuple[dict[str, Any], list[dict[str, Any]], str | None] | None,
-) -> tuple[dict[str, Any], ...]:
-    """Every act left unresolved by the Designator or the Recensor, with its reason.
-
-    Derived from the sealed records rather than from the export's accounting,
-    so it is the same list before and after export -- and so an `advance`
-    record, which touches neither stage's records, can never make an act
-    disappear from it.
-
-    Three sources, because three records can say an act is unresolved: a
-    Designator hold record, the proposal seal's own outcome for an act that has
-    no hold record beside it, and the current Recensor review. Each row says
-    which of the three it is, so two rows about one act read as one act twice
-    attested rather than two acts.
-    """
-    rows: list[dict[str, Any]] = []
-    designator_held: set[str] = set()
-    # The seal's own word about an act is a hold too, seeded by outcome
-    # class: a `failed` act counts, a `proposed` or `excluded` one (both
-    # COMPLETED) does not.
-    seal_rows: list[dict[str, Any]] = []
-    seal_held: set[str] = set()
-    if found is not None:
-        seal, expected, _note = found
-        for act in expected:
-            if classify(DESIGNATOR, act["outcome"]) is OutcomeClass.COMPLETED:
-                continue
-            seal_held.add(act["act_id"])
-            seal_rows.append(
-                {
-                    "act_id": act["act_id"],
-                    "act_key": act.get("act_key"),
-                    "source": DESIGNATOR,
-                    "label": "proposal seal, no hold record found",
-                    "outcome": act["outcome"],
-                    "reason": (
-                        f"the Designator's proposal seal records this act as "
-                        f"{act['outcome']!r}; no hold record carrying a reason was found "
-                        "beside it"
-                    ),
-                    "audit_examination": None,
-                    "record_ref": seal["record_ref"],
-                }
-            )
-    for row in _records_of(stage_records, DESIGNATOR, "hold"):
-        payload = _payload_of(row, "the Designator hold record")
-        designator_held.add(row["subject_id"])
-        rows.append(
-            {
-                "act_id": row["subject_id"],
-                "act_key": payload.get("act_key"),
-                "source": DESIGNATOR,
-                "label": "Designator hold",
-                "outcome": row["outcome"],
-                "reason": payload.get("reason"),
-                "audit_examination": None,
                 "record_ref": row["record_ref"],
             }
         )
-    rows.extend(row for row in seal_rows if row["act_id"] not in designator_held)
+    acts.sort(
+        key=lambda act: (
+            not isinstance(act["row"]["page_ordinal"], int),
+            act["row"]["page_ordinal"] or 0,
+            act["act_key"],
+        )
+    )
+    return tuple(acts)
+
+
+def _holds(stage_records: list[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+    """Every act the Recensor's current review leaves unresolved, with its reason.
+
+    Derived from the sealed review records rather than from the export's
+    accounting, so it is the same list before and after export -- and so an
+    `advance` record, which touches no review, can never make an act disappear
+    from it.
+    """
+    rows: list[dict[str, Any]] = []
     reviewed = sorted({row["subject_id"] for row in _records_of(stage_records, RECENSOR, "review")})
     for act_id in reviewed:
         current = _latest(stage_records, RECENSOR, "review", act_id, operation="recense")
@@ -1240,14 +985,7 @@ def _holds(
                 "act_id": act_id,
                 "act_key": payload.get("act_key"),
                 "source": RECENSOR,
-                # An act held by the Designator and reviewed as held by the
-                # Recensor keeps both rows, each saying which it is, so two
-                # sealed facts read as one act twice attested, not two acts.
-                "label": (
-                    "Recensor review of that hold"
-                    if act_id in designator_held or act_id in seal_held
-                    else "Recensor review"
-                ),
+                "label": "Recensor review",
                 "outcome": current["outcome"],
                 "reason": payload.get("reason"),
                 "audit_examination": payload.get("audit_examination"),
@@ -1367,7 +1105,7 @@ def _next_action(
                 "treat the tree as evidence to preserve and investigate before anything "
                 "resumes."
             )
-    # Distinct acts, not hold records: one act can appear as two rows below.
+    # Distinct acts, not hold records.
     held_acts = len({hold["act_id"] for hold in holds})
     if holds:
         summary += (
@@ -1439,7 +1177,7 @@ def _act_row(
     A delivered act is described entirely by its export row. A non-delivered
     one is not: the Armarium attaches `source_regions` and a witness basis
     only to an act it delivered, so a held act's crops and witnesses are read
-    here from the sealed Designator and Attestatores records instead, the same
+    here from the sealed Perlector and Attestatores records instead, the same
     ones the pre-export path reads.
     """
     budget = _ImageBudget() if budget is None else budget
@@ -1500,12 +1238,11 @@ def _act_row(
     if not crops and not requires_crops and isinstance(act_id, str) and stage_records is not None:
         crops = _progressive_crops(tree, stage_records, act_id, budget)
         crops_note = (
-            "this export row records no crops; the crops below are read from the sealed "
-            "Designator region records"
+            "this export row records no crops; the crop below is read from the sealed "
+            "Perlector act-region record"
             if crops
             else (
-                "this export row records no crops, and no Designator region record was found "
-                "for this act either"
+                "this export row records no crops, and the Perlector cut none for this act either"
             )
         )
     elif not crops:

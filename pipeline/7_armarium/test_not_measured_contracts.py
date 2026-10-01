@@ -51,7 +51,7 @@ armarium = _load_armarium_contract_run()
 def test_calibration_flag_refuses_non_boolean_values(value):
     with pytest.raises(armarium.FatalAccounting, match="non-boolean"):
         armarium._typed_calibration_flag(
-            {"calibrated_for_this_corpus": value}, "designator-padding"
+            {"calibrated_for_this_corpus": value}, "perlector-protocol"
         )
 
 
@@ -59,7 +59,7 @@ def test_calibration_flag_refuses_non_boolean_values(value):
 def test_calibration_sample_count_refuses_boolean_or_negative_values(value):
     with pytest.raises(armarium.FatalAccounting, match="invalid sample_count"):
         armarium._typed_sample_count(
-            {"calibrated_for_this_corpus": False, "sample_count": value}, "designator-padding"
+            {"calibrated_for_this_corpus": False, "sample_count": value}, "perlector-protocol"
         )
 
 

@@ -89,7 +89,6 @@ from common.page_testimonia import (  # noqa: E402
     chair_was_served,
     current_page_testimonia,
     declared_page_witness_chairs,
-    sealed_proposal_regions,
     shown_page_witnesses,
 )
 from common.residual_ink import (  # noqa: E402
@@ -430,9 +429,7 @@ def ink_map_page_rows(
 # this survey exists to disclose; a caveat that stayed in `config/` and never
 # reached the bundle would be one the product does not carry.
 _CALIBRATED_CONFIG_ATTRIBUTES: Final = (
-    ("designator-padding", "designator_padding_config", "padding"),
     ("designator-geometry", "designator_geometry_config", "geometry"),
-    ("designator-grouping", "designator_grouping_config", "grouping"),
     ("perlector-protocol", "perlector_protocol_config", "truncation"),
 )
 
@@ -1038,7 +1035,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
     rows = reviewed_rows(rows)
     reviews = current_page_reviews(context, rows)
     links = continuation_links(context, rows)
-    testimonia = current_page_testimonia(context, sealed_proposal_regions(context))
+    testimonia = current_page_testimonia(context)
     manifest_cache: dict[str, dict] = {}
     categories: dict[str, ArmariumCategory] = {}
     coverages: dict[str, dict] = {}

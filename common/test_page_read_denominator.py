@@ -604,28 +604,20 @@ def _refuse_page_two(tree: tuple[Path, dict[str, Path], str]) -> str:
 
 @pytest.fixture()
 def refuse_page_two(monkeypatch) -> Callable:
-    """`_refuse_page_two`, with the page's upstream crops and Testimonia let through.
+    """`_refuse_page_two`, with the page's upstream Testimonia let through.
 
-    The forgery refuses page 2 after the Designator cut crops from it and the
-    Attestatores showed it to the witnesses; no run can hold both. Those
-    records' page lineage is therefore not checked on the refused page, and
-    every other page's is.
+    The forgery refuses page 2 after the Attestatores showed it to the
+    witnesses; no run can hold both. Those records' page lineage is therefore
+    not checked on the refused page, and every other page's is.
     """
     refused: list[str] = []
-    verify_region = page_testimonia.verify_region
     validate_presented_page = page_testimonia.validate_presented_page
-
-    def region(context, record):
-        if record["payload"]["transform"]["source_page_id"] in refused:
-            return record
-        return verify_region(context, record)
 
     def presented(context, payload, presentations):
         if presentations and presentations[0].get("source_page_id") in refused:
             return None
         return validate_presented_page(context, payload, presentations)
 
-    monkeypatch.setattr(page_testimonia, "verify_region", region)
     monkeypatch.setattr(page_testimonia, "validate_presented_page", presented)
 
     def refuse(tree: tuple[Path, dict[str, Path], str]) -> str:

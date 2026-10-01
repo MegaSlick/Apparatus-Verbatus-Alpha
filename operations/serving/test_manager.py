@@ -2609,7 +2609,6 @@ def test_real_catalogue_covers_each_chair_and_names_unservable_tiers():
         value for value in real_models.chairs.values() if isinstance(value, ChairIdentity)
     ]
     assert {identity.role for identity in configured} == {
-        "designator_structure",
         "secondary_proposer",
         "attestator_1",
         "attestator_2",

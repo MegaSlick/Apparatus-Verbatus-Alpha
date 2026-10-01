@@ -48,7 +48,6 @@ from common.page_testimonia import (
     current_page_testimonia,
     declared_page_witness_chairs,
     require_page_roster,
-    sealed_proposal_regions,
 )
 from common.recensor_receipt import build_recensor_reading_receipt, witnessed_count
 from common.stage import (
@@ -108,7 +107,7 @@ def page_testimonia(context, chairs: set[str]) -> dict[str, list[dict[str, Any]]
     must carry every configured page witness and no other, as the Perlector
     required when it read the page.
     """
-    current = current_page_testimonia(context, sealed_proposal_regions(context))
+    current = current_page_testimonia(context)
     for page_id, records in current.items():
         require_page_roster(page_id, records, chairs)
     return current
@@ -146,7 +145,7 @@ def page_witness_coverage(records: list[dict[str, Any]], floor: int, chairs: set
         },
     }
     # The page-read floor formula the v3 receipt checks, not `witness_coverage`'s own.
-    coverage["under_witnessed"] = witnessed_count(coverage, page_read=True) < floor
+    coverage["under_witnessed"] = witnessed_count(coverage) < floor
     return coverage
 
 
@@ -364,7 +363,7 @@ def coverage_findings(coverage: dict, ordinal: int) -> list[tuple[str, str]]:
         findings.append(
             (
                 UNDER_WITNESSED,
-                f"{witnessed_count(coverage, page_read=True)} page witness(es) read page "
+                f"{witnessed_count(coverage)} page witness(es) read page "
                 f"{ordinal} against a floor of "
                 f"{coverage['floor']}"
                 + (f" ({truncated} truncated reading(s) not counted)" if truncated else ""),

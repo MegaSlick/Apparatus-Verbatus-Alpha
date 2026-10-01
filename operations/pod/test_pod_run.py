@@ -87,7 +87,6 @@ class PreflightedActions(FakeActions):
                 "smoke_receipts": [
                     {"chair": role, "valid": True}
                     for role in (
-                        "designator_structure",
                         "attestator_1",
                         "attestator_2",
                         "attestator_3",
@@ -392,7 +391,6 @@ def test_small_models_selects_cheap_stages_and_returns_after_selection(tmp_path:
         "attestator_1",
         "attestator_2",
         "attestator_3",
-        "designator_structure",
         "designator_surya",
         "secondary_proposer",
     ]
@@ -510,7 +508,6 @@ def test_attestatores_preflight_roles_follow_the_configured_roster(
     roles = json.loads(capsys.readouterr().out)["bootstrap"]["preflight_roles"]
     assert roles == [
         "attestator_7",
-        "designator_structure",
         "designator_surya",
         "secondary_proposer",
     ]

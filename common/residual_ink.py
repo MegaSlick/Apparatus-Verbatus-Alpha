@@ -1,21 +1,17 @@
 """Shared residual-ink measurement for the early Ink Map and late Recensor.
 
 Ink is derived from the sealed page independently of stage claims. Coverage is
-the Designator's declared ``transform.bounds``, clipped here so a later
-geometry refusal is not pre-empted by this measurement. The early Ink Map
-passes empty coverage for the pre-proposal denominator; the Recensor passes
-every proposal and recovery region. This module invents no act, requests no
-recovery and holds no run.
+the boxes a caller declares, clipped here so a later geometry refusal is not
+pre-empted by this measurement. The early Ink Map passes empty coverage for the
+whole page's denominator; the Recensor passes the Perlector's reading regions.
+This module invents no act, requests no recovery and holds no run.
 
 The paper value comes from `common.background.infer_background_evidence`
-under the sealed `[background]` policy of `config/ink_map.toml`, the one the
-Designator's structure pass reads too, so the audit and the stage it audits
-threshold against the same paper. The
-contrast stays this module's own: an audit sharing the Designator's margin
-would restate it rather than check it.
+under the sealed `[background]` policy of `config/ink_map.toml`, so every
+reader thresholds against the same paper. The contrast stays this module's
+own.
 
-The page-spanning component the Designator withholds from grouping
-(`pipeline/2_designator/grouping.partition_page_spanning`) held 35 to 87 per
+The page-spanning component held 35 to 87 per
 cent of audited ink on 44 real pages, so counting it flagged every page. It is
 re-derived here at the page's own derived margin, because the Designator's record
 carries only whole-page boxes, and taken out of `total_ink_pixels` and
@@ -44,8 +40,8 @@ from common.background import (
     infer_background_evidence,
     load_background_config,
     round_half_up_bp,
+    validate_provenance_block,
 )
-from common.calibration import calibrated_claim_has_sample_evidence
 from common.components import label_component_runs, runs_in_row
 from common.contracts.canonical import is_plain_int
 from common.contracts.errors import ContractError
@@ -56,10 +52,7 @@ from common.sealed_config import read_sealed_toml
 MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 
 #: A pixel this many levels below the page's own inferred background is ink.
-#: Kept at or above the Designator conservation denominator's margin (2), so
-#: this audit never calls ink a pixel that accounting dismissed, the one
-#: disagreement that could lose ink silently (pinned by
-#: `common/test_designator_recensor_ink_calibration.py`). It sits below a
+#: It sits below a
 #: photographed page's derived margin (median 66), so there it counts more ink
 #: than the Designator's primary scan does; that is why the gates are fractions.
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
@@ -106,9 +99,7 @@ class CoverageAuditPolicy(TypedDict):
     minimum_fraction_outside_bp: int
 
 
-#: Beside `[background]` under the one `ink-map` seal: the component this audit
-#: removes must be the one the Designator withheld, which holds only while both
-#: read one `page_spanning_area_bp` and one `gap_tolerance_px`, from this file.
+#: Beside `[background]` under the one `ink-map` seal.
 DEFAULT_COVERAGE_AUDIT_CONFIG_PATH: Final = DEFAULT_INK_MAP_CONFIG_PATH
 
 COVERAGE_AUDIT_BP_FIELDS: Final = (SUBSTANTIAL_INK_AREA_BP_FIELD, EDGE_BAND_BP_FIELD)
@@ -117,66 +108,6 @@ COVERAGE_AUDIT_BP_FIELDS: Final = (SUBSTANTIAL_INK_AREA_BP_FIELD, EDGE_BAND_BP_F
 #: over-read onto two values nobody measured.
 COVERAGE_NOISE_FLOOR_TABLE: Final = "noise_floor"
 COVERAGE_NOISE_FLOOR_FIELDS: Final = (MINIMUM_INK_PIXELS_FIELD, MINIMUM_FRACTION_OUTSIDE_BP_FIELD)
-
-
-#: Restated from `pipeline/2_designator/geometry.py`, which `common/` may not
-#: import; the shared config file must satisfy both.
-_PROVENANCE_FIELDS: Final = frozenset(
-    {
-        "source",
-        "corpus",
-        "sample_unit",
-        "sample_count",
-        "statistic",
-        "calibrated_for_this_corpus",
-        "caveat",
-    }
-)
-_TYPED_PROVENANCE_FIELDS: Final = frozenset({"sample_count", "calibrated_for_this_corpus"})
-
-
-def validate_provenance_block(provenance: Any, *, where: str) -> dict[str, Any]:
-    """One declared provenance block, held to the closed schema.
-
-    Needed here because the Ink Map publishes under this policy before any
-    later stage reads it.
-    """
-
-    if not isinstance(provenance, dict):
-        raise ContractError(
-            f"the ink-map configuration has no {where} table; a policy value with no "
-            "declared source may not be shipped as a default"
-        )
-    unexpected = sorted(set(provenance) - _PROVENANCE_FIELDS)
-    if unexpected:
-        raise ContractError(
-            f"the ink-map configuration's {where} carries unknown field(s) {unexpected}; "
-            "provenance is a closed schema so an unread field cannot be trusted"
-        )
-    missing = sorted(_PROVENANCE_FIELDS - set(provenance))
-    if missing:
-        raise ContractError(f"the ink-map configuration's {where} is missing field(s) {missing}")
-    for field in sorted(_PROVENANCE_FIELDS - _TYPED_PROVENANCE_FIELDS):
-        if not isinstance(provenance[field], str) or not provenance[field].strip():
-            raise ContractError(
-                f"the ink-map configuration's {where} field {field!r} is not a non-empty string"
-            )
-    if not is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
-        raise ContractError(
-            f"the ink-map configuration's {where} sample_count is not a non-negative integer"
-        )
-    if not isinstance(provenance["calibrated_for_this_corpus"], bool):
-        raise ContractError(
-            f"the ink-map configuration's {where} calibrated_for_this_corpus is not a boolean"
-        )
-    if not calibrated_claim_has_sample_evidence(
-        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
-    ):
-        raise ContractError(
-            f"the ink-map configuration's {where} says calibrated_for_this_corpus but "
-            "sample_count is zero"
-        )
-    return dict(provenance)
 
 
 def validate_coverage_audit_table(table: Any, *, where: str = "[coverage_audit]") -> dict[str, int]:
@@ -449,10 +380,9 @@ def page_spanning_components(
 ) -> tuple[list[dict[str, Any]], bytearray]:
     """This page's page-spanning components, and a page-sized 0/1 mask of their pixels.
 
-    The question `pipeline/2_designator/grouping.partition_page_spanning` asks,
-    on the same bytes at the same margin, gap tolerance and bound, so the
-    component removed here is the one that stage withheld. The mask is needed
-    because such a component's bounding box is the whole page.
+    Asked on the same bytes at the same margin, gap tolerance and bound by every
+    reader. The mask is needed because such a component's bounding box is the
+    whole page.
 
     Measured cost: one labelling per call, about doubling `residual_ink` (up to
     1.83 s and 207 MB on an 18.4-megapixel page), paid four times per page per

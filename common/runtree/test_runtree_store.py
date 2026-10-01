@@ -29,10 +29,9 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import build_envelope, read_verified
 from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
-from common.contracts.outcomes import INTERIM_GRANULARITY_BASIS
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR, writing_directory
 from common.corpus_register import EMPTY_REGISTER_DIGEST, empty_register
-from common.recensor_receipt import build_recensor_partition_receipt
+from common.recensor_receipt import build_recensor_reading_receipt
 from common.runtree import store as runtree_store
 from common.runtree.store import (
     ARTIFACTS_DIR,
@@ -130,39 +129,45 @@ def make_approval_record(**overrides):
 COMMIT = "a1b2c3d4" * 5
 
 
-def make_recensor_partition_receipt():
-    return build_recensor_partition_receipt(
+def _receipt_item(act_id: str = "act-1", act_key: str = "p1:1") -> dict:
+    return {
+        "act_id": act_id,
+        "act_key": act_key,
+        "page_disposition": "read",
+        "review_ref": {
+            "relative_path": "5_recensor/artifacts/review.json",
+            "sha256": "b" * 64,
+        },
+        "review_outcome": "accepted",
+        "partition_class": "completed",
+        "coverage": {
+            "configured": 3,
+            "floor": 3,
+            "by_outcome": {"read": 3},
+            "by_class": {"completed": 3, "unresolved": 0, "failed": 0},
+            "under_witnessed": False,
+            "unresolved_chairs": 0,
+            "health_unrecorded": 0,
+            "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0},
+        },
+        "release_reason": None,
+    }
+
+
+def make_recensor_partition_receipt(items: list[dict] | None = None):
+    return build_recensor_reading_receipt(
         run_id="r1",
         config_digest=CONFIG_DIGEST,
-        proposal_seal_ref={
-            "relative_path": "2_designator/artifacts/proposal-seal.json",
-            "sha256": "a" * 64,
-        },
-        items=[
+        page_reading_refs=[
             {
-                "act_id": "act-1",
-                "act_key": "a1",
-                "designator_outcome": "proposed",
-                "review_ref": {
-                    "relative_path": "5_recensor/artifacts/review.json",
-                    "sha256": "b" * 64,
-                },
-                "review_outcome": "accepted",
-                "partition_class": "completed",
-                "coverage": {
-                    "configured": 3,
-                    "floor": 3,
-                    "by_outcome": {"read": 3},
-                    "by_class": {"completed": 3, "unresolved": 0, "failed": 0},
-                    "under_witnessed": False,
-                    "unresolved_chairs": 0,
-                    "page_granularity_only": 0,
-                    "health_unrecorded": 0,
-                    "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0},
-                    "granularity_basis": INTERIM_GRANULARITY_BASIS,
+                "page_ordinal": 1,
+                "reading_ref": {
+                    "relative_path": "4_perlector/artifacts/page-reading.json",
+                    "sha256": "a" * 64,
                 },
             }
         ],
+        items=[_receipt_item()] if items is None else items,
     )
 
 
@@ -170,46 +175,32 @@ def make_recensor_partition_receipt():
 # --- denominator under the same run authority ----------------------------------
 
 
-def test_a_write_that_would_shrink_the_expected_act_count_is_refused(tmp_path):
-    """The proposal-act denominator is sealed once by the Designator; two honest
+def test_a_write_that_would_shrink_the_expected_unit_count_is_refused(tmp_path):
+    """The unit denominator is sealed once by the page readings; two honest
     Recensor passes over the same run can never legitimately disagree about how
-    many acts it names. A write that would shrink it is not a fresher partition
+    many units it names. A write that would shrink it is not a fresher partition
     superseding a stale one -- it is a different, inconsistent claim about the
     same sealed denominator, and is refused rather than silently accepted as
     whichever write happened to land last."""
     tree = make_run(tmp_path)
-    two_items = make_recensor_partition_receipt()
-    second_item = dict(two_items["items"][0], act_id="act-2", act_key="a2")
-    two_items = build_recensor_partition_receipt(
-        run_id=two_items["run_id"],
-        config_digest=two_items["config_digest"],
-        proposal_seal_ref=two_items["proposal_seal_ref"],
-        items=[two_items["items"][0], second_item],
-    )
+    two_items = make_recensor_partition_receipt([_receipt_item(), _receipt_item("act-2", "p1:2")])
     tree.write_recensor_partition_receipt(two_items)
 
-    with pytest.raises(SchemaRefusal, match="expected_act_count"):
+    with pytest.raises(SchemaRefusal, match="expected_unit_count"):
         tree.write_recensor_partition_receipt(make_recensor_partition_receipt())
 
     # The two-item receipt already on disk survives the refused write untouched.
-    assert tree.read_recensor_partition_receipt()["expected_act_count"] == 2
+    assert tree.read_recensor_partition_receipt()["expected_unit_count"] == 2
 
 
-def test_a_write_that_grows_the_expected_act_count_is_also_refused(tmp_path):
+def test_a_write_that_grows_the_expected_unit_count_is_also_refused(tmp_path):
     """Grown or shrunk, either direction disagrees with an already-sealed
     denominator, so neither is treated as the fresher one."""
     tree = make_run(tmp_path)
     tree.write_recensor_partition_receipt(make_recensor_partition_receipt())
 
-    two_items = make_recensor_partition_receipt()
-    second_item = dict(two_items["items"][0], act_id="act-2", act_key="a2")
-    grown = build_recensor_partition_receipt(
-        run_id=two_items["run_id"],
-        config_digest=two_items["config_digest"],
-        proposal_seal_ref=two_items["proposal_seal_ref"],
-        items=[two_items["items"][0], second_item],
-    )
-    with pytest.raises(SchemaRefusal, match="expected_act_count"):
+    grown = make_recensor_partition_receipt([_receipt_item(), _receipt_item("act-2", "p1:2")])
+    with pytest.raises(SchemaRefusal, match="expected_unit_count"):
         tree.write_recensor_partition_receipt(grown)
 
 
@@ -2266,7 +2257,7 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
     refusal protected nothing while blocking recovery.
 
     The refusal that *does* matter — a valid receipt disagreeing about the sealed
-    proposal-act denominator — is pinned by the test above and is unaffected.
+    unit denominator — is pinned by the test above and is unaffected.
     """
     tree = make_run(tmp_path)
     receipt = make_recensor_partition_receipt()
@@ -2281,7 +2272,7 @@ def test_a_damaged_partition_receipt_does_not_block_the_valid_one_replacing_it(
     # the validator's own integrity refusal.
     valid = json.dumps(receipt).encode("utf-8")
     float_damaged = json.loads(valid)
-    float_damaged["expected_act_count"] = 1.0
+    float_damaged["expected_unit_count"] = 1.0
     self_hash_damaged = json.loads(valid)
     self_hash_damaged["self_hash"] = "0" * 64
     damage = {

@@ -1,18 +1,15 @@
 """One page, one paper value: the background inference every stage that reads ink runs.
 
-Three stages threshold the same pixels and used to disagree about what paper
-is: the Designator infers paper from a page's own two grey-level population
-modes, while the Ink Map and Recensor took the raw histogram mode instead --
-on a photographed opening that mode is the bezel, near-zero, so their audit
-counted approximately zero ink over a page full of writing and the cross-stage
-containment pin held vacuously (an empty set is contained in anything).
+Every stage that thresholds ink infers paper here, from a page's own two
+grey-level population modes rather than its raw histogram mode: on a
+photographed opening the raw mode is the bezel, near-zero, and an audit taken
+below it counts no ink over a page full of writing.
 
-So the inference lives here, and all three stages get the same background, the
-same derived ink margin, and the same refusal by name. What is shared is the
-background, not the sensitivity: each caller keeps its own margin below it
-(the Designator's derived margin, its `SECONDARY_MARGIN = 2`, the audit's
-`MINIMUM_CONTRAST_BELOW_BACKGROUND = 40`) so the three numbers stay comparable
-without the audit restating the stage it audits.
+So every caller gets the same background, the same derived ink margin, and the
+same refusal by name. What is shared is the background, not the sensitivity:
+each caller keeps its own margin below it (the derived margin, the audit's
+`MINIMUM_CONTRAST_BELOW_BACKGROUND = 40`) so the numbers stay comparable
+without the audit restating the scan it audits.
 
 This module may not import a stage (`pipeline/test_stage_import_boundaries.py`):
 it reads the sealed policy's own bytes and takes everything else as arguments.
@@ -21,6 +18,7 @@ it reads the sealed policy's own bytes and takes everything else as arguments.
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
+from common.calibration import calibrated_claim_has_sample_evidence
 from common.contracts.canonical import is_plain_int, is_sha256
 from common.contracts.errors import ContractError
 from common.sealed_config import read_sealed_toml
@@ -31,20 +29,10 @@ from common.sealed_config import read_sealed_toml
 # Not the margin any scan runs at: it is the *floor* under the margin each page
 # derives for itself (`_derived_ink_margin`), and the level
 # `_settle_background_evidence`'s plausibility probe is measured at, since the
-# floor is the most permissive threshold a scan can ever apply. Lives here
-# rather than in `structure.py` because all three ink-thresholding stages now
-# reach it through this module, and because the AST pin in
-# `common/test_designator_recensor_ink_calibration.py` reads it as a source
-# literal against the sealed `max_ink_bp` measured at this level.
+# floor is the most permissive threshold a scan can ever apply.
+# `common/test_ink_calibration.py` pins it as a source literal against the
+# sealed `max_ink_bp` measured at this level.
 PRIMARY_MARGIN: Final = 20
-
-# Deliberately not derived or configured: a fixed 2 below background is
-# smaller than any derived margin, so the Designator's secondary scan and
-# conservation, and the Perlector's page-fallback reader, are strictly more
-# sensitive than the primary scan on every page, never the reverse. A derived
-# value could invert that on some page, trading a visible over-count for a
-# possible silent loss.
-SECONDARY_MARGIN: Final = 2
 
 # The denominator of every basis-point fraction this module is handed. The
 # sealed policy (`config/ink_map.toml`) states its fractions in basis points;
@@ -312,11 +300,6 @@ def infer_background_evidence(
     (found on real material, proxy `da9e07ec...`; `_derived_ink_margin` can
     only place a threshold for one dominant population). A per-region
     background is the repair, and a different unit.
-
-    Conservation separately reconciles at the more sensitive, non-derived
-    `SECONDARY_MARGIN`; a page `_ink_threshold` refuses at that margin is
-    likewise still cut and read, and holds the run rather than reporting an
-    unmade measurement.
     """
     if width <= 0 or height <= 0:
         raise ContractError(f"a {width}x{height} page has no pixels to infer a background from")
@@ -450,11 +433,10 @@ def _settle_background_evidence(
     return evidence
 
 
-#: Names this policy refuses wherever they appear: `PRIMARY_MARGIN` and
-#: `SECONDARY_MARGIN`, absolute 8-bit offsets an AST pin in
-#: `common/test_designator_recensor_ink_calibration.py` reads as source
-#: literals, which a per-run config value would make unenforceable statically.
-FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
+#: Names this policy refuses wherever they appear: `PRIMARY_MARGIN` is an
+#: absolute 8-bit offset `common/test_ink_calibration.py` reads as a source
+#: literal, which a per-run config value would make unenforceable statically.
+FORBIDDEN_NAMES: Final = ("primary_margin",)
 
 
 def validate_ink_not_measurable_payload(payload: Any) -> dict[str, Any]:
@@ -611,15 +593,67 @@ BACKGROUND_BP_FIELDS: Final = (
 )
 
 
+#: The closed schema of every provenance block in the ink-map configuration.
+_PROVENANCE_FIELDS: Final = frozenset(
+    {
+        "source",
+        "corpus",
+        "sample_unit",
+        "sample_count",
+        "statistic",
+        "calibrated_for_this_corpus",
+        "caveat",
+    }
+)
+_TYPED_PROVENANCE_FIELDS: Final = frozenset({"sample_count", "calibrated_for_this_corpus"})
+
+
+def validate_provenance_block(provenance: Any, *, where: str) -> dict[str, Any]:
+    """One declared provenance block, held to the closed schema."""
+
+    if not isinstance(provenance, dict):
+        raise ContractError(
+            f"the ink-map configuration has no {where} table; a policy value with no "
+            "declared source may not be shipped as a default"
+        )
+    unexpected = sorted(set(provenance) - _PROVENANCE_FIELDS)
+    if unexpected:
+        raise ContractError(
+            f"the ink-map configuration's {where} carries unknown field(s) {unexpected}; "
+            "provenance is a closed schema so an unread field cannot be trusted"
+        )
+    missing = sorted(_PROVENANCE_FIELDS - set(provenance))
+    if missing:
+        raise ContractError(f"the ink-map configuration's {where} is missing field(s) {missing}")
+    for field in sorted(_PROVENANCE_FIELDS - _TYPED_PROVENANCE_FIELDS):
+        if not isinstance(provenance[field], str) or not provenance[field].strip():
+            raise ContractError(
+                f"the ink-map configuration's {where} field {field!r} is not a non-empty string"
+            )
+    if not is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
+        raise ContractError(
+            f"the ink-map configuration's {where} sample_count is not a non-negative integer"
+        )
+    if not isinstance(provenance["calibrated_for_this_corpus"], bool):
+        raise ContractError(
+            f"the ink-map configuration's {where} calibrated_for_this_corpus is not a boolean"
+        )
+    if not calibrated_claim_has_sample_evidence(
+        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
+    ):
+        raise ContractError(
+            f"the ink-map configuration's {where} says calibrated_for_this_corpus but "
+            "sample_count is zero"
+        )
+    return dict(provenance)
+
+
 def validate_background_table(table: Any, *, where: str = "[background]") -> dict[str, int]:
     """The four sealed values, checked against their bounds and returned.
 
     Every reader of the policy validates it here, so all refuse the same
-    malformed value. Provenance is not checked here: the Designator's loader
-    validates it against the same schema and refuses a run whose block has lost
-    it, while the Ink Map and Recensor do not -- the one asymmetry between the
-    readers, on the field recording where a number came from rather than one
-    deciding what a page measures.
+    malformed value. Provenance is checked by `load_background_config`, which
+    reads a shipped file.
     """
     if not isinstance(table, dict):
         raise ContractError(f"the ink-map configuration has no {where} table")
@@ -627,8 +661,8 @@ def validate_background_table(table: Any, *, where: str = "[background]") -> dic
     if forbidden:
         raise ContractError(
             f"the ink-map configuration's {where} carries forbidden field(s) {forbidden}; "
-            "primary_margin/secondary_margin are absolute 8-bit ink-intensity offsets pinned "
-            "as Python module constants and may never become a per-run config value. What is "
+            "primary_margin is an absolute 8-bit ink-intensity offset pinned "
+            "as a Python module constant and may never become a per-run config value. What is "
             "sealed instead is ink_margin_bp, the fraction of a page's own two-mode distance "
             "that derives its margin: a population fraction, which scales with the page, and "
             "not an offset"
@@ -700,17 +734,19 @@ def load_background_config(
     nobody able to point at a config line that said so.
     """
     config, digest = read_sealed_toml(path, "ink-map configuration", INK_MAP_TABLES)
-    return {
-        "config_sha256": digest,
-        "background": validate_background_table(config.get("background")),
-    }
+    background = validate_background_table(config.get("background"))
+    # Only a shipped file must declare provenance; the table validator also
+    # takes bare tables built in code.
+    validate_provenance_block(
+        config["background"].get("provenance"), where="[background.provenance]"
+    )
+    return {"config_sha256": digest, "background": background}
 
 
 def resolve_background_policy(config: dict[str, Any], width: int, height: int) -> BackgroundPolicy:
     """One page's own resolved background-inference policy.
 
-    Background inference runs before any threshold touches any geometry, so it
-    is resolved apart from the Designator's grouping thresholds. `config` is
+    Background inference runs before any threshold touches any geometry. `config` is
     anything carrying the sealed block under `background`, as
     `load_background_config`'s result does.
     """

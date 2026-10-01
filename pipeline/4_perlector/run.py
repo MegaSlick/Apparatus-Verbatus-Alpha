@@ -50,11 +50,9 @@ from common.decoding import (  # noqa: E402
     refuse_retired_call_record,
 )
 from common.image_sniff import PNG_SIGNATURE  # noqa: E402
-from common.page_testimonia import sealed_proposal_regions  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     PERLECTOR_CHAIR,
-    expected_acts,
     fixture_serving_details,
     is_real_ingress,
     open_stage_context,
@@ -598,8 +596,6 @@ class _Pass:
     page_max_tokens: int
     audit_policy: dict[str, Any]
     audit_sha256: str
-    # The run-wide routing denominator the page testimonia are read against.
-    all_proposal_regions: list[dict]
     receipt_ref: dict[str, str] | None = None
     # Reader calls in flight at once; see `_reading_concurrency`.
     concurrency: int = 1
@@ -634,8 +630,6 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
     context.require_sealed_config("perlector-protocol", protocol_sha256)
     audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
     context.require_sealed_config("perlector-audit", audit_sha256)
-    # The Designator's proposal seal is checked whole before anything is published.
-    expected_acts(context)
     return _Pass(
         context=context,
         args=args,
@@ -653,7 +647,6 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         page_max_tokens=perlector_page_max_tokens(decoding_policy),
         audit_policy=audit_policy,
         audit_sha256=audit_sha256,
-        all_proposal_regions=sealed_proposal_regions(context),
         concurrency=_reading_concurrency(context, args, chair, serving_mode),
     )
 

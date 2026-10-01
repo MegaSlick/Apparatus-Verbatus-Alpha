@@ -449,7 +449,7 @@ def test_the_old_constant_would_have_misreported_this_paid_measurement(
 
     report = runner(
         fixture_page,
-        roles=("attestator_3", "designator_structure"),
+        roles=("attestator_3", "attestator_1"),
         reader=Reader(served=True),
     ).run(measured_profile())
 
@@ -459,8 +459,8 @@ def test_the_old_constant_would_have_misreported_this_paid_measurement(
     assert report.to_record()["assembly_note"] != old_note
     # Every chair that read through the engine is named, in a stable order.
     assert report.to_record()["assembly_note"] == (
-        f"real assembly measured on {MEASURED_CARD}: attestator_3 via vllm 0.27.1, "
-        "designator_structure via vllm 0.27.1 smoke-read the golden page through a "
+        f"real assembly measured on {MEASURED_CARD}: attestator_1 via vllm 0.27.1, "
+        "attestator_3 via vllm 0.27.1 smoke-read the golden page through a "
         "served engine"
     )
 

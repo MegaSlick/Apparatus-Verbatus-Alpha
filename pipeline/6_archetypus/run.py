@@ -69,7 +69,6 @@ from common.page_review import (  # noqa: E402
 )
 from common.page_testimonia import (  # noqa: E402
     current_page_testimonia,
-    sealed_proposal_regions,
     shown_page_witnesses,
 )
 from common.stage import (  # noqa: E402
@@ -699,7 +698,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     context = open_stage_context(args, ARCHETYPUS, registry_factory=registry_factory)
     rows = reviewed_rows(reading_acts(context))
     reviews = current_page_reviews(context, rows)
-    testimonia = current_page_testimonia(context, sealed_proposal_regions(context))
+    testimonia = current_page_testimonia(context)
     unresolved: list[str] = []
     # Every record is built and checked before any is published, so a refused
     # one leaves no partial set of established readings behind it.

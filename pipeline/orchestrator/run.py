@@ -40,7 +40,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH  # noqa: E402
 from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa: E402
 from common.background import DEFAULT_INK_MAP_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
@@ -58,8 +57,6 @@ from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_DECODING_CONFIG_PATH,
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
-    DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH,
-    DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH,
     DEFAULT_PDF_RENDER_CONFIG_PATH,
     DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
@@ -374,10 +371,7 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
                 ("--decoding-config", args.decoding_config),
                 ("--serving-recipes-config", args.serving_recipes_config),
                 ("--pdf-render-config", args.pdf_render_config),
-                ("--designator-padding-config", args.designator_padding_config),
                 ("--designator-geometry-config", args.designator_geometry_config),
-                ("--designator-grouping-config", args.designator_grouping_config),
-                ("--alignment-config", args.alignment_config),
                 ("--page-accounting-config", args.page_accounting_config),
                 ("--ink-map-config", args.ink_map_config),
                 ("--formats-config", args.formats_config),
@@ -681,27 +675,9 @@ def main() -> int:
         help="the default whole-page PDF rasterisation target for this run",
     )
     parser.add_argument(
-        "--designator-padding-config",
-        default=str(DEFAULT_DESIGNATOR_PADDING_CONFIG_PATH),
-        help="the capture padding applied to every act crop, sealed into this run",
-    )
-    parser.add_argument(
         "--designator-geometry-config",
         default=str(DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH),
         help="the sealed Surya/YOLO geometry and crop-policy declaration for this run",
-    )
-    parser.add_argument(
-        "--designator-grouping-config",
-        default=str(DEFAULT_DESIGNATOR_GROUPING_CONFIG_PATH),
-        help=(
-            "the sealed grouping, structure and conservation thresholds the Designator "
-            "resolves against each page's own dimensions"
-        ),
-    )
-    parser.add_argument(
-        "--alignment-config",
-        default=str(DEFAULT_ALIGNMENT_CONFIG_PATH),
-        help="the sealed limits for page-witness alignment",
     )
     parser.add_argument(
         "--ink-map-config",

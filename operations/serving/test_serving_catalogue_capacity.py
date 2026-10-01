@@ -56,7 +56,6 @@ REAL_PLACEMENT = REPO_ROOT / "config" / "pod_placement.toml"
 # charged for is 1500x2122.  Every other chair
 # is shown the sealed page unchanged.
 PAGE_AS_PRESENTED = {
-    "designator_structure": A4_300DPI,
     "attestator_1": A4_300DPI,
     "attestator_2": (1500, 2122),
     "attestator_3": A4_300DPI,
@@ -230,7 +229,6 @@ def test_the_measured_failures_this_change_answers_are_still_failures_at_the_old
         ("attestator_3", "generic-24gb"): (2048, TIER_MAX_PIXELS["generic-24gb"], 14),
         ("attestator_3", "generic-48gb"): (4096, TIER_MAX_PIXELS["generic-48gb"], 14),
         ("attestator_3", "generic-80gb-plus"): (8192, TIER_MAX_PIXELS["generic-80gb-plus"], 14),
-        ("designator_structure", "generic-24gb"): (2048, TIER_MAX_PIXELS["generic-24gb"], 16),
         ("attestator_1", "generic-24gb"): (2048, TIER_MAX_PIXELS["generic-24gb"], 16),
     }
     for (chair, tier), (context, max_pixels, patch) in old.items():
@@ -257,9 +255,9 @@ def test_measured_witness_rows_have_a_600s_startup_budget() -> None:
     measured = [
         (profile.chair, profile.tier, profile.startup_timeout_seconds)
         for profile in _shipped_rows()
-        if profile.chair in {"designator_structure", "attestator_1", "attestator_2", "attestator_3"}
+        if profile.chair in {"attestator_1", "attestator_2", "attestator_3"}
     ]
-    assert len(measured) == 12
+    assert len(measured) == 9
     assert all(timeout == 600 for _, _, timeout in measured)
     assert [
         (profile.tier, profile.startup_timeout_seconds)

@@ -1344,7 +1344,7 @@ def test_six_words_end_to_end_and_status_is_strictly_read_only(tmp_path: Path) -
     lease = LeaseStore(surface.state_root / str(launch_receipt["lease"])).load()
     assert lease is not None and lease.phase == "closed-verified"
     assert any("page 1" in line and "page 2" in line for line in messages)
-    assert any("act a1" in line and "act a2" in line for line in messages)
+    assert any("Acts accounted for: act " in line for line in messages)
     assert any("I CONFIRM PAID POD" in line for line in messages)
     assert any("Charges captured through" in line for line in messages)
     assert any("ongoing price is $" in line for line in messages)
@@ -1995,7 +1995,7 @@ def test_laptop_crash_leaves_resumable_pages_and_acts(tmp_path: Path) -> None:
     assert resumed.state == "complete"
     assert any("Resuming run laptop-crash-run" in line for line in messages)
     assert any("page 1" in line for line in messages)
-    assert any("act a1" in line for line in messages)
+    assert any("Acts accounted for: act " in line for line in messages)
 
 
 def test_failed_close_is_loud_then_can_be_rechecked(tmp_path: Path) -> None:
@@ -2689,9 +2689,9 @@ def test_a_real_run_is_never_narrated_with_the_declared_fixtures_pages(tmp_path:
             data_gate_policy=tmp_path / "data-gate-policy.json",
         )
 
-    declared_pages, declared_acts, declared_ok = _declared_work(ROOT, "happy")
+    declared_pages, declared_ok = _declared_work(ROOT, "happy")
     assert declared_ok, "the declared fixture is unreadable; this test proves nothing"
-    for name in declared_pages + declared_acts:
+    for name in declared_pages:
         assert not any(name in line for line in messages), (
             f"a real run was narrated with the declared fixture's {name!r}"
         )
@@ -5573,7 +5573,6 @@ def test_verdict_save_failure_says_the_verdict_was_not_saved(tmp_path, monkeypat
 # chair client is built in. Read from source below rather than
 # imported, since a stage module pulls the whole serving stack in behind it.
 _SERVING_STAGE_SOURCES = {
-    "designator": "pipeline/2_designator/run.py",
     "attestatores": "pipeline/3_attestatores/run.py",
     "perlector": "pipeline/4_perlector/run.py",
 }

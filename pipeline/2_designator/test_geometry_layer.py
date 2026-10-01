@@ -1,36 +1,23 @@
-"""Fixture-shaped R2 adapter and custody tests; no model calls or downloads."""
+"""The record detector's geometry policy and proposals; no model calls or downloads."""
 
 from __future__ import annotations
 
 from copy import deepcopy
-from types import SimpleNamespace
 
 import pytest
 from geometry_layer import (
     DEFAULT_POLICY_PATH,
     RESPONSE_BLOB_PREFIX,
-    chandra_layout,
     load_geometry_policy,
     load_geometry_policy_record,
-    occlusion_envelope,
-    raw_proposal_envelope,
-    read_retained_chandra_response,
-    resolve,
-    retain_chandra_response,
     validate_raw_proposal,
     yolo_obb,
 )
 
-from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
-from common.contracts.stages import DESIGNATOR, writing_directory
-from common.runtree.store import BLOBS_DIR
 from common.sealed_config import read_sealed_toml
-from common.stage import StageContext
 
 RECEIPT = {"relative_path": "receipts/sha256/" + "a" * 64 + ".json", "sha256": "a" * 64}
-# Derived exactly as the custody module derives its prefix, so this fixture
-# can never regress to a bare-stage-name literal.
 RESPONSE = {"relative_path": RESPONSE_BLOB_PREFIX + "b" * 64, "sha256": "b" * 64}
 PAGE_ID = "pg_fixture"
 PAGE_ORDINAL = 0
@@ -131,422 +118,6 @@ def test_yolo_retains_obb_and_derives_aabb_under_default_policy():
     validate_raw_proposal(proposals[0])
 
 
-def test_chandra_split_refuses_text_and_only_preserves_geometry_reference():
-    with pytest.raises(SchemaRefusal, match="closed schema"):
-        chandra_layout(
-            page_id="pg_fixture",
-            page_ordinal=0,
-            page_w=100,
-            page_h=100,
-            config_sha256="c" * 64,
-            receipt_ref=RECEIPT,
-            response_ref=RESPONSE,
-            regions=[{"bbox_1000": [0, 0, 1000, 1000], "score_bp": 9000, "text": "forbidden"}],
-        )
-
-
-class _Context(SimpleNamespace):
-    stage = DESIGNATOR
-    sealed = False
-    retain = StageContext.retain
-
-
-class _FixtureTree:
-    """Mimics the real run tree's numbered stage directories, not the bare
-    stage name -- a fixture writing to `"designator/blobs/…"` instead of the
-    real `"2_designator/blobs/…"` would hide a prefix bug from this suite.
-    """
-
-    def __init__(self, *, receipt_chair="designator_structure"):
-        self.blobs = {}
-        self.receipts = []
-        self.receipt_chair = receipt_chair
-
-    def put_blob(self, stage, data):
-        digest = digest_bytes(data)
-        path = f"{writing_directory(stage)}/{BLOBS_DIR}/{digest}"
-        self.blobs[path] = data
-        return digest, type("Published", (), {"relative_path": path})()
-
-    def read_run_receipt(self, reference):
-        self.receipts.append(reference)
-        return {"chair": self.receipt_chair}
-
-    def read_bytes(self, path):
-        # RunTree.read_bytes is Path.read_bytes, which raises FileNotFoundError
-        # for a missing file; a double raising KeyError instead would hide a
-        # missing-blob refusal from this suite.
-        try:
-            return self.blobs[path]
-        except KeyError:
-            raise FileNotFoundError(2, "No such file or directory", path) from None
-
-
-def test_one_chandra_response_has_one_receipt_and_two_consumable_references():
-    tree = _FixtureTree()
-    body = b'{"regions":[{"text":"R3-only custody"}]}'
-    stored = retain_chandra_response(
-        _Context(tree=tree), body, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
-    )
-    response_ref, custody_ref = stored["response_ref"], stored["custody_ref"]
-    assert response_ref["relative_path"] in tree.blobs
-    assert (
-        read_retained_chandra_response(
-            tree,
-            response_ref,
-            RECEIPT,
-            custody_ref,
-            page_id=PAGE_ID,
-            page_ordinal=PAGE_ORDINAL,
-        )
-        == body
-    )
-    # Verified at both ends of custody: once retained, once read back.
-    assert tree.receipts == [RECEIPT, RECEIPT]
-    geometry = chandra_layout(
-        page_id="pg_fixture",
-        page_ordinal=0,
-        page_w=100,
-        page_h=100,
-        config_sha256="c" * 64,
-        receipt_ref=RECEIPT,
-        response_ref=response_ref,
-        regions=[{"bbox_1000": [0, 0, 500, 500], "score_bp": 9000}],
-    )[0]
-    assert "R3-only custody" not in str(geometry)
-
-
-@pytest.mark.parametrize("removed", ["response_ref", "custody_ref"])
-def test_chandra_custody_refuses_a_reference_whose_blob_is_gone(removed):
-    """A vanished blob is a named custody refusal, not a bare FileNotFoundError.
-    Both halves of the pair are read through the same helper, so both are pinned.
-    """
-    tree = _FixtureTree()
-    stored = retain_chandra_response(
-        _Context(tree=tree),
-        b"a response later removed",
-        RECEIPT,
-        page_id=PAGE_ID,
-        page_ordinal=PAGE_ORDINAL,
-    )
-    del tree.blobs[stored[removed]["relative_path"]]
-    with pytest.raises(SchemaRefusal, match="could not be read"):
-        read_retained_chandra_response(
-            tree,
-            stored["response_ref"],
-            RECEIPT,
-            stored["custody_ref"],
-            page_id=PAGE_ID,
-            page_ordinal=PAGE_ORDINAL,
-        )
-
-
-def test_chandra_custody_retains_a_pathologically_nested_response_unparsed():
-    """`retain_chandra_response` asks `_is_custody_binding` whether the bytes
-    it was handed are themselves a canonical binding, via `json.loads`. A
-    response nested ~10k deep makes that raise `RecursionError` rather than
-    answer; the predicate must read that as "not a binding" and retain the
-    response as opaque custody, never a crash on the live structure pass.
-    """
-    tree = _FixtureTree()
-    nested = (b"[" * 10_000) + (b"]" * 10_000)
-    stored = retain_chandra_response(
-        _Context(tree=tree), nested, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
-    )
-
-    assert (
-        read_retained_chandra_response(
-            tree,
-            stored["response_ref"],
-            RECEIPT,
-            stored["custody_ref"],
-            page_id=PAGE_ID,
-            page_ordinal=PAGE_ORDINAL,
-        )
-        == nested
-    )
-
-
-def test_chandra_custody_refuses_a_pathologically_nested_binding():
-    """A well-formed but ~10k-deep custody binding blob is this boundary's
-    named refusal, never an escaping `RecursionError`: `json.loads` recurses
-    per nesting level, so a blob nested deep enough defeats the parser
-    separately from `json.JSONDecodeError`.
-    """
-    tree = _FixtureTree()
-    stored = retain_chandra_response(
-        _Context(tree=tree),
-        b"a response paired with a hostile binding",
-        RECEIPT,
-        page_id=PAGE_ID,
-        page_ordinal=PAGE_ORDINAL,
-    )
-    # Nesting around a 4,301-digit integer: 3.12 refuses the nesting
-    # (RecursionError), 3.14 walks it and refuses the integer (ValueError);
-    # the boundary's named refusal must answer both.
-    nested = (b"[" * 10_000) + (b"9" * 4301) + (b"]" * 10_000)
-    digest = digest_bytes(nested)
-    hostile_path = f"{RESPONSE_BLOB_PREFIX}{digest}"
-    tree.blobs[hostile_path] = nested
-    hostile_custody_ref = {"relative_path": hostile_path, "sha256": digest}
-    with pytest.raises(SchemaRefusal, match="not valid JSON"):
-        read_retained_chandra_response(
-            tree,
-            stored["response_ref"],
-            RECEIPT,
-            hostile_custody_ref,
-            page_id=PAGE_ID,
-            page_ordinal=PAGE_ORDINAL,
-        )
-
-
-def test_chandra_custody_refuses_to_retain_under_a_non_designator_receipt():
-    """The write half refuses exactly what the read half refuses, before writing."""
-    tree = _FixtureTree(receipt_chair="attestator_1")
-    with pytest.raises(SchemaRefusal, match="designator_structure"):
-        retain_chandra_response(
-            _Context(tree=tree),
-            b"a response served under the wrong chair",
-            RECEIPT,
-            page_id=PAGE_ID,
-            page_ordinal=PAGE_ORDINAL,
-        )
-    assert tree.blobs == {}, "no custody may be sealed that the read half can never accept"
-
-
-@pytest.mark.parametrize(
-    ("page_id", "page_ordinal", "message"),
-    [
-        ("", 0, "page identity is blank"),  # blank page_id
-        (None, 0, "page identity is blank"),  # non-string page_id
-        (PAGE_ID, -1, "page ordinal is not a non-negative integer"),  # negative ordinal
-        (PAGE_ID, True, "page ordinal is not a non-negative integer"),  # boolean ordinal
-    ],
-)
-def test_chandra_custody_refuses_a_malformed_page_identity_before_writing(
-    page_id, page_ordinal, message
-):
-    """Every `_page_identity` branch refuses at the write door; the exact
-    message proves each case hits ITS branch, not a sibling's."""
-    tree = _FixtureTree()
-    with pytest.raises(SchemaRefusal, match=message):
-        retain_chandra_response(
-            _Context(tree=tree),
-            b"a response under a broken identity",
-            RECEIPT,
-            page_id=page_id,
-            page_ordinal=page_ordinal,
-        )
-    assert tree.blobs == {}, "no custody may be sealed under an identity the read half refuses"
-
-
-def test_chandra_custody_refuses_a_response_that_is_not_bytes_before_writing():
-    tree = _FixtureTree()
-    with pytest.raises(SchemaRefusal, match=r"^Chandra raw response is not bytes$"):
-        retain_chandra_response(
-            _Context(tree=tree),
-            "a str response",
-            RECEIPT,
-            page_id=PAGE_ID,
-            page_ordinal=PAGE_ORDINAL,
-        )
-    assert tree.blobs == {}, "nothing may be sealed for a response of the wrong type"
-
-
-def test_chandra_custody_refuses_to_retain_a_response_that_is_itself_a_binding():
-    """Custody may not be minted through the response door.
-
-    Bindings and responses are content-addressed into one blob namespace, so
-    retaining binding-shaped bytes as a response would yield a blob the read half
-    accepts as proof of a pairing nothing ever recorded -- exercised against a
-    real run tree, where it paired one call's receipt with another's response.
-    """
-    tree = _FixtureTree()
-    honest = retain_chandra_response(
-        _Context(tree=tree),
-        b"an honest response",
-        RECEIPT,
-        page_id=PAGE_ID,
-        page_ordinal=PAGE_ORDINAL,
-    )
-    minted = tree.blobs[honest["custody_ref"]["relative_path"]]
-    with pytest.raises(SchemaRefusal, match="itself a custody binding"):
-        retain_chandra_response(
-            _Context(tree=tree), minted, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
-        )
-    # Only the exact canonical form is a binding; ordinary Chandra bytes that
-    # merely mention the schema are still an ordinary response.
-    mentions = b'{"html":"<p>chandra-custody-binding.v1</p>"}'
-    assert (
-        retain_chandra_response(
-            _Context(tree=tree), mentions, RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
-        )["response_ref"]["relative_path"]
-        in tree.blobs
-    )
-
-
-def test_chandra_custody_refuses_a_receipt_reused_with_a_different_response():
-    tree = _FixtureTree()
-    first = retain_chandra_response(
-        _Context(tree=tree),
-        b"the first Chandra call's response",
-        RECEIPT,
-        page_id=PAGE_ID,
-        page_ordinal=PAGE_ORDINAL,
-    )
-    other_receipt = {
-        **RECEIPT,
-        "relative_path": "receipts/sha256/" + "e" * 64 + ".json",
-        "sha256": "e" * 64,
-    }
-    second = retain_chandra_response(
-        _Context(tree=tree),
-        b"a second, unrelated response",
-        other_receipt,
-        page_id=PAGE_ID,
-        page_ordinal=PAGE_ORDINAL,
-    )
-    with pytest.raises(SchemaRefusal, match="different receipt"):
-        read_retained_chandra_response(
-            tree,
-            second["response_ref"],
-            RECEIPT,
-            second["custody_ref"],
-            page_id=PAGE_ID,
-            page_ordinal=PAGE_ORDINAL,
-        )
-    # Under the binding's OWN receipt, so the receipt check passes honestly
-    # and what refuses is the response pairing itself.
-    with pytest.raises(SchemaRefusal, match="names a different response"):
-        read_retained_chandra_response(
-            tree,
-            first["response_ref"],
-            other_receipt,
-            second["custody_ref"],
-            page_id=PAGE_ID,
-            page_ordinal=PAGE_ORDINAL,
-        )
-
-
-def _raw_envelope(payload):
-    return raw_proposal_envelope(
-        run_id="r2-fixture",
-        subject_id=payload["proposal_id"],
-        config_digest="d" * 64,
-        adapter_revision="fixture-r2-v1",
-        inputs=[],
-        payload=payload,
-    )
-
-
-def _occlusion_envelope():
-    return occlusion_envelope(
-        run_id="r2-fixture",
-        subject_id="occ_fixture",
-        config_digest="d" * 64,
-        adapter_revision="fixture-r2-v1",
-        inputs=[],
-        payload={
-            "schema": "designator-occlusion.v1",
-            "occlusion_id": "occ_fixture",
-            "page_id": "pg_fixture",
-            "page_ordinal": 0,
-            "polygon": [{"x": 11, "y": 11}, {"x": 12, "y": 11}, {"x": 12, "y": 12}],
-            "z_relationship": "unknown",
-            "review_state": "open",
-            "receipt_ref": RECEIPT,
-        },
-    )
-
-
-def _geometry_sources():
-    policy = load_geometry_policy()
-    first = chandra_layout(
-        page_id="pg_fixture",
-        page_ordinal=0,
-        page_w=100,
-        page_h=100,
-        config_sha256=policy["config_sha256"],
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        regions=[{"bbox_1000": [100, 100, 500, 500], "score_bp": 9000}],
-    )[0]
-    second = yolo_obb(
-        page_id="pg_fixture",
-        page_ordinal=0,
-        page_w=100,
-        page_h=100,
-        policy=policy,
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        detections=[
-            {
-                "obb": [
-                    {"x": 40, "y": 20},
-                    {"x": 70, "y": 20},
-                    {"x": 70, "y": 60},
-                    {"x": 40, "y": 60},
-                ],
-                "score_bp": 8000,
-            }
-        ],
-    )[0]
-    return [_raw_envelope(first), _raw_envelope(second)]
-
-
-def test_graduated_raw_proposal_produces_deterministic_additive_partition_without_occlusion():
-    raw_sources = _geometry_sources()
-    forward = resolve(raw_sources, [])
-    reverse = resolve(list(reversed(raw_sources)), [])
-    assert forward == reverse
-    assert len(forward["union_aabbs"]) == 2
-    assert {row["proposal_id"] for row in forward["partition"]} == {
-        record["payload"]["proposal_id"] for record in raw_sources
-    }
-    assert {row["disposition"] for row in forward["partition"]} == {"accepted-coverage"}
-    assert forward["ambiguities"], "overlap must be represented, not selected away"
-
-
-def test_graduated_occlusion_produces_review_partition_and_is_not_silently_read_past():
-    raw_sources = _geometry_sources()
-    result = resolve(raw_sources, [_occlusion_envelope()])
-    assert result["occlusion_refs"]
-    assert {row["disposition"] for row in result["partition"]} == {"review"}
-    assert {tuple(row["occlusion_ids"]) for row in result["partition"]} == {("occ_fixture",)}
-
-
-def test_page_wide_occlusion_disposition_includes_in_bounds_nonintersecting_geometry():
-    raw_sources = _geometry_sources()
-    distant = occlusion_envelope(
-        run_id="r2-fixture",
-        subject_id="occ_distant",
-        config_digest="d" * 64,
-        adapter_revision="fixture-r2-v1",
-        inputs=[],
-        payload={
-            "schema": "designator-occlusion.v1",
-            "occlusion_id": "occ_distant",
-            "page_id": "pg_fixture",
-            "page_ordinal": 0,
-            "polygon": [{"x": 90, "y": 90}, {"x": 91, "y": 90}, {"x": 91, "y": 91}],
-            "z_relationship": "unknown",
-            "review_state": "open",
-            "receipt_ref": RECEIPT,
-        },
-    )
-    result = resolve(raw_sources, [distant])
-    assert {row["disposition"] for row in result["partition"]} == {"review"}
-    assert {tuple(row["occlusion_ids"]) for row in result["partition"]} == {("occ_distant",)}
-
-
-def test_resolver_consumer_refuses_a_raw_proposal_with_unsealed_extra_field():
-    raw_sources = _geometry_sources()
-    forged = dict(raw_sources[0])
-    forged["payload"] = {**forged["payload"], "text": "must not cross geometry boundary"}
-    with pytest.raises(SchemaRefusal, match="self-hash|closed schema"):
-        resolve([forged, raw_sources[1]], [])
-
-
 def test_proposal_identity_is_reproducible_without_first_seen_observation_provenance():
     obb = [{"x": 10, "y": 20}, {"x": 20, "y": 10}, {"x": 30, "y": 20}, {"x": 20, "y": 30}]
     proposal = yolo_obb(
@@ -565,44 +136,6 @@ def test_proposal_identity_is_reproducible_without_first_seen_observation_proven
 
     with pytest.raises(SchemaRefusal, match="identity does not derive"):
         validate_raw_proposal({**proposal, "proposal_id": "proposal_forged000000"})
-
-
-def test_content_identity_unions_exact_duplicate_single_call_detections():
-    policy = load_geometry_policy()
-    obb = [
-        {"x": 10, "y": 20},
-        {"x": 20, "y": 10},
-        {"x": 30, "y": 20},
-        {"x": 20, "y": 30},
-    ]
-    yolo = yolo_obb(
-        page_id="pg_fixture",
-        page_ordinal=0,
-        page_w=100,
-        page_h=100,
-        policy=policy,
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        detections=[{"obb": obb, "score_bp": 8000}, {"obb": obb, "score_bp": 8000}],
-    )
-    assert len(yolo) == 1
-    assert yolo[0]["observation_unit"] == "response-detection"
-    assert yolo[0]["observed_ordinals"] == [0, 1]
-
-    region = {"bbox_1000": [100, 100, 500, 500], "score_bp": 9000}
-    chandra = chandra_layout(
-        page_id="pg_fixture",
-        page_ordinal=0,
-        page_w=100,
-        page_h=100,
-        config_sha256=policy["config_sha256"],
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        regions=[region, region],
-    )
-    assert len(chandra) == 1
-    assert chandra[0]["observation_unit"] == "response-detection"
-    assert chandra[0]["observed_ordinals"] == [0, 1]
 
 
 def test_raw_proposal_transform_refuses_a_non_identity_scale_in_page_pixel_space():
@@ -638,112 +171,6 @@ def test_raw_proposal_transform_refuses_a_non_identity_scale_in_page_pixel_space
         validate_raw_proposal(forged)
 
 
-def test_resolver_refuses_an_occlusion_polygon_outside_the_shared_page_extent():
-    """`validate_occlusion` cannot see the page; the resolver must."""
-    raw_sources = _geometry_sources()  # 100x100 page
-    out_of_bounds = occlusion_envelope(
-        run_id="r2-fixture",
-        subject_id="occ_out_of_bounds",
-        config_digest="d" * 64,
-        adapter_revision="fixture-r2-v1",
-        inputs=[],
-        payload={
-            "schema": "designator-occlusion.v1",
-            "occlusion_id": "occ_out_of_bounds",
-            "page_id": "pg_fixture",
-            "page_ordinal": 0,
-            "polygon": [{"x": 500, "y": 500}, {"x": 501, "y": 500}, {"x": 501, "y": 501}],
-            "z_relationship": "unknown",
-            "review_state": "open",
-            "receipt_ref": RECEIPT,
-        },
-    )
-    with pytest.raises(SchemaRefusal, match="outside the shared page extent"):
-        resolve(raw_sources, [out_of_bounds])
-
-
-def test_resolver_refuses_two_occlusions_sharing_one_identity():
-    """The resolver refuses colliding raw proposal ids; occlusions are the same
-    fact: `occlusion_ids` goes into every partition row, so an id counted
-    twice would tell a reviewer two obstructions bear on the page.
-    """
-    raw_sources = _geometry_sources()
-    first = _occlusion_envelope()
-    second = occlusion_envelope(
-        run_id="r2-fixture",
-        subject_id="occ_fixture",  # the same identity as `first`
-        config_digest="d" * 64,
-        adapter_revision="fixture-r2-v1",
-        inputs=[],
-        payload={
-            "schema": "designator-occlusion.v1",
-            "occlusion_id": "occ_fixture",
-            "page_id": "pg_fixture",
-            "page_ordinal": 0,
-            "polygon": [{"x": 40, "y": 40}, {"x": 41, "y": 40}, {"x": 41, "y": 41}],
-            "z_relationship": "unknown",
-            "review_state": "open",
-            "receipt_ref": RECEIPT,
-        },
-    )
-    assert first["payload"]["polygon"] != second["payload"]["polygon"]
-    with pytest.raises(SchemaRefusal, match="duplicate occlusion identities"):
-        resolve(raw_sources, [first, second])
-
-
-def test_resolver_refuses_raw_proposals_with_mismatched_page_pixel_extent():
-    """Page lineage (id+ordinal) is not page pixel extent; both must be pinned."""
-    policy = load_geometry_policy()
-    small = yolo_obb(
-        page_id="pg_shared",
-        page_ordinal=0,
-        page_w=100,
-        page_h=100,
-        policy=policy,
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        detections=[
-            {
-                "obb": [
-                    {"x": 10, "y": 20},
-                    {"x": 20, "y": 10},
-                    {"x": 30, "y": 20},
-                    {"x": 20, "y": 30},
-                ],
-                "score_bp": 8000,
-            }
-        ],
-    )[0]
-    big = chandra_layout(
-        page_id="pg_shared",
-        page_ordinal=0,
-        page_w=200,
-        page_h=200,
-        config_sha256=policy["config_sha256"],
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        regions=[{"bbox_1000": [0, 0, 500, 500], "score_bp": 9000}],
-    )[0]
-    with pytest.raises(SchemaRefusal, match="page pixel extent"):
-        resolve([_raw_envelope(small), _raw_envelope(big)], [])
-
-
-def test_resolve_does_not_mutate_its_inputs_across_the_internal_double_derivation():
-    """`resolve()` calls `_derive_resolution` twice (once directly, once
-    inside `validate_resolution`); confirm the second sees the same
-    untouched inputs.
-    """
-    raw_sources = _geometry_sources()
-    occlusions = [_occlusion_envelope()]
-    before_raw = deepcopy(raw_sources)
-    before_occ = deepcopy(occlusions)
-    first = resolve(raw_sources, occlusions)
-    second = resolve(raw_sources, occlusions)
-    assert first == second
-    assert raw_sources == before_raw
-    assert occlusions == before_occ
-
-
 def test_empty_detections_lists_are_held_as_empty_not_an_error():
     policy = load_geometry_policy()
     assert (
@@ -759,13 +186,6 @@ def test_empty_detections_lists_are_held_as_empty_not_an_error():
         )
         == []
     )
-
-
-def test_resolver_refuses_a_page_with_zero_raw_proposals_rather_than_an_empty_partition():
-    """A page with no raw proposal source has no denominator to partition,
-    so it fails closed instead of returning an empty coverage record."""
-    with pytest.raises(SchemaRefusal, match="no raw proposal denominator"):
-        resolve([], [])
 
 
 def test_degenerate_obb_with_only_three_distinct_corners_is_accepted():
@@ -792,24 +212,6 @@ def test_degenerate_obb_with_only_three_distinct_corners_is_accepted():
         ],
     )
     assert proposal[0]["aabb"] == {"x": 10, "y": 10, "w": 21, "h": 1}
-
-
-def test_unicode_page_id_round_trips_through_adapter_and_resolver():
-    policy = load_geometry_policy()
-    page_id = "página_église_日本"  # accented + CJK
-    proposal = chandra_layout(
-        page_id=page_id,
-        page_ordinal=0,
-        page_w=100,
-        page_h=100,
-        config_sha256=policy["config_sha256"],
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        regions=[{"bbox_1000": [0, 0, 500, 500], "score_bp": 9000}],
-    )[0]
-    assert proposal["page_id"] == page_id
-    resolved = resolve([_raw_envelope(proposal)], [])
-    assert resolved["page_id"] == page_id
 
 
 @pytest.mark.parametrize("score_bp", [0, 10_000])
@@ -862,180 +264,54 @@ def test_score_bp_boundary_values_are_refused(score_bp):
         )
 
 
-def test_chandra_bbox_at_a_one_pixel_page_collapses_to_too_few_distinct_points_and_is_refused():
-    """The floor-left and ceil-right formulas both round to the page's only
-    column at a 1px page, so a full-range bbox yields fewer than three
-    distinct corners -- a fail-closed refusal, not a coverage loss.
-    """
+def test_content_identity_unions_exact_duplicate_single_call_detections():
     policy = load_geometry_policy()
-    with pytest.raises(SchemaRefusal, match="fewer than three distinct points"):
-        chandra_layout(
-            page_id="pg_tiny",
-            page_ordinal=0,
-            page_w=1,
-            page_h=1,
-            config_sha256=policy["config_sha256"],
-            receipt_ref=RECEIPT,
-            response_ref=RESPONSE,
-            regions=[{"bbox_1000": [0, 0, 1000, 1000], "score_bp": 9000}],
-        )
-
-
-def test_chandra_bbox_rounding_never_inverts_for_a_thin_real_region():
-    """A genuinely thin but non-degenerate region: the right edge must never
-    land left of the left edge after ceil-based rounding.
-    """
-    policy = load_geometry_policy()
-    thin = chandra_layout(
+    obb = [
+        {"x": 10, "y": 20},
+        {"x": 20, "y": 10},
+        {"x": 30, "y": 20},
+        {"x": 20, "y": 30},
+    ]
+    yolo = yolo_obb(
         page_id="pg_fixture",
         page_ordinal=0,
-        page_w=2000,
-        page_h=2000,
-        config_sha256=policy["config_sha256"],
+        page_w=100,
+        page_h=100,
+        policy=policy,
         receipt_ref=RECEIPT,
         response_ref=RESPONSE,
-        regions=[{"bbox_1000": [500, 500, 501, 999], "score_bp": 9000}],
+        detections=[{"obb": obb, "score_bp": 8000}, {"obb": obb, "score_bp": 8000}],
     )
-    aabb = thin[0]["aabb"]
-    assert aabb["w"] >= 1 and aabb["h"] >= 1, "no inverted or zero-area crop for a thin real region"
-
-    full_width = chandra_layout(
-        page_id="pg_fixture",
-        page_ordinal=0,
-        page_w=2000,
-        page_h=2000,
-        config_sha256=policy["config_sha256"],
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        regions=[{"bbox_1000": [0, 0, 1000, 1000], "score_bp": 9000}],
-    )[0]
-    assert full_width["aabb"] == {"x": 0, "y": 0, "w": 2000, "h": 2000}
+    assert len(yolo) == 1
+    assert yolo[0]["observation_unit"] == "response-detection"
+    assert yolo[0]["observed_ordinals"] == [0, 1]
 
 
 def test_a_raw_proposal_must_name_what_its_observation_ordinals_count():
     """`[0, 1]` means two detections in one response; the record says what an
     ordinal counts, so a reader never has to guess."""
-    proposal = chandra_layout(
+    proposal = yolo_obb(
         page_id="pg_fixture",
         page_ordinal=0,
         page_w=100,
         page_h=100,
-        config_sha256="c" * 64,
+        policy=load_geometry_policy(),
         receipt_ref=RECEIPT,
         response_ref=RESPONSE,
-        regions=[{"bbox_1000": [0, 0, 500, 500], "score_bp": 9000}],
+        detections=[
+            {
+                "obb": [
+                    {"x": 10, "y": 20},
+                    {"x": 20, "y": 10},
+                    {"x": 30, "y": 20},
+                    {"x": 20, "y": 30},
+                ],
+                "score_bp": 9000,
+            }
+        ],
     )[0]
     assert proposal["observation_unit"] == "response-detection"
     with pytest.raises(SchemaRefusal, match="what its observation ordinals count"):
         validate_raw_proposal({**proposal, "observation_unit": "pass"})
     with pytest.raises(SchemaRefusal, match="observed ordinals"):
         validate_raw_proposal({**proposal, "observed_ordinals": [1, 0]})
-
-
-def test_occlusion_polygon_answers_the_same_shape_question_as_proposal_geometry():
-    """One degenerate point repeated three times is not page geometry, and the
-    two validators may not disagree about that."""
-    with pytest.raises(SchemaRefusal, match="fewer than three distinct points"):
-        occlusion_envelope(
-            run_id="r2-fixture",
-            subject_id="occ_degenerate",
-            config_digest="d" * 64,
-            adapter_revision="fixture-r2-v1",
-            inputs=[],
-            payload={
-                "schema": "designator-occlusion.v1",
-                "occlusion_id": "occ_degenerate",
-                "page_id": "pg_fixture",
-                "page_ordinal": 0,
-                "polygon": [{"x": 11, "y": 11}, {"x": 11, "y": 11}, {"x": 11, "y": 11}],
-                "z_relationship": "unknown",
-                "review_state": "open",
-                "receipt_ref": RECEIPT,
-            },
-        )
-
-
-def test_two_proposals_with_the_same_box_are_an_ambiguity_not_an_invented_hierarchy():
-    """Coincident AABBs each 'contain' the other, so publishing one as the
-    outer one would invent a parent-child relation from sort order."""
-    policy = load_geometry_policy()
-    box = [{"x": 4, "y": 804}, {"x": 8, "y": 804}, {"x": 8, "y": 808}, {"x": 4, "y": 808}]
-    proposals = yolo_obb(
-        page_id="pg_coincident",
-        page_ordinal=0,
-        page_w=100,
-        page_h=2600,
-        policy=policy,
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        # The same box at two scores is two raw observations, never one.
-        detections=[{"obb": box, "score_bp": 9000}, {"obb": box, "score_bp": 7000}],
-    )
-    assert len(proposals) == 2
-    assert proposals[0]["aabb"] == proposals[1]["aabb"]
-
-    envelopes = [_raw_envelope(row) for row in proposals]
-    resolved = resolve(envelopes, [])
-    assert resolved["containment"] == [], "equal boxes are not a hierarchy"
-    assert [row["state"] for row in resolved["ambiguities"]] == ["coincident-aabb"]
-    assert {resolved["ambiguities"][0]["left"], resolved["ambiguities"][0]["right"]} == {
-        row["proposal_id"] for row in proposals
-    }
-    assert resolve(list(reversed(envelopes)), []) == resolved
-
-    # A strictly larger box still contains each of them.
-    bigger = yolo_obb(
-        page_id="pg_coincident",
-        page_ordinal=0,
-        page_w=100,
-        page_h=2600,
-        policy=policy,
-        receipt_ref=RECEIPT,
-        response_ref=RESPONSE,
-        detections=[
-            {
-                "obb": [
-                    {"x": 0, "y": 800},
-                    {"x": 20, "y": 800},
-                    {"x": 20, "y": 820},
-                    {"x": 0, "y": 820},
-                ],
-                "score_bp": 8000,
-            }
-        ],
-    )[0]
-    with_outer = resolve(envelopes + [_raw_envelope(bigger)], [])
-    assert {row["inner"] for row in with_outer["containment"]} == {
-        row["proposal_id"] for row in proposals
-    }
-    assert {row["outer"] for row in with_outer["containment"]} == {bigger["proposal_id"]}
-
-
-def test_chandra_custody_is_not_stored_after_the_seal():
-    tree = _FixtureTree()
-    with pytest.raises(SchemaRefusal, match="storing a Chandra raw response afterwards"):
-        retain_chandra_response(
-            _Context(tree=tree, sealed=True),
-            b"a late response",
-            RECEIPT,
-            page_id=PAGE_ID,
-            page_ordinal=PAGE_ORDINAL,
-        )
-    assert tree.blobs == {}
-
-
-def test_chandra_custody_refuses_a_blob_changed_under_its_reference():
-    tree = _FixtureTree()
-    stored = retain_chandra_response(
-        _Context(tree=tree), b"fixture", RECEIPT, page_id=PAGE_ID, page_ordinal=PAGE_ORDINAL
-    )
-    tree.blobs[stored["response_ref"]["relative_path"]] = b"tampered"
-    with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
-        read_retained_chandra_response(
-            tree,
-            stored["response_ref"],
-            RECEIPT,
-            stored["custody_ref"],
-            page_id=PAGE_ID,
-            page_ordinal=PAGE_ORDINAL,
-        )

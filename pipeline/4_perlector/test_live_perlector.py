@@ -37,7 +37,7 @@ from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.decoding import load_decoding_policy
 from common.page_path import distinct_refs
-from common.page_testimonia import sealed_proposal_regions, validate_page_testimonium_record
+from common.page_testimonia import validate_page_testimonium_record
 from common.runtree.store import SERVING_LOGS_DIR, RunTree
 from common.sealed_config import read_sealed_toml
 from common.stage import StageContext
@@ -582,13 +582,10 @@ def test_an_engine_call_naming_bytes_that_moved_is_refused(live_run):
 
 
 def test_an_engine_call_is_held_to_the_receipts_sealed_seed(live_run):
-    """A page reading sends the receipt's seed; a call under a variance arm's seed is
+    """A page reading sends the receipt's seed; a call under any other seed is
     refused where the reading binds it."""
-    from common.decoding import VARIANCE_ARMS, load_decoding_policy, variance_arm_seed
-
     root, _catalogue = live_run
-    policy, _digest = load_decoding_policy()
-    arm_seed = variance_arm_seed(policy, VARIANCE_ARMS[0])
+    arm_seed = 8
     tree = RunTree(root, "r")
     context, at_receipt_seed = _engine_call_world(tree, seed=7)
     perlector.engine_call_inputs(context, at_receipt_seed)
@@ -811,7 +808,6 @@ def test_one_retained_response_named_by_both_halves_of_a_page_record_is_one_inpu
     """
     root, catalogue = live_run
     context = _page_context(root, catalogue, monkeypatch)
-    proposals = sealed_proposal_regions(context)
     pages = [
         context.tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
         for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]
@@ -821,7 +817,7 @@ def test_one_retained_response_named_by_both_halves_of_a_page_record_is_one_inpu
         (page for page in pages if page["payload"].get("native_capture") is not None), None
     )
     assert record is not None, "no page Testimonium in this tree retains a native capture"
-    validate_page_testimonium_record(context, record, proposals)
+    validate_page_testimonium_record(context, record)
 
     reference = record["payload"]["native_capture"]["raw_response_ref"]
     assert reference in record["inputs"]
@@ -830,21 +826,28 @@ def test_one_retained_response_named_by_both_halves_of_a_page_record_is_one_inpu
     both["self_hash"] = self_hash(both)
     # `inputs` is untouched: it is what the producer would have written, and
     # the point is that this record needs no second entry to be honest.
-    validate_page_testimonium_record(context, both, proposals)
+    validate_page_testimonium_record(context, both)
 
     # The rule did not go soft. An input the record does not derive from is
     # still refused, and so is one retained response left unbound.
+    foreign = next(
+        page["payload"]["presented"]["image_path"]
+        for page in pages
+        if page["payload"]["presented"]
+        and page["payload"]["presented"]["image_path"]
+        != record["payload"]["presented"]["image_path"]
+    )
     extra = copy.deepcopy(both)
     extra["inputs"] = sorted(
-        [*extra["inputs"], context.input_ref(proposals[0]["payload"]["image_path"])],
+        [*extra["inputs"], context.input_ref(foreign)],
         key=lambda item: (item["relative_path"], item["sha256"]),
     )
     with pytest.raises(SchemaRefusal, match="does not bind exactly its presented image"):
-        validate_page_testimonium_record(context, extra, proposals)
+        validate_page_testimonium_record(context, extra)
     unbound = copy.deepcopy(both)
     unbound["inputs"] = [item for item in unbound["inputs"] if item != reference]
     with pytest.raises(SchemaRefusal, match="every retained raw response"):
-        validate_page_testimonium_record(context, unbound, proposals)
+        validate_page_testimonium_record(context, unbound)
 
 
 # --- concurrent reader calls ---------------------------------------------------

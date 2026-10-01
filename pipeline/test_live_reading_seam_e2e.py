@@ -181,8 +181,8 @@ def _vllm_row(*, recipe: str, chair: str, tier: str, port: int) -> dict[str, Any
         # Chandra's row moved next, for the same reason once more: the chair is
         # asked in its vendor's own `OCR_LAYOUT_PROMPT` rather than this
         # repository's retired instruction, re-measured at 593 against 256, so
-        # its need is 1 + 593 + 1,645 = 2,239 (U14's re-measured answer, shared
-        # with `designator_structure`) where the row left 2,048. The shipped
+        # its need is 1 + 593 + 1,645 = 2,239 (U14's re-measured answer) where
+        # the row left 2,048. The shipped
         # catalogue states 18,000 for it (U15) at every tier. DAI keeps 2,048:
         # its act crop needs 1 + 84 + 230 and fits with room to spare, and raising a row nothing refuses would
         # remove the one chair this stand-in still proves the arithmetic
@@ -245,12 +245,9 @@ def _toml_profile(row: dict[str, Any]) -> str:
 def write_live_catalogue(path: Path, registry) -> Path:
     """Every chair this seam can serve, live, at every tier the placement file names.
 
-    The Designator keeps its fixture rows, and its Surya detector with it
-    (fixture rows answer only a fixture pass): this module's subject is the reading
-    seam, and a live row for `designator_structure` would start its structure
-    pass instead (`pipeline/2_designator/structure_pass.py`, exercised end to end
-    in `pipeline/test_structure_chair_e2e.py`). Every other configured
-    chair is live at all three tiers, which is also what
+    The Designator's two detectors keep their fixture rows (a fixture row answers
+    only a synthetic run): this module's subject is the reading seam. Every other
+    configured chair is live at all three tiers, which is also what
     `verify_recipes_cover_chairs` requires of any catalogue a real run seals.
     """
     rows: list[dict[str, Any]] = [
@@ -262,7 +259,6 @@ def write_live_catalogue(path: Path, registry) -> Path:
             "description": "offline walking-skeleton fixture row",
         }
         for chair, recipe in (
-            ("designator_structure", "fake-designator-v0"),
             ("designator_surya", "fake-surya-v0"),
             ("secondary_proposer", "fake-secondary-proposer-v0"),
         )
@@ -317,12 +313,8 @@ def stage_argv(run_root: Path, catalogue: Path, *, placement_tier: str | None) -
         str(catalogue),
         "--pdf-render-config",
         str(config / "pdf_render.toml"),
-        "--designator-padding-config",
-        str(config / "designator_padding.toml"),
         "--designator-geometry-config",
         str(config / "designator_geometry.toml"),
-        "--alignment-config",
-        str(config / "alignment.toml"),
         "--formats-config",
         str(config / "formats.toml"),
         "--recovery-config",

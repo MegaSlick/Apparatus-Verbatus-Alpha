@@ -45,6 +45,7 @@ from operations.corpus.local_admission import SCHEMA as LEDGER_SCHEMA
 from operations.corpus.local_admission import validate_local_admission_ledger
 from operations.corpus.reference import build_reference_page
 from operations.spike_perlector.models import OutputStatus
+from proof.build_fixture import ACTS, act_descriptor
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -298,8 +299,16 @@ def _orchestrate(run_root: Path, scenario: str) -> subprocess.CompletedProcess[s
 
 
 def _fixture_acts() -> list[dict]:
-    skeleton = tomllib.load((ROOT / "proof" / "skeleton_fixture.toml").open("rb"))
-    return [row for row in skeleton["act"] if row["page_ordinal"] == 1]
+    """The acts the fixture draws on page 1, with the text its witnesses read."""
+    return [
+        {
+            "key": act["key"],
+            **act_descriptor(act["page_ordinal"], act["proposal_ordinal"])["bounds"],
+            "text": act["text"],
+        }
+        for act in ACTS
+        if act["page_ordinal"] == 1
+    ]
 
 
 def _fixture_page() -> dict:

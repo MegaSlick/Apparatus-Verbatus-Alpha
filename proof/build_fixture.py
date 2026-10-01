@@ -26,7 +26,6 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from common.imaging import crop_png  # noqa: E402
 from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, render_page  # noqa: E402
 
 PROOF_ROOT = Path(__file__).resolve().parent
@@ -115,16 +114,6 @@ PAGE_REFUSALS = (
 )
 _UNMATCHABLE_SHA256 = "0" * 64
 
-# A recorded structure failure (there is no live structure model to fail). The
-# page and every act on it must be held visibly, never skipped.
-STRUCTURE_FAILURES = (
-    {
-        "scenario": "structure-failure",
-        "page_ordinal": 1,
-        "reason_code": "recorded-fixture-structure-failure",
-    },
-)
-
 
 def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=False, kind="act"):
     return {
@@ -138,9 +127,9 @@ def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=Fa
     }
 
 
-# What the fake Perlector answers when it reads a page whole (`reading_unit =
-# "page"`). The ids are the page feed's: A is attestator_1 (Chandra, one boxed
-# unit per declared act on page 1, one unboxed unit of page text on page 2), B
+# What the fake Perlector answers when it reads a page whole. The ids are the
+# page feed's: A is attestator_1 (Chandra, one boxed unit per declared act on
+# page 1, one unboxed unit of page text on page 2), B
 # is attestator_2 (DAI, one boxed unit per detector record), C is attestator_3
 # (Churro, one unit per line, no boxes), L are Surya's lines.
 # `happy` places every entry: page 1's by Chandra's boxes, page 2's by the
@@ -306,7 +295,6 @@ PAGE_ANSWER_VARIANTS = {
     "churro-truncation": ("happy", {}),
     "refused-page": ("happy", {}),
     "refused-first-page": ("happy", {}),
-    "structure-failure": ("happy", {}),
     "genuinely-empty-witness": ("happy", {1: _citing_no_churro_unit}),
     "not-run-witness": ("happy", {1: _citing_no_churro_unit}),
     "malformed-witness": ("happy", {1: _citing_no_churro_unit}),
@@ -522,10 +510,6 @@ SCENARIOS = (
         "genuinely-empty-witness",
         "Churro returns an empty body for page 1: a completed empty reading, never a "
         "missing or failed attempt.",
-    ),
-    (
-        "structure-failure",
-        "The structure chair's recorded failure: the Designator holds page 1 visibly.",
     ),
     (
         "ink-free-page",
@@ -770,22 +754,6 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         if scenarios := page.get("scenarios"):
             lines.append("scenarios = [" + ", ".join(toml_string(item) for item in scenarios) + "]")
 
-    for act in ACTS:
-        source = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])
-        bounds = source["bounds"]
-        lines += [
-            "",
-            "[[act]]",
-            f"key = {toml_string(act['key'])}",
-            f"page_ordinal = {act['page_ordinal']}",
-            f"proposal_ordinal = {act['proposal_ordinal']}",
-            f"x = {bounds['x']}",
-            f"y = {bounds['y']}",
-            f"w = {bounds['w']}",
-            f"h = {bounds['h']}",
-            f"text = {toml_string(act['text'])}",
-        ]
-
     for observation in NATIVE_OBSERVATIONS:
         lines += ["", "[[native_observation]]"]
         for key in ("scenario", "chair", "page_ordinal", "x", "y", "w", "h"):
@@ -801,19 +769,6 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
     for row in SURYA_BLOCKS:
         lines += ["", "[[surya_block]]"]
         lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
-
-    # a2 continues across the page break: a region of the same act, not a new act.
-    continuation_source = act_descriptor(2, 1)
-    lines += [
-        "",
-        "[[continuation]]",
-        'act_key = "a2"',
-        "page_ordinal = 2",
-        f"x = {continuation_source['bounds']['x']}",
-        f"y = {continuation_source['bounds']['y']}",
-        f"w = {continuation_source['bounds']['w']}",
-        f"h = {continuation_source['bounds']['h']}",
-    ]
 
     for row in PAGE_TESTIMONY:
         lines += ["", "[[testimony]]"]
@@ -896,18 +851,6 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             lines += ["", f"[[{table}]]"]
             lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
 
-    for row in STRUCTURE_FAILURES:
-        lines += [
-            "",
-            "# A recorded structure-chair failure: the Designator holds the page and every",
-            "# act that needed it, with the reason named, rather than skipping either.",
-            "",
-            "[[structure_failure]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"page_ordinal = {row['page_ordinal']}",
-            f"reason_code = {toml_string(row['reason_code'])}",
-        ]
-
     lines += [
         "",
         "# Per-scenario declared digests the checked-in bytes cannot match, so the",
@@ -936,11 +879,6 @@ def main() -> int:
     (PROOF_ROOT / "skeleton_fixture.toml").write_text(
         build_skeleton_fixture(rendered), encoding="utf-8"
     )
-
-    # Fail here if a crop the pipeline will take is not derivable.
-    for act in ACTS:
-        source = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])
-        crop_png(rendered[act["page_ordinal"]], source["bounds"])
 
     print(f"wrote {len(rendered)} pages, fixtures.toml and skeleton_fixture.toml for {FIXTURE_ID}")
     return 0

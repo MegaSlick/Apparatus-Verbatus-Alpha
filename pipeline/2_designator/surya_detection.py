@@ -8,11 +8,9 @@ quantization. Nothing here carries text, cuts a crop, holds an act or enters
 one: the records are for later stages to account against.
 
 The chair is resolved every run. Absent, nothing is published and the sealed
-roster records why. Configured, its serving row says how it answers, and each
-row answers one pass only, so a run's receipts are never mixed: a fixture row
-from the synthetic fixture's declared rows, on the fixture pass (a live pass
-reads no fixture and writes no fixture receipt); a subprocess row by running
-Surya in its own pinned environment, on the live pass.
+roster records why. Configured, its serving row says how it answers: a fixture
+row from the synthetic fixture's declared rows, which a real submission never
+has; a subprocess row by running Surya in its own pinned environment.
 """
 
 from __future__ import annotations
@@ -107,12 +105,11 @@ def resolved_surya(context) -> ChairIdentity | None:
     return resolved
 
 
-def surya_mode(context, identity: ChairIdentity, *, live: bool) -> str:
+def surya_mode(context, identity: ChairIdentity, *, real: bool) -> str:
     """`fixture` or `subprocess`, by the sealed catalogue row alone.
 
-    Surya is never a served engine, so a `vllm` row is refused. A fixture row
-    answers only the fixture pass and a subprocess row only the live pass, so
-    a fixture run never carries a real receipt beside its declared ones.
+    Surya is never a served engine, so a `vllm` row is refused, and a fixture
+    row answers only a synthetic run, the one that declares Surya's rows.
     """
     try:
         mode = serving_mode_for(
@@ -124,18 +121,16 @@ def surya_mode(context, identity: ChairIdentity, *, live: bool) -> str:
         raise ContractError(
             f"the serving posture of the Surya chair could not be resolved: {error}"
         ) from error
-    if mode == ("subprocess" if live else "fixture"):
+    if mode == "subprocess" or (mode == "fixture" and not real):
         return mode
-    if mode == "subprocess":
+    if mode == "fixture":
         raise ContractError(
-            f"the Surya chair {identity.role!r} resolves to a subprocess row on the fixture "
-            "pass; a subprocess row answers only the live pass, and a fixture run's receipts "
-            "are all declared"
+            f"the Surya chair {identity.role!r} resolves to a fixture row on a real "
+            "submission; a fixture row answers only a synthetic run, which declares its rows"
         )
     raise ContractError(
         f"the Surya chair {identity.role!r} resolves to a {mode!r} row; Surya runs as a "
         "subprocess in its own environment"
-        + (", and a fixture row answers only the fixture pass" if live else "")
     )
 
 
@@ -145,13 +140,13 @@ def _profile(context, identity: ChairIdentity):
     )
 
 
-def check_surya_runnable(context, runner: SuryaRunner = SURYA_SUBPROCESS) -> None:
-    """Refuse a Surya chair the live pass cannot run, before any paid work starts:
-    its row, the versions its environment reports, and its verified weights."""
+def check_surya_runnable(context, runner: SuryaRunner = SURYA_SUBPROCESS, *, real: bool) -> None:
+    """Refuse a Surya chair this run cannot run, before anything is published: its
+    row and, for a subprocess row, the versions its environment reports and its
+    verified weights."""
     identity = resolved_surya(context)
-    if identity is None:
+    if identity is None or surya_mode(context, identity, real=real) != "subprocess":
         return
-    surya_mode(context, identity, live=True)
     try:
         runner.check(_profile(context, identity))
     except ServingError as error:
@@ -297,7 +292,7 @@ def publish_surya_detections(
     context,
     pages: dict[int, dict],
     *,
-    live: bool,
+    real: bool,
     runner: SuryaRunner = SURYA_SUBPROCESS,
     refused_pages: frozenset[int] = frozenset(),
 ) -> None:
@@ -313,7 +308,7 @@ def publish_surya_detections(
     identity = resolved_surya(context)
     if identity is None:
         return
-    mode = surya_mode(context, identity, live=live)
+    mode = surya_mode(context, identity, real=real)
     run, page_bytes = _run_surya(context, identity, mode, pages, runner, refused_pages)
     provenance = _provenance(context, identity, run)
     for ordinal, page_record in sorted(pages.items()):

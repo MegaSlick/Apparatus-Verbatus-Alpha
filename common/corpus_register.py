@@ -73,8 +73,8 @@ _FORBIDDEN_PREFERENCE_FIELDS: Final = frozenset(
         "selected",
         "chosen",
         # These are witness-selection mechanisms under a different spelling.
-        # `agree` is deliberately absent: page partition evidence legitimately
-        # records `partition_disagreement`.
+        # `agree` is deliberately absent: it is part of ordinary record words such
+        # as `disagreement`, which name no selection.
         "consensus",
         "majority",
         "vote",

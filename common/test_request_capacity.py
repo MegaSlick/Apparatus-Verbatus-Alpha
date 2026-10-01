@@ -395,8 +395,8 @@ def test_a_negative_count_is_refused_rather_than_defaulted(field):
 
 # The measured constants are bound to their prompts by digest.  That the digest
 # still matches the prompt each stage actually sends is asserted where those
-# prompts live -- `pipeline/2_designator/test_structure_pass.py` and
-# `pipeline/3_attestatores/test_live_witness.py` -- so this module never has to
+# prompts live -- `pipeline/3_attestatores/test_live_witness.py` -- so this
+# module never has to
 # import a stage across the boundary `common/README.md` draws.
 
 
@@ -428,16 +428,11 @@ def test_prompt_digest_is_order_sensitive():
 @pytest.mark.parametrize(
     "chair, expected",
     [
-        # Re-measured for `verbatus-structure-prompt.v3`: this chair's declared
-        # response shape is Chandra's layout HTML now (1575 -> 1645). The rise
-        # is the measured fixture's entity-escaped apostrophes, not the tags --
-        # the same blocks written literally measure 1506, below the JSON they
-        # replace -- and the dearer spelling is the one sealed because
+        # Chandra's layout HTML: the measured fixture's entity-escaped
+        # apostrophes, not the tags, set it -- the same blocks written literally
+        # measure 1506 -- and the dearer spelling is the one sealed because
         # `parse_layout_html` accepts it. `common/request_capacity.py` carries
         # both numbers and the reason.
-        ("designator_structure", 1645),
-        # U14: shares `designator_structure`'s prompt and grammar, so the same
-        # fixture costs it the same (1520 -> 1645).
         ("attestator_1", 1645),
         ("attestator_2", 1426),
         # U14: re-measured over the vendor's `HistoricalDocument` grammar at
@@ -464,9 +459,7 @@ def test_the_measured_record_answer_budget():
     assert dict(MEASURED_RECORD_ANSWER_TOKENS) == {"attestator_2": 230}
 
 
-@pytest.mark.parametrize(
-    "chair", ["designator_structure", "attestator_1", "attestator_3", "perlector"]
-)
+@pytest.mark.parametrize("chair", ["attestator_1", "attestator_3", "perlector"])
 def test_a_whole_page_chair_has_no_record_budget_to_reserve(chair):
     """The whole-page chairs are never asked for one record, so nothing measured one."""
 

@@ -3,10 +3,10 @@
 A genuine real submission -- the synthetic fixture's own two pages copied into an
 approved storage root and admitted through `operations/submit/submit.py` -- is
 driven by the real Door, Exemplar and Ink Map programs. The catalogue this
-module writes keeps `designator_structure` on its fixture rows, so the
-Designator refuses the run by name ("a real submission may not be marked out by
-the fixture structure chair") and writes nothing; the test below drives its
-program to exactly that refusal.
+module writes keeps the Designator's detectors on their fixture rows, so the
+Designator refuses the run by name ("a fixture row answers only a synthetic
+run") and writes nothing; the test below drives its program to exactly that
+refusal.
 
 Nothing here starts a pod, opens a socket, loads a model or reaches a network.
 """
@@ -106,16 +106,13 @@ def run_in_process(module, run_root: Path, catalogue: Path, *, serving_factory):
 # ========================= what a real run cannot do =========================
 
 
-def test_the_designator_itself_refuses_a_real_submission_and_writes_nothing(tmp_path):
-    """Why the Designator layer above is hand-built, driven rather than asserted.
+def test_the_designator_refuses_fixture_detectors_on_a_real_submission_and_writes_nothing(
+    tmp_path,
+):
+    """A fixture row answers only a synthetic run, which declares its boxes.
 
-    The stage that would produce a real structural denominator refuses to
-    invent one under this catalogue, so this module supplies the layer by hand
-    and says so. A live structure chair would mark the submission out
-    (`pipeline/test_structure_chair_e2e.py`); the catalogue here keeps
-    `designator_structure` fixture, and marking a real page out with an ink scan
-    standing in for a model is exactly what the refusal forbids. It is honest in
-    both directions: it names what it will not do, and the tree it leaves is byte
+    The catalogue here keeps the record detector and Surya on fixture rows, so the
+    Designator refuses before it publishes anything: the tree it leaves is byte
     for byte what the Ink Map sealed.
     """
     registry = ChairRegistry.from_toml(str(MODELS_CONFIG))
@@ -128,6 +125,5 @@ def test_the_designator_itself_refuses_a_real_submission_and_writes_nothing(tmp_
     result = invoke_stage(DESIGNATOR_CLI, run_root, catalogue)
 
     assert result.returncode == EXIT_FATAL, result.stderr
-    assert "a real submission may not be marked out by the fixture structure chair" in result.stderr
-    assert "no proposals or holds were fabricated" in result.stderr
-    assert snapshot(run_root) == before, "a refused structural pass writes nothing"
+    assert "a fixture row answers only a synthetic run" in result.stderr
+    assert snapshot(run_root) == before, "a refused Designator writes nothing"

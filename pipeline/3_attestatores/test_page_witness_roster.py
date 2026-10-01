@@ -174,7 +174,6 @@ def test_no_testimonium_is_sealed_before_the_declaration_is_validated():
             attempt=attestatores.not_run_attempt("fixture test needs no live chair"),
             ordinal=1,
             page_ids={1: "page-1"},
-            proposals=[],
             live=False,
         )
     assert published == [], "a page record sealed before the declaration was validated"
@@ -193,7 +192,6 @@ def test_a_page_record_for_a_chair_outside_the_page_roster_is_refused_before_it_
             attempt=attestatores.not_run_attempt("fixture test needs no live chair"),
             ordinal=1,
             page_ids={1: "page-1"},
-            proposals=[],
             live=False,
         )
     assert published == []
