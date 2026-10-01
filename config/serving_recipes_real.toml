@@ -48,22 +48,13 @@
 # largest any row now asks for), `context_cap = 32,768` at every tier but
 # `generic-80gb-plus`, which is 65,536 for the Perlector's page reading (admits Churro's
 # 25,000-token generation bound, and at `generic-80gb-plus` the Perlector's
-# two-view page-fallback act, 20,400 image tokens alone); `engine_memory_fraction = "0.90"` at `generic-24gb` only (0.58 had
+# whole-page reading); `engine_memory_fraction = "0.90"` at `generic-24gb` only (0.58 had
 # no derivation anywhere in this tree or the old pipeline, which never served
 # below 0.85 on a comparable card, and under `residency = "single"` it was a
 # co-residency leftover that only ever subtracted pixels).
 # `operations/serving/test_serving_catalogue_capacity.py` reads this file and
-# asserts that every row it ships passes -- at one and at two capture views for
-# the Perlector -- and that none exceeds its tier's `context_cap`.
-#
-# ONE MEASURED SHAPE STILL DOES NOT FIT, and it is recorded rather than papered
-# over: a two-capture-view *page-fallback* act -- an act whose bounds are the
-# whole page, seen from two captures -- sends four page-sized images, which at
-# the 80 GB+ tier's `max_pixels` is 20,400 prompt tokens before a word of
-# prompt.  Its token count fits the smaller tiers' contexts, but its weights
-# rule those tiers out.  The 80 GB+ row has a 65,536-token context, sized for a
-# whole-page reading (its own comment has the arithmetic); the pinned capacity
-# case says the act request fits that row.
+# asserts that every witness row admits a dense page, that the Perlector row
+# admits a dense whole-page reading, and that none exceeds its tier's `context_cap`.
 #
 # CHURRO'S ANSWER BOUND IS THE VENDOR'S OWN, AND EVERY TIER HOLDS IT.  The live
 # chair is asked in the system string the vendor's own registry resolves for

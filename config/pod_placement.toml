@@ -48,10 +48,8 @@
 # 18,000-token rows, Churro's 32,768-token row
 # (its complete 25,000-token vendor answer bound plus a 300-dpi A4 page's
 # ~5,100 image tokens; the model's KV cache is small enough that memory allows
-# it at every tier), and at `generic-80gb-plus` the Perlector's act request,
-# which carries a region crop *and* a page render per capture view, its
-# two-capture-view page-fallback act costing 20,400 image tokens alone at that
-# tier's `max_pixels`.
+# it at every tier), and at `generic-80gb-plus` the Perlector's whole-page
+# reading.
 # `pixel_cap = 3,584` at every tier
 # (3,584² = 12,845,056 = DAI's vendor `max_pixels`, the largest any row now asks
 # for) retires the per-tier pixel ladder along with it: a chair's

@@ -1,10 +1,7 @@
 # The sealed policy of the ink measurement: where ink lies on a page, measured
 # with no model involved. The Ink Map measures it before any stage claims a
 # region, the Recensor and the Armarium re-measure against what was read, and
-# the Perlector's page accounting reads the Ink Map's runs under it. The
-# Designator's structure pass also reads it while that pass exists, so the paper
-# value and the page-spanning component it withholds are the ones the audit takes
-# out. Sealed as `ink-map` in every run's config map.
+# the Perlector's page accounting reads the Ink Map's runs under it. Sealed as `ink-map` in every run's config map.
 #
 # Every field is refused loudly rather than defaulted. Fractions are integer
 # basis points (1/10000), never floats, because canonical artifacts carry no
@@ -54,7 +51,7 @@
 # while max_ink_bp and ink_margin_bp are read on every page that gets a paper
 # value at all. **The dark population measured by the interior-mode branch is
 # never removed from the page** -- it stays below the ink threshold and is counted
-# as ink by the structure scan and by conservation alike. The published
+# as ink by every measurement. The published
 # `dark_distribution` records its sampled band/page counts without treating them
 # as a bezel, a paper region, or a region to remove. See
 # common/background.py::_dark_distribution.
