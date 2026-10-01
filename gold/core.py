@@ -1595,7 +1595,8 @@ def validate_corpus(
             len(readings) > 2,
             f"act {record['act_identity']} already has two independent transcriptions; "
             f"a third, by {record['transcriber']!r}, could never be adjudicated, since an "
-            "adjudication reconciles exactly two. Do not publish it",
+            "adjudication reconciles exactly two. Preserve every record and hold the corpus "
+            "for review",
         )
 
     adjudications: dict[str, str] = {}
