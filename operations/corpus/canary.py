@@ -103,6 +103,16 @@ def _contains_canary_identity(value: Any, act_ids: set[str], ordinals: set[int])
             and any(act_id in act_ids for act_id in item)
         ):
             return True
+        # The sources record lists each shown reconstruction by its act ids.
+        if (
+            key == "reconstructions"
+            and isinstance(item, list)
+            and any(
+                isinstance(row, list) and any(act_id in act_ids for act_id in row)
+                for row in item
+            )
+        ):
+            return True
         if (key == "ordinal" or ("page" in key and key.endswith("_ordinal"))) and item in ordinals:
             return True
         if (key == "ordinals" or ("page" in key and key.endswith("_ordinals"))) and any(

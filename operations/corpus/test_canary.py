@@ -38,6 +38,7 @@ def _bundle(members=None):
         ("review-items.jsonl", canonical_bytes({"act_id": "act"}) + b"\n"),
         ("coniector.jsonl", canonical_bytes({"act_ids": ["other", "act"]}) + b"\n"),
         ("sources.json", canonical_bytes({"joins": [{"head_act_ids": ["act"]}]})),
+        ("sources.json", canonical_bytes({"reconstructions": [["other"], ["other", "act"]]})),
         ("other.jsonl", canonical_bytes({"act_id": "act"}) + b"\n"),
         ("text/_source_root/readings.txt", b"## OTHER act (not an act)\nother-id: act\n"),
     ],
@@ -50,6 +51,8 @@ def test_bundle_inspection_finds_canary_identity_without_reference_text(member, 
 def test_bundle_inspection_passes_act_id_lists_that_name_no_canary_act():
     row = canonical_bytes({"act_ids": ["other"], "act_keys": ["act"]}) + b"\n"
     assert not canary._canary_in_bundle(_bundle({"coniector.jsonl": row}), {"act"}, {2})
+    sources = canonical_bytes({"reconstructions": [["other"], ["another"]]})
+    assert not canary._canary_in_bundle(_bundle({"sources.json": sources}), {"act"}, {2})
 
 
 def test_bundle_inspection_reads_database_identity_in_memory():
