@@ -320,7 +320,11 @@ recorded a `review-decisions` record, the aggregate takes its clearances as
 `review_page_holds`, each a named reason, so a run a person cleared stays `partial`.
 `aggregate_basis.review_decisions` (`{clearances, page_holds: [{page, codes}]}`) carries
 them, present only on such a run, and the clean verifier recomputes the aggregate with
-them.
+them. Before it publishes anything, the stage refuses a run whose stored decisions are
+not the set that record's pass applied
+(`common/page_review.py::require_current_review_decisions`), saying to re-run the
+Recensor, so a decision recorded after the Recensor's last pass never goes unapplied in
+silence.
 `confirmed-blank` reaches the export only on a `page-blank` row whose review confirms
 it.
 

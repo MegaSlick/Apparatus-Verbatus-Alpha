@@ -217,6 +217,8 @@ class _RecordingContext:
             put_blob=put_blob,
             build_manifest=build_manifest,
             read_artifact=read_artifact,
+            # This run stores no operator review decision.
+            review_decision_records=lambda: [],
         )
 
     def publish(self, **record) -> None:

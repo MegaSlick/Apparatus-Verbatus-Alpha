@@ -83,7 +83,7 @@ from common.page_accounting import require_page_accounting_policy  # noqa: E402
 from common.page_review import (  # noqa: E402
     continuation_links,
     current_page_reviews,
-    current_review_decisions,
+    require_current_review_decisions,
     require_establishable,
     review_coverage,
     review_notes,
@@ -1068,9 +1068,10 @@ def review_decisions_basis(context, canaries: set[int]) -> dict[str, list] | Non
     `{clearances, page_holds}`: each hold a decision cleared, as
     `run_aggregate`'s `review_clearances` rows naming units by act key, and
     each page still held after review, `{page, codes}`. A canary page is
-    outside the export, so its rows are too.
+    outside the export, so its rows are too. Refused when a decision was
+    recorded after the Recensor's last pass, which no review applied.
     """
-    decisions = current_review_decisions(context)
+    decisions = require_current_review_decisions(context)
     if decisions is None:
         return None
     return {
@@ -1089,6 +1090,8 @@ def review_decisions_basis(context, canaries: set[int]) -> dict[str, list] | Non
 
 def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> int:
     """Export the run: acts, the other layer, page rows, and the page accounting."""
+    # Before anything is published, so a decision no review applied refuses cleanly.
+    review_basis = review_decisions_basis(context, canaries)
     submission_id, fixture_id, run_identity = export_run_identity(context)
     real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
     denominator = reading_denominator(context)
@@ -1254,7 +1257,6 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
     other_categories_by_page: dict[int, list[str]] = {}
     for other in projected_others:
         other_categories_by_page.setdefault(other["page_ordinal"], []).append(other["category"])
-    review_basis = review_decisions_basis(context, canaries)
     aggregate = run_aggregate(
         categories,
         coverages,

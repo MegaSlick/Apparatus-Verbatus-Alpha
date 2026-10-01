@@ -143,8 +143,10 @@ and the receipt measures it again with the rest of the review.
 
 A person records a decision about a held unit or page as an `approval-record.v1`
 (`common/contracts/approval.py`) in the run's `receipts/sha256/`, outside every stage
-record. Every pass reads all of them (`RunTree.review_decision_records`, each one
-digest- and self-hash-checked) and applies them on top of the reviews it has just
+record. Every pass reads all of them (`RunTree.review_decision_records`: every file in
+that directory is digest-checked against its name, and every approval among them must
+be stored as its canonical bytes and pass its own schema and self-hash, so an edited
+decision is refused, never skipped) and applies them on top of the reviews it has just
 measured (`common.review_decisions.apply_decisions`). A decision binds to the basis
 digest of the machine's review of its unit, or of every unit on its page, so it stays
 bound across passes while nothing it looked at changes.
@@ -181,17 +183,31 @@ unchanged repeat:
 ```
 
 The Armarium hands `clearances` and `page_holds` to the run aggregate, where each is a
-named reason, so a run a person cleared stays `partial`. `requests` names the re-asks
-and re-shoots asked for; nothing acts on them yet.
+named reason, so a run a person cleared stays `partial`. `requests` records the re-asks
+and re-shoots asked for; no stage acts on them.
+
+**A decision clears only this stage's own holds.** A `release` or `no-missed-act`
+completes a unit only when what remains held it is this stage's measurement; a hold the
+page reading itself carries (its Perlectio's own `holds` or `page_holds`) stays,
+because the Archetypus establishes only a reading the Perlector did not hold
+(`common/page_review.py::require_establishable`). When the decisions about a unit would
+accept such a reading, the unit stays held under `review-reading-held`
+(`common.review_decisions.READING_HELD`) with the reading's own codes, its reason says
+why, and the rest of the pass goes on.
+
+The Archetypus and the Armarium each compare the digest of the decisions stored when
+they run (`common.review_decisions.decisions_digest`) with this record's
+`decisions_digest`, and refuse on a difference, so a decision recorded after this
+stage's last pass is never silently ignored: the Recensor runs again first. A run that
+stores no decision has no record, and neither stage checks anything else.
 
 Refused, before anything is published:
 
-- a decision that would accept a reading its page reading holds (its Perlectio's own
-  `holds` or `page_holds`): the Archetypus establishes only a reading the Perlector did
-  not hold (`common/page_review.py::require_establishable`), so a person may clear only
-  this stage's own holds on a reading;
-- a changed set of decisions once the Archetypus has published anything: a decision
-  recorded after establishment cannot reach the export, and a new run is needed;
+- a changed set of decisions once the Archetypus has established a reading (any
+  `kind="archetypus"` record; its seal and index alone establish nothing): a decision
+  recorded then cannot reach what was established, so the decisions belong in a new run
+  of the submission, which stops at a held Recensor before the Archetypus
+  (`pipeline/orchestrator/CONTRACT.md`);
 - a decision for another run, one that fails its digest or self-hash, or one its
   subject does not allow (`common/review_decisions.py::review_decision`).
 

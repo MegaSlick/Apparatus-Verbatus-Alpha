@@ -83,6 +83,7 @@ from common.page_testimonia import (
 from common.recensor_receipt import build_recensor_reading_receipt
 from common.review_decisions import (
     EXCLUDED,
+    READING_HELD,
     REVIEW_FIELD,
     apply_decisions,
     held_pages,
@@ -96,6 +97,8 @@ from common.stage import (
     reading_denominator,
 )
 
+# The kind of the Archetypus record that establishes one reading.
+ESTABLISHED_KIND: Final = "archetypus"
 ACCEPTED: Final = "accepted"
 CONFIRMED_BLANK: Final = "confirmed-blank"
 # A chair of the sealed page roster with no Testimonium for a page has not been
@@ -633,22 +636,22 @@ def decide_reviews(
     Returns `(act, outcome, payload, inputs, approval_ref)` per unit, in the
     plan's order, and the `review-decisions` payload (`None` when the run holds
     no decision, so every review is the machine's own). An excluded unit's
-    `approval_ref` is the stored path of a current exclusion of it. A decision
-    that would accept a reading its page reading holds is refused: the
-    Archetypus establishes only a reading the Perlector did not hold.
+    `approval_ref` is the stored path of a current exclusion of it. Decisions
+    that would accept a reading its page reading holds leave the unit held
+    under `READING_HELD`: the Archetypus establishes only a reading the
+    Perlector did not hold, so a decision clears only this stage's own holds.
     """
     stored = context.tree.review_decision_records()
     if not stored:
         return [(*plan, None) for plan in planned], None
     paths = {reference.sha256: reference.relative_path for reference, _record in stored}
     result = apply_decisions(derived_review(context, planned), [record for _, record in stored])
-    if missing := sorted({s["record_sha256"] for s in result["applied"]} - set(paths)):
-        raise FatalAccounting(f"applied review decision(s) {missing} are not stored in this run")
     decided = []
     for act, machine_outcome, _payload, inputs in planned:
         unit = result["units"][act["act_id"]]
+        outcome, payload = unit["outcome"], unit["payload"]
         approval_ref = None
-        if unit["outcome"] == EXCLUDED:
+        if outcome == EXCLUDED:
             approval_ref = paths[
                 min(
                     s["record_sha256"]
@@ -658,9 +661,9 @@ def decide_reviews(
                     and s["decision"] == "exclude"
                 )
             ]
-        if unit["outcome"] == ACCEPTED and machine_outcome != ACCEPTED:
-            _require_decided_establishable(act, unit)
-        decided.append((act, unit["outcome"], unit["payload"], inputs, approval_ref))
+        if outcome == ACCEPTED and machine_outcome != ACCEPTED and not _establishable(act, payload):
+            outcome, payload = HELD, _reading_held(act, payload)
+        decided.append((act, outcome, payload, inputs, approval_ref))
     record = {
         "schema": REVIEW_DECISIONS_SCHEMA,
         "decisions_digest": result["decisions_digest"],
@@ -679,39 +682,62 @@ def decide_reviews(
     return decided, record
 
 
-def _require_decided_establishable(act: dict, unit: dict) -> None:
-    """Refuse a decision that accepts a reading the stages after this one would not establish."""
+def _establishable(act: dict, payload: dict) -> bool:
+    """Whether the Archetypus would establish this unit's reading were its review accepted."""
     if act["perlectio_ref"] is None:
-        return
+        return True
     try:
-        require_establishable(act, {"outcome": ACCEPTED, "payload": unit["payload"]})
-    except FatalAccounting as error:
-        hashes = sorted(s["decision_hash"] for s in unit["payload"][REVIEW_FIELD]["decisions"])
-        raise ApprovalRefusal(
-            f"operator review decision(s) {hashes} would accept {act['act_key']}, which its "
-            f"page reading holds ({', '.join(act['hold_codes'])}); the Archetypus establishes "
-            "only a reading the Perlector did not hold, so no decision clears a hold the "
-            "reading itself carries"
-        ) from error
+        require_establishable(act, {"outcome": ACCEPTED, "payload": payload})
+    except FatalAccounting:
+        return False
+    return True
+
+
+def _reading_held(act: dict, payload: dict) -> dict:
+    """A decided review that stays held because its page reading holds the unit.
+
+    The reading's own codes stay and `READING_HELD` names why the decisions
+    did not complete it; the `operator_review` block records the added code.
+    """
+    block = payload[REVIEW_FIELD]
+    reading_codes = ", ".join(act["hold_codes"]) or "no code"
+    return {
+        **payload,
+        "hold_codes": sorted(set(payload["hold_codes"]) | set(act["hold_codes"]) | {READING_HELD}),
+        "reason": (
+            f"operator review would accept it, but its page reading holds it ({reading_codes}) "
+            f"and a decision clears only this stage's own holds, so it stays held "
+            f"({READING_HELD}); {payload['reason']}"
+        ),
+        REVIEW_FIELD: {**block, "added": sorted(set(block["added"]) | {READING_HELD})},
+    }
 
 
 def _review_decisions_ordinal(context, record: dict[str, Any]) -> int:
     """The attempt ordinal the pass's `review-decisions` record is published at.
 
     The current one's when nothing changed, so a repeat reuses its bytes, and
-    the next one otherwise. A decision recorded after the Archetypus has
-    published cannot reach what it established, so a changed record is refused
-    once the Archetypus has any record: a new run is needed.
+    the next one otherwise. A decision recorded after the Archetypus
+    established a reading cannot reach what it established, so a changed
+    record is refused once any established record exists; the Archetypus's
+    seal and index alone establish nothing and do not stop it.
     """
     current = current_review_decisions(context)
     if current is not None:
         ordinal = current.pop("attempt_ordinal")
         if current == record:
             return ordinal
-    if context.tree.build_manifest(ARCHETYPUS)["artifacts"]:
+    established = [
+        entry
+        for entry in context.tree.build_manifest(ARCHETYPUS)["artifacts"]
+        if entry["kind"] == ESTABLISHED_KIND
+    ]
+    if established:
         raise ApprovalRefusal(
-            "operator review decisions changed after the Archetypus published; a decision "
-            "recorded after establishment cannot reach the export, so a new run is needed"
+            f"operator review decisions changed after the Archetypus established "
+            f"{len(established)} reading(s), which a decision recorded now cannot reach. "
+            "Record them in a new run of this submission instead: an unattended run stops at "
+            "a held Recensor, before the Archetypus, so its decisions are made in time"
         )
     return 1 if current is None else ordinal + 1
 

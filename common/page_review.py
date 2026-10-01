@@ -18,10 +18,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
-from common.contracts.errors import FatalAccounting
+from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.stages import RECENSOR
 from common.page_path import FIRST_READING
-from common.review_decisions import EXCLUDED, REVIEW_FIELD
+from common.review_decisions import EXCLUDED, REVIEW_FIELD, decisions_digest
 from common.stage import (
     COUNTED_READING_CLASSES,
     NO_ACT_ON_PAGE_HOLD,
@@ -296,6 +296,28 @@ def current_review_decisions(context) -> dict[str, Any] | None:
             f"{REVIEW_DECISIONS_SCHEMA} record"
         )
     return dict(payload)
+
+
+def require_current_review_decisions(context) -> dict[str, Any] | None:
+    """`current_review_decisions`, refused unless the pass behind it saw every decision stored now.
+
+    A decision recorded after the Recensor's last pass is in no review, so a
+    stage after the Recensor acting on that pass would silently ignore it. The
+    stored set's digest (`common.review_decisions.decisions_digest`) must be
+    the record's `decisions_digest`, and a run storing no decision must have
+    no record.
+    """
+    recorded = current_review_decisions(context)
+    stored = context.tree.review_decision_records()
+    now = decisions_digest(reference.sha256 for reference, _record in stored) if stored else None
+    seen = None if recorded is None else recorded["decisions_digest"]
+    if now != seen:
+        raise ApprovalRefusal(
+            f"this run stores {len(stored)} operator review decision(s) and the Recensor's last "
+            f"pass applied {'none' if recorded is None else 'another set'}; re-run the Recensor "
+            "so every decision reaches its reviews before this stage runs"
+        )
+    return recorded
 
 
 def review_coverage(review: Mapping[str, Any]) -> dict[str, Any]:

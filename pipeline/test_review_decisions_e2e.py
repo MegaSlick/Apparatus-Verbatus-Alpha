@@ -39,7 +39,7 @@ from test_live_reading_seam_e2e import (  # noqa: F401  (`designated` is a fixtu
 from common.contracts.approval import build_review_decision_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.stages import ARCHETYPUS, ARMARIUM
-from common.review_decisions import basis_digest, page_basis_digest
+from common.review_decisions import READING_HELD, basis_digest, page_basis_digest
 from common.runtree.store import RunTree
 from common.stage import EXIT_COMPLETE, EXIT_HELD
 from conftest import build_page_tree, load_stage, run_stage
@@ -334,7 +334,7 @@ def test_decisions_are_re_applied_identically_on_a_re_run(held, tmp_path):
     assert snapshot(tree.root) == before
 
 
-def test_a_decision_recorded_after_the_archetypus_published_is_refused(held, tmp_path):
+def test_a_decision_recorded_after_the_archetypus_established_is_refused(held, tmp_path):
     tree = _copy(held, tmp_path)
     _after_recensor(tree)
     _decide(tree.root, "p1", "no-missed-act")
@@ -342,20 +342,68 @@ def test_a_decision_recorded_after_the_archetypus_published_is_refused(held, tmp
 
     result = _run(tree, "pipeline/5_recensor/run.py")
     assert result.returncode not in (EXIT_COMPLETE, EXIT_HELD)
-    assert "a new run is needed" in result.stderr
+    assert "after the Archetypus established 1 reading(s)" in result.stderr
+    assert "Record them in a new run of this submission" in result.stderr
     assert snapshot(tree.root / RUN_ID / "5_recensor") == before
 
 
-def test_a_decision_that_would_accept_a_reading_its_page_reading_holds_is_refused(tmp_path):
-    """page-review's p2:1 is held by its own reading, which the Archetypus would not establish."""
+def test_a_decision_after_an_archetypus_that_established_nothing_is_applied(held, tmp_path):
+    """The Archetypus's seal and index establish nothing, so they do not stop a decision."""
+    tree = _copy(held, tmp_path)
+    _decide(tree.root, "p2:1", "hold", finding="text-misread")
+    assert _recense(tree) == EXIT_HELD
+    assert _run(tree, TAIL[0]).returncode in (EXIT_COMPLETE, EXIT_HELD)
+    assert _bundle_established(tree.root) == set()
+
+    _decide(tree.root, "p1", "no-missed-act")
+    assert _recense(tree) == EXIT_HELD
+    _after_recensor(tree)
+    assert _bundle_established(tree.root) == {"p1:1", "p1:2"}
+
+
+@pytest.mark.parametrize("program", TAIL[::2])
+def test_a_stage_after_the_recensor_refuses_a_decision_its_last_pass_did_not_apply(
+    held, tmp_path, program
+):
+    """A decision recorded after the Recensor's last pass is never silently ignored."""
+    tree = _copy(held, tmp_path)
+    _after_recensor(tree)
+    _decide(tree.root, "p2:1", "hold", finding="text-misread")
+
+    result = _run(tree, program)
+    assert result.returncode not in (EXIT_COMPLETE, EXIT_HELD)
+    assert "re-run the Recensor" in result.stderr
+
+
+def _bundle_established(root: Path) -> set[str]:
+    tree = RunTree(root, RUN_ID)
+    return {
+        tree.read_artifact(ARCHETYPUS, "archetypus", entry["artifact_id"])["payload"]["act_key"]
+        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
+        if entry["kind"] == "archetypus"
+    }
+
+
+def test_a_decision_that_would_accept_a_reading_its_page_reading_holds_keeps_it_held(tmp_path):
+    """page-review's p2:1 is held by its own reading, which the Archetypus would not establish.
+
+    The pass goes on: the unit stays held under `review-reading-held` with its
+    reading's codes, and the rest of the run's reviews are published.
+    """
     root, options = build_page_tree(tmp_path, "page-review")
     recensor = "pipeline/5_recensor/run.py"
     assert run_stage(root, RUN_ID, "page-review", recensor, **options).returncode == EXIT_HELD
     _decide(root, "p2:1", "release")
     _decide(root, "p2", "no-missed-act")
-    before = snapshot(root / RUN_ID / "5_recensor")
 
     result = run_stage(root, RUN_ID, "page-review", recensor, **options)
-    assert result.returncode not in (EXIT_COMPLETE, EXIT_HELD)
-    assert "no decision clears a hold the reading itself carries" in result.stderr
-    assert snapshot(root / RUN_ID / "5_recensor") == before
+    assert result.returncode == EXIT_HELD, result.stderr
+    review = _reviews(root)["p2:1"]
+    assert review["outcome"] == "held-for-review"
+    assert READING_HELD in review["payload"]["hold_codes"]
+    # The reading's own holds stay; the residual ink the page decision cleared does not.
+    codes = review["payload"]["hold_codes"]
+    assert "reading-unplaced" in codes and "residual-ink" not in codes
+    assert READING_HELD in review["payload"]["operator_review"]["added"]
+    assert "a decision clears only this stage's own holds" in review["payload"]["reason"]
+    assert _decisions(root)["applied"], "the decisions were applied, not refused"
