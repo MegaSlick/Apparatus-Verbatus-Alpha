@@ -35,14 +35,19 @@ def pod(tmp_path):
             'case "$*" in "$FAKE_RUNPODCTL_FAIL"*) exit 1 ;; esac\n'
         ),
         "nvidia-smi": 'echo "${FAKE_GPU_UTIL:-0}"\n',
-        # Records its argv and the contents of any -K config, which the caller deletes.
+        # Records the contents of any -K config, which the caller deletes, and then its
+        # argv: a test that waits for the argv line finds the config already written.
         "curl": (
+            'previous=""\n'
+            'for argument in "$@"; do\n'
+            f'  [ "$previous" = -K ] && cat "$argument" >> "{curl_configs}"\n'
+            '  previous="$argument"\n'
+            "done\n"
             f'printf "%s\\n" "$*" >> "{curl_calls}"\n'
             '[ "${FAKE_CURL_FAIL:-}" = yes ] && exit 22\n'
             "while [ $# -gt 0 ]; do\n"
             '  case "$1" in\n'
             '    -o) cp "$FAKE_GUARD" "$2"; exit 0 ;;\n'
-            f'    -K) cat "$2" >> "{curl_configs}" ;;\n'
             "  esac\n"
             "  shift\n"
             "done\n"
@@ -352,7 +357,13 @@ def test_the_rest_api_deletes_the_pod_when_both_runpodctl_forms_fail(pod, tmp_pa
     env["FAKE_RUNPODCTL_FAIL"] = ""  # the empty prefix matches every runpodctl call
     env["RUNPOD_API_KEY"] = "test-key-not-real"
     curl_calls = tmp_path / "curl-calls.txt"
-    run_until(["sh", str(GUARD), "5", "30"], env, lambda: "DELETE" in "".join(lines(curl_calls)))
+    # The guard logs the request once curl has returned, so waiting for that line
+    # leaves nothing of the call still to be written.
+    run_until(
+        ["sh", str(GUARD), "5", "30"],
+        env,
+        lambda: "delete requested (attempt 1)" in log_of(state),
+    )
     delete = next(line for line in lines(curl_calls) if "DELETE" in line)
     assert delete.endswith("-X DELETE https://api.runpod.io/v2/pods/testpod")
     assert "test-key-not-real" not in "".join(lines(curl_calls))
