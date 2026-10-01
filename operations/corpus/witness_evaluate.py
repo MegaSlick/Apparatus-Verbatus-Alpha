@@ -760,14 +760,14 @@ def evaluate_page_feed_run(
     rows = [row for report in reports for row in report["rows"]]
     totals = _totals(rows, names)
     for name, total in totals.items():
-        scored = [
+        scoreable_rows = [
             row
             for row in rows
             if row["chair"] == name
             and row["status"] in {OutputStatus.COMPLETE.value, OutputStatus.TRUNCATED.value}
         ]
-        total["scoreable_cer_errors"] = sum(row["cer"] for row in scored)
-        total["scoreable_cer_units"] = sum(row["cer_units"] for row in scored)
+        total["scoreable_cer_errors"] = sum(row["cer"] for row in scoreable_rows)
+        total["scoreable_cer_units"] = sum(row["cer_units"] for row in scoreable_rows)
         total["reasons"] = dict(
             sorted(
                 Counter(row["reason"] or "scored" for row in rows if row["chair"] == name).items()
