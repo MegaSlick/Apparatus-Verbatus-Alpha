@@ -433,7 +433,7 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
     context.publish(
         kind=PAGE_READING_KIND,
         subject_id=page.page_id,
-        outcome=disposition,
+        outcome=page_path.reading_outcome(parse_state, disposition),
         attempt=attempt,
         inputs=page_path.distinct_refs(inputs),
         payload=payload,

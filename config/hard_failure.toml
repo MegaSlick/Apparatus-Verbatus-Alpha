@@ -48,10 +48,12 @@ threshold = 2
 # lengthy marginal note) will truncate routinely in real parish
 # registers; folding that into a 2-failure early-warning cap would trip it on
 # ordinary document variance and defeat the cap's purpose. `(perlector, failed)`
-# is KEPT as a reserved member of the Perlector's vocabulary. The page path
-# publishes a failed engine call as a `held` page-reading whose parse state is
-# `call-failed` and whose failure facts name the call, not as a `failed`
-# outcome, so no page reading counts toward it today.
+# is KEPT, and on the page path it means the old pipeline's "exception escaping
+# the read path": a page whose engine call failed (transport failure, endpoint
+# unavailable, an engine refusal or an unrecognised stop) is published as a
+# `page-reading` with outcome `failed` and parse state `call-failed`, its page
+# held for review as `page-unread`. A capacity refusal is not counted: like a
+# truncation, it is a page too large for the sealed row, not a broken run.
 #
 # `(door, refused, reason="corrupt")` and `(door, refused, reason="unreadable")`
 # are ADDED. `pipeline/1_exemplar/admission.py`'s closed `RefusalReason`

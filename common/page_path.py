@@ -87,6 +87,15 @@ CALL_FAILED: Final = "call-failed"
 NOT_RUN: Final = "not-run"
 READ: Final = "read"
 HELD: Final = "held"
+# A page whose call failed is held for review like any unread page, and its
+# record's outcome is the Perlector's `failed`, so the run-level hard-failure
+# cap (`config/hard_failure.toml`, `(perlector, failed)`) counts it.
+FAILED: Final = "failed"
+
+
+def reading_outcome(parse_state: str, disposition: str) -> str:
+    """The `page-reading` record's outcome: `failed` for a failed call, else its disposition."""
+    return FAILED if parse_state == CALL_FAILED else disposition
 
 # Why a page is not asked (`not-run`), and why a parsed answer is held whole.
 PAGE_NOT_SEALED: Final = "page-not-sealed"

@@ -47,6 +47,7 @@ from common.decoding import (
     recorded_wire_decimals,
 )
 from common.exemplar_boundary import read_sealed_page
+from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.imaging import crop_png
 from common.page_accounting import is_inside, load_page_accounting_policy, placement_boxes
 from common.page_witness_units import DAI
@@ -1271,14 +1272,59 @@ def test_an_answer_that_cannot_stand_is_held_whole_with_no_act_record(
     assert exit_code == 0
     readings = _records(root, "page-reading")
     assert [r["payload"]["parse_state"] for r in readings] == [parse_state] * 2
+    outcome = "failed" if parse_state == "call-failed" else "held"
     for reading in readings:
-        assert reading["outcome"] == "held" and reading["payload"]["disposition"] == "held"
+        assert reading["outcome"] == outcome and reading["payload"]["disposition"] == "held"
         assert reading["payload"]["answer"] is None and reading["payload"]["problems"]
     assert _records(root, "act-region") == [] and _records(root, "perlectio") == []
     if parse_state == "call-failed":
         failure = readings[0]["payload"]["failure"]
         assert failure["code"] == "ENGINE_FINISH_REASON_UNRECOGNIZED"
         assert failure["raw_response_ref"] in readings[0]["inputs"]
+
+
+def test_a_failed_page_call_is_counted_unread_and_tallied_as_a_hard_failure(
+    live_tree, tmp_path, monkeypatch
+):
+    """A page whose call failed stays in the denominator as a held `page-unread`
+    unit, never zero acts, and its reading's `failed` outcome is what the
+    run-level hard-failure cap counts, so a page-read run whose calls keep
+    failing trips it."""
+    root = live_tree.root
+    transport = ScriptedAnswer(transport_failure="connection reset after dispatch")
+    unrecognized = ScriptedAnswer(content="{}", finish_reason="eos_token")
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, transport, unrecognized)
+    assert exit_code == 0
+    readings = _records(root, "page-reading")
+    assert [
+        (r["outcome"], r["payload"]["parse_state"], r["payload"]["disposition"]) for r in readings
+    ] == [("failed", "call-failed", "held")] * 2
+    codes = [r["payload"]["failure"]["code"] for r in readings]
+    assert codes[1] == "ENGINE_FINISH_REASON_UNRECOGNIZED"
+
+    rows = reading_acts(_denominator_context(live_tree))
+    assert [(row["act_key"], row["class"], row["disposition"]) for row in rows] == [
+        ("p1:unread", "page-unread", "held"),
+        ("p2:unread", "page-unread", "held"),
+    ]
+    for row, code in zip(rows, codes):
+        assert {"page-unread", code} <= set(row["hold_codes"])
+
+    tally = tally_hard_failures(RunTree(root, "r"), load_hard_failure_policy())
+    assert tally["by_kind"]["perlector:failed"] == sorted(r["subject_id"] for r in readings)
+    assert tally["count"] == 2 and tally["breached"] is False
+
+
+def test_a_failed_page_call_recorded_as_held_is_refused_by_the_denominator(
+    live_tree, tmp_path, monkeypatch
+):
+    """A failed call recorded under the held outcome would hide it from the hard-failure cap."""
+    failing = ScriptedAnswer(content="{}", finish_reason="eos_token")
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, failing, failing)
+    assert exit_code == 0
+    _forge_reading(live_tree, 1, lambda payload: None, outcome="held")
+    with pytest.raises(FatalAccounting, match="not a page-path reading of this page"):
+        reading_acts(_denominator_context(live_tree))
 
 
 def test_a_parsed_answer_with_no_finish_reason_is_kept_and_held_whole(
@@ -1539,9 +1585,10 @@ def _denominator_context(tree: _Live, serving_reader=SERVING_READER):
     return open_context(args, RECENSOR, serving_reader=serving_reader)
 
 
-def _forge_reading(tree: _Live, ordinal: int, change) -> None:
-    """Rewrite one page reading and rewitness the Perlector's boundary, so only the
-    denominator's own recomputation is left to catch it."""
+def _forge_reading(tree: _Live, ordinal: int, change, outcome: str | None = None) -> None:
+    """Rewrite one page reading (and its outcome, when given) and rewitness the
+    Perlector's boundary, so only the denominator's own recomputation is left to
+    catch it."""
     directory = tree.root / "r" / "4_perlector" / "artifacts" / "page-reading"
     [path] = [
         path
@@ -1550,6 +1597,8 @@ def _forge_reading(tree: _Live, ordinal: int, change) -> None:
     ]
     record = json.loads(path.read_text(encoding="utf-8"))
     change(record["payload"])
+    if outcome is not None:
+        record["outcome"] = outcome
     record["self_hash"] = self_hash({k: v for k, v in record.items() if k != "self_hash"})
     path.write_bytes(canonical_bytes(record))
     rewitness_stage_boundary(RunTree(tree.root, "r"), PERLECTOR)

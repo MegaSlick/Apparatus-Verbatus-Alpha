@@ -2305,8 +2305,9 @@ def _verify_page_reading(
         and payload.get("page_id") == page_id
         and payload.get("page_ordinal") == ordinal
         and payload.get("disposition") in READING_DISPOSITIONS
-        and reading.get("outcome") == payload.get("disposition")
-        and payload.get("parse_state") in page_accounting.PARSE_STATES,
+        and payload.get("parse_state") in page_accounting.PARSE_STATES
+        and reading.get("outcome")
+        == page_path.reading_outcome(payload["parse_state"], payload["disposition"]),
         f"{what}'s page reading is not a page-path reading of this page under this run",
     )
     _require(
