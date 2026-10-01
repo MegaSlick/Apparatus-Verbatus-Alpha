@@ -39,7 +39,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Final
 
-from common.contracts.approval import UNIT_SCOPE
+from common.contracts.approval import PAGE_SCOPE, UNIT_SCOPE
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.outcomes import (
@@ -655,8 +655,9 @@ def decide_reviews(
     paths = {reference.sha256: reference.relative_path for reference, _record in stored}
     result = apply_decisions(derived_review(context, planned), [record for _, record in stored])
     decided = []
-    # Each unit kept held under `READING_HELD`, by the codes that hold it again.
-    reheld: dict[str, set[str]] = {}
+    # Each unit kept held under `READING_HELD`, and each page with such a unit,
+    # by the codes that hold it again.
+    reheld: dict[tuple[str, str], set[str]] = {}
     for act, machine_outcome, _payload, inputs in planned:
         unit = result["units"][act["act_id"]]
         outcome, payload = unit["outcome"], unit["payload"]
@@ -675,7 +676,9 @@ def decide_reviews(
             refusal = _not_establishable(act, payload)
             if refusal is not None:
                 outcome, payload = HELD, _reading_held(act, payload, refusal)
-                reheld[act["act_id"]] = set(payload["hold_codes"])
+                codes = set(payload["hold_codes"])
+                reheld[(UNIT_SCOPE, act["act_id"])] = codes
+                reheld.setdefault((PAGE_SCOPE, act["page_id"]), set()).update(codes)
         decided.append((act, outcome, payload, inputs, approval_ref))
     record = {
         "schema": REVIEW_DECISIONS_SCHEMA,
@@ -687,7 +690,9 @@ def decide_reviews(
         "unkept": result["unkept"],
         "clearances": _effective_clearances(result["clearances"], reheld),
         # A correction kept held did not take effect.
-        "corrections": [row for row in result["corrections"] if row["subject_id"] not in reheld],
+        "corrections": [
+            row for row in result["corrections"] if (UNIT_SCOPE, row["subject_id"]) not in reheld
+        ],
         "page_holds": [
             {"page_ordinal": ordinal, "hold_codes": codes}
             for ordinal, codes in sorted(held_pages(result).items())
@@ -715,21 +720,20 @@ def _not_establishable(act: dict, payload: dict) -> str | None:
     return None
 
 
-def _effective_clearances(clearances: list[dict], reheld: dict[str, set[str]]) -> list[dict]:
-    """The clearances that took effect: a unit kept held loses the codes that hold it again.
+def _effective_clearances(
+    clearances: list[dict], reheld: dict[tuple[str, str], set[str]]
+) -> list[dict]:
+    """The clearances that took effect: a unit or page row loses the codes that hold again.
 
-    A unit row left with no code cleared is dropped, so the aggregate never
-    reports a release that held nothing less.
+    A page row loses every code that holds again any unit on its page. A row
+    left with no code cleared is dropped, so the aggregate never reports a
+    release that held nothing less.
     """
     rows = []
     for row in clearances:
-        if row["scope"] == UNIT_SCOPE and row["subject_id"] in reheld:
-            row = {
-                **row,
-                "cleared": [
-                    code for code in row["cleared"] if code not in reheld[row["subject_id"]]
-                ],
-            }
+        held = reheld.get((row["scope"], row["subject_id"]))
+        if held:
+            row = {**row, "cleared": [code for code in row["cleared"] if code not in held]}
             if not row["cleared"]:
                 continue
         rows.append(row)
