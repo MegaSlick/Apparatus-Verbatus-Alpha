@@ -214,9 +214,9 @@ def stage_manifest(context, stage: str) -> dict[str, Any]:
 RUN_MODES: Final = TRIAGE_MODES
 
 # Boundaries a run stops at whatever the mode: the Attestatores and the Armarium
-# when they exit held, and a Recensor that holds anything, before the Archetypus,
-# until an advance passes its current seal (`boundary_advanced`).
-# `test_advance_modes.py` checks this against the driver's source.
+# when they exit held, and a Recensor that holds anything, before the Archetypus
+# or the Armarium, until an advance passes its current seal (`boundary_advanced`).
+# `test_advance_modes.py` checks this by driving the driver with fake stages.
 ALWAYS_HELD_BOUNDARIES: Final = frozenset({ATTESTATORES, RECENSOR, ARMARIUM})
 
 

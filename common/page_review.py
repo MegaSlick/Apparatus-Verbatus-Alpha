@@ -26,6 +26,7 @@ from common.stage import (
     COUNTED_READING_CLASSES,
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_HOLD,
+    boundary_advanced,
     exemplar_page_ids,
     latest_attempt,
     stage_manifest,
@@ -376,6 +377,22 @@ def held_by_recensor(tree) -> list[dict[str, Any]]:
         for row in ([] if recorded is None else recorded["page_holds"])
     ]
     return held + sorted(links, key=lambda link: link["subject_id"]) + pages
+
+
+def require_recensor_passed(tree) -> None:
+    """Refuse a stage after the Recensor while the Recensor holds what no person has passed.
+
+    A held Recensor (`held_by_recensor`) waits for a person: nothing is
+    established or exported over it until nothing is held, or until a person's
+    advance record binds the Recensor's current seal (`boundary_advanced`).
+    """
+    held = held_by_recensor(tree)
+    if held and not boundary_advanced(tree, RECENSOR):
+        raise ApprovalRefusal(
+            f"the Recensor holds {len(held)} item(s) and no advance record passes its current "
+            "seal; record review decisions and re-run the Recensor, or advance its seal with "
+            "`verbatus advance --stage recensor`, before this stage runs"
+        )
 
 
 def review_coverage(review: Mapping[str, Any]) -> dict[str, Any]:

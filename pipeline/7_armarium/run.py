@@ -85,6 +85,7 @@ from common.page_review import (  # noqa: E402
     current_page_reviews,
     require_current_review_decisions,
     require_establishable,
+    require_recensor_passed,
     review_coverage,
     review_notes,
     review_reason,
@@ -1397,6 +1398,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     context = open_stage_context(
         args, ARMARIUM, registry_factory=registry_factory, serving_reader=SERVING_READER
     )
+    # Nothing is exported over a Recensor hold no person has passed.
+    require_recensor_passed(context.tree)
     formats = context.armarium_formats
     if formats is None:
         raise FatalAccounting("Armarium has no format projection bound to the run configuration")

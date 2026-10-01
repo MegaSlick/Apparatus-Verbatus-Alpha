@@ -36,9 +36,11 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.stages import ARCHETYPUS, ARMARIUM
 from common.page_accounting import load_page_accounting_policy
+from common.page_review import held_by_recensor
 from common.runtree.store import RunTree
 from common.stage import PAGE_BLANK_HOLD
 from conftest import (
+    advance_held_recensor,
     build_page_tree,
     forge_continuation_links,
     forge_page_review,
@@ -106,7 +108,13 @@ def _recense(root: Path, options: dict, scenario: str) -> None:
 
 
 def _after_recensor(root: Path, options: dict, scenario: str):
-    """The Archetypus, then (when it completes) the Coniector and the Armarium; the last result."""
+    """The Archetypus, then (when it completes) the Coniector and the Armarium; the last result.
+
+    A Recensor that holds anything is first advanced, as a person would to
+    export with every hold named; neither stage runs past it otherwise.
+    """
+    if held_by_recensor(RunTree(root, RUN_ID)):
+        advance_held_recensor(root, RUN_ID)
     for program in (
         "pipeline/6_archetypus/run.py",
         "pipeline/4b_coniector/run.py",

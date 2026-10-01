@@ -49,6 +49,7 @@ from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
     ARCHETYPUS,
+    ARMARIUM,
     ATTESTATORES,
     CONIECTOR,
     INK_MAP,
@@ -877,18 +878,23 @@ def run_sequence(
     """Run one contiguous selection without persisting its driver mode.
 
     In every mode, a Recensor that holds anything stops the run before the
-    Archetypus, so nothing is established or exported over a hold no person
-    has looked at. The Coniector, which reads only the Perlector's readings,
-    still runs when the selection includes it, so what is left needs no model.
-    The run continues past the Recensor once nothing is held, or once an
-    advance record passes its current seal.
+    first of the Archetypus and the Armarium it selects, so nothing is
+    established or exported over a hold no person has looked at. Both stages
+    refuse such a Recensor at their own entry too
+    (`common.page_review.require_recensor_passed`); the check here names
+    every hold and how to go on. The Coniector, which reads only the
+    Perlector's readings, still runs when the selection includes it, so what is
+    left needs no model. The run continues past the Recensor once nothing is
+    held, or once an advance record passes its current seal.
     """
     held_recensor: list[dict] | None = None
+    first_after_recensor: str | None = None
     ran_after_hold: list[str] = []
     for name in names:
         if held_recensor is not None and name != CONIECTOR:
             continue
-        if name == ARCHETYPUS and held_recensor is None:
+        if name in (ARCHETYPUS, ARMARIUM) and first_after_recensor is None:
+            first_after_recensor = name
             held = recensor_holds(args)
             if held:
                 held_recensor = held
@@ -919,7 +925,7 @@ def run_sequence(
             return EXIT_HELD
 
     if held_recensor is not None:
-        print(f"run {args.run_id}: stopped at a held recensor, before the archetypus")
+        print(f"run {args.run_id}: stopped at a held recensor, before the {first_after_recensor}")
         report_held_recensor(args, held_recensor, ran_after_hold)
         return EXIT_HELD
     if names[-1] != "armarium":

@@ -252,6 +252,22 @@ def test_a_manual_archetypus_over_a_held_recensor_stops_too(tmp_path):
     assert not (root / "r" / "6_archetypus").exists()
 
 
+@pytest.mark.parametrize(
+    "selection",
+    [("--stage", "armarium"), ("--from", "coniector", "--to", "armarium")],
+    ids=["manual", "semi"],
+)
+def test_an_armarium_selection_over_a_held_recensor_stops_too(tmp_path, selection):
+    """A selection that skips the Archetypus still stops before exporting over the hold."""
+    root = tmp_path / "runs"
+    drive(root, "r", "page-review", "--from", "door", "--to", "recensor")
+    result = drive(root, "r", "page-review", *selection)
+    assert result.returncode == EXIT_HELD, result.stdout + result.stderr
+    assert "stopped at a held recensor, before the armarium" in result.stdout
+    assert "p2:1 (" in result.stdout
+    assert not (root / "r" / "7_armarium").exists()
+
+
 def test_the_big_models_range_stops_at_a_held_recensor_then_resumes_after_an_advance(tmp_path):
     """`pod_run --models big` runs perlector..armarium after the witnesses' own range.
 
