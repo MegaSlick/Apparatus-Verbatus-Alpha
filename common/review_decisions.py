@@ -24,13 +24,15 @@ The API:
 - `basis_digest(payload)`: what a unit decision binds to, the sha256 of the
   machine's payload. It is recomputed every pass, so a decision stays bound
   while nothing it looked at changes, and goes stale as soon as anything does.
-  A page decision binds to `page_basis_digest`, over every unit on the page, so
-  a page that gains or changes a unit makes it stale.
+  A page decision binds to `page_basis_digest`, over every unit on the page and
+  the act entries current decisions exclude from it, so a page that gains or
+  changes a unit, or whose exclusions change, makes it stale.
 - `classify_holds`: a unit's hold codes split into `unit` and `page` scope. A
   page-scope hold is cleared only by a page decision, so releasing the entries
   one by one never clears the sign of an act the Perlector never listed.
-- `current_basis(derived)`: every unit and page with its digest and scoped
-  holds; what the operator CLI shows and binds a new decision to.
+- `current_basis(derived, decisions)`: every unit and page with its digest and
+  scoped holds, its pages bound to the exclusions among `decisions`; what the
+  operator CLI shows and binds a new decision to.
 - `review_decision(record, basis)`: one decision checked against the current
   basis: `current`, `stale` (with why), or refused when it could never apply.
   Its summary names the record by self-hash and by `record_sha256`, the digest
@@ -153,9 +155,17 @@ def basis_digest(payload: Mapping[str, Any]) -> str:
     return digest_of(dict(payload))
 
 
-def page_basis_digest(page_id: str, unit_digests: Mapping[str, str]) -> str:
-    """The sha256 a page decision binds to: its page and every unit basis on it."""
-    return digest_of({"page_id": page_id, "units": dict(unit_digests)})
+def page_basis_digest(
+    page_id: str, unit_digests: Mapping[str, str], excluded_acts: Iterable[str]
+) -> str:
+    """The sha256 a page decision binds to: its page, every unit basis on it, and its excluded acts.
+
+    Excluding every act holds the page as one with no act, so a page decision
+    made before an exclusion has not looked at the page it would now clear.
+    """
+    return digest_of(
+        {"page_id": page_id, "units": dict(unit_digests), "excluded_acts": sorted(excluded_acts)}
+    )
 
 
 def classify_holds(
@@ -193,14 +203,16 @@ def classify_holds(
     return {"unit": sorted(unit), "page": sorted(page)}
 
 
-def current_basis(derived: Mapping[str, Any]) -> dict[str, Any]:
+def current_basis(derived: Mapping[str, Any], decisions: Sequence[Any] = ()) -> dict[str, Any]:
     """Every unit and page of a derived review, with its basis digest and scoped holds.
 
     `{"run_id", "units": {act_id: {page_id, page_ordinal, act_key, unit_class,
     kind, page_holds, outcome, basis_digest, unit_codes, page_codes}}, "pages":
     {page_id: {page_ordinal, page_holds, basis_digest, units, act_units,
-    page_codes}}}`. A page's codes are the union of its units' page-scope
-    codes; its units must name the same page accounting holds.
+    excluded_acts, page_codes}}}`. A page's codes are the union of its units'
+    page-scope codes; its units must name the same page accounting holds. A
+    page's `excluded_acts` are its act entries the current unit decisions
+    among `decisions` exclude, and its digest binds them.
     """
     run_id = derived.get("run_id") if isinstance(derived, Mapping) else None
     units_in = derived.get("units") if isinstance(derived, Mapping) else None
@@ -236,11 +248,27 @@ def current_basis(derived: Mapping[str, Any]) -> dict[str, Any]:
         if entry["kind"] == "act" and entry["unit_class"] in READING_CLASSES:
             page["act_units"].append(act_id)
         page["page_codes"] = sorted(set(page["page_codes"]) | set(entry["page_codes"]))
+    basis = {"run_id": run_id, "units": units, "pages": pages}
+    excluded = _excluded_units(decisions, basis)
     for page_id, page in pages.items():
+        page["excluded_acts"] = [act_id for act_id in page["act_units"] if act_id in excluded]
         page["basis_digest"] = page_basis_digest(
-            page_id, {act_id: units[act_id]["basis_digest"] for act_id in page["units"]}
+            page_id,
+            {act_id: units[act_id]["basis_digest"] for act_id in page["units"]},
+            page["excluded_acts"],
         )
-    return {"run_id": run_id, "units": units, "pages": pages}
+    return basis
+
+
+def _excluded_units(decisions: Sequence[Any], basis: Mapping[str, Any]) -> set[str]:
+    """The units the current unit decisions exclude; a unit decision binds no page digest."""
+    summaries = []
+    for record in decisions:
+        record = validate_approval_record(record)
+        if record["action"] == REVIEW_ACTION and record["review"]["scope"] == UNIT_SCOPE:
+            summaries.append(review_decision(record, basis))
+    kinds = _current_kind_by_subject(summaries)
+    return {subject for (_, subject), kind in kinds.items() if kind == "exclude"}
 
 
 def _unit_basis(unit: Any) -> dict[str, Any]:
@@ -376,7 +404,7 @@ def apply_decisions(derived: Mapping[str, Any], decisions: Sequence[Any]) -> dic
     that decide differently are never chosen between: none is applied, each is
     kept as `conflicting`, and the subject is held until they agree.
     """
-    basis = current_basis(derived)
+    basis = current_basis(derived, decisions)
     by_hash: dict[str, dict[str, Any]] = {}
     for record in decisions:
         summary = review_decision(record, basis)
@@ -459,7 +487,7 @@ def _page_result(
     kind = kinds.get((PAGE_SCOPE, page_id))
     codes = set(page["page_codes"])
     acts = page["act_units"]
-    if acts and all(kinds.get((UNIT_SCOPE, act_id)) == "exclude" for act_id in acts):
+    if acts and page["excluded_acts"] == acts:
         codes.add(NO_ACT_ON_PAGE_HOLD)
     cleared = sorted(codes) if kind == "no-missed-act" else []
     added = [ADDED_CODES[(PAGE_SCOPE, kind)]] if (PAGE_SCOPE, kind) in ADDED_CODES else []

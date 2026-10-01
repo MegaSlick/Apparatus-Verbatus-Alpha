@@ -464,11 +464,13 @@ def test_applying_twice_is_applying_once_whatever_the_order():
 
 def test_an_applied_review_is_not_a_basis_to_apply_decisions_to_again():
     derived = derived_review()
-    result = apply_decisions(derived, [decide(derived, "unit", "b1", "hold", finding="other")])
+    # A decision that adds no code, so only the review block marks the payload.
+    result = apply_decisions(derived, [decide(derived, "page", "page-2", "no-missed-act")])
+    assert result["units"]["b1"]["payload"]["hold_codes"] == []
     again = copy.deepcopy(derived)
     again["units"][2]["payload"] = result["units"]["b1"]["payload"]
     again["units"][2]["outcome"] = result["units"]["b1"]["outcome"]
-    with pytest.raises(FatalAccounting):
+    with pytest.raises(FatalAccounting, match="before any decision"):
         apply_decisions(again, [])
 
 
@@ -615,13 +617,10 @@ def test_no_missed_act_alone_leaves_a_unit_held_by_its_own_holds():
 
 def test_an_exclusion_on_a_page_with_a_missed_act_keeps_the_sign_on_the_unit_and_page():
     derived = derived_review()
+    excluded = [decide(derived, "unit", "a1", "exclude"), decide(derived, "unit", "a2", "exclude")]
+    basis = current_basis(derived, excluded)
     result = apply_decisions(
-        derived,
-        [
-            decide(derived, "unit", "a1", "exclude"),
-            decide(derived, "unit", "a2", "exclude"),
-            decide(derived, "page", "page-1", "missed-act"),
-        ],
+        derived, excluded + [decide(derived, "page", "page-1", "missed-act", basis=basis)]
     )
     for act_id in ("a1", "a2"):
         excluded = result["units"][act_id]
@@ -652,8 +651,10 @@ def test_excluding_every_act_on_a_page_holds_its_other_entries_until_no_missed_a
     assert result["units"]["o2"]["payload"]["hold_codes"] == [NO_ACT_ON_PAGE_HOLD]
     assert held_pages(result) == {1: [NO_ACT_ON_PAGE_HOLD]}
 
+    basis = current_basis(derived, excluded)
+    assert basis["pages"]["page-1"]["excluded_acts"] == ["a1"]
     confirmed = apply_decisions(
-        derived, excluded + [decide(derived, "page", "page-1", "no-missed-act")]
+        derived, excluded + [decide(derived, "page", "page-1", "no-missed-act", basis=basis)]
     )
     assert confirmed["units"]["o2"]["outcome"] == "accepted"
     assert held_pages(confirmed) == {}
@@ -661,6 +662,24 @@ def test_excluding_every_act_on_a_page_holds_its_other_entries_until_no_missed_a
         ("page", [NO_ACT_ON_PAGE_HOLD]),
         ("unit", []),
     ]
+
+
+def test_no_missed_act_recorded_before_every_act_was_excluded_is_stale():
+    derived = {
+        "run_id": RUN,
+        "units": [
+            unit("a1", "page-1", 1, []),
+            unit("o2", "page-1", 1, [], kind="other"),
+        ],
+    }
+    early = decide(derived, "page", "page-1", "no-missed-act")
+    result = apply_decisions(derived, [early, decide(derived, "unit", "a1", "exclude")])
+    assert [(s["scope"], s["stale_because"]) for s in result["stale"]] == [
+        ("page", BASIS_CHANGED)
+    ]
+    assert result["units"]["o2"]["outcome"] == "held-for-review"
+    assert result["units"]["o2"]["payload"]["hold_codes"] == [NO_ACT_ON_PAGE_HOLD]
+    assert held_pages(result) == {1: [NO_ACT_ON_PAGE_HOLD]}
 
 
 def test_a_cleared_other_reading_is_named_by_key_in_the_run_aggregate():
