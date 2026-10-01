@@ -622,8 +622,8 @@ def _no_continuation_in(answer: dict) -> dict:
 # `reask-off`: page 1 read as a1 alone, with nothing running onto page 2.
 # `reask-duplicate`: page 1's a2 read but placed by Churro's unboxed line
 # alone, so its boxed units, record and lines are unaccounted for.
-# `reask-cited-forgot`: a2 read and placed without citing DAI's record over
-# it; the record lies inside a2's region, so the page holds and asks nothing.
+# `reask-cited-forgot`: a2 read and placed without citing B2, DAI's witness
+# unit over it; B2 lies inside a2's region, so the page holds and asks nothing.
 # `reask-continuation`: page 1 read as a2 alone, still running onto page 2.
 # `blank-then-recovered`: page 1 read as blank, with nothing set aside.
 _REASK_FIRST_READINGS = {

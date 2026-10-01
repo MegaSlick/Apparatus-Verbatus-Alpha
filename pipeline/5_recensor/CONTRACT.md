@@ -630,13 +630,14 @@ ordinal in page order,
 
 ```
 pages: [{page_ordinal, reading_ref, reask_ref | null, accounting_ref,
-         reask: {named, cleared, set_aside, unread, duplicate} | null}]
+         reask: {named, cleared, set_aside, held, unread, duplicate} | null}]
 ```
 
 binding each page's first reading, its re-ask and its last accounting, with
 `reask` what the re-ask did (`common.page_reask.reask_outcome`): the named ids,
-split into those the last accounting no longer holds as unread (`cleared`), those
-the re-ask set aside (`set_aside`) and those still unread (`unread`), and the
+split into those a re-ask entry rule (j) does not hold accounts for (`cleared`),
+those the re-ask set aside (`set_aside`), those only a re-ask entry rule (j) holds
+accounts for (`held`) and those still unread (`unread`), and the
 entry numbers rule (j) holds as duplicates (`duplicate`); each item's
 `page_disposition`, review and coverage recomputed from the Testimonia, and its
 `release_reason`: the review's `release.reason` for a unit its page reading held and

@@ -492,6 +492,7 @@ def test_what_a_re_ask_did_splits_its_named_ids_by_the_last_accounting():
         "named": ids,
         "cleared": ids,
         "set_aside": [],
+        "held": [],
         "unread": [],
         "duplicate": [],
     }
@@ -499,8 +500,28 @@ def test_what_a_re_ask_did_splits_its_named_ids_by_the_last_accounting():
     assert reask_outcome(named, account(case, reask=reask_of(case, aside)))["set_aside"] == ids
     malformed = account(case, reask=reask_of(case, None, parse_state="malformed"))
     assert reask_outcome(named, malformed)["unread"] == ids
-    again = account(case, reask=reask_of(case, recovered(case, acts(case)[1]["text"])))
-    assert reask_outcome(named, again)["duplicate"] == [3]
+
+
+@pytest.mark.parametrize(
+    ("text", "cites", "code", "held", "unread"),
+    [
+        ("  [[?]] ", ("B3", "L7-L9"), "reask-no-text", ["B3", "L7", "L8", "L9"], ["A3"]),
+        (None, (), "reask-unplaced", [], ["A3", "B3", "L7", "L8", "L9"]),
+        ("second", ("A3", "B3", "L7-L9"), "reask-duplicate", ["A3", "B3", "L7", "L8", "L9"], []),
+    ],
+    ids=["no-text", "unplaced", "duplicate"],
+)
+def test_an_id_only_a_held_re_ask_entry_accounts_for_is_never_cleared(
+    text, cites, code, held, unread
+):
+    case = missing_last()
+    named = plan(case)
+    text = {None: last_text(case), "second": acts(case)[1]["text"]}.get(text, text)
+    both = account(case, reask=reask_of(case, recovered(case, text, cites=cites)))
+    assert code in codes(both, "j") and code in both["holds"]
+    outcome = reask_outcome(named, both)
+    assert (outcome["cleared"], outcome["held"], outcome["unread"]) == ([], held, unread)
+    assert outcome["duplicate"] == ([3] if code == "reask-duplicate" else [])
 
 
 def _entries(*keys: tuple[int, int, int]) -> list[dict]:

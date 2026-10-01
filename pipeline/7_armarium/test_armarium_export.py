@@ -1651,7 +1651,7 @@ def test_delivered_gate_requires_sqlite_product_identity(tmp_path):
 def test_a_verifier_without_fts5_names_why_sqlite_identity_cannot_be_checked(monkeypatch):
     """A missing verifier capability is a refusal, not a raw sqlite traceback."""
 
-    def no_fts5():
+    def no_fts5(_reading_unit):
         raise sqlite3.OperationalError("no such module: fts5")
 
     monkeypatch.setattr("armarium_export._expected_acts_schema", no_fts5)

@@ -33,9 +33,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from armarium_export import (  # noqa: E402
     ARMARIUM_ARCHIVE_NAME,
+    FIRST_READING_LABEL,
     NOT_MEASURED_BASIS_SCHEMA,
     NOT_MEASURED_INSTRUMENTS,
     PAGE_NOT_MEASURED_INSTRUMENTS,
+    READ_ON_REASK_LABEL,
     READING_UNIT_PAGE,
     ArmariumProjection,
     act_key_sort_key,
@@ -116,7 +118,9 @@ from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
     EXIT_COMPLETE,
     EXIT_HELD,
+    PAGE_BLANK_CLASS,
     PAGE_REFUSED_CLASS,
+    PAGE_UNREAD_CLASS,
     canary_ordinals,
     expected_acts,
     latest_attempt,
@@ -2214,6 +2218,28 @@ def page_not_measured_basis(
     return basis
 
 
+# The reading a counted entry came from, by the attempt its verified denominator
+# row names: its page's first reading or its re-ask.
+_ACT_READING_LABELS: Final = {
+    page_path.FIRST_READING: FIRST_READING_LABEL,
+    page_path.REASK_READING: READ_ON_REASK_LABEL,
+}
+
+
+def _act_reading(row: dict) -> str | None:
+    """A counted row's reading label; `None` only for a page row that stands for no entry."""
+    if row["class"] in (PAGE_UNREAD_CLASS, PAGE_BLANK_CLASS):
+        if row["reading_attempt"] is not None:
+            raise FatalAccounting(f"{row['act_key']} stands for no entry yet names a reading")
+        return None
+    if row["reading_attempt"] not in _ACT_READING_LABELS:
+        raise FatalAccounting(
+            f"{row['act_key']} is an entry whose reading attempt "
+            f"{row['reading_attempt']!r} is neither its page's first reading nor its re-ask"
+        )
+    return _ACT_READING_LABELS[row["reading_attempt"]]
+
+
 def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) -> int:
     """Export a page-read run: acts, the other layer, page rows, and the page accounting."""
     submission_id, fixture_id, run_identity = export_run_identity(context)
@@ -2348,7 +2374,13 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
                 raised = [flag for flag in CONTINUATION_FLAGS if row[flag] is True]
                 if raised:
                     continuation_flags[row["act_key"]] = raised
-            projected_acts.append(projected)
+            projected_acts.append(
+                {
+                    **projected,
+                    "page_ordinal": row["page_ordinal"],
+                    "reading": _act_reading(row),
+                }
+            )
         context.publish(
             kind="manifest-entry",
             subject_id=row["act_id"],
