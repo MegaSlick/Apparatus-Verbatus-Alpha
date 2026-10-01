@@ -12,7 +12,6 @@ import pytest
 from common import stage as stage_module
 from common.chairs.model_store import StoreRoleFetcher
 from common.contracts.errors import ContractError
-from common.runtree.store import RunTree
 from common.stage import EXIT_HELD
 from conftest import file_bytes_snapshot as snapshot
 from conftest import load_stage
@@ -30,7 +29,6 @@ SEQUENCE = (
     "attestatores",
     "perlector",
     "recensor",
-    "recovery",
     "archetypus",
     "armarium",
 )
@@ -164,63 +162,10 @@ def test_all_and_a_split_semi_range_write_the_identical_happy_run_tree(tmp_path)
     assert drive(automatic, "r", "page-unbroken", "--all").returncode == 0
     first = drive(split, "r", "page-unbroken", "--from", "door", "--to", "recensor")
     assert first.returncode == 0, first.stdout + first.stderr
-    second = drive(split, "r", "page-unbroken", "--from", "recovery", "--to", "armarium")
+    second = drive(split, "r", "page-unbroken", "--from", "archetypus", "--to", "armarium")
     assert second.returncode == 0, second.stdout + second.stderr
 
     assert snapshot(split) == snapshot(automatic)
-
-
-@pytest.mark.act_path
-def test_recovery_is_a_manual_sequence_member_with_its_own_contiguous_seal_attempt(tmp_path):
-    automatic = tmp_path / "automatic"
-    manual = tmp_path / "manual"
-
-    assert drive(automatic, "r", "review", "--all").returncode == EXIT_HELD
-    for stage in SEQUENCE:
-        result = drive(manual, "r", "review", "--stage", stage)
-        expected = EXIT_HELD if stage in {"recensor", "armarium"} else 0
-        assert result.returncode == expected, result.stdout + result.stderr
-
-    assert snapshot(manual) == snapshot(automatic)
-    tree = RunTree(manual, "r")
-    seals = [
-        tree.read_artifact("designator", "stage-seal", entry["artifact_id"])
-        for entry in tree.build_manifest("designator")["artifacts"]
-        if entry["kind"] == "stage-seal"
-    ]
-    # `review` spends only its declared a1 recovery. The scenario's marginal
-    # page-1 witness box (x 0..10 / y 200..240) sits over zero ink -- measured
-    # directly against `proof.synthetic_pages.page_bytes(1)` via
-    # `common.residual_ink.ink_runs`, the same control
-    # `test_coverage_recovery_origin.py` proves at the unit level -- so consult
-    # §4.5's ink-confirmation conjunct (`unclaimed_ink_observations`, read
-    # through `outside_ink_requests`) correctly refuses it a second recovery
-    # round; a2 goes straight to held-for-review instead
-    # (the note above the digest pins in
-    # `pipeline/orchestrator/test_orchestrator_acceptance.py` states the same fact).
-    # Spending an unconfirmed witness pointer here would be letting a witness
-    # choose a pipeline action, which no step may do.
-    assert sorted(seal["payload"]["attempt_ordinal"] for seal in seals) == [1, 2]
-    # The ordinals prove a second Designator pass happened, not whose it was:
-    # if the recovery moved from a1 to a2 they would still read [1, 2]. Name
-    # the act, which is the fact the comment above is actually about.
-    requests = [
-        tree.read_artifact("recensor", "recovery-request", entry["artifact_id"])
-        for entry in tree.build_manifest("recensor")["artifacts"]
-        if entry["kind"] == "recovery-request"
-    ]
-    assert [request["payload"]["act_key"] for request in requests] == ["a1"]
-    # And what a2 became, not only what it did not ask for. `refused` is also a
-    # non-delivered category that keeps this run at exit 3, so the absence of a
-    # request does not by itself establish the held-for-review the comment above
-    # claims -- nor that a2 survived the run at all.
-    export_entry = next(
-        entry for entry in tree.build_manifest("armarium")["artifacts"] if entry["kind"] == "export"
-    )
-    export = tree.read_artifact("armarium", "export", export_entry["artifact_id"])["payload"]
-    assert [row["category"] for row in export["non_delivered"] if row["act_key"] == "a2"] == [
-        "held-for-review"
-    ]
 
 
 def test_from_refuses_an_unsealed_predecessor_by_name(tmp_path):
@@ -289,7 +234,7 @@ def test_a_held_armarium_reports_its_terminal_reasons_under_every_mode(tmp_path)
     assert "act p2:1 is held-for-review" in manual_result.stdout
 
     drive(semi, "r", "page-review", "--from", "door", "--to", "recensor")
-    semi_result = drive(semi, "r", "page-review", "--from", "recovery", "--to", "armarium")
+    semi_result = drive(semi, "r", "page-review", "--from", "archetypus", "--to", "armarium")
     assert semi_result.returncode == EXIT_HELD
     assert "run r: partial" in semi_result.stdout
     assert "act p2:1 is held-for-review" in semi_result.stdout

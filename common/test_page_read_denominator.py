@@ -93,11 +93,6 @@ def review_tree(tmp_path_factory) -> tuple[Path, dict[str, Path], str]:
     return _tree(tmp_path_factory.mktemp("page-review"), "page-review")
 
 
-@pytest.fixture(scope="module")
-def act_tree(tmp_path_factory) -> tuple[Path, dict[str, Path], str]:
-    return _tree(tmp_path_factory.mktemp("act"), "happy", unit="act")
-
-
 def _copy(
     tree: tuple[Path, dict[str, Path], str], tmp_path: Path
 ) -> tuple[Path, dict[str, Path], str]:
@@ -1220,43 +1215,19 @@ def test_a_page_read_tree_holding_an_act_reading_is_refused_as_mixed(happy_tree,
         reading_denominator(_context(tree))
 
 
-@pytest.mark.act_path
 @pytest.mark.parametrize("kind", ["audit-draft", "audit-finding"])
-def test_a_page_read_tree_holding_any_act_path_record_is_refused_as_mixed(
-    act_tree, happy_tree, tmp_path, kind
+def test_a_page_read_tree_holding_a_record_of_any_other_kind_is_refused_as_mixed(
+    happy_tree, tmp_path, kind
 ):
     tree = _copy(happy_tree, tmp_path)
-    source = sorted((act_tree[0] / RUN_ID / "4_perlector" / "artifacts" / kind).glob("*.json"))[0]
-    run = RunTree(tree[0], RUN_ID)
-    record = json.loads(source.read_text(encoding="utf-8"))
-    # Written by this page-read run, with no input it could not have read.
-    record.update(config_digest=run.read_run()["config_digest"], inputs=[])
+    source, record = _one(tree[0], "page-reading", 1)
+    record["kind"] = kind
+    record["artifact_id"] = artifact_id(PERLECTOR, kind, record["subject_id"], record["attempt_id"])
     directory = tree[0] / RUN_ID / "4_perlector" / "artifacts" / kind
-    directory.mkdir(exist_ok=True)
-    _write(directory / source.name, record)
-    rebind_stage_seal_artifact(run, PERLECTOR)
+    directory.mkdir()
+    _write(directory / f"{record['artifact_id']}.json", record)
+    rebind_stage_seal_artifact(RunTree(tree[0], RUN_ID), PERLECTOR)
     with pytest.raises(FatalAccounting, match=f"published an act-path {kind}"):
-        reading_denominator(_context(tree))
-
-
-@pytest.mark.act_path
-@pytest.mark.parametrize(
-    "kind", ["page-feed", "page-reading", "page-accounting", "act-region", "perlectio"]
-)
-def test_an_act_read_tree_holding_a_page_record_is_refused_as_mixed(
-    act_tree, happy_tree, tmp_path, kind
-):
-    tree = _copy(act_tree, tmp_path)
-    source, _record = _one(happy_tree[0], kind, 1, None if kind.startswith("page-") else 1)
-    run = RunTree(tree[0], RUN_ID)
-    record = json.loads(source.read_text(encoding="utf-8"))
-    # Written by this act-read run, with no input it could not have read.
-    record.update(config_digest=run.read_run()["config_digest"], inputs=[])
-    directory = tree[0] / RUN_ID / "4_perlector" / "artifacts" / kind
-    directory.mkdir(exist_ok=True)
-    _write(directory / source.name, record)
-    rebind_stage_seal_artifact(run, PERLECTOR)
-    with pytest.raises(FatalAccounting, match=f"published a page-path {kind}"):
         reading_denominator(_context(tree))
 
 
