@@ -166,8 +166,9 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   reading), and two records for one reading are refused. The gate is judged on the
   sealed final accounting -- the re-ask's on a re-asked page -- over every act region the
   page holds; `reask` reports the same records on the first reading alone (its regions
-  and accounting) beside it: pages re-asked, acts recovered on the re-ask, exactly-once
-  before and after, overall and on the re-asked pages. Parse states, the `length` finish
+  and accounting) beside it: pages re-asked, acts recovered on the re-ask (an added act
+  rule (j) holds as a duplicate of a first-reading entry is counted in `reask_duplicates`
+  instead), exactly-once before and after, overall and on the re-asked pages. Parse states, the `length` finish
   rate and the 65,536-token fit describe each page's first reading; the re-ask's parse
   states are under `reask`, and prompt tokens compare every call. With `--selection`
   (`proof_pages`' `selection.json`, checked against the ledger) the pages in scope are
