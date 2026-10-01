@@ -128,6 +128,9 @@ pod through the same route -- and the same credential scope -- the launch used.
 A timer that guessed a default could be the one controller that cannot
 terminate its own pod at the hard deadline."""
 
+POD_ID_ENVIRONMENT: Final = "RUNPOD_POD_ID"
+"""The variable RunPod sets in every pod to that pod's own id."""
+
 V2_ON_DEMAND_BASIS: Final[str | None] = None
 """The documented basis on which a v2 pod is on-demand, or ``None`` while there is none.
 
@@ -1700,7 +1703,7 @@ def timer_context_from_environment(environment: Mapping[str, str] | None = None)
     """
 
     env = os.environ if environment is None else environment
-    pod_id = _required_environment(env, "RUNPOD_POD_ID")
+    pod_id = _required_environment(env, POD_ID_ENVIRONMENT)
     capability = _required_environment(env, "RUNPOD_API_KEY")
     volume_id = _required_environment(env, "VERBATUS_VOLUME_ID")
     deadline = _environment_timestamp(

@@ -7,15 +7,19 @@
 #
 # Uses RUNPOD_POD_ID and the pod-scoped RUNPOD_API_KEY that RunPod sets in every pod, and
 # keeps its deadline, keep-alive file and log in $POD_GUARD_DIR (default
-# /workspace/.pod_guard, on the network volume). To extend the deadline, write the new
-# epoch second to a temporary file and move it over deadline-<pod id>. Touching
-# keepalive-<pod id> counts as work at that moment: the idle limit then runs from the touch.
+# /workspace/private/.pod_guard, on the network volume at the pod's mount path). To extend
+# the deadline, write the new epoch second to a temporary file and move it over
+# deadline-<pod id>. Touching keepalive-<pod id> counts as work at that moment: the idle
+# limit then runs from the touch. The guard touches heartbeat-<pod id> on every tick, so
+# a reader can tell a live guard from a deadline file nobody watches; a released-<pod id>
+# file (pod_run --no-hold writes the run and its outcome there) is quoted in the delete
+# notice, so a finished run's notice differs from one whose time ran out mid-run.
 set -u
 
 max_hours=${1:?usage: pod_guard.sh <max_hours> [idle_minutes]}
 idle_minutes=${2:-30}
 pod=${RUNPOD_POD_ID:?RUNPOD_POD_ID is not set}
-dir=${POD_GUARD_DIR:-/workspace/.pod_guard}
+dir=${POD_GUARD_DIR:-/workspace/private/.pod_guard}
 interval=${POD_GUARD_INTERVAL:-60}
 idle_limit=${POD_GUARD_IDLE_SECONDS:-$((idle_minutes * 60))}
 busy_percent=${POD_GUARD_BUSY_PERCENT:-5}
@@ -29,6 +33,9 @@ deadline_file="$dir/deadline-$pod"
 # Without a writable log nothing below can be trusted, so the guard exits and the start
 # command's own backstop does the deleting instead.
 { mkdir -p "$dir" && touch "$log"; } 2>/dev/null || exit 3
+# A release notice belongs to the run that wrote it: a restarted pod keeps its id, and an
+# old notice would make this guard's delete read as that earlier run's ending.
+rm -f "$dir/released-$pod"
 
 if command -v timeout >/dev/null 2>&1; then limit="timeout 60"; else limit=""; fi
 # A lost volume must not cost the delete: without a writable log, output goes nowhere.
@@ -70,24 +77,31 @@ notify() {
   case $topic in '' | *[!A-Za-z0-9_-]*) return 0 ;; esac
   config=$(mktemp) || return 0
   printf 'url = "https://ntfy.sh/%s"\n' "$topic" >"$config"
-  limited curl -fsS --max-time 30 -K "$config" -H "Title: Pod guard" -d "$1"
+  # The response echoes the topic, a bearer secret, so it never reaches the log.
+  limited curl -fsS --max-time 30 -K "$config" -H "Title: Pod guard" -d "$1" -o /dev/null
   rm -f "$config"
 }
 
 # The delete ends this container, so the loop only ever ends that way: a request that
 # reports success while the pod lives on is simply repeated, and stopping is the fallback.
 shut_down() {
-  say "deleting pod $pod: $1"
+  reason=$1
+  released="$dir/released-$pod"
+  if [ -r "$released" ]; then
+    ended=$(tr -cd 'A-Za-z0-9 ._-' <"$released" | cut -c 1-160)
+    [ -z "$ended" ] || reason="$reason; pod_run reported: $ended"
+  fi
+  say "deleting pod $pod: $reason"
   attempt=0
   stopped=""
   while :; do
     attempt=$((attempt + 1))
     if delete_pod; then
       say "delete requested (attempt $attempt)"
-      [ "$attempt" -eq 1 ] && notify "Pod $pod: its guard requested deletion ($1)."
+      [ "$attempt" -eq 1 ] && notify "Pod $pod: its guard requested deletion ($reason)."
     else
       say "delete attempt $attempt failed"
-      [ "$attempt" -eq 1 ] && notify "Pod $pod: its guard could not delete it ($1) and keeps trying."
+      [ "$attempt" -eq 1 ] && notify "Pod $pod: its guard could not delete it ($reason) and keeps trying."
     fi
     if [ "$attempt" -ge 3 ] && [ -z "$stopped" ] && stop_pod; then
       stopped=yes
@@ -167,6 +181,7 @@ keepalive_age() {
 
 idle_for=0
 while :; do
+  touch "$dir/heartbeat-$pod" 2>/dev/null
   latest=$(cat "$deadline_file" 2>/dev/null)
   if [ "$latest" != "$deadline" ] && [ "$latest" != "${ignored-}" ]; then
     if sane_deadline "$latest"; then
