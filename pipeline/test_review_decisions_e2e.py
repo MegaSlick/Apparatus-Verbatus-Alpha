@@ -39,6 +39,7 @@ from test_live_reading_seam_e2e import (  # noqa: F401  (`designated` is a fixtu
 from common.contracts.approval import build_review_decision_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.stages import ARCHETYPUS, ARMARIUM
+from common.page_review import held_by_recensor
 from common.review_decisions import READING_HELD, basis_digest, page_basis_digest
 from common.runtree.store import RunTree
 from common.stage import EXIT_COMPLETE, EXIT_HELD
@@ -312,6 +313,22 @@ def test_an_exclusion_keeps_the_unit_out_of_the_delivered_text_but_recorded(held
         "no machine hold; a person's decision, not a machine check"
     ) in reasons
     assert f"page 1 is still held by {UNDER_WITNESSED}" in reasons
+
+
+def test_a_page_held_after_every_unit_on_it_was_excluded_holds_the_recensor(held, tmp_path):
+    """Excluding both acts on under-witnessed page 1 leaves the page itself held."""
+    tree = _copy(held, tmp_path)
+    _decide(tree.root, "p1:1", "exclude")
+    _decide(tree.root, "p1:2", "exclude")
+
+    assert _recense(tree) == EXIT_HELD
+    reviews = _reviews(tree.root)
+    assert reviews["p1:1"]["outcome"] == reviews["p1:2"]["outcome"] == "excluded"
+    [page] = _decisions(tree.root)["page_holds"]
+    assert page["page_ordinal"] == 1 and UNDER_WITNESSED in page["hold_codes"]
+    assert held_by_recensor(RunTree(tree.root, RUN_ID)) == [
+        {"subject_id": "operator-review", "what": "page 1", "hold_codes": page["hold_codes"]}
+    ]
 
 
 def test_decisions_are_re_applied_identically_on_a_re_run(held, tmp_path):

@@ -825,8 +825,10 @@ def review_pages(
 ) -> int:
     """Review every counted unit and record every flagged page break.
 
-    Returns how many records are held: units and one-sided page breaks alike,
-    so a run with an unresolved break does not exit complete. Every fact is
+    Returns how many records are held: units, one-sided page breaks, and pages
+    the applied decisions leave held (`common.review_decisions.held_pages`),
+    alike, so a run with an unresolved break, or a held page whose every unit
+    was excluded, does not exit complete. Every fact is
     measured before anything is published, so a refusal found at a later unit
     never leaves a partial set of reviews behind.
     """
@@ -855,6 +857,7 @@ def review_pages(
         held += outcome == HELD
     if decisions is not None:
         publish_review_decisions(context, decisions, ordinal)
+        held += len(decisions["page_holds"])
     for subject, payload, inputs in links:
         outcome = link_outcome(payload)
         context.publish(
