@@ -35,6 +35,7 @@ from armarium_export import (  # noqa: E402
     FIRST_READING_LABEL,
     NOT_MEASURED_BASIS_SCHEMA,
     NOT_MEASURED_INSTRUMENTS,
+    OPERATOR_REREAD_LABEL,
     READ_ON_REASK_LABEL,
     ArmariumProjection,
     act_key_sort_key,
@@ -1123,7 +1124,7 @@ def page_not_measured_basis(context, pages: dict[int, dict], projected_acts: lis
 
 
 # The reading a counted entry came from, by the attempt its verified denominator
-# row names: its page's first reading or its re-ask.
+# row names: its page's first reading, its re-ask, or an operator re-read (3 on).
 _ACT_READING_LABELS: Final = {
     page_path.FIRST_READING: FIRST_READING_LABEL,
     page_path.REASK_READING: READ_ON_REASK_LABEL,
@@ -1136,10 +1137,13 @@ def _act_reading(row: dict) -> str | None:
         if row["reading_attempt"] is not None:
             raise FatalAccounting(f"{row['act_key']} stands for no entry yet names a reading")
         return None
+    if page_path.is_operator_reread(row["reading_attempt"]):
+        return OPERATOR_REREAD_LABEL
     if row["reading_attempt"] not in _ACT_READING_LABELS:
         raise FatalAccounting(
             f"{row['act_key']} is an entry whose reading attempt "
-            f"{row['reading_attempt']!r} is neither its page's first reading nor its re-ask"
+            f"{row['reading_attempt']!r} is neither its page's first reading, its re-ask nor "
+            "an operator re-read"
         )
     return _ACT_READING_LABELS[row["reading_attempt"]]
 

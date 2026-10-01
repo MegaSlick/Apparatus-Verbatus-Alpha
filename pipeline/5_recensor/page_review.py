@@ -61,6 +61,7 @@ from common.page_reask import reask_outcome
 from common.page_review import (
     CONTINUATION_LINK_KIND,
     HELD,
+    LINK_OPERATION,
     PAGE_REVIEW_FIELDS,
     RELEASABLE_HOLDS,
     REVIEW_DECISIONS_KIND,
@@ -69,12 +70,16 @@ from common.page_review import (
     REVIEW_DECISIONS_SUBJECT,
     REVIEWED_PAGE_REVIEW_FIELDS,
     act_entries_by_page,
+    current_link_records,
     current_review_decisions,
+    link_generations,
+    of_superseded_reading,
     operator_correction,
     override_refusal,
     page_breaks,
     require_establishable,
     reviewed_rows,
+    superseded_readings,
 )
 from common.page_testimonia import (
     PAGE_TESTIMONIUM_KIND,
@@ -908,11 +913,22 @@ def review_pages(
         held += len(decisions["page_holds"])
     for subject, payload, inputs in links:
         outcome = link_outcome(payload)
+        # A break's link is filed again, as its next attempt, only when the
+        # readings an operator re-read changed what the break's sides say.
+        generations = link_generations(context.tree, subject)
+        last = generations[-1] if generations else None
+        unchanged = (
+            last is not None
+            and last["payload"] == payload
+            and refs_by_path(last["inputs"]) == refs_by_path(inputs)
+        )
         context.publish(
             kind=CONTINUATION_LINK_KIND,
             subject_id=subject,
             outcome=outcome,
-            attempt=attempt_id(subject, "link", 1),
+            attempt=attempt_id(
+                subject, LINK_OPERATION, len(generations) if unchanged else len(generations) + 1
+            ),
             inputs=inputs,
             payload=payload,
         )
@@ -1013,13 +1029,7 @@ def release_reason(act: dict, review: dict) -> str | None:
 def current_links(context, expected: list[tuple[str, dict]], by_id, pages) -> list[dict]:
     """Every continuation-link on disk, matched one to one against the breaks disk derives."""
     derived = {subject: payload for subject, payload in expected}
-    found: dict[str, list[dict]] = {}
-    for entry in context.tree.build_manifest(RECENSOR)["artifacts"]:
-        if entry["kind"] == CONTINUATION_LINK_KIND:
-            record = context.tree.read_artifact(
-                RECENSOR, CONTINUATION_LINK_KIND, entry["artifact_id"]
-            )
-            found.setdefault(record["subject_id"], []).append(record)
+    found = {subject: [record] for subject, record in current_link_records(context.tree).items()}
     if missing := sorted(set(derived) - set(found)):
         raise FatalAccounting(f"the flagged page break(s) {missing} have no continuation-link")
     if stray := sorted(set(found) - set(derived)):
@@ -1032,7 +1042,6 @@ def current_links(context, expected: list[tuple[str, dict]], by_id, pages) -> li
         record = records[0]
         if (
             len(records) != 1
-            or record.get("attempt_id") != attempt_id(subject, "link", 1)
             or record.get("payload") != payload
             or record.get("outcome") != link_outcome(payload)
             or refs_by_path(record["inputs"]) != refs_by_path(link_inputs(payload, by_id, pages))
@@ -1087,6 +1096,7 @@ def write_reading_receipt(
     machine = {act["act_id"]: (outcome, payload) for act, outcome, payload, _inputs in planned}
     by_id = {act["act_id"]: act for act in acts}
     reviews: dict[str, list[dict]] = {act_id: [] for act_id in by_id}
+    superseded: dict[str, list[dict]] = {}
     for entry in context.tree.build_manifest(RECENSOR)["artifacts"]:
         if entry["kind"] == "recovery-request":
             raise FatalAccounting(
@@ -1096,12 +1106,19 @@ def write_reading_receipt(
         if entry["kind"] != "review":
             continue
         record = context.tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
-        if record["subject_id"] not in by_id:
+        if record["subject_id"] in reviews:
+            reviews[record["subject_id"]].append(record)
+        else:
+            superseded.setdefault(record["subject_id"], []).append(record)
+    # A unit outside the counted ones is reviewed only as a unit of a reading an
+    # operator re-read superseded, kept as published.
+    old_readings = superseded_readings(context.tree)
+    for subject, records in sorted(superseded.items()):
+        if not all(of_superseded_reading(record, old_readings) for record in records):
             raise FatalAccounting(
-                f"Recensor review {record['artifact_id']} names unit {record['subject_id']!r}, "
-                "which is outside this page-read run's reading_acts"
+                f"Recensor review {records[0]['artifact_id']} names unit {subject!r}, which is "
+                "outside this page-read run's reading_acts"
             )
-        reviews[record["subject_id"]].append(record)
     off_edge = continuation_off_edge(acts)
     items = []
     for act, outcome, expected, inputs, approval_ref in sorted(

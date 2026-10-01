@@ -15,18 +15,23 @@ disagree about them.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any, Final
 
 from common.contracts.approval import EDIT_DECISION
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
-from common.contracts.stages import RECENSOR
+from common.contracts.identities import artifact_id, attempt_id
+from common.contracts.stages import PERLECTOR, RECENSOR
 from common.page_path import (
     DOUBT_MARKS_MALFORMED,
     ENTRY_NO_READABLE_TEXT,
-    FIRST_READING,
+    OPERATOR_REREAD_FIELD,
+    PAGE_READING_KIND,
+    PERLECTIO_KIND,
     READING_CLASS,
     UNPLACED,
+    is_whole_page_reading,
 )
 from common.review_decisions import CORRECTION_FIELD, EXCLUDED, REVIEW_FIELD, decisions_digest
 from common.review_policy import SEALED_CONFIG_NAME as REVIEW_CONFIG_NAME
@@ -173,7 +178,13 @@ def current_page_reviews(context, rows: Sequence[Mapping[str, Any]]) -> dict[str
         record = context.tree.read_artifact(RECENSOR, REVIEW_KIND, entry["artifact_id"])
         by_subject.setdefault(entry["subject_id"], []).append(record)
     counted = {row["act_id"] for row in rows}
-    strays = sorted(set(by_subject) - counted)
+    superseded = superseded_readings(context.tree)
+    strays = sorted(
+        subject
+        for subject, records in by_subject.items()
+        if subject not in counted
+        and not all(of_superseded_reading(record, superseded) for record in records)
+    )
     if strays:
         raise FatalAccounting(
             f"the Recensor reviewed {strays}, which this page-read run does not count; a "
@@ -193,6 +204,90 @@ def current_page_reviews(context, rows: Sequence[Mapping[str, Any]]) -> dict[str
         _require_review_of_row(review, row)
         reviews[act_id] = review
     return reviews
+
+
+def superseded_readings(tree) -> set[str]:
+    """The run-tree paths of every page reading an operator re-read superseded.
+
+    Each operator re-read names the page's earlier readings it supersedes
+    (`common.page_path.operator_reread_record`); they stay in the run tree as
+    read, and the Recensor's reviews of their units stay beside them, current
+    no more.
+    """
+    found: set[str] = set()
+    for entry in tree.build_manifest(PERLECTOR, verify_inputs=False)["artifacts"]:
+        if entry["kind"] != PAGE_READING_KIND:
+            continue
+        block = _payload(
+            tree.read_artifact(PERLECTOR, PAGE_READING_KIND, entry["artifact_id"])
+        ).get(OPERATOR_REREAD_FIELD)
+        if isinstance(block, Mapping) and isinstance(block.get("supersedes"), list):
+            found |= {
+                reference["relative_path"]
+                for reference in block["supersedes"]
+                if isinstance(reference, Mapping)
+                and isinstance(reference.get("relative_path"), str)
+            }
+    return found
+
+
+def of_superseded_reading(review: Mapping[str, Any], superseded: Collection[str]) -> bool:
+    """Whether a review is of a unit of a page reading an operator re-read superseded."""
+    reference = _payload(review).get("page_reading_ref")
+    return isinstance(reference, Mapping) and reference.get("relative_path") in superseded
+
+
+def _current_reviews(tree) -> dict[str, dict[str, Any]]:
+    """The Recensor's latest review of every unit of a current page reading, by subject."""
+    reviews: dict[str, list[dict[str, Any]]] = {}
+    for entry in tree.build_manifest(RECENSOR, verify_inputs=False)["artifacts"]:
+        if entry["kind"] == REVIEW_KIND:
+            reviews.setdefault(entry["subject_id"], []).append(
+                tree.read_artifact(RECENSOR, REVIEW_KIND, entry["artifact_id"])
+            )
+    superseded = superseded_readings(tree)
+    current = {}
+    for subject_id, records in sorted(reviews.items()):
+        review = latest_attempt(records, f"review of {subject_id}", operation=REVIEW_OPERATION)
+        if not of_superseded_reading(review, superseded):
+            current[subject_id] = review
+    return current
+
+
+def published_units(tree) -> list[dict[str, Any]]:
+    """The Recensor's latest review of every current unit, as `published_basis` reads them.
+
+    Each unit's page is the one its page reading names, and its own and page
+    holds its Perlectio's, as sealed; a page row has no reading and holds
+    for its page. A unit of a reading an operator re-read superseded is not
+    among them.
+    """
+    units = []
+    for act_id, review in _current_reviews(tree).items():
+        payload = {
+            key: value for key, value in review["payload"].items() if key != "attempt_ordinal"
+        }
+        page = tree.read_artifact_reference(
+            payload["page_reading_ref"], stage=PERLECTOR, kind=PAGE_READING_KIND
+        )
+        holds: list[str] = []
+        page_holds: list[str] = []
+        if payload["perlectio_ref"] is not None:
+            reading = tree.read_artifact_reference(
+                payload["perlectio_ref"], stage=PERLECTOR, kind=PERLECTIO_KIND, subject_id=act_id
+            )
+            holds, page_holds = reading["payload"]["holds"], reading["payload"]["page_holds"]
+        units.append(
+            {
+                "act_id": act_id,
+                "page_id": page["subject_id"],
+                "outcome": review["outcome"],
+                "payload": payload,
+                "unit_holds": holds,
+                "page_holds": page_holds,
+            }
+        )
+    return units
 
 
 def _require_review_of_row(review: Mapping[str, Any], row: Mapping[str, Any]) -> None:
@@ -531,15 +626,10 @@ def held_by_recensor(tree) -> list[dict[str, Any]]:
     held total the Recensor exits held on, so a driver can tell a held
     Recensor from its records without opening a stage.
     """
-    reviews: dict[str, list[dict[str, Any]]] = {}
     links: list[dict[str, Any]] = []
     decisions: list[dict[str, Any]] = []
     for entry in tree.build_manifest(RECENSOR, verify_inputs=False)["artifacts"]:
-        if entry["kind"] == REVIEW_KIND:
-            reviews.setdefault(entry["subject_id"], []).append(
-                tree.read_artifact(RECENSOR, REVIEW_KIND, entry["artifact_id"])
-            )
-        elif entry["kind"] == CONTINUATION_LINK_KIND and entry["outcome"] == HELD:
+        if entry["kind"] == CONTINUATION_LINK_KIND and entry["outcome"] == HELD:
             links.append(
                 {"subject_id": entry["subject_id"], "what": "continuation link", "hold_codes": []}
             )
@@ -548,8 +638,7 @@ def held_by_recensor(tree) -> list[dict[str, Any]]:
                 tree.read_artifact(RECENSOR, REVIEW_DECISIONS_KIND, entry["artifact_id"])
             )
     held = []
-    for subject_id, records in sorted(reviews.items()):
-        review = latest_attempt(records, f"review of {subject_id}", operation=REVIEW_OPERATION)
+    for subject_id, review in _current_reviews(tree).items():
         if review.get("outcome") == HELD:
             payload = _payload(review)
             held.append(
@@ -601,21 +690,15 @@ def held_pages_after_review(tree) -> tuple[list[int], int]:
     holds it (a page whose every unit was excluded keeps its page holds). Read
     from the run tree alone, like `held_by_recensor`.
     """
-    reviews: dict[str, list[dict[str, Any]]] = {}
     decisions: list[dict[str, Any]] = []
     for entry in tree.build_manifest(RECENSOR, verify_inputs=False)["artifacts"]:
-        if entry["kind"] == REVIEW_KIND:
-            reviews.setdefault(entry["subject_id"], []).append(
-                tree.read_artifact(RECENSOR, REVIEW_KIND, entry["artifact_id"])
-            )
-        elif entry["kind"] == REVIEW_DECISIONS_KIND:
+        if entry["kind"] == REVIEW_DECISIONS_KIND:
             decisions.append(
                 tree.read_artifact(RECENSOR, REVIEW_DECISIONS_KIND, entry["artifact_id"])
             )
     pages: set[int] = set()
     held: set[int] = set()
-    for subject_id, records in reviews.items():
-        review = latest_attempt(records, f"review of {subject_id}", operation=REVIEW_OPERATION)
+    for review in _current_reviews(tree).values():
         ordinal = _payload(review)["page_ordinal"]
         pages.add(ordinal)
         if review.get("outcome") == HELD:
@@ -647,19 +730,20 @@ def review_notes(review: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def act_entries_by_page(acts: Sequence[Mapping[str, Any]]) -> dict[int, list[Mapping[str, Any]]]:
-    """Each page's first-reading `act` entries: the only entries a page break can join.
+    """Each page's whole-page `act` entries: the only entries a page break can join.
 
-    A page's edges are its first reading's. An entry the re-ask recovered
-    (`reading_attempt` 2) was asked about ids alone, with no continuation
-    flag allowed, so its place in page order is not established: it never
-    moves a page's act edge and is never a side of a page break.
+    A page's edges are its current whole-page reading's: its first reading's,
+    or an operator re-read's (`page_path.is_whole_page_reading`). An entry the
+    re-ask recovered (`reading_attempt` 2) was asked about ids alone, with no
+    continuation flag allowed, so its place in page order is not established:
+    it never moves a page's act edge and is never a side of a page break.
     """
     entries: dict[int, list[Mapping[str, Any]]] = {}
     for act in acts:
         if (
             act["n"] is not None
             and act["kind"] == "act"
-            and act["reading_attempt"] == FIRST_READING
+            and is_whole_page_reading(act["reading_attempt"])
         ):
             entries.setdefault(act["page_ordinal"], []).append(act)
     return entries
@@ -707,6 +791,68 @@ def page_breaks(
     return links
 
 
+LINK_OPERATION: Final = "link"
+
+
+def link_generations(tree, subject: str) -> list[dict[str, Any]]:
+    """Every attempt of one page break's continuation-link, in order: 1, then each later one.
+
+    A Recensor pass over readings an operator re-read changed files a link that
+    differs from the last as the break's next attempt; the last is current.
+    """
+    found = []
+    while True:
+        identifier = artifact_id(
+            RECENSOR,
+            CONTINUATION_LINK_KIND,
+            subject,
+            attempt_id(subject, LINK_OPERATION, len(found) + 1),
+        )
+        if not tree.has_artifact(RECENSOR, CONTINUATION_LINK_KIND, identifier):
+            return found
+        found.append(tree.read_artifact(RECENSOR, CONTINUATION_LINK_KIND, identifier))
+
+
+def current_link_records(tree) -> dict[str, dict[str, Any]]:
+    """Each page break's current continuation-link record, by subject.
+
+    The last attempt of each break, unless it is of readings an operator
+    re-read superseded (a break the current readings no longer flag), which is
+    kept as published and current no more. Every link record must be one of
+    its break's attempts.
+    """
+    subjects: dict[str, int] = {}
+    for entry in tree.build_manifest(RECENSOR, verify_inputs=False)["artifacts"]:
+        if entry["kind"] == CONTINUATION_LINK_KIND:
+            subjects[entry["subject_id"]] = subjects.get(entry["subject_id"], 0) + 1
+    superseded = superseded_readings(tree)
+    current = {}
+    for subject, count in sorted(subjects.items()):
+        generations = link_generations(tree, subject)
+        if len(generations) != count:
+            raise FatalAccounting(
+                f"the continuation-links of {subject} are not its attempts 1..{count}"
+            )
+        record = generations[-1]
+        if not _of_superseded_inputs(tree, record, superseded):
+            current[subject] = record
+    return current
+
+
+def _of_superseded_inputs(tree, record: Mapping[str, Any], superseded: Collection[str]) -> bool:
+    """Whether a link names a reading, or a unit of one, an operator re-read superseded."""
+    if not superseded:
+        return False
+    for reference in record.get("inputs", []):
+        path = reference.get("relative_path") if isinstance(reference, Mapping) else None
+        if path in superseded:
+            return True
+        named = _payload(json.loads(tree.read_bytes(path))).get("page_reading_ref")
+        if isinstance(named, Mapping) and named.get("relative_path") in superseded:
+            return True
+    return False
+
+
 def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Every `continuation-link`, as `{ref, from_page_ordinal, to_page_ordinal,
     head_act_id, tail_act_id, agreed}`.
@@ -725,10 +871,13 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
     derived = dict(page_breaks(exemplar_page_ids(context), rows))
     links: list[dict[str, Any]] = []
     subjects: set[str] = set()
-    for entry in stage_manifest(context, RECENSOR)["artifacts"]:
-        if entry["kind"] != CONTINUATION_LINK_KIND:
-            continue
-        record = context.tree.read_artifact(RECENSOR, CONTINUATION_LINK_KIND, entry["artifact_id"])
+    entries = {
+        entry["artifact_id"]: entry
+        for entry in stage_manifest(context, RECENSOR)["artifacts"]
+        if entry["kind"] == CONTINUATION_LINK_KIND
+    }
+    for record in current_link_records(context.tree).values():
+        entry = entries[record["artifact_id"]]
         payload = _payload(record)
         what = f"Recensor continuation-link {entry['artifact_id']!r}"
         if set(payload) != CONTINUATION_LINK_FIELDS or payload["schema"] != (
@@ -749,7 +898,7 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
             row = counted.get(act_id) if isinstance(act_id, str) else None
             if row is None or row["act_key"] != act_key:
                 raise FatalAccounting(f"{what} names a reading this run does not count")
-            if row["reading_attempt"] != FIRST_READING:
+            if not is_whole_page_reading(row["reading_attempt"]):
                 raise FatalAccounting(
                     f"{what} names {act_key}, an entry the re-ask recovered; a page's edges "
                     "are its first reading's, and a recovered entry is never a side of a break"

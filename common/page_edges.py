@@ -17,13 +17,24 @@ from collections.abc import Iterable, Mapping
 from typing import Any, Final
 
 FIRST_READING_ATTEMPT: Final = 1
+# The one re-ask of a page (`common.page_path.REASK_READING`): asked about ids
+# alone, so its entries are never a page's edges.
+REASK_ATTEMPT: Final = 2
 
 Entry = Mapping[str, Any]
 
 
 def first_attempt_entries(entries: Iterable[Entry]) -> list[Entry]:
-    """The entries of each page's first reading attempt: the reading a page's edges are of."""
-    return [entry for entry in entries if entry["reading_attempt"] == FIRST_READING_ATTEMPT]
+    """The entries of each page's current whole-page reading: the reading a page's edges are of.
+
+    That is the first reading, or an operator re-read (attempt 3 on) that
+    superseded it; never the re-ask's.
+    """
+    return [
+        entry
+        for entry in entries
+        if entry["reading_attempt"] is not None and entry["reading_attempt"] != REASK_ATTEMPT
+    ]
 
 
 def act_entries_by_page(entries: Iterable[Entry]) -> dict[int, list[Entry]]:

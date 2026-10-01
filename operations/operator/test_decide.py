@@ -113,13 +113,14 @@ def test_each_decision_is_recorded_current_and_the_recensor_applies_it(
     assert applied["stale"] == []
 
 
-def test_a_page_rerun_request_is_recorded_and_says_what_is_missing(
+def test_a_page_rerun_request_is_recorded_and_says_how_the_page_is_read_again(
     recensed, tmp_path, monkeypatch, capsys
 ):
     root, options = _copy(recensed, tmp_path)
     assert _decide(root, tmp_path, monkeypatch, "re-ask", "--page", "2", "--reason", "re-read") == 0
-    out = capsys.readouterr().out
-    assert "This tool does not start that re-read" in out
+    out = " ".join(capsys.readouterr().out.split())
+    assert "when the run resumes from the Perlector (--from perlector --to armarium)" in out
+    assert "needs the project lead's permission" in out
     assert run_stage(root, RUN_ID, SCENARIO, RECENSOR, **options).returncode == 3
     [request] = _decisions_record(root)["requests"]
     assert (request["scope"], request["page_ordinal"], request["decision"]) == ("page", 2, "re-ask")

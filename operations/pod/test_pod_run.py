@@ -1344,6 +1344,32 @@ def test_a_selection_whose_records_did_not_come_home_is_held_not_complete(
     assert not (ws.volume / "pod-run-report-hold.json").exists()
 
 
+def test_an_operator_re_read_runs_on_the_pod_as_a_selection_from_the_perlector(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A person's page re-ask is read on the pod through the existing route, never a new one.
+
+    The run resumes from the Perlector, which reads the page again; nothing
+    here starts a pod: the provider and the runner are fakes.
+    """
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
+    clock = Clock()
+    runner = RecordedRunner(returncode=orchestrator.EXIT_HELD)
+    code = main(
+        _run_argv(ws, extra=("--from", "perlector", "--to", "armarium")),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+    assert code == EXIT_HELD
+    [(argv, _cwd, _env)] = runner.calls
+    start = argv.index("--from")
+    assert argv[start : start + 4] == ["--from", "perlector", "--to", "armarium"]
+
+
 @pytest.mark.parametrize(
     ("selection", "predecessor"),
     [

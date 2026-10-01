@@ -32,6 +32,7 @@ from common.review_decisions import (
     classify_holds,
     current_basis,
     held_pages,
+    page_reask_decisions,
     published_basis,
     review_decision,
 )
@@ -1042,3 +1043,30 @@ def test_a_basis_read_back_without_the_operator_block_would_bind_to_the_wrong_re
     assert published_basis(RUN, published, decisions)["units"]["b1"]["basis_digest"] != (
         digest_of({key: value for key, value in decided.items() if key != REVIEW_FIELD})
     )
+
+
+# --- a page re-ask asks for an operator re-read ----------------------------------------
+
+
+def test_a_current_page_re_ask_asks_for_its_page_to_be_read_again():
+    derived = derived_review()
+    basis = current_basis(derived)
+    reask = decide(derived, "page", "page-1", "re-ask")
+    asked = page_reask_decisions(basis, [reask])
+    assert list(asked) == ["page-1"]
+    [summary] = asked["page-1"]
+    assert summary["decision_hash"] == reask["self_hash"]
+
+
+def test_a_stale_or_conflicting_page_re_ask_asks_for_nothing():
+    derived = derived_review()
+    basis = current_basis(derived)
+    stale = decide(derived, "page", "page-1", "re-ask", basis_digest="0" * 64)
+    assert page_reask_decisions(basis, [stale]) == {}
+    conflicting = [
+        decide(derived, "page", "page-1", "re-ask"),
+        decide(derived, "page", "page-1", "no-missed-act"),
+    ]
+    assert page_reask_decisions(basis, conflicting) == {}
+    unit = decide(derived, "unit", "a1", "re-ask")
+    assert page_reask_decisions(basis, [unit]) == {}

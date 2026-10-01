@@ -14,6 +14,8 @@ An `edit` records a person's corrected text for one held unit, with an
 optional note; when the Recensor accepts the unit, the Archetypus establishes
 that text as its reading, labelled "corrected by a person"
 (`common/correction.py`), and the export shows the model's reading beside it.
+A page `re-ask` is read again by the Perlector when the run resumes from it
+(`common/page_reread.py`), as the page's next operator re-read.
 
 Refused, before anything is written: a unit or page the Recensor's latest
 pass did not review; a decision its subject does not allow (a release with no
@@ -39,13 +41,11 @@ from common.contracts.approval import (
     build_review_decision_record,
 )
 from common.contracts.errors import ApprovalRefusal
-from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
+from common.contracts.stages import ARCHETYPUS, ARMARIUM
 from common.correction import text_sha256
-from common.page_path import PAGE_READING_KIND, PERLECTIO_KIND
-from common.page_review import REVIEW_KIND, REVIEW_OPERATION, override_refusal
+from common.page_review import override_refusal, published_units
 from common.review_decisions import CURRENT, published_basis, review_decision
 from common.runtree.store import RunTree
-from common.stage import latest_attempt
 
 # What each decision asks of the run after it, in words.
 NEXT_STEP: Final = {
@@ -61,13 +61,17 @@ NEXT_STEP: Final = {
         "with the model's reading kept beside it"
     ),
 }
-RERUN_MISSING: Final = (
-    "the Recensor records the request in its review-decisions `requests`, and holds the "
-    "subject until it is read again. This tool does not start that re-read: the Perlector "
-    "reads a page as attempt 1 and its one re-ask as attempt 2 and refuses any other "
-    "(`common.page_path.page_reading_attempt`), and the reading denominator has no rule for "
-    "which of two first readings of a page is current, so a re-read is a new run of the "
-    "submission"
+# What a re-ask asks of the run after it, by scope.
+REREAD_PAGE: Final = (
+    "when the run resumes from the Perlector (--from perlector --to armarium), the Perlector "
+    "reads the page again as its next operator re-read, bound to this decision; that reading "
+    "becomes the page's current one, its earlier readings stay in the run tree marked "
+    "superseded, and the Recensor reviews the new reading. On a pod the re-read is paid GPU "
+    "work and needs the project lead's permission like any pod start"
+)
+REREAD_UNIT: Final = (
+    "the Recensor records the request in its review-decisions `requests` and holds the unit; "
+    "the Perlector reads whole pages, so to read it again record a re-ask of its page"
 )
 
 
@@ -85,48 +89,6 @@ class PreparedDecision:
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def published_units(tree: RunTree) -> list[dict[str, Any]]:
-    """The Recensor's latest review of every unit, as `published_basis` reads them.
-
-    Each unit's page is the one its page reading names, and its own and page
-    holds its Perlectio's, as sealed; a page row has no reading and holds
-    for its page.
-    """
-    reviews: dict[str, list[dict[str, Any]]] = {}
-    for entry in tree.build_manifest(RECENSOR, verify_inputs=False)["artifacts"]:
-        if entry["kind"] == REVIEW_KIND:
-            reviews.setdefault(entry["subject_id"], []).append(
-                tree.read_artifact(RECENSOR, REVIEW_KIND, entry["artifact_id"])
-            )
-    units = []
-    for act_id, records in sorted(reviews.items()):
-        review = latest_attempt(records, f"review of {act_id}", operation=REVIEW_OPERATION)
-        payload = {
-            key: value for key, value in review["payload"].items() if key != "attempt_ordinal"
-        }
-        page = tree.read_artifact_reference(
-            payload["page_reading_ref"], stage=PERLECTOR, kind=PAGE_READING_KIND
-        )
-        holds: list[str] = []
-        page_holds: list[str] = []
-        if payload["perlectio_ref"] is not None:
-            reading = tree.read_artifact_reference(
-                payload["perlectio_ref"], stage=PERLECTOR, kind=PERLECTIO_KIND, subject_id=act_id
-            )
-            holds, page_holds = reading["payload"]["holds"], reading["payload"]["page_holds"]
-        units.append(
-            {
-                "act_id": act_id,
-                "page_id": page["subject_id"],
-                "outcome": review["outcome"],
-                "payload": payload,
-                "unit_holds": holds,
-                "page_holds": page_holds,
-            }
-        )
-    return units
 
 
 def _require_open(tree: RunTree) -> None:
@@ -278,7 +240,10 @@ def report(prepared: PreparedDecision, reference: ApprovalRecordReference) -> li
     review = prepared.record["review"]
     decision = review["decision"]
     finding = f" with finding {review['finding']}" if review["finding"] else ""
-    effect = RERUN_MISSING if decision == "re-ask" else NEXT_STEP[decision]
+    if decision == "re-ask":
+        effect = REREAD_PAGE if review["scope"] == PAGE_SCOPE else REREAD_UNIT
+    else:
+        effect = NEXT_STEP[decision]
     text = (
         [f"The corrected text has digest {prepared.text_sha256}; note: {review['note'] or 'none'}."]
         if decision == EDIT_DECISION

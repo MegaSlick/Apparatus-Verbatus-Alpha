@@ -38,7 +38,7 @@ from typing import Any, Final
 from common.contracts.errors import ContractError
 from common.page_accounting import normalized_text
 from common.page_edges import (
-    FIRST_READING_ATTEMPT,
+    REASK_ATTEMPT,
     act_entries_by_page,
     break_chains,
     first_attempt_entries,
@@ -149,7 +149,8 @@ def reconstruction_plan(
 
     An entry a page's re-ask recovered (`reading_attempt` 2) is a diplomatic
     reading like any other and may be a subject, but a page's edges are its first
-    reading's (`first_attempt_entries`): the re-ask was asked about ids alone and
+    reading's, or an operator re-read's that superseded it (`first_attempt_entries`):
+    the re-ask was asked about ids alone and
     may set no continuation flag, so a recovered entry is never a chain piece or
     another page's context, and one carrying a continuation flag is refused.
     """
@@ -161,7 +162,7 @@ def reconstruction_plan(
         return []
     entries = list(entries)
     for entry in entries:
-        if entry["reading_attempt"] != FIRST_READING_ATTEMPT and (
+        if entry["reading_attempt"] == REASK_ATTEMPT and (
             entry["continues_from_previous_page"] is True or entry["continues_to_next_page"] is True
         ):
             raise ContractError(

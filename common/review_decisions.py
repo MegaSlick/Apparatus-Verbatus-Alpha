@@ -539,6 +539,37 @@ def apply_decisions(derived: Mapping[str, Any], decisions: Sequence[Any]) -> dic
     }
 
 
+def page_reask_decisions(
+    basis: Mapping[str, Any], decisions: Sequence[Any]
+) -> dict[str, list[dict[str, Any]]]:
+    """Each page whose current decisions all ask for it to be read again, with their summaries.
+
+    `basis` is the one the decisions bind to (`published_basis`), `decisions`
+    every stored decision. A page whose current decisions disagree is held as
+    conflicting by the Recensor and asks for nothing; a stale re-ask asks for
+    nothing either. The summaries are in hash order.
+    """
+    summaries = [
+        review_decision(record, basis)
+        for record in decisions
+        if validate_approval_record(record)["action"] == REVIEW_ACTION
+    ]
+    kinds = _current_kind_by_subject(summaries)
+    return {
+        subject: sorted(
+            (
+                summary
+                for summary in summaries
+                if summary["state"] == CURRENT
+                and (summary["scope"], summary["subject_id"]) == (PAGE_SCOPE, subject)
+            ),
+            key=lambda summary: summary["decision_hash"],
+        )
+        for (scope, subject), kind in sorted(kinds.items())
+        if scope == PAGE_SCOPE and kind == "re-ask"
+    }
+
+
 def decisions_digest(record_sha256s: Iterable[str]) -> str:
     """The digest of a set of decisions, from the digests the run tree stores each one under."""
     return digest_of(sorted(set(record_sha256s)))

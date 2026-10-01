@@ -141,7 +141,8 @@ _ACT_RECORD_FIELDS: Final = frozenset(
         "approval_ref",
         "reason",
         "evidence_refs",
-        # The reading the act came from (`FIRST_READING_LABEL`, `READ_ON_REASK_LABEL`).
+        # The reading the act came from (`FIRST_READING_LABEL`, `READ_ON_REASK_LABEL`,
+        # `OPERATOR_REREAD_LABEL`).
         "reading",
     }
 )
@@ -150,11 +151,14 @@ _REVIEW_ITEM_FIELDS: Final = frozenset(
 )
 _SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v5"
 _SQLITE_USER_VERSION: Final = 5
-# The reading a page-read act came from: its page's first reading, or the one
-# re-ask of its page. A row standing for a page with no entry names neither.
+# The reading a page-read act came from: its page's first reading, the one
+# re-ask of its page, or an operator re-read a person's page re-ask asked for,
+# which superseded the page's earlier readings. A row standing for a page with
+# no entry names none.
 FIRST_READING_LABEL: Final = "first reading"
 READ_ON_REASK_LABEL: Final = "read on re-ask"
-_ACT_READINGS: Final = (FIRST_READING_LABEL, READ_ON_REASK_LABEL)
+OPERATOR_REREAD_LABEL: Final = "read on operator re-read"
+_ACT_READINGS: Final = (FIRST_READING_LABEL, READ_ON_REASK_LABEL, OPERATOR_REREAD_LABEL)
 _ACT_READING_FIELDS: Final = frozenset({"act_id", "act_key", "page_ordinal", "reading"})
 # A counted page-read act's key, `p<page>:<entry n>`, or a page row with no entry.
 _PAGE_ACT_KEY: Final = re.compile(r"p([1-9][0-9]*):(?:([1-9][0-9]*)|unread|blank)")
@@ -2485,7 +2489,10 @@ def _validate_act_readings(rows: Any, sealed: set[int], subject: str) -> dict[st
 
 
 def _reask_claim(rows: list[dict[str, Any]], ordinals: list[int]) -> dict[str, Any]:
-    """The acts read on re-ask, counted apart from first-reading acts, per page and in total."""
+    """The acts read on re-ask, counted apart from first-reading acts, per page and in total.
+
+    A run with operator re-reads counts the acts they read apart too.
+    """
 
     def count(reading: str, ordinal: int | None = None) -> int:
         return sum(
@@ -2493,10 +2500,20 @@ def _reask_claim(rows: list[dict[str, Any]], ordinals: list[int]) -> dict[str, A
             for row in rows
         )
 
+    reread = count(OPERATOR_REREAD_LABEL) > 0
+
+    def rereads(ordinal: int | None = None) -> dict[str, int]:
+        return (
+            {"read_on_operator_reread_acts": count(OPERATOR_REREAD_LABEL, ordinal)}
+            if reread
+            else {}
+        )
+
     return {
         "label": READ_ON_REASK_LABEL,
         "first_reading_acts": count(FIRST_READING_LABEL),
         "read_on_reask_acts": count(READ_ON_REASK_LABEL),
+        **rereads(),
         "read_on_reask_act_ids": sorted(
             row["act_id"] for row in rows if row["reading"] == READ_ON_REASK_LABEL
         ),
@@ -2505,6 +2522,7 @@ def _reask_claim(rows: list[dict[str, Any]], ordinals: list[int]) -> dict[str, A
                 "ordinal": ordinal,
                 "first_reading_acts": count(FIRST_READING_LABEL, ordinal),
                 "read_on_reask_acts": count(READ_ON_REASK_LABEL, ordinal),
+                **rereads(ordinal),
             }
             for ordinal in ordinals
         ],

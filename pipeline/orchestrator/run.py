@@ -1087,9 +1087,10 @@ def report_held_recensor(args, held: list[dict], ran_after_hold: list[str]) -> N
         )
     print(
         "  next: record operator review decisions in this run, then resume it from the "
-        "recensor (--from recensor --to armarium), which applies them; it continues past the "
-        "recensor once nothing is held, or once `verbatus advance --stage recensor` passes "
-        "its current seal"
+        "recensor (--from recensor --to armarium), which applies them, or from the perlector "
+        "(--from perlector --to armarium) when a page re-ask asks for a page to be read "
+        "again; it continues past the recensor once nothing is held, or once "
+        "`verbatus advance --stage recensor` passes its current seal"
     )
 
 
