@@ -205,6 +205,39 @@ def test_a_machine_review_whose_outcome_does_not_follow_its_holds_is_refused():
         current_basis(derived)
 
 
+def _repeat_a1(units):
+    units.append(copy.deepcopy(units[0]))
+
+
+def _second_ordinal(units):
+    units[1]["payload"]["page_ordinal"] = 9
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (_repeat_a1, "names unit 'a1' twice"),
+        (_second_ordinal, "named with two ordinals"),
+        (lambda units: units[0].update(extra=1), "is not the closed"),
+        (lambda units: units[0].update(act_id=""), "names no act id or page id"),
+        (lambda units: units[0].update(unit_holds="doubt"), "something other than codes"),
+        (lambda units: units[0]["payload"].pop("page_ordinal"), "no page ordinal or unit key"),
+        (lambda units: units[2]["payload"].update(unit_class="mystery"), "names unit class"),
+    ],
+)
+def test_a_malformed_derived_review_is_refused_by_name(mutate, message):
+    derived = derived_review()
+    mutate(derived["units"])
+    with pytest.raises(FatalAccounting, match=message):
+        current_basis(derived)
+
+
+def test_clearances_name_a_unit_by_act_id_or_act_key_only():
+    result = apply_decisions(derived_review(), [])
+    with pytest.raises(FatalAccounting, match="named by act_id or act_key"):
+        aggregate_clearances(result, unit_key="x")
+
+
 # --- one decision ----------------------------------------------------------------------
 
 

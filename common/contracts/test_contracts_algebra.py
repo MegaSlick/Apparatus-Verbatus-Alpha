@@ -1467,10 +1467,13 @@ def test_a_run_whose_every_hold_was_cleared_stays_partial_and_names_each_clearan
 def test_a_page_still_held_after_review_keeps_the_run_partial() -> None:
     aggregate = _cleared_run([], {1: ["review-missed-act"]})
     assert aggregate["status"] == "partial"
-    assert aggregate["reasons"] == ["page 1 is held after operator review by review-missed-act"]
+    assert aggregate["reasons"] == ["page 1 is still held by review-missed-act"]
     for holds in ({2: ["review-missed-act"]}, {1: []}):
         with pytest.raises(FatalAccounting, match="not a held census page"):
             _cleared_run([], holds)
+    for codes in ("review-missed-act", ["review-missed-act", ""], [1]):
+        with pytest.raises(FatalAccounting, match="page 1 names .*not a list of hold codes"):
+            _cleared_run([], {1: codes})
 
 
 def _row(**overrides) -> dict:
@@ -1480,19 +1483,19 @@ def _row(**overrides) -> dict:
 
 
 @pytest.mark.parametrize(
-    "rows",
+    ("rows", "message"),
     [
-        [_row(page=2)],
-        [_row(subject="")],
-        [_row(scope="page", subject=2, decision="no-missed-act")],
-        [_row(scope="page", subject="1", decision="no-missed-act")],
-        [_row(decision="hold")],
-        [_row(decision="no-missed-act")],
-        [_row(cleared="x")],
-        [{key: value for key, value in _row().items() if key != "page"}],
-        [_row(), _row(decision="exclude")],
+        ([_row(page=2)], "names page 2, not a census page"),
+        ([_row(subject="")], "names 'unit' '' on page 1"),
+        ([_row(scope="page", subject=2, decision="no-missed-act")], "names 'page' 2 on page 1"),
+        ([_row(scope="page", subject="1", decision="no-missed-act")], "names 'page' '1' on page 1"),
+        ([_row(decision="hold")], "names no clearing decision or no codes"),
+        ([_row(decision="no-missed-act")], "names no clearing decision or no codes"),
+        ([_row(cleared="x")], "names no clearing decision or no codes"),
+        ([{key: value for key, value in _row().items() if key != "page"}], "is not the closed"),
+        ([_row(), _row(decision="exclude")], "named by more than one review clearance"),
     ],
 )
-def test_a_malformed_or_repeated_clearance_is_fatal(rows: list[dict]) -> None:
-    with pytest.raises(FatalAccounting):
+def test_a_malformed_or_repeated_clearance_is_fatal(rows: list[dict], message: str) -> None:
+    with pytest.raises(FatalAccounting, match=message):
         _cleared_run(rows)
