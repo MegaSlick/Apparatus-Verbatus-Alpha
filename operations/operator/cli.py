@@ -1634,7 +1634,7 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, fetch-run, export, close, status, spend, review, advance, backup, or clear-leftovers."
+        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, fetch-run, export, close, status, spend, review, decide, advance, backup, or clear-leftovers."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -1844,7 +1844,7 @@ def _interactive_arguments() -> list[str]:
         if policy:
             arguments.extend(("--policy", policy))
         return arguments
-    if verb in {"review", "advance", "backup"}:
+    if verb in {"review", "decide", "advance", "backup"}:
         run_root = _ask("Folder containing the run tree")
         run_id = _ask("The sealed run ID")
         if not run_root or not run_id:
@@ -1875,6 +1875,25 @@ def _interactive_arguments() -> list[str]:
                     _print("Semi advance needs both range endpoints. Nothing changed.")
                     return []
                 arguments.extend(("--from-stage", from_stage, "--to-stage", to_stage))
+        if verb == "decide":
+            words = sorted({word for words in REVIEW_DECISIONS.values() for word in words})
+            decision = _ask(f"The review decision — one of: {', '.join(words)}")
+            subject = _ask(
+                "The unit's key as review shows it (for example p2:1), or a page's ordinal "
+                "for a page decision"
+            )
+            reason = _ask("Why the project lead decided this")
+            finding = _ask(
+                f"For a hold only, its finding — one of: {', '.join(FINDINGS)} (blank otherwise)"
+            )
+            if not decision or not subject or not reason:
+                _print("Decide needs a decision, a unit or page, and a reason. Nothing changed.")
+                return []
+            arguments.extend(
+                (decision, "--page" if subject.isdigit() else "--unit", subject, "--reason", reason)
+            )
+            if finding:
+                arguments.extend(("--finding", finding))
         if verb == "backup":
             mac_directory = _ask("Local synced Mac backup directory")
             if not mac_directory:

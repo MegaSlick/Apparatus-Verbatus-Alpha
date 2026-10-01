@@ -151,8 +151,8 @@ ADDED_CODES: Final = {
     (UNIT_SCOPE, CONFLICT): "review-conflict",
     (PAGE_SCOPE, CONFLICT): "review-page-conflict",
 }
-# The code a unit keeps when decisions would accept a reading its page reading
-# holds: a decision clears only the Recensor's own holds, never the reading's.
+# The code a unit keeps when decisions would release a reading the export cannot
+# carry (`common.page_review.override_refusal`): it stays held, and says why.
 READING_HELD: Final = "review-reading-held"
 CLEARING: Final = frozenset({(UNIT_SCOPE, "release"), (UNIT_SCOPE, "exclude")}) | {
     (PAGE_SCOPE, "no-missed-act")

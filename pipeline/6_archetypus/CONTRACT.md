@@ -50,9 +50,13 @@ the Recensor.
   that `page_review.require_establishable` allows: a row with a reading whose
   disposition is `read`, or a held row whose only hold is
   `no-act-on-page-unconfirmed` and whose review names exactly that code in its
-  `release` (the Recensor confirmed its page holds no act). An accepted row with no
-  reading (`page-unread`, `page-blank`) or any other hold is fatal, because a stage
-  may not resurrect a held reading. Every record is built and checked before any is
+  `release` (the Recensor confirmed its page holds no act), or a held row an operator
+  override released: every hold it carries cleared in its review's `operator_review`
+  block by a current `release` of the unit and `no-missed-act` of its page, each among
+  the decisions the Recensor's current `review-decisions` record applied
+  (`page_review.operator_override`). An accepted row with no reading (`page-unread`,
+  `page-blank`) or any other hold is fatal, because a stage may not resurrect a held
+  reading. Every record is built and checked before any is
   published, so a refusal leaves no partial set behind. Held and page rows end at
   the Recensor with no record; only an outcome the algebra leaves open makes the
   stage exit `EXIT_HELD`.
@@ -60,15 +64,18 @@ the Recensor.
   entries on a page; both are established here, so every export shows the one
   established reading of each. The record carries `kind` (`act` | `other`).
 - **The constructor** is `establish_from_accepted_page_reading(context, row,
-  review_ref, page_testimonia)`, the only public constructor; `page_testimonia` is
-  the row's page's entry in `common.page_testimonia.current_page_testimonia`,
-  computed once per pass. Its caller supplies a row and the sealed Recensor-review
+  review_ref, page_testimonia, applied)`, the only public constructor; `page_testimonia`
+  is the row's page's entry in `common.page_testimonia.current_page_testimonia`,
+  computed once per pass, and `applied` the decision hashes the current
+  `review-decisions` record applied (`page_review.applied_decision_hashes`). Its caller supplies a row and the sealed Recensor-review
   reference, never free-standing text or a reading payload. The review is resolved
   through `RunTree.read_artifact_reference`, which refuses a reference whose actual
   bytes name a different stage or kind; that check is what makes a Testimonium or
   any other non-Perlectio artifact unable to reach this stage by being named. The
   reading is the row's `perlectio.v3`, which the review must name and input; it must
-  be `read` with no `holds` or `page_holds`, of the row's kind, and hold exactly the
+  be `read` with no `holds` or `page_holds` (or, under an operator override, `held`
+  on no code but those the override cleared: `page_review.reading_holds_allowed`), of
+  the row's kind, and hold exactly the
   closed Perlectio field set (`page_path.PERLECTIO_FIELDS`), so a salvage tier or an
   annotation layer is refused. Its one region
   is the `act-region` the reading names (and the row counted), proven from the
