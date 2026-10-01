@@ -46,6 +46,7 @@ from display import DISPLAY_CONVENTION, render_display, strip_display
 from operator_layer import LABEL_LINE as OPERATOR_LABEL_LINE
 from operator_layer import (
     MODEL_READING_SCHEMA,
+    MODEL_READINGS_FIELD,
     MODEL_READINGS_MEMBER,
     MODEL_ROW_FIELDS,
     OPERATOR_MEMBER,
@@ -588,6 +589,11 @@ def build_armarium_bundle(
     if operator_rows:
         # Every package carries the label, whatever formats it selects.
         sources_record[OPERATOR_SOURCES_FIELD] = list(operator_rows)
+    if model_readings:
+        # And the model's reading beside each person's correction.
+        sources_record[MODEL_READINGS_FIELD] = [
+            model_reading_record(model_readings[act_id]) for act_id in sorted(model_readings)
+        ]
     if projection.reading_hold_codes is not None:
         # Lets a verifier require the row of a reading released on its own holds,
         # which no page hold would otherwise show.
@@ -1726,42 +1732,27 @@ def _model_readings_shown(
     actual_names: set[str],
     recorded: list[dict[str, Any]],
 ) -> dict[str, dict[str, dict[str, Any]]]:
-    """The model's reading of each corrected reading, as each format that carries it shows it.
+    """The model's reading of each corrected reading, as each place that carries it shows it.
 
-    `{format: {reading id: {text, uncertainty, text_status}}}` for `jsonl`
+    `{place: {reading id: {text, uncertainty, text_status}}}` for `sources`
+    (`sources.json`'s `model_readings`, in every package), `jsonl`
     (`model_readings.jsonl`) and `text-bundle` (beneath the reading's section,
-    the same in every folder). Each format that carries the layer must show
-    one for exactly the readings a corrected row names, each held to its row
-    (`operator_layer.verify_model_reading`), so a dropped original is refused.
+    the same in every folder). Each must show one for exactly the readings a
+    corrected row names, each held to its row
+    (`operator_layer.verify_model_reading`), and the formats must show what
+    `sources.json` records, so a dropped or altered original is refused.
     """
     corrected = {row["act_id"]: row for row in recorded if row["label"] == CORRECTED_LABEL}
-    shown: dict[str, dict[str, dict[str, Any]]] = {}
+    shown: dict[str, dict[str, dict[str, Any]]] = {
+        "sources": _model_rows(sources.get(MODEL_READINGS_FIELD) or [], corrected, "sources.json")
+    }
     if "jsonl" in formats.formats:
-        models: dict[str, dict[str, Any]] = {}
         rows = (
             _jsonl_rows(root / MODEL_READINGS_MEMBER, MODEL_READINGS_MEMBER, "a model reading row")
             if MODEL_READINGS_MEMBER in actual_names
             else []
         )
-        for record in rows:
-            if not isinstance(record, dict) or record.get("schema") != MODEL_READING_SCHEMA:
-                raise SchemaRefusal("a model reading row has no recognized schema")
-            _require_exact_fields(record, MODEL_ROW_FIELDS, subject="a model reading row")
-            row = corrected.get(record["act_id"])
-            if (
-                row is None
-                or record["act_id"] in models
-                or (record["act_key"], record["kind"]) != (row["act_key"], row["kind"])
-                or record["label"] != row["model_reading"]["label"]
-                or record["perlectio_ref"] != row["model_reading"]["perlectio_ref"]
-            ):
-                raise SchemaRefusal(
-                    f"{MODEL_READINGS_MEMBER} shows a model reading no corrected row names, or "
-                    "names it differently"
-                )
-            _verify_retained_references_bounded(record)
-            models[record["act_id"]] = verify_model_reading(row, record, MODEL_READINGS_MEMBER)
-        shown["jsonl"] = models
+        shown["jsonl"] = _model_rows(rows, corrected, MODEL_READINGS_MEMBER)
     if "text-bundle" in formats.formats:
         models = {}
         for folder in sorted(
@@ -1773,12 +1764,42 @@ def _model_readings_shown(
                     raise SchemaRefusal("the text bundle shows one model reading differently")
         shown["text-bundle"] = models
     for name, models in shown.items():
+        place = "sources.json" if name == "sources" else f"the {name} format"
         if set(models) != set(corrected):
             raise SchemaRefusal(
-                f"the {name} format does not show the model reading (original) beside exactly "
-                "the readings a person corrected"
+                f"{place} does not show the model reading (original) beside exactly the "
+                "readings a person corrected"
+            )
+        if models != shown["sources"]:
+            raise SchemaRefusal(
+                f"{place} shows a model reading (original) other than sources.json records"
             )
     return shown
+
+
+def _model_rows(
+    rows: Any, corrected: dict[str, dict[str, Any]], subject: str
+) -> dict[str, dict[str, Any]]:
+    """`model_reading_record` rows as one place shows them, each held to its corrected row."""
+    models: dict[str, dict[str, Any]] = {}
+    for record in rows:
+        if not isinstance(record, dict) or record.get("schema") != MODEL_READING_SCHEMA:
+            raise SchemaRefusal(f"a model reading row in {subject} has no recognized schema")
+        _require_exact_fields(record, MODEL_ROW_FIELDS, subject="a model reading row")
+        row = corrected.get(record["act_id"])
+        if (
+            row is None
+            or record["act_id"] in models
+            or (record["act_key"], record["kind"]) != (row["act_key"], row["kind"])
+            or record["label"] != row["model_reading"]["label"]
+            or record["perlectio_ref"] != row["model_reading"]["perlectio_ref"]
+        ):
+            raise SchemaRefusal(
+                f"{subject} shows a model reading no corrected row names, or names it differently"
+            )
+        _verify_retained_references_bounded(record)
+        models[record["act_id"]] = verify_model_reading(row, record, subject)
+    return models
 
 
 def _correction_views(
@@ -4650,6 +4671,7 @@ def _load_sources(root) -> dict[str, Any]:
         "reconstructions",
         OPERATOR_SOURCES_FIELD,
         READING_HOLDS_FIELD,
+        MODEL_READINGS_FIELD,
     }
     if set(record) - optional != {"schema", *_SOURCES_FIELDS}:
         raise SchemaRefusal("the package sources citation has an unrecognized field set")
@@ -4682,6 +4704,11 @@ def _load_sources(root) -> dict[str, Any]:
     ):
         raise SchemaRefusal("the package sources citation carries an empty operator layer")
     sources[READING_HOLDS_FIELD] = record.get(READING_HOLDS_FIELD)
+    sources[MODEL_READINGS_FIELD] = record.get(MODEL_READINGS_FIELD)
+    if MODEL_READINGS_FIELD in record and not (
+        isinstance(sources[MODEL_READINGS_FIELD], list) and sources[MODEL_READINGS_FIELD]
+    ):
+        raise SchemaRefusal("the package sources citation carries an empty model reading layer")
     return sources
 
 

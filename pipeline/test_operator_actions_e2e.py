@@ -367,6 +367,8 @@ def test_an_edit_exports_the_persons_text_labelled_with_the_original_beside_it(c
     [original] = [
         json.loads(line) for line in members["model_readings.jsonl"].decode().splitlines()
     ]
+    # Every package carries it, whatever formats it selects.
+    assert json.loads(members["sources.json"])["model_readings"] == [original]
     assert (original["act_key"], original["label"], original["text"]) == (
         "p1:1",
         "model reading (original)",
@@ -415,6 +417,24 @@ def _empty_originals(members: dict) -> None:
     members["model_readings.jsonl"] = b""
 
 
+def _sources(members: dict, change) -> None:
+    sources = json.loads(members["sources.json"])
+    change(sources)
+    members["sources.json"] = canonical_bytes(sources)
+
+
+def _drop_sources_original(members: dict) -> None:
+    _sources(members, lambda sources: sources.pop("model_readings"))
+
+
+def _alter_sources_original(members: dict) -> None:
+    def alter(sources):
+        [model] = sources["model_readings"]
+        model["text_status"] = "partial"
+
+    _sources(members, alter)
+
+
 def _forge_note(members: dict) -> None:
     """Change the person's note wherever the package says it, but not the decision."""
     old, new = json.dumps(NOTE), json.dumps("a note nobody wrote")
@@ -438,12 +458,14 @@ def _forge_note(members: dict) -> None:
     "forge, refusal",
     [
         (_empty_originals, "jsonl format does not show the model reading \\(original\\)"),
+        (_drop_sources_original, "sources.json does not show the model reading \\(original\\)"),
+        (_alter_sources_original, "does not show p1:1's model reading \\(original\\)"),
         (
             _forge_note,
             "delivers a text for p1:1 that the edit its provenance names does not record",
         ),
     ],
-    ids=["dropped-original", "forged-note"],
+    ids=["dropped-original", "dropped-sources-original", "altered-sources-original", "forged-note"],
 )
 def test_a_dropped_original_or_forged_edit_is_refused_by_the_verifier(
     corrected, tmp_path, forge, refusal

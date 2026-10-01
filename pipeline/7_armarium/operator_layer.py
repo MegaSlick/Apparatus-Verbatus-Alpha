@@ -12,8 +12,10 @@ person's text and labelled "corrected by a person" (`common.correction`): its
 row adds the person's `note` and `model_reading`, the model's reading it
 corrects (its label, Perlectio reference, text digest, text status and serving
 provenance). The rows stay text-free; the model's text itself is shown beside
-the person's in `model_readings.jsonl` (with JSONL) and beneath the reading's
-section in the text bundle, labelled "model reading (original)".
+the person's, labelled "model reading (original)": in `sources.json`
+(`model_readings`) in every package, so a package whose only literal format is
+the acts database carries it too, in `model_readings.jsonl` with JSONL, and
+beneath the reading's section in the text bundle.
 
 `sources.json` carries every row (`operator_actions`), so the label travels in
 every package; `operator.jsonl` carries the same rows when the JSONL format is
@@ -74,8 +76,11 @@ DECISION_FIELDS: Final = frozenset(
 )
 # A corrected row's further fields.
 CORRECTED_ROW_FIELDS: Final = ROW_FIELDS | {"note", "model_reading"}
-# The JSONL member that carries each corrected reading's model reading.
+# The JSONL member that carries each corrected reading's model reading, and the
+# `sources.json` field that carries the same rows in every package, whatever
+# formats it selects.
 MODEL_READINGS_MEMBER: Final = "model_readings.jsonl"
+MODEL_READINGS_FIELD: Final = "model_readings"
 MODEL_READING_SCHEMA: Final = "armarium-model-reading.v1"
 MODEL_ROW_FIELDS: Final = frozenset(
     {
