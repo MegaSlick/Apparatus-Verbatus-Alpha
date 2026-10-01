@@ -1307,7 +1307,7 @@ def test_a_failed_page_call_is_counted_unread_and_tallied_as_a_hard_failure(
         ("p1:unread", "page-unread", "held"),
         ("p2:unread", "page-unread", "held"),
     ]
-    for row, code in zip(rows, codes):
+    for row, code in zip(rows, codes, strict=True):
         assert {"page-unread", code} <= set(row["hold_codes"])
 
     tally = tally_hard_failures(RunTree(root, "r"), load_hard_failure_policy())

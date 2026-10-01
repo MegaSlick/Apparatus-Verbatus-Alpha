@@ -97,6 +97,7 @@ def reading_outcome(parse_state: str, disposition: str) -> str:
     """The `page-reading` record's outcome: `failed` for a failed call, else its disposition."""
     return FAILED if parse_state == CALL_FAILED else disposition
 
+
 # Why a page is not asked (`not-run`), and why a parsed answer is held whole.
 PAGE_NOT_SEALED: Final = "page-not-sealed"
 CHAIR_ABSENT: Final = "chair-absent"
