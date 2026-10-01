@@ -8,7 +8,6 @@ The knobs. One question per planned file, each answerable without reading code.
 | `recovery.toml` | how many times rework may be asked for before review |
 | `hard_failure.toml` | how many accounted hard failures one run may carry before it stops; the threshold and the outcome taxonomy are both settled by ruling (see the file's own header) |
 | `pdf_render.toml` | what whole-page PDF resolution the next run targets |
-| `designator_padding.toml` | how far a proposal crop is expanded past its structural bounds before it is cut |
 | `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
 | `spend.toml` | the project lead's pod-plus-attached-volume money caps; both paid paths refuse it unless configured, and configuring it is not permission to launch |
 | `pod_placement.toml` | planning-only single-resident GPU resource tiers, dtype capability floors, and the reviewed price sheet for the cards this project rents |
@@ -16,33 +15,14 @@ The knobs. One question per planned file, each answerable without reading code.
 | `serving_recipes_real.toml` | unproven, locked real-chair vLLM profiles plus explicit non-launchable rows where no honest engine exists; selected only with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
 | `formats.toml` | which Armarium product projections are written and whether verified pixels are embedded |
 | `perlector_protocol.toml` | the sealed prior-draft protocol: Pass-B neutral fragment, page-shared-prefix policy, and control selection-rule name; and, since 2026-09-14, `[truncation]`, the truncation instrument's length floor in characters per page-equivalent |
-| `alignment.toml` | sealed alignment limits; the Door still seals them, and no stage reads them |
 | `corpus_frame.toml` | R0's sealed shard boundary: how many pages one bounded failure and accounting unit may hold |
-| `designator_geometry.toml` | the sealed tiling and crop-policy geometry the Designator's proposal adapters are built against |
-| `designator_grouping.toml` | which marks the Designator joins into one act, and how many residual components one page may enumerate before the page itself is held |
-| `ink_map.toml` | the ink measurement's sealed policy: background inference, the page-spanning bound and connectivity radius, and the outside-coverage audit's gates, read by the Ink Map, the Designator, the Perlector's page accounting, the Recensor and the Armarium |
+| `designator_geometry.toml` | the sealed crop policy under which the Designator turns a record detector's oriented box into the crop DAI reads |
+| `ink_map.toml` | the ink measurement's sealed policy: background inference, the page-spanning bound and connectivity radius, and the outside-coverage audit's gates, read by the Ink Map, the Perlector's page accounting, the Recensor and the Armarium |
 | `perlector_audit.toml` | the sealed Pass-C audit policy: flag classes and the round cap the audit refuses to exceed |
 | `witness_context.toml` | the factual per-witness context the Perlector's dossier may carry: identity, provenance, training domain, and nothing evaluative |
 | `witness_context-real.toml` | the same declaration for the real roster's three chairs, each training domain stated as far as this repository can cite it and named as unknown where it cannot; selected with the full trio `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml --witness-context-config config/witness_context-real.toml`; published witness identities paired with a known fixture declaration are refused |
 | `triage_modes.toml` | the three pipeline-wide triage modes and their closed-ordinal review thresholds |
-| `decoding.toml` | each reading chair's sampling values as its makers recommend them, with source and revision; the Perlector's output bounds; the Designator's coverage recovery on Chandra's own retry schedule; Chandra's native recipe; and the seed the Lectio nuda and lectio-prior arms draw under |
-
-## R4 toggle register
-
-| Knob | Default | Who changes it | What retires it |
-|---|---|---|---|
-| alignment character/pair/deadline limits | 100,000 / 100,000,000 / 25 seconds | ordinary engineering with recorded measurement | a replacement bounded aligner with recorded benchmark evidence |
-
-The deadline is sized from the legitimate ceiling, not the pathological one.
-An unaligned page witness is not `comparable`, so it leaves the act's witness
-floor: a deadline that fires on real work records a slow comparison as coverage
-that is missing. A 7,500-character page whose acts repeat one formula verbatim
-measures 10.1 seconds, already past the five this used to carry. Twenty-five
-clears it with load headroom, and does not pretend to clear everything the pair
-ceiling admits -- two different low-entropy chair responses there measure 283.9
-seconds, a case no deadline value closes. A faster matcher was tried and refused
-because it attached witness text to the wrong act. Both measurements and the
-design that would close the case are in `pipeline/3_attestatores/CONTRACT.md`.
+| `decoding.toml` | each reading chair's sampling values as its makers recommend them, with source and revision; the Perlector's whole-page output cap; and Chandra's native recipe |
 
 ## R5a toggle register
 
@@ -97,17 +77,6 @@ The door reads this file exactly once and parses and seals that one read
 let the binding step open the file again, so a rewrite between the two reads left a
 run whose `render_settings` recorded one target while its `config_digest` bound
 another — a run claiming a configuration it did not execute.
-
-`designator_padding.toml` is the asymmetric capture-padding policy
-`pipeline/2_designator/geometry.py` applies to a structural proposal before
-cutting it: top/bottom/left/right, in integer basis points of the crop's own
-width or height, clamped to the page edge. It is bound into `run.json`'s
-`config_digest` exactly as `pdf_render.toml` and `recovery.toml` are, so
-reusing a run id across a padding change is refused before anything is
-written — the crops would otherwise be different pixels under the same run's
-name. Every crop's own payload additionally carries the exact fraction and
-pixel amount applied, the file's digest, and the file's declared provenance,
-so a padding change is traceable per artifact as well as per run.
 
 `data_handling_policy.json` names the storage roots real material may occupy, and
 `operations/submit/gate.py` refuses a submission folder, run root or ledger outside
@@ -244,69 +213,13 @@ policy a stage needs the *values* of is carried already parsed rather than reope
 `recovery.toml` travels as `StageContext.recovery_policy`, `formats.toml` as
 `StageContext.armarium_formats`.
 
-Sealed names today: `designator-padding`, `designator-geometry`, `designator-grouping`,
-`ink-map`, `page-accounting`, `alignment`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
+Sealed names today: `designator-geometry`,
+`ink-map`, `page-accounting`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
 `pdf-render`, `recovery`, `hard-failure` and `triage-modes` on every run (Unit 6's
 pre-door producer/door seam must call `require_triage_modes` before using its
 vocabulary). Real ingress adds `data-handling`, `serving-recipes`, `pod-placement`,
 `models`, `armarium-formats` and `run-policy`: the fixture route rechecks those facts
 through `config_digest`, which a later stage can recompute, and the real one cannot.
-
-### `designator_grouping.toml`
-
-The Designator's structure pass used to carry its thresholds as Python module defaults
-in `grouping.py`, `structure.py` and `conservation.py`, where nothing sealed them and
-nothing recorded where they came from. They decide which marks join into one act, so
-two runs under different values mark out *different acts from identical pixels* — the
-padding argument one step earlier in the same stage, and the reason this file exists.
-
-Seven of its thresholds are integer basis points of the page's own dimension —
-`margin_bp` of the width, the rest of the height — resolved through the same
-round-half-up rule `designator_padding.toml` already uses, because an absolute pixel
-policy cannot be one policy for both a 200×260 fixture and a 2480×3508 scan, and two
-files would mean fixture runs prove bytes that real runs never seal. Every one resolves
-bit-identically to the constant it replaces at fixture size, so the file changed what
-is *recorded* without changing what a fixture page *measures* — and each page's own
-resolved integers are published on its `structure-status` record, so a reader of a
-finished run can say what geometry that page actually executed at rather than
-re-deriving it.
-
-The connectivity radius the structure scan runs at, `gap_tolerance_px`, never scales
-with the page: it is a stroke-connectivity radius rather than a page proportion, and
-scaling it would change what "connected" means. It and the page-spanning bound are the
-ink map's `[connectivity]` and `[page_spanning]` (below), which this pass reads rather
-than keeping a copy. Two more values are bare counts rather than lengths, so
-they have no dimension to be a fraction of: `max_secondary_proposals` caps one
-page's secondary rescue pass, and
-`fallback_bands` is how many horizontal bands the predetermined fallback grid
-cuts a page into, a cardinality rather than a length
-(a taller page gets taller bands, not more of them; its `fallback_overlap_bp`
-scales instead). Two more values do not enter the file at all.
-`PRIMARY_MARGIN` and `SECONDARY_MARGIN` stay Python constants in
-`common/background.py`: they are *absolute* 8-bit ink-intensity offsets, not geometry, and
-`common/test_designator_recensor_ink_calibration.py` pins `SECONDARY_MARGIN` against the
-Recensor's own contrast constant. A per-run value for either
-would make that cross-stage invariant unenforceable statically, so the file's closed
-schema refuses both names outright. `ink_map.toml`'s `[background] ink_margin_bp` is not
-one of them: it is the fraction of the distance between a page's own two grey-level population
-modes that derives the margin the primary scan runs at, floored at `PRIMARY_MARGIN`,
-and it carries no grey level of its own.
-
-Unlike `recovery.toml` and `formats.toml` above, this policy is meant to be re-read at
-its point of use rather than carried already parsed, exactly as `designator-padding`
-and `designator-geometry` are. Its schema lives in
-`pipeline/2_designator/grouping_config.py`, and `common/` may never import a stage
-module (`common/README.md`, enforced through `ast` by
-`common/chairs/test_chairs_import_boundary.py`), nor may the Door reach across stage
-directories to it (`pipeline/test_stage_import_boundaries.py`). So run creation seals
-the file and refuses an unreadable one, and the Designator does the parsing where the
-loader already is: `initial_pass` calls `grouping_config.load_grouping_config` on the
-run's own `--designator-grouping-config`, validates it against the closed schema, and
-then proves it read the bound policy through
-`require_sealed_config("designator-grouping", …)` — before the stage marks anything
-out. A malformed policy is refused there by name, and a policy rewritten after the door
-bound it refuses as drift naming both digests. The sealed name has a reader, so it is
-no longer a closed window that nothing shuts.
 
 ### `ink_map.toml`
 
@@ -317,9 +230,6 @@ coverage audit takes out of its counts, and the radius it is found at), and
 its own provenance. The Ink Map, the Perlector's page accounting, the Recensor and the
 Armarium read it through `load_background_config` and `load_coverage_audit_config`,
 and every record measured under it names its digest as `background_config_sha256`.
-The Designator's structure pass reads it too, taking `page_spanning_area_bp` and
-`gap_tolerance_px` from here, so the component it withholds is the one the audit takes
-out.
 
 ## Pre-door triage instrument
 

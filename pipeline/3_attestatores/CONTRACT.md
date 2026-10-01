@@ -2,8 +2,8 @@
 
 The Attestatores retains one immutable `kind="page-testimonium"` for every page
 the Exemplar sealed and every configured page witness chair, on every attempted
-read. The schedule is the sealed pages: it does not read the Designator's
-proposals or `expected_acts` to decide what a witness is shown. It does not merge,
+read. The schedule is the sealed pages: no act list decides what a witness is
+shown. It does not merge,
 rank, select, or turn a Testimonium into established text. A missing artifact is
 never a witness outcome.
 
@@ -27,12 +27,9 @@ statement would then answer for a boundary it never witnessed.
 
 A witness is shown a sealed Exemplar page: Chandra and Churro the whole page,
 DAI the record crops its own detector cut from it. A page the Exemplar refused
-has no pixels and is not witnessed. The Designator's sealed proposal regions are
-read once per pass, after its stage seal verifies, and are used for two facts on
-each page record and nothing else: `unpresented_regions`, the proposals on the
-page that no presented image contains, and `partition_disagreement`, every
-pairing between those proposals and the chair's own reported geometry. No
-proposal, act or continuation decides whether a page is read.
+has no pixels and is not witnessed. The Designator's sealed detector regions are
+read after its stage seal verifies, as DAI's units and nothing else. No act
+decides whether a page is read.
 
 This stage has two writers, and which one runs is decided by the sealed
 serving-recipe row for each configured witness chair — never by a new
@@ -290,7 +287,7 @@ say.
    the source is the Designator's record crop under `2_designator/`, and every
    image a witness is shown is inventoried under `3_attestatores/`. Both are
    `crop_png` of the same sealed page at the same bounds, and
-   `verify_exemplar_crop_lineage` already proves the first of them is, so equal
+   `_verify_detector_region` already proves the first of them is, so equal
    digests are equal pixels. Held to the whole dict, the rule refused a genuine
    DAI reading *after* its response had already come back.
 3. **The truncation the page contract re-derives has three states.** A Churro
@@ -555,9 +552,9 @@ optional fields):
 ```text
 chair, attempt_ordinal, provenance, format_capabilities
 payload, witness_reported, content_health
-presented, observed, unpresented_regions
+presented, observed
 scope = "page", page_ordinal
-reason, partition_disagreement, raw_response_refs, adapter_metadata,
+reason, page_edge_overshoots, raw_response_refs, adapter_metadata,
 native_capture, native_inference, presentations, unit_captures, unit_call_refs,
 serving_call_ref               only where the record has them
 ```
@@ -603,7 +600,7 @@ than coercing the number.
 `presented` is either `{}` (this record has no image presentation) or the closed
 description of exactly one `page`, `region`, or `adapter-crop` image: sealed page
 identity and ordinal, blob path/digest, and an executable sealed-page transform.
-A region presentation is re-derived from its unique Designator proposal. A page
+A region presentation names one Designator detector region. A page
 presentation must name the whole sealed page and `operation="whole"`. An
 adapter-crop is either an exact `operation="crop"`, or the closed
 `operation="crop-resize-preserve-aspect"` recipe with Pillow LANCZOS, floor
@@ -621,13 +618,12 @@ box is contained by the exact presented image's page-space bounds; a witness
 cannot report pixels its presentation did not include.
 `observed` carries no act identity, preference, authority, or confidence field.
 A `presented` box is an explicit no-geometry fallback: it restates the image
-sent and is excluded from both unrouted-ink detection and coverage. Only
+sent and is excluded from coverage. Only
 `native` and `derived` boxes report witness geometry.
 
-`unpresented_regions` is computed after the adapter's final presentation, by
-page-space containment of the page's sealed proposals. With a real
-presentation, `[]` means every proposal on the page lies inside that image; with
-`presented={}`, the list is inapplicable and must be `[]`.
+A native box that runs past the sealed page edge is kept as reported, never
+clamped, in `page_edge_overshoots`, present only on a record with a real
+presentation.
 
 The runnable adapter registry resolves exact configured names with no default.
 `present(context, presentation)` may retain an adapter-owned crop through the run
@@ -640,9 +636,9 @@ that never receives its own response.
 **Observations reach a record from three sources, in this order.** The fixture's
 `[[native_observation]]` table is consulted first: rows matching the chair and
 page ordinal (and the scenario, where one is named) become `bounds_source="native"`
-boxes directly, ahead of the adapter. Those are reported geometry — they drive
-the partition and routing exactly as an adapter's own layout would, which is what
-makes the table a stimulus for the geometry paths rather than decoration. Only
+boxes directly, ahead of the adapter. Those are reported geometry, exactly as
+an adapter's own layout would be, which is what makes the table a stimulus for
+the geometry paths rather than decoration. Only
 when no row matches does `observe` run, and only when there is no adapter at all
 does the `bounds_source="presented"` echo of the presentation stand in.
 
@@ -671,10 +667,8 @@ contract:
 * `present(context, presentation)` returns the closed `presented` block —
   `kind` ∈ `page | region | adapter-crop`, sealed page identity and ordinal, blob
   path and digest, and an executable transform in **sealed-page pixel space**
-  (the only space anything downstream can verify: `verify_exemplar_crop_lineage`
-  re-derives there and the Recensor reconciles there). `kind="region"` may name a
-  Designator region whose `origin` is `proposal` and nothing else — a recovery
-  crop may never be presented as a witness basis. An `adapter-crop` is an
+  (the only space anything downstream can verify). `kind="region"` names a
+  Designator detector region, the source of a DAI unit. An `adapter-crop` is an
   adapter-owned derivative: DAI publishes one from each detector record crop it
   is shown. Both read seams regenerate its bytes from the sealed page and refuse
   a differing digest.
@@ -700,16 +694,14 @@ would report a working layout model as a broken witness. Return text or
 integer-only structures from `parse`; put the geometry through `observe` and the
 floats in the blob.
 **Scope semantics.** Every occupant writes one page-scoped Testimonium per
-(page, chair) carrying `partition_disagreement`. No witness is asked about an
+(page, chair). No witness is asked about an
 act, and this stage attaches no reading to one: the Perlector reads the page
 records. A `presented` box is an explicit no-geometry fallback and is excluded
 from both routing and coverage.
 
 **What an adapter never does.** It never mints a region (crop lineage refuses a
 stage that is not the Designator), never expresses a preference, and never
-reports coverage. Ink it observed that no sealed proposal accounts for becomes a
-named non-fatal `unrouted-observation` finding, retained in
-`partition_disagreement.unclaimed_observations`, never dropped.
+reports coverage.
 
 **Evidence.** Published vendor specimens enter with their source and licence
 recorded, exactly as `common/churro_document.py` cites stanford-oval/Churro at
@@ -858,8 +850,7 @@ chair, across every table.
 ### DAI: a page witness over its own detector's records
 
 DAI was trained on crops of the records its own project's detector finds, so a
-page-scoped `dai.v1` chair is shown its page that way and never the
-Designator's proposal crops. The adapter declares it (`RunnableAdapter.page_units =
+page-scoped `dai.v1` chair is shown its page that way. The adapter declares it (`RunnableAdapter.page_units =
 "detector-records"`), and a roster that scopes such a chair `page` without a
 configured `secondary_proposer` is refused before anything runs. The chair
 runs on the fixture pass as on a live one: its detector's fixture row answers

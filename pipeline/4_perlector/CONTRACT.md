@@ -39,16 +39,11 @@ runs ("Page reading", below). It does not select a preferred witness or use witn
 agreement to choose its text: every witness is shown to the reader as a clue, and
 dissent is measured after the reading is fixed.
 
-Before any page Testimonium is used, `sealed_proposal_regions` validates every
-Designator region's provenance and full Exemplar crop lineage; that run-wide
-proposal denominator is what each page Testimonium's geometry is checked against.
-
 ### Native witness intake
 
 The consumer validates the same closed `presented`/`observed` waist the
 Attestatores writes. Page ids and ordinals are reconciled to the sealed Exemplar;
-whole-page and adapter-crop transforms are executable; region presentations are
-looked up physically and must resolve to one Designator proposal; observed boxes
+whole-page and adapter-crop transforms are executable; observed boxes
 are bounded integer sealed-page coordinates; spans address retained text; and
 preferences, floats, unknown fields, malformed ordinals, and overlapping spans
 are refused. The page-Testimonium read additionally applies the shared full
@@ -56,22 +51,9 @@ payload allowlist and validates Attestatores provenance/receipt requirements,
 not only geometry. A page outcome in `read | genuinely-empty | failed` is
 attempted and receipt-backed; `not-run` is explicitly unpresented and receipt-free.
 
-`unpresented_regions` is re-derived for region, page, and adapter-crop
-presentations by the common page-space-containment function. An empty list beside
-a real presentation means all bound proposal crops lie inside it; beside
-`presented={}` it is inapplicable, and the non-attempted record is independently
-forbidden to bind regions. A continuation crop on another page therefore cannot
-be hidden by changing presentation kind or deleting the field's member.
-
-Routing is the shared derivation (`common/native_witness.py`,
-`unrouted_observations`): whether each `native`/`derived` box has positive-area
-overlap with any sealed proposal on its presented page. The rule records
-`{rule="positive-area", status="unmeasured"}`; `bounds_source="presented"` is
-excluded because it reports no witness geometry. Routing is overlap; coverage is
-containment, and the two remain separately named. The Attestatores page Testimonium
-stores the derivation in `partition_disagreement.unclaimed_observations`, and the
-Recensor re-derives it from the observed geometry and the sealed proposal
-denominator; this stage records no second copy.
+A native box that runs past the sealed page edge is kept as reported, never
+clamped, as a `page_edge_overshoots` finding on the page Testimonium
+(`common/native_witness.py`, `split_page_edge_overshoots`).
 
 ## Page reading
 

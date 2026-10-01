@@ -4,14 +4,14 @@ The ink map runs after the Exemplar seal and before the Designator. It writes on
 `kind="ink-map"` record per sealed page, including zero-ink pages, with the shared
 `common.residual_ink::residual_ink` result measured against empty coverage.
 
-## The paper value is the Designator's, and the contrast is this stage's
+## The paper value is shared, and the contrast is this stage's
 
 The background every count here is taken below comes from
 `common.background::infer_background_evidence`, under the sealed
 `[background]` block of `config/ink_map.toml` resolved for this page's own
-dimensions — the same inference, the same policy and the same bytes the
-Designator's structure pass runs under, proved against the run's `ink-map` seal
-at the point of use.
+dimensions — the same inference, the same policy and the same bytes every
+stage that reads paper runs under, proved against the run's `ink-map` seal at
+the point of use.
 
 **What that repaired.** This stage used to take the page's single most common
 pixel as paper. On a photographed register opening that is the bezel — 0 or near
@@ -19,22 +19,21 @@ it on every page of the Designator's 127-page calibration that reaches its
 surround branch — so `background - MINIMUM_CONTRAST_BELOW_BACKGROUND` was below
 every 8-bit sample, the page mapped as carrying approximately no ink at all, and
 `flagged` was `False` by construction. A coverage audit that passes because its
-threshold cannot be reached is not evidence of coverage, and the cross-stage
-containment pin in `common/test_designator_recensor_ink_calibration.py` held
-over an empty set.
+threshold cannot be reached is not evidence of coverage, and a containment
+pin between the two thresholds held over an empty set
+(`common/test_ink_calibration.py` now checks the sets themselves).
 
 **What is deliberately *not* shared is the contrast.**
 `MINIMUM_CONTRAST_BELOW_BACKGROUND` stays this module's own 40. Sharing the
-Designator's derived margin as well would make this measure a restatement of the
-stage it exists to check independently. Because 40 is below the margin a
-photographed page derives for itself, this stage counts *more* ink than that
-stage's primary scan does — including paper — and far less than its conservation
-denominator of 2. All three now sit under one background, which is what makes
-that ordering a statement about sensitivity rather than about two different
+derived margin as well would make this measure a restatement of the scan it
+exists to check independently. Because 40 is below the margin a photographed
+page derives for itself, the audit counts *more* ink than the derived scan does
+— including paper. Both sit under one background, which is what makes that
+ordering a statement about sensitivity rather than about two different
 statistics.
 
 `payload["background"]` records the paper value, the branch it came from, the
-page's dark mode, the Designator's derived margin, this stage's own contrast,
+page's dark mode, the page's derived margin, this stage's own contrast,
 the ink threshold that produced every count on the record, and the digest of the
 sealed policy — so a reader can recompute the level the page was measured at.
 
@@ -47,7 +46,7 @@ and it carries **no** `ink`, `edge` or `edge_findings` key at all: there was no
 threshold, so there are no counts and no retained runs, and an absent key is what
 makes a consumer fail loudly instead of reading zero as a measurement.
 
-The page stays in the census. The Designator still cuts and reads it, and the
+The page stays in the census. The witnesses and the Perlector still read it, and the
 Armarium reconciles the same page denominator it always did — that page's row
 records `initial_outcome: "ink-not-measurable"` with `remeasured: null`, and no
 edge hold can be derived from or released for it. No fixture page reaches this
@@ -92,9 +91,7 @@ counts it decided.
 
 **The counts on this record are the page's AUDITED ink.** `total_ink_pixels` and
 `outside_ink_pixels` are this page's ink with its page-spanning component taken
-out of both -- the component the Designator withholds from detected grouping
-while retaining all its pixels in conservation. Declared or fallback coverage
-may claim those pixels, and conservation holds any unclaimed remainder.
+out of both -- the component `[page_spanning]` bounds.
 `page_ink_pixels` is every pixel the audit calls ink and
 `page_spanning_ink_pixels` is that separately accounted part, so the whole-page
 figure is on the record and nothing has gone quiet. The retained
@@ -103,27 +100,27 @@ figure is on the record and nothing has gone quiet. The retained
 content under the old contract.
 
 The Designator consumes this producer's completion seal before any detection. The
-Recensor continues to use the same shared residual-ink implementation for its late
-proposal/recovery coverage reconciliation.
+Recensor uses the same shared residual-ink implementation for its late coverage
+reconciliation.
 
 ## Two things Unit 14 must not misread
 
 **`payload["ink"]["flagged"]` is not an alarm here.** This stage measures with
-*empty* coverage, because before the Designator runs there is no coverage to
+*empty* coverage, because before the Perlector reads there is no coverage to
 measure against. `flagged` in `common.residual_ink` means "outside-coverage ink
 passed a gate", so with empty coverage it is true of every page carrying more
 than 24 ink pixels, and `fraction_outside_per_million` is 1,000,000 on every
 inked page and 0 on a blank one. Both are true statements and neither is
 informative on its own. The field this record exists to carry forward is
-`total_ink_pixels`: it is the pre-proposal denominator Unit 14's coverage
+`total_ink_pixels`: it is the pre-reading denominator Unit 14's coverage
 derives from. The alarm on this record is the *outcome* —
 `unclaimed-edge-ink` — which is measured against a real central rectangle.
 
 **A flagged edge record does not by itself make the run `partial`, but an
 unreleased one now does.** `unclaimed-edge-ink` still classifies UNRESOLVED at
 *this* boundary and terminates nothing here: this stage measures before any
-proposal exists, so it cannot know whether an act claims that ink. What decides
-the run is the Armarium's re-measure against the Designator's verified crops —
+act is read, so it cannot know whether an act claims that ink. What decides
+the run is the Armarium's re-measure against the verified act-region bounds —
 see the Unit 14B ledger below. `run_aggregate`
 (`common/contracts/outcomes.py`) takes `edge_hold_pages` and appends a named
 partial reason for every page whose edge ink no crop released, so a run
@@ -157,20 +154,18 @@ two pages contain 0 of 11,520 and 0 of 3,840 ink pixels in their perimeter
 strips. The sealed `minimum_ink_pixels` (`[coverage_audit.noise_floor]`, formerly a
 module constant) remains the noise floor; the substantial-ink gate
 is resolved from page area. Armarium re-measures the Ink Map's retained,
-lossless page-space runs against verified final Designator crop bounds. A clear
-re-measure releases the page; a flagged re-measure holds it. The
-`structure-failure` scenario remains partial for its recorded structure failure
-and unclaimed residual ink, not an edge hold. This distinguishes a pre-proposal
-signal from a genuine unresolved coverage finding without weakening either.
+lossless page-space runs against the verified final act-region bounds. A clear
+re-measure releases the page; a flagged re-measure holds it. This distinguishes
+a pre-reading signal from a genuine unresolved coverage finding without
+weakening either.
 
 ## Background inference, shared by every stage that reads paper
 
 `common/background.py` infers each page's paper value and ink threshold under
 `config/ink_map.toml`'s sealed `[background]`, and every stage that reads paper
-calls it: this stage, the Designator's structure pass and conservation, and the
-Recensor's audit. The measurements below were taken through the Designator's
-shipped pass, which runs the same inference; where they say "this stage" they
-mean the Designator, whose `structure-status` records publish these figures.
+calls it: this stage, the Perlector's page accounting and the Recensor's audit.
+The 127-page measurements below were taken through an ink scan running this same
+inference; where they say "this stage" they mean that scan.
 
 **Every stage's paper value comes from one inference.** The Ink Map's and the
 Recensor's used to be the raw histogram mode: `common/residual_ink.py::_background_level` returned the page's
@@ -181,40 +176,33 @@ every one of the 127 calibration pages that reaches the surround branch — the
 residual of a page full of writing computed to approximately zero and the
 independent coverage proof passed by construction.
 
-The inference now lives in `common/background.py` and all three stages call it
-on the same page bytes: the Designator's `structure.py` re-exports it, and
-`pipeline/1_ink_map/run.py` and `pipeline/5_recensor/run.py` reach it through
-`common/residual_ink.py`. The decision the contract left open was whether the
+The inference lives in `common/background.py` and every stage that reads paper
+calls it on the same page bytes: `pipeline/1_ink_map/run.py` and
+`pipeline/5_recensor/run.py` reach it through `common/residual_ink.py`. The decision the contract left open was whether the
 audit should share this inference and lose its independence, or grow its own on
 the same real material. **It shares the background and keeps its own contrast.**
 Paper is a property of the page, not of the stage looking at it — two stages
 inferring two different paper values for one page is a disagreement about the
 specimen, and there is no second opinion to be had about it. Sensitivity is a
-property of the instrument, and that stays separate: the Designator scans at the
-margin each page derives for itself, reconciles at `SECONDARY_MARGIN = 2`, and
-the audit runs at its own fixed 40. All three now sit under one background,
-which is what turns `recensor_contrast >= SECONDARY_MARGIN` from arithmetic over
-an empty set into a real containment —
-`test_the_containment_is_not_vacuous_on_a_photographed_page` proves it on a
-photographed-shaped page where the three ink sets nest strictly.
+property of the instrument, and that stays separate: the derived scan runs at
+the margin each page derives for itself and the audit at its own fixed 40. Both
+sit under one background, which makes their ordering a real containment —
+`common/test_ink_calibration.py::test_the_containment_is_not_vacuous_on_a_photographed_page`
+proves it on a photographed-shaped page where the ink sets nest strictly.
 
 The background policy lives in `config/ink_map.toml`'s `[background]`, sealed as
 `ink-map`. Every stage that infers paper reads it, validates it through one
 function (`common.background.validate_background_table`) and proves the bytes
 against the run's own `ink-map` seal, so each record names the policy it ran
-under. The Designator also takes `page_spanning_area_bp` and `gap_tolerance_px` from
-the ink map's `[page_spanning]` and `[connectivity]`, so the component it
-withholds is the one the coverage audit takes out.
+under.
 
-A page this inference refuses is now refused by name at all three: the Designator
-records `background_source: "not-inferable"` and `ink_measurable: false`, the Ink
-Map publishes `outcome="ink-not-measurable"` with no counts, and the Recensor's
+A page this inference refuses is refused by name: the Ink Map publishes `outcome="ink-not-measurable"` with no counts, and the Recensor's
 audit carries the page in `page_coverage.unmeasurable_pages` on every act that
 touches it rather than in `checked_pages`.
 
 ### Neutral dark-distribution evidence
 
-The interior-mode branch still uses the same sealed band, interior-dark, whole-page-ink, and derived-margin arithmetic. Its published block is now `dark_distribution`, not `surround`: the branch can be reached by a real photographed frame, but the retained counts alone do not establish a frame, bezel, paper region, or pixels to exclude. They are the exact sampled border-band and page-wide dark populations at the recorded level, and every sampled pixel remains in the primary scan and conservation denominator. Historical passages below describing known photographed frames remain observations of those material pages; they are not a classifier guarantee for every page this admission rule accepts.
+The interior-mode branch still uses the same sealed band, interior-dark, whole-page-ink, and derived-margin arithmetic. Its published block is now `dark_distribution`, not `surround`: the branch can be reached by a real photographed frame, but the retained counts alone do not establish a frame, bezel, paper region, or pixels to exclude. They are the exact sampled border-band and page-wide dark populations at the recorded level, and every sampled pixel remains in the scan's denominator. Historical passages below describing known photographed frames remain observations of those material pages; they are not a classifier guarantee for every page this admission rule accepts.
 
 **`infer_background_evidence`'s majority-paper assumption is checked from both sides,
 and it also knows a photographed page from a dark one.** The premise is
@@ -241,7 +229,7 @@ path cut every one into blind fallback slabs and reconciled none of their ink.
 The premise "the modal pixel is paper" is sound for a flatbed scan and false
 for a photograph.
 
-`structure._dark_distribution` measures the dark fraction in a fixed interior
+`common.background._dark_distribution` measures the dark fraction in a fixed interior
 sample. It admits the historical photographed examples and continues to refuse
 the measured inverted and dark-core controls, but it does not classify arbitrary
 spatial arrangements as a frame, bezel, or page boundary. Where the interior is
@@ -249,18 +237,16 @@ within the sealed bound, the paper value is the modal pixel at or above the
 page's own mean; that value still faces the `PRIMARY_MARGIN` guard and the final
 ink-fraction guard. The thresholds are sealed in `config/ink_map.toml`'s
 `[background]`. Its provenance has
-`calibrated_for_this_corpus = true` and a positive `sample_count`; the
-grouping file's `[grouping.continuation]` and the ink map's `[page_spanning]`
-blocks also carry measured provenance, while other thresholds retain their own
-unmeasured provenance.
+`calibrated_for_this_corpus = true` and a positive `sample_count`; the ink map's
+`[page_spanning]` block also carries measured provenance, while other thresholds
+retain their own unmeasured provenance.
 
 **The fourth shape is the one the seven-page calibration could not see, and it is
 the quiet one.** On 6 of 127 real pages the modal pixel is 255 — a blown
 highlight, a scanner mount, a saturated margin — which is *lighter* than the
 mean, so the majority-ink question is never asked at all, 255 is taken as paper,
-and 71 to 85% of the page is counted as ink. `group_page` finds structure,
-`conservation.reconcile` balances exactly, residual is zero, and nothing in the
-record marks it. So a fourth question is asked of both branches, and it needs no
+and 71 to 85% of the page is counted as ink. Every count downstream balances
+exactly and nothing in the record marks it. So a fourth question is asked of both branches, and it needs no
 geometry: does the inferred value leave the page a *minority* of ink? A
 background is the surface most of the page is; a value that puts more than 70% of
 its own page below the threshold it implies is not one. That bound is
@@ -273,8 +259,7 @@ points at. Measured over 60 RecordGold pages, 60 parish master pages and the
 seven review proxies, sampled by the fixed seed `designator-survey-2026-09-06`.
 Pages were read where they lie and never copied into this tree. Rows marked
 **SYNTHETIC** are shape tests built by
-`common/test_background_components.py` and
-`pipeline/2_designator/test_structure_failure.py`, not photographs.
+`common/test_background_components.py`, not photographs.
 
 **What each lever is, and what it was measured against.**
 
@@ -342,7 +327,7 @@ grey levels above are measuring.
 
 **The dark distribution is measured, never removed.** Every sampled dark pixel
 stays on the page, stays below the ink threshold, and is counted as ink by
-`primary_scan` and reconciled as ink by `conservation.reconcile`. Masking any
+the scan. Masking any
 population out would mean deciding where the page ends, and a page edge misjudged
 by thirty pixels would silently delete a marginal name — the worst kind of
 loss. The `dark_distribution` block records two observed counts:
@@ -458,28 +443,6 @@ the floor they measure 7077-8502 against a maximum of 6595 among the pages it
 admits. The bound and the derivation ask different questions and are measured at
 different levels; the constant `PRIMARY_MARGIN` is what the first one needs — a
 level every page shares.
-
-**`SECONDARY_MARGIN` is not derived, by decision.** It stays 2, and so does
-`conservation.reconcile`'s margin, which defaults to it. The primary margin
-governs what this stage *proposes*; the secondary margin and the conservation
-denominator govern what it cannot *lose*, and erring sensitive there means a
-mark the grouping pass missed still appears as a residual component rather
-than as an absence. Deriving those too would trade a
-visible over-count for a possible silent loss. Two properties follow and both are
-still pinned: the conservation scan at `SECONDARY_MARGIN` is strictly more sensitive than the primary on
-every page, because 2 is below the floor and no page can invert them; and the
-cross-stage containment with the Recensor's `MINIMUM_CONTRAST_BELOW_BACKGROUND`
-stays a comparison of two source literals that
-`common/test_designator_recensor_ink_calibration.py` reads statically.
-
-**The cost of that decision, stated rather than buried.** Conservation at a margin
-of 2 counts a photographed page as almost entirely ink — the measured
-distribution is in the table below — so on real material its residual accounting
-is an over-count by a very large factor, and it was already that before this unit.
-Nothing here makes it worse and nothing here fixes it. What this unit changes is
-that the two numbers no longer look alike: the primary scan's ink fraction is now
-a measurement of the page and conservation's is not, and a reader comparing them
-will see the difference rather than two plausible numbers that disagree.
 
 **What the 127 pages measure, before and after.** Both runs went through the
 shipped pass, one page per process, on the same pages in the same order.

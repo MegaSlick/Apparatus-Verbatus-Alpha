@@ -17,11 +17,10 @@ still cross.
 | `stage.py` | argument shape, opening a run, publishing with the envelope filled in |
 | `imaging.py` | decoding and cropping, with bounds refused rather than clamped |
 | `image_sniff.py` | the one byte-signature table for page sources and the "could be a page" test the submit door and the Exemplar door share |
-| `imaging_ports.py` | the two vendor resize rules a witness's own preprocessing applies, as pure dimension arithmetic — carried third-party logic, cited to its pinned commit, with `common/test_vendor_parity.py` pinning both against the vendors' own functions. Its designed consumers are the Designator's structure chair and the Attestatores' Chandra and Churro adapters; both adapters now size their presented page through it, and the structure chair follows. The pixels still move through `imaging.py`'s sealed recipe |
+| `imaging_ports.py` | the two vendor resize rules a witness's own preprocessing applies, as pure dimension arithmetic — carried third-party logic, cited to its pinned commit, with `common/test_vendor_parity.py` pinning both against the vendors' own functions. Its consumers are the Attestatores' Chandra and Churro adapters, which size their presented page through it. The pixels still move through `imaging.py`'s sealed recipe |
 | `request_capacity.py` | whether one reading request fits the sealed serving row it would be sent to: the chair's own image-token arithmetic, the measured prompt and answer costs, and a closed record naming the headroom. Three stages ask it the same question before they send. A request is admitted on a measured constant or a measured **upper** bound and never on a floor; where a chair has both, the record carries both with their bases named. A Perlector page request is the one not fully measured: it is admitted on an upper bound for the reported text plus a carried rate for the builder's own fixed text (`reported-text-per-byte-fixed-text-at-carried-act-rate`) |
 | `credentials.py` | one reading of "this looks like a secret": the name markers, provider prefixes and the value shape test every credential screen shares, operational and pipeline alike |
 | `armarium_formats.py` | the sealed Armarium projection choices — the door binds them into the run, the Armarium reads them back |
-| `chandra_custody.py` | one-receipt Chandra custody: the Designator's live structure pass writes it; the read half has no served caller since the capture intake was removed and is the half that defines what the binding admits. It deliberately names the Designator's blob root and serving chair — those constants come from `contracts/`, `runtree/` and `stage.py`, never from a stage module, so the import boundary above holds |
 | `page_path.py` | the Perlector's page path as derived data: each page's feed (`page_feed_of`), an answer's problems, each entry's plan and holds, and every input the page accounting measures. Stage 4 publishes from it; the page-read denominator recomputes stage 4's records with it |
 | `dissent.py` | where a reading departs from each witness that reported, aligned under a clock or, for a reader checking a sealed record, to its end |
 | `page_feed.py`, `page_prompt.py`, `page_overlay.py`, `page_render.py` | what one whole-page reading is shown: the feed and its sealed `[feed]` switches, the prompt rendered from it, the id overlay drawn on the page render, and the page render itself. Stage 4 builds them; the page-read denominator builds a feed again to prove the sealed one |
@@ -77,7 +76,7 @@ Every submitted page contributes at least one row. A page whose reading is not a
 parsed, valid answer is one `page-unread` row (held: `page-unread`, the reading's
 problem codes and the page's holds). A read answer with no entry is one
 `page-blank` row, held (`page-blank-unconfirmed`) until the Recensor confirms the
-page blank. Both bind the sealed page rectangle, as `page-fallback` does. A read
+page blank. Both bind the sealed page rectangle. A read
 answer whose entries are all `other` keeps one row per entry, each also held
 (`no-act-on-page-unconfirmed`) until the Recensor confirms the page holds no
 act. A page the Exemplar refused is one `page-refused` row: the Door's refusal
