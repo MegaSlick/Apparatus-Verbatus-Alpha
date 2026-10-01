@@ -495,14 +495,13 @@ def test_a_payload_that_is_not_an_object_is_refused():
 
 
 def _reference_screens():
-    from common import chandra_custody, cross_capture_dissent
+    from common import chandra_custody
     from common.runtree import store
 
     return {
         "digest_ref": lambda ref: digest_ref(ref, "reference"),
         "run receipt": store._receipt_reference,
         "chandra custody": lambda ref: chandra_custody.custody_reference(ref, "", "custody"),
-        "cross-capture dissent": lambda ref: cross_capture_dissent._ref(ref, "anchor"),
     }
 
 
@@ -518,9 +517,7 @@ def _reference_screens():
         ("   ", "has no relative_path"),
     ],
 )
-@pytest.mark.parametrize(
-    "screen", ["digest_ref", "run receipt", "chandra custody", "cross-capture dissent"]
-)
+@pytest.mark.parametrize("screen", ["digest_ref", "run receipt", "chandra custody"])
 def test_every_reference_screen_refuses_a_path_outside_the_run_tree(screen, path, match):
     with pytest.raises(SchemaRefusal, match=match):
         _reference_screens()[screen]({"relative_path": path, "sha256": "a" * 64})
