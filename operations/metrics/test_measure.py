@@ -20,7 +20,7 @@ def test_nothing():
 """
 
 
-def _commit(root, files):
+def _stage(root, files):
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     for name, text in files.items():
         path = root / name
@@ -30,7 +30,7 @@ def _commit(root, files):
 
 
 def test_counts_lines_comments_docstrings_and_markers_per_kind(tmp_path, capsys):
-    _commit(
+    _stage(
         tmp_path,
         {
             "pkg/module.py": SOURCE,
