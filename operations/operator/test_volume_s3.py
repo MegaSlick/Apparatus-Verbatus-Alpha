@@ -421,16 +421,11 @@ def test_a_contradictory_access_denied_404_is_not_absence() -> None:
 
 
 class _BrokenHandle:
-    """A handle that fails mid-read, the one way `put_file` can still see a bad source.
+    """A handle that fails mid-read, to pin that `put_file` turns a read failure
+    into a named `VolumeTransferRefusal`, not a raw exception.
 
-    Refusing a symlink or a missing file is no longer this class's job: the
-    caller opens and verifies the source exactly once, with `O_NOFOLLOW`,
-    before `put_file` ever sees it (`operations.pod.transfer.TransferTarget`'s
-    own docstring), and that refusal is covered by
-    `operations/pod/test_transfer.py`'s
-    `test_open_verified_regular_file_refuses_a_symlink_leaf_directly`. What is
-    still this class's job is turning a failure reading the handle it was
-    given into a named `VolumeTransferRefusal`, not a raw exception.
+    The caller opens and verifies the source once, with `O_NOFOLLOW`, before
+    `put_file` sees it, so a symlink or missing source never reaches here.
     """
 
     def read(self, size: int = -1) -> bytes:
@@ -931,9 +926,9 @@ def test_a_single_page_past_the_key_bound_is_refused_by_name() -> None:
 def test_a_page_with_no_usable_istruncated_is_a_refusal_not_a_complete_listing(
     bad_value: object,
 ) -> None:
-    """A page missing or malforming ``IsTruncated`` used to read exactly like
-    ``False`` -- a listing this reader cannot tell complete from partial must
-    not be recorded as verified over what could be a hidden remaining page.
+    """A page missing or malforming ``IsTruncated`` is a refusal, not ``False``:
+    a listing this reader cannot tell complete from partial must not be
+    recorded as verified over what could be a hidden remaining page.
     """
 
     class UntruncatedShapedClient(FakeListingClient):

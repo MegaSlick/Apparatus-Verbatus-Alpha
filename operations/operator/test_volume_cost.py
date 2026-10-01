@@ -1,4 +1,4 @@
-"""F063: the volume's ongoing price is never a live provider quote."""
+"""The volume's ongoing price is never a live provider quote."""
 
 from __future__ import annotations
 

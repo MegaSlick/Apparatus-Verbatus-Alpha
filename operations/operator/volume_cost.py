@@ -5,7 +5,7 @@ operator watches stop; the volume is the part they forget, because the
 expensive-looking thing has just visibly ended.
 
 The close report already carries the volume's hourly rate, and that figure stays
-the number this surface quotes. It is not a live provider quote (F063): RunPod's
+the number this surface quotes. It is not a live provider quote: RunPod's
 v1 API publishes no endpoint for a network volume's price, so this figure is
 always the rate supplied when the volume was named, carried through rather than
 observed -- said plainly below rather than implied as measured. What is added
