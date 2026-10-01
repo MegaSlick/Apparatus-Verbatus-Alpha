@@ -1,4 +1,4 @@
-"""A vendor-neutral phone-notification seam for the three pod-lease moments.
+"""A vendor-neutral phone-notification seam for the pod-lease moments and a systemic run.
 
 Spend machinery is tracking plus notifications only -- no new enforcement,
 RunPod's own limits enforce. This module is the notification half of that: it
@@ -11,7 +11,11 @@ one short line, three times in a lease's life --
 - each balance observation: the balance and the spend rate the observer
   reported
 
--- through `operations/notify/client.py`.
+-- through `operations/notify/client.py`. A fourth, `notify_systemic`, is the
+one question among them: a run on the pod that stopped with more of its pages
+held than its sealed review policy allows, or exported past that stop on a
+person's advance, sends the systemic alarm as a `decision`, the line
+`verbatus run --notify` sends for the same run on this computer.
 
 **Never a secret, never a URL.** Every message is checked before the shell
 call: a word naming a secret, any piece `common.credentials` reads as
@@ -33,6 +37,7 @@ import re
 from typing import Final
 
 from common.credentials import notification_carries_credential
+from common.review_policy import systemic_notice
 from operations.notify import client
 from operations.notify.client import NotifyOutcome, Runner
 
@@ -62,11 +67,11 @@ def _unsafe_reason(message: str) -> str | None:
     return None
 
 
-def _send(message: str, *, runner: Runner) -> NotifyOutcome:
+def _send(message: str, *, runner: Runner, event: str = NOTIFY_EVENT) -> NotifyOutcome:
     unsafe = _unsafe_reason(message)
     if unsafe is not None:
         return NotifyOutcome(False, False, unsafe)
-    return client.send(NOTIFY_EVENT, message, runner=runner)
+    return client.send(event, message, runner=runner)
 
 
 def notify_launch(
@@ -125,3 +130,9 @@ def notify_balance(
         f"pod balance: {subject}, ${balance_usd} available, ${spend_rate_usd_per_hr}/h spend rate"
     )
     return _send(message, runner=runner)
+
+
+def notify_systemic(*, run_id: str, alarm_line: str, runner: Runner = client.run) -> NotifyOutcome:
+    """One `decision` line for a run whose systemic alarm sounded (`common.review_policy`)."""
+
+    return _send(systemic_notice(run_id, alarm_line), runner=runner, event="decision")

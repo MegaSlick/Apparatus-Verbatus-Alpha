@@ -10,12 +10,17 @@ nothing it looked at changes. The decision changes nothing by itself: the
 Recensor applies it on its next pass (`pipeline/5_recensor/CONTRACT.md`,
 "Operator review decisions").
 
+An `edit` records a person's corrected text for one held unit, with an
+optional note; when the Recensor accepts the unit, the Archetypus establishes
+that text as its reading, labelled "corrected by a person"
+(`common/correction.py`), and the export shows the model's reading beside it.
+
 Refused, before anything is written: a unit or page the Recensor's latest
 pass did not review; a decision its subject does not allow (a release with no
-hold of its own to clear, a release of a reading no decision can send to
-export, no missed act on an unread page); and a run whose Archetypus has
-established a reading or whose Armarium has published its export, where a
-decision recorded now could reach nothing.
+hold of its own to clear, a release or edit of a reading no decision can send
+to export, an edit of a unit nothing holds, no missed act on an unread page);
+and a run whose Archetypus has established a reading or whose Armarium has
+published its export, where a decision recorded now could reach nothing.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from typing import Any, Final
 
 from common.contracts.approval import (
     APPROVER,
+    EDIT_DECISION,
     PAGE_SCOPE,
     REVIEW_DECISIONS,
     UNIT_SCOPE,
@@ -34,6 +40,7 @@ from common.contracts.approval import (
 )
 from common.contracts.errors import ApprovalRefusal
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
+from common.correction import text_sha256
 from common.page_path import PAGE_READING_KIND, PERLECTIO_KIND
 from common.page_review import REVIEW_KIND, REVIEW_OPERATION, override_refusal
 from common.review_decisions import CURRENT, published_basis, review_decision
@@ -48,6 +55,11 @@ NEXT_STEP: Final = {
     "no-missed-act": "the Recensor clears the page's holds",
     "missed-act": "the Recensor holds the page as missing an act",
     "re-shoot": "the Recensor holds the page and records the re-shoot request",
+    EDIT_DECISION: (
+        "the Recensor clears the unit's own holds, and once nothing else holds it the "
+        "Archetypus establishes your text as its reading, labelled corrected by a person, "
+        "with the model's reading kept beside it"
+    ),
 }
 RERUN_MISSING: Final = (
     "the Recensor records the request in its review-decisions `requests`, and holds the "
@@ -67,6 +79,8 @@ class PreparedDecision:
     subject: str
     basis_digest: str
     held_codes: tuple[str, ...]
+    # The digest of an edit's text, which its confirmation names; None otherwise.
+    text_sha256: str | None = None
 
 
 def _now() -> str:
@@ -142,14 +156,16 @@ def prepare_decision(
     page: int | None = None,
     finding: str | None = None,
     timestamp: str | None = None,
+    text: str | None = None,
+    note: str | None = None,
 ) -> PreparedDecision:
     """Build one decision about the unit keyed `unit` (`p1:2`) or page ordinal `page`.
 
     It binds to that subject's basis in the Recensor's latest reviews, so
     nothing unknown is ever written; `record_decision` checks it current again
-    just before it writes. The reason is bounded by the approval contract
-    (`common.contracts.approval.MAX_APPROVAL_REASON_BYTES`), which the record's
-    builder enforces.
+    just before it writes. The reason, an edit's `text` and its `note` are
+    bounded by the approval contract (`common.contracts.approval`), which the
+    record's builder enforces.
     """
     if (unit is None) == (page is None):
         raise ApprovalRefusal("a decision names exactly one unit (by its key) or one page")
@@ -184,6 +200,12 @@ def prepare_decision(
                     f"releasing {unit} cannot send it to export: {refusal}. Exclude it, or "
                     "hold it with a finding"
                 )
+        if decision == EDIT_DECISION:
+            if (refusal := override_refusal(_row(units, subject, entry), edit=True)) is not None:
+                raise ApprovalRefusal(
+                    f"correcting {unit} cannot send it to export: {refusal}. Exclude it, or "
+                    "hold it with a finding"
+                )
         what = f"unit {unit} ({subject})"
     else:
         matches = [pid for pid, entry in basis["pages"].items() if entry["page_ordinal"] == page]
@@ -205,9 +227,15 @@ def prepare_decision(
         basis_digest=digest,
         reason=reason,
         timestamp=timestamp or _now(),
+        text=text,
+        note=note,
     )
     return PreparedDecision(
-        record=record, subject=what, basis_digest=digest, held_codes=tuple(sorted(held))
+        record=record,
+        subject=what,
+        basis_digest=digest,
+        held_codes=tuple(sorted(held)),
+        text_sha256=text_sha256(text) if decision == EDIT_DECISION else None,
     )
 
 
@@ -251,9 +279,15 @@ def report(prepared: PreparedDecision, reference: ApprovalRecordReference) -> li
     decision = review["decision"]
     finding = f" with finding {review['finding']}" if review["finding"] else ""
     effect = RERUN_MISSING if decision == "re-ask" else NEXT_STEP[decision]
+    text = (
+        [f"The corrected text has digest {prepared.text_sha256}; note: {review['note'] or 'none'}."]
+        if decision == EDIT_DECISION
+        else []
+    )
     return [
         f"Recorded: {decision}{finding} of {prepared.subject}, by {APPROVER} at "
         f"{prepared.record['timestamp']}.",
+        *text,
         f"It binds to the review basis {prepared.basis_digest}; held now by: "
         f"{', '.join(prepared.held_codes) or 'nothing'}.",
         f"Decision record: {reference.relative_path} ({reference.sha256})",

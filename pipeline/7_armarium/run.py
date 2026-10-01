@@ -46,7 +46,7 @@ from armarium_export import (  # noqa: E402
     unpaired_continuations,
 )
 from coniector_layer import export_rows  # noqa: E402
-from operator_layer import released_row  # noqa: E402
+from operator_layer import corrected_row, released_row  # noqa: E402
 
 from common import page_path  # noqa: E402
 from common.background import (  # noqa: E402
@@ -74,7 +74,15 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
-from common.contracts.uncertainty import from_page_perlectio  # noqa: E402
+from common.contracts.uncertainty import corrected_layer, from_page_perlectio  # noqa: E402
+from common.correction import (  # noqa: E402
+    ORIGINAL_LABEL,
+    correction_provenance,
+    edited_text,
+    is_correction,
+    model_provenance,
+    stored_edits,
+)
 from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_corpus_seal,
     verify_reading_region_lineage,
@@ -87,6 +95,7 @@ from common.page_review import (  # noqa: E402
     continuation_links,
     current_page_reviews,
     held_share,
+    operator_correction,
     operator_override,
     reading_holds_allowed,
     require_current_review_decisions,
@@ -736,7 +745,12 @@ def _page_category(
 
 
 def verify_established_page_record(
-    context, row: dict, review: dict, established: dict, applied: frozenset[str] = frozenset()
+    context,
+    row: dict,
+    review: dict,
+    established: dict,
+    applied: frozenset[str] = frozenset(),
+    approvals: dict | None = None,
 ) -> tuple[dict, dict]:
     """Reconcile a page-path Archetypus against its row, its review and its reading.
 
@@ -744,7 +758,11 @@ def verify_established_page_record(
     the Exemplar here, not read out of the record, and the damage layers are
     recomputed from the reading. A held reading stands only under current
     operator decisions that override every hold it carries (`applied` as in
-    `page_review.operator_override`).
+    `page_review.operator_override`). A reading a current edit corrects
+    (`page_review.operator_correction`) must carry exactly the person's text
+    from the stored edit in `approvals` (the run's stored decisions by digest),
+    the fixed no-doubt layer and the correction's provenance, built again here
+    (`common.correction`), and input the edit's stored approval.
     """
     payload = established.get("payload")
     if not isinstance(payload, dict) or not verify_self_hash(payload):
@@ -810,33 +828,72 @@ def verify_established_page_record(
             None,
             f"the reading of {row['act_key']} annotations",
         )
-        uncertainty = from_page_perlectio(reading_payload)
+        model_uncertainty = from_page_perlectio(reading_payload)
+        corrections = operator_correction(row, review, applied)
+        edits: list = []
+        if corrections is None:
+            text = reading_payload.get("text")
+            uncertainty, provenance = model_uncertainty, reading_payload.get("provenance")
+        else:
+            edits = stored_edits(corrections, approvals or {}, row["act_key"])
+            text, uncertainty = edited_text(edits), corrected_layer()
+            provenance = correction_provenance(
+                edits,
+                perlectio_ref=reading_ref,
+                model_text=reading_payload.get("text"),
+                model_text_status=derive_record_text_status(
+                    reading_payload.get("text"), annotations, model_uncertainty
+                ),
+                model_provenance=reading_payload.get("provenance"),
+            )
         text_status = derive_record_text_status(payload.get("text"), annotations, uncertainty)
     except SchemaRefusal as error:
         raise FatalAccounting(
             f"the damage layers of {row['act_key']} cannot be reconciled with its reading"
         ) from error
     if (
-        payload.get("text") != reading_payload.get("text")
+        payload.get("text") != text
         or payload.get("regions") != [region]
-        or payload.get("provenance") != reading_payload.get("provenance")
+        or payload.get("provenance") != provenance
         or payload.get("annotations") != annotations
         or payload.get("uncertainty") != uncertainty
         or payload.get("text_status") != text_status
     ):
         raise FatalAccounting(
             f"the Archetypus of {row['act_key']} does not exactly preserve the reading its "
-            "review accepted"
+            "review accepted, or the person's correction of it"
         )
-    expected_inputs = [review_ref, reading_ref, region_ref, context.input_ref(region["image_path"])]
+    expected_inputs = [
+        review_ref,
+        reading_ref,
+        region_ref,
+        context.input_ref(region["image_path"]),
+        *(reference.to_record() for reference, _record in edits),
+    ]
     if sorted(established.get("inputs", []), key=lambda item: item["relative_path"]) != sorted(
         expected_inputs, key=lambda item: item["relative_path"]
     ):
         raise FatalAccounting(
             f"the Archetypus of {row['act_key']} does not input exactly its review, reading, "
-            "act-region and crop"
+            "act-region and crop, and the stored edit that corrects it"
         )
     return payload, reading
+
+
+def model_reading_row(row: dict, reading: dict) -> dict:
+    """The model's reading of a corrected entry, exported beside the person's text."""
+    payload = reading["payload"]
+    uncertainty = from_page_perlectio(payload)
+    return {
+        "act_id": row["act_id"],
+        "act_key": row["act_key"],
+        "kind": row["kind"],
+        "label": ORIGINAL_LABEL,
+        "text": payload["text"],
+        "uncertainty": uncertainty,
+        "text_status": derive_record_text_status(payload["text"], [], uncertainty),
+        "perlectio_ref": row["perlectio_ref"],
+    }
 
 
 def export_page_witnesses(context, reading: dict, page_testimonia: list[dict]) -> list[dict]:
@@ -938,10 +995,18 @@ def page_continuation_joins(
     return tuple(joins)
 
 
-def coniector_rows(coniector: dict, projected_acts: list[dict]) -> list[dict]:
-    """The Coniector's verified reconstructions beneath the acts this run delivers."""
+def coniector_rows(
+    coniector: dict, projected_acts: list[dict], model_texts: dict[str, str] | None = None
+) -> list[dict]:
+    """The Coniector's verified reconstructions beneath the acts this run delivers.
+
+    The Coniector reconstructs from the model's reading, so beneath an act a
+    person corrected (`model_texts`, the model's text by act id) its pieces are
+    held to that reading and its row says it was made from it.
+    """
+    model_texts = model_texts or {}
     delivered = {
-        act["act_id"]: act["canonical_clean_text"]
+        act["act_id"]: model_texts.get(act["act_id"], act["canonical_clean_text"])
         for act in projected_acts
         if act["category"] == ArmariumCategory.DELIVERED.value
     }
@@ -950,6 +1015,7 @@ def coniector_rows(coniector: dict, projected_acts: list[dict]) -> list[dict]:
         coniector["diplomatic_raw"],
         delivered,
         coniector["refs"],
+        corrected=set(model_texts),
     )
 
 
@@ -1079,14 +1145,21 @@ def _act_reading(row: dict) -> str | None:
 
 
 def operator_action(
-    row: dict, review: dict, applied: frozenset[str], approvals: dict[str, tuple]
+    row: dict,
+    review: dict,
+    applied: frozenset[str],
+    approvals: dict[str, tuple],
+    provenance: dict | None = None,
 ) -> dict | None:
-    """The operator layer's row for a delivered reading a person released, or None.
+    """The operator layer's row for a delivered reading a person released or corrected, or None.
 
     A reading is labelled when current decisions the Recensor applied cleared
-    any hold on it: a `release` of the unit, a `no-missed-act` of its page.
-    Each decision is named with the approval it was stored as (`approvals`,
-    the run's stored decisions by digest), who made it and when.
+    any hold on it: a `release` or `edit` of the unit, a `no-missed-act` of
+    its page. Each decision is named with the approval it was stored as
+    (`approvals`, the run's stored decisions by digest), who made it and when.
+    A corrected reading (its established `provenance` a correction's) is
+    labelled "corrected by a person", with the person's note and the model's
+    reading it corrects.
     """
     block = review["payload"].get(REVIEW_FIELD)
     if block is None:
@@ -1094,7 +1167,11 @@ def operator_action(
     cleared = sorted(set(block["cleared"]["unit"]) | set(block["cleared"]["page"]))
     if not cleared:
         return None
-    clearing = {("unit", row["act_id"], "release"), ("page", row["page_id"], "no-missed-act")}
+    corrected = is_correction(provenance)
+    clearing = {
+        ("unit", row["act_id"], "edit" if corrected else "release"),
+        ("page", row["page_id"], "no-missed-act"),
+    }
     decisions = []
     for summary in block["decisions"]:
         if (
@@ -1122,6 +1199,8 @@ def operator_action(
             "Recensor applied; the export cannot say who released it"
         )
     override = require_establishable(row, review, applied)
+    if corrected:
+        return corrected_row(row, override, cleared, decisions, provenance)
     return released_row(row, override, cleared, decisions)
 
 
@@ -1159,10 +1238,12 @@ def review_decisions_basis(decisions: dict | None, canaries: set[int]) -> dict[s
     """What the Recensor's operator review decisions give the run aggregate, or None without any.
 
     `decisions` is the Recensor's current `review-decisions` record
-    (`require_current_review_decisions`). `{clearances, page_holds}`: each
-    hold a decision cleared, as `run_aggregate`'s `review_clearances` rows
-    naming units by act key, and each page still held after review, `{page,
-    codes}`. A canary page is outside the export, so its rows are too.
+    (`require_current_review_decisions`). `{clearances, page_holds,
+    corrections}`: each hold a decision cleared, as `run_aggregate`'s
+    `review_clearances` rows naming units by act key, each page still held
+    after review, `{page, codes}`, and the key of each unit a person's edit
+    corrected, which is no reason: the person's text is the truth. A canary
+    page is outside the export, so its rows are too.
     """
     if decisions is None:
         return None
@@ -1177,6 +1258,11 @@ def review_decisions_basis(decisions: dict | None, canaries: set[int]) -> dict[s
             for row in decisions["page_holds"]
             if row["page_ordinal"] not in canaries
         ],
+        "corrections": sorted(
+            row["act_key"]
+            for row in decisions["corrections"]
+            if row["page_ordinal"] not in canaries
+        ),
     }
 
 
@@ -1207,6 +1293,8 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
         else {}
     )
     operator_actions: list[dict] = []
+    # The model's reading of each delivered entry a person corrected, by act id.
+    model_readings: dict[str, dict] = {}
     submission_id, fixture_id, run_identity = export_run_identity(context)
     real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
     denominator = reading_denominator(context)
@@ -1274,12 +1362,12 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             refusal = missing_export_provenance(established.get("payload"))
             if refusal is None:
                 payload, reading = verify_established_page_record(
-                    context, row, review, established, applied
+                    context, row, review, established, applied, approvals
                 )
                 try:
                     validate_serving_provenance(
                         context,
-                        payload.get("provenance"),
+                        model_provenance(payload.get("provenance")),
                         producer_stage=PERLECTOR,
                         require_receipt=True,
                     )
@@ -1305,7 +1393,9 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                         }
                     )
                     delivered.append(entry)
-                    action = operator_action(row, review, applied, approvals)
+                    if is_correction(payload["provenance"]):
+                        model_readings[row["act_id"]] = model_reading_row(row, reading)
+                    action = operator_action(row, review, applied, approvals, payload["provenance"])
                     if action is not None:
                         operator_actions.append(action)
             if refusal is not None:
@@ -1372,7 +1462,11 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
     )
     ink_map_pages = [row for row in all_ink_map_pages if row["ordinal"] not in canaries]
     joins = page_continuation_joins(links, projected_acts, formats.formats)
-    reconstructions = coniector_rows(coniector, projected_acts)
+    reconstructions = coniector_rows(
+        coniector,
+        projected_acts,
+        {act_id: model["text"] for act_id, model in model_readings.items()},
+    )
     unaddressed = list(unaddressed_chairs(context.registry.config))
     other_categories_by_page: dict[int, list[str]] = {}
     for other in projected_others:
@@ -1445,6 +1539,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             page_accounting=tuple(page_accounting_rows(context, pages, real_sealed)),
             reconstructions=tuple(reconstructions),
             operator_actions=tuple(sorted(operator_actions, key=lambda row: row["act_id"])),
+            model_readings=tuple(model_readings[act_id] for act_id in sorted(model_readings)),
             reading_hold_codes=(
                 None
                 if review_basis is None

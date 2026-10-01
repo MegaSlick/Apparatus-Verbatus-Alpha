@@ -45,11 +45,16 @@ from coniector_layer import (
 from display import DISPLAY_CONVENTION, render_display, strip_display
 from operator_layer import LABEL_LINE as OPERATOR_LABEL_LINE
 from operator_layer import (
-    OPERATOR_LINES,
+    MODEL_READING_SCHEMA,
+    MODEL_READINGS_MEMBER,
+    MODEL_ROW_FIELDS,
     OPERATOR_MEMBER,
     READING_HOLDS_FIELD,
+    block_end,
     lines_for,
+    model_reading_record,
     text_bundle_rows,
+    verify_model_reading,
     verify_rows,
 )
 from operator_layer import SOURCES_FIELD as OPERATOR_SOURCES_FIELD
@@ -79,8 +84,19 @@ from common.contracts.outcomes import (
     run_aggregate,
 )
 from common.contracts.stages import ARMARIUM
-from common.contracts.uncertainty import utf8_round_trip
+from common.contracts.uncertainty import CORRECTED_LECTIO, corrected_layer, utf8_round_trip
 from common.contracts.uncertainty import validate as validate_uncertainty
+from common.correction import (
+    CORRECTED_LABEL,
+    edit_digests,
+    is_correction,
+)
+from common.correction import (
+    DECISION_FIELDS as CORRECTION_DECISION_FIELDS,
+)
+from common.correction import (
+    PROVENANCE_FIELDS as CORRECTION_PROVENANCE_FIELDS,
+)
 from common.imaging import dimensions
 from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
 from common.review_policy import parse_share
@@ -358,6 +374,9 @@ class ArmariumProjection:
     # none; `None` exactly when the run has no review decisions, since only a
     # decision can deliver a held reading.
     reading_hold_codes: dict[str, list[str]] | None = None
+    # The model's reading of each delivered reading a person corrected
+    # (`run.model_reading_row`), shown beside the person's text.
+    model_readings: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -563,6 +582,9 @@ def build_armarium_bundle(
         # dropped from a format from one never made.
         sources_record["reconstructions"] = [list(row["act_ids"]) for row in coniector_rows]
     operator_rows = tuple(_mark_retained_references(row) for row in projection.operator_actions)
+    model_readings = {
+        model["act_id"]: _mark_retained_references(model) for model in projection.model_readings
+    }
     if operator_rows:
         # Every package carries the label, whatever formats it selects.
         sources_record[OPERATOR_SOURCES_FIELD] = list(operator_rows)
@@ -584,6 +606,7 @@ def build_armarium_bundle(
                 projection.other_readings,
                 coniector_rows,
                 operator_rows,
+                model_readings,
             )
         )
     if "acts-database" in formats.formats:
@@ -594,6 +617,10 @@ def build_armarium_bundle(
             members[CONIECTOR_MEMBER] = _jsonl_bytes(list(coniector_rows))
         if operator_rows:
             members[OPERATOR_MEMBER] = _jsonl_bytes(list(operator_rows))
+        if model_readings:
+            members[MODEL_READINGS_MEMBER] = _jsonl_bytes(
+                [model_reading_record(model_readings[act_id]) for act_id in sorted(model_readings)]
+            )
         members[OTHER_READINGS_MEMBER] = _jsonl_bytes(
             _other_json_records(projection.other_readings)
         )
@@ -719,7 +746,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     search_fold_verification = _verify_product_accounting(root, manifest, formats, sources)
     _verify_page_layers(root, manifest, formats, sources)
     _verify_continuation_joins(root, formats, sources)
-    _verify_coniector_layer(root, formats, sources, actual_names)
+    _verify_coniector_layer(root, manifest, formats, sources, actual_names)
     _verify_operator_layer(root, manifest, formats, sources, actual_names)
     verification = {}
     if search_fold_verification is not None:
@@ -1464,17 +1491,34 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
 
 
 def _verify_coniector_layer(
-    root: Path, formats: ArmariumFormats, sources: dict, actual_names: set[str]
+    root: Path,
+    manifest: dict[str, Any],
+    formats: ArmariumFormats,
+    sources: dict,
+    actual_names: set[str],
 ) -> None:
     """Recompute every reconstruction the package shows, in each format that shows it.
 
     Each row must stand beneath delivered literals of its own format, name each
     act by that act's own key and, when made, be its own departures applied to
-    its own diplomatic pieces. In the text bundle each row must sit beneath its
-    own act's section (a join in its own section) in every folder that sections
-    the act. Every format that shows reconstructions shows exactly the rows
-    `sources.json` records, so a row dropped from one is refused.
+    its own diplomatic pieces. Beneath an act a person corrected, its pieces
+    are held to the model reading that format shows beside the person's text,
+    and the row must say it was made from it. In the text bundle each row must
+    sit beneath its own act's section (a join in its own section) in every
+    folder that sections the act. Every format that shows reconstructions shows
+    exactly the rows `sources.json` records, so a row dropped from one is
+    refused.
     """
+    models = (
+        _model_readings_shown(
+            root, formats, sources, actual_names, _operator_rows(sources, manifest)
+        )
+        if any(
+            isinstance(row, dict) and row.get("label") == CORRECTED_LABEL
+            for row in sources.get(OPERATOR_SOURCES_FIELD) or []
+        )
+        else {}
+    )
     shown: list[list[dict[str, Any]]] = []
     if CONIECTOR_MEMBER in actual_names:
         literals = _jsonl_literals(root / "acts.jsonl")
@@ -1483,9 +1527,10 @@ def _verify_coniector_layer(
             for row in _jsonl_rows(root / "acts.jsonl", "acts JSONL", "an acts JSONL row")
             if isinstance(row, dict) and isinstance(row.get("act_id"), str)
         }
+        corrected = {act_id: model["text"] for act_id, model in models.get("jsonl", {}).items()}
         shown.append(
             [
-                verify_row(row, literals, keys)
+                verify_row(row, literals, keys, corrected)
                 for row in _jsonl_rows(
                     root / CONIECTOR_MEMBER, CONIECTOR_MEMBER, "a reconstruction row"
                 )
@@ -1497,6 +1542,9 @@ def _verify_coniector_layer(
         records = _text_bundle_records(root)
         literals = {act_id: (record.literal,) for act_id, record in records.items()}
         keys = {act_id: record.heading_key for act_id, record in records.items()}
+        corrected = {
+            act_id: model["text"] for act_id, model in models.get("text-bundle", {}).items()
+        }
         by_act_ids: dict[tuple[str, ...], dict[str, Any]] = {}
         sectioned: dict[str, set[str]] = {}
         placed: dict[str, Counter[tuple[str, ...]]] = {}
@@ -1507,7 +1555,7 @@ def _verify_coniector_layer(
             sectioned[folder], placements = text_bundle_placements(lines)
             placed[folder] = Counter()
             for _place, shown_row in placements:
-                row = verify_row(shown_row, literals, keys)
+                row = verify_row(shown_row, literals, keys, corrected)
                 act_ids = tuple(row["act_ids"])
                 if by_act_ids.setdefault(act_ids, row) != row:
                     raise SchemaRefusal(
@@ -1629,6 +1677,8 @@ def _verify_operator_layer(
     """
     recorded = _operator_rows(sources, manifest)
     _verify_reading_holds(sources, manifest, recorded)
+    _model_readings_shown(root, formats, sources, actual_names, recorded)
+    _verify_corrections(root, formats, sources, recorded)
     shown: list[tuple[str, list[dict[str, Any]]]] = []
     if "jsonl" in formats.formats:
         rows = (
@@ -1649,7 +1699,7 @@ def _verify_operator_layer(
                 if line.startswith(("act-id: ", "other-id: "))
             }
             placed = Counter()
-            for act_id, row in text_bundle_rows(lines):
+            for act_id, row, _model in text_bundle_rows(lines):
                 if by_id.setdefault(act_id, row) != row:
                     raise SchemaRefusal(
                         f"the text bundle labels {row['act_key']} differently in two places"
@@ -1667,6 +1717,193 @@ def _verify_operator_layer(
             raise SchemaRefusal(f"{subject} shows other operator rows than sources.json records")
         for row in rows:
             _verify_retained_references(row)
+
+
+def _model_readings_shown(
+    root: Path,
+    formats: ArmariumFormats,
+    sources: dict[str, Any],
+    actual_names: set[str],
+    recorded: list[dict[str, Any]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """The model's reading of each corrected reading, as each format that carries it shows it.
+
+    `{format: {reading id: {text, uncertainty, text_status}}}` for `jsonl`
+    (`model_readings.jsonl`) and `text-bundle` (beneath the reading's section,
+    the same in every folder). Each format that carries the layer must show
+    one for exactly the readings a corrected row names, each held to its row
+    (`operator_layer.verify_model_reading`), so a dropped original is refused.
+    """
+    corrected = {row["act_id"]: row for row in recorded if row["label"] == CORRECTED_LABEL}
+    shown: dict[str, dict[str, dict[str, Any]]] = {}
+    if "jsonl" in formats.formats:
+        models: dict[str, dict[str, Any]] = {}
+        rows = (
+            _jsonl_rows(root / MODEL_READINGS_MEMBER, MODEL_READINGS_MEMBER, "a model reading row")
+            if MODEL_READINGS_MEMBER in actual_names
+            else []
+        )
+        for record in rows:
+            if not isinstance(record, dict) or record.get("schema") != MODEL_READING_SCHEMA:
+                raise SchemaRefusal("a model reading row has no recognized schema")
+            _require_exact_fields(record, MODEL_ROW_FIELDS, subject="a model reading row")
+            row = corrected.get(record["act_id"])
+            if (
+                row is None
+                or record["act_id"] in models
+                or (record["act_key"], record["kind"]) != (row["act_key"], row["kind"])
+                or record["label"] != row["model_reading"]["label"]
+                or record["perlectio_ref"] != row["model_reading"]["perlectio_ref"]
+            ):
+                raise SchemaRefusal(
+                    f"{MODEL_READINGS_MEMBER} shows a model reading no corrected row names, or "
+                    "names it differently"
+                )
+            _verify_retained_references_bounded(record)
+            models[record["act_id"]] = verify_model_reading(row, record, MODEL_READINGS_MEMBER)
+        shown["jsonl"] = models
+    if "text-bundle" in formats.formats:
+        models = {}
+        for folder in sorted(
+            {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
+        ):
+            lines = _package_lines(root / _text_member_path(folder), "text bundle")
+            for act_id, _row, model in text_bundle_rows(lines):
+                if model is not None and models.setdefault(act_id, model) != model:
+                    raise SchemaRefusal("the text bundle shows one model reading differently")
+        shown["text-bundle"] = models
+    for name, models in shown.items():
+        if set(models) != set(corrected):
+            raise SchemaRefusal(
+                f"the {name} format does not show the model reading (original) beside exactly "
+                "the readings a person corrected"
+            )
+    return shown
+
+
+def _correction_views(
+    root: Path, formats: ArmariumFormats, sources: dict[str, Any]
+) -> list[tuple[str, dict[str, tuple[str, Any]]]]:
+    """Each selected literal format's delivered readings, acts and others, as `{id: (text, layer)}`."""
+    views = []
+    for name in _LITERAL_TEXT_FORMATS:
+        if name not in formats.formats:
+            continue
+        view = {
+            act_id: (record[0], record[2])
+            for act_id, record in _literal_projection(root, name).items()
+        }
+        if name == "jsonl":
+            for act_id, record in _other_jsonl_records(
+                root / OTHER_READINGS_MEMBER, sources["regions"]
+            ).items():
+                if record["category"] == ArmariumCategory.DELIVERED.value:
+                    view[act_id] = (record[CANONICAL_TEXT_FIELD], record["uncertainty"])
+        elif name == "text-bundle":
+            for act_id, record in _text_bundle_other_records(root, sources["pages"]).items():
+                view[act_id] = (record[1], record[4])
+        views.append((name, view))
+    return views
+
+
+def _verify_corrections(
+    root: Path,
+    formats: ArmariumFormats,
+    sources: dict[str, Any],
+    recorded: list[dict[str, Any]],
+) -> None:
+    """Every reading a person corrected is labelled, its decisions rebuilt from its text.
+
+    A delivered reading's provenance is a correction's exactly when an operator
+    row labels it "corrected by a person", and the aggregate basis names
+    exactly those readings. The provenance names the row's note, model reading
+    and edits; each literal format delivers the person's text with the fixed
+    no-doubt layer, and each edit the provenance names is rebuilt from that
+    text and note (`common.correction.edit_digests`) and must hash to the
+    decision and stored approval it names, so a text no edit names is refused.
+    No other delivered reading carries the correction's layer.
+    """
+    corrected = {row["act_id"]: row for row in recorded if row["label"] == CORRECTED_LABEL}
+    basis = sources["aggregate_basis"].get(_REVIEW_DECISIONS_BASIS_FIELD)
+    named = basis.get("corrections") if isinstance(basis, dict) else []
+    if named != sorted(row["act_key"] for row in corrected.values()):
+        raise SchemaRefusal(
+            "the aggregate basis does not name exactly the readings the package labels "
+            "corrected by a person"
+        )
+    citations = {
+        **_act_citation_sources(sources),
+        **_act_citation_sources(sources, "other_citations"),
+    }
+    for act_id, citation in citations.items():
+        if is_correction(citation["provenance"]) != (act_id in corrected):
+            raise SchemaRefusal(
+                f"{citation['act_key']}'s provenance and its operator row disagree about whether "
+                "a person corrected it"
+            )
+    for act_id, row in corrected.items():
+        _require_correction_provenance(citations[act_id]["provenance"], row)
+    for name, view in _correction_views(root, formats, sources):
+        for act_id, (literal, layer) in view.items():
+            if act_id not in corrected:
+                if isinstance(layer, dict) and layer.get("lectio_kind") == CORRECTED_LECTIO:
+                    raise SchemaRefusal(
+                        f"the {name} format carries a person's correction layer on a reading "
+                        "no operator row labels corrected"
+                    )
+                continue
+            row = corrected[act_id]
+            if layer != corrected_layer():
+                raise SchemaRefusal(
+                    f"the {name} format does not deliver {row['act_key']}, which a person "
+                    "corrected, with the correction's no-doubt layer"
+                )
+            for decision in citations[act_id]["provenance"]["decisions"]:
+                try:
+                    digests = edit_digests(decision, act_id=act_id, text=literal, note=row["note"])
+                except ContractError as error:
+                    raise SchemaRefusal(
+                        f"{row['act_key']}'s correction cannot be rebuilt as an edit"
+                    ) from error
+                if digests != (decision["decision_hash"], decision["approval_ref"]["sha256"]):
+                    raise SchemaRefusal(
+                        f"the {name} format delivers a text for {row['act_key']} that the edit "
+                        "its provenance names does not record"
+                    )
+
+
+def _require_correction_provenance(provenance: Any, row: dict[str, Any]) -> None:
+    """A corrected reading's provenance: the row's label, note, model reading and edits."""
+    edits = sorted(
+        (
+            {key: decision[key] for key in ("decision_hash", "approver", "timestamp", "reason")}
+            | {"approval_ref": decision["approval_ref"]}
+            for decision in row["decisions"]
+            if decision["decision"] == "edit"
+        ),
+        key=lambda decision: decision["decision_hash"],
+    )
+    decisions = provenance.get("decisions") if isinstance(provenance, dict) else None
+    if (
+        not isinstance(provenance, dict)
+        or set(provenance) != CORRECTION_PROVENANCE_FIELDS
+        or provenance["note"] != row["note"]
+        or provenance["model_reading"] != row["model_reading"]
+        or not isinstance(decisions, list)
+        or not all(
+            isinstance(decision, dict) and set(decision) == CORRECTION_DECISION_FIELDS
+            for decision in decisions
+        )
+        or [
+            {key: decision[key] for key in ("decision_hash", "approver", "timestamp", "reason")}
+            | {"approval_ref": decision["approval_ref"]}
+            for decision in decisions
+        ]
+        != edits
+    ):
+        raise SchemaRefusal(
+            f"{row['act_key']}'s provenance does not name the correction its operator row labels"
+        )
 
 
 def _operator_released_pages(
@@ -2462,18 +2699,23 @@ _OPTIONAL_BASIS_FIELDS: Final = frozenset({_REVIEW_DECISIONS_BASIS_FIELD, _SYSTE
 def review_aggregate_arguments(basis: Any) -> dict[str, Any]:
     """`run_aggregate`'s review arguments from a basis's `review_decisions`; none when absent.
 
-    `{clearances, page_holds}`: the `review_clearances` rows, and each page
-    still held after review as `{page, codes}`. `run_aggregate` checks the
-    rows themselves; a clearance or page hold only adds a reason, so a
-    package cannot read as complete by carrying one.
+    `{clearances, page_holds, corrections}`: the `review_clearances` rows,
+    each page still held after review as `{page, codes}`, and the key of each
+    reading a person corrected. `run_aggregate` checks the rows themselves; a
+    clearance or page hold only adds a reason, so a package cannot read as
+    complete by carrying one. A correction is no reason: the person's text is
+    the truth (`_verify_corrections` holds each to its labelled reading).
     """
     if basis is None:
         return {}
     if (
         not isinstance(basis, dict)
-        or set(basis) != {"clearances", "page_holds"}
+        or set(basis) != {"clearances", "page_holds", "corrections"}
         or not isinstance(basis["clearances"], list)
         or not isinstance(basis["page_holds"], list)
+        or not isinstance(basis["corrections"], list)
+        or not all(_is_nonempty_str(key) for key in basis["corrections"])
+        or basis["corrections"] != sorted(set(basis["corrections"]))
         or not all(
             isinstance(row, dict) and set(row) == {"page", "codes"} for row in basis["page_holds"]
         )
@@ -2859,8 +3101,12 @@ def _text_bundle_members(
     others: tuple[dict[str, Any], ...] = (),
     coniector_rows: tuple[dict[str, Any], ...] = (),
     operator_rows: tuple[dict[str, Any], ...] = (),
+    model_readings: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, bytes]:
     """Write one readable file for every cited source folder.
+
+    A reading an operator acted on carries its operator lines, and a corrected
+    one the model's reading beside the person's (`model_readings`, by id).
 
     A folder with only holds or refusals still gets a file, with no invented
     reading in it. A delivered other reading follows the acts of its folder in
@@ -2904,6 +3150,7 @@ def _text_bundle_members(
     notes = _join_notes(joins, act_keys)
     beneath = {anchor_act(row): row for row in coniector_rows if row["unit"] == "act"}
     released = {row["act_id"]: row for row in operator_rows}
+    models = model_readings or {}
     members: dict[str, bytes] = {}
     for folder in sorted(folders):
         records = grouped[folder]
@@ -2937,7 +3184,11 @@ def _text_bundle_members(
                     "display:",
                     json.dumps(render_display(act[CANONICAL_TEXT_FIELD]), ensure_ascii=False),
                     *notes.get(act["act_id"], []),
-                    *(lines_for(released[act["act_id"]]) if act["act_id"] in released else []),
+                    *(
+                        lines_for(released[act["act_id"]], models.get(act["act_id"]))
+                        if act["act_id"] in released
+                        else []
+                    ),
                     *(
                         reconstruction_lines(beneath[act["act_id"]])
                         if act["act_id"] in beneath
@@ -2953,7 +3204,9 @@ def _text_bundle_members(
         for other in sorted(
             other_groups[folder], key=lambda item: act_key_sort_key(item["act_key"])
         ):
-            lines.extend(_other_section(other, released.get(other["act_id"])))
+            lines.extend(
+                _other_section(other, released.get(other["act_id"]), models.get(other["act_id"]))
+            )
         members[_text_member_path(folder)] = "\n".join(lines).encode("utf-8")
     return members
 
@@ -2962,10 +3215,14 @@ _OTHER_SECTION_PREFIX: Final = "## OTHER "
 _OTHER_SECTION_SUFFIX: Final = " (not an act)"
 
 
-def _other_section(other: dict[str, Any], operator_row: dict[str, Any] | None = None) -> list[str]:
+def _other_section(
+    other: dict[str, Any],
+    operator_row: dict[str, Any] | None = None,
+    model: dict[str, Any] | None = None,
+) -> list[str]:
     """One delivered other reading, labelled as not an act, with its own field names.
 
-    A reading a person released carries its operator lines last.
+    A reading a person released or corrected carries its operator lines last.
     """
     literal = other[CANONICAL_TEXT_FIELD]
     lines = [
@@ -2987,7 +3244,7 @@ def _other_section(other: dict[str, Any], operator_row: dict[str, Any] | None = 
         "other_uncertainty:",
         json.dumps(other["uncertainty"], ensure_ascii=False, sort_keys=True),
         f"other_text_status: {other['text_status']}",
-        *(lines_for(operator_row) if operator_row is not None else []),
+        *(lines_for(operator_row, model) if operator_row is not None else []),
         "",
     ]
 
@@ -3051,7 +3308,7 @@ def _text_bundle_other_records(
             end = position + 6
             if end < len(block) and block[end].startswith(OPERATOR_LABEL_LINE):
                 # Its lines are the operator row's own (`_verify_operator_layer`).
-                end += OPERATOR_LINES
+                end = block_end(block, end)
             if _section_field(block, end, "") != "":
                 raise SchemaRefusal("a text-bundle OTHER section does not end where its fields do")
             if (
@@ -4524,6 +4781,11 @@ def _verify_exact_product_members(
     # (`_verify_operator_layer`).
     if "jsonl" in formats.formats and sources.get(OPERATOR_SOURCES_FIELD):
         expected.add(OPERATOR_MEMBER)
+        if any(
+            isinstance(row, dict) and row.get("label") == CORRECTED_LABEL
+            for row in sources[OPERATOR_SOURCES_FIELD]
+        ):
+            expected.add(MODEL_READINGS_MEMBER)
     expected.update(_embedded_member_paths(sources))
     if actual_names != expected:
         missing = sorted(expected - actual_names)

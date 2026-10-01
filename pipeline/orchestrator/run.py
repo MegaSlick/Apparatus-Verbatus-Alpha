@@ -874,7 +874,8 @@ def _record_stop(args: argparse.Namespace, exit_code: int, *, exported: bool) ->
 
     `exported` is true only when this invocation ran the Armarium and proved its
     sealed export; a stop before it is false whatever export the tree already
-    holds. A record that cannot be written is said on stderr and leaves the run
+    holds. `systemic` is the systemic alarm line this invocation printed, at a
+    held Recensor or at an advance past it, or null. A record that cannot be written is said on stderr and leaves the run
     as it is: its caller reads no record as no export.
     """
     record = getattr(args, "stop_record", None)
@@ -885,6 +886,9 @@ def _record_stop(args: argparse.Namespace, exit_code: int, *, exported: bool) ->
         "run_id": args.run_id,
         "exit_code": exit_code,
         "exported": exported,
+        # The systemic alarm line this invocation printed (`report_systemic_share`),
+        # so a caller that reads no transcript can still say it.
+        "systemic": getattr(args, "systemic_line", None),
     }
     try:
         atomic_create(Path(record), json.dumps(payload, sort_keys=True).encode("utf-8"))
@@ -1047,8 +1051,8 @@ def report_systemic_share(args) -> None:
     """Print the systemic alarm line when the run's held share is above its sealed limit.
 
     The line (`common.review_policy.alarm_line`) is what the operator's
-    notification carries. A run that sealed no review policy says the share
-    was not checked.
+    notification carries, and the stop record names it (`_record_stop`). A run
+    that sealed no review policy says the share was not checked.
     """
     tree = _run_tree(args)
     share = held_share(tree, run_sealed_config_digests(tree.read_run()), args.review_config)
@@ -1058,7 +1062,8 @@ def report_systemic_share(args) -> None:
             "is systemic was not checked"
         )
     elif share["systemic"]:
-        print(alarm_line(args.run_id, share["held_pages"], share["pages"], share))
+        args.systemic_line = alarm_line(args.run_id, share["held_pages"], share["pages"], share)
+        print(args.systemic_line)
 
 
 def report_held_recensor(args, held: list[dict], ran_after_hold: list[str]) -> None:

@@ -34,6 +34,25 @@ def is_trailing_offset(text: str, offset: int) -> bool:
 # How the one reading was made: a whole page read with the witnesses beside it and
 # no prior draft, so its self-revisions were not measured (`None`).
 PAGE_READ_LECTIO: Final = "page-read"
+# A reading a person corrected: their text is the truth, so it carries no machine
+# doubt layer, only this one fixed record saying so (`corrected_layer`).
+CORRECTED_LECTIO: Final = "person-corrected"
+CORRECTED_PROBLEM: Final = (
+    "corrected by a person: the person's text is taken as the truth and carries no "
+    "machine doubt layer"
+)
+
+
+def corrected_layer() -> dict[str, Any]:
+    """The uncertainty layer of a reading a person corrected: no spans, no gaps, said so."""
+    return {
+        "uncertain_spans": [],
+        "gaps": [],
+        "self_revisions": None,
+        "assessment": {"state": "not-assessed", "problem": CORRECTED_PROBLEM},
+        "lectio_kind": CORRECTED_LECTIO,
+    }
+
 
 _GAP_EVIDENCE_FIELDS = frozenset({"chair", "testimonium_id", "reference", "variant"})
 
@@ -101,6 +120,13 @@ def validate(layer: Any, text: Any) -> dict[str, Any]:
     uncertain = layer["uncertain_spans"]
     gaps = layer["gaps"]
     validate_assessment_record(layer["assessment"])
+    if layer["lectio_kind"] == CORRECTED_LECTIO:
+        if layer != corrected_layer():
+            raise SchemaRefusal(
+                "a person's correction carries no machine doubt layer, only the fixed record "
+                "that says so"
+            )
+        return layer
     if layer["lectio_kind"] != PAGE_READ_LECTIO:
         raise SchemaRefusal("canonical uncertainty names an unknown lectio kind")
     if layer["self_revisions"] is not None:

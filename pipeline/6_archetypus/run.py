@@ -18,8 +18,11 @@ never about blankness.
 
 **Write-once is enforced a layer down**, by the run tree refusing different
 bytes under one identity; this stage adds only that it never tries -- a
-revised reading is a new run over the same Exemplar, and human correction
-lives *above* this record as a different kind of thing.
+revised reading is a new run over the same Exemplar. A person's correction (a
+current `edit` the Recensor applied) is established here as the reading,
+labelled "corrected by a person" in its provenance, which names the model's
+reading it corrects; that reading stays in the run tree as read
+(`common/correction.py`).
 
 **A held act reaches no Archetypus record at all**, and that absence is the
 evidence the Armarium reconciles against: an export showing a held act as
@@ -59,12 +62,18 @@ from common.contracts.stages import (  # noqa: E402
     PERLECTOR,
     RECENSOR,
 )
-from common.contracts.uncertainty import from_page_perlectio  # noqa: E402
+from common.contracts.uncertainty import corrected_layer, from_page_perlectio  # noqa: E402
 from common.contracts.uncertainty import validate as validate_uncertainty
+from common.correction import (  # noqa: E402
+    correction_provenance,
+    edited_text,
+    stored_edits,
+)
 from common.exemplar_boundary import verify_reading_region_lineage  # noqa: E402
 from common.page_review import (  # noqa: E402
     applied_decision_hashes,
     current_page_reviews,
+    operator_correction,
     reading_holds_allowed,
     require_current_review_decisions,
     require_establishable,
@@ -403,6 +412,7 @@ def establish_from_accepted_page_reading(
     review_ref: dict[str, str],
     page_testimonia: list[dict],
     applied: frozenset[str] = frozenset(),
+    approvals: dict | None = None,
 ) -> tuple[dict, list[dict[str, str]]]:
     """The page path's one constructor: a `reading_acts` row and its accepted review.
 
@@ -411,7 +421,11 @@ def establish_from_accepted_page_reading(
     record applied (`page_review.applied_decision_hashes`). A reading its
     Perlectio holds is established only when those decisions override every
     hold it carries (`page_review.operator_override`); what is established is
-    still the reading exactly as read.
+    the reading exactly as read, unless a current edit corrects it
+    (`page_review.operator_correction`): then the person's text, read from the
+    stored edit in `approvals` (the run's stored decisions by digest), is
+    established with no machine doubt layer and the correction's provenance
+    (`common.correction`), and the edit's stored approval is an input.
 
     The reading is the `perlectio.v3` the row and the review both name; its one
     region is the `act-region` that reading names, proven from the Exemplar by
@@ -438,6 +452,7 @@ def establish_from_accepted_page_reading(
             "reading a Recensor accepted"
         )
     override = require_establishable(row, review, applied)
+    corrections = operator_correction(row, review, applied)
     reading = context.tree.read_artifact_reference(
         reading_ref, stage=PERLECTOR, kind="perlectio", subject_id=act_id
     )
@@ -480,12 +495,25 @@ def establish_from_accepted_page_reading(
     # Custody: every witness the feed showed is its chair's current page
     # Testimonium, and a feed that showed none made the reading a Lectio nuda.
     shown_page_witnesses(context, reading, page_testimonia, f"the page reading of {row['act_key']}")
-    text = payload.get("text")
-    if not isinstance(text, str):
+    model_text = payload.get("text")
+    if not isinstance(model_text, str):
         raise SchemaRefusal("the accepted page reading has no string text")
     # A page reading records its doubt as spans and gaps; it has no annotation layer.
     annotations: list[dict] = []
-    uncertainty = from_page_perlectio(payload)
+    model_uncertainty = from_page_perlectio(payload)
+    edits: list = []
+    if corrections is None:
+        text, uncertainty, provenance = model_text, model_uncertainty, payload.get("provenance")
+    else:
+        edits = stored_edits(corrections, approvals or {}, row["act_key"])
+        text, uncertainty = edited_text(edits), corrected_layer()
+        provenance = correction_provenance(
+            edits,
+            perlectio_ref=reading_ref,
+            model_text=model_text,
+            model_text_status=derive_record_text_status(model_text, annotations, model_uncertainty),
+            model_provenance=payload.get("provenance"),
+        )
     text_status = derive_record_text_status(text, annotations, uncertainty)
     # No page review carries a blank proof, so a record's evidence_ref is null.
     evidence_ref = None
@@ -506,7 +534,7 @@ def establish_from_accepted_page_reading(
         "status": "established",
         "text_status": text_status,
         "regions": regions,
-        "provenance": payload.get("provenance"),
+        "provenance": provenance,
         "annotations": annotations,
         "uncertainty": uncertainty,
         "evidence_ref": evidence_ref,
@@ -516,7 +544,11 @@ def establish_from_accepted_page_reading(
     }
     record["self_hash"] = self_hash(record)
     validate_record(record)
-    return record, _direct_inputs([review_ref, reading_ref, region_ref], crop_references)
+    return record, _direct_inputs(
+        [review_ref, reading_ref, region_ref],
+        crop_references,
+        [reference.to_record() for reference, _record in edits],
+    )
 
 
 def accepted_act_ids(context, rows: list[dict] | None = None) -> set[str]:
@@ -670,6 +702,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # and one that holds nothing no person has passed.
     applied = applied_decision_hashes(require_current_review_decisions(context))
     require_recensor_passed(context.tree)
+    approvals = {
+        reference.sha256: (reference, record)
+        for reference, record in context.tree.review_decision_records()
+    }
     rows = reviewed_rows(reading_acts(context))
     reviews = current_page_reviews(context, rows)
     testimonia = current_page_testimonia(context)
@@ -693,6 +729,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             review_ref=review_ref,
             page_testimonia=testimonia.get(row["page_id"], []),
             applied=applied,
+            approvals=approvals,
         )
         established.append((row, record, inputs))
     for row, record, inputs in established:

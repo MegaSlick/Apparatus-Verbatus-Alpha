@@ -15,7 +15,8 @@ Two schemas share this family. `approval-record.v0` carries every action except
 operator review decision about one held unit or page of a run: action `review`, a
 closed `review` block naming the run, scope, page, decision and finding, and a
 `target_version_hash` that is the review's basis digest
-(`common.review_decisions`). Readers accept both. The Recensor applies every v1
+(`common.review_decisions`). An `edit` decision's block also carries the
+person's corrected `text` and an optional `note`. Readers accept both. The Recensor applies every v1
 decision a run stores (`pipeline/5_recensor/CONTRACT.md`, "Operator review
 decisions"). One is built with `build_review_decision_record` and stored with
 `RunTree.write_approval_record`; `verbatus decide` (`operations/operator/decide.py`)
@@ -29,7 +30,14 @@ of a human act at a moment — so the moment is the point.
 
 from typing import Any, Final
 
-from .canonical import is_sha256, self_hash, self_hash_refusal, verify_self_hash
+from .canonical import (
+    canonical_bytes,
+    digest_bytes,
+    is_sha256,
+    self_hash,
+    self_hash_refusal,
+    verify_self_hash,
+)
 from .errors import ApprovalRefusal
 
 # The only approver, recorded as a role rather than a person's name, and as a value
@@ -51,11 +59,16 @@ REVIEW_ACTION: Final = "review"
 # A review decision is about one unit (an act or other reading of a page) or one page.
 UNIT_SCOPE: Final = "unit"
 PAGE_SCOPE: Final = "page"
-UNIT_DECISIONS: Final = ("release", "exclude", "hold", "re-ask")
+UNIT_DECISIONS: Final = ("release", "exclude", "hold", "re-ask", "edit")
 PAGE_DECISIONS: Final = ("no-missed-act", "missed-act", "re-ask", "re-shoot", "hold")
 REVIEW_DECISIONS: Final = {UNIT_SCOPE: UNIT_DECISIONS, PAGE_SCOPE: PAGE_DECISIONS}
-# What a `hold` names. Correcting text, splitting and merging are findings, never
-# decisions: the unit stays held and nothing is filed as gold.
+# A person's correction of a held reading: the block adds the corrected text and
+# an optional free-text note, which travel with it into the export.
+EDIT_DECISION: Final = "edit"
+EDIT_FIELDS: Final = frozenset({"text", "note"})
+# What a `hold` names. Splitting and merging are findings, never decisions: the
+# unit stays held and nothing is filed as gold. A misread a person does not
+# correct with an `edit` is a `text-misread` finding.
 FINDINGS: Final = (
     "text-misread",
     "split-needed",
@@ -65,15 +78,19 @@ FINDINGS: Final = (
     "other",
 )
 REVIEW_FIELDS: Final = frozenset({"run_id", "scope", "page_id", "decision", "finding"})
+EDIT_REVIEW_FIELDS: Final = REVIEW_FIELDS | EDIT_FIELDS
 
 # Bounds make a planted object a named refusal, not an unbounded allocation.  Together
-# they keep the largest valid record, fully escaped, below the Perlector's
-# `MAX_SAMPLING_APPROVAL_RECEIPT_BYTES` read bound, so no valid approval is unreadable
-# there (`pipeline/4_perlector/test_sampling_approval_attacks.py` pins it).
+# they keep the largest valid record, fully escaped, far below the run tree's record
+# read bound (`common.runtree.store.MAX_RECORD_READ_BYTES`), so no valid approval is
+# unreadable there.
 MAX_APPROVAL_SUBJECTS: Final = 384
 MAX_APPROVAL_SUBJECT_BYTES: Final = 1024
 MAX_APPROVAL_REASON_BYTES: Final = 256 * 1024
 MAX_APPROVAL_TIMESTAMP_BYTES: Final = 256
+# An edit's corrected text and its note, bounded like the reason.
+MAX_APPROVAL_TEXT_BYTES: Final = 256 * 1024
+MAX_APPROVAL_NOTE_BYTES: Final = 256 * 1024
 
 # Ingress status must be part of self-hashed run authority. An absent field in a
 # mutable door artifact is never proof that the run began as a fixture.
@@ -221,20 +238,27 @@ def build_review_decision_record(
     basis_digest: str,
     reason: str,
     timestamp: str,
+    text: str | None = None,
+    note: str | None = None,
 ) -> dict[str, Any]:
     """Build one operator review decision as an `approval-record.v1`, self-hash included.
 
     `subject_id` is the unit's act id for a unit decision and the page id for a
     page decision; `basis_digest` is the review basis it was made against and
-    becomes `target_version_hash`.
+    becomes `target_version_hash`. An `edit` names the corrected `text` and may
+    carry a `note`; no other decision names either.
     """
-    review = {
+    review: dict[str, Any] = {
         "run_id": run_id,
         "scope": scope,
         "page_id": page_id,
         "decision": decision,
         "finding": finding,
     }
+    if decision == EDIT_DECISION:
+        review.update({"text": text, "note": note})
+    elif text is not None or note is not None:
+        raise ApprovalRefusal(f"only an edit names a text or a note; a {decision} names neither")
     _require_review_block(review, [subject_id])
     _require_common_fields([subject_id], reason, basis_digest, timestamp)
     record: dict[str, Any] = {
@@ -251,11 +275,25 @@ def build_review_decision_record(
     return record
 
 
+def review_decision_digests(**fields: Any) -> tuple[str, str]:
+    """The self-hash and stored digest of the review decision these fields describe.
+
+    A reader that holds a decision's fields but not its stored bytes (a clean
+    machine checking an export) recomputes what the decision it names must hash
+    to; it returns digests, never a record, so nothing outside the writers holds
+    an approval it could store. Fields as `build_review_decision_record` takes.
+    """
+    record = build_review_decision_record(**fields)
+    return record["self_hash"], digest_bytes(canonical_bytes(record))
+
+
 def _require_review_block(review: Any, subjects: Any) -> None:
     """Refuse a review block that is not closed, or that its scope does not allow."""
-    if not isinstance(review, dict) or set(review) != REVIEW_FIELDS:
+    edit = isinstance(review, dict) and review.get("decision") == EDIT_DECISION
+    fields = EDIT_REVIEW_FIELDS if edit else REVIEW_FIELDS
+    if not isinstance(review, dict) or set(review) != fields:
         raise ApprovalRefusal(
-            f"a review decision's review block must hold exactly {sorted(REVIEW_FIELDS)}"
+            f"a review decision's review block must hold exactly {sorted(fields)}"
         )
     for field in ("run_id", "page_id"):
         if not _bounded_text(review[field], MAX_APPROVAL_SUBJECT_BYTES):
@@ -280,6 +318,19 @@ def _require_review_block(review: Any, subjects: Any) -> None:
             )
     elif finding is not None:
         raise ApprovalRefusal(f"only a hold names a finding; a {decision} names none")
+    if edit:
+        if not _bounded_text(review["text"], MAX_APPROVAL_TEXT_BYTES):
+            raise ApprovalRefusal(
+                "an edit's text must be non-blank UTF-8 text no larger than "
+                f"{MAX_APPROVAL_TEXT_BYTES} bytes; it is the reading a person establishes"
+            )
+        if review["note"] is not None and not _bounded_text(
+            review["note"], MAX_APPROVAL_NOTE_BYTES
+        ):
+            raise ApprovalRefusal(
+                "an edit's note is absent (null) or non-blank UTF-8 text no larger than "
+                f"{MAX_APPROVAL_NOTE_BYTES} bytes"
+            )
     if type(subjects) is not list or len(subjects) != 1:
         raise ApprovalRefusal("a review decision names exactly one subject")
     if scope == PAGE_SCOPE and subjects[0] != review["page_id"]:

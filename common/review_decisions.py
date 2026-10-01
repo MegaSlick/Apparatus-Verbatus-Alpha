@@ -51,8 +51,9 @@ The API:
   payload (a unit no decision names keeps the machine's, byte for byte), each
   page's remaining holds (`held_pages`), the applied, stale and conflicting
   decisions, a `decisions_digest` over the set it was given, the `clearances`
-  the run aggregate names (`aggregate_clearances`), and the `requests` for a
-  re-ask or re-shoot the driver acts on. A stale decision is kept inside the
+  the run aggregate names (`aggregate_clearances`), the `corrections` a
+  person's `edit` made (never a reason in the aggregate: the person's text is
+  the truth), and the `requests` for a re-ask or re-shoot the driver acts on. A stale decision is kept inside the
   review of every unit it concerns; one whose page is gone is returned in
   `unkept` for the caller to record. Disagreeing current decisions about one
   subject are kept as conflicting and hold it; none is applied.
@@ -69,13 +70,16 @@ recorded after a missed act stales the missed act without losing the hold it
 raised. A re-ask or re-shoot is not carried: the re-read it asks for changes
 the basis by design, and the machine's own holds on the new reading stand.
 
-Decisions: a unit is released (its own holds cleared), excluded as not an act,
-held with a finding, or re-asked; an excluded unit's page keeps its page
-holds, and a page whose every act is excluded is held as one with no act. A
-page is found to have no missed act (its page-scope holds cleared), to have a
-missed act, re-asked, re-shot, or held with a finding. Correcting text,
-splitting, merging and clearing a continuation link are not decisions; each is
-a `hold` finding and the unit stays held.
+Decisions: a unit is released (its own holds cleared), corrected by a
+person's `edit` (its own holds cleared, and the person's text established as
+its reading), excluded as not an act, held with a finding, or re-asked; an
+excluded unit's page keeps its page holds, and a page whose every act is
+excluded is held as one with no act. Only a held unit is edited, and current
+edits of one unit agree only when they name the same text and note. A page is
+found to have no missed act (its page-scope holds cleared), to have a missed
+act, re-asked, re-shot, or held with a finding. Splitting, merging and clearing
+a continuation link are not decisions; each is a `hold` finding and the unit
+stays held.
 """
 
 from __future__ import annotations
@@ -85,6 +89,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Final
 
 from common.contracts.approval import (
+    EDIT_DECISION,
     PAGE_SCOPE,
     REVIEW_ACTION,
     UNIT_SCOPE,
@@ -154,9 +159,12 @@ ADDED_CODES: Final = {
 # The code a unit keeps when decisions would release a reading the export cannot
 # carry (`common.page_review.override_refusal`): it stays held, and says why.
 READING_HELD: Final = "review-reading-held"
-CLEARING: Final = frozenset({(UNIT_SCOPE, "release"), (UNIT_SCOPE, "exclude")}) | {
-    (PAGE_SCOPE, "no-missed-act")
-}
+CLEARING: Final = frozenset(
+    {(UNIT_SCOPE, "release"), (UNIT_SCOPE, "exclude"), (UNIT_SCOPE, EDIT_DECISION)}
+) | {(PAGE_SCOPE, "no-missed-act")}
+# What an edit summary adds: the digest of the text and note it names, which
+# current edits of one unit must share to agree.
+CORRECTION_FIELD: Final = "correction_digest"
 REQUESTS: Final = frozenset({"re-ask", "re-shoot"})
 # The hold code a stale holding decision carries onto its subject, by scope.
 CARRIED_CODES: Final = {
@@ -444,6 +452,8 @@ def review_decision(record: Any, basis: Mapping[str, Any]) -> dict[str, Any]:
         "state": CURRENT,
         "stale_because": None,
     }
+    if review["decision"] == EDIT_DECISION:
+        summary[CORRECTION_FIELD] = correction_digest(review)
     found = (basis["units"] if scope == UNIT_SCOPE else basis["pages"]).get(subject)
     if found is None:
         return {**summary, "state": STALE, "stale_because": SUBJECT_ABSENT}
@@ -453,6 +463,11 @@ def review_decision(record: Any, basis: Mapping[str, Any]) -> dict[str, Any]:
         return {**summary, "state": STALE, "stale_because": BASIS_CHANGED}
     _require_allowed(summary, found)
     return summary
+
+
+def correction_digest(review: Mapping[str, Any]) -> str:
+    """The digest of what an edit says: its corrected text and its note."""
+    return digest_of({"text": review["text"], "note": review["note"]})
 
 
 def _require_allowed(summary: Mapping[str, Any], found: Mapping[str, Any]) -> None:
@@ -465,6 +480,8 @@ def _require_allowed(summary: Mapping[str, Any], found: Mapping[str, Any]) -> No
             )
         if summary["decision"] == "release" and not found["unit_codes"]:
             raise ApprovalRefusal(f"a {what}: the unit has no hold of its own to release")
+        if summary["decision"] == EDIT_DECISION and found["outcome"] != HELD:
+            raise ApprovalRefusal(f"a {what}: only a held reading is corrected by a person")
     elif summary["decision"] == "no-missed-act":
         if PAGE_UNREAD_HOLD in found["page_codes"]:
             raise ApprovalRefusal(
@@ -517,6 +534,7 @@ def apply_decisions(derived: Mapping[str, Any], decisions: Sequence[Any]) -> dic
         "carried": carried,
         "unkept": [summary for summary in stale if summary["page_id"] not in basis["pages"]],
         "clearances": _clearances(basis, units, pages, applied),
+        "corrections": _corrections(basis, units, applied),
         "requests": _requests(basis, applied),
     }
 
@@ -536,13 +554,19 @@ def _summary_key(summary: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _current_kind_by_subject(summaries: Iterable[dict[str, Any]]) -> dict[tuple[str, str], str]:
-    """The one decision each subject's current decisions make, or `conflict` when they differ."""
-    kinds: dict[tuple[str, str], set[str]] = {}
+    """The one decision each subject's current decisions make, or `conflict` when they differ.
+
+    Edits differ when they name another text or note, so two corrections that
+    say different things are never chosen between.
+    """
+    kinds: dict[tuple[str, str], set[tuple[str, str | None]]] = {}
     for summary in summaries:
         if summary["state"] == CURRENT:
             key = (summary["scope"], summary["subject_id"])
-            kinds.setdefault(key, set()).add(summary["decision"])
-    return {key: next(iter(found)) if len(found) == 1 else CONFLICT for key, found in kinds.items()}
+            kinds.setdefault(key, set()).add((summary["decision"], summary.get(CORRECTION_FIELD)))
+    return {
+        key: next(iter(found))[0] if len(found) == 1 else CONFLICT for key, found in kinds.items()
+    }
 
 
 def _with_conflict(summary: dict[str, Any], kinds: Mapping[tuple[str, str], str]) -> dict[str, Any]:
@@ -718,6 +742,11 @@ def _reason(
     parts = []
     if kind == "exclude":
         parts.append("operator review excluded it as not an act")
+    elif kind == EDIT_DECISION:
+        parts.append(
+            "operator review corrected its text (a person's edit)"
+            + (f", clearing its own holds ({', '.join(cleared_unit)})" if cleared_unit else "")
+        )
     elif cleared_unit:
         parts.append(f"operator review released its own holds ({', '.join(cleared_unit)})")
     if cleared_page:
@@ -761,11 +790,15 @@ def _clearances(
     pages: Mapping[str, Mapping[str, Any]],
     applied: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Each subject a clearing decision cleared, with the codes it cleared."""
+    """Each subject a clearing decision cleared, with the codes it cleared.
+
+    A person's edit is not among them: it establishes the person's text as the
+    truth, so it is a correction (`_corrections`), not a cleared machine check.
+    """
     rows: dict[tuple[str, str], dict[str, Any]] = {}
     for summary in applied:
         scope, subject = summary["scope"], summary["subject_id"]
-        if (scope, summary["decision"]) not in CLEARING:
+        if (scope, summary["decision"]) not in CLEARING or summary["decision"] == EDIT_DECISION:
             continue
         row = rows.get((scope, subject))
         if row is None:
@@ -786,6 +819,33 @@ def _clearances(
                 "cleared": list(cleared),
                 "decision_hashes": [],
             }
+        row["decision_hashes"].append(summary["decision_hash"])
+    return [rows[key] for key in sorted(rows)]
+
+
+def _corrections(
+    basis: Mapping[str, Any],
+    units: Mapping[str, Mapping[str, Any]],
+    applied: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Each unit a person's current edit corrected, with the unit codes it cleared."""
+    rows: dict[str, dict[str, Any]] = {}
+    for summary in applied:
+        if summary["decision"] != EDIT_DECISION:
+            continue
+        subject = summary["subject_id"]
+        entry = basis["units"][subject]
+        row = rows.setdefault(
+            subject,
+            {
+                "subject_id": subject,
+                "act_key": entry["act_key"],
+                "page_id": summary["page_id"],
+                "page_ordinal": entry["page_ordinal"],
+                "cleared": list(units[subject]["payload"][REVIEW_FIELD]["cleared"]["unit"]),
+                "decision_hashes": [],
+            },
+        )
         row["decision_hashes"].append(summary["decision_hash"])
     return [rows[key] for key in sorted(rows)]
 

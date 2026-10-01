@@ -178,6 +178,19 @@ def test_a_layer_of_another_lectio_kind_is_refused() -> None:
         validate(dict(_EMPTY, lectio_kind="primed-with-prior"), "Maria")
 
 
+def test_a_persons_correction_carries_only_the_fixed_no_doubt_record() -> None:
+    layer = canonical_uncertainty.corrected_layer()
+    assert validate(layer, "Jean de la Roche") == layer
+    assert layer["assessment"] == {
+        "state": "not-assessed",
+        "problem": canonical_uncertainty.CORRECTED_PROBLEM,
+    }
+    with pytest.raises(SchemaRefusal, match="carries no machine doubt layer"):
+        validate(dict(layer, uncertain_spans=[{"start": 0, "end": 1}]), "Jean")
+    with pytest.raises(SchemaRefusal, match="carries no machine doubt layer"):
+        validate(dict(layer, assessment=_ASSESSED), "Jean")
+
+
 def test_the_round_trip_asks_the_shape_question_before_its_own() -> None:
     """Callers rely on this to avoid validating the same arguments twice."""
     with pytest.raises(SchemaRefusal, match="closed canonical schema"):

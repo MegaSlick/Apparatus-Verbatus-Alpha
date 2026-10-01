@@ -6,6 +6,11 @@ who made it (a model chair, or a person), its departures and its findings,
 which are flags and change nothing. One that was not made says why, and the
 diplomatic reading above it stands as delivered.
 
+The Coniector reconstructs from the model's reading. Beneath an act a person
+corrected, the row is held to the model's reading, shown above it as "model
+reading (original)", and says so in `made_from`, so it never reads as a
+reconstruction of the person's text.
+
 `coniector.jsonl` carries one row per shown reconstruction when the JSONL
 format is selected; the text bundle carries the same beneath each act, and each
 join as its own `## JOIN RECONSTRUCTION ... (not an act)` section. A clean machine
@@ -21,6 +26,7 @@ from typing import Any, Final
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
+from common.correction import ORIGINAL_LABEL
 from common.reading_annotations import read_doubt_marks
 from common.reconstruction_records import LABEL, MAKER_FIELDS, MAKER_MODEL, MAKER_PERSON
 
@@ -46,6 +52,8 @@ ROW_FIELDS: Final = frozenset(
         "record_ref",
     }
 )
+# Present only on a row with a piece a person corrected: what it was made from.
+MADE_FROM_FIELD: Final = "made_from"
 JOIN_SECTION_PREFIX: Final = "## JOIN RECONSTRUCTION "
 ROW_LINE: Final = "reconstruction_row:"
 JOIN_SECTION_SUFFIX: Final = " (not an act)"
@@ -65,13 +73,16 @@ def export_rows(
     diplomatic_raw: Mapping[str, str],
     delivered_texts: Mapping[str, str],
     record_refs: Mapping[str, Mapping[str, str]],
+    corrected: frozenset[str] | set[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """The rows shown: each verified Coniector record whose acts are all delivered.
 
     `diplomatic_raw` is each act's diplomatic reading with its doubt marks, as the
-    Coniector was shown it; `delivered_texts` each delivered act's literal; a
-    record's pieces must be those literals exactly, or the reconstruction would
-    stand beneath a text other than the one delivered.
+    Coniector was shown it; `delivered_texts` each delivered act's model reading:
+    its literal, or for an act in `corrected` the model's reading a person
+    corrected. A record's pieces must be those texts exactly, or the
+    reconstruction would stand beneath a reading other than the one it was
+    made from; a row with a corrected piece names `made_from`.
     """
     rows = []
     for record in records:
@@ -84,8 +95,12 @@ def export_rows(
                     f"the reconstruction beneath {act_id} was made over a reading other than the "
                     "one delivered"
                 )
+        made_from = (
+            {MADE_FROM_FIELD: ORIGINAL_LABEL} if any(a in corrected for a in act_ids) else {}
+        )
         rows.append(
             {
+                **made_from,
                 "schema": ROW_SCHEMA,
                 "unit": record["unit"],
                 "act_ids": act_ids,
@@ -130,6 +145,7 @@ def reconstruction_lines(row: Mapping[str, Any]) -> list[str]:
     """
     lines = [
         f"reconstruction_label: {LABEL}",
+        *([f"reconstruction_made_from: {row[MADE_FROM_FIELD]}"] if MADE_FROM_FIELD in row else []),
         "reconstruction_maker:",
         _json(maker_text(row["maker"])),
     ]
@@ -213,7 +229,12 @@ def _objects(value: Any, required: frozenset[str], optional: frozenset[str] = fr
 
 def _require_shape(row: Any) -> dict[str, Any]:
     """Refuse a row that is not the closed shape, before anything reads a field of it."""
-    if not isinstance(row, dict) or set(row) != ROW_FIELDS or row["schema"] != ROW_SCHEMA:
+    if (
+        not isinstance(row, dict)
+        or set(row) - {MADE_FROM_FIELD} != ROW_FIELDS
+        or row["schema"] != ROW_SCHEMA
+        or row.get(MADE_FROM_FIELD, ORIGINAL_LABEL) != ORIGINAL_LABEL
+    ):
         raise SchemaRefusal(f"a reconstruction row is not a {ROW_SCHEMA} row")
     if row["label"] != LABEL or row["unit"] not in ("act", "join"):
         raise SchemaRefusal("a reconstruction row is not labelled as a reconstruction")
@@ -260,13 +281,31 @@ def _require_shape(row: Any) -> dict[str, Any]:
     return row
 
 
-def verify_row(row: Any, literals: Mapping[str, tuple], keys: Mapping[str, str]) -> dict[str, Any]:
+def verify_row(
+    row: Any,
+    literals: Mapping[str, tuple],
+    keys: Mapping[str, str],
+    corrected: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """One reconstruction row, recomputed.
 
     `literals` maps each delivered act to its literal and `keys` each act to its
-    key, both read from the same format the row came from.
+    key, both read from the same format the row came from; `corrected` maps
+    each act a person corrected to the model's reading that format shows beside
+    it, which the row's pieces are held to instead, and a row names
+    `made_from` exactly when it has such a piece.
     """
     row = _require_shape(row)
+    corrected = corrected or {}
+    if (MADE_FROM_FIELD in row) != any(act_id in corrected for act_id in row["act_ids"]):
+        raise SchemaRefusal(
+            "a reconstruction row does not say it was made from the model's reading exactly "
+            "when a piece of it is a reading a person corrected"
+        )
+    literals = {
+        act_id: ((corrected[act_id],) if act_id in corrected else literal)
+        for act_id, literal in literals.items()
+    }
     for act_id, key, piece in zip(
         row["act_ids"], row["act_keys"], row["diplomatic_raw_pieces"], strict=True
     ):
