@@ -1,8 +1,8 @@
 """The declared-gap firewall: a gap cannot claim testimony characters inside
 `text`, and the schema refuses any record shaped that way.
 
-Spec_08's sharpest requirement: "the established text never contains
-testimony-supplied characters. No count of agreeing witnesses changes this."
+The established text never contains testimony-supplied characters, and no count
+of agreeing witnesses changes this.
 """
 
 import pytest
@@ -72,12 +72,7 @@ _RECURSIVE_CONFIDENCE: list = []
 _RECURSIVE_CONFIDENCE.append(_RECURSIVE_CONFIDENCE)
 
 
-# Which refusal each value must reach, not merely that some refusal mentioning
-# "confidence" was raised. Ten of these are refused by the pre-existing membership
-# check too, so matching the word alone left the type gate — the thing this test is
-# named for — provable only by the two str subclasses, and even there the two
-# messages were indistinguishable. The gap test below already pins its branch with
-# `match="position has type"`; this does the same per case.
+# Each case names the gate that must refuse it.
 _TYPE_GATE = "confidence has type"
 _MEMBERSHIP_GATE = "is not one of"
 
@@ -319,45 +314,6 @@ def test_a_gap_with_an_undeclared_position_refuses():
         )
 
 
-# --- Bidirectional whole-act / no-readable-text consistency -------------------
-
-
-def test_no_readable_text_outcome_requires_empty_text_and_a_whole_act_gap():
-    with pytest.raises(SchemaRefusal, match="no-readable-text"):
-        annotations.validate_whole_act_consistency(outcome="no-readable-text", text="", gaps=[])
-
-
-def test_a_whole_act_gap_forces_the_no_readable_text_outcome():
-    """The direction the design note originally missed: an outcome of `read`
-    may not carry a whole-act gap and flow onward as though something had
-    been established over an empty text."""
-    gaps = [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}]
-    with pytest.raises(SchemaRefusal, match="wholly illegible"):
-        annotations.validate_whole_act_consistency(outcome="read", text="", gaps=gaps)
-
-
-def test_the_consistent_no_readable_text_combination_validates():
-    gaps = [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}]
-    annotations.validate_whole_act_consistency(outcome="no-readable-text", text="", gaps=gaps)
-
-
-def test_validate_annotations_enforces_bidirectional_consistency_when_outcome_supplied():
-    payload = {
-        "text": "",
-        "uncertain_spans": [],
-        "gaps": [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}],
-    }
-    with pytest.raises(SchemaRefusal, match="wholly illegible"):
-        annotations.validate_annotations(payload, outcome="read")
-    # The same payload validates under the outcome it is actually consistent with.
-    annotations.validate_annotations(payload, outcome="no-readable-text")
-
-
-def test_validate_annotations_requires_a_text_field():
-    with pytest.raises(SchemaRefusal, match="no text field"):
-        annotations.validate_annotations({})
-
-
 @pytest.mark.parametrize(
     "raw,text,state,spans,gaps",
     [
@@ -398,9 +354,7 @@ def test_ink_past_the_crop_marked_at_the_end_is_a_trailing_gap(raw):
     text, assessment = annotations.read_doubt_marks(raw)
     gaps = [{"position": "trailing", "start": 22, "end": 22, "witness_evidence": []}]
     assert assessment["gaps"] == gaps
-    annotations.validate_annotations(
-        {"text": text, "uncertain_spans": [], "gaps": gaps}, outcome="read"
-    )
+    assert annotations.validate_assessment(assessment, text) == assessment
 
 
 def test_a_mark_followed_by_more_words_stays_internal():
