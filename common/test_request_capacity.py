@@ -27,6 +27,7 @@ from common.request_capacity import (
     PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS,
     PERLECTOR_MEASURED_TOKENIZER,
     PROMPT_TOKENS_ADMITTING_BASES,
+    PROMPT_TOKENS_ALL_TEXT_PER_BYTE,
     PROMPT_TOKENS_MEASURED_CONSTANT,
     PROMPT_TOKENS_MEASURED_FLOOR,
     PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
@@ -515,9 +516,11 @@ def test_the_sealed_rate_is_above_the_maximum_ratio_that_was_measured():
 
 
 def test_only_a_count_or_an_upper_bound_admits():
+    # One token per byte bounds the Coniector's all-text request from above.
     assert PROMPT_TOKENS_ADMITTING_BASES == {
         PROMPT_TOKENS_MEASURED_CONSTANT,
         PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
+        PROMPT_TOKENS_ALL_TEXT_PER_BYTE,
     }
     assert PROMPT_TOKENS_MEASURED_FLOOR not in PROMPT_TOKENS_ADMITTING_BASES
 

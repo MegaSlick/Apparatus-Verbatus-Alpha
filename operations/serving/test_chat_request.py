@@ -17,7 +17,7 @@ from operations.serving.chat_request import (
 
 # The digest of the Perlector's page request for these inputs; a change to it
 # changes what the Perlector sends.
-PAGE_REQUEST_SHA256 = "ebd30a691335a9b7e3eebc3761284bc754e4006a093b1dd926e58b788e8ea64b"
+PAGE_REQUEST_SHA256 = "ac2803cbbe83e11df09671c2e0bc455ac813fe3ee4ca4ab7376f6a7f25546d6a"
 PAGE_REQUEST_INPUTS = {
     "images": [b"\x89PNG page", b"\x89PNG overlay"],
     "text": "Read this page.\nÉté",
@@ -60,8 +60,6 @@ def _request_bytes(request) -> bytes:
                 for key, value in request.generation_sent.items()
             },
             "capacity": json.loads(json.dumps(request.capacity, default=dict)),
-            "structure_attempt_ordinal": request.structure_attempt_ordinal,
-            "variance_arm": request.variance_arm,
         }
     )
 
