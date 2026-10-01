@@ -84,6 +84,7 @@ from common.durability import (
     PublishedUnsettled,
     atomic_create,
     atomic_replace,
+    is_temporary_name,
     is_unpublished_blob_temporary,
 )
 from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, require_seal_method
@@ -605,15 +606,16 @@ class RunTree:
         refused, never skipped as something else, and a valid serving receipt
         is passed over. A name that is no digest is refused even in a run with
         no approval, because only the content-addressed writers write here and
-        a renamed record would otherwise vanish from every reader. A dot-file
-        is an unfinished write, not a record.
+        a renamed record would otherwise vanish from every reader. Only an
+        unfinished write's temporary (`common.durability.is_temporary_name`) is
+        passed over; any other dot-file is refused like any other stray name.
         """
         directory = self.resolve(RECEIPTS_DIR)
         if not directory.is_dir():
             return []
         found = []
         for path in sorted(directory.iterdir()):
-            if path.name.startswith("."):
+            if is_temporary_name(path.name):
                 continue
             relative = f"{RECEIPTS_DIR}/{path.name}"
             digest = path.name.removesuffix(".json")
