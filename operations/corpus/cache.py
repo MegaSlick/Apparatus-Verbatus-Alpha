@@ -201,13 +201,3 @@ def write_request_record(cache_root: Path, request_key: str, record: dict[str, A
             "never re-fetch means never re-record either; the caller should have checked "
             "load_request_record first"
         )
-
-
-def already_answered(cache_root: Path, request_key: str) -> bool:
-    """Whether `request_key` has a recorded answer — the never-re-fetch gate.
-
-    Raises `CorpusRefusal` (`"unreadable-request-record"`), same as
-    `load_request_record`, if the record on disk exists but is not readable
-    JSON — this is not silently `False` on a damaged record.
-    """
-    return load_request_record(cache_root, request_key) is not None
