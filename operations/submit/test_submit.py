@@ -778,3 +778,11 @@ def test_a_stray_file_is_written_to_the_private_report_through_submit(submission
         }
     ]
     assert not submission["manifest_out"].exists()
+
+
+def test_load_manifest_refuses_deeply_nested_json_by_name(tmp_path: Path) -> None:
+    ledger = tmp_path / "m.json"
+    ledger.write_bytes(b"[" * 200_000 + b"]" * 200_000)
+
+    with pytest.raises(submit.SubmitRefusal, match="could not be read as canonical JSON"):
+        submit.load_manifest(ledger)

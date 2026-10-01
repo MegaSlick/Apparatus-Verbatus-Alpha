@@ -253,7 +253,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
             raise SubmitRefusal("submission manifest is not canonical JSON")
     except SubmitRefusal:
         raise
-    except (OSError, UnicodeDecodeError, ValueError, TypeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError, TypeError, RecursionError) as error:
         raise SubmitRefusal("submission manifest could not be read as canonical JSON") from error
     return validate_manifest(record)
 
@@ -292,7 +292,7 @@ def _content_addressed_report_path(path: Path, report_hash: str) -> Path:
 
 
 def atomic_create(target: Path, data: bytes) -> bool:
-    """Create the manifest, or reuse an identical one. Never overwrite a different.
+    """Create a record, or reuse an identical one. Never overwrite a different.
 
     Evidence is never overwritten. Identical bytes are a true no-op, so a byte-identical resubmission
     stays idempotent. Returns True when created, False when an identical file
@@ -305,7 +305,7 @@ def atomic_create(target: Path, data: bytes) -> bool:
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         raise SubmitRefusal(
-            "the folder for the submission manifest could not be created; nothing was sealed"
+            "the folder for this record could not be created; the record was not written"
         ) from error
     try:
         durability.atomic_create(target, data, strict=False)
@@ -329,7 +329,7 @@ def atomic_create(target: Path, data: bytes) -> bool:
         ) from None
     except OSError as error:
         raise SubmitRefusal(
-            "the submission manifest could not be written; nothing was sealed"
+            "this record could not be written; nothing was left at its path"
         ) from error
     return True
 
