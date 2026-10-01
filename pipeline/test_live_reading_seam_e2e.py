@@ -624,7 +624,7 @@ def test_a_live_page_read_run_carries_on_through_the_recensor_to_a_sealed_termin
     serving receipts, which no fixture record has; running them here is what says
     a live run reaches an export at all. The fixture's `happy` pages carry an act
     across their break, so every reading is delivered and the run is partial for
-    exactly that labelled reconstruction.
+    exactly that join, which code never makes (`no-code-join`).
     """
     run_root = tmp_path / "runs"
     shutil.copytree(witnessed.run_root, run_root)
@@ -648,6 +648,7 @@ def test_a_live_page_read_run_carries_on_through_the_recensor_to_a_sealed_termin
     assert tail == {
         "pipeline/5_recensor/run.py": EXIT_COMPLETE,
         "pipeline/6_archetypus/run.py": EXIT_COMPLETE,
+        "pipeline/4b_coniector/run.py": EXIT_COMPLETE,
         "pipeline/7_armarium/run.py": EXIT_HELD,
     }
 
@@ -673,5 +674,6 @@ def test_a_live_page_read_run_carries_on_through_the_recensor_to_a_sealed_termin
     aggregate = payload["aggregate"]
     assert aggregate["status"] == "partial"
     (reason,) = aggregate["reasons"]
-    assert reason.startswith("continuation join join-1-2-0 (reconstructed)")
+    assert reason.startswith("continuation join join-1-2-0 (not-reconstructed)")
+    assert "(no-code-join)" in reason
     assert export["outcome"] == ArmariumCategory.HELD_FOR_REVIEW.value

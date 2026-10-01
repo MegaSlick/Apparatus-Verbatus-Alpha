@@ -244,7 +244,7 @@ def test_a_canary_page_is_never_an_entry_so_never_a_subject_context_or_chain_pie
     assert sorted(shown) == ["p1:1", "p3:1"]
     assert [entry["page_ordinal"] for entry in entries] == [1, 3]
     policy = replace(load_reconstruction_policy(), mode="on", pages_are_consecutive=True)
-    plan = plan_payload(policy, "page", entries)
+    plan = plan_payload(policy, entries)
     assert [call["page_ordinal"] for call in plan["calls"]] == [1, 3]
     named = {
         key

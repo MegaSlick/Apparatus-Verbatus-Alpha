@@ -30,7 +30,13 @@ from common.reconstruction_records import (
 )
 from common.runtree.store import RunTree
 from common.stage import EXIT_COMPLETE, verify_final_seal
-from conftest import build_page_tree, load_stage, programs_through, run_stage
+from conftest import (
+    build_page_tree,
+    floor_models_config,
+    load_stage,
+    programs_through,
+    run_stage,
+)
 
 RUN_ID = "r"
 CONIECTOR_PROGRAM = "pipeline/4b_coniector/run.py"
@@ -184,7 +190,12 @@ def test_what_is_not_made_says_why_and_the_diplomatic_is_still_delivered(reviewe
 
 def test_a_run_whose_chair_is_absent_makes_nothing_and_names_the_absence(tmp_path):
     base = tmp_path / "absent"
-    root, options = build_page_tree(base, "happy", reconstruction_config=_config(base / "config-r"))
+    root, options = build_page_tree(
+        base,
+        "happy",
+        reconstruction_config=_config(base / "config-r"),
+        models_config=floor_models_config(base / "models", 3),
+    )
     models = Path(options["models_config"])
     text = models.read_text(encoding="utf-8")
     start = text.index("[chairs.reconstructor]")

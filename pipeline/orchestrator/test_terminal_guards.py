@@ -370,6 +370,7 @@ def _reading_row(act_id: str, act_key: str, page_ordinal: int) -> dict:
         "kind": "act",
         "class": "reading",
         "page_ordinal": page_ordinal,
+        "reading_attempt": 1,
         "hold_codes": [],
         "region_ref": None,
         "perlectio_ref": {
@@ -417,6 +418,19 @@ def _stub_page_export(monkeypatch, armarium, context, rows: list[dict], category
         lambda _context, pages, *_args: {"pages_sealed": len(pages)},
     )
     monkeypatch.setattr(armarium, "page_accounting_rows", lambda *_args: [])
+    # The Coniector, switched off, made nothing over these rows.
+    monkeypatch.setattr(
+        armarium,
+        "verified_reconstructions",
+        lambda _context, _rows: {
+            "plan": {},
+            "acts": {},
+            "joins": [],
+            "calls": {},
+            "refs": {},
+            "diplomatic_raw": {},
+        },
+    )
 
 
 def test_only_sealed_canary_readings_leave_the_bundle_and_real_canary_named_paths_stay(
