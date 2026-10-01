@@ -3,9 +3,13 @@
 A page-read run's Recensor holds a unit for review with every reason named
 (`pipeline/5_recensor/page_review.py`). A person then looks at the held units
 and records decisions as `approval-record.v1` (`common.contracts.approval`),
-outside the sealed stage records. The Recensor re-derives its review on every
-pass and applies the current decisions on top before anything is established.
-This module is that application, as pure functions over data: no I/O.
+outside the sealed stage records. This module is how current decisions apply
+on top of the Recensor's derived review, as pure functions over data: no I/O.
+
+Not wired in: no stage calls these functions and no operator CLI builds or shows
+a decision, so a recorded decision is not applied and a held unit stays held.
+`common.contracts.outcomes.run_aggregate` takes the `review_clearances` and
+`review_page_holds` that `apply_decisions` returns, but no caller passes them.
 
 The input is the derived review, the Recensor's review as the machine derives
 it before any decision:
@@ -31,8 +35,8 @@ The API:
   page-scope hold is cleared only by a page decision, so releasing the entries
   one by one never clears the sign of an act the Perlector never listed.
 - `current_basis(derived, decisions)`: every unit and page with its digest and
-  scoped holds, its pages bound to the exclusions among `decisions`; what the
-  operator CLI shows and binds a new decision to.
+  scoped holds, its pages bound to the exclusions among `decisions`; what a
+  new decision binds to.
 - `review_decision(record, basis)`: one decision checked against the current
   basis: `current`, `stale` (with why), or refused when it could never apply.
   Its summary names the record by self-hash and by `record_sha256`, the digest
