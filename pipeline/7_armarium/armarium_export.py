@@ -42,6 +42,15 @@ from coniector_layer import (
     verify_row,
 )
 from display import DISPLAY_CONVENTION, render_display, strip_display
+from operator_layer import LABEL_LINE as OPERATOR_LABEL_LINE
+from operator_layer import (
+    OPERATOR_LINES,
+    OPERATOR_MEMBER,
+    lines_for,
+    text_bundle_rows,
+    verify_rows,
+)
+from operator_layer import SOURCES_FIELD as OPERATOR_SOURCES_FIELD
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats, armarium_formats_from_record
@@ -339,6 +348,9 @@ class ArmariumProjection:
     # The Coniector's reconstructions beneath delivered acts
     # (`coniector_layer.export_rows`): labelled, unconfirmed, never acts.
     reconstructions: tuple[dict[str, Any], ...] = ()
+    # The operator layer (`operator_layer.released_row`): each delivered
+    # reading a person's decision released, labelled, with who, when and why.
+    operator_actions: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -543,6 +555,10 @@ def build_armarium_bundle(
         # Which reconstructions the package shows, so a verifier can tell one
         # dropped from a format from one never made.
         sources_record["reconstructions"] = [list(row["act_ids"]) for row in coniector_rows]
+    operator_rows = tuple(_mark_retained_references(row) for row in projection.operator_actions)
+    if operator_rows:
+        # Every package carries the label, whatever formats it selects.
+        sources_record[OPERATOR_SOURCES_FIELD] = list(operator_rows)
     members["sources.json"] = canonical_bytes(sources_record)
 
     if "text-bundle" in formats.formats:
@@ -553,6 +569,7 @@ def build_armarium_bundle(
                 projection.continuation_joins,
                 projection.other_readings,
                 coniector_rows,
+                operator_rows,
             )
         )
     if "acts-database" in formats.formats:
@@ -561,6 +578,8 @@ def build_armarium_bundle(
         members["acts.jsonl"] = _jsonl_bytes(_act_json_records(projection.acts))
         if coniector_rows:
             members[CONIECTOR_MEMBER] = _jsonl_bytes(list(coniector_rows))
+        if operator_rows:
+            members[OPERATOR_MEMBER] = _jsonl_bytes(list(operator_rows))
         members[OTHER_READINGS_MEMBER] = _jsonl_bytes(
             _other_json_records(projection.other_readings)
         )
@@ -687,6 +706,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_page_layers(root, manifest, formats, sources)
     _verify_continuation_joins(root, formats, sources)
     _verify_coniector_layer(root, formats, sources, actual_names)
+    _verify_operator_layer(root, manifest, formats, sources, actual_names)
     verification = {}
     if search_fold_verification is not None:
         verification["search_fold"] = search_fold_verification
@@ -1504,6 +1524,101 @@ def _verify_coniector_layer(
         raise SchemaRefusal(
             f"the text bundle and {CONIECTOR_MEMBER} show different reconstructions"
         )
+
+
+def _operator_rows(sources: dict[str, Any], manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """The operator rows `sources.json` records, each about a reading the package delivers."""
+    categories = _manifest_act_categories(manifest)
+    keys = _manifest_act_keys(manifest, categories)
+    delivered = {
+        act_id: (keys[act_id], "act")
+        for act_id, category in categories.items()
+        if category == ArmariumCategory.DELIVERED.value
+    }
+    for act_id, row in _other_outcome_sources(sources).items():
+        if row["category"] == ArmariumCategory.DELIVERED.value:
+            delivered[act_id] = (row["act_key"], "other")
+    return verify_rows(sources.get(OPERATOR_SOURCES_FIELD) or [], delivered, "sources.json")
+
+
+def _verify_operator_layer(
+    root: Path,
+    manifest: dict[str, Any],
+    formats: ArmariumFormats,
+    sources: dict[str, Any],
+    actual_names: set[str],
+) -> None:
+    """Every format that carries the operator layer shows exactly the rows `sources.json` records.
+
+    `operator.jsonl` carries them when the JSONL format is selected, and the
+    text bundle shows each once beneath its reading's section in every folder
+    that sections the reading, so a label dropped from a format is refused.
+    """
+    recorded = _operator_rows(sources, manifest)
+    shown: list[tuple[str, list[dict[str, Any]]]] = []
+    if "jsonl" in formats.formats:
+        rows = (
+            list(_jsonl_rows(root / OPERATOR_MEMBER, OPERATOR_MEMBER, "an operator row"))
+            if OPERATOR_MEMBER in actual_names
+            else []
+        )
+        shown.append((OPERATOR_MEMBER, sorted(rows, key=lambda row: str(row.get("act_id")))))
+    if "text-bundle" in formats.formats:
+        by_id: dict[str, dict[str, Any]] = {}
+        for folder in sorted(
+            {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
+        ):
+            lines = _package_lines(root / _text_member_path(folder), "text bundle")
+            sectioned = {
+                line.split(": ", 1)[1]
+                for line in lines
+                if line.startswith(("act-id: ", "other-id: "))
+            }
+            placed = Counter()
+            for act_id, row in text_bundle_rows(lines):
+                if by_id.setdefault(act_id, row) != row:
+                    raise SchemaRefusal(
+                        f"the text bundle labels {row['act_key']} differently in two places"
+                    )
+                placed[act_id] += 1
+            for row in recorded:
+                if row["act_id"] in sectioned and placed[row["act_id"]] != 1:
+                    raise SchemaRefusal(
+                        f"the text bundle does not label {row['act_key']} as released by an "
+                        "operator exactly once in every folder that shows it"
+                    )
+        shown.append(("the text bundle", sorted(by_id.values(), key=lambda row: row["act_id"])))
+    for subject, rows in shown:
+        if rows != recorded:
+            raise SchemaRefusal(f"{subject} shows other operator rows than sources.json records")
+        for row in rows:
+            _verify_retained_references(row)
+
+
+def _operator_released_pages(
+    sources: dict[str, Any], manifest: dict[str, Any], held: dict[int, list[str]]
+) -> set[int]:
+    """The held pages whose every delivered reading an operator released over its page's holds.
+
+    Each such reading's row must name every one of its page accounting's
+    hold codes among the reading's own holds the decisions overrode.
+    """
+    rows = {row["act_id"]: row for row in _operator_rows(sources, manifest)}
+    on_page: dict[int, list[str]] = {}
+    for act_id, citation in _act_citation_sources(sources).items():
+        for region in citation["source_regions"]:
+            on_page.setdefault(region["source_page_ordinal"], []).append(act_id)
+    for act_id, row in _other_outcome_sources(sources).items():
+        if row["category"] == ArmariumCategory.DELIVERED.value:
+            on_page.setdefault(row["page_ordinal"], []).append(act_id)
+    return {
+        ordinal
+        for ordinal, codes in held.items()
+        if all(
+            act_id in rows and set(codes) <= set(rows[act_id]["reading_hold_codes"])
+            for act_id in on_page.get(ordinal, [])
+        )
+    }
 
 
 def _verify_text_bundle_joins(root, sources, joins, act_keys) -> None:
@@ -2643,6 +2758,7 @@ def _text_bundle_members(
     joins: tuple[dict[str, Any], ...] = (),
     others: tuple[dict[str, Any], ...] = (),
     coniector_rows: tuple[dict[str, Any], ...] = (),
+    operator_rows: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, bytes]:
     """Write one readable file for every cited source folder.
 
@@ -2687,6 +2803,7 @@ def _text_bundle_members(
     act_keys = {act["act_id"]: act["act_key"] for act in acts}
     notes = _join_notes(joins, act_keys)
     beneath = {anchor_act(row): row for row in coniector_rows if row["unit"] == "act"}
+    released = {row["act_id"]: row for row in operator_rows}
     members: dict[str, bytes] = {}
     for folder in sorted(folders):
         records = grouped[folder]
@@ -2720,6 +2837,7 @@ def _text_bundle_members(
                     "display:",
                     json.dumps(render_display(act[CANONICAL_TEXT_FIELD]), ensure_ascii=False),
                     *notes.get(act["act_id"], []),
+                    *(lines_for(released[act["act_id"]]) if act["act_id"] in released else []),
                     *(
                         reconstruction_lines(beneath[act["act_id"]])
                         if act["act_id"] in beneath
@@ -2735,7 +2853,7 @@ def _text_bundle_members(
         for other in sorted(
             other_groups[folder], key=lambda item: act_key_sort_key(item["act_key"])
         ):
-            lines.extend(_other_section(other))
+            lines.extend(_other_section(other, released.get(other["act_id"])))
         members[_text_member_path(folder)] = "\n".join(lines).encode("utf-8")
     return members
 
@@ -2744,8 +2862,11 @@ _OTHER_SECTION_PREFIX: Final = "## OTHER "
 _OTHER_SECTION_SUFFIX: Final = " (not an act)"
 
 
-def _other_section(other: dict[str, Any]) -> list[str]:
-    """One delivered other reading, labelled as not an act, with its own field names."""
+def _other_section(other: dict[str, Any], operator_row: dict[str, Any] | None = None) -> list[str]:
+    """One delivered other reading, labelled as not an act, with its own field names.
+
+    A reading a person released carries its operator lines last.
+    """
     literal = other[CANONICAL_TEXT_FIELD]
     lines = [
         f"{_OTHER_SECTION_PREFIX}{other['act_key']}{_OTHER_SECTION_SUFFIX}",
@@ -2766,6 +2887,7 @@ def _other_section(other: dict[str, Any]) -> list[str]:
         "other_uncertainty:",
         json.dumps(other["uncertainty"], ensure_ascii=False, sort_keys=True),
         f"other_text_status: {other['text_status']}",
+        *(lines_for(operator_row) if operator_row is not None else []),
         "",
     ]
 
@@ -2826,7 +2948,11 @@ def _text_bundle_other_records(
                 "a text-bundle other uncertainty layer is not JSON",
             )
             status = _section_field(block, position + 5, "other_text_status: ")
-            if _section_field(block, position + 6, "") != "":
+            end = position + 6
+            if end < len(block) and block[end].startswith(OPERATOR_LABEL_LINE):
+                # Its lines are the operator row's own (`_verify_operator_layer`).
+                end += OPERATOR_LINES
+            if _section_field(block, end, "") != "":
                 raise SchemaRefusal("a text-bundle OTHER section does not end where its fields do")
             if (
                 not _is_line_safe_identity(act_key)
@@ -4162,7 +4288,8 @@ def _load_sources(root) -> dict[str, Any]:
         raise SchemaRefusal("the package sources citation is unreadable") from error
     if not isinstance(record, dict) or record.get("schema") != SOURCES_SCHEMA:
         raise SchemaRefusal("the package sources citation has no recognized schema")
-    if set(record) - {"continuation_joins", "reconstructions"} != {"schema", *_SOURCES_FIELDS}:
+    optional = {"continuation_joins", "reconstructions", OPERATOR_SOURCES_FIELD}
+    if set(record) - optional != {"schema", *_SOURCES_FIELDS}:
         raise SchemaRefusal("the package sources citation has an unrecognized field set")
     sources = {field: record[field] for field in _SOURCES_FIELDS}
     sources["ink_map_pages"] = _validate_ink_map_pages(
@@ -4187,6 +4314,11 @@ def _load_sources(root) -> dict[str, Any]:
         )
     ):
         raise SchemaRefusal("the package sources citation names its reconstructions malformed")
+    sources[OPERATOR_SOURCES_FIELD] = record.get(OPERATOR_SOURCES_FIELD)
+    if OPERATOR_SOURCES_FIELD in record and not (
+        isinstance(sources[OPERATOR_SOURCES_FIELD], list) and sources[OPERATOR_SOURCES_FIELD]
+    ):
+        raise SchemaRefusal("the package sources citation carries an empty operator layer")
     return sources
 
 
@@ -4282,6 +4414,10 @@ def _verify_exact_product_members(
         CONIECTOR_MEMBER in actual_names or sources.get("reconstructions")
     ):
         expected.add(CONIECTOR_MEMBER)
+    # Written exactly when a delivered reading carries an operator row
+    # (`_verify_operator_layer`).
+    if "jsonl" in formats.formats and sources.get(OPERATOR_SOURCES_FIELD):
+        expected.add(OPERATOR_MEMBER)
     expected.update(_embedded_member_paths(sources))
     if actual_names != expected:
         missing = sorted(expected - actual_names)
@@ -4786,7 +4922,8 @@ def _verify_page_layers(
         _reask_claim(sources["act_readings"], [row["ordinal"] for row in page_rows])
     ):
         raise SchemaRefusal("the exported re-ask claim does not follow from the act readings")
-    held = {row["ordinal"] for row in page_rows if row["hold_codes"]}
+    held_codes = {row["ordinal"]: row["hold_codes"] for row in page_rows if row["hold_codes"]}
+    held = set(held_codes) - _operator_released_pages(sources, manifest, held_codes)
     pass_c = {entry["instrument"]: entry["detail"] for entry in claims["not_measured"]["entries"]}
     if pass_c[_PASS_C]["pages_read"] != len(sealed):
         raise SchemaRefusal(
@@ -4809,7 +4946,8 @@ def _verify_page_layers(
     if held & delivered_pages:
         raise SchemaRefusal(
             f"page(s) {sorted(held & delivered_pages)} are held by their page accounting yet "
-            "delivered a reading; every reading on a held page is held"
+            "delivered a reading; every reading on a held page is held unless an operator "
+            "released it over those holds"
         )
 
 

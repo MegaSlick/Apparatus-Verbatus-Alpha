@@ -70,6 +70,7 @@ from common.page_review import (
     REVIEWED_PAGE_REVIEW_FIELDS,
     act_entries_by_page,
     current_review_decisions,
+    override_refusal,
     page_breaks,
     require_establishable,
     reviewed_rows,
@@ -637,9 +638,10 @@ def decide_reviews(
     plan's order, and the `review-decisions` payload (`None` when the run holds
     no decision, so every review is the machine's own). An excluded unit's
     `approval_ref` is the stored path of a current exclusion of it. Decisions
-    that would accept a reading its page reading holds leave the unit held
-    under `READING_HELD`: the Archetypus establishes only a reading the
-    Perlector did not hold, so a decision clears only this stage's own holds.
+    that clear every hold of a reading its page reading holds override those
+    holds (`common.page_review.operator_override`), and the Archetypus
+    establishes it, labelled; one the export cannot carry
+    (`common.page_review.override_refusal`) stays held under `READING_HELD`.
     """
     stored = context.tree.review_decision_records()
     if not stored:
@@ -661,8 +663,10 @@ def decide_reviews(
                     and s["decision"] == "exclude"
                 )
             ]
-        if outcome == ACCEPTED and machine_outcome != ACCEPTED and not _establishable(act, payload):
-            outcome, payload = HELD, _reading_held(act, payload)
+        if outcome == ACCEPTED and machine_outcome != ACCEPTED:
+            refusal = _not_establishable(act, payload)
+            if refusal is not None:
+                outcome, payload = HELD, _reading_held(act, payload, refusal)
         decided.append((act, outcome, payload, inputs, approval_ref))
     record = {
         "schema": REVIEW_DECISIONS_SCHEMA,
@@ -682,19 +686,25 @@ def decide_reviews(
     return decided, record
 
 
-def _establishable(act: dict, payload: dict) -> bool:
-    """Whether the Archetypus would establish this unit's reading were its review accepted."""
+def _not_establishable(act: dict, payload: dict) -> str | None:
+    """Why the Archetypus would not establish this unit's reading were its review accepted.
+
+    None when it would: a reading the Perlector did not hold, a machine
+    release, or an operator override of every hold the reading carries.
+    """
     if act["perlectio_ref"] is None:
-        return True
+        return None
+    if act["hold_codes"] and (refusal := override_refusal(act)) is not None:
+        return refusal
     try:
         require_establishable(act, {"outcome": ACCEPTED, "payload": payload})
-    except FatalAccounting:
-        return False
-    return True
+    except FatalAccounting as error:
+        return str(error)
+    return None
 
 
-def _reading_held(act: dict, payload: dict) -> dict:
-    """A decided review that stays held because its page reading holds the unit.
+def _reading_held(act: dict, payload: dict, refusal: str) -> dict:
+    """A decided review that stays held because no decision can send its reading to export.
 
     The reading's own codes stay and `READING_HELD` names why the decisions
     did not complete it; the `operator_review` block records the added code.
@@ -705,8 +715,8 @@ def _reading_held(act: dict, payload: dict) -> dict:
         **payload,
         "hold_codes": sorted(set(payload["hold_codes"]) | set(act["hold_codes"]) | {READING_HELD}),
         "reason": (
-            f"operator review would accept it, but its page reading holds it ({reading_codes}) "
-            f"and a decision clears only this stage's own holds, so it stays held "
+            f"operator review would release it, but its page reading holds it ({reading_codes}) "
+            f"and no decision can send that reading to export ({refusal}), so it stays held "
             f"({READING_HELD}); {payload['reason']}"
         ),
         REVIEW_FIELD: {**block, "added": sorted(set(block["added"]) | {READING_HELD})},

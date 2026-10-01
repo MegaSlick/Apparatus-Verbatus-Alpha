@@ -63,7 +63,9 @@ from common.contracts.uncertainty import from_page_perlectio  # noqa: E402
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.exemplar_boundary import verify_reading_region_lineage  # noqa: E402
 from common.page_review import (  # noqa: E402
+    applied_decision_hashes,
     current_page_reviews,
+    reading_holds_allowed,
     require_current_review_decisions,
     require_establishable,
     reviewed_rows,
@@ -394,11 +396,21 @@ def _direct_inputs(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 def establish_from_accepted_page_reading(
-    context, *, row: dict, review_ref: dict[str, str], page_testimonia: list[dict]
+    context,
+    *,
+    row: dict,
+    review_ref: dict[str, str],
+    page_testimonia: list[dict],
+    applied: frozenset[str] = frozenset(),
 ) -> tuple[dict, list[dict[str, str]]]:
     """The page path's one constructor: a `reading_acts` row and its accepted review.
 
-    `page_testimonia` is the row's page's entry in `current_page_testimonia`.
+    `page_testimonia` is the row's page's entry in `current_page_testimonia`,
+    and `applied` the decision hashes the Recensor's current `review-decisions`
+    record applied (`page_review.applied_decision_hashes`). A reading its
+    Perlectio holds is established only when those decisions override every
+    hold it carries (`page_review.operator_override`); what is established is
+    still the reading exactly as read.
 
     The reading is the `perlectio.v3` the row and the review both name; its one
     region is the `act-region` that reading names, proven from the Exemplar by
@@ -424,22 +436,21 @@ def establish_from_accepted_page_reading(
             f"the Archetypus constructor for {row['act_key']} accepts only the exact page "
             "reading a Recensor accepted"
         )
-    require_establishable(row, review)
+    override = require_establishable(row, review, applied)
     reading = context.tree.read_artifact_reference(
         reading_ref, stage=PERLECTOR, kind="perlectio", subject_id=act_id
     )
     payload = reading.get("payload")
     if (
-        reading.get("outcome") != "read"
-        or not isinstance(payload, dict)
+        not isinstance(payload, dict)
         or payload.get("schema") != page_path.PERLECTIO_SCHEMA
         or payload.get("kind") != row["kind"]
-        or payload.get("holds") != []
-        or payload.get("page_holds") != []
+        or not reading_holds_allowed(reading, override)
     ):
         raise FatalAccounting(
             f"{row['act_key']} would be established from a page reading that is held or is not "
-            "the row's own reading; a held reading is never written"
+            "the row's own reading; a held reading is written only when operator decisions "
+            "override every hold it carries"
         )
     # The closed Perlectio schema has no tier, salvage or annotation field, so
     # anything carrying one is refused here rather than read past.
@@ -655,7 +666,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         args, ARCHETYPUS, registry_factory=registry_factory, serving_reader=SERVING_READER
     )
     # The reviews below must be a pass that applied every decision stored now.
-    require_current_review_decisions(context)
+    applied = applied_decision_hashes(require_current_review_decisions(context))
     rows = reviewed_rows(reading_acts(context))
     reviews = current_page_reviews(context, rows)
     testimonia = current_page_testimonia(context)
@@ -671,13 +682,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             if terminal_category(RECENSOR, review["outcome"]) is None:
                 unresolved.append(row["act_key"])
             continue
-        require_establishable(row, review)
+        require_establishable(row, review, applied)
         review_ref = context.artifact_ref(RECENSOR, "review", review["artifact_id"])
         record, inputs = establish_from_accepted_page_reading(
             context,
             row=row,
             review_ref=review_ref,
             page_testimonia=testimonia.get(row["page_id"], []),
+            applied=applied,
         )
         established.append((row, record, inputs))
     for row, record, inputs in established:
