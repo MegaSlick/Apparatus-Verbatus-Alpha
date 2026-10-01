@@ -7268,3 +7268,47 @@ def test_export_does_not_take_a_fetch_that_verified_a_stage_by_envelope_only(
         surface.export(run_id="envelope-only")
 
     assert missing.value.code is ErrorCode.EXPORT_MISSING
+
+
+def test_export_does_not_take_a_fetch_whose_canary_raised_an_alarm(tmp_path: Path) -> None:
+    volume = tmp_path / "volume"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline" / "orchestrator" / "run.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--scenario",
+            "page-unbroken",
+            "--run-id",
+            "canary-dead",
+            "--run-root",
+            str(volume / "runs"),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
+    with pytest.raises(OperatorError) as alarm:
+        surface.fetch_run(
+            run_id="canary-dead",
+            into=tmp_path / "local-runs",
+            reader=DirectoryRunReader(volume),
+            canary_root=tmp_path / "private-canary",
+        )
+    assert alarm.value.code is ErrorCode.CANARY_ALARM
+    receipt = surface._descriptor_receipt("fetch-run")
+    assert receipt is not None
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "canary-alarm"
+    assert payload["unmanifested_stages"] == []
+
+    with pytest.raises(OperatorError) as missing:
+        surface.export(run_id="canary-dead")
+
+    assert missing.value.code is ErrorCode.EXPORT_MISSING
+    # Refused when choosing a run, before any Armarium export is attempted.
+    assert missing.value.detail is None

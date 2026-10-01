@@ -2241,9 +2241,10 @@ class OperatorSurface:
         """Every run `export` can name, oldest first, as `{run_id, run_root}` records.
 
         A run receipt is one; so is a fetch-run receipt whose whole tree was
-        verified against its stage manifests on arrival, with the folder it was
-        fetched into as its run root. A fetch that stopped (`partial`) or left a
-        stage verified by envelope only (`unmanifested_stages`) is not.
+        verified against its stage manifests on arrival and whose canary check
+        passed (`verified`), with the folder it was fetched into as its run root.
+        Every other fetch state is not: one that stopped, left a stage verified by
+        envelope only, raised a canary alarm, or could not save its verdict.
         """
 
         descriptor = self._load_descriptor()
@@ -2257,7 +2258,7 @@ class OperatorSurface:
                 payload = record["payload"]
                 if action == "fetch-run":
                     if (
-                        payload.get("state") == "partial"
+                        payload.get("state") != "verified"
                         or payload.get("unmanifested_stages") != []
                     ):
                         continue
