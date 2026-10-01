@@ -649,6 +649,8 @@ def decide_reviews(
     paths = {reference.sha256: reference.relative_path for reference, _record in stored}
     result = apply_decisions(derived_review(context, planned), [record for _, record in stored])
     decided = []
+    # Each unit kept held under `READING_HELD`, by the codes that hold it again.
+    reheld: dict[str, set[str]] = {}
     for act, machine_outcome, _payload, inputs in planned:
         unit = result["units"][act["act_id"]]
         outcome, payload = unit["outcome"], unit["payload"]
@@ -667,6 +669,7 @@ def decide_reviews(
             refusal = _not_establishable(act, payload)
             if refusal is not None:
                 outcome, payload = HELD, _reading_held(act, payload, refusal)
+                reheld[act["act_id"]] = set(payload["hold_codes"])
         decided.append((act, outcome, payload, inputs, approval_ref))
     record = {
         "schema": REVIEW_DECISIONS_SCHEMA,
@@ -676,7 +679,7 @@ def decide_reviews(
         "conflicting": result["conflicting"],
         "carried": result["carried"],
         "unkept": result["unkept"],
-        "clearances": result["clearances"],
+        "clearances": _effective_clearances(result["clearances"], reheld),
         "page_holds": [
             {"page_ordinal": ordinal, "hold_codes": codes}
             for ordinal, codes in sorted(held_pages(result).items())
@@ -703,23 +706,54 @@ def _not_establishable(act: dict, payload: dict) -> str | None:
     return None
 
 
+def _effective_clearances(clearances: list[dict], reheld: dict[str, set[str]]) -> list[dict]:
+    """The clearances that took effect: a unit kept held loses the codes that hold it again.
+
+    A unit row left with no code cleared is dropped, so the aggregate never
+    reports a release that held nothing less.
+    """
+    rows = []
+    for row in clearances:
+        if row["scope"] == UNIT_SCOPE and row["subject_id"] in reheld:
+            row = {
+                **row,
+                "cleared": [
+                    code for code in row["cleared"] if code not in reheld[row["subject_id"]]
+                ],
+            }
+            if not row["cleared"]:
+                continue
+        rows.append(row)
+    return rows
+
+
 def _reading_held(act: dict, payload: dict, refusal: str) -> dict:
     """A decided review that stays held because no decision can send its reading to export.
 
     The reading's own codes stay and `READING_HELD` names why the decisions
-    did not complete it; the `operator_review` block records the added code.
+    did not complete it; the `operator_review` block records the added code,
+    and its `cleared` keeps only the codes that no longer hold the unit.
     """
     block = payload[REVIEW_FIELD]
     reading_codes = ", ".join(act["hold_codes"]) or "no code"
+    held = set(payload["hold_codes"]) | set(act["hold_codes"]) | {READING_HELD}
+    cleared = {
+        scope: [code for code in codes if code not in held]
+        for scope, codes in block["cleared"].items()
+    }
     return {
         **payload,
-        "hold_codes": sorted(set(payload["hold_codes"]) | set(act["hold_codes"]) | {READING_HELD}),
+        "hold_codes": sorted(held),
         "reason": (
             f"operator review would release it, but its page reading holds it ({reading_codes}) "
             f"and no decision can send that reading to export ({refusal}), so it stays held "
             f"({READING_HELD}); {payload['reason']}"
         ),
-        REVIEW_FIELD: {**block, "added": sorted(set(block["added"]) | {READING_HELD})},
+        REVIEW_FIELD: {
+            **block,
+            "cleared": cleared,
+            "added": sorted(set(block["added"]) | {READING_HELD}),
+        },
     }
 
 

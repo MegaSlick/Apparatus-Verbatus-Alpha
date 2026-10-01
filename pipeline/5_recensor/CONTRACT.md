@@ -185,8 +185,9 @@ unchanged repeat:
 The Armarium hands `clearances` and `page_holds` to the run aggregate, where each is a
 named reason, so a run a person cleared stays `partial`. `requests` records the re-asks
 and re-shoots asked for. An operator's page `re-ask` is the request to send the page
-through the Perlector again; nothing starts that re-read yet (`operations/operator/README.md`,
-"Recording a review decision"), so the subject stays held under its `review-*` code.
+through the Perlector again; the operator's tool records it and does not start the re-read
+(`operations/operator/README.md`, "Recording a review decision"), so the subject stays
+held under its `review-*` code.
 
 **An override sends a held reading to export.** A `release` clears the unit's own holds
 and a `no-missed-act` its page's, the reading's own included: the codes its Perlectio
@@ -200,7 +201,10 @@ cite), `doubt-marks-malformed` (no doubt report the export can anchor) and
 `entry-no-readable-text` (no text, and an empty reading is exported only as a proved
 blank). When the decisions about such a unit would accept it, it stays held under
 `review-reading-held` (`common.review_decisions.READING_HELD`) with the reading's own
-codes, its reason says why, and the rest of the pass goes on.
+codes, its reason says why, and the rest of the pass goes on. Only what took effect is
+reported cleared: the unit's `operator_review.cleared` and its row in `clearances` drop
+every code that holds it again, and a unit row left with nothing cleared is dropped, so
+the aggregate never reports a release that did not happen.
 
 The Archetypus and the Armarium each compare the digest of the decisions stored when
 they run (`common.review_decisions.decisions_digest`) with this record's
