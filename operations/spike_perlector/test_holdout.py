@@ -277,3 +277,24 @@ def test_an_exclusion_that_is_not_a_checked_exclusion_is_refused():
             scoreable_opaque_act_ids=("act-2",),
             exclusions=(LooksLikeOne(),),
         )
+
+
+def test_private_sample_accounting_digest_does_not_depend_on_listing_order():
+    def exclusion(opaque_act_id):
+        return ReferenceExclusion(
+            opaque_act_id=opaque_act_id,
+            status=ReferenceStatus.NO_READABLE_TEXT,
+            reason_evidence_sha256=digest(f"reason-{opaque_act_id}"),
+        )
+
+    one = PrivateSampleAccounting(
+        manifest_sha256=digest("manifest"),
+        scoreable_opaque_act_ids=("act-a", "act-b"),
+        exclusions=(exclusion("act-c"), exclusion("act-d")),
+    )
+    other = PrivateSampleAccounting(
+        manifest_sha256=digest("manifest"),
+        scoreable_opaque_act_ids=("act-b", "act-a"),
+        exclusions=(exclusion("act-d"), exclusion("act-c")),
+    )
+    assert one.digest == other.digest

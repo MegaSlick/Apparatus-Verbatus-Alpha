@@ -18,6 +18,15 @@ from common.exemplar_boundary import read_sealed_page
 from common.imaging import crop_png, dimensions, encode_grayscale_png_deterministic
 
 
+def render_size(size: tuple[int, int], maximum_edge: int) -> tuple[int, int]:
+    """The `(width, height)` a page of `size` is rendered at under `maximum_edge`."""
+    width, height = size
+    if max(width, height) <= maximum_edge:
+        return width, height
+    scale = maximum_edge / max(width, height)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
 def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dict[str, Any]]:
     """A genuine downscale of the sealed page, deterministic for a fixed input.
 
@@ -38,15 +47,12 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
     display = crop_png(page_bytes, {"x": 0, "y": 0, "w": width, "h": height})
     with Image.open(BytesIO(display)) as image:
         image.load()
-        if max(image.width, image.height) <= maximum_edge:
+        target = render_size((image.width, image.height), maximum_edge)
+        if target == (image.width, image.height):
             rendered = image.copy()
             resampler = "identity"
         else:
-            scale = maximum_edge / max(image.width, image.height)
-            rendered = image.resize(
-                (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
-                resample=Image.Resampling.LANCZOS,
-            )
+            rendered = image.resize(target, resample=Image.Resampling.LANCZOS)
             resampler = "pillow-lanczos"
         # The project's own deterministic encoder, never Pillow's: Pillow's
         # wheels bundle their own zlib, so `rendered.save(...)` produces

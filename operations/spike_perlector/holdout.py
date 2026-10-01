@@ -284,11 +284,9 @@ class PrivateSampleAccounting:
             for opaque_act_id in self.scoreable_opaque_act_ids
         ):
             raise HoldoutRefusal("private sample accounting has an invalid scoreable act ID")
-        # Type-checked before its ID is read, the same way the scoreable IDs
-        # above already are. An exclusion is the project lead's approved removal
-        # of an act from the scored set, and it lands in the digest and the
-        # accounting record; anything that merely answers to `.opaque_act_id`
-        # was being taken at its word.
+        # Type-checked before its ID is read: an exclusion removes an act from
+        # the scored set and lands in the digest, so a stand-in that merely
+        # answers to `.opaque_act_id` is refused.
         if any(not isinstance(item, ReferenceExclusion) for item in self.exclusions):
             raise HoldoutRefusal("private sample accounting has an unchecked exclusion")
         exclusion_ids = [item.opaque_act_id for item in self.exclusions]
@@ -318,8 +316,13 @@ class PrivateSampleAccounting:
         return {
             "schema": "spec05-private-sample-accounting.v1",
             "manifest_sha256": self.manifest_sha256,
-            "scoreable_opaque_act_ids": list(self.scoreable_opaque_act_ids),
-            "exclusions": [item.record() for item in self.exclusions],
+            # Sorted, so the digest names the partition rather than the order a
+            # caller happened to list it in.
+            "scoreable_opaque_act_ids": sorted(self.scoreable_opaque_act_ids),
+            "exclusions": [
+                item.record()
+                for item in sorted(self.exclusions, key=lambda item: item.opaque_act_id)
+            ],
         }
 
     def require_complete_for(self, manifest: EvaluationManifest) -> None:
@@ -544,12 +547,8 @@ class BoundEvaluationMaterial:
 
     @property
     def opaque_act_id(self) -> str:
-        """Read-only: the lineage this class exists to carry.
-
-        It was a plain writable attribute while `_payload` and `_capability` sat
-        behind underscores — so the one field the class protects was the one a
-        caller could reassign, pointing a bound payload at a different act.
-        """
+        """Read-only: the lineage this class exists to carry, so a caller cannot
+        point a bound payload at a different act."""
 
         return self._opaque_act_id
 

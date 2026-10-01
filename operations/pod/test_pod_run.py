@@ -19,6 +19,7 @@ on a requirement missing the Linux/x86_64 marker that keeps a laptop
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -30,6 +31,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from common.chairs.config import load_models_toml
+from common.runtree.store import RunTree
+from common.sealed_config import read_sealed_toml
+from common.stage import real_run_policy_digest, validate_witness_context_bindings
 from operations.operator import cli as operator_cli
 from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.records import SCHEMA as RECEIPT_SCHEMA
@@ -240,6 +245,13 @@ def _report(ws: Workspace, name: str = "pod-run-report.json") -> dict:
     return json.loads((ws.volume / name).read_text(encoding="utf-8"))
 
 
+@pytest.fixture(autouse=True)
+def _no_container_pod_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The test machine's own first process is not a pod; tests write one when they need it."""
+
+    monkeypatch.setattr(pod_run, "PID1_ENVIRON", tmp_path / "no-such-proc" / "environ")
+
+
 # --- the green run: bootstrap, orchestrate over the volume, hold --------------
 
 
@@ -368,6 +380,601 @@ def test_mechanics_qualification_reaches_orchestrator_and_report(tmp_path: Path)
     report = _report(ws)
     assert report["plan"]["mechanics_qualification"] is True
     assert "--mechanics-qualification" in report["orchestrator_argv"]
+
+
+def test_perlector_protocol_config_reaches_orchestrator_and_report(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    protocol = ws.repository / "config" / "perlector_protocol_page.toml"
+    protocol.write_text('reading_unit = "page"\n', encoding="utf-8")
+    clock = Clock()
+    runner = RecordedRunner()
+
+    code = main(
+        _run_argv(ws, extra=("--perlector-protocol-config", str(protocol))),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+
+    assert code == EXIT_COMPLETE
+    command = runner.calls[0][0]
+    flag = command.index("--perlector-protocol-config")
+    assert command[flag + 1] == str(protocol.resolve())
+    assert _report(ws)["plan"]["perlector_protocol_config"] == str(protocol.resolve())
+
+
+def test_without_a_protocol_flag_the_orchestrator_keeps_its_default(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+
+    main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+
+    assert "--perlector-protocol-config" not in runner.calls[0][0]
+    assert _report(ws)["plan"]["perlector_protocol_config"] is None
+
+
+@pytest.mark.parametrize("where", ["outside", "missing"])
+def test_a_protocol_outside_the_repository_or_missing_is_refused_before_bootstrap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], where: str
+) -> None:
+    ws = _prepared(tmp_path)
+    if where == "outside":
+        protocol = tmp_path / "protocol.toml"
+        protocol.write_text("", encoding="utf-8")
+    else:
+        protocol = ws.repository / "config" / "absent.toml"
+    exit_code, runner = _refused(
+        ws, _run_argv(ws, extra=("--perlector-protocol-config", str(protocol)))
+    )
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "--perlector-protocol-config" in capsys.readouterr().err
+
+
+def _first_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pod_id: str) -> None:
+    environ = tmp_path / "pid1-environ"
+    environ.write_bytes(f"PATH=/usr/bin\0{pod_run.POD_ID_ENVIRONMENT}={pod_id}\0HOME=/\0".encode())
+    monkeypatch.setattr(pod_run, "PID1_ENVIRON", environ)
+
+
+def _armed(
+    ws: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: Clock, value: int
+) -> Path:
+    """This pod as --no-hold needs it: its id on its first process, and a live guard."""
+
+    _first_process(tmp_path, monkeypatch, "pod123")
+    return _guard_deadline(ws, value, heartbeat=clock.now().timestamp() - 30)
+
+
+def _guard_deadline(ws: Workspace, value: int, *, heartbeat: float | None = None) -> Path:
+    guard = ws.volume / pod_run.POD_GUARD_DIRECTORY
+    guard.mkdir()
+    path = guard / "deadline-pod123"
+    path.write_text(f"{value}\n", encoding="ascii")
+    if heartbeat is not None:
+        beat = guard / "heartbeat-pod123"
+        beat.touch()
+        os.utime(beat, (heartbeat, heartbeat))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("orchestrator_exit", "expected_exit"),
+    [
+        (0, EXIT_COMPLETE),
+        (orchestrator.EXIT_HELD, EXIT_HELD),
+        (orchestrator.EXIT_RUN_HALTED, EXIT_HALTED),
+        (pod_run.ORCHESTRATOR_FATAL, EXIT_FAILED),
+        (None, EXIT_FAILED),
+    ],
+)
+def test_no_hold_returns_at_once_and_moves_the_guard_deadline_to_now(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, orchestrator_exit: int, expected_exit: int
+) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    later = int(clock.now().timestamp()) + 3600
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, later)
+
+    code = main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(
+            returncode=orchestrator_exit or 0, raise_oserror=orchestrator_exit is None
+        ),
+    )
+
+    assert code == expected_exit
+    # No paid idle time, and no hold record.
+    assert clock.seconds == 0.0
+    assert not (ws.volume / "pod-run-report-hold.json").exists()
+    now = int(clock.now().timestamp())
+    assert deadline.read_text(encoding="ascii") == f"{now}\n"
+    report = _report(ws)
+    assert report["plan"]["no_hold"] is True
+    assert report["held_to_hard_deadline"] is False
+    assert "--no-hold" in report["hold_detail"]
+    assert report["guard_release"] == {
+        "path": str(deadline),
+        "released": True,
+        "deadline": now,
+        "guard_heartbeat_age_seconds": 30,
+        "guard_alive": True,
+    }
+    # Written before the deadline moved: the guard quotes it in its delete notice.
+    notice = deadline.with_name("released-pod123").read_text(encoding="ascii")
+    assert notice == f"run first-real-run ended {report['state']}\n"
+
+
+def test_no_hold_is_refused_under_a_launch_token(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    ws.report_path = ws.volume / "bootstrap-report-launch-abc123.json"
+    ws.journal = ws.volume / "bootstrap-journal-launch-abc123.json"
+    clock = Clock()
+    runner = RecordedRunner()
+
+    code = main(
+        _run_argv(
+            ws, extra=("--no-hold",), report_path=ws.volume / "pod-run-report-launch-abc123.json"
+        ),
+        environ=_environ(clock, lifetime=1.0, extra={"VERBATUS_LAUNCH_TOKEN": "launch-abc123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=_never_called,
+        runner=runner,
+    )
+
+    assert code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "--no-hold" in _report(ws, "pod-run-report-launch-abc123.json")["reason"]
+
+
+def test_no_hold_never_moves_an_earlier_guard_deadline_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    earlier = int(clock.now().timestamp()) - 60
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, earlier)
+
+    main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(),
+    )
+
+    assert deadline.read_text(encoding="ascii") == f"{earlier}\n"
+    assert _report(ws)["guard_release"]["released"] is True
+
+
+@pytest.mark.parametrize("case", ["no-deadline-file", "garbage-deadline", "unwritable"])
+def test_no_hold_without_an_armed_guard_still_returns_and_says_so(
+    tmp_path: Path, case: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    extra = {pod_run.POD_ID_ENVIRONMENT: "pod123"}
+    later = int(clock.now().timestamp()) + 3600
+    deadline_path = _armed(ws, tmp_path, monkeypatch, clock, later)
+    if case == "no-deadline-file":
+        deadline_path.unlink()
+    elif case == "garbage-deadline":
+        deadline_path.write_text("abc\n", encoding="ascii")
+    elif case == "unwritable":
+        # Root ignores a read-only directory, so the failed write is made directly.
+        write = pod_run.atomic_write
+
+        def refuse_deadline(path: Path, data: bytes) -> None:
+            if Path(path).name.startswith("deadline-"):
+                raise OSError("read-only file system")
+            write(path, data)
+
+        monkeypatch.setattr(pod_run, "atomic_write", refuse_deadline)
+
+    code = main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0, extra=extra),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(),
+    )
+
+    assert code == EXIT_COMPLETE
+    assert clock.seconds == 0.0
+    release = _report(ws)["guard_release"]
+    assert release["released"] is False
+    assert release["detail"]
+    deadline = ws.volume / pod_run.POD_GUARD_DIRECTORY / "deadline-pod123"
+    if case == "garbage-deadline":
+        assert deadline.read_text(encoding="ascii") == "abc\n"
+    elif case == "unwritable":
+        assert release["detail"].startswith("deadline write failed")
+    else:
+        assert not deadline.exists()
+
+
+def test_no_hold_leaves_the_guard_alone_after_a_red_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    later = int(clock.now().timestamp()) + 3600
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, later)
+    red = FakeActions(fail_step=BootstrapStep.PREFLIGHT)
+
+    code = main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: red,
+        runner=RecordedRunner(),
+    )
+
+    assert code == EXIT_BOOTSTRAP_RED
+    assert deadline.read_text(encoding="ascii") == f"{later}\n"
+
+
+def test_no_hold_says_when_the_guard_heartbeat_went_stale_during_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    later = int(clock.now().timestamp()) + 3600
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, later)
+    stale = clock.now().timestamp() - pod_run.GUARD_HEARTBEAT_STALE_SECONDS - 1
+    inner = RecordedRunner()
+
+    def guard_dies_mid_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        os.utime(deadline.with_name("heartbeat-pod123"), (stale, stale))
+        return inner(*args, **kwargs)
+
+    main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=guard_dies_mid_run,
+    )
+
+    release = _report(ws)["guard_release"]
+    # The deadline moved, but nothing is known to be watching it.
+    assert release["released"] is True
+    assert release["guard_alive"] is False
+    assert "delete the pod by hand" in release["detail"]
+
+
+def test_no_hold_reads_the_pod_id_from_the_container_s_first_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An SSH shell need not inherit the provider's pod id; the container's first process has it."""
+
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, int(clock.now().timestamp()) + 3600)
+
+    code = main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(),
+    )
+
+    assert code == EXIT_COMPLETE
+    assert deadline.read_text(encoding="ascii") == f"{int(clock.now().timestamp())}\n"
+    assert _report(ws)["guard_release"]["released"] is True
+
+
+def test_no_hold_refuses_a_shell_pod_id_that_is_not_the_container_s_before_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every pod's deadline is on the shared volume; a wrong id would end another pod."""
+
+    ws = _prepared(tmp_path)
+    _first_process(tmp_path, monkeypatch, "pod123")
+    clock = Clock()
+    later = int(clock.now().timestamp()) + 3600
+    deadline = _guard_deadline(ws, later)
+    actions = PreflightedActions()
+    runner = RecordedRunner()
+
+    code = main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "otherpod"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: actions,
+        runner=runner,
+    )
+
+    assert code == EXIT_REFUSED
+    assert actions.calls == []
+    assert runner.calls == []
+    assert "'otherpod'" in _report(ws)["reason"]
+    assert deadline.read_text(encoding="ascii") == f"{later}\n"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "shell-id-only",
+        "no-pod-id",
+        "bad-first-process-id",
+        "no-guard-directory",
+        "missing-heartbeat",
+        "stale-heartbeat",
+    ],
+)
+def test_no_hold_without_this_pod_s_live_guard_is_refused_before_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A release must reach this pod's own guard; a shell's id could name another live pod."""
+
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    later = int(clock.now().timestamp()) + 3600
+    extra: dict[str, str] = {}
+    if case == "shell-id-only":
+        # /proc/1/environ unreadable; a hand-exported id names a pod whose guard is live.
+        _guard_deadline(ws, later, heartbeat=clock.now().timestamp() - 30)
+        extra = {pod_run.POD_ID_ENVIRONMENT: "pod123"}
+    elif case == "bad-first-process-id":
+        _first_process(tmp_path, monkeypatch, "pod١٢٣")
+    elif case != "no-pod-id":
+        _first_process(tmp_path, monkeypatch, "pod123")
+        if case == "missing-heartbeat":
+            _guard_deadline(ws, later)
+        elif case == "stale-heartbeat":
+            stale = clock.now().timestamp() - pod_run.GUARD_HEARTBEAT_STALE_SECONDS - 1
+            _guard_deadline(ws, later, heartbeat=stale)
+    actions = PreflightedActions()
+    runner = RecordedRunner()
+
+    code = main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=_environ(clock, lifetime=4.0, extra=extra),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: actions,
+        runner=runner,
+    )
+
+    assert code == EXIT_REFUSED
+    assert actions.calls == []
+    assert runner.calls == []
+    reason = _report(ws)["reason"]
+    assert "--no-hold" in reason
+    if case in ("shell-id-only", "no-pod-id"):
+        assert "Run without --no-hold" in reason
+    if case in ("missing-heartbeat", "stale-heartbeat", "no-guard-directory"):
+        assert "heartbeat" in reason
+    deadline = ws.volume / pod_run.POD_GUARD_DIRECTORY / "deadline-pod123"
+    if deadline.exists():
+        assert deadline.read_text(encoding="ascii") == f"{later}\n"
+    assert not deadline.with_name("released-pod123").exists()
+
+
+def test_a_protocol_the_orchestrator_cannot_parse_is_refused_before_bootstrap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws = _prepared(tmp_path)
+    protocol = ws.repository / "config" / "broken_protocol.toml"
+    protocol.write_text("reading_unit = [unclosed\n", encoding="utf-8")
+
+    exit_code, runner = _refused(
+        ws, _run_argv(ws, extra=("--perlector-protocol-config", str(protocol)))
+    )
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "not a protocol the orchestrator can seal" in capsys.readouterr().err
+
+
+def _protocols(ws: Workspace) -> tuple[Path, Path]:
+    """The checkout's default protocol and a second, page-reading one."""
+
+    config = ws.repository / "config"
+    default = config / "perlector_protocol.toml"
+    default.write_bytes((ROOT / "config" / "perlector_protocol.toml").read_bytes())
+    page = config / "perlector_protocol_page.toml"
+    page.write_text('reading_unit = "page"\n', encoding="utf-8")
+    return default, page
+
+
+def _sealed_run(ws: Workspace, digests: dict[str, str]) -> None:
+    RunTree.create(
+        ws.volume / "runs",
+        "first-real-run",
+        source_manifest=[],
+        config_digest="0" * 64,
+        adapter_recipes={},
+        witness_chairs=[],
+        sealed_config_digests=digests,
+    )
+
+
+def _resume(ws: Workspace, extra: tuple[str, ...]) -> tuple[int, PreflightedActions]:
+    clock = Clock()
+    actions = PreflightedActions()
+    code = main(
+        _run_argv(ws, extra=("--models", "big", *extra)),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: actions,
+        runner=RecordedRunner(),
+    )
+    return code, actions
+
+
+@pytest.mark.parametrize("sealed", ["default", "page"])
+def test_a_resume_naming_another_protocol_than_its_seal_is_refused_before_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sealed: str
+) -> None:
+    """Leaving out, or changing, the protocol on a resume would fail only after a paid bootstrap."""
+
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
+    default, page = _protocols(ws)
+    sealed_path = default if sealed == "default" else page
+    _sealed_run(ws, {"perlector-protocol": read_sealed_toml(sealed_path, "protocol")[1]})
+    matching = () if sealed == "default" else ("--perlector-protocol-config", str(page))
+    other = ("--perlector-protocol-config", str(page)) if sealed == "default" else ()
+
+    code, actions = _resume(ws, other)
+
+    assert code == EXIT_REFUSED
+    assert actions.calls == []
+    reason = _report(ws)["reason"]
+    assert "sealed under different inputs" in reason
+    assert "Perlector protocol" in reason
+
+    code, actions = _resume(ws, matching)
+
+    assert code == EXIT_COMPLETE
+    assert actions.calls
+
+
+@pytest.mark.parametrize("case", ["not-json", "read-oserror"])
+def test_a_resume_whose_run_json_cannot_be_read_is_refused_before_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
+    _protocols(ws)
+    run_json = ws.volume / "runs" / "first-real-run" / "run.json"
+    run_json.parent.mkdir(parents=True)
+    if case == "not-json":
+        run_json.write_text("{not json", encoding="utf-8")
+    else:
+        run_json.write_text("{}", encoding="utf-8")
+
+        def unreadable(self: RunTree) -> dict:
+            raise PermissionError(13, "Permission denied", str(run_json))
+
+        monkeypatch.setattr(RunTree, "read_run", unreadable)
+
+    code, actions = _resume(ws, ())
+
+    assert code == EXIT_REFUSED
+    assert actions.calls == []
+    assert "sealed inputs could not be checked" in _report(ws)["reason"]
+
+
+def test_a_pod_id_is_ascii_letters_and_digits_only(tmp_path: Path) -> None:
+    clock = Clock()
+    guard = tmp_path / pod_run.POD_GUARD_DIRECTORY
+    guard.mkdir()
+    for pod_id in ("pod١٢٣", "pod/../x", ""):
+        release = pod_run.release_pod_guard(
+            tmp_path, pod_id, run_id="r", state="complete", now=clock.now
+        )
+        assert release["released"] is False
+    assert list(guard.iterdir()) == []
+
+
+def test_a_real_resume_without_its_sealed_mechanics_qualification_is_refused_before_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
+    default, _ = _protocols(ws)
+    declaration = ws.repository / "config" / "witness_context.toml"
+    declaration.write_bytes((ROOT / "config" / "witness_context.toml").read_bytes())
+    # Computed here from the stage library, not through pod_run, under the
+    # values the orchestrator seals when pod_run forwards none of them.
+    policy = real_run_policy_digest(
+        witness_context="named",
+        witness_context_declaration_sha256=validate_witness_context_bindings(
+            load_models_toml(ws.models_config),
+            witness_context="named",
+            witness_context_config_path=declaration,
+            nuda_per_mille=0,
+            nuda_approval_ref="",
+            perlector_instrument_per_mille=0,
+            perlector_instrument_approval_ref="",
+            blind_read="off",
+        ),
+        nuda_per_mille=0,
+        nuda_approval_ref="",
+        perlector_instrument_per_mille=0,
+        perlector_instrument_approval_ref="",
+        blind_read="off",
+        mechanics_qualification=True,
+    )
+    _sealed_run(
+        ws,
+        {
+            "perlector-protocol": read_sealed_toml(default, "protocol")[1],
+            "run-policy": policy,
+        },
+    )
+
+    code, actions = _resume(ws, ())
+
+    assert code == EXIT_REFUSED
+    assert actions.calls == []
+    assert "--mechanics-qualification" in _report(ws)["reason"]
+
+    code, actions = _resume(ws, ("--mechanics-qualification",))
+
+    assert code == EXIT_COMPLETE
+    assert actions.calls
+
+
+def test_the_run_policy_pod_run_assumes_is_the_orchestrator_s_own_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pod_run forwards none of these knobs; a changed orchestrator default must fail here."""
+
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+    main(
+        _run_argv(ws, extra=("--mechanics-qualification", "--blind-read", "fed")),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+    command = runner.calls[0][0]
+    captured: dict[str, Namespace] = {}
+    parse = argparse.ArgumentParser.parse_args
+
+    class Parsed(Exception):
+        pass
+
+    def capture(self, args=None, namespace=None):  # type: ignore[no-untyped-def]
+        captured["args"] = parse(self, ["--fixture", "f", "--run-id", "r", "--run-root", "/r"])
+        raise Parsed
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", capture)
+    with pytest.raises(Parsed):
+        orchestrator.main()
+    for name, value in pod_run.ORCHESTRATOR_RUN_POLICY_DEFAULTS.items():
+        assert getattr(captured["args"], name) == value
+        assert "--" + name.replace("_", "-") not in command
 
 
 def test_small_models_selects_cheap_stages_and_returns_after_selection(tmp_path: Path) -> None:

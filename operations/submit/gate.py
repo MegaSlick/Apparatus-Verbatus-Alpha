@@ -1,7 +1,7 @@
 """The data-handling gate: where real material may live, checked mechanically.
 
-The gate *policy* is this directory's `README.md`; this module is only its
-mechanical enforcement -- policy load and storage-root checks. Per-run
+The gate *policy* is `config/data_handling_policy.json`; this module is only
+its mechanical enforcement -- policy load and storage-root checks. Per-run
 sign-off is a separate, human decision this module does not make: git
 ingress and CI's history scan only keep real material out of git, and
 sending it to a vendor is a separate lead decision on top of that.
@@ -108,8 +108,8 @@ def _parse_policy(raw: bytes, path: Path | str) -> dict[str, Any]:
         if not isinstance(value, str) or len(value.strip()) < _MINIMUM_CLAUSE_LENGTH:
             raise GateRefusal(
                 f"{path} gives clause {field!r} a value that is not a stated rule "
-                f"({type(value).__name__}); a truthiness check accepted `true`, `1` and "
-                "`{...}` here, which is a policy that says nothing passing as one that does"
+                f"({type(value).__name__}); each clause must be written out as text of at "
+                f"least {_MINIMUM_CLAUSE_LENGTH} characters"
             )
     version = record["policy_version"]
     if not isinstance(version, str) or not version.strip():

@@ -90,8 +90,8 @@ def test_blank_checked_reference_is_not_given_a_perfect_score():
 def test_the_textbook_levenshtein_example():
     """kitten -> sitting: three edits, the standard worked example.
 
-    Grafted from lane A. Its value is that a reader can check it against the
-    literature rather than against this repository: two substitutions (k->s, e->i)
+    A reader can check it against the literature rather than against this
+    repository: two substitutions (k->s, e->i)
     and one insertion (g), over a six-character reference.
     """
     score = score_text("kitten", "sitting", profile=GRAPHEMIC_V1).cer

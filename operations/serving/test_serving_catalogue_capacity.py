@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from common.churro_document import CHURRO_PROMPT_VARIANTS
+from common.page_render import render_size
 from common.request_capacity import (
     DECLARED_ANSWER_BOUND_TOKENS,
     MEASURED_PROMPT_TOKENS,
@@ -451,7 +452,7 @@ def test_a_legible_render_stays_inside_the_rows_pixel_bound():
     """So the chair sees exactly the rendered pixels, on a letter leaf and on A4."""
     row, sealed = fit.perlector_row(), fit.sealed_protocol()
     for page in (LETTER, A4_300DPI):
-        width, height = fit._rendered(page, sealed["page_context"]["maximum_edge"])
+        width, height = render_size(page, sealed["page_context"]["maximum_edge"])
         assert width * height <= row.max_pixels
 
 

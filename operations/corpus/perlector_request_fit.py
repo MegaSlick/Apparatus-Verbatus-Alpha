@@ -51,6 +51,7 @@ from common.decoding import (  # noqa: E402
     perlector_page_max_tokens,
 )
 from common.imaging import encode_grayscale_png_deterministic  # noqa: E402
+from common.page_render import render_size  # noqa: E402
 from common.request_capacity import (  # noqa: E402
     RequestCapacityRefusal,
     page_request_capacity,
@@ -131,12 +132,6 @@ def _neighbour(clue: tuple[list[str], bool] | None, side: str, cap: int) -> dict
     }
 
 
-def _rendered(page: tuple[int, int], edge: int) -> tuple[int, int]:
-    width, height = page
-    scale = min(1, edge / max(width, height))
-    return (max(1, round(width * scale)), max(1, round(height * scale)))
-
-
 def _covered(page: tuple[int, int], crops: list[tuple[int, int, int, int]]) -> bool:
     # One full-page crop is the case that occurs; `common.page_render.union_area` decides it in
     # the pipeline for any union.
@@ -166,7 +161,7 @@ def request_record(
     context = sealed["page_context"]
     crops = [(w, h) for _page, boxes in pages for (_x, _y, w, h) in boxes]
     renders = [
-        _rendered(
+        render_size(
             page,
             edge
             if edge is not None
@@ -360,7 +355,7 @@ def _blank_render(size: tuple[int, int]) -> bytes:
 def page_feed_for(sealed: dict[str, Any], shape: dict[str, Any], change: dict) -> dict[str, Any]:
     """The page feed one gold page would be read under, with one feed setting changed."""
     size = shape["size"]
-    render = _rendered(size, sealed["page_context"]["maximum_edge"])
+    render = render_size(size, sealed["page_context"]["maximum_edge"])
     switches = {**sealed["feed"], **change}
     render_bytes = _blank_render(render) if switches["page_overlay"] != "off" else None
     chairs = [chair for chair, _adapter, _units in shape["witnesses"]]
