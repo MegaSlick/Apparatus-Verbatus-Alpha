@@ -49,7 +49,6 @@ def classify(
     region_pixels=FIXTURE_REGION,
     page_pixels=FIXTURE_PAGE,
     stop_reason=None,
-    smallest_page_pixels=None,
 ):
     return truncation.classify(
         text,
@@ -57,7 +56,6 @@ def classify(
         page_pixels=page_pixels,
         truncation_policy=POLICY,
         stop_reason=stop_reason,
-        smallest_page_pixels=smallest_page_pixels,
     )
 
 
@@ -229,13 +227,12 @@ def test_a_not_judged_length_votes_neither_way():
     assert one["classification"] == truncation.UNKNOWN
 
 
-def test_the_gate_is_judged_on_the_smallest_page_an_act_spans():
-    """A large page summed with a sub-legible one must not hide it."""
-    args = {"region_pixels": GATE, "page_pixels": LEAF_PAGE + GATE - 1}
-    small = classify("x", smallest_page_pixels=GATE - 1, stop_reason="stop", **args)
+def test_the_gate_is_judged_on_the_page_the_reading_is_of():
+    small = classify("x", region_pixels=GATE - 1, page_pixels=GATE - 1, stop_reason="stop")
     assert small["measure"]["length_judged"] is False
+    assert small["measure"]["smallest_page_pixels"] == GATE - 1
     assert small["signals"]["length_suspicious"] is None
-    at_gate = classify("x", smallest_page_pixels=GATE, stop_reason="stop", **args)
+    at_gate = classify("x", region_pixels=GATE, page_pixels=GATE, stop_reason="stop")
     assert at_gate["measure"]["length_judged"] is True
     assert at_gate["signals"]["length_suspicious"] is True
 

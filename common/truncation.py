@@ -10,7 +10,7 @@ testimony.
 Four declared signals. Three are genuinely computed, over the actual reading
 text and the actual region area. The fourth -- the serving engine's own
 stop-reason -- is observed, not computed: the reader
-(`pipeline/4_perlector/reader.py`) passes on the engine's own answer, and a
+(`pipeline/4_perlector/live_reader.py::send_page_request`) passes on the engine's own answer, and a
 fixture run's declared stand-in is named as one rather than disguised as a
 computed signal.
 
@@ -30,8 +30,8 @@ still produce `truncated` when every judged computed signal is suspicious;
 otherwise the result is `unknown` -- the reason the rule is written as "an
 engine observation" rather than "a stop-reason".
 
-The length signal is judged only where the act's smallest page is at least the
-sealed legible size; where it is not, it is recorded as not judged and votes
+The length signal is judged only where the page is at least the sealed legible
+size; where it is not, it is recorded as not judged and votes
 neither way, so the verdict comes from the other two signals and the record
 says length was not consulted.
 """
@@ -67,9 +67,9 @@ _STRUCTURE_PAIRS: Final = (("(", ")"), ("[", "]"), ("“", "”"))
 
 # The length signal's floor is sealed, not a module constant, and it is
 # dimensionless rather than an absolute pixels-per-character ratio: an
-# absolute ratio scales the wrong way, since a real 300-DPI act crop has far
-# more pixels per character than a fixture crop, so a ratio tuned to the
-# fixture would hold every ordinary act as truncated.
+# absolute ratio scales the wrong way, since a real 300-DPI page has far
+# more pixels per character than a fixture page, so a ratio tuned to the
+# fixture would hold every ordinary reading as truncated.
 # `config/perlector_protocol.toml`'s `[truncation]` names the floor: a reading
 # is length-suspicious when, scaled from its region to the whole page's area,
 # it would carry fewer than the floor's characters. It reaches this module as
@@ -93,9 +93,10 @@ class TruncationSignals(TypedDict):
 class TruncationMeasure(TypedDict):
     """What the length signal was judged from, recorded so it can be re-judged.
 
-    Carries every term of the predicate -- region pixels, page pixels, the
-    smallest page the act spans, character count, floor, legibility gate --
-    so a consumer holding nothing but this block
+    Carries every term of the predicate -- region pixels, page pixels (also
+    recorded as `smallest_page_pixels`, the size the legibility gate is judged
+    on), character count, floor, legibility gate -- so a consumer holding
+    nothing but this block
     recomputes `length_suspicious` rather than trusting it. The floor travels
     on the record and not only in the run's config_digest because
     configuration protects reproducibility going forward while the record
@@ -155,9 +156,7 @@ def is_length_suspicious(
     Scale-invariant: the reading's characters are scaled from its region to
     the whole page's area and compared with the sealed floor, in integers --
     `characters * page_pixels < floor * region_pixels` -- so the same crop at
-    fixture scale and at 300 DPI gets the same verdict. A continuation act's
-    `region_pixels` and `page_pixels` are each summed over the pages it spans,
-    which keeps the ratio the same one.
+    fixture scale and at 300 DPI gets the same verdict.
 
     The arithmetic itself is `common/perlector_audit.py::length_signal`, the one
     spelling `validate_truncation_record` re-derives the recorded signal with;
@@ -201,13 +200,11 @@ def classify(
     page_pixels: int,
     truncation_policy: Mapping[str, object],
     stop_reason: str | None = None,
-    smallest_page_pixels: int | None = None,
 ) -> TruncationRecord:
     """Classify one reading attempt `complete | truncated | unknown`.
 
-    `smallest_page_pixels` is the smallest single page the act spans, which the
-    legibility gate is judged on; it defaults to `page_pixels`, right for an act
-    on one page. `truncation_policy` is the sealed `[truncation]` table, keyword-only with
+    The legibility gate is judged on `page_pixels`, the page the reading is
+    of. `truncation_policy` is the sealed `[truncation]` table, keyword-only with
     no default: a caller that forgets it fails loudly rather than judging under
     a floor nobody sealed, the shape `coverage_flag`'s gates already take.
 
@@ -248,10 +245,7 @@ def classify(
         raise ContractError(
             f"the truncation policy's {LEGIBLE_PAGE_FIELD} is not a positive integer"
         )
-    smallest = page_pixels if smallest_page_pixels is None else smallest_page_pixels
-    if smallest <= 0 or smallest > page_pixels:
-        raise ValueError("smallest_page_pixels must be positive and within page_pixels")
-    judged = length_judged(smallest_page_pixels=smallest, legible_page_pixels=legible)
+    judged = length_judged(smallest_page_pixels=page_pixels, legible_page_pixels=legible)
     signals: TruncationSignals = {
         "stop_reason_declared": stop_reason,
         "unclosed_structure": has_unclosed_structure(text),
@@ -265,7 +259,7 @@ def classify(
     measure: TruncationMeasure = {
         "region_pixels": region_pixels,
         "page_pixels": page_pixels,
-        "smallest_page_pixels": smallest,
+        "smallest_page_pixels": page_pixels,
         "characters": len(text),
         "length_floor_characters_per_page": floor,
         "legible_page_pixels": legible,
