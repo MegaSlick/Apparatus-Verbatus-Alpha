@@ -572,12 +572,17 @@ PAGE_ANSWERS = {
 
 
 class PageReaderWorld:
-    """The Perlector's single resident chair, answering each page with its scripted answer."""
+    """The Perlector's single resident chair, answering each page with its scripted answer.
 
-    def __init__(self, catalogue: Path, work: Path) -> None:
+    `answers` maps each page ordinal to the reply text; the fixture's `happy`
+    answers by default.
+    """
+
+    def __init__(self, catalogue: Path, work: Path, answers: dict[int, str] | None = None) -> None:
         self.catalogue = catalogue
         self.work = work
         self.work.mkdir(parents=True, exist_ok=True)
+        self.answers = PAGE_ANSWERS if answers is None else answers
         self.endpoint: RecordingEndpoint | None = None
 
     def factory(self, context, identity, tier: str) -> ChairClient:
@@ -589,7 +594,7 @@ class PageReaderWorld:
         )
         endpoint.script(
             *(
-                ScriptedAnswer(content=PAGE_ANSWERS[ordinal], finish_reason="stop")
+                ScriptedAnswer(content=self.answers[ordinal], finish_reason="stop")
                 for ordinal in (1, 2)
             )
         )
