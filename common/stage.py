@@ -94,6 +94,7 @@ from common.contracts.stages import (
     PERLECTOR,
     RECENSOR,
     SEAL_PREDECESSORS,
+    SIDE_SEALS,
     STAGES,
     TRIAGE_MODES,
 )
@@ -124,6 +125,7 @@ from common.hard_failure import (
 from common.imaging import dimensions
 from common.native_witness import validate_presented, validate_presented_page_binding
 from common.page_accounting import DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH, load_page_accounting_policy
+from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH, load_reconstruction_policy
 from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
     RECOVERY_KINDS,
@@ -411,8 +413,16 @@ class ServingReader(Protocol):
         """`(content, finish_reason)` of one retained chat reply, parsed as the client did."""
         ...
 
-    def request_bytes(self, payload: Mapping[str, Any], *, model_id: str, seed: Any) -> bytes:
-        """The exact request bytes the client renders for a sampled `payload`."""
+    def request_bytes(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        model_id: str,
+        seed: Any,
+        sampling: Mapping[str, Any] | None = None,
+    ) -> bytes:
+        """The exact request bytes the client renders for a sampled `payload`, with the
+        chair's sealed `sampling` row added when the payload does not already carry it."""
         ...
 
 
@@ -1234,11 +1244,18 @@ def _digest_regular_file_at(
 
 
 def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
-    """Refuse a missing, forged, or changed predecessor boundary by name."""
+    """Refuse a missing, forged, or changed predecessor or side-branch boundary by name."""
     predecessor = SEAL_PREDECESSORS.get(stage)
-    if predecessor is None:
-        return
-    _verify_stage_seal(tree, predecessor, stage, "predecessor")
+    if predecessor is not None:
+        _verify_stage_seal(tree, predecessor, stage, "predecessor")
+    for producer in SIDE_SEALS.get(stage, ()):
+        _verify_stage_seal(tree, producer, stage, "side branch")
+
+
+def verify_stage_seal(tree: RunTree, producer: str, reader: str) -> None:
+    """Prove one producer's completion seal as `reader` proves it when it opens."""
+    role = "side branch" if producer in SIDE_SEALS.get(reader, ()) else "predecessor"
+    _verify_stage_seal(tree, producer, reader, role)
 
 
 def verify_final_seal(tree: RunTree) -> dict[str, Any]:
@@ -1491,6 +1508,12 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         "witness the establishing reading never sees",
     )
     parser.add_argument("--formats-config", default=str(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH))
+    parser.add_argument(
+        "--reconstruction-config",
+        default=str(DEFAULT_RECONSTRUCTION_CONFIG_PATH),
+        help="the sealed Coniector switches and bounds: whether its chair runs, whether the "
+        "pages are consecutive, and how far a reconstruction may depart",
+    )
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
     parser.add_argument("--hard-failure-config", default=str(DEFAULT_HARD_FAILURE_CONFIG_PATH))
     parser.add_argument("--pdf-target-dpi", type=int, default=None)
@@ -1696,6 +1719,7 @@ def run_config_bindings(
     alignment_config_path: str | Path = DEFAULT_ALIGNMENT_CONFIG_PATH,
     page_accounting_config_path: str | Path = DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
     ink_map_config_path: str | Path = DEFAULT_INK_MAP_CONFIG_PATH,
+    reconstruction_config_path: str | Path = DEFAULT_RECONSTRUCTION_CONFIG_PATH,
     pdf_target_dpi: int | None = None,
     armarium_formats_config_path: str | Path = DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
@@ -1755,6 +1779,7 @@ def run_config_bindings(
     )[1]
     _, alignment_config_digest = load_alignment_limits(alignment_config_path)
     page_accounting_config_digest = load_page_accounting_policy(page_accounting_config_path).sha256
+    reconstruction_config_digest = load_reconstruction_policy(reconstruction_config_path).sha256
     ink_map_digest = ink_map_config_digest(ink_map_config_path)
     corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         corpus_frame_config_path
@@ -1799,6 +1824,7 @@ def run_config_bindings(
                 "designator_grouping_config_sha256": grouping_config_digest,
                 "alignment_config_sha256": alignment_config_digest,
                 "page_accounting_config_sha256": page_accounting_config_digest,
+                "reconstruction_config_sha256": reconstruction_config_digest,
                 "ink_map_config_sha256": ink_map_digest,
                 "corpus_frame_policy": corpus_frame_policy,
                 "corpus_frame_config_sha256": corpus_frame_config_digest,
@@ -1835,6 +1861,7 @@ def run_config_bindings(
             "designator-grouping": grouping_config_digest,
             "alignment": alignment_config_digest,
             "page-accounting": page_accounting_config_digest,
+            "reconstruction": reconstruction_config_digest,
             "ink-map": ink_map_digest,
             "corpus-frame-shard": corpus_frame_config_digest,
             "decoding": decoding_config_digest,
@@ -1910,6 +1937,7 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
             )[1],
             "alignment": alignment_config_digest,
             "page-accounting": load_page_accounting_policy(args.page_accounting_config).sha256,
+            "reconstruction": load_reconstruction_policy(args.reconstruction_config).sha256,
             "ink-map": ink_map_config_digest(args.ink_map_config),
             "corpus-frame-shard": corpus_frame_config_digest,
             "decoding": decoding_config_digest,
@@ -2011,6 +2039,8 @@ SECONDARY_PROPOSER_CHAIR = "secondary_proposer"
 # Surya's text-line and layout detector: the Designator runs it beside its
 # structure chair, as a check that no ink goes unseen. It decides nothing.
 DESIGNATOR_SURYA_CHAIR = "designator_surya"
+# The Coniector's chair: the Perlector's model, asked text only.
+RECONSTRUCTOR_CHAIR = "reconstructor"
 
 
 def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
@@ -2025,6 +2055,7 @@ def unaddressed_chairs(models: ModelsConfig) -> tuple[str, ...]:
         PERLECTOR_CHAIR,
         SECONDARY_PROPOSER_CHAIR,
         DESIGNATOR_SURYA_CHAIR,
+        RECONSTRUCTOR_CHAIR,
     }
     for role in list(addressed):
         value = models.chairs.get(role)
@@ -3099,7 +3130,7 @@ def _verify_reply(
         try:
             if engine_call is not None:
                 reply = page_path.retained_reply(
-                    context.tree.read_bytes, engine_call, _serving_reader(context, what)
+                    context.tree.read_bytes, engine_call, serving_reader(context, what)
                 )
                 _require(
                     reply["finish_reason"] == engine_call.get("finish_reason"),
@@ -3200,7 +3231,7 @@ def _verify_request(
         _verify_engine_call(context, what, chair, reading, payload, feed, text, image_sha256s)
 
 
-def _serving_reader(context, what: str) -> ServingReader:
+def serving_reader(context, what: str) -> ServingReader:
     """The context's `ServingReader`, or a refusal: a live call is read again, never trusted."""
     reader = context.serving_reader
     _require(
@@ -3219,7 +3250,7 @@ def _verify_capacity(context, what, chair, payload, feed, text, shown) -> None:
     """
     from common.request_capacity import RequestCapacityRefusal
 
-    reader = _serving_reader(context, what)
+    reader = serving_reader(context, what)
     capacity = payload["capacity"]
     record = capacity.get("capacity") if isinstance(capacity, Mapping) else None
     tier = record.get("tier") if isinstance(record, Mapping) else None
@@ -3259,7 +3290,7 @@ def _verify_engine_call(context, what, chair, reading, payload, feed, text, imag
     from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
     from common.perlector_audit import decode_recorded_generation
 
-    reader = _serving_reader(context, what)
+    reader = serving_reader(context, what)
     engine_call = payload["engine_call"]
     inputs = reading.get("inputs", [])
     _require(
@@ -5434,6 +5465,7 @@ def open_context(
         alignment_config_path=args.alignment_config,
         page_accounting_config_path=args.page_accounting_config,
         ink_map_config_path=args.ink_map_config,
+        reconstruction_config_path=args.reconstruction_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,

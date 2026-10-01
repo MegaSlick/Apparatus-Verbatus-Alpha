@@ -58,6 +58,8 @@ def test_pins_come_from_configured_chairs_and_vendor_source_constants() -> None:
             "HEAD",
         ),
         ("Qwen/Qwen3.8-27B", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0", "huggingface", "HEAD"),
+        # The reconstructor sits on the Perlector's repository at the same pin.
+        ("Qwen/Qwen3.8-27B", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0", "huggingface", "HEAD"),
         ("datalab-to/chandra", "d4f7467435aa4137d9539f000ddf0b7ced3eb43f", "github", "HEAD"),
         ("stanford-oval/Churro", "4abb17386d9656199c2776195926545fc527a691", "github", "v0.3.0"),
     ]

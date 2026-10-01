@@ -1,4 +1,4 @@
-"""The stage names, in flow order, and the eight handoffs between them.
+"""The stage names, in flow order, and the nine handoffs between them.
 
 Named once here so the run tree, the outcome algebra, and the boundary tests
 cannot drift apart on what a stage is called. The directory names match
@@ -8,7 +8,12 @@ like the diagram in ARCHITECTURE.md.
 The door is a producer but not a numbered stage: it is the submit surface that
 decides what may enter at all, and it writes its refusals where the Exemplar can
 account for them. Giving it a name here is what lets "door -> Exemplar" be one of
-the eight tested handoffs rather than an unexamined edge.
+the nine tested handoffs rather than an unexamined edge.
+
+The Coniector reads the Perlector's readings and only the Armarium reads it: a
+side branch beside the main line, never an input to the Recensor or the
+Archetypus. It runs after the Archetypus, so it reads the Perlector's final
+readings, not ones a recovery round replaces.
 """
 
 from enum import Enum
@@ -20,6 +25,7 @@ INK_MAP: Final = "ink-map"
 DESIGNATOR: Final = "designator"
 ATTESTATORES: Final = "attestatores"
 PERLECTOR: Final = "perlector"
+CONIECTOR: Final = "coniector"
 RECENSOR: Final = "recensor"
 ARCHETYPUS: Final = "archetypus"
 ARMARIUM: Final = "armarium"
@@ -35,6 +41,7 @@ STAGES: Final = (
     PERLECTOR,
     RECENSOR,
     ARCHETYPUS,
+    CONIECTOR,
     ARMARIUM,
 )
 
@@ -45,6 +52,7 @@ STAGE_DIRECTORIES: Final = {
     DESIGNATOR: "2_designator",
     ATTESTATORES: "3_attestatores",
     PERLECTOR: "4_perlector",
+    CONIECTOR: "4b_coniector",
     RECENSOR: "5_recensor",
     ARCHETYPUS: "6_archetypus",
     ARMARIUM: "7_armarium",
@@ -59,9 +67,14 @@ HANDOFFS: Final = (
     (DESIGNATOR, ATTESTATORES),
     (ATTESTATORES, PERLECTOR),
     (PERLECTOR, RECENSOR),
+    (PERLECTOR, CONIECTOR),
     (RECENSOR, ARCHETYPUS),
     (ARCHETYPUS, ARMARIUM),
 )
+
+# (producer, reader) of each side branch: a seal its reader verifies beside its
+# predecessor's, whose records it reads but whose outcome decides nothing it counts.
+SIDE_BRANCHES: Final = ((CONIECTOR, ARMARIUM),)
 
 ORCHESTRATOR: Final = "orchestrator"
 
@@ -71,6 +84,19 @@ SEAL_PREDECESSORS: Final = {
     **{consumer: producer for producer, consumer in HANDOFFS},
     ORCHESTRATOR: ARMARIUM,
 }
+
+# Consumer -> the side-branch producers whose seals it verifies too.
+SIDE_SEALS: Final = {
+    reader: tuple(producer for producer, other in SIDE_BRANCHES if other == reader)
+    for _producer, reader in SIDE_BRANCHES
+}
+
+
+def seal_readers(stage: str) -> tuple[str, ...]:
+    """Every consumer that verifies `stage`'s completion seal, main line and side branch."""
+    return tuple(
+        consumer for consumer, producer in SEAL_PREDECESSORS.items() if producer == stage
+    ) + tuple(reader for producer, reader in SIDE_BRANCHES if producer == stage)
 
 
 # Where each producer writes; the door writes into the Exemplar's directory.

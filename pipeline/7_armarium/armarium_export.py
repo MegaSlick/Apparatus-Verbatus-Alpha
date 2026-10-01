@@ -33,6 +33,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Final, NamedTuple
 from zipfile import ZIP_STORED, BadZipFile, LargeZipFile, ZipFile, ZipInfo
 
+from coniector_layer import (
+    CONIECTOR_MEMBER,
+    anchor_act,
+    join_section,
+    reconstruction_lines,
+    text_bundle_placements,
+    verify_row,
+)
 from display import DISPLAY_CONVENTION, render_display, strip_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
@@ -61,7 +69,7 @@ from common.contracts.outcomes import (
     run_aggregate,
 )
 from common.contracts.stages import ARMARIUM
-from common.contracts.uncertainty import PAGE_READ_LECTIO, utf8_round_trip
+from common.contracts.uncertainty import utf8_round_trip
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import dimensions
 from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
@@ -191,12 +199,10 @@ _PAGE_ACCOUNTING_ROW_FIELDS: Final = frozenset(
     {"ordinal", "page_id", "rules", "hold_codes", "policy_sha256", "accounting_ref"}
 )
 SALVAGE_RECORD_SCHEMA: Final = "armarium-salvage-item.v1"
-JOIN_RULE: Final = "verbatus-page-join.v2"
-RECONSTRUCTION_SCHEMA: Final = "armarium-reconstructed-join.v2"
-RECONSTRUCTION_LABEL: Final = (
-    "RECONSTRUCTED: two literal page readings joined at a page break; not an act, "
-    "not a reading, unconfirmed"
-)
+# Code never joins text across a page break: a join row records only that an
+# act may cross it. The Coniector alone reconstructs across one, and only on a
+# run sealed `pages_are_consecutive` (`coniector_layer`).
+JOIN_RULE: Final = "verbatus-page-join.v3"
 _JOIN_FIELDS: Final = frozenset(
     {
         "join_id",
@@ -358,6 +364,9 @@ class ArmariumProjection:
     reading_unit: str = READING_UNIT_ACT
     other_readings: tuple[dict[str, Any], ...] = ()
     page_accounting: tuple[dict[str, Any], ...] = ()
+    # The Coniector's reconstructions beneath delivered acts
+    # (`coniector_layer.export_rows`): labelled, unconfirmed, never acts.
+    reconstructions: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -421,6 +430,7 @@ def canonical_text_sha256(text: str) -> str:
 
 
 _FLAGS_DISAGREE: Final = "flags-disagree"
+NO_CODE_JOIN: Final = "no-code-join"
 
 
 def continuation_join_row(
@@ -437,12 +447,12 @@ def continuation_join_row(
 ) -> dict[str, Any]:
     """One continuation candidate as a text-free join row over the delivered literals.
 
-    `flags_disagree` marks a page-read break whose two readings do not both say
-    an act crosses it: it is recorded, and nothing is reconstructed over it.
+    Every row is `not-reconstructed`: code never joins the two sides' text. Its
+    reason names what the row found; `no-code-join` is a break whose sides are
+    each one delivered act. `flags_disagree` marks a page-read break whose two
+    readings do not both say an act crosses it.
     """
     literal = bool(_literal_formats_in(selected_formats))
-    # Only these two formats carry a reconstruction; the database has no table for one yet.
-    writes = bool({"jsonl", "text-bundle"} & set(selected_formats))
 
     def side_sha256(act_ids: list[str]) -> str | None:
         if literal and len(act_ids) == 1 and act_ids[0] in delivered_texts:
@@ -461,10 +471,8 @@ def continuation_join_row(
         reason = "head-not-delivered"
     elif tail_act_ids[0] not in delivered_texts:
         reason = "tail-not-delivered"
-    elif not writes:
-        reason = "no-reconstruction-format-selected"
     else:
-        reason = None
+        reason = NO_CODE_JOIN
     return {
         "join_id": join_id,
         "candidate_ref": candidate_ref,
@@ -472,97 +480,13 @@ def continuation_join_row(
         "tail_page_ordinal": tail_page_ordinal,
         "head_act_ids": list(head_act_ids),
         "tail_act_ids": list(tail_act_ids),
-        "status": "reconstructed" if reason is None else "not-reconstructed",
+        "status": "not-reconstructed",
         "not_reconstructed_reason": reason,
         "head_canonical_text_sha256": side_sha256(head_act_ids),
         "tail_canonical_text_sha256": side_sha256(tail_act_ids),
         "join_rule": JOIN_RULE,
         "authoritative": False,
     }
-
-
-def _self_revisions(layer: dict[str, Any]) -> list | None:
-    """The layer's self-revisions, refused when absent: a missing key is not zero revisions."""
-    if "self_revisions" not in layer:
-        raise SchemaRefusal(
-            "a delivered act's uncertainty layer carries no self_revisions field; an absent "
-            "measurement may not be counted as no revisions"
-        )
-    return layer["self_revisions"]
-
-
-def _doubt(layer: Any) -> dict[str, int | str | None]:
-    """How much doubt a literal carries, so a join never reads cleaner than its halves."""
-    layer = layer if isinstance(layer, dict) else {}
-    assessment = layer.get("assessment")
-    result = {
-        "uncertain_spans": len(layer.get("uncertain_spans") or []),
-        "gaps": len(layer.get("gaps") or []),
-        # Null when not measured: a withheld draft, or a fed one whose comparison
-        # ran out of its sealed step budget. Never counted as no revisions.
-        "self_revisions": (
-            None
-            if layer.get("lectio_kind") in ("primed-draft-withheld", PAGE_READ_LECTIO)
-            or _self_revisions(layer) is None
-            else len(_self_revisions(layer))
-        ),
-        "assessment": assessment.get("state") if isinstance(assessment, dict) else None,
-    }
-    result["lectio_kind"] = layer["lectio_kind"]
-    return result
-
-
-def _reconstructions(joins, literals: dict[str, tuple[str, Any, Any]]) -> list[dict[str, Any]]:
-    """Head literal, one U+000A, tail literal: nothing added, removed or normalised.
-
-    `literals` maps each delivered act to (text, text_status, uncertainty).
-    """
-    records = []
-    for join in joins:
-        if join["status"] != "reconstructed":
-            continue
-        (head,), (tail,) = join["head_act_ids"], join["tail_act_ids"]
-        text = literals[head][0] + "\n" + literals[tail][0]
-        records.append(
-            {
-                "schema": RECONSTRUCTION_SCHEMA,
-                "join_id": join["join_id"],
-                "label": RECONSTRUCTION_LABEL,
-                "head_act_id": head,
-                "tail_act_id": tail,
-                "head_page_ordinal": join["head_page_ordinal"],
-                "tail_page_ordinal": join["tail_page_ordinal"],
-                "join_rule": JOIN_RULE,
-                "break_offset": len(literals[head][0]),
-                "reconstructed_text": text,
-                "reconstructed_text_sha256": canonical_text_sha256(text),
-                "head_text_status": literals[head][1],
-                "tail_text_status": literals[tail][1],
-                "head_doubt": _doubt(literals[head][2]),
-                "tail_doubt": _doubt(literals[tail][2]),
-            }
-        )
-    return records
-
-
-def _reconstruction_section(record: dict[str, Any], act_keys: dict[str, str]) -> list[str]:
-    head, tail = record["head_act_id"], record["tail_act_id"]
-    return [
-        f"## RECONSTRUCTED {record['join_id']} (not an act)",
-        f"label: {record['label']}",
-        f"join_rule: {record['join_rule']}",
-        f"head: {act_keys[head]} ({head}) page {record['head_page_ordinal']}",
-        f"head_text_status: {record['head_text_status']}",
-        f"head_doubt: {json.dumps(record['head_doubt'], sort_keys=True)}",
-        f"tail: {act_keys[tail]} ({tail}) page {record['tail_page_ordinal']}",
-        f"tail_text_status: {record['tail_text_status']}",
-        f"tail_doubt: {json.dumps(record['tail_doubt'], sort_keys=True)}",
-        f"break_offset: {record['break_offset']}",
-        f"reconstructed_text_sha256: {record['reconstructed_text_sha256']}",
-        "reconstructed_text:",
-        json.dumps(record["reconstructed_text"], ensure_ascii=False),
-        "",
-    ]
 
 
 def _join_notes(joins, act_keys: dict[str, str]) -> dict[str, list[str]]:
@@ -653,27 +577,22 @@ def build_armarium_bundle(
         sources_record["continuation_joins"] = _mark_retained_references(
             list(projection.continuation_joins)
         )
+    coniector_rows = tuple(_mark_retained_references(row) for row in projection.reconstructions)
+    if coniector_rows:
+        # Which reconstructions the package shows, so a verifier can tell one
+        # dropped from a format from one never made.
+        sources_record["reconstructions"] = [list(row["act_ids"]) for row in coniector_rows]
     members["sources.json"] = canonical_bytes(sources_record)
 
-    delivered = [
-        act for act in projection.acts if act["category"] == ArmariumCategory.DELIVERED.value
-    ]
-    reconstructions = _reconstructions(
-        projection.continuation_joins,
-        {
-            act["act_id"]: (act[CANONICAL_TEXT_FIELD], act["text_status"], act["uncertainty"])
-            for act in delivered
-        },
-    )
     if "text-bundle" in formats.formats:
         members.update(
             _text_bundle_members(
                 projection.acts,
                 source_rows,
                 projection.continuation_joins,
-                reconstructions,
                 projection.other_readings,
                 projection.reading_unit,
+                coniector_rows,
             )
         )
     if "acts-database" in formats.formats:
@@ -682,8 +601,8 @@ def build_armarium_bundle(
         members["acts.jsonl"] = _jsonl_bytes(
             _act_json_records(projection.acts, projection.reading_unit)
         )
-        if reconstructions:
-            members["reconstructions.jsonl"] = _jsonl_bytes(reconstructions)
+        if coniector_rows:
+            members[CONIECTOR_MEMBER] = _jsonl_bytes(list(coniector_rows))
         if page_path:
             members[OTHER_READINGS_MEMBER] = _jsonl_bytes(
                 _other_json_records(projection.other_readings)
@@ -819,6 +738,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     if sources["reading_unit"] == READING_UNIT_PAGE:
         _verify_page_layers(root, manifest, formats, sources)
     _verify_continuation_joins(root, formats, sources)
+    _verify_coniector_layer(root, formats, sources, actual_names)
     verification = {}
     if search_fold_verification is not None:
         verification["search_fold"] = search_fold_verification
@@ -1710,7 +1630,7 @@ def _literal_projection(root: Path, name: str) -> dict[str, tuple]:
 
 
 def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: dict) -> None:
-    """Recompute every join row and every reconstruction from the packaged literals."""
+    """Recompute every join row from the packaged literals."""
     joins = sources["continuation_joins"] or []
     outcomes = _act_outcome_sources(sources)
     act_keys = {act_id: outcome["act_key"] for act_id, outcome in outcomes.items()}
@@ -1724,14 +1644,14 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
     ):
         raise SchemaRefusal("the package's act page attribution is not lists of page ordinals")
     literal_formats = _literal_formats_in(formats.formats)
-    literals = (
+    delivered_texts = (
         {
-            act_id: (record[0], record[3], record[2])
+            act_id: record[0]
             for act_id, record in _literal_projection(root, literal_formats[0]).items()
         }
         if literal_formats and joins
         else {
-            act_id: ("", None, None)
+            act_id: ""
             for act_id, outcome in outcomes.items()
             if outcome["category"] == ArmariumCategory.DELIVERED.value
         }
@@ -1773,7 +1693,7 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
             tail_page_ordinal=pages[1],
             head_act_ids=sides[0],
             tail_act_ids=sides[1],
-            delivered_texts={act_id: literal[0] for act_id, literal in literals.items()},
+            delivered_texts=delivered_texts,
             selected_formats=formats.formats,
             flags_disagree=sources["reading_unit"] == READING_UNIT_PAGE
             and join["not_reconstructed_reason"] == _FLAGS_DISAGREE,
@@ -1782,64 +1702,104 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
             raise SchemaRefusal(
                 f"continuation join {join['join_id']} does not recompute from its acts' literals"
             )
-    reconstructions = _reconstructions(joins, literals)
-    if "jsonl" in formats.formats and reconstructions:
-        found = list(
-            _jsonl_rows(root / "reconstructions.jsonl", "reconstructions", "a reconstruction")
-        )
-        if found != reconstructions:
-            raise SchemaRefusal(
-                "a reconstruction is not head + one U+000A + tail of its packaged literals"
-            )
     if "text-bundle" in formats.formats:
-        _verify_text_bundle_joins(root, sources, joins, reconstructions, act_keys)
+        _verify_text_bundle_joins(root, sources, joins, act_keys)
 
 
-def _verify_text_bundle_joins(root, sources, joins, reconstructions, act_keys) -> None:
-    """Each RECONSTRUCTED section line for line, and each act section's own notes."""
-    citations = _act_citation_sources(sources)
+def _verify_coniector_layer(
+    root: Path, formats: ArmariumFormats, sources: dict, actual_names: set[str]
+) -> None:
+    """Recompute every reconstruction the package shows, in each format that shows it.
+
+    Each row must stand beneath delivered literals of its own format, name each
+    act by that act's own key and, when made, be its own departures applied to
+    its own diplomatic pieces. In the text bundle each row must sit beneath its
+    own act's section (a join in its own section) in every folder that sections
+    the act. Every format that shows reconstructions shows exactly the rows
+    `sources.json` records, so a row dropped from one is refused.
+    """
+    shown: list[list[dict[str, Any]]] = []
+    if CONIECTOR_MEMBER in actual_names:
+        literals = _jsonl_literals(root / "acts.jsonl")
+        keys = {
+            row["act_id"]: row["act_key"]
+            for row in _jsonl_rows(root / "acts.jsonl", "acts JSONL", "an acts JSONL row")
+            if isinstance(row, dict) and isinstance(row.get("act_id"), str)
+        }
+        shown.append(
+            [
+                verify_row(row, literals, keys)
+                for row in _jsonl_rows(
+                    root / CONIECTOR_MEMBER, CONIECTOR_MEMBER, "a reconstruction row"
+                )
+            ]
+        )
+    elif "jsonl" in formats.formats:
+        shown.append([])
+    if "text-bundle" in formats.formats:
+        records = _text_bundle_records(root)
+        literals = {act_id: (record.literal,) for act_id, record in records.items()}
+        keys = {act_id: record.heading_key for act_id, record in records.items()}
+        rows: list[dict[str, Any]] = []
+        sectioned: dict[str, set[str]] = {}
+        placed: dict[str, list[dict[str, Any]]] = {}
+        for folder in sorted(
+            {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
+        ):
+            lines = _package_lines(root / _text_member_path(folder), "text bundle")
+            sectioned[folder], placements = text_bundle_placements(lines)
+            placed[folder] = [verify_row(row, literals, keys) for _place, row in placements]
+            rows += [row for row in placed[folder] if row not in rows]
+        for row in rows:
+            for folder, acts in sectioned.items():
+                if anchor_act(row) in acts and placed[folder].count(row) != 1:
+                    raise SchemaRefusal(
+                        f"the text bundle does not show {row['act_keys']}'s reconstruction "
+                        "exactly once in every folder that shows the act"
+                    )
+        shown.append(rows)
+    recorded = sorted(tuple(act_ids) for act_ids in sources.get("reconstructions") or [])
+    for rows in shown:
+        if len({tuple(row["act_ids"]) for row in rows}) != len(rows):
+            raise SchemaRefusal("a package shows one reconstruction twice")
+        if sorted(tuple(row["act_ids"]) for row in rows) != recorded:
+            raise SchemaRefusal(
+                "a package format shows other reconstructions than its sources record"
+            )
+        for row in rows:
+            _verify_retained_references(row)
+    keyed = [sorted(rows, key=lambda row: row["act_ids"]) for rows in shown]
+    if any(rows != keyed[0] for rows in keyed):
+        raise SchemaRefusal(
+            f"the text bundle and {CONIECTOR_MEMBER} show different reconstructions"
+        )
+
+
+def _verify_text_bundle_joins(root, sources, joins, act_keys) -> None:
+    """Each act section's continuation notes mirror its join rows, and no section joins text."""
     expected_notes = _join_notes(joins, act_keys)
     folders = {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
     for folder in sorted(folders):
         lines = [*_package_lines(root / _text_member_path(folder), "text bundle"), ""]
-        act_id, act_notes, index = None, None, 0
-        sections: dict[str, list[str]] = {}
-        while index < len(lines):
-            line = lines[index]
+        act_id, act_notes = None, None
+        for line in lines:
             if act_notes is not None and (not line or line.startswith("## ")):
                 if act_notes != expected_notes.get(act_id, []):
                     raise SchemaRefusal(
                         "the text bundle's continuation notes do not mirror its join rows"
                     )
                 act_notes = None
-            if line.startswith("## RECONSTRUCTED "):
-                end = next((at for at in range(index, len(lines)) if not lines[at]), len(lines))
-                block = lines[index : end + 1]
-                join_id = line.removeprefix("## RECONSTRUCTED ").removesuffix(" (not an act)")
-                if sections.setdefault(join_id, block) is not block:
-                    raise SchemaRefusal("a text-bundle RECONSTRUCTED section appears twice")
-                index = end + 1
-                continue
+            if line.startswith("## RECONSTRUCTED ") or line == "reconstructed_text:":
+                raise SchemaRefusal(
+                    "the text bundle joins two readings by code; only the Coniector "
+                    "reconstructs across a page break"
+                )
             if line.startswith("act-id: "):
                 act_id, act_notes = line.removeprefix("act-id: "), []
-            elif line.startswith("possible-continuation-") or line == "reconstructed_text:":
-                if act_notes is None or line == "reconstructed_text:":
+            elif line.startswith("possible-continuation-"):
+                if act_notes is None:
                     raise SchemaRefusal("a text-bundle continuation line sits outside its section")
                 act_notes.append(line)
-            index += 1
-        expected_sections = {
-            record["join_id"]: _reconstruction_section(record, act_keys)
-            for record in reconstructions
-            if folder
-            in {
-                _source_folder_for_declared_path(region["declared_path"])
-                for region in citations[record["head_act_id"]]["source_regions"]
-            }
-        }
-        if sections != expected_sections:
-            raise SchemaRefusal(
-                "a text-bundle RECONSTRUCTED section does not recompute from its join and literals"
-            )
 
 
 INK_MAP_DENOMINATOR: Final = "ink-map sealed pages"
@@ -3236,9 +3196,9 @@ def _text_bundle_members(
     acts: tuple[dict[str, Any]],
     source_rows: list[dict[str, Any]],
     joins: tuple[dict[str, Any], ...] = (),
-    reconstructions: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
     others: tuple[dict[str, Any], ...] = (),
     reading_unit: str = READING_UNIT_ACT,
+    coniector_rows: tuple[dict[str, Any], ...] = (),
 ) -> dict[str, bytes]:
     """Write one readable file for every cited source folder.
 
@@ -3282,6 +3242,7 @@ def _text_bundle_members(
             other_groups[folder].append(other)
     act_keys = {act["act_id"]: act["act_key"] for act in acts}
     notes = _join_notes(joins, act_keys)
+    beneath = {anchor_act(row): row for row in coniector_rows if row["unit"] == "act"}
     members: dict[str, bytes] = {}
     for folder in sorted(folders):
         records = grouped[folder]
@@ -3316,14 +3277,18 @@ def _text_bundle_members(
                     "display:",
                     json.dumps(render_display(act[CANONICAL_TEXT_FIELD]), ensure_ascii=False),
                     *notes.get(act["act_id"], []),
+                    *(
+                        reconstruction_lines(beneath[act["act_id"]])
+                        if act["act_id"] in beneath
+                        else []
+                    ),
                     "",
                 ]
             )
         in_folder = {act["act_id"] for act in records}
-        for record in reconstructions:
-            if record["head_act_id"] not in in_folder:
-                continue
-            lines.extend(_reconstruction_section(record, act_keys))
+        for row in coniector_rows:
+            if row["unit"] == "join" and anchor_act(row) in in_folder:
+                lines.extend(join_section(row))
         for other in sorted(
             other_groups[folder], key=lambda item: act_key_sort_key(item["act_key"])
         ):
@@ -4797,7 +4762,10 @@ def _load_sources(root) -> dict[str, Any]:
         raise SchemaRefusal("the package sources citation has no recognized schema")
     page_path = record["schema"] == SOURCES_PAGE_SCHEMA
     fields = (*_SOURCES_FIELDS, *(_SOURCES_PAGE_FIELDS if page_path else ()))
-    if set(record) - {"logical_accounting", "continuation_joins"} != {"schema", *fields}:
+    if set(record) - {"logical_accounting", "continuation_joins", "reconstructions"} != {
+        "schema",
+        *fields,
+    }:
         raise SchemaRefusal("the package sources citation has an unrecognized field set")
     sources = {field: record[field] for field in fields}
     sources["reading_unit"] = READING_UNIT_PAGE if page_path else READING_UNIT_ACT
@@ -4816,6 +4784,16 @@ def _load_sources(root) -> dict[str, Any]:
         isinstance(sources["continuation_joins"], list) and sources["continuation_joins"]
     ):
         raise SchemaRefusal("the package sources citation carries an empty continuation-join list")
+    sources["reconstructions"] = record.get("reconstructions")
+    if "reconstructions" in record and not (
+        isinstance(sources["reconstructions"], list)
+        and sources["reconstructions"]
+        and all(
+            isinstance(act_ids, list) and act_ids and all(isinstance(a, str) for a in act_ids)
+            for act_ids in sources["reconstructions"]
+        )
+    ):
+        raise SchemaRefusal("the package sources citation names its reconstructions malformed")
     return sources
 
 
@@ -4903,13 +4881,14 @@ def _verify_exact_product_members(
     """Make the manifest's format list a closed promise, in both directions."""
     selected = set().union(*_required_format_members(formats, sources["pages"]).values())
     expected = {EXPORT_MANIFEST_NAME, "sources.json", *selected}
-    if "jsonl" in formats.formats and any(
-        isinstance(join, dict) and join.get("status") == "reconstructed"
-        for join in sources["continuation_joins"] or []
-    ):
-        expected.add("reconstructions.jsonl")
     if "jsonl" in formats.formats and sources["reading_unit"] == READING_UNIT_PAGE:
         expected.add(OTHER_READINGS_MEMBER)
+    # Written only when a delivered act carries a reconstruction; its rows are
+    # verified whole (`_verify_coniector_layer`).
+    if "jsonl" in formats.formats and (
+        CONIECTOR_MEMBER in actual_names or sources.get("reconstructions")
+    ):
+        expected.add(CONIECTOR_MEMBER)
     expected.update(_embedded_member_paths(sources))
     if actual_names != expected:
         missing = sorted(expected - actual_names)

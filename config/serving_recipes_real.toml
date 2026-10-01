@@ -648,6 +648,53 @@ request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
 
 [[profiles]]
+kind = "unsupported"
+recipe = "unproven-real-reconstructor"
+chair = "reconstructor"
+tier = "generic-24gb"
+reason = "Reconstructor Qwen3.8-27B needs 51.7 GiB for bf16 weights alone, above this 24 GiB tier before KV, vision, or engine overhead; use generic-80gb-plus."
+
+[[profiles]]
+kind = "unsupported"
+recipe = "unproven-real-reconstructor"
+chair = "reconstructor"
+tier = "generic-48gb"
+reason = "Reconstructor Qwen3.8-27B needs 51.7 GiB for bf16 weights alone, above this 48 GiB tier before KV, vision, or engine overhead; use generic-80gb-plus."
+
+[[profiles]]
+kind = "vllm"
+recipe = "unproven-real-reconstructor"
+chair = "reconstructor"
+tier = "generic-80gb-plus"
+host = "127.0.0.1"
+port = 8107
+served_model_id = "reconstructor-qwen3.8-27b"
+dtype = "bfloat16"
+seed = 0
+required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
+# The Perlector's own launch shape: the same model served as its makers serve
+# it, asked text only by the Coniector.
+max_model_len = 65536
+max_num_seqs = 2
+max_num_batched_tokens = 4096
+gpu_memory_utilization = "0.88"
+min_pixels = 65536
+max_pixels = 5299200
+patch_size = 16
+merge_size = 2
+enable_prefix_caching = false  # hybrid attention (few full-attention layers); see header note
+enforce_eager = false
+trust_remote_code = false
+enable_tower_connector_lora = false
+max_lora_rank = 64
+generation_config = "vllm"
+preflight_state = "unproven"
+startup_timeout_seconds = 600  # measured cold start ~375 s (see the header) plus 60% margin
+poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value: no real reading has been timed
+readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+
+[[profiles]]
 kind = "in-process"
 recipe = "unproven-real-secondary-proposer"
 chair = "secondary_proposer"

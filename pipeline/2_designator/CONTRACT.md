@@ -252,9 +252,12 @@ grouping_config_sha256
 Inputs cite both pages' `structure-status` and every named act's `act-group`
 record. The payload passes `_refuse_text_fields`. It enters no act and no seal,
 and the Designator's exit code ignores it: the named acts stay `proposed`, are
-witnessed and read, and each is delivered as its literal page reading beside a
-labelled Armarium reconstruction, with the run partial (see those contracts).
-The link stays unmade; a candidate is a flag for review, never the relation.
+witnessed and read, and each is delivered as its literal page reading. The
+Armarium's join row records only that an act may cross the break
+(`not-reconstructed`, `no-code-join`), with the run partial; only the
+Coniector's layer reconstructs across the break, on a run sealed
+`pages_are_consecutive` (see those contracts). The link stays unmade; a
+candidate is a flag for review, never the relation.
 
 ## `kind="page-fallback"`
 
@@ -1715,8 +1718,10 @@ live/fixture distinction this unit gave `_publish_page_fallback`'s `reason`.
 answers one page at a time, so an act that crosses a page break comes back as
 two acts: a head with no tail and a tail with no heading. When the geometry
 shows it (see `kind="continuation-candidate"`), both acts are read and delivered
-as their literals beside a labelled reconstruction, and the export is partial
-rather than complete. Nothing joins them into one act. What this does not catch: a tail the scan groups with a margin anchor (an
+as their literals, the join row records only that an act may cross the break
+(`not-reconstructed`, `no-code-join`), and the export is partial rather than
+complete. Nothing joins them into one act; only the Coniector's layer
+reconstructs across the break, on a run sealed `pages_are_consecutive`. What this does not catch: a tail the scan groups with a margin anchor (an
 anchored group is read as a new act); a head or tail that stops short of its
 page's edge reach; a crossing between two groups that share no pixel column,
 which includes a reading-order break from one column into another; a page cut

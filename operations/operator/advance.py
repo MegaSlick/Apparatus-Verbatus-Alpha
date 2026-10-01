@@ -21,13 +21,13 @@ from typing import Any
 from common.contracts.approval import ApprovalRecordReference, build_approval_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ApprovalRefusal, ContractError
-from common.contracts.stages import ARMARIUM, SEAL_PREDECESSORS, STAGES
+from common.contracts.stages import ARMARIUM, STAGES, seal_readers
 from common.runtree.store import RunTree
 from common.stage import (
     held_advance_boundaries,
     latest_attempt,
     verify_final_seal,
-    verify_predecessor_seal,
+    verify_stage_seal,
 )
 
 # The one copy of the fstat identity this package checks custody against lives
@@ -172,12 +172,11 @@ def verify_sealed_boundary(tree: RunTree, stage: str) -> None:
     if stage == ARMARIUM:
         verify_final_seal(tree)
         return
-    consumers = [consumer for consumer, producer in SEAL_PREDECESSORS.items() if producer == stage]
-    if len(consumers) != 1:  # the closed stage graph must give every non-final seal one reader
-        raise ApprovalRefusal(
-            f"stage {stage!r} has no unique seal verifier; no boundary was advanced"
-        )
-    verify_predecessor_seal(tree, consumers[0])
+    # Every reader verifies one seal the same way, so any of them proves it.
+    readers = seal_readers(stage)
+    if not readers:  # the closed stage graph must give every non-final seal a reader
+        raise ApprovalRefusal(f"stage {stage!r} has no seal verifier; no boundary was advanced")
+    verify_stage_seal(tree, stage, readers[0])
 
 
 def stored_boundary(tree: RunTree, stage: str) -> tuple[dict[str, Any], str]:

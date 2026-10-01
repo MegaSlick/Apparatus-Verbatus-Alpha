@@ -2726,12 +2726,13 @@ def test_real_catalogue_covers_each_chair_and_names_unservable_tiers():
         "attestator_3",
         "perlector",
         "designator_surya",
+        "reconstructor",
     }
     assert len(real_catalogue.profiles) == len(configured) * len(tiers)
     for identity in configured:
         for tier in tiers:
             profile = real_catalogue.for_identity(identity, tier)
-            if identity.role == "perlector" and tier != "generic-80gb-plus":
+            if identity.role in ("perlector", "reconstructor") and tier != "generic-80gb-plus":
                 assert isinstance(profile, UnsupportedProfile)
                 with pytest.raises(ServingModeRefusal, match="51.7 GiB"):
                     serving_mode_for(real_catalogue, identity, tier)

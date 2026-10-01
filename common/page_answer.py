@@ -282,17 +282,26 @@ def grammar_problems(answer: Any) -> list[dict[str, str]]:
     return problems
 
 
+def decode_json_reply(raw: Any) -> tuple[Any, list[dict[str, str]]]:
+    """`(value, problems)` for a reply that must be one bare JSON value, never repaired.
+
+    `problems` is empty exactly when the reply is text holding one JSON value and
+    nothing else: no code fence, no duplicate key, no `NaN`/`Infinity`, nested at
+    most `MAX_NESTING_DEPTH` deep and with no lone surrogate. On any problem the
+    value is `None`. Shared by every grammar that asks a model for bare JSON.
+    """
+    if not isinstance(raw, str):
+        return None, [_problem("not-text", "the reply is not text")]
+    if _is_fenced(raw):
+        return None, [
+            _problem(FENCED_ANSWER, "the reply wraps its object in a Markdown code fence")
+        ]
+    return _decode(raw)
+
+
 def parse_page_answer(raw_text: str) -> tuple[str, dict[str, Any] | None, list[dict[str, str]]]:
     """`(parse_state, answer | None, problems)` for one page reading's reply text."""
-    if not isinstance(raw_text, str):
-        return MALFORMED, None, [_problem("not-text", "the reply is not text")]
-    if _is_fenced(raw_text):
-        return (
-            MALFORMED,
-            None,
-            [_problem(FENCED_ANSWER, "the reply wraps its object in a Markdown code fence")],
-        )
-    value, problems = _decode(raw_text)
+    value, problems = decode_json_reply(raw_text)
     if not problems:
         problems = grammar_problems(value)
     if problems:

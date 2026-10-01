@@ -154,6 +154,7 @@ CHAIN_TO_INK_MAP = programs_through("ink-map")
 TAIL_FROM_RECENSOR = (
     "pipeline/5_recensor/run.py",
     "pipeline/6_archetypus/run.py",
+    "pipeline/4b_coniector/run.py",
     "pipeline/7_armarium/run.py",
 )
 LIVE_CHAIRS = ("designator_structure", *WITNESS_CHAIRS, "perlector")
@@ -814,6 +815,7 @@ def test_the_run_reaches_a_sealed_terminal_export_over_proposed_acts(whole_run):
     assert whole_run.tail == {
         "pipeline/5_recensor/run.py": EXIT_COMPLETE,
         "pipeline/6_archetypus/run.py": EXIT_COMPLETE,
+        "pipeline/4b_coniector/run.py": EXIT_COMPLETE,
         "pipeline/7_armarium/run.py": EXIT_COMPLETE,
     }
     export = verify_final_seal(RunTree(whole_run.run_root, RUN_ID))
@@ -1476,10 +1478,10 @@ def page_break_run(work: Path) -> SimpleNamespace:
     )
 
 
-def test_an_act_split_across_a_page_break_is_delivered_twice_with_a_labelled_reconstruction(
+def test_an_act_split_across_a_page_break_is_delivered_twice_and_joined_by_no_code(
     tmp_path,
 ):
-    """Both halves leave as their own literals; the join is a labelled layer, never an act."""
+    """Both halves leave as their own literals; the join row records the break and joins nothing."""
     run = page_break_run(tmp_path)
     assert run.exits == (EXIT_COMPLETE, EXIT_COMPLETE, EXIT_COMPLETE)
 
@@ -1496,7 +1498,8 @@ def test_an_act_split_across_a_page_break_is_delivered_twice_with_a_labelled_rec
     assert aggregate["status"] == "partial"
     assert aggregate["by_category"] == {ArmariumCategory.DELIVERED.value: 4}
     (reason,) = aggregate["reasons"]
-    assert reason.startswith("continuation join join-1-2-0 (reconstructed)")
+    assert reason.startswith("continuation join join-1-2-0 (not-reconstructed)")
+    assert "(no-code-join)" in reason
 
     texts = {act["act_key"]: act["text"] for act in export["payload"]["delivered"]}
     bundle = RunTree(run.run_root, RUN_ID).read_bytes(
@@ -1504,6 +1507,7 @@ def test_an_act_split_across_a_page_break_is_delivered_twice_with_a_labelled_rec
     )
     with ZipFile(BytesIO(bundle)) as archive:
         (readings,) = [name for name in archive.namelist() if name.endswith("readings.txt")]
-        lines = archive.read(readings).decode("utf-8").split("\n")
-    joined = json.loads(lines[lines.index("reconstructed_text:") + 1])
-    assert joined == texts[PAGE_BREAK_HEAD] + "\n" + texts[PAGE_BREAK_TAIL]
+        text = archive.read(readings).decode("utf-8")
+    assert "reconstructed_text:" not in text
+    joined = texts[PAGE_BREAK_HEAD] + "\n" + texts[PAGE_BREAK_TAIL]
+    assert json.dumps(joined, ensure_ascii=False) not in text

@@ -106,8 +106,12 @@ def _recense(root: Path, options: dict, scenario: str) -> None:
 
 
 def _after_recensor(root: Path, options: dict, scenario: str):
-    """The Archetypus, then (when it completes) the Armarium; the last result."""
-    for program in ("pipeline/6_archetypus/run.py", "pipeline/7_armarium/run.py"):
+    """The Archetypus, then (when it completes) the Coniector and the Armarium; the last result."""
+    for program in (
+        "pipeline/6_archetypus/run.py",
+        "pipeline/4b_coniector/run.py",
+        "pipeline/7_armarium/run.py",
+    ):
         result = run_stage(root, RUN_ID, scenario, program, **options)
         if program.startswith("pipeline/6") and result.returncode != 0:
             return result
@@ -337,19 +341,17 @@ def _assert_no_entry_reads_nothing(bundle: dict, key: str) -> None:
     assert reask["read_on_reask_acts"] == 0
 
 
-def test_an_agreed_continuation_is_a_labelled_reconstruction_and_keeps_the_run_partial(
-    happy, tmp_path
-):
+def test_an_agreed_continuation_is_joined_by_no_code_and_keeps_the_run_partial(happy, tmp_path):
     root, options = _copy(happy, tmp_path)
     result = _export(root, options, "happy")
     assert result.returncode == 3, result.stderr
     bundle = _bundle(root, tmp_path / "clean")
-    [reconstruction] = [
-        json.loads(line) for line in bundle["members"]["reconstructions.jsonl"].splitlines()
-    ]
-    assert reconstruction["head_page_ordinal"] == 1 and reconstruction["tail_page_ordinal"] == 2
+    assert "reconstructions.jsonl" not in bundle["members"]
+    [join] = json.loads(bundle["members"]["sources.json"])["continuation_joins"]
+    assert (join["head_page_ordinal"], join["tail_page_ordinal"]) == (1, 2)
+    assert join["not_reconstructed_reason"] == "no-code-join"
     [reason] = bundle["manifest"]["aggregate"]["reasons"]
-    assert reason.startswith("continuation join") and "(reconstructed)" in reason
+    assert reason.startswith("continuation join") and "(no-code-join)" in reason
 
 
 # --- the verifier recomputes every claim from the package's own sources ------------

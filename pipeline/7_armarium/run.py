@@ -46,6 +46,7 @@ from armarium_export import (  # noqa: E402
     edge_hold_pages_from_rows,
     unpaired_continuations,
 )
+from coniector_layer import export_rows  # noqa: E402
 
 from common import page_path  # noqa: E402
 from common.alignment import sealed_dissent_budget  # noqa: E402
@@ -107,6 +108,7 @@ from common.page_testimonia import (  # noqa: E402
     shown_page_witnesses,
 )
 from common.physical_act_partition import validate_physical_act_partition  # noqa: E402
+from common.reconstruction_records import verified_reconstructions  # noqa: E402
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
@@ -2114,10 +2116,11 @@ def page_continuation_joins(
     """Each Recensor continuation link as a join row over the delivered literals.
 
     Every flagged page break is a join, so each keeps the run partial with its
-    reason: an agreed link with both sides delivered is reconstructed; a side
-    with no `act` entry names no act (`side-names-no-act`); a link whose two
-    readings' flags disagree reconstructs nothing (`flags-disagree`). Each
-    link is one `page_review.continuation_links` proved to join `act` edges.
+    reason: an agreed link with both sides delivered is `no-code-join`
+    (recorded, never joined by code); a side with no `act` entry names no act
+    (`side-names-no-act`); a link whose two readings' flags disagree is
+    `flags-disagree`. Each link is one `page_review.continuation_links` proved
+    to join `act` edges.
     """
     delivered_texts = {
         act["act_id"]: act["canonical_clean_text"]
@@ -2142,6 +2145,21 @@ def page_continuation_joins(
             )
         )
     return tuple(joins)
+
+
+def coniector_rows(coniector: dict, projected_acts: list[dict]) -> list[dict]:
+    """The Coniector's verified reconstructions beneath the acts this run delivers."""
+    delivered = {
+        act["act_id"]: act["canonical_clean_text"]
+        for act in projected_acts
+        if act["category"] == ArmariumCategory.DELIVERED.value
+    }
+    return export_rows(
+        [*coniector["acts"].values(), *coniector["joins"]],
+        coniector["diplomatic_raw"],
+        delivered,
+        coniector["refs"],
+    )
 
 
 def page_accounting_rows(context, pages: dict[int, dict], real: set[int]) -> list[dict]:
@@ -2286,6 +2304,7 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
     real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
     denominator = reading_denominator(context)
     pages, rows = denominator["pages"], denominator["acts"]
+    coniector = verified_reconstructions(context, READING_UNIT_PAGE, rows)
     # A refused page is the census's to report, with the Door's reason; it is
     # never reviewed and never counted.
     for row in rows:
@@ -2433,6 +2452,7 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
     )
     ink_map_pages = [row for row in all_ink_map_pages if row["ordinal"] not in canaries]
     joins = page_continuation_joins(links, projected_acts, formats.formats)
+    reconstructions = coniector_rows(coniector, projected_acts)
     unaddressed = list(unaddressed_chairs(context.registry.config))
     other_categories_by_page: dict[int, list[str]] = {}
     for other in projected_others:
@@ -2502,6 +2522,7 @@ def _main_page(context, formats, census: dict[int, dict], canaries: set[int]) ->
             reading_unit=READING_UNIT_PAGE,
             other_readings=tuple(projected_others),
             page_accounting=tuple(page_accounting_rows(context, pages, real_sealed)),
+            reconstructions=tuple(reconstructions),
         ),
         formats,
         context.tree.read_bytes,
@@ -2590,6 +2611,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         raise FatalAccounting("sealed canary ordinals are absent from the Exemplar page census")
     if sealed_reading_unit(context) == READING_UNIT_PAGE:
         return _main_page(context, formats, census, canaries)
+    # An act-read run's Coniector reconstructs nothing; its plan is still proven.
+    verified_reconstructions(context, sealed_reading_unit(context), None)
     real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
 
     categories: dict[str, ArmariumCategory] = {}

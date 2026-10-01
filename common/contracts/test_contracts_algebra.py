@@ -29,7 +29,15 @@ from common.contracts.outcomes import (
     terminal_category,
     witness_coverage,
 )
-from common.contracts.stages import ARMARIUM, ATTESTATORES, DESIGNATOR, INK_MAP, PERLECTOR, RECENSOR
+from common.contracts.stages import (
+    ARMARIUM,
+    ATTESTATORES,
+    CONIECTOR,
+    DESIGNATOR,
+    INK_MAP,
+    PERLECTOR,
+    RECENSOR,
+)
 from common.recensor_receipt import _validate_coverage
 
 # The exact shape of the algebra as this spec defines it. Pinned as counts so that
@@ -45,6 +53,7 @@ EXPECTED_VOCABULARY_SIZES = {
     "perlector": 8,
     "recensor": 8,
     "archetypus": 4,
+    "coniector": 7,
     "armarium": 7,
 }
 
@@ -62,6 +71,11 @@ def test_ink_map_names_edge_evidence_without_owning_unit_14s_hold():
 def test_unmeasurable_ink_remains_unresolved_page_evidence_that_flows_onward():
     assert classify(INK_MAP, "ink-not-measurable") is OutcomeClass.UNRESOLVED
     assert terminal_category(INK_MAP, "ink-not-measurable") is None
+
+
+def test_no_coniector_outcome_decides_where_an_act_ends():
+    for outcome in outcomes.VOCABULARIES[CONIECTOR]:
+        assert terminal_category(CONIECTOR, outcome) is None
 
 
 def test_vocabulary_shape_is_pinned():
@@ -413,8 +427,8 @@ def test_a_continuation_join_forces_partial_over_two_delivered_acts():
         continuation_joins=[
             {
                 "join_id": "join-1-2-0",
-                "status": "reconstructed",
-                "not_reconstructed_reason": None,
+                "status": "not-reconstructed",
+                "not_reconstructed_reason": "no-code-join",
                 "head_page_ordinal": 1,
                 "tail_page_ordinal": 2,
             }
@@ -423,7 +437,8 @@ def test_a_continuation_join_forces_partial_over_two_delivered_acts():
     assert aggregate["status"] == "partial"
     assert aggregate["by_category"] == {"delivered": 2}
     (reason,) = aggregate["reasons"]
-    assert reason.startswith("continuation join join-1-2-0 (reconstructed)")
+    assert reason.startswith("continuation join join-1-2-0 (not-reconstructed)")
+    assert "no reconstruction was made (no-code-join)" in reason
 
 
 def test_an_unaddressed_chair_is_named_once_however_often_it_is_supplied():

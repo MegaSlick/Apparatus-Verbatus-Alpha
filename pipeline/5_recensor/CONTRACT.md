@@ -175,8 +175,9 @@ a blank act, and its reason is appended to every named act's review reason. Ever
 review of a named act, `recovery-requested` included, lists every naming candidate
 as inputs and as `payload["continuation_candidate_refs"]`, so an act that ends one
 break and opens the next cites both; the field is absent on a review no candidate
-names. The link stays unmade and no act is merged: the Armarium projects a labelled
-reconstruction beside the literals and keeps the run partial.
+names. The link stays unmade and no act is merged: the Armarium records a text-free
+`not-reconstructed` join row and keeps the run partial; any reconstruction is the
+Coniector's own layer.
 
 ## `kind="review"`
 

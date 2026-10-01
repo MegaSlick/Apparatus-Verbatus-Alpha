@@ -178,29 +178,45 @@ projection configuration. The bundle may contain these plainly specified formats
   claim from it instead of believing the self-hashed manifest.
 - `review-items.jsonl` — held and refused act records with reasons and
   digest-checked evidence references.
-- `continuation_joins` in `sources.json` and `reconstructions.jsonl` — present only when
-  the Designator published a `continuation-candidate`, and refused unless every act it
-  names has a review citing it. Each join row is text-free and `authoritative: false`:
-  `reconstructed` when each side names exactly one delivered act and `jsonl` or
-  `text-bundle` is selected, else `not-reconstructed` with a named reason and no text. The
-  head and tail pages must be adjacent and among the pages each named act was marked
-  out on. A reconstructed join is the head literal, one U+000A, then the tail literal
-  (`verbatus-page-join.v2`, nothing added, removed or normalised), labelled
-  `RECONSTRUCTED … not an act`, and carries each half's `text_status`, its reader
-  assessment state and a count of its uncertain spans, gaps and self-revisions (the
-  offsets stay on each half's own literal). A `primed-draft-withheld` reading carries
-  `self_revisions: null` and its lectio kind: the reader did not see Pass A, so a
-  self-revision count was not measured. So does a fed reading whose self-revision
-  comparison ran out of its sealed step budget. V2 permits null head/tail doubt counts
-  and carries each half's `lectio_kind` in `armarium-reconstructed-join.v2`.
-  It is written to `reconstructions.jsonl` (with `jsonl`) and as a
-  `## RECONSTRUCTED <join_id> (not an act)` section, with mirrored
-  `possible-continuation-on/-from` notes in each named act's own section (with
-  `text-bundle`). Every join keeps the run `partial` with a reason named from its
-  status; no reconstruction enters the act count, the ledger's units, review items, the
-  database or its search index. The clean verifier recomputes every row, every
-  reconstruction record, every section line for line in its head act's folder and
-  every act's notes from the packaged literals.
+- `continuation_joins` in `sources.json` — present only when the Designator published a
+  `continuation-candidate`, and refused unless every act it names has a review citing
+  it. Each join row is text-free and `authoritative: false`: it records that an act may
+  cross the break, and code never joins the two sides' text (`verbatus-page-join.v3`).
+  Every row is `not-reconstructed` with a named reason: `no-code-join` when each side
+  names exactly one delivered act, else what the row found (`side-names-no-act`,
+  `flags-disagree`, `act-named-twice-on-one-side`, `several-acts-on-a-side`,
+  `head-not-delivered`, `tail-not-delivered`). The head and tail pages must be adjacent
+  and among the pages each named act was marked out on. The text bundle carries
+  mirrored `possible-continuation-on/-from` notes in each named act's own section.
+  Every join keeps the run `partial` with its reason; no join enters the act count, the
+  ledger's units, review items, the database or its search index. Only the Coniector
+  reconstructs across a page break, and only on a run sealed `pages_are_consecutive`
+  (its layer, below). The clean verifier recomputes every row and every act's notes
+  from the packaged literals, and refuses a text bundle that joins text by code.
+- `coniector.jsonl` (with `jsonl`) and the text bundle's reconstruction lines (with
+  `text-bundle`) — the Coniector's reconstructions (`pipeline/4b_coniector`), each
+  verified at export by `common.reconstruction_records.verified_reconstructions`,
+  which recomputes every Coniector record from the Perlector's sealed readings and
+  each call's retained reply. A reconstruction is shown only beneath a delivered act
+  whose literal is exactly the reading the Coniector was shown (a join only when
+  every piece is delivered), as one `armarium-coniector-reconstruction.v1` row:
+  its label, who made it (`maker.kind`, a model chair or a person), its diplomatic
+  pieces with their doubt marks, its departures, its findings as `flags`, and, when
+  not made, why. In the text bundle it follows the act's own fields as
+  `reconstruction_*` lines (every value a model or person wrote as one JSON line),
+  ending with the whole row, and a join is its own
+  `## JOIN RECONSTRUCTION <keys> (not an act)` section. Flags change nothing: no
+  reconstruction or flag enters the act count, the ledger, review items, the
+  database, a category or the aggregate. The clean verifier re-applies every made
+  row's departures to its pieces, holds each piece to its act's literal in the same
+  format, and requires every selected format that shows reconstructions to show
+  exactly the rows `sources.json` names under `reconstructions` (each row's
+  `act_ids`; the key is absent when none is shown), so a row dropped from one format
+  is refused. In the
+  text bundle each row must sit beneath its own act's section (a join in its own
+  section) in every folder that sections that act. A reconstruction whose act is not
+  delivered, or a join with a piece not delivered, is not shown at all: the
+  Coniector's records in the run tree keep it.
 - `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
   act identifiers or canonical-text fields; promotion requires recorded approval
   and pipeline re-entry, never an export-time act.
@@ -450,10 +466,9 @@ records, read by `page_review.continuation_links` (one per flagged page break
 `page-break:<p>:<p+1>`, each named side a counted row on its side of the break
 carrying its own flag, `agreed` exactly when both flags are raised, `accepted`
 exactly when agreed). Every link becomes a join row (its `candidate_ref` is the
-link): agreed with both sides delivered, it is reconstructed exactly as on the
-act path; a side with no `act` entry is `not-reconstructed`
-(`side-names-no-act`); a link whose flags disagree is `not-reconstructed`
-(`flags-disagree`). A link naming an `other` reading is fatal. Every join keeps
+link): agreed with both sides delivered, it is `no-code-join` exactly as on the
+act path; a side with no `act` entry is `side-names-no-act`; a link whose flags
+disagree is `flags-disagree`. A link naming an `other` reading is fatal. Every join keeps
 the run `partial` with its reason, as on the act path. Each delivered act's raised
 flags travel in `aggregate_basis.continuation_flags` (`{act_key: [flag, ...]}`,
 page path only), and a flag no join has as a side is a named partial reason, so a

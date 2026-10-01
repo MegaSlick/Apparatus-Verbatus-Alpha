@@ -91,6 +91,7 @@ def stage_programs() -> dict[str, str]:
         "perlector",
         "recensor",
         "archetypus",
+        "coniector",
         "armarium",
     ], "a stage was added to or dropped from the orchestrator's sequence"
     return programs
@@ -541,8 +542,16 @@ def build_page_tree(
     return root, options
 
 
-def page_context(root: Path, run_id: str, scenario: str, options: dict[str, object], stage=None):
-    """A page-read tree's context under `options`, opened as `stage` (the Recensor's by default)."""
+def page_context(
+    root: Path,
+    run_id: str,
+    scenario: str,
+    options: dict[str, object],
+    stage=None,
+    serving_reader=None,
+):
+    """A page-read tree's context under `options`, opened as `stage` (the Recensor's by
+    default), with `serving_reader` for a test that reads a live call again."""
     from common.contracts.stages import RECENSOR
     from common.stage import open_context, stage_parser
 
@@ -561,7 +570,7 @@ def page_context(root: Path, run_id: str, scenario: str, options: dict[str, obje
             ),
         ]
     )
-    return open_context(args, stage or RECENSOR)
+    return open_context(args, stage or RECENSOR, serving_reader=serving_reader)
 
 
 def _stage_records(root: Path, run_id: str, stage_dir: str, kind: str) -> list[tuple[Path, dict]]:

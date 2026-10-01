@@ -58,7 +58,6 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Callable, Final
 
-from live_reader import EngineSignalRefusal, send_page_request
 from throughput import planned_seconds_per_page
 
 import operations.serving.errors as serving_errors
@@ -107,6 +106,7 @@ from common.stage import (
     stage_manifest,
 )
 from operations.serving.assembly import bound_serving_recipes
+from operations.serving.chat_request import EngineSignalRefusal, send_page_request
 from operations.serving.errors import ChairResponseRefusal
 from operations.serving.http import EndpointUnavailable
 

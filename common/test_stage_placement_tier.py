@@ -46,6 +46,7 @@ def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
         designator_grouping_config=ROOT / "config" / "designator_grouping.toml",
         alignment_config=ROOT / "config" / "alignment.toml",
         page_accounting_config=ROOT / "config" / "page_accounting.toml",
+        reconstruction_config=ROOT / "config" / "reconstruction.toml",
         ink_map_config=ROOT / "config" / "ink_map.toml",
         formats_config=ROOT / "config" / "formats.toml",
         recovery_config=ROOT / "config" / "recovery.toml",

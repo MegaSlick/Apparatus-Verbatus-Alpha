@@ -38,6 +38,7 @@ from common.contracts.stages import (
     ARCHETYPUS,
     ARMARIUM,
     ATTESTATORES,
+    CONIECTOR,
     DESIGNATOR,
     DOOR,
     EXEMPLAR,
@@ -120,10 +121,10 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 # the ink map must confirm ink under it before it may spend a recovery or hold
 # an act; here it cannot, so a2 goes straight to a hold without a
 # second recovery round.
-HAPPY_SNAPSHOT_FILES = 119
-REVIEW_SNAPSHOT_FILES = 129
-HAPPY_RUN_TREE_DIGEST = "22f3b91c9f4b0258b7dca25ff7d35e075b46c66f519bb19020631e159cdd15ee"
-REVIEW_RUN_TREE_DIGEST = "1a41768dae099bb6893898612fe2f6db9dea6d2c8b46ccbc9182b45d488a1646"
+HAPPY_SNAPSHOT_FILES = 123
+REVIEW_SNAPSHOT_FILES = 133
+HAPPY_RUN_TREE_DIGEST = "e8e2399f5d07bb43bb52ded99787bf4fe7990ad6e02b5ad033ce6bf709859ce5"
+REVIEW_RUN_TREE_DIGEST = "0adc71e86401940857f7ff0f0ad289eb60de4f5c0cdf5120bc19836f9543c95e"
 
 
 def orchestrate(
@@ -345,6 +346,7 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         designator_grouping_config=ROOT / "config" / "designator_grouping.toml",
         alignment_config=ROOT / "config" / "alignment.toml",
         page_accounting_config=ROOT / "config" / "page_accounting.toml",
+        reconstruction_config=ROOT / "config" / "reconstruction.toml",
         ink_map_config=ROOT / "config" / "ink_map.toml",
         # `config/armarium_formats.toml` until now, which is a file that has
         # never existed: the Armarium's formats policy is `config/formats.toml`
@@ -2975,7 +2977,7 @@ def test_the_run_used_no_network_and_no_model(happy_run):
     assert run["witness_chairs"] == list(config.witness_chairs)
     assert run["adapter_recipes"] == dict(config.adapter_recipes)
     recipes = run["adapter_recipes"]
-    assert len(recipes) == 9
+    assert len(recipes) == 10
     assert recipes[INK_MAP] == "deterministic-residual-ink-v1"
     assert all(
         revision.startswith("fake-") for stage, revision in recipes.items() if stage != INK_MAP
@@ -3407,6 +3409,8 @@ def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_bl
     assert record["status"] == "established"
     assert record["evidence_ref"] == evidence_ref
 
+    coniector_result = invoke_stage(root, "r", "happy", "pipeline/4b_coniector/run.py")
+    assert coniector_result.returncode == 0, coniector_result.stderr
     export_result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
     # EXIT_HELD, not 0, since the export became honest about damage: an act
     # delivered with a record that establishes no readable text is a delivered act
@@ -4470,6 +4474,7 @@ HANDOFF_ARTIFACTS = (
     (DESIGNATOR, ATTESTATORES, "region"),
     (ATTESTATORES, PERLECTOR, "testimonium"),
     (PERLECTOR, RECENSOR, "perlectio"),
+    (PERLECTOR, CONIECTOR, "perlectio"),
     (RECENSOR, ARCHETYPUS, "review"),
     (ARCHETYPUS, ARMARIUM, "archetypus"),
 )
@@ -4485,6 +4490,7 @@ SEAL_ARTIFACTS = (
     (PERLECTOR, RECENSOR),
     (RECENSOR, ARCHETYPUS),
     (ARCHETYPUS, ARMARIUM),
+    (CONIECTOR, ARMARIUM),
     (ARMARIUM, "orchestrator"),
 )
 
@@ -4496,6 +4502,7 @@ CONSUMER_PROGRAMS = {
     PERLECTOR: "pipeline/4_perlector/run.py",
     RECENSOR: "pipeline/5_recensor/run.py",
     ARCHETYPUS: "pipeline/6_archetypus/run.py",
+    CONIECTOR: "pipeline/4b_coniector/run.py",
     ARMARIUM: "pipeline/7_armarium/run.py",
 }
 
@@ -4565,6 +4572,40 @@ def test_each_stage_seal_corruption_stops_its_named_consumer(
         return
 
     result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[consumer])
+
+    assert result.returncode != 0
+    assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr
+    assert snapshot(root) == before
+
+
+def _further_seal_readers() -> list[tuple[str, str]]:
+    from common.contracts.stages import seal_readers
+
+    return [
+        (producer, reader)
+        for producer in STAGES
+        for reader in seal_readers(producer)
+        if (producer, reader) not in SEAL_ARTIFACTS
+    ]
+
+
+@pytest.mark.full
+@pytest.mark.parametrize("producer,reader", _further_seal_readers())
+def test_every_further_reader_of_a_seal_refuses_it_corrupted(happy_run, tmp_path, producer, reader):
+    """A seal read by more than one stage (the Perlector's, by the Recensor and the
+    Coniector) is refused by each reader, not only the one the battery above names."""
+    assert (PERLECTOR, CONIECTOR) in _further_seal_readers()
+    source_root, _ = happy_run
+    root = tmp_path / "runs"
+    shutil.copytree(source_root, root)
+    tree = RunTree(root, "r")
+    path = _stage_seal_path(tree, producer)
+    record = json.loads(path.read_bytes())
+    record["schema"] = "skeleton.v99"
+    path.write_bytes(canonical_bytes(record))
+    before = snapshot(root)
+
+    result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[reader])
 
     assert result.returncode != 0
     assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr
@@ -4774,14 +4815,14 @@ def test_every_handoff_in_the_contract_is_covered_by_this_table():
 
     assert {(producer, consumer) for producer, consumer, _ in HANDOFF_ARTIFACTS} == set(HANDOFFS)
     assert {consumer for _, consumer, _ in HANDOFF_ARTIFACTS} == set(CONSUMER_PROGRAMS)
-    assert len(HANDOFF_ARTIFACTS) == 8
+    assert len(HANDOFF_ARTIFACTS) == 9
 
 
 def test_every_stage_has_one_seal_battery_row():
     from common.contracts.stages import STAGES
 
     assert {producer for producer, _ in SEAL_ARTIFACTS} == set(STAGES)
-    assert len(SEAL_ARTIFACTS) == 9
+    assert len(SEAL_ARTIFACTS) == 10
 
 
 def test_the_run_authority_is_never_rewritten_by_any_stage(happy_run):

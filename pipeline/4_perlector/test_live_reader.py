@@ -21,7 +21,7 @@ import live_reader
 import prompts
 import protocol
 import pytest
-from live_reader import EngineSignalRefusal, VLLMReader
+from live_reader import VLLMReader
 from reader import FixtureReader
 
 from common.chairs.models import ChairIdentity
@@ -49,6 +49,7 @@ from common.request_capacity import (
     perlector_prompt_tokens,
     request_fits,
 )
+from operations.serving.chat_request import EngineSignalRefusal
 from operations.serving.client import ChairClient
 from operations.serving.config import (
     ServingConfigInputs,

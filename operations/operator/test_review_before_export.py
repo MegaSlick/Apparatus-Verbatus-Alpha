@@ -113,6 +113,7 @@ def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_
         "perlector": "not-run",
         "recensor": "not-run",
         "archetypus": "not-run",
+        "coniector": "not-run",
         "armarium": "not-run",
     }
     assert projected.next_action["resume_from"] == "perlector"
@@ -122,7 +123,10 @@ def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_
     assert f"`verbatus run --run-id {RUN_ID}`" in summary
     assert "picks up from perlector" in summary
     assert "door, exemplar, ink-map, designator, attestatores sealed" in summary
-    assert "perlector, recensor, archetypus, armarium left no record or seal here" in summary
+    assert (
+        "perlector, recensor, archetypus, coniector, armarium left no record or seal here"
+        in summary
+    )
     assert "--from" not in summary, "an operator surface prints no orchestrator flag"
     assert projected.next_action["held_acts"] == 0
     assert projected.next_action["hold_records"] == 0
@@ -236,13 +240,15 @@ def test_the_failed_reproof_run_can_be_opened_and_understood_before_export(
     assert by_key["a2"]["category"] == "established, awaiting export"
     assert "the Armarium has not exported it" in by_key["a2"]["reason"]
     assert by_key["a2"]["row"]["established"]["text_status"]
-    assert between.next_action["resume_from"] == "armarium"
+    assert between.next_action["resume_from"] == "coniector"
     assert "established, awaiting export" in "\n".join(
         review_text.render(dataclasses.asdict(between))
     )
 
     # The export arrives; the same surface now shows its accounting, and the
     # hold neither disappears nor changes its reason.
+    reconstructed = _orchestrate(run_root, "--stage", "coniector")
+    assert reconstructed.returncode == 0, reconstructed.stderr
     exported = _orchestrate(run_root, "--stage", "armarium")
     assert exported.returncode == 3, exported.stderr
     after = _projection(run_root)
@@ -276,6 +282,7 @@ def test_the_failed_reproof_run_can_be_opened_and_understood_before_export(
             "perlector",
             "recensor",
             "archetypus",
+            "coniector",
             "armarium",
         )
     }

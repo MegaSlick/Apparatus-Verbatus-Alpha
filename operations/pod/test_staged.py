@@ -988,3 +988,13 @@ def test_a_fresh_lifecycle_closes_a_pod_under_the_boot_it_is_handed(
     assert closes[0]["stage"] == "attestatores"
     assert closes[0]["authorization_ref"] == "grant-witnesses"
     assert sum(verb == "create" for verb, _subject in provider.calls) == create_calls
+
+
+def test_the_printed_schedule_says_the_coniector_boots_only_when_its_mode_is_on() -> None:
+    """Its chair is off by default, so its line must not read as a boot every run needs."""
+
+    from operations.pod.staged import render_boot_schedule
+
+    [line] = [line for line in render_boot_schedule("c").splitlines() if ". coniector:" in line]
+    assert "reconstructor" in line
+    assert 'Only when the run is sealed with config/reconstruction.toml mode = "on"' in line

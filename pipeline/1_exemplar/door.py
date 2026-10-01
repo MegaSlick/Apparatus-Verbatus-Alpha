@@ -91,6 +91,10 @@ from common.page_accounting import (  # noqa: E402
     DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
     load_page_accounting_policy,
 )
+from common.reconstruction import (  # noqa: E402
+    DEFAULT_RECONSTRUCTION_CONFIG_PATH,
+    load_reconstruction_policy,
+)
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.residual_ink import ink_map_config_digest  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
@@ -1725,6 +1729,7 @@ def fixture_submission(args, registry) -> int:
         alignment_config_path=args.alignment_config,
         page_accounting_config_path=args.page_accounting_config,
         ink_map_config_path=args.ink_map_config,
+        reconstruction_config_path=args.reconstruction_config,
         pdf_target_dpi=args.pdf_target_dpi,
         armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,
@@ -1932,6 +1937,7 @@ def real_submission(args, registry) -> int:
         alignment_config_path=args.alignment_config,
         page_accounting_config_path=args.page_accounting_config,
         ink_map_config_path=args.ink_map_config,
+        reconstruction_config_path=args.reconstruction_config,
         serving_recipes_config_path=args.serving_recipes_config,
         triage_document_digests=triage_digests,
         witness_context=args.witness_context,
@@ -2093,6 +2099,7 @@ def _real_bindings(
     alignment_config_path=DEFAULT_ALIGNMENT_CONFIG_PATH,
     page_accounting_config_path=DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
     ink_map_config_path=DEFAULT_INK_MAP_CONFIG_PATH,
+    reconstruction_config_path=DEFAULT_RECONSTRUCTION_CONFIG_PATH,
     triage_document_digests: dict[str, str] | None = None,
     witness_context: str = "named",
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
@@ -2136,6 +2143,7 @@ def _real_bindings(
     )
     _, alignment_config_sha256 = load_alignment_limits(alignment_config_path)
     page_accounting_config_sha256 = load_page_accounting_policy(page_accounting_config_path).sha256
+    reconstruction_config_sha256 = load_reconstruction_policy(reconstruction_config_path).sha256
     ink_map_config_sha256 = ink_map_config_digest(ink_map_config_path)
     _decoding_policy, decoding_config_sha256 = load_decoding_policy(decoding_config_path)
     adapter_recipes = dict(sorted(models.adapter_recipes.items()))
@@ -2182,6 +2190,7 @@ def _real_bindings(
                 "designator_grouping_config_sha256": designator_grouping_config_sha256,
                 "alignment_config_sha256": alignment_config_sha256,
                 "page_accounting_config_sha256": page_accounting_config_sha256,
+                "reconstruction_config_sha256": reconstruction_config_sha256,
                 "ink_map_config_sha256": ink_map_config_sha256,
                 "triage_modes_config_sha256": triage_modes_config_sha256,
                 # Triage decisions shape pixels, so a re-run triage pass under one
@@ -2218,6 +2227,7 @@ def _real_bindings(
             "designator-grouping": designator_grouping_config_sha256,
             "alignment": alignment_config_sha256,
             "page-accounting": page_accounting_config_sha256,
+            "reconstruction": reconstruction_config_sha256,
             "ink-map": ink_map_config_sha256,
             "corpus-frame-shard": corpus_frame_config_sha256,
             "decoding": decoding_config_sha256,

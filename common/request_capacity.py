@@ -269,6 +269,9 @@ PROMPT_TOKENS_MEASURED_BOUND: Final = "measured-upper-bound-for-this-prompt-shap
 PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED: Final = (
     "reported-text-per-byte-fixed-text-at-carried-act-rate"
 )
+# A text-only prompt charged whole at one token per UTF-8 byte, an upper bound for
+# a byte-level BPE tokenizer whatever the text, with the chat template's cost.
+PROMPT_TOKENS_ALL_TEXT_PER_BYTE: Final = "all-text-per-byte"
 PROMPT_TOKENS_BASES: Final = frozenset(
     {
         PROMPT_TOKENS_MEASURED_CONSTANT,
@@ -276,6 +279,7 @@ PROMPT_TOKENS_BASES: Final = frozenset(
         PROMPT_TOKENS_MEASURED_RATE,
         PROMPT_TOKENS_MEASURED_BOUND,
         PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
+        PROMPT_TOKENS_ALL_TEXT_PER_BYTE,
     }
 )
 
@@ -285,6 +289,7 @@ PROMPT_TOKENS_ADMITTING_BASES: Final = frozenset(
         PROMPT_TOKENS_MEASURED_CONSTANT,
         PROMPT_TOKENS_MEASURED_BOUND,
         PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
+        PROMPT_TOKENS_ALL_TEXT_PER_BYTE,
     }
 )
 
@@ -890,6 +895,119 @@ def reask_answer_measure(
         "longest_witness_characters": max(by_witness.values(), default=0),
         "act_entries": _nonnegative(named_ids, "named_ids"),
         "surya_lines": _nonnegative(named_lines, "named_lines"),
+    }
+
+
+# The Coniector's request (`common/reconstruction_prompt.py`) is text only, so it
+# is charged whole at one token per byte (`PROMPT_TOKENS_ALL_TEXT_PER_BYTE`), plus
+# the chat template's cost for one text turn, the page request's measured 52.
+TEXT_TURN_OVERHEAD_TOKENS: Final = 52
+
+# The answer's reserve, charged per byte like the prompt: the answer's wrapper,
+# and for each act and each join its entry skeleton, one finding with a reason at
+# its longest, and the most departures an act may carry, each with both sides and
+# its reason at their longest. The reserve decides admission only and is at most
+# the sealed cap; the `max_tokens` sent is the cap or the context the prompt
+# leaves, whichever is smaller.
+RECONSTRUCTION_ANSWER_WRAPPER: Final = '{"acts": [], "joins": []}'
+RECONSTRUCTION_ENTRY_SKELETON: Final = (
+    '{"act": "p9999:999", "findings": [{"code": "cut-at-page-break", "reason": ""}], '
+    '"departures": []}, '
+)
+RECONSTRUCTION_JOIN_SKELETON: Final = (
+    '{"acts": ["p9999:999", "p9999:999"], "continues": false, "departures": []}, '
+)
+RECONSTRUCTION_DEPARTURE_SKELETON: Final = (
+    '{"diplomatic": "", "reconstruction": "", "reason": ""}, '
+)
+
+
+def all_text_prompt_bound(text: str) -> tuple[int, str]:
+    """``(tokens, basis)`` for one text-only prompt: every byte a token, plus one turn."""
+    if not isinstance(text, str):
+        raise RequestCapacityRefusal("a text-only prompt is not a string")
+    return TEXT_TURN_OVERHEAD_TOKENS + _reported_bytes(text), PROMPT_TOKENS_ALL_TEXT_PER_BYTE
+
+
+def reconstruction_answer_bound(
+    *,
+    acts: int,
+    joins: int,
+    max_departures_per_act: int,
+    max_departure_characters: int,
+    max_reason_characters: int,
+    answer_max_tokens: int,
+) -> tuple[int, bool]:
+    """``(tokens, reserve_clamped)``: the tokens reserved for one Coniector answer.
+
+    Each character is charged at four bytes, the most one code point takes in
+    UTF-8, and each act one finding with a reason at the departure reason's
+    bound. The grammar bounds neither a finding's count nor its reason, so this
+    is an estimate, not a ceiling: it decides admission only, and an answer
+    longer than the context left stops as a visible cut-off.
+    """
+    acts = _nonnegative(acts, "acts")
+    joins = _nonnegative(joins, "joins")
+    departures = _positive(max_departures_per_act, "max_departures_per_act")
+    side = _positive(max_departure_characters, "max_departure_characters")
+    reason = _positive(max_reason_characters, "max_reason_characters")
+    cap = _positive(answer_max_tokens, "answer_max_tokens")
+    departure = len(RECONSTRUCTION_DEPARTURE_SKELETON) + 4 * (2 * side + reason)
+    per_item = departures * departure + 4 * reason
+    estimate = (
+        len(RECONSTRUCTION_ANSWER_WRAPPER)
+        + acts * (len(RECONSTRUCTION_ENTRY_SKELETON) + per_item)
+        + joins * (len(RECONSTRUCTION_JOIN_SKELETON) + per_item)
+    )
+    return min(estimate, cap), estimate > cap
+
+
+def reconstruction_request_capacity(
+    row: Any,
+    *,
+    prompt_text: str,
+    acts: int,
+    joins: int,
+    policy: Any,
+    answer_max_tokens: int,
+) -> dict[str, Any]:
+    """Admit one Coniector request against its sealed row, or refuse it whole.
+
+    ``policy`` is the sealed `common.reconstruction.ReconstructionPolicy`, whose
+    bounds size the answer. Returns ``{"capacity": <request-capacity record>,
+    "answer_reserve": {acts, joins, tokens, reserve_clamped, answer_max_tokens},
+    "max_tokens": min(answer_max_tokens, context the prompt leaves)}``; raises
+    :class:`RequestCapacityRefusal` carrying the record when the row cannot hold
+    prompt and reserve. Nothing is trimmed to fit.
+    """
+    prompt_tokens, basis = all_text_prompt_bound(prompt_text)
+    cap = _positive(answer_max_tokens, "answer_max_tokens")
+    reserve, clamped = reconstruction_answer_bound(
+        acts=acts,
+        joins=joins,
+        max_departures_per_act=policy.max_departures_per_act,
+        max_departure_characters=policy.max_departure_characters,
+        max_reason_characters=policy.max_reason_characters,
+        answer_max_tokens=cap,
+    )
+    record = request_fits(row, [], prompt_tokens, reserve, prompt_tokens_basis=basis)
+    if not record["fits"]:
+        raise RequestCapacityRefusal(
+            f"the Coniector request does not fit the sealed serving row ({_row_name(row)}): "
+            f"{record['reason']}. Nothing was sent; the page's reconstructions are not made",
+            capacity=record,
+        )
+    room = record["max_model_len"] - record["prompt_tokens"]
+    return {
+        "capacity": record,
+        "answer_reserve": {
+            "acts": acts,
+            "joins": joins,
+            "tokens": reserve,
+            "reserve_clamped": clamped,
+            "answer_max_tokens": cap,
+        },
+        "max_tokens": min(cap, room),
     }
 
 

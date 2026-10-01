@@ -94,6 +94,12 @@ def _contains_canary_identity(value: Any, act_ids: set[str], ordinals: set[int])
     for key, item in value.items():
         if (key == "act_id" or key.endswith("_act_id")) and item in act_ids:
             return True
+        if (
+            (key == "act_ids" or key.endswith("_act_ids"))
+            and isinstance(item, list)
+            and any(act_id in act_ids for act_id in item)
+        ):
+            return True
         if (key == "ordinal" or ("page" in key and key.endswith("_ordinal"))) and item in ordinals:
             return True
         if (key == "ordinals" or ("page" in key and key.endswith("_ordinals"))) and any(
@@ -118,7 +124,11 @@ def _canary_in_bundle(data: bytes, act_ids: set[str], ordinals: set[int]) -> boo
         for name in ("EXPORT_MANIFEST.json", "sources.json"):
             if _contains_canary_identity(json.loads(archive.read(name)), act_ids, ordinals):
                 return True
-        for name in {"acts.jsonl", "review-items.jsonl", "reconstructions.jsonl"} & names:
+        for name in {
+            "acts.jsonl",
+            "review-items.jsonl",
+            "coniector.jsonl",
+        } & names:
             with archive.open(name) as member:
                 if any(
                     _contains_canary_identity(json.loads(line), act_ids, ordinals)

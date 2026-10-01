@@ -24,7 +24,6 @@ from armarium_export import (
     NOT_MEASURED_SCHEMA,
     ArmariumProjection,
     _act_json_records,
-    _doubt,
     _jsonl_act_records,
     _not_measured_status,
     _page_ledger_category,
@@ -4906,21 +4905,22 @@ def _text(members: dict[str, bytes]) -> str:
     )
 
 
-def test_a_reconstruction_joins_two_literals_and_stays_out_of_the_act_accounting(tmp_path):
+def test_code_never_joins_two_literals_and_the_join_stays_out_of_the_act_accounting(tmp_path):
     bundle = build_armarium_bundle(_joined(), _formats(embed_pixels=False), _source_bytes)
     manifest = verify_delivered_bundle(bundle.data, tmp_path / "clean")
     members = _members(bundle.data)
 
-    (record,) = [json.loads(line) for line in members["reconstructions.jsonl"].splitlines()]
-    assert record["reconstructed_text"] == _HEAD_TEXT + "\n" + _TAIL_TEXT
-    assert record["break_offset"] == len(_HEAD_TEXT)
-    assert record["label"].startswith("RECONSTRUCTED: ")
-    assert record["head_text_status"] == record["tail_text_status"] == "established"
+    assert "reconstructions.jsonl" not in members
     (join,) = json.loads(members["sources.json"])["continuation_joins"]
-    assert (join["status"], join["authoritative"]) == ("reconstructed", False)
+    assert (join["status"], join["not_reconstructed_reason"], join["authoritative"]) == (
+        "not-reconstructed",
+        "no-code-join",
+        False,
+    )
+    assert join["join_rule"] == "verbatus-page-join.v3"
     text = _text(members)
-    assert "## RECONSTRUCTED join-1-2-0 (not an act)" in text
-    assert "head_text_status: established" in text
+    assert "RECONSTRUCTED" not in text
+    assert _HEAD_TEXT + "\n" + _TAIL_TEXT not in text
     assert "possible-continuation-on: three (page 2) [join-1-2-0]" in text
     assert "possible-continuation-from: one (page 1) [join-1-2-0]" in text
 
@@ -4929,22 +4929,23 @@ def test_a_reconstruction_joins_two_literals_and_stays_out_of_the_act_accounting
     assert manifest["claims"]["terminal_ledger"]["by_unit_type"]["act"] == 3
     assert len(members["acts.jsonl"].splitlines()) == 3
     assert members["review-items.jsonl"] == b""
+    partial = manifest["claims"]["partial_reasons"]
+    assert any("no reconstruction was made (no-code-join)" in line for line in partial)
 
 
-def _reforged(members: dict[str, bytes], in_text: bool, old: str, new: str) -> bytes:
-    (name,) = [
-        name
-        for name, content in members.items()
-        if name.startswith("text/") == in_text
-        and name != "sources.json"
-        and old.encode("utf-8") in content
-    ]
-    members[name] = members[name].decode("utf-8").replace(old, new, 1).encode("utf-8")
+def test_a_code_joined_section_is_refused(tmp_path):
+    members = _joined_members()
+    (name,) = [name for name in members if name.startswith("text/")]
+    joined = json.dumps(_HEAD_TEXT + "\n" + _TAIL_TEXT, ensure_ascii=False)
+    members[name] = (
+        members[name].decode("utf-8")
+        + "## RECONSTRUCTED join-1-2-0 (not an act)\nreconstructed_text:\n"
+        + joined
+        + "\n"
+    ).encode("utf-8")
     _refresh_manifest_member(members, name)
-    return _zip_bytes(members)
-
-
-_JOINED_JSON = json.dumps(_HEAD_TEXT + "\n" + _TAIL_TEXT, ensure_ascii=False)
+    with pytest.raises(SchemaRefusal, match="joins two readings by code"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "forged")
 
 
 def test_a_note_moved_to_another_act_is_refused(tmp_path):
@@ -4965,23 +4966,23 @@ def test_a_join_on_pages_its_acts_were_not_marked_out_on_is_refused(pages):
         build_armarium_bundle(_joined(pages=pages), _formats(embed_pixels=False), _source_bytes)
 
 
-def test_a_text_bundle_only_export_carries_the_section_and_verifies(tmp_path):
+def test_a_text_bundle_only_export_joins_nothing_and_verifies(tmp_path):
     formats = ArmariumFormats(("text-bundle",), False)
     bundle = build_armarium_bundle(_joined(formats=formats), formats, _source_bytes)
     verify_delivered_bundle(bundle.data, tmp_path / "clean")
     members = _members(bundle.data)
     assert "reconstructions.jsonl" not in members
-    assert _JOINED_JSON in _text(members)
+    assert "RECONSTRUCTED" not in _text(members)
 
 
-def test_with_no_literal_format_a_joinable_candidate_is_not_reconstructed(tmp_path):
+def test_with_no_literal_format_a_join_names_no_text(tmp_path):
     bundle = build_armarium_bundle(
         _joined(formats=_FORMATS_WITHOUT_TEXT), _FORMATS_WITHOUT_TEXT, _source_bytes
     )
     verify_export_bundle(bundle.data, tmp_path / "clean")
     members = _members(bundle.data)
     (join,) = json.loads(members["sources.json"])["continuation_joins"]
-    assert join["not_reconstructed_reason"] == "no-reconstruction-format-selected"
+    assert join["not_reconstructed_reason"] == "no-code-join"
     assert join["head_canonical_text_sha256"] is join["tail_canonical_text_sha256"] is None
     assert not any(_HEAD_TEXT.encode("utf-8") in content for content in members.values())
 
@@ -5010,7 +5011,6 @@ def test_a_dropped_join_row_fails_the_aggregate_recompute(tmp_path):
     sources = json.loads(members["sources.json"])
     del sources["continuation_joins"]
     members["sources.json"] = canonical_bytes(sources)
-    del members["reconstructions.jsonl"]
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
     del manifest["self_hash"]
     manifest["members"] = [row for row in manifest["members"] if row["path"] in members]
@@ -5022,95 +5022,26 @@ def test_a_dropped_join_row_fails_the_aggregate_recompute(tmp_path):
         verify_export_bundle(_zip_bytes(members), tmp_path / "dropped")
 
 
-def test_the_doubt_on_each_half_travels_with_the_reconstruction(tmp_path):
-    layer = {
-        "lectio_kind": "primed-with-prior",
-        "uncertain_spans": [_SPAN, {**_SPAN, "start": 2, "end": 3}],
-        "gaps": [],
-        "self_revisions": [],
-        "assessment": {"state": "assessed", "problem": None},
-    }
-    bundle = build_armarium_bundle(
-        _joined(head_uncertainty=layer), _formats(embed_pixels=False), _source_bytes
-    )
-    verify_delivered_bundle(bundle.data, tmp_path / "clean")
-    members = _members(bundle.data)
-    (record,) = [json.loads(line) for line in members["reconstructions.jsonl"].splitlines()]
-    assert record["head_doubt"] == {
-        "uncertain_spans": 2,
-        "gaps": 0,
-        "self_revisions": 0,
-        "assessment": "assessed",
-        "lectio_kind": "primed-with-prior",
-    }
-    assert record["tail_doubt"]["assessment"] == "not-assessed"
-    assert '"uncertain_spans": 2' in _text(members)
-    forged = _reforged(members, False, '"uncertain_spans":2', '"uncertain_spans":0')
-    with pytest.raises(SchemaRefusal, match="head \\+ one U\\+000A"):
-        verify_export_bundle(forged, tmp_path / "forged")
-
-
-def test_reconstruction_does_not_count_a_withheld_draft_as_zero(tmp_path):
-    layer = {
-        "uncertain_spans": [],
-        "gaps": [],
-        "self_revisions": None,
-        "lectio_kind": "primed-draft-withheld",
-        "assessment": {"state": "assessed", "problem": None},
-    }
-    bundle = build_armarium_bundle(
-        _joined(head_uncertainty=layer), _formats(embed_pixels=False), _source_bytes
-    )
-    members = _members(bundle.data)
-    (record,) = [json.loads(line) for line in members["reconstructions.jsonl"].splitlines()]
-    assert record["head_doubt"]["self_revisions"] is None
-    assert record["head_doubt"]["lectio_kind"] == "primed-draft-withheld"
-    verify_delivered_bundle(bundle.data, tmp_path / "clean")
-
-
-def test_reconstruction_does_not_count_an_unmeasured_fed_draft_as_zero(tmp_path):
-    """A fed draft whose self-revision comparison ran out of its step budget
-    carries null in its canonical layer: not measured, never zero revisions."""
-    layer = {
-        "uncertain_spans": [],
-        "gaps": [],
-        "self_revisions": None,
-        "lectio_kind": "primed-with-prior",
-        "assessment": {"state": "assessed", "problem": None},
-    }
-    bundle = build_armarium_bundle(
-        _joined(head_uncertainty=layer), _formats(embed_pixels=False), _source_bytes
-    )
-    members = _members(bundle.data)
-    (record,) = [json.loads(line) for line in members["reconstructions.jsonl"].splitlines()]
-    assert record["head_doubt"]["self_revisions"] is None
-    assert record["head_doubt"]["lectio_kind"] == "primed-with-prior"
-    verify_delivered_bundle(bundle.data, tmp_path / "clean")
-
-
-def test_chained_joins_reconstruct_each_pair_and_mirror_both_notes(tmp_path):
+def test_chained_joins_join_nothing_and_mirror_both_notes(tmp_path):
     bundle = build_armarium_bundle(
         _joined(chained=True), _formats(embed_pixels=False), _source_bytes
     )
     verify_delivered_bundle(bundle.data, tmp_path / "clean")
     members = _members(bundle.data)
-    records = [json.loads(line) for line in members["reconstructions.jsonl"].splitlines()]
-    assert [record["reconstructed_text"] for record in records] == [
-        _HEAD_TEXT + "\n" + _TAIL_TEXT,
-        _TAIL_TEXT + "\n" + "et sa femme",
-    ]
+    joins = json.loads(members["sources.json"])["continuation_joins"]
+    assert [join["not_reconstructed_reason"] for join in joins] == ["no-code-join"] * 2
     text = _text(members)
     assert "possible-continuation-from: one (page 1) [join-1-2-0]" in text
     assert "possible-continuation-on: five (page 3) [join-2-3-1]" in text
 
 
-def test_an_acts_database_only_export_reconstructs_nothing(tmp_path):
+def test_an_acts_database_only_export_joins_nothing(tmp_path):
     formats = ArmariumFormats(("acts-database",), False)
     bundle = build_armarium_bundle(_joined(formats=formats), formats, _source_bytes)
     verify_delivered_bundle(bundle.data, tmp_path / "clean")
     members = _members(bundle.data)
     (join,) = json.loads(members["sources.json"])["continuation_joins"]
-    assert join["not_reconstructed_reason"] == "no-reconstruction-format-selected"
+    assert join["not_reconstructed_reason"] == "no-code-join"
     assert join["head_canonical_text_sha256"] == canonical_text_sha256(_HEAD_TEXT)
     partial = json.loads(members[EXPORT_MANIFEST_NAME])["claims"]["partial_reasons"]
     assert any("no reconstruction was made" in line for line in partial)
@@ -5159,18 +5090,7 @@ def test_a_join_over_non_integer_pages_is_refused_by_the_verifier(tmp_path, chan
         _verify_continuation_joins(tmp_path, ArmariumFormats(("review-items",), False), sources)
 
 
-def test_a_reconstructed_section_repeated_in_one_folder_is_refused(tmp_path):
-    members = _joined_members()
-    (name,) = [name for name in members if name.startswith("text/")]
-    text = members[name].decode("utf-8")
-    block = text[text.index("## RECONSTRUCTED ") :]
-    members[name] = (text + "\n" + block).encode("utf-8")
-    _refresh_manifest_member(members, name)
-    with pytest.raises(SchemaRefusal, match="appears twice"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "forged")
-
-
-def test_a_join_across_two_folders_writes_its_section_in_the_head_folder(tmp_path):
+def test_a_join_across_two_folders_notes_each_side_in_its_own_folder(tmp_path):
     bundle = build_armarium_bundle(
         _joined(tail_folder="other"), _formats(embed_pixels=False), _source_bytes
     )
@@ -5178,8 +5098,8 @@ def test_a_join_across_two_folders_writes_its_section_in_the_head_folder(tmp_pat
     members = _members(bundle.data)
     head_text = members[TEXT_REGISTER].decode("utf-8")
     tail_text = members["text/_source_folder/other/readings.txt"].decode("utf-8")
-    assert "## RECONSTRUCTED join-1-2-0" in head_text
-    assert "RECONSTRUCTED" not in tail_text
+    assert "RECONSTRUCTED" not in head_text + tail_text
+    assert "possible-continuation-on: three (page 2) [join-1-2-0]" in head_text
     assert "possible-continuation-from: one (page 1) [join-1-2-0]" in tail_text
 
 
@@ -5253,8 +5173,7 @@ def recipient_happy_run(tmp_path_factory):
         ("member-byte-count", "manifest byte count"),
         ("selected-format-inventory", "selected formats.*missing"),
         ("damaged-act-whole", "may not be projected as a whole one"),
-        ("reconstruction-text", "does not recompute|head \\+ one U\\+000A"),
-        ("reconstruction-section", "RECONSTRUCTED section does not recompute"),
+        ("join-reason", "aggregate does not match|does not recompute from its acts' literals"),
         ("publish-aggregate", "aggregate disagrees"),
         ("publish-binding", "run binding"),
         ("publish-submission", "this run's authority names no real submission"),
@@ -5361,15 +5280,13 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
         data = _zip_bytes(members)
     elif case == "damaged-act-whole":
         data = _recipient_whole_damaged_act()
-    elif case == "reconstruction-text":
-        data = _reforged(
-            _joined_members(),
-            False,
-            _JOINED_JSON,
-            json.dumps("Cǣsar d’Amours fils", ensure_ascii=False),
-        )
-    elif case == "reconstruction-section":
-        data = _reforged(_joined_members(), True, "label: RECONSTRUCTED: ", "label: ")
+    elif case == "join-reason":
+        members = _joined_members()
+        sources = json.loads(members["sources.json"])
+        sources["continuation_joins"][0]["not_reconstructed_reason"] = "head-not-delivered"
+        members["sources.json"] = canonical_bytes(sources)
+        _refresh_manifest_member(members, "sources.json")
+        data = _zip_bytes(members)
     else:
         import shutil
 
@@ -5737,17 +5654,3 @@ def test_the_verifier_rechecks_the_self_revision_stop_without_jsonl(tmp_path):
             _resealed_comparison_bounds(projection, unstop, formats=("acts-database",)),
             tmp_path / "clean",
         )
-
-
-def test_a_join_doubt_refuses_a_layer_with_no_self_revisions_field():
-    """A missing key is not zero revisions; a fed null is not measured."""
-    layer = {
-        "lectio_kind": "primed-with-prior",
-        "uncertain_spans": [],
-        "gaps": [],
-        "assessment": {"state": "assessed", "problem": None},
-    }
-    with pytest.raises(SchemaRefusal, match="carries no self_revisions field"):
-        _doubt(layer)
-    assert _doubt({**layer, "self_revisions": None})["self_revisions"] is None
-    assert _doubt({**layer, "self_revisions": []})["self_revisions"] == 0

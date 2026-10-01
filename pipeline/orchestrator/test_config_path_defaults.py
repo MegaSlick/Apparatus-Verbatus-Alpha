@@ -22,6 +22,7 @@ SEALED_CONFIG_FLAGS = (
     "--designator-grouping-config",
     "--alignment-config",
     "--page-accounting-config",
+    "--reconstruction-config",
     "--ink-map-config",
     "--perlector-protocol-config",
     "--perlector-audit-config",
