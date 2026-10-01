@@ -499,7 +499,7 @@ def test_an_ordinary_held_for_review_never_counts(tmp_path):
 def test_a_truncated_reading_never_counts_toward_the_run_level_cap(tmp_path):
     """The old pipeline's own ruled distinction (`page_health.py`):
     a dense page is not a damaged one. Three truncated Perlectiones is heavy
-    per-act recovery traffic, never evidence the run itself is going wrong."""
+    ordinary per-page traffic, never evidence the run itself is going wrong."""
     tree = make_run(tmp_path)
     for ordinal in (1, 2, 3):
         publish(

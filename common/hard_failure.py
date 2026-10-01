@@ -1,6 +1,6 @@
 """The one checked reader for the run-level hard-failure cap, and its tally.
 
-Distinct from `common/recovery.py`, which bounds rework for one act: this
+Distinct from `common/recovery.py`, which bounds re-asks of one page: this
 answers whether the RUN itself is going wrong. The tally is recomputed from
 the sealed, self-hashed artifacts already on disk every time it is asked for
 rather than kept as a running counter, so a process dying mid-run cannot make
@@ -143,7 +143,7 @@ def tally_hard_failures(
     """Recompute the run's hard-failure tally from the sealed partition on disk.
 
     Counted as `(stage, subject_id)` pairs, not raw artifact counts: a failed
-    act that was later recovered still contributes one incident, and a stage
+    unit that a later attempt read still contributes one incident, and a stage
     retrying the same failing outcome twice for one subject is one incident,
     not two. `build_manifest`'s entries are already verified evidence, so
     reading `outcome`/`subject_id` off them trusts nothing unchecked; a

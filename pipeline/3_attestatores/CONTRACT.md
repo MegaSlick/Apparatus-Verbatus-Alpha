@@ -102,12 +102,8 @@ its returned attempt's ordinal. A live page record that retains a response and
 names no serving call is refused, so no response's sampling goes unchecked.
 
 **Chandra is a served witness like the others, reading its vendor's own
-grammar.** Every witness runs its own full pass:
-Chandra reads the page for the Designator and separately as Attestator 1, and
-nothing is captured from one call into another. The capture-as-Testimonium
-intake the structure-chair design had half built (`feeding.chandra_capture_intake`,
-the `chandra-capture.v1` name) is removed rather than left as dead surface.
-What the served chair parses is the vendor's own layout HTML, read by
+grammar.** Every witness runs its own full pass, and nothing is captured
+from one call into another. What the served chair parses is the vendor's own layout HTML, read by
 `common/chandra_layout.py::parse_layout_html` under the parser name `html`
 (U9 of the vendor systems design). A body in that grammar is a reading -- page
 text, and block geometry from each `data-bbox` in sealed-page pixels with a span
@@ -221,11 +217,9 @@ posture records `chandra.FIXTURE_PROMPT` in its retained model view instead
 bytes, the fixture never asks a chair anything, and changing what a served
 chair is asked may not move a fixture byte.
 
-**Geometry converts once, the Designator's way.** A block's `bbox_1000` is
-quantized low-edges-floor / far-edges-ceil in normalized space and converted to
-sealed-page pixels by `common.chandra_layout.to_page_bounds`, the same
-conversion the Designator's structure pass applies to its own Chandra call, so
-the two Chandra readings of one page share one page-pixel mapping. The
+**Geometry converts once.** A block's `bbox_1000` is quantized
+low-edges-floor / far-edges-ceil in normalized space and converted to
+sealed-page pixels by `common.chandra_layout.to_page_bounds`. The
 denominator is the *sealed page*, not the resized view the chair was shown,
 because the vendor's own denominator is the same one. That conversion clamps
 the far edges to the page, and a component outside [0, 1000] is malformed

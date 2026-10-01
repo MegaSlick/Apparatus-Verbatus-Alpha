@@ -139,13 +139,10 @@ def _uncertainty_entries(value: Any, label: str) -> list[dict[str, Any]]:
 def _uncertainty_folds(spans: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int]]:
     """Identical span entries folded into one, with how many the layer carried.
 
-    The published layer keeps an exhausted-cap projection and an identical
-    reader-reported span as two entries, since the layer records that those
-    characters were doubted twice; printing them as two doubts would say
-    something else, so they are shown once with the count beside them. Order
-    is first appearance. What a repeat MEANS is not decided here: no
-    artifact names the instrument behind any one span, so a fold is evidence
-    of a repeat and nothing else.
+    A layer that carries the same span twice records that those characters
+    were doubted twice; printing them as two doubts would say something else,
+    so they are shown once with the count beside them. Order is first
+    appearance. A fold is evidence of a repeat and nothing else.
     """
     folded: list[tuple[dict[str, Any], int]] = []
     for span in spans:
@@ -183,11 +180,9 @@ def _uncertainty_lines(
     *,
     spans: Any,
     gaps: Any,
-    revisions: Any,
     text: Any,
     label: str,
     assessment_key: str,
-    attributable: bool,
     outcome: Any,
 ) -> list[str]:
     """The reader's own doubt report, rendered the same way wherever it is carried.
@@ -200,13 +195,6 @@ def _uncertainty_lines(
     as a reader's confidence; spans and gaps print whenever there are any,
     whatever the state, since a chair whose prompt has no doubt grammar can
     still carry real published spans under `not-assessed`.
-
-    `attributable` says whether every span in the layer is the reader's own.
-    Where the layer is a union of the audit's projection and the reader's
-    report, this surface cannot tell which entry is whose, and says so
-    rather than crediting the reader with both. Only a record with no audit
-    behind it is attributable; a page reading carries no audit, so its layer
-    is the reader's own.
     """
     if assessment is not None and not isinstance(assessment, dict):
         raise ProjectionShapeError(
@@ -216,15 +204,12 @@ def _uncertainty_lines(
     # malformed layer beside a missing assessment is still looked at.
     spans = _uncertainty_entries(spans, f"{label}.uncertain_spans")
     gaps = _uncertainty_entries(gaps, f"{label}.gaps")
-    revisions = _uncertainty_entries(revisions, f"{label}.self_revisions")
     alternatives = [
         _uncertainty_alternatives(span, f"{label}.uncertain_spans[{index}].alternatives")
         for index, span in enumerate(spans)
     ]
     state = assessment.get("state") if assessment is not None else None
     counted = f"{len(spans)} uncertain span(s), {len(gaps)} gap(s)"
-    if revisions:
-        counted += f", {len(revisions)} self-revision(s)"
     if assessment is None:
         # Two different facts: a reading sealed before the doubt report was
         # part of the record, and a `not-run` record, which is no reading at
@@ -245,15 +230,7 @@ def _uncertainty_lines(
         if spans or gaps:
             lines.append(f"      published beside that absence: {counted}")
     elif state == "assessed":
-        who = (
-            "assessed by the reader"
-            if attributable
-            else (
-                "assessed by the reader; this view cannot tell which of the span(s) below are "
-                "its report and which the audit's"
-            )
-        )
-        lines = [f"    doubts: {who}; {counted}"]
+        lines = [f"    doubts: assessed by the reader; {counted}"]
     else:
         if state in _UNCERTAINTY_STATES:
             named = inert(state)
@@ -383,14 +360,12 @@ def render(projection: dict[str, Any]) -> list[str]:
     held_acts = len({hold.get("act_id") for hold in holds})
     lines.append(f"Held or unresolved acts ({held_acts})")
     for hold in holds:
-        examination = hold.get("audit_examination")
-        audit_note = f"; audit examination {inert(examination)}" if examination else ""
         # The label names which record says the act is unresolved.
         label = hold.get("label")
         which = f" [{inert(label)}]" if label else ""
         lines.append(
             f"  {inert(hold.get('act_key'))} ({inert(hold.get('act_id'))}): "
-            f"{inert(hold.get('outcome'))} by the {inert(hold.get('source'))}{which}{audit_note}"
+            f"{inert(hold.get('outcome'))} by the {inert(hold.get('source'))}{which}"
         )
         lines.append(f"    reason: {_one_line(hold.get('reason'), limit=600)}")
         record_ref = _object(hold, "record_ref", "holds[].record_ref")
@@ -436,12 +411,10 @@ def render(projection: dict[str, Any]) -> list[str]:
         row = _object(act, "row", "acts[].row")
         reading = _object(row, "reading", "acts[].row.reading")
         if reading:
-            audit = _object(reading, "audit", "acts[].row.reading.audit")
             truncation = _object(reading, "truncation", "acts[].row.reading.truncation")
             lines.append(
                 f"    reading: {inert(reading.get('outcome'))}; truncation "
-                f"{inert(truncation.get('classification'))}; audit examination "
-                f"{inert(audit.get('examination'))}"
+                f"{inert(truncation.get('classification'))}"
             )
             if isinstance(reading.get("text"), str):
                 lines.append(f"    machine reading: {_one_line(reading.get('text'), limit=300)}")
@@ -450,14 +423,9 @@ def render(projection: dict[str, Any]) -> list[str]:
                     reading.get("uncertainty_assessment"),
                     spans=reading.get("uncertain_spans"),
                     gaps=reading.get("gaps"),
-                    revisions=reading.get("self_revision"),
                     text=reading.get("text"),
                     label="acts[].row.reading",
                     assessment_key="uncertainty_assessment",
-                    # Where a Perlectio audit is present, the published layer
-                    # is a union with the audit's projection and no entry
-                    # says which instrument wrote it.
-                    attributable=not isinstance(reading.get("audit"), dict),
                     outcome=reading.get("outcome"),
                 )
             )
@@ -472,14 +440,9 @@ def render(projection: dict[str, Any]) -> list[str]:
                     uncertainty.get("assessment"),
                     spans=uncertainty.get("uncertain_spans"),
                     gaps=uncertainty.get("gaps"),
-                    revisions=uncertainty.get("self_revisions"),
                     text=row.get("text"),
                     label="acts[].row.uncertainty",
                     assessment_key="assessment",
-                    # A delivered act reached the product through the audit
-                    # chain, so its layer is a union like any established
-                    # reading's, and nothing here says which entry is whose.
-                    attributable=False,
                     # A delivered act was read by definition; its text is the
                     # string this branch was entered on.
                     outcome="read",

@@ -80,6 +80,7 @@ from common.page_testimonia import (
     current_page_testimonia,
     declared_page_witness_chairs,
 )
+from common.perlector_audit import audit_not_run
 from common.request_capacity import RequestCapacityRefusal
 from common.stage import (
     SECONDARY_PROPOSER_CHAIR,
@@ -120,17 +121,6 @@ class StageHooks:
 
 
 # --- stage open -------------------------------------------------------------------
-
-
-def audit_not_run(audit_policy: dict[str, Any], audit_sha256: str) -> dict[str, Any]:
-    """What every `page-reading` says about the sealed Pass-C audit: it did not run."""
-    return {
-        "state": "not-run",
-        "round_cap": audit_policy["round_cap"],
-        "policy_sha256": audit_sha256,
-        "reason": "Pass C flags and re-proves spans of a reading; a whole-page reading does "
-        "not run it",
-    }
 
 
 # --- sealed inputs ----------------------------------------------------------------

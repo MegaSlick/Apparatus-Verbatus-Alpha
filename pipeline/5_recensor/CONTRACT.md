@@ -39,8 +39,7 @@ counts toward the floor, and the validation above re-derives the census it rests
 On a page whose reading establishes acts, the page accounting's rule (i) holds every
 unit (`no-detector-record-on-act-page`), so no unit there is accepted on DAI's
 silence. A DAI page whose detector's run facts state no cap, or whose records enclosed
-no crop, is `not-run` and does not count. An act-scoped witness testifies to no
-page-read unit and is not counted.
+no crop, is `not-run` and does not count.
 
 ## Residual ink
 

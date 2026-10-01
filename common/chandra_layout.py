@@ -63,8 +63,7 @@ ever asked for.
 `data-bbox` is `"x0 y0 x1 y1"`, four integers normalized to `BBOX_SCALE`
 (1000), which is what the prompt tells the model and what
 `chandra/settings.py` sets. `block_page_bounds` converts to sealed-page pixels
-through `to_page_bounds` -- the one conversion the Designator's own Chandra
-reading uses, so both readings of a page land in one page-pixel mapping. The sealed page is the right denominator because the vendor
+through `to_page_bounds`. The sealed page is the right denominator because the vendor
 uses the same one: `InferenceManager` runs `parse_chunks` against the original
 image, not the resized one it sent.
 
@@ -101,9 +100,6 @@ blocks in `<p>`. So the text view is ours, named, and stated in full:
 `Blank-Page` block's text is kept like any other block's. A record naming a
 view in `RETIRED_LAYOUT_TEXT_VIEWS` is refused by that name rather than re-read
 under this view, because its text differs from what this view reads.
-The Designator's answer uses the same join and the same span rule, so a span
-published against this page text lands where every other Chandra reading of the
-page puts it.
 """
 
 from __future__ import annotations
@@ -386,7 +382,7 @@ def _quoted(value: str | None) -> dict[str, Any]:
 # (`BBOX_SCALE` is 1000), so a cap of 16 is already generous headroom; without
 # one, a model writing a component thousands of digits long reaches `int()`
 # below and CPython's own integer-string-conversion limit turns that into an
-# unhandled `ValueError` that crashes the Designator instead of producing this
+# unhandled `ValueError` that crashes the reader instead of producing this
 # function's named refusal.
 _MAX_BBOX_COMPONENT_DIGITS: Final = 16
 _BBOX_COMPONENT: Final = re.compile(rf"[+-]?[0-9]{{1,{_MAX_BBOX_COMPONENT_DIGITS}}}")

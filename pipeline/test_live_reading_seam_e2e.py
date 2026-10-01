@@ -26,7 +26,6 @@ synthetic fixture reaches an export; nothing follows about a real page.
 from __future__ import annotations
 
 import hashlib
-import json
 import shutil
 import subprocess
 import sys
@@ -74,7 +73,6 @@ from operations.serving.fakes import (  # noqa: E402
     ScriptedAnswer,
     shipped_decoding_policy,
 )
-from operations.serving.http import chat_image_bytes_all  # noqa: E402
 from operations.serving.manager import ServingManager, StageContextReceiptPublisher  # noqa: E402
 from operations.serving.residency import FileResidencyLease  # noqa: E402
 
@@ -96,8 +94,8 @@ TAIL_FROM_RECENSOR = (
 # (`common/chandra_layout.py`) -- top-level divs carrying a `data-bbox`
 # normalized 0-1000, which convert, on this fixture's 200x260 pages, to the
 # sealed proposal rectangles of `a1`, `a2` and a2's page-2 continuation; Churro
-# speaks its `<output>` envelope once per page; DAI is act-scoped and answers
-# plain text once per act. Churro answers its own closed contract on page 1 and
+# speaks its `<output>` envelope once per page; DAI answers plain text once per
+# record its detector found. Churro answers its own closed contract on page 1 and
 # the retired `<output>` envelope on page 2, so two of its three legal shapes
 # cross this seam.
 CHANDRA_PAGE_ONE = (
@@ -134,8 +132,6 @@ CHURRO_PAGE_TWO = "<output>SYNTHETIC ACT TWO delta epsilon zeta eta</output>"
 DAI_ACT_ONE = "SYNTHETIC ACT ONE alpha beta gamma"
 DAI_ACT_TWO = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 DAI_CONTINUATION = "zeta eta"
-# The act reading `ReaderWorld` answers with, for the structure-chair harness.
-READING = "SYNTHETIC LIVE READING alpha beta gamma delta epsilon zeta eta theta iota kappa"
 
 
 attestatores = load_stage("3_attestatores")
@@ -422,42 +418,6 @@ class RecordingEndpoint(FakeEndpoint):
         return response
 
 
-class VaryingReadingEndpoint(RecordingEndpoint):
-    """A reader endpoint whose answer is derived from the pixels it was sent.
-
-    A fixed scripted answer replayed for every page cannot show that a
-    Perlectio is bound to its own engine response: identical replies make every
-    response blob identical. Hashing the delivered images into the content ties
-    each answer to the page whose pixels asked for it.
-    """
-
-    def __init__(
-        self, *, finish_reason: Any, refusal: ScriptedAnswer | None = None, **keywords: Any
-    ) -> None:
-        super().__init__(**keywords)
-        self._finish_reason = finish_reason
-        self._refusal = refusal
-
-    def request(self, method: str, url: str, *, body: bytes | None, timeout_seconds: float):
-        if (
-            method == "POST"
-            and url.endswith("/chat/completions")
-            and self._readiness_probe_answered
-        ):
-            if self._refusal is not None:
-                self.script(self._refusal)
-                return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
-            images = chat_image_bytes_all(json.loads(body)) if body is not None else []
-            digest = hashlib.sha256(b"".join(images)).hexdigest()[:12] if images else "no-pixels"
-            # Brackets keep the final character stable across reading passes;
-            # a bare hex digest would sometimes end in the same character as
-            # a scripted witness and move the testimony-diff flag's end.
-            self.script(
-                ScriptedAnswer(content=f"{READING} [{digest}]", finish_reason=self._finish_reason)
-            )
-        return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
-
-
 class _TreeBlobs:
     """`FakeEndpoint`'s response-as-arrival probe, over the real run tree."""
 
@@ -549,57 +509,6 @@ class WitnessWorld:
     def served(self, chair: str) -> list[bytes]:
         endpoint = self.endpoints.get(chair)
         return [] if endpoint is None else endpoint.served
-
-
-class ReaderWorld:
-    """The Perlector's single resident chair, over one scripted endpoint."""
-
-    def __init__(
-        self,
-        catalogue: Path,
-        work: Path,
-        *,
-        finish_reason: Any,
-        refusal: ScriptedAnswer | None = None,
-    ) -> None:
-        self.catalogue = catalogue
-        self.work = work
-        self.work.mkdir(parents=True, exist_ok=True)
-        self.finish_reason = finish_reason
-        self.refusal = refusal
-        self.endpoint: RecordingEndpoint | None = None
-
-    def factory(self, context, identity, tier: str) -> ChairClient:
-        policy, decoding_sha256 = load_decoding_policy(str(ROOT / "config" / "decoding.toml"))
-        endpoint = VaryingReadingEndpoint(
-            finish_reason=self.finish_reason,
-            refusal=self.refusal,
-            served_model_id=f"served-{identity.role}",
-            blob_store=_TreeBlobs(context, PERLECTOR),
-            assert_retained_before_next_request=True,
-        )
-        self.endpoint = endpoint
-        manager = ServingManager(
-            registry=context.registry,
-            recipes=load_serving_recipes(self.catalogue),
-            config_inputs=ServingConfigInputs.from_record(dict(context.serving_config_inputs)),
-            launcher=FakeLauncher(endpoint),
-            http=endpoint,
-            receipt_publisher=StageContextReceiptPublisher(context),
-            log_root=self.work / "serving-logs",
-            package_inspector=FakePackages({"vllm": "0.test"}),
-            residency_lease=FileResidencyLease(self.work / "pod-gpu.lock"),
-            producer="pipeline/4_perlector/run.py",
-        )
-        return ChairClient(
-            manager=manager,
-            identity=identity,
-            tier=tier,
-            retain=lambda data: retain_chair_bytes(context, data),
-            decoding_config_sha256=decoding_sha256,
-            decoding_policy=policy,
-            read_receipt=context.tree.read_run_receipt,
-        )
 
 
 # --------------------------------- the fixtures -------------------------------

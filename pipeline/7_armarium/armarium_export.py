@@ -1125,19 +1125,12 @@ def _validate_not_measured_detail(
             _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
         if detail["acts_assessed"] + detail["acts_not_assessed"] != detail["acts_delivered"]:
             raise SchemaRefusal(f"{subject} assessment counts do not partition its delivered acts")
-        # Under a nonzero cap the exhausted-cap projection cannot mint a span,
-        # so every act carrying one must have been assessed by its reader.
-        if (
-            detail["sealed_audit_round_cap"] != 0
-            and detail["acts_with_uncertain_spans"] > detail["acts_assessed"]
-        ):
+        # Only the reader's own doubt report mints a span, so every act carrying
+        # one was assessed; assessed acts are a part of the delivered ones.
+        if detail["acts_with_uncertain_spans"] > detail["acts_assessed"]:
             raise SchemaRefusal(
-                f"{subject} names more acts with uncertain spans than assessed acts although its "
-                "nonzero sealed audit cap makes every other span unreachable"
-            )
-        if detail["acts_with_uncertain_spans"] > detail["acts_delivered"]:
-            raise SchemaRefusal(
-                f"{subject} names more acts with uncertain spans than delivered acts"
+                f"{subject} names more acts with uncertain spans than assessed acts; only "
+                "a reader's own doubt report mints a span"
             )
     elif instrument == _PAGE_ACCOUNTING_THRESHOLDS:
         _require_sha256(detail["policy_sha256"], f"{subject} policy_sha256")
@@ -1745,8 +1738,7 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
             return "measured"
         if detail["acts_assessed"] == 0 and detail["acts_with_uncertain_spans"] == 0:
             return "declared-unproduced"
-        # Partly measured: some readers assessed, or a sealed cap of 0 let the
-        # exhausted-cap projection mint spans with no reader assessing.
+        # Partly measured: some readers assessed and some did not.
         return "not-measured"
     if instrument == _GEOMETRY_CALIBRATION:
         return (
@@ -2296,7 +2288,6 @@ def _aggregate_from_basis(
             act_text_status=act_text_status,
             edge_hold_pages=edge_hold_pages,
             continuation_joins=continuation_joins,
-            page_read=True,
             other_categories_by_page=by_page,
             unpaired_continuations=unpaired,
         )

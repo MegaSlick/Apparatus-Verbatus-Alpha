@@ -1,8 +1,7 @@
 """Chandra's page-witness adapter: the vendor's own preprocessing, prompt,
 message shape and output grammar, adopted verbatim and pinned by digest. The
-grammar reader lives in `common/chandra_layout.py`, shared with the
-Designator's structure pass, so the two readers of one page cannot disagree
-about what a `data-bbox` means.
+grammar reader lives in `common/chandra_layout.py`, so every reader of a
+Chandra answer agrees about what a `data-bbox` means.
 
 Two answer shapes exist, only one a grammar: the live answer is HTML, read
 under parser name `html`. The committed fixture's synthetic rows still declare
@@ -217,7 +216,7 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     validate_presented(presentation, page_size=dimensions(page_bytes))
     bounds = dict(transform["bounds"])
     try:
-        # Shared so this chair and the Designator's own Chandra call agree.
+        # The vendor's own page render, so the chair sees what Chandra's runner sends.
         model_image, target = render_page(page_bytes, bounds)
     except ValueError as error:
         # Name load_image's conversion failure here rather than raise a bare error.

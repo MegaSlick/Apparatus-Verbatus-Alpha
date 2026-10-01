@@ -154,7 +154,7 @@ class RecordedRunner:
                 "".join(
                     json.dumps(
                         {
-                            "schema": "stage-timing-journal.v3",
+                            "schema": "stage-timing-journal.v4",
                             "run_id": self.journal_run_id,
                             "run_root": argv[argv.index("--run-root") + 1],
                         }
@@ -2503,7 +2503,6 @@ def test_real_timing_writer_and_reader_audit_mixed_and_damaged_lines(tmp_path: P
         orchestrator._record_stage_timing(
             args,
             program="door",
-            extra={},
             started_at="start",
             finished_at="finish",
             duration_ms=1,
@@ -2521,7 +2520,7 @@ def test_real_timing_writer_and_reader_audit_mixed_and_damaged_lines(tmp_path: P
     write()
     args.run_root = run_root
     with journal.open("ab") as handle:
-        handle.write(b'{"schema":"stage-timing-journal.v3"')
+        handle.write(b'{"schema":"stage-timing-journal.v4"')
     write()  # Repairs the torn tail before appending the next complete line.
 
     plan = object.__new__(pod_run.RunPlan)
@@ -2555,7 +2554,6 @@ def test_timing_writer_refuses_an_existing_foreign_file(
     orchestrator._record_stage_timing(
         args,
         program="door",
-        extra={},
         started_at="start",
         finished_at="finish",
         duration_ms=1,
@@ -2585,7 +2583,6 @@ def test_timing_writer_does_not_follow_a_symlink(
     orchestrator._record_stage_timing(
         args,
         program="door",
-        extra={},
         started_at="start",
         finished_at="finish",
         duration_ms=1,

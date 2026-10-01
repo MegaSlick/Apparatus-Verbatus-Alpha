@@ -242,9 +242,9 @@ Teklia's annotation scope and must never be scored as a false positive on that
 account alone.
 
 Act identity follows the same discipline. `common/contracts/identities.py`
-binds an `act_*` identity to bounds the Designator itself minted; a RecordGold
-box was minted by Teklia's annotators, never by this project's own structure
-pass, so deriving an `act_*` from it would verify against its own bindings and
+binds an `act_*` identity to bounds this project's own reading minted; a
+RecordGold box was minted by Teklia's annotators, never by this pipeline, so
+deriving an `act_*` from it would verify against its own bindings and
 mean nothing. Reference acts are keyed instead by
 `physical_act_id(physical_page_id("recordgold", "<source>/<volume>",
 "<page>"), record_id)` — a `pac_` identity, disjoint from `act_*` by prefix,
@@ -262,7 +262,7 @@ distinct `source`/`volume` splits (`"Tours/geneanet"` joined with nothing, and
 
 `compare.py` runs after a run tree is immutable, reads it read-only alongside a
 reference record set, computes IoU between every pipeline act's region (the
-Designator's proposal regions, or for `evaluate.py` the Perlector's act-regions) and
+Perlector's act-regions) and
 every reference box, takes the assignment maximising total IoU under a
 predeclared threshold, and writes `reference-comparison.v1` recording the whole
 matrix: matched pairs, unmatched reference acts (misses, scored), and

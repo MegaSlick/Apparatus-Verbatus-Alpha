@@ -1,6 +1,8 @@
 # How many times one page may be asked again before it is held for review.
 # Recovery recovers coverage, never quality: a poor reading is flagged, never
 # re-asked until it looks better. `common/recovery.py` reads and bounds it.
+# No stage re-asks a page yet; the budget is sealed into every run for the
+# page re-ask that will spend it.
 
 [budget]
 page_level_reread = 1

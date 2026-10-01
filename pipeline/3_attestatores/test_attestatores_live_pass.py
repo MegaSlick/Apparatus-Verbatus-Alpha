@@ -2009,3 +2009,24 @@ def test_a_live_whole_page_record_that_names_no_serving_call_is_refused():
         {}, field="serving_call_ref", endpoint="fixture://offline-chair-runner"
     )
     attestatores.verify_page_call_sampling(fixture, retained(None), "attestator_3")
+
+
+def test_a_live_unit_that_retains_a_response_and_names_no_call_is_refused():
+    """Per image, the same rule: a DAI unit with a live capture names its call."""
+    context, _call, _retained = _call_world({})
+    capture = {"raw_response_ref": {"relative_path": "x", "sha256": "b" * 64}}
+    record = {
+        "provenance": {
+            "receipt_ref": {"relative_path": "receipts/sha256/r.json", "sha256": "a" * 64}
+        },
+        "unit_call_refs": [None],
+        "unit_captures": [capture],
+    }
+    with pytest.raises(SchemaRefusal, match="image 1 and names no call"):
+        attestatores.verify_page_call_sampling(context, record, "attestator_2")
+    # A unit that retained nothing has no call to name.
+    attestatores.verify_page_call_sampling(
+        context, {**record, "unit_captures": [None]}, "attestator_2"
+    )
+    fixture, _call, _retained = _call_world({}, endpoint="fixture://offline-chair-runner")
+    attestatores.verify_page_call_sampling(fixture, record, "attestator_2")

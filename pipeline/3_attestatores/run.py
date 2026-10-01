@@ -2538,12 +2538,20 @@ def verify_page_call_sampling(context, payload: dict[str, Any], chair: str) -> N
     """Hold every call a page record retains to its chair's sealed sampling row.
 
     DAI names one call per record it was shown; a whole-page chair names the one
-    request it was sent, and a live record that retains a response must name it.
-    A Chandra native page sends no seed and samples at its returned attempt's
-    ordinal.
+    request it was sent, and a live record that retains a response, for the page
+    or for one of its units, must name the call that produced it. A Chandra
+    native page sends no seed and samples at its returned attempt's ordinal.
     """
-    for reference in payload.get("unit_call_refs", []):
+    captures = payload.get("unit_captures") or []
+    for index, reference in enumerate(payload.get("unit_call_refs", [])):
         if reference is None:
+            retains_response = index < len(captures) and captures[index] is not None
+            if retains_response and _served_live(context, payload):
+                raise SchemaRefusal(
+                    f"chair {chair!r}'s live page Testimonium retains a response for image "
+                    f"{index + 1} and names no call for it, so the request that produced it "
+                    "cannot be held to its sealed sampling row"
+                )
             continue
         call = _retained_call(context, reference, "unit call")
         try:

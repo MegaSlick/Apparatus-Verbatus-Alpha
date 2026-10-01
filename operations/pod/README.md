@@ -329,8 +329,8 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
   stamped long before the deadline means the supervisor stopped while the child ran (an OOM
   kill or teardown).
 - `-timings.json` — append-only JSON lines, one entry per stage invocation (run id,
-  member, operation, act, start, finish, duration, exit code, commit). A torn final
-  line is skipped when read. It is outside the run tree because the tree is pinned
+  member, start, finish, duration, exit code, GPU use, Perlector concurrency, commit). A
+  torn final line is skipped when read. It is outside the run tree because the tree is pinned
   byte-identical across reruns and restores and a clock is not. `run.json` names only the
   commit that created the run; a resume at another commit shows here. (Binding the commit
   into the run authority would refuse every resume after a fix.)

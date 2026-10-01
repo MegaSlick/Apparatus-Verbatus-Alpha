@@ -83,9 +83,9 @@ this page whose payload names the row's chair; no two rows may share a ref. Ever
 each line's and block's `ref`) is an input the caller binds on the page-feed
 record.
 
-A page the Attestatores served no page Testimonium at all (stage 3 serves only
-pages with a proposed Designator act) is built with `no_testimony=True` and no
-witnesses: its feed records `witness_testimony: "none"` and no row, so the
+A page with no page Testimonium at all (the sealed roster seats no page
+witness, or the Attestatores recorded none for it) is built with
+`no_testimony=True` and no witnesses: its feed records `witness_testimony: "none"` and no row, so the
 absence is stated rather than silent. A roster chair missing beside others
 that did testify is still refused.
 

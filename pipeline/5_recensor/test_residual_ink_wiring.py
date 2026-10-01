@@ -184,8 +184,7 @@ def test_a_page_whose_paper_cannot_be_inferred_is_unmeasurable_and_never_checked
 ):
     """The audit refuses the page rather than reporting zero residual ink on it.
 
-    The page substituted here is the inverted scan
-    `pipeline/2_designator/test_structure.py` uses -- 80% at 30, 20% at 220 --
+    The page substituted here is an inverted scan -- 80% at 30, 20% at 220 --
     whose mode is darker than its own mean and whose interior is dark, so no
     branch of the shared inference can call anything on it paper. Taking 30 as
     the paper value would find no pixel 40 levels below it and report the page

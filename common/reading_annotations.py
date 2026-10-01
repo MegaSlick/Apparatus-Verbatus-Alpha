@@ -9,16 +9,16 @@ shown as "(illegible -- witnesses agree: ...)" -- never characters inside
 bounds must be zero-width inside `text`, so a declared gap cannot carry text.
 No count of agreeing witnesses can widen it -- the schema does not read
 `witness_evidence` at all when deciding whether the gap's span is legal. This
-does not claim to identify an undeclared model echo elsewhere in `text`; Lectio
-nuda and dissent are the instruments for that behaviour.
+does not claim to identify an undeclared model echo elsewhere in `text`; dissent
+is the instrument for that behaviour.
 
 An uncertain span is the opposite case: text the Perlector *did* read, held
 with less confidence, with alternatives noted. It carries real characters on
 purpose -- that is what "read, with alternatives" means -- and it is validated
 only for shape (bounds inside `text`, a closed confidence vocabulary), because
 whether a span's content was genuinely read or silently borrowed from a witness
-is not a thing a bounds check can decide; that is what the dissent record and
-Lectio nuda comparison exist for instead.
+is not a thing a bounds check can decide; that is what the dissent record
+exists for instead.
 """
 
 from __future__ import annotations

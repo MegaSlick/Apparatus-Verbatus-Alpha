@@ -51,26 +51,18 @@ def _parser_stub():
 
 
 def _accepted_review() -> dict:
-    """A fresh continuation-inclusive Recensor review for terminal tests."""
+    """A fresh accepted Recensor review for terminal tests."""
     return {
         "artifact_id": "art_accepted",
         "outcome": "accepted",
-        # Both coverage facts every Recensor review shape writes. A double
-        # that omitted the continuation restatement would be a review no
-        # producer can emit, and the export reads it unconditionally.
+        # The coverage facts a page review writes, so the double is a review a
+        # producer can emit.
         "payload": {
             "coverage": {
                 "under_witnessed": False,
                 "unresolved_chairs": 0,
-                "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0, "unmeasured": 0},
+                "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0},
             },
-            "testimony_content_coverage": {
-                "by_chair": None,
-                "shortfall": None,
-                "reason": "synthetic terminal context has no comparable page testimony",
-            },
-            "testimony_content_coverage_continuation": [],
-            "cross_capture_coverage": None,
         },
     }
 

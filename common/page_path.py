@@ -67,7 +67,7 @@ PERLECTIO_KIND: Final = "perlectio"
 PAGE_READING_SCHEMA: Final = "perlector-page-reading.v2"
 ACT_REGION_SCHEMA: Final = "perlector-act-region.v2"
 PERLECTIO_SCHEMA: Final = "perlectio.v3"
-# Every kind the page path publishes, and no act-read run does.
+# Every kind the page reading publishes beside its Perlectios.
 PAGE_PATH_KINDS: Final = frozenset(
     {PAGE_FEED_KIND, PAGE_READING_KIND, PAGE_ACCOUNTING_KIND, ACT_REGION_KIND}
 )
@@ -184,9 +184,10 @@ def not_run_problems(
         problems.append(
             {
                 "code": NO_WITNESS_TESTIMONY,
-                "detail": "no witness testified to this page (the Attestatores serve only pages "
-                "with a proposed Designator act); the page is held for a human, not read "
-                "without its witnesses",
+                "detail": "no witness testified to this page: the sealed roster seats no page "
+                "witness, or the Attestatores recorded no page Testimonium for it; the page is "
+                "held for a human, not read without its witnesses. Seat a page witness or "
+                "complete the Attestatores pass, then read the page again",
             }
         )
     if page_feed.shows_nothing(feed):

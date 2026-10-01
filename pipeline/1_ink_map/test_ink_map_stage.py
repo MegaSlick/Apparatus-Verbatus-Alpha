@@ -696,8 +696,7 @@ def test_retained_runs_for_another_page_size_are_refused_by_the_shared_reconcile
 def test_a_page_whose_paper_cannot_be_inferred_is_named_rather_than_mapped(monkeypatch):
     """`ink-not-measurable`: in the census, with no counts and no retained runs.
 
-    The page is the inverted scan `pipeline/2_designator/test_structure.py`
-    uses -- 80% at 30, 20% at 220 -- whose mode is darker than its own mean and
+    The page is an inverted scan -- 80% at 30, 20% at 220 -- whose mode is darker than its own mean and
     whose interior is dark, so no branch can call anything on it paper. Taking
     the raw mode (30) as the paper value would find no pixel 40 levels below
     it, and would publish `mapped` with `total_ink_pixels: 0`: a

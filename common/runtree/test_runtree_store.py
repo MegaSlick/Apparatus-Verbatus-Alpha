@@ -1237,7 +1237,7 @@ def test_a_manifest_metadata_and_digest_come_from_one_byte_snapshot(tmp_path, mo
     """
     tree = make_run(tmp_path)
     published = tree.publish_artifact(make_envelope(outcome="proposed"))
-    replacement = canonical_bytes(make_envelope(outcome="held"))
+    replacement = canonical_bytes(make_envelope(outcome="failed"))
     real_read = RunTree._read_manifest_artifact
 
     def read_replacement(self, relative_path):
@@ -1249,7 +1249,7 @@ def test_a_manifest_metadata_and_digest_come_from_one_byte_snapshot(tmp_path, mo
     monkeypatch.setattr(RunTree, "_read_manifest_artifact", read_replacement)
     row = tree.build_manifest(DESIGNATOR)["artifacts"][0]
 
-    assert row["outcome"] == "held"
+    assert row["outcome"] == "failed"
     assert row["sha256"] == digest_bytes(replacement)
 
 

@@ -1083,6 +1083,25 @@ def test_a_reading_departing_from_its_reply_is_refused(happy_tree, tmp_path, fie
         reading_acts(_context(tree))
 
 
+@pytest.mark.parametrize(
+    "audit",
+    [
+        lambda audit: audit.update(state="complete"),
+        lambda audit: audit.update(round_cap=0),
+        lambda audit: audit.update(policy_sha256="0" * 64),
+        lambda audit: audit.pop("reason"),
+    ],
+)
+def test_a_reading_whose_audit_is_not_the_sealed_policy_not_run_is_refused(
+    happy_tree, tmp_path, audit
+):
+    """The export's Pass-C status is read off each reading's audit, so it is checked."""
+    tree = _copy(happy_tree, tmp_path)
+    _forge(tree[0], "page-reading", 1, None, lambda record: audit(record["payload"]["audit"]))
+    with pytest.raises(FatalAccounting, match="sealed Pass-C audit policy as not run"):
+        reading_acts(_context(tree))
+
+
 def test_a_reading_naming_another_feed_than_its_inputs_is_refused(happy_tree, tmp_path):
     tree = _copy(happy_tree, tmp_path)
     root = tree[0]

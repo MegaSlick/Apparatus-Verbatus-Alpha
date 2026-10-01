@@ -13,8 +13,7 @@ own.
 
 The page-spanning component held 35 to 87 per
 cent of audited ink on 44 real pages, so counting it flagged every page. It is
-re-derived here at the page's own derived margin, because the Designator's record
-carries only whole-page boxes, and taken out of `total_ink_pixels` and
+derived here at the page's own derived margin and taken out of `total_ink_pixels` and
 `outside_ink_pixels`; `page_ink_pixels` and `page_spanning_ink_pixels` keep the
 whole-page figure. It is cut at the derived margin rather than at this module's
 looser contrast, which merges writing touching it into the component and hides
@@ -55,7 +54,7 @@ MINIMUM_INK_PIXELS_FIELD: Final = "minimum_ink_pixels"
 #: A pixel this many levels below the page's own inferred background is ink.
 #: It sits below a
 #: photographed page's derived margin (median 66), so there it counts more ink
-#: than the Designator's primary scan does; that is why the gates are fractions.
+#: than a scan at the derived margin does; that is why the gates are fractions.
 MINIMUM_CONTRAST_BELOW_BACKGROUND = 40
 
 #: Fraction of the page's own ink outside every region that flags it, in basis
@@ -362,8 +361,8 @@ def page_background(
 ) -> dict[str, Any]:
     """This page's paper value and the level this audit thresholds it at.
 
-    The paper value is the shared inference's, the identical call the
-    Designator makes on the identical bytes. `ink_margin` and `dark_mode` decide
+    The paper value is the shared inference's, the identical call every ink
+    reader makes on the identical bytes. `ink_margin` and `dark_mode` decide
     nothing here; they are recorded so a reader can tell a disagreement about
     paper from one about sensitivity. Raises `BackgroundInferenceRefusal` when the
     paper cannot be inferred or is too dark to express this contrast.
@@ -464,8 +463,8 @@ def residual_ink(
 ) -> dict[str, Any]:
     """How much of this page's own ink sits outside every region cut for it.
 
-    `covered` is every proposal and recovery region cut for this page, in page
-    pixels as the Designator recorded them. Out-of-page bounds are clipped, not
+    `covered` is every reading region claimed on this page, in page pixels; the
+    Ink Map's own whole-page measure passes none. Out-of-page bounds are clipped, not
     refused, so a later stage's own geometry refusal is still reached. Both
     policies must be resolved for this page's own dimensions.
 
@@ -511,7 +510,7 @@ def _residual_counts(
         covered_bits = _row_bits(covered_mask, y, width)
         spanning_bits = _row_bits(spanning_mask, y, width)
         page_ink += ink_row.count(1)
-        # The component is found at the Designator's margin, so its mask may hold
+        # The component is found at the page's derived margin, so its mask may hold
         # pixels this audit does not call ink; only this audit's ink is removed.
         spanning_ink += (ink_bits & spanning_bits).bit_count()
         audited_bits = ink_bits & ~spanning_bits
@@ -549,10 +548,10 @@ def _audited_runs(
 def edge_ink_from_runs(
     evidence: dict[str, Any], covered: list[Bounds], *, coverage_policy: CoverageAuditPolicy
 ) -> dict[str, Any]:
-    """Re-measure the edge finding against later Designator cuts.
+    """Re-measure the edge finding against the regions later read on the page.
 
-    The initial measure precedes all proposals, so it is a candidate finding. A
-    later crop may release it only under the same band and gates over these
+    The initial measure precedes every reading, so it is a candidate finding. A
+    later reading region may release it only under the same band and gates over these
     retained runs; only the coverage mask may change. `coverage_policy` must be
     resolved for this page's own dimensions.
     """

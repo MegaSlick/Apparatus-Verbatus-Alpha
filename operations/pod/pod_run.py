@@ -466,7 +466,7 @@ class RunPlan:
         roles: set[str] = set()
         if "designator" in selected:
             roles.update(("secondary_proposer", "designator_surya"))
-        if selected & {"perlector", "recovery"}:
+        if "perlector" in selected:
             roles.add("perlector")
         try:
             configured = load_models_toml(self.models_config).chairs

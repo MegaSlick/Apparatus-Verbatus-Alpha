@@ -210,11 +210,7 @@ ALWAYS_HELD_BOUNDARIES: Final = frozenset({ATTESTATORES, ARMARIUM})
 
 
 def _named_boundary(name: str, role: str) -> str:
-    """Refuse a selection endpoint that owns no stage completion boundary.
-
-    `recovery` is a legal driver member but has no seal, so it gets the same
-    refusal as a typo.
-    """
+    """Refuse a selection endpoint that owns no stage completion boundary."""
 
     if name not in STAGES:
         raise ContractError(
@@ -1273,7 +1269,7 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument(
         "--decoding-config",
         default=str(DEFAULT_DECODING_CONFIG_PATH),
-        help="the sealed decoding posture for record readings and variance experiments",
+        help="the sealed decoding posture of every reading chair",
     )
     parser.add_argument(
         "--serving-recipes-config",
@@ -1301,7 +1297,7 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument(
         "--perlector-protocol-config",
         default=str(DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH),
-        help="the sealed Perlector prior-draft protocol declaration",
+        help="the sealed Perlector protocol: page feed, page render and truncation",
     )
     parser.add_argument(
         "--perlector-audit-config",
@@ -1998,6 +1994,22 @@ def _sealed_perlector_protocol(context) -> dict[str, Any]:
     return protocol
 
 
+def _sealed_audit_not_run(context) -> dict[str, Any]:
+    """The audit record every page reading of this run must carry: the sealed policy, not run."""
+    from common.perlector_audit import audit_not_run
+
+    policy, digest = read_sealed_toml(
+        context.perlector_audit_config_path, "Perlector audit declaration"
+    )
+    context.require_sealed_config("perlector-audit", digest)
+    if not isinstance(policy, dict) or "round_cap" not in policy:
+        raise FatalAccounting(
+            "the sealed Perlector audit declaration names no round cap, so no page reading's "
+            "audit record can be checked against it"
+        )
+    return audit_not_run(policy, digest)
+
+
 def reading_denominator(context) -> dict[str, Any]:
     """The acts every downstream count is taken over, verified once.
 
@@ -2118,6 +2130,7 @@ class _PageReadRecords:
                 )
         protocol = _sealed_perlector_protocol(context)
         self.protocol = protocol
+        self.audit = _sealed_audit_not_run(context)
         self.truncation_policy = protocol.get("truncation")
         self.accounting_policy = page_accounting.require_page_accounting_policy(
             context, context.page_accounting_config_path
@@ -2295,6 +2308,10 @@ def _verify_page_reading(
         and reading.get("outcome") == payload.get("disposition")
         and payload.get("parse_state") in page_accounting.PARSE_STATES,
         f"{what}'s page reading is not a page-path reading of this page under this run",
+    )
+    _require(
+        payload.get("audit") == index.audit,
+        f"{what}'s page reading does not record the sealed Pass-C audit policy as not run",
     )
     codes = _problem_codes(payload.get("problems"), f"{what}'s page reading")
     reading_ref = index.ref(reading)
