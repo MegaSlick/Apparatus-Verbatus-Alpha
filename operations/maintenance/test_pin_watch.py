@@ -47,8 +47,7 @@ def test_pins_come_from_configured_chairs_and_vendor_source_constants() -> None:
             "0c57f057391113579e7af170b864542f049e67aa",
             "huggingface",
         ),
-        ("Qwen/Qwen3.8-27B", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0", "huggingface"),
-        # The reconstructor sits on the Perlector's repository at the same pin.
+        # The Perlector and the reconstructor share this repository and pin: one row.
         ("Qwen/Qwen3.8-27B", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0", "huggingface"),
         ("datalab-to/chandra", "d4f7467435aa4137d9539f000ddf0b7ced3eb43f", "github"),
         ("stanford-oval/Churro", "4abb17386d9656199c2776195926545fc527a691", "github"),
