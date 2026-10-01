@@ -1503,10 +1503,19 @@ class OperatorSurface:
         """Record why a finished run has no usable Armarium record; the refusal to raise."""
 
         if completed.returncode == 3:
-            # Held before the Armarium, so no export record exists; the
-            # reason is the orchestrator's last stderr line.
+            # Held before the Armarium, so no export record exists. A held
+            # Recensor's stop, with what it holds, is the orchestrator's own
+            # report on stdout; any other hold's reason is its last stderr line.
+            report = completed.stdout.rstrip().splitlines()
+            stopped = next(
+                (line for line in report if f"run {run_id}: " in line and "held recensor" in line),
+                None,
+            )
+            if stopped is None:
+                report = []
             reason = (
-                _last_line(completed.stderr)
+                stopped
+                or _last_line(completed.stderr)
                 or _last_line(completed.stdout)
                 or "the orchestrator reported a hold, and no Armarium export record "
                 "exists to name the reason"
@@ -1529,6 +1538,9 @@ class OperatorSurface:
             )
             self.present("Run is held. It was not called complete.")
             self.present(f"Hold reason: {reason}")
+            for line in report:
+                if line != stopped:
+                    self.present(line)
             self._present_review_command(run_root, run_id)
             self._notify(
                 "decision", f"Verbatus run {run_id} is held and needs a decision: {reason}"

@@ -15,8 +15,10 @@ Two schemas share this family. `approval-record.v0` carries every action except
 operator review decision about one held unit or page of a run: action `review`, a
 closed `review` block naming the run, scope, page, decision and finding, and a
 `target_version_hash` that is the review's basis digest
-(`common.review_decisions`). Readers accept both. No stage applies a v1 decision
-yet: `common.review_decisions` is not called by any stage.
+(`common.review_decisions`). Readers accept both. The Recensor applies every v1
+decision a run stores (`pipeline/5_recensor/CONTRACT.md`, "Operator review
+decisions"). One is built with `build_review_decision_record` and stored with
+`RunTree.write_approval_record`; no operator command writes one.
 
 `timestamp` is present here and absent from every other artifact in this package.
 Deterministic artifacts carry no timestamps, because two identical runs must
@@ -37,6 +39,9 @@ APPROVER: Final = "project-lead"
 # decision that can move a staged run forward, and readers must be able to find
 # it without treating a free-text label as authority.
 ACTIONS: Final = ("advance", "exclusion", "salvage-promotion", "review", "other")
+ADVANCE_ACTION: Final = "advance"
+# An advance names one stage boundary as its one subject: this prefix and the stage.
+ADVANCE_SUBJECT_PREFIX: Final = "stage-boundary:"
 
 SCHEMA_V0: Final = "approval-record.v0"
 SCHEMA_V1: Final = "approval-record.v1"

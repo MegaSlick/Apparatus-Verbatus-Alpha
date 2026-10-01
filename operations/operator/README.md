@@ -99,7 +99,12 @@ bundle written (`export-unreconciled`, distinct from an unreadable record,
 `export-missing`); use `review` to see why.
 
 **A hold is not cleared by running the same run name again**: that republishes the same
-sealed hold. Only a new authorized run over the same sealed source resolves it.
+sealed hold. An operator review decision recorded in the run (`approval-record.v1`,
+`pipeline/5_recensor/CONTRACT.md`, "Operator review decisions") resolves it when the run
+resumes from the Recensor, which applies every decision stored; a new run over the same
+sealed source is the other way. A run whose Recensor holds anything stops there, before
+the Archetypus, in every mode; it exports with holds remaining only after `advance`
+passes the Recensor's current seal. `review` shows what each stored decision did.
 
 ## `review` on a run that has not finished
 

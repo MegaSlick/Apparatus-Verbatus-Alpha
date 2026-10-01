@@ -1,7 +1,8 @@
 # Review
 
 Where items the Recensor cannot resolve will reach the project lead. **Nothing is built here yet:
-this directory holds this README and no queue.**
+this directory holds this README and no queue.** The decisions the project lead records about
+held units are already applied by the Recensor (`../CONTRACT.md`, "Operator review decisions").
 
 It will live inside the Recensor because the Recensor is what fills the queue.
 Separating the queue from the stage that fills it is how things get lost.

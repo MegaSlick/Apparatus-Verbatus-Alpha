@@ -6,10 +6,15 @@ and records decisions as `approval-record.v1` (`common.contracts.approval`),
 outside the sealed stage records. This module is how current decisions apply
 on top of the Recensor's derived review, as pure functions over data: no I/O.
 
-Not wired in: no stage calls these functions and no operator CLI builds or shows
-a decision, so a recorded decision is not applied and a held unit stays held.
-`common.contracts.outcomes.run_aggregate` takes the `review_clearances` and
-`review_page_holds` that `apply_decisions` returns, but no caller passes them.
+The Recensor's page path (`pipeline/5_recensor/page_review.py`) reads every
+decision the run stores (`RunTree.review_decision_records`) and applies them
+with `apply_decisions` on every pass, recording the result in its
+`review-decisions` record; the Armarium hands that record's clearances and held
+pages to `common.contracts.outcomes.run_aggregate` as `review_clearances`
+(`aggregate_clearances`) and `review_page_holds` (`held_pages`). The record's
+`decisions_digest` (`decisions_digest`) is what the Archetypus and the Armarium
+compare with the decisions stored when they run, so neither acts on a pass that
+did not see every decision.
 
 The input is the derived review, the Recensor's review as the machine derives
 it before any decision:
@@ -67,9 +72,10 @@ the basis by design, and the machine's own holds on the new reading stand.
 Decisions: a unit is released (its own holds cleared), excluded as not an act,
 held with a finding, or re-asked; an excluded unit's page keeps its page
 holds, and a page whose every act is excluded is held as one with no act. A
-page is found to have no missed act (its page-scope holds cleared), to have a missed act, re-asked, re-shot, or held with
-a finding. Correcting text, splitting, merging and clearing a continuation link
-are not decisions; each is a `hold` finding and the unit stays held.
+page is found to have no missed act (its page-scope holds cleared), to have a
+missed act, re-asked, re-shot, or held with a finding. Correcting text,
+splitting, merging and clearing a continuation link are not decisions; each is
+a `hold` finding and the unit stays held.
 """
 
 from __future__ import annotations
@@ -145,6 +151,9 @@ ADDED_CODES: Final = {
     (UNIT_SCOPE, CONFLICT): "review-conflict",
     (PAGE_SCOPE, CONFLICT): "review-page-conflict",
 }
+# The code a unit keeps when decisions would accept a reading its page reading
+# holds: a decision clears only the Recensor's own holds, never the reading's.
+READING_HELD: Final = "review-reading-held"
 CLEARING: Final = frozenset({(UNIT_SCOPE, "release"), (UNIT_SCOPE, "exclude")}) | {
     (PAGE_SCOPE, "no-missed-act")
 }
@@ -451,7 +460,7 @@ def apply_decisions(derived: Mapping[str, Any], decisions: Sequence[Any]) -> dic
     stale = [summary for summary in summaries if summary["state"] == STALE]
     carried = [s for s in stale if _carried_code(s, basis, kinds) is not None]
     return {
-        "decisions_digest": digest_of(sorted(s["record_sha256"] for s in summaries)),
+        "decisions_digest": decisions_digest(s["record_sha256"] for s in summaries),
         "units": units,
         "pages": pages,
         "applied": applied,
@@ -462,6 +471,11 @@ def apply_decisions(derived: Mapping[str, Any], decisions: Sequence[Any]) -> dic
         "clearances": _clearances(basis, units, pages, applied),
         "requests": _requests(basis, applied),
     }
+
+
+def decisions_digest(record_sha256s: Iterable[str]) -> str:
+    """The digest of a set of decisions, from the digests the run tree stores each one under."""
+    return digest_of(sorted(set(record_sha256s)))
 
 
 def _summary_key(summary: Mapping[str, Any]) -> tuple[str, ...]:

@@ -155,6 +155,9 @@ BOUNDARY_OUTCOMES: Final = {
     # one configured-chair denominator.
     "chandra-native-attempt-intent": "recorded",
     "chandra-native-attempt": "recorded",
+    # What one Recensor pass did with the run's operator review decisions; it
+    # decides about no unit, each review does.
+    "review-decisions": "recorded",
 }
 
 # Boundary evidence, never an act's category (an Armarium boundary record is not

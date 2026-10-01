@@ -64,7 +64,9 @@ from common.contracts.uncertainty import validate as validate_uncertainty
 from common.exemplar_boundary import verify_reading_region_lineage  # noqa: E402
 from common.page_review import (  # noqa: E402
     current_page_reviews,
+    require_current_review_decisions,
     require_establishable,
+    require_recensor_passed,
     reviewed_rows,
 )
 from common.page_testimonia import (  # noqa: E402
@@ -653,6 +655,10 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     context = open_stage_context(
         args, ARCHETYPUS, registry_factory=registry_factory, serving_reader=SERVING_READER
     )
+    # The reviews below must be a pass that applied every decision stored now,
+    # and one that holds nothing no person has passed.
+    require_current_review_decisions(context)
+    require_recensor_passed(context.tree)
     rows = reviewed_rows(reading_acts(context))
     reviews = current_page_reviews(context, rows)
     testimonia = current_page_testimonia(context)

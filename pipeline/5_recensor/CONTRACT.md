@@ -61,7 +61,8 @@ assessment is not malformed. Otherwise `held-for-review`, with every row code an
 every code of this stage (`under-witnessed`, `unresolved-witness`, `residual-ink`,
 `residual-ink-not-measurable`, `residual-ink-not-measured`,
 `uncertainty-assessment-malformed`, `continuation-off-page-edge`) in `hold_codes` and
-each named in `reason`.
+each named in `reason`. An operator review decision can change that outcome
+("Operator review decisions" below).
 
 ## A page that holds no act
 
@@ -94,7 +95,8 @@ fields below and is how the Archetypus and the Armarium read both records):
  confirmation: {confirms, rules, surya_lines, witnesses, confirmed, failures} | null,
  release: {hold_codes, reason} | null,
  notes: [{code: "continuation-flag-on-other", flags}],
- recoveries_used: 0 | 1, attempt_ordinal}
+ recoveries_used: 0 | 1, attempt_ordinal,
+ operator_review}           # only on a review an operator decision concerns
 ```
 
 Its inputs are the page reading, the page accounting, the act-region and Perlectio
@@ -137,6 +139,78 @@ refused. A page's one re-ask is stage 4's own (`pipeline/4_perlector/CONTRACT.md
 page's re-asks from its `page_readings` row (1 when it names a `reask_ref`, else 0),
 and the receipt measures it again with the rest of the review.
 
+## Operator review decisions
+
+A person records a decision about a held unit or page as an `approval-record.v1`
+(`common/contracts/approval.py`) in the run's `receipts/sha256/`, outside every stage
+record. Every pass reads all of them (`RunTree.review_decision_records`: every file in
+that directory is digest-checked against its name, and every approval among them must
+be stored as its canonical bytes and pass its own schema and self-hash, so an edited
+decision is refused, never skipped) and applies them on top of the reviews it has just
+measured (`common.review_decisions.apply_decisions`). A decision binds to the basis
+digest of the machine's review of its unit, or of every unit on its page, so it stays
+bound across passes while nothing it looked at changes.
+
+- **Current** (its basis is the subject's now): a `release` clears the unit's own
+  holds, a `no-missed-act` its page's, an `exclude` makes the review `excluded`
+  (`approval_ref` on the envelope citing the stored decision; the page keeps its
+  holds), and a `hold`, `missed-act`, `re-ask` or `re-shoot` adds its `review-*` hold
+  code. Disagreeing current decisions about one subject are applied by none and hold
+  it.
+- **Stale** (its basis no longer matches): never applied. A stale `hold`, `missed-act`
+  or page `hold` still holds its subject with a `-carried` code until a person decides
+  against the current basis.
+- **Unkept**: a stale decision whose page is no longer in the review.
+
+A review a decision concerns carries an `operator_review` block: the unit and page
+basis digests, the machine's outcome and codes, what was cleared, added and carried,
+the findings, and every decision touching it; its `hold_codes` and `reason` are the
+result. A review no decision concerns is the machine's, byte for byte, and a run that
+stores no decision publishes exactly what it would without this section.
+
+The pass then publishes one `review-decisions` record (subject `operator-review`,
+attempt `attempt_id("operator-review", "decide", n)`, outcome `recorded`), reused on an
+unchanged repeat:
+
+```
+{schema: "recensor-review-decisions.v1", decisions_digest,
+ applied, stale, conflicting, carried, unkept,    # decision summaries
+ clearances: [{scope, subject_id, act_key, page_id, page_ordinal, decision,
+               cleared, decision_hashes}],
+ page_holds: [{page_ordinal, hold_codes}],        # every page still held
+ requests: [{scope, subject_id, page_id, page_ordinal, decision, decision_hashes}],
+ attempt_ordinal}
+```
+
+The Armarium hands `clearances` and `page_holds` to the run aggregate, where each is a
+named reason, so a run a person cleared stays `partial`. `requests` records the re-asks
+and re-shoots asked for; no stage acts on them.
+
+**A decision clears only this stage's own holds.** A `release` or `no-missed-act`
+completes a unit only when what remains held it is this stage's measurement; a hold the
+page reading itself carries (its Perlectio's own `holds` or `page_holds`) stays,
+because the Archetypus establishes only a reading the Perlector did not hold
+(`common/page_review.py::require_establishable`). When the decisions about a unit would
+accept such a reading, the unit stays held under `review-reading-held`
+(`common.review_decisions.READING_HELD`) with the reading's own codes, its reason says
+why, and the rest of the pass goes on.
+
+The Archetypus and the Armarium each compare the digest of the decisions stored when
+they run (`common.review_decisions.decisions_digest`) with this record's
+`decisions_digest`, and refuse on a difference, so a decision recorded after this
+stage's last pass is never silently ignored: the Recensor runs again first. A run that
+stores no decision has no record, and neither stage checks anything else.
+
+Refused, before anything is published:
+
+- a changed set of decisions once the Archetypus has established a reading (any
+  `kind="archetypus"` record; its seal and index alone establish nothing): a decision
+  recorded then cannot reach what was established, so the decisions belong in a new run
+  of the submission, which stops at a held Recensor before the Archetypus
+  (`pipeline/orchestrator/CONTRACT.md`);
+- a decision for another run, one that fails its digest or self-hash, or one its
+  subject does not allow (`common/review_decisions.py::review_decision`).
+
 ## The partition receipt
 
 `page_review.write_reading_receipt` rebuilds `recensor-partition-receipt.v5` from
@@ -156,17 +230,20 @@ set aside (`set_aside`), those only a re-ask entry rule (j) holds accounts for
 (`held`) and those still unread (`unread`), and the entry numbers rule (j) holds as
 duplicates (`duplicate`); each item's `page_disposition`, review and coverage recomputed from
 the Testimonia, and its `release_reason`: the review's `release.reason` for a unit its
-page reading held and this stage released, `null` otherwise. A held unit so released
+page reading held and this stage released, the review's `reason` for one an operator
+decision completed, `null` otherwise. A held unit so released
 is resolved and adds no receipt reason, so a run whose only held page is a blank page
 the review confirmed can be `complete`; a held unit with no completed review keeps the
 receipt `partial`. Each review's outcome is recomputed too: every row hold code is
 kept or named in a release, a release names exactly the row's releasable codes on a
 confirmed page, the witness-floor and continuation codes are what disk derives, and
-the unit is held exactly when a code remains. Then the whole review is measured again
-as it was published (`page_review.plan_reviews`): its coverage, residual ink,
-confirmation, release, codes, reason, outcome and inputs must be exactly what disk
-gives, and the Testimonia counted for the floor must be ones the page accounting
-measured, so no release rests on a stale confirmation and no residual-ink hold is
+the unit is held exactly when a code remains (for a review a decision concerns, these
+checks run on the machine's review it was derived from). Then the whole review is
+measured again as it was published (`page_review.plan_reviews`, with the run's
+decisions applied): its coverage, residual ink, confirmation, release, codes, reason,
+outcome, inputs and `approval_ref` must be exactly what disk gives, and so must the
+`review-decisions` record, and the Testimonia counted for the floor must be ones the
+page accounting measured, so no release rests on a stale confirmation and no residual-ink hold is
 lost. Every `continuation-link` is matched one to one against the breaks the answers
 flag; a missing, stray or different link is refused. `continuation_links` names each
 (`subject_id`, `link_ref`, `outcome`), and a held one is a receipt reason, so the
@@ -212,4 +289,6 @@ authority to halt a sequence it does not control.
 Archetypus establishes text only for a current `accepted` review and follows its exact
 `perlectio_ref`; it does not reselect a newer reading. Armarium derives the terminal
 category from this review history and keeps all holds visible, so a partial result
-cannot present as complete.
+cannot present as complete; an `excluded` review becomes `excluded-with-approval`
+citing the review's `approval_ref`, and the `review-decisions` record's clearances and
+held pages are reasons in the run aggregate.

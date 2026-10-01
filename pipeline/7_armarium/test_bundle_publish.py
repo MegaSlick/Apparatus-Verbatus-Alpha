@@ -95,7 +95,7 @@ def unreconstructed_run(tmp_path_factory):
 @pytest.fixture(scope="module")
 def review_run(orchestrated_run, tmp_path_factory):
     root = tmp_path_factory.mktemp("bundle-publish-review") / "runs"
-    return orchestrated_run(root, "r", "page-review", 3)
+    return orchestrated_run(root, "r", "page-review", 3, past_held_recensor=True)
 
 
 def test_the_sealed_bundle_is_published_and_verifies_outside_the_run_tree(tmp_path, happy_run):

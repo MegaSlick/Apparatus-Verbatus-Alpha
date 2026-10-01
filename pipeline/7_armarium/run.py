@@ -41,6 +41,7 @@ from armarium_export import (  # noqa: E402
     build_armarium_bundle,
     continuation_join_row,
     edge_hold_pages_from_rows,
+    review_aggregate_arguments,
     unpaired_continuations,
 )
 from coniector_layer import export_rows  # noqa: E402
@@ -82,7 +83,9 @@ from common.page_accounting import require_page_accounting_policy  # noqa: E402
 from common.page_review import (  # noqa: E402
     continuation_links,
     current_page_reviews,
+    require_current_review_decisions,
     require_establishable,
+    require_recensor_passed,
     review_coverage,
     review_notes,
     review_reason,
@@ -103,6 +106,7 @@ from common.residual_ink import (  # noqa: E402
     reconcile_edge_finding_with_runs,
     resolve_coverage_audit_policy,
 )
+from common.review_decisions import aggregate_clearances  # noqa: E402
 from common.sealed_config import read_sealed_toml
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -1059,8 +1063,36 @@ def _act_reading(row: dict) -> str | None:
     return _ACT_READING_LABELS[row["reading_attempt"]]
 
 
+def review_decisions_basis(context, canaries: set[int]) -> dict[str, list] | None:
+    """What the Recensor's operator review decisions give the run aggregate, or None without any.
+
+    `{clearances, page_holds}`: each hold a decision cleared, as
+    `run_aggregate`'s `review_clearances` rows naming units by act key, and
+    each page still held after review, `{page, codes}`. A canary page is
+    outside the export, so its rows are too. Refused when a decision was
+    recorded after the Recensor's last pass, which no review applied.
+    """
+    decisions = require_current_review_decisions(context)
+    if decisions is None:
+        return None
+    return {
+        "clearances": [
+            row
+            for row in aggregate_clearances(decisions, unit_key="act_key")
+            if row["page"] not in canaries
+        ],
+        "page_holds": [
+            {"page": row["page_ordinal"], "codes": row["hold_codes"]}
+            for row in decisions["page_holds"]
+            if row["page_ordinal"] not in canaries
+        ],
+    }
+
+
 def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> int:
     """Export the run: acts, the other layer, page rows, and the page accounting."""
+    # Before anything is published, so a decision no review applied refuses cleanly.
+    review_basis = review_decisions_basis(context, canaries)
     submission_id, fixture_id, run_identity = export_run_identity(context)
     real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
     denominator = reading_denominator(context)
@@ -1090,6 +1122,12 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
     for row in rows:
         review = reviews[row["act_id"]]
         category, established = _page_category(context, row, review, manifest_cache)
+        # An exclusion cites the operator decision its review rests on.
+        approval_ref = (
+            review.get("approval_ref")
+            if category is ArmariumCategory.EXCLUDED_WITH_APPROVAL
+            else None
+        )
         if row["page_ordinal"] in canaries:
             canary_entry = {
                 "act_id": row["act_id"],
@@ -1102,6 +1140,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                 subject_id=row["act_id"],
                 outcome=category.value,
                 payload=canary_entry,
+                approval_ref=approval_ref,
             )
             canary_acts.append(canary_entry)
             continue
@@ -1177,7 +1216,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             "perlectio_ref": entry.get("perlectio_ref"),
             "recensor_ref": entry.get("recensor_ref"),
             "dissent_ref": entry.get("dissent_ref"),
-            "approval_ref": None,
+            "approval_ref": approval_ref,
             "uncertainty": entry.get("uncertainty"),
         }
         if row["kind"] == "other":
@@ -1206,6 +1245,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             subject_id=row["act_id"],
             outcome=category.value,
             payload=entry,
+            approval_ref=approval_ref,
         )
 
     all_ink_map_pages = ink_map_page_rows(
@@ -1233,6 +1273,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             list(joins),
             {act["act_id"]: act["act_key"] for act in projected_acts},
         ),
+        **review_aggregate_arguments(review_basis),
     )
     real_sealed = {
         ordinal for ordinal, page in real_census.items() if page.get("outcome") == "sealed"
@@ -1270,6 +1311,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                 "act_text_status": act_text_status,
                 "continuation_flags": continuation_flags,
                 "page_witness_chairs": sorted(declared_page_witness_chairs(context)),
+                **({} if review_basis is None else {"review_decisions": review_basis}),
             },
             ink_map_pages=ink_map_pages,
             not_measured_basis=page_not_measured_basis(
@@ -1365,6 +1407,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     canaries = canary_ordinals(context.run)
     if not canaries <= set(census):
         raise FatalAccounting("sealed canary ordinals are absent from the Exemplar page census")
+    # Nothing is exported over a Recensor hold no person has passed.
+    require_recensor_passed(context.tree)
     return _export(context, formats, census, canaries)
 
 

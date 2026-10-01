@@ -21,11 +21,12 @@ from common import page_path
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR
 from common.exemplar_boundary import verify_reading_region_lineage
-from common.page_review import current_page_reviews
+from common.page_review import current_page_reviews, held_by_recensor
 from common.page_testimonia import current_page_testimonia
 from common.runtree.store import RunTree
 from common.stage import NO_ACT_ON_PAGE_HOLD, reading_acts
 from conftest import (
+    advance_held_recensor,
     build_page_tree,
     forge_page_review,
     load_stage,
@@ -70,8 +71,10 @@ def _archetypus(root: Path, options: dict, scenario: str):
 
 
 def _establish(root: Path, options: dict, scenario: str):
-    """The real Recensor, then the Archetypus."""
+    """The real Recensor, then the Archetypus, past a held Recensor once a person advances it."""
     _recense(root, options, scenario)
+    if held_by_recensor(RunTree(root, RUN_ID)):
+        advance_held_recensor(root, RUN_ID)
     return _archetypus(root, options, scenario)
 
 

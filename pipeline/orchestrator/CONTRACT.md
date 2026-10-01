@@ -49,7 +49,7 @@ publishing did not, so the next entry is a named missing-seal refusal.
 
 | Stop | Exit | How it is said |
 |---|---|---|
-| a member **held** | 3 | `manual`/`semi`: `run <id>: <mode> mode stopped at held <name>`, unless the selection ends at the Armarium: such a selection runs through every held member, as `auto` does, so the Armarium's terminal report names every hold. A held Attestatores stops every mode, including `auto`, and says so. |
+| a member **held** | 3 | `manual`/`semi`: `run <id>: <mode> mode stopped at held <name>`, unless the selection ends at the Armarium: such a selection runs through every held member, as `auto` does, so the Armarium's terminal report names every hold. A held Attestatores stops every mode, including `auto`, and says so. So does a held Recensor (below). |
 | a boundary **refused** | 2 | the refusing stage's own named `ContractError`/`SchemaRefusal` on stderr, forwarded verbatim |
 | the run-level **cap** breached | 4 | `run <id>: halted at the <checkpoint> checkpoint — …`, plus the offending subjects by kind |
 
@@ -59,6 +59,28 @@ directly invoked stage refuses a halted run without writing. A run that is both 
 over the cap reports the cap: that is the reason that needs fixing rather than re-entry.
 Re-entering a halted run is refused again at the resume preflight, from the same tally
 recomputed from the same artifacts — the driver caches nothing between invocations.
+
+## A held Recensor stops every mode
+
+Before the Archetypus is invoked, in every mode, the orchestrator reads what the
+Recensor's current records hold (`common/page_review.py::held_by_recensor`: each held
+review's unit and codes, each held continuation link, each page the
+`review-decisions` record still holds, the same total the Recensor exits held on). When anything is held, nothing is established or exported: the
+Archetypus and the Armarium are not invoked, the Coniector still runs when the
+selection includes it (it reads only the Perlector's readings, so what is left needs no
+model), and the run exits 3 after `run <id>: stopped at a held recensor, before the
+archetypus`, listing every held item and the way on. An unsealed Recensor is left to
+the Archetypus to refuse by name.
+
+The way on is a person's: record operator review decisions in the run, then resume it
+from the Recensor (`--from recensor --to armarium`), which applies them
+(`pipeline/5_recensor/CONTRACT.md`, "Operator review decisions"). The run continues
+past the Recensor once nothing is held, or once an `advance` record
+(`operations/operator/advance.py`) binds the Recensor's current seal
+(`common.stage.boundary_advanced`); the export then names every hold. A Recensor pass
+that applies new decisions re-seals, so an advance given before it passes nothing.
+The Recensor is in `common.stage.ALWAYS_HELD_BOUNDARIES` for this reason, beside the
+Attestatores and the Armarium, and `advance` accepts it in every mode.
 
 ## Mode is an invocation choice, never durable bytes
 

@@ -39,6 +39,13 @@ The denominator is `common.stage.reading_acts`, and the reviews come through
 of an uncounted unit, each naming its row's key, kind and reading). A `page-refused`
 row is the census's and is never reviewed (`reviewed_rows`).
 
+Before reading any review, the stage refuses a run whose stored operator review
+decisions are not the set the Recensor's last pass applied
+(`page_review.require_current_review_decisions`: the digest of the decisions in
+`receipts/sha256/` against the `review-decisions` record's `decisions_digest`), so a
+decision recorded after that pass is never silently ignored; the message says to re-run
+the Recensor.
+
 - **Which rows are established.** A row whose current review is `accepted`, and
   that `page_review.require_establishable` allows: a row with a reading whose
   disposition is `read`, or a held row whose only hold is

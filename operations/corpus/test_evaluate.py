@@ -25,7 +25,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 from common.contracts.canonical import self_hash as _self_hash
 from common.runtree.store import RunTree
 from common.sealed_config import SEAL_METHOD
-from conftest import reask_recovery_config
+from conftest import advance_held_recensor, reask_recovery_config
 from operations.corpus import CorpusRefusal
 from operations.corpus.compare import compare_page, load_exemplar_page_shas
 from operations.corpus.evaluate import (
@@ -455,6 +455,10 @@ def sealed_run(tmp_path_factory):
     """
     run_root = tmp_path_factory.mktemp("runs")
     recovery = reask_recovery_config(tmp_path_factory.mktemp("config"), 0)
+    completed = _orchestrate(run_root, "page-review", "--recovery-config", str(recovery))
+    assert completed.returncode == 3, completed.stderr
+    # Held at its Recensor; a person's advance of that seal lets it export.
+    advance_held_recensor(run_root, "r")
     completed = _orchestrate(run_root, "page-review", "--recovery-config", str(recovery))
     assert completed.returncode == 3, completed.stderr
     return RunTree(run_root, "r")

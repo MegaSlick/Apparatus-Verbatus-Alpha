@@ -45,7 +45,8 @@ bootstrap report, not the run report.
 **A full terminal run holds to the deadline.**
 ``pod_timer.run_with_bootstrap`` treats any child exit before the hard deadline
 -- exit 0 included -- as ``completed-early`` and closes the pod with a non-green
-timer report, so after a full ``complete`` or ``held`` run this process holds to the
+timer report, so after a full ``complete`` run, or a ``held`` one whose export is
+sealed, this process holds to the
 shared hard deadline exactly as ``bootstrap_main`` does, re-journaling a
 liveness line beside the run report.  That hold is paid idle time between a
 finished run and the deadline, because ``pod_timer`` reads any earlier exit as
@@ -57,6 +58,14 @@ last tick records when the hold actually ended.
 A selected range ending before Armarium records ``selection-complete`` when it
 completes, and returns at once when it holds. The pod timer closes the card;
 the run tree remains on the volume for the next selection.
+
+**A run that holds before its export returns at once too.**  A held
+Attestatores, or a Recensor that holds anything, stops a full run before the
+Armarium; the next step is a person's review, not more GPU work, so the pod is
+not kept waiting for it. Only a held run whose orchestrator says, in the stop
+record this invocation alone gave it (``--stop-record``), that it reached a
+sealed Armarium export (``exported_this_invocation``) holds to the deadline; an
+export an earlier pass left in the tree never counts.
 
 **Nothing the run printed dies with the pod.**  The orchestrator's stdout and
 stderr -- and, through inheritance, every stage's -- are teed into a bounded,
@@ -119,6 +128,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -147,7 +157,11 @@ from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
 from operations.serving.config import ServingConfigInputs
 from operations.serving.errors import ServingConfigurationError
 from operations.submit import gate
-from pipeline.orchestrator.run import SEQUENCE_NAMES, STAGE_TIMING_JOURNAL_SCHEMA
+from pipeline.orchestrator.run import (
+    SEQUENCE_NAMES,
+    STAGE_TIMING_JOURNAL_SCHEMA,
+    STOP_RECORD_SCHEMA,
+)
 
 from . import bootstrap_main
 from .bootstrap import BootstrapActions, BootstrapReport
@@ -241,6 +255,27 @@ _ORCHESTRATOR_EXITS = {
 # evidence are on the *volume*, which outlives the pod and is read by
 # `verbatus fetch-run` over S3 with no pod running at all.
 _HOLD_AFTER_EXITS = frozenset({EXIT_COMPLETE, EXIT_HELD})
+
+
+def exported_this_invocation(stop_record: Path, run_id: str) -> bool:
+    """Whether this invocation's orchestrator says it reached a sealed Armarium export.
+
+    A run held before its export (at a held Attestatores or Recensor) waits for
+    a person, and the pod must not bill while it waits. The orchestrator writes
+    its stop record to a path made fresh for this invocation, so an export an
+    earlier pass sealed never reads as this run's. No record, an unreadable one,
+    or another run's is read as not reached, whatever goes wrong reading it: the
+    worst that costs is a pod closed early.
+    """
+    try:
+        record = json.loads(stop_record.read_text(encoding="utf-8"))
+        return (
+            record.get("schema") == STOP_RECORD_SCHEMA
+            and record.get("run_id") == run_id
+            and record.get("exported") is True
+        )
+    except Exception:
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,7 +429,7 @@ class RunPlan:
             )
         return commit
 
-    def orchestrator_argv(self) -> list[str]:
+    def orchestrator_argv(self, stop_record: Path) -> list[str]:
         command = [
             sys.executable,
             # Ignore PYTHON* startup controls and the user site, as the
@@ -421,6 +456,8 @@ class RunPlan:
             str(self.witness_context_config),
             "--stage-timing-journal",
             str(self.timing_journal_path),
+            "--stop-record",
+            str(stop_record),
             "--repository-commit",
             self.repository_commit,
         ]
@@ -1628,6 +1665,15 @@ def main(
                 "selection needs a chair without green PREFLIGHT evidence (a smoke receipt, "
                 f"or a verified cache and, for a subprocess chair, its run): {sorted(missing)}"
             )
+        # Private and new, so the only stop record in it is this invocation's.
+        try:
+            stop_directory = tempfile.TemporaryDirectory(
+                prefix="pod-run-stop-", ignore_cleanup_errors=True
+            )
+        except OSError as error:
+            raise RunRefusal(
+                f"no private directory for the orchestrator's stop record: {error}"
+            ) from error
     except RunRefusal as refusal:
         refusal.report_path = plan.report_path
         _write_run_report(
@@ -1644,7 +1690,8 @@ def main(
         print(f"pod_run refused: {refusal}", file=sys.stderr)
         return EXIT_REFUSED
 
-    command = plan.orchestrator_argv()
+    stop_record = Path(stop_directory.name) / "stop.json"
+    command = plan.orchestrator_argv(stop_record)
     command += ["--placement-tier", placement_tier]
     running: dict[str, object] = {
         **base,
@@ -1680,6 +1727,8 @@ def main(
         failure_detail = f"the orchestrator could not start: {error}"
         transcript_failure = None
         transcript_dropped_bytes = 0
+    exported = exported_this_invocation(stop_record, plan.run_id)
+    stop_directory.cleanup()
     exit_code = _ORCHESTRATOR_EXITS.get(orchestrator_exit, EXIT_FAILED)
     if exit_code == EXIT_COMPLETE and plan.ends_before_armarium:
         exit_code = EXIT_SELECTION_COMPLETE
@@ -1730,7 +1779,13 @@ def main(
         else:
             failure_detail = absence if failure_detail is None else f"{failure_detail}. {absence}"
     state = _STATE_FOR_EXIT[exit_code]
-    holding = exit_code in _HOLD_AFTER_EXITS and not plan.ends_before_armarium and not plan.no_hold
+    held_before_export = exit_code == EXIT_HELD and not plan.ends_before_armarium and not exported
+    holding = (
+        exit_code in _HOLD_AFTER_EXITS
+        and not plan.ends_before_armarium
+        and not held_before_export
+        and not plan.no_hold
+    )
     if plan.no_hold:
         hold_detail = (
             f"the run ended {state}; --no-hold returns now and asks the pod guard to delete "
@@ -1747,6 +1802,13 @@ def main(
         hold_detail = (
             "the selected stages completed; returning at once so the pod timer closes the "
             "pod. The run tree is on the volume, which outlives the pod, for the next selection"
+        )
+    elif held_before_export:
+        hold_detail = (
+            "the run held before its Armarium export, waiting for a person's review; "
+            "returning at once so the pod timer closes the pod rather than billing idle time "
+            "while it waits. The run tree and every record are on the volume, which outlives "
+            "the pod, and `verbatus fetch-run` brings them home"
         )
     elif exit_code == EXIT_HELD:
         hold_detail = (

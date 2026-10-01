@@ -60,13 +60,15 @@ from common.stage import (
     run_sealed_config_digests,
     verify_final_seal,
 )
-from conftest import file_digest_snapshot as snapshot
 from conftest import (
+    HELD_RECENSOR_STOP,
+    advance_held_recensor,
     file_identities,
     is_immutable_evidence,
     load_stage,
     programs_through,
 )
+from conftest import file_digest_snapshot as snapshot
 from operations.operator import surface, volume_s3
 from operations.operator.custody import credential_free_environment
 from operations.submit import gate, submit
@@ -95,13 +97,29 @@ FIXTURE = "synthetic-two-page-v0"
 #   - any string sealed into a record or the export manifest.
 #
 # The review pins are the page-read `page-review` scenario's tree, whose page 2
-# the committed re-ask budget asks once more. Both trees carry the Coniector's
-# records, since the committed reconstruction config runs it: a call per page,
-# a reconstruction per act, and the reconstructor's receipt.
+# the committed re-ask budget asks once more. Its Recensor holds, so the run
+# stops there, before the Archetypus: the tree has no Archetypus or Armarium
+# record. Both trees carry the Coniector's records, since the committed
+# reconstruction config runs it: a call per page, a reconstruction per act, and
+# the reconstructor's receipt.
 HAPPY_SNAPSHOT_FILES = 141
-REVIEW_SNAPSHOT_FILES = 147
+REVIEW_SNAPSHOT_FILES = 132
 HAPPY_RUN_TREE_DIGEST = "9cf4ff1aae37bf4b362f779c7abce23a537cad7176f5bd91446e67b0c71997bf"
-REVIEW_RUN_TREE_DIGEST = "b0607fc3e76f97b779a002b912a774b7a8eaa606ab382025865d7cb65e3e4e4a"
+REVIEW_RUN_TREE_DIGEST = "3e5acf4e005e66d7aeca6aa682450b152f708db8eb8313e5f4576fee9b098c0f"
+
+
+def orchestrate_to_export(
+    run_root: Path, run_id: str, scenario: str, **options
+) -> subprocess.CompletedProcess:
+    """`orchestrate`, and when it stops at a held Recensor, advance that seal and run again.
+
+    For a test about what the export says of a held run, not about the stop.
+    """
+    result = orchestrate(run_root, run_id, scenario, **options)
+    if result.returncode == 3 and HELD_RECENSOR_STOP in result.stdout:
+        advance_held_recensor(run_root, run_id)
+        result = orchestrate(run_root, run_id, scenario, **options)
+    return result
 
 
 def orchestrate(
@@ -2205,7 +2223,7 @@ def test_an_explicitly_absent_witness_counts_against_the_floor_on_every_page(
     is delivered as fully witnessed.
     """
     root = tmp_path / "runs"
-    result = orchestrate(root, "r", "happy", models_config=absent_third_chair_config)
+    result = orchestrate_to_export(root, "r", "happy", models_config=absent_third_chair_config)
     assert result.returncode == 3, result.stderr
     tree = RunTree(root, "r")
     assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]
@@ -2627,7 +2645,7 @@ def test_a_stage_invoked_before_its_producer_refuses_rather_than_inventing(tmp_p
 def refused_first_page_run(tmp_path_factory):
     """Page 1 is refused at the door; page 2 is sealed and witnessed."""
     root = tmp_path_factory.mktemp("refused_first_page")
-    result = orchestrate(root, "r", "refused-first-page")
+    result = orchestrate_to_export(root, "r", "refused-first-page")
     assert result.returncode == 3, result.stderr
     return root, RunTree(root, "r"), result
 

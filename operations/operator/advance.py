@@ -18,14 +18,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from common.contracts.approval import ApprovalRecordReference, build_approval_record
-from common.contracts.canonical import digest_bytes
+from common.contracts.approval import (
+    ADVANCE_ACTION,
+    ADVANCE_SUBJECT_PREFIX,
+    ApprovalRecordReference,
+    build_approval_record,
+)
 from common.contracts.errors import ApprovalRefusal, ContractError
 from common.contracts.stages import ARMARIUM, STAGES, seal_readers
 from common.runtree.store import RunTree
 from common.stage import (
+    current_stage_seal,
     held_advance_boundaries,
-    latest_attempt,
     verify_final_seal,
     verify_stage_seal,
 )
@@ -39,8 +43,6 @@ from .custody import (
 )
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 
-ADVANCE_ACTION = "advance"
-ADVANCE_SUBJECT_PREFIX = "stage-boundary:"
 MAX_ADVANCE_REASON_CHARACTERS = 4_000
 MAX_ADVANCE_REQUEST_CHARACTERS = 65_536
 UTC = timezone.utc
@@ -189,27 +191,18 @@ def stored_boundary(tree: RunTree, stage: str) -> tuple[dict[str, Any], str]:
 
     advance_subject(stage)
     try:
-        manifest = tree.build_manifest(stage, verify_inputs=False)
-        seals = [
-            tree.read_artifact(stage, "stage-seal", entry["artifact_id"])
-            for entry in manifest["artifacts"]
-            if entry["kind"] == "stage-seal"
-        ]
-        if not seals:
-            raise UnsealedBoundaryRefusal(
-                f"advance refuses {stage}: it has no stored stage-seal, so there is no "
-                "witnessed boundary to pass"
-            )
-        seal = latest_attempt(seals, f"{stage} stage seal", operation="seal")
-        data = tree.read_bytes(tree.artifact_path(stage, "stage-seal", seal["artifact_id"]))
-    except UnsealedBoundaryRefusal:
-        raise
+        current = current_stage_seal(tree, stage)
     except (ContractError, KeyError, OSError, TypeError) as error:
         raise ApprovalRefusal(
             f"advance could not read {stage}'s stored completion seal ({error}); "
             "no boundary was advanced"
         ) from error
-    return seal, digest_bytes(data)
+    if current is None:
+        raise UnsealedBoundaryRefusal(
+            f"advance refuses {stage}: it has no stored stage-seal, so there is no "
+            "witnessed boundary to pass"
+        )
+    return current
 
 
 def boundary_summary(tree: RunTree, stage: str) -> dict[str, Any]:
@@ -255,8 +248,10 @@ def held_boundaries_for_mode(
     """Refuse unless this declared selection can require an advance at ``stage``.
 
     The held set is the driver's, not this module's opinion of it: an auto run
-    can still stop at the Attestatores' witnessed boundary, and so can a semi
-    range that spans it (`common.stage.ALWAYS_HELD_BOUNDARIES`). This function
+    can still stop at the Attestatores' witnessed boundary or at a Recensor that
+    holds anything, and so can a semi range that spans either
+    (`common.stage.ALWAYS_HELD_BOUNDARIES`). An advance at the Recensor is what
+    lets a later run pass its current seal while units stay held. This function
     validates invocation shape; the run tree carries no invocation mode or
     exit-status evidence from which it could claim that one particular run did
     stop there.
