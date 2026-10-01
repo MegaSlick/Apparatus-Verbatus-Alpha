@@ -410,6 +410,14 @@ duck-typed `set_balance_notify` or `RunPodProvider(balance_notify=...)`, both of
 default, so a pod never pages a phone on its own. A provider without the seam is recorded
 in the launch record's `balance_notification`, not refused.
 
+`pod_run --notify` adds a fourth, the one question among them: a run on the pod that
+stops with more of its pages held than its sealed review policy allows, or exports past
+that stop on a person's advance, sends the systemic alarm as a `decision`
+(`notify_systemic`), the line `verbatus run --notify` sends for a run on this computer.
+`pod_run` reads the alarm from its invocation's stop record (`systemic`) and records the
+line and the notification outcome in its run report; without `--notify` the line is
+recorded and nothing is sent.
+
 ### `spend.py`: prices, ceilings and the typed phrase
 
 - **The phrase is derived from the preview**: action, subject, both hourly rates, and a

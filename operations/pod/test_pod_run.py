@@ -1204,7 +1204,7 @@ def test_a_systemic_run_on_the_pod_sends_the_alarm_as_a_decision(
 
     ws = _prepared(tmp_path)
     clock = Clock()
-    argv = _run_argv(ws)
+    argv = _run_argv(ws, extra=("--notify",))
     run_id = argv[argv.index("--run-id") + 1]
     line = f"run {run_id}: systemic: 2 of 2 page(s) are held after the recensor"
     notify = NotifyRecorder()
@@ -1225,12 +1225,33 @@ def test_a_systemic_run_on_the_pod_sends_the_alarm_as_a_decision(
     assert report["systemic_notification"] == "Phone notification: sent."
 
 
+def test_without_notify_the_pod_records_the_alarm_and_pages_no_phone(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    notify = NotifyRecorder()
+    line = "run first-real-run: systemic: 2 of 2 page(s) are held after the recensor"
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(returncode=orchestrator.EXIT_HELD, stop=False, systemic=line),
+        notify_runner=notify,
+    )
+    assert code == EXIT_HELD
+    assert notify.calls == []
+    report = _report(ws)
+    assert report["systemic"] == line
+    assert report["systemic_notification"] == "Phone notification: not sent (no --notify)."
+
+
 def test_a_run_with_no_systemic_alarm_sends_no_decision(tmp_path: Path) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
     notify = NotifyRecorder()
     code = main(
-        _run_argv(ws),
+        _run_argv(ws, extra=("--notify",)),
         environ=_environ(clock, lifetime=4.0),
         now=clock.now,
         sleeper=clock.sleep,

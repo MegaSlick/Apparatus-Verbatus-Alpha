@@ -766,6 +766,13 @@ def build_parser() -> bootstrap_main.RefusingParser:
         "omitted, the orchestrator's default",
     )
     parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="send the systemic alarm, when the run sounds it, to the phone through "
+        "operations/notify as a decision; off by default so a pod never pages a phone on "
+        "its own",
+    )
+    parser.add_argument(
         "--no-hold",
         action="store_true",
         help="for a run started by hand: after the final report, return and move the pod "
@@ -1857,11 +1864,15 @@ def main(
     }
     if systemic is not None:
         # The run stopped on, or exported past, more held pages than its sealed
-        # review policy allows: a person must decide, so the phone hears of it
-        # whatever happens to the pod next. A failed ping changes nothing.
-        notice = notify_systemic(run_id=plan.run_id, alarm_line=systemic, runner=notify_runner)
-        final = {**final, "systemic": systemic, "systemic_notification": notice.line()}
-        print(f"pod_run {plan.run_id}: {systemic}; {notice.line()}")
+        # review policy allows: a person must decide. With --notify the phone
+        # hears of it whatever happens to the pod next; a failed ping changes nothing.
+        notice = (
+            notify_systemic(run_id=plan.run_id, alarm_line=systemic, runner=notify_runner).line()
+            if args.notify
+            else "Phone notification: not sent (no --notify)."
+        )
+        final = {**final, "systemic": systemic, "systemic_notification": notice}
+        print(f"pod_run {plan.run_id}: {systemic}; {notice}")
     _write_run_report(plan, final)
     if plan.no_hold:
         # After the final report, so a prompt delete cannot cost the run's record.
