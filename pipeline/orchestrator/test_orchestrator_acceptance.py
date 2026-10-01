@@ -94,10 +94,10 @@ FIXTURE = "synthetic-two-page-v0"
 #   - any string sealed into a record or the export manifest.
 #
 # The review pins are the page-read `page-review` scenario's tree.
-HAPPY_SNAPSHOT_FILES = 153
-REVIEW_SNAPSHOT_FILES = 151
-HAPPY_RUN_TREE_DIGEST = "b14fd0c66726956a4dc3ecb479e62a898425da5b2c573de222b9d294c9af39b7"
-REVIEW_RUN_TREE_DIGEST = "6b6ed5dbdcf93f687f9511a64804d6a350f0825da56c754cc0cbce970f9ce2cb"
+HAPPY_SNAPSHOT_FILES = 131
+REVIEW_SNAPSHOT_FILES = 129
+HAPPY_RUN_TREE_DIGEST = "7ecb9443e5e7cc8ad77b6f4c2632e5b03836efe20f9c6b6468a2ba737bf1e312"
+REVIEW_RUN_TREE_DIGEST = "bd643138e71b562435beb6b6dad73065cddc6e85c10ae2d54069af65beae65f4"
 
 
 def orchestrate(
