@@ -1,4 +1,4 @@
-"""The orchestrator: sequencing, resume, and recovery dispatch. It is not a stage.
+"""The orchestrator: sequencing and resume. It is not a stage.
 
 Its home is decided here, once: `pipeline/orchestrator/`, a peer of the numbered
 stage directories rather than one of them. It is stage-neutral, imports only
@@ -8,15 +8,11 @@ harness runs the real orchestration end to end offline, so a green Python suite 
 never stand in for a pipeline that was never actually executed.
 
 It establishes nothing and reads nothing except the outcome bookkeeping it needs to
-sequence and to checkpoint. Its four jobs:
+sequence and to checkpoint. Its three jobs:
 
   Sequence.   Door, Exemplar, Ink Map, Designator, Attestatores, Perlector,
-              Recensor, recovery, Archetypus, Armarium, in that order.
-  Recover.    The Recensor appends a request; the orchestrator invokes the owning
-              stage — the Designator — for a replacement region, then re-reads and
-              re-reviews. The Recensor never cuts a crop, so recovery does not grow
-              a second author for regions.
-  Checkpoint. After every stage invocation and every recovery round, the run-level
+              Recensor, Archetypus, Armarium, in that order.
+  Checkpoint. After every stage invocation, the run-level
               hard-failure cap (`common/hard_failure.py`, which owns the tally and
               the reasoning behind it) is recomputed. Two hard failures is an early
               warning and the run keeps going; more than two halts it at the stage
@@ -49,8 +45,7 @@ from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa
 from common.background import DEFAULT_INK_MAP_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
-from common.contracts.prior_draft import BLIND_READ_MODES  # noqa: E402
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP, RECENSOR  # noqa: E402
+from common.contracts.stages import ATTESTATORES, INK_MAP  # noqa: E402
 from common.credentials import looks_like_credential_env  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -58,11 +53,7 @@ from common.hard_failure import (  # noqa: E402
     tally_hard_failures,
 )
 from common.page_accounting import DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH  # noqa: E402
-from common.recovery import (  # noqa: E402
-    DEFAULT_RECOVERY_CONFIG_PATH,
-    FALLBACK_RECROP,
-    load_recovery_policy,
-)
+from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_DECODING_CONFIG_PATH,
@@ -79,18 +70,14 @@ from common.stage import (  # noqa: E402
     EXIT_RUN_HALTED,
     RUN_MODES,
     WITNESS_CONTEXT_REGIMES,
-    current_recovery_request,
-    is_real_ingress,
-    latest_attempt,
     load_fixture,
     require_sealed_config,
     run_sealed_config_digests,
     scenario_for,
     verify_final_seal,
-    verify_predecessor_seal,
 )
 
-DESCRIPTION = "The orchestrator: sequencing, resume, and recovery dispatch. It is not a stage."
+DESCRIPTION = "The orchestrator: sequencing and resume. It is not a stage."
 
 ROOT = Path(__file__).resolve().parents[2]
 _TRIAGE_PATHS = ("triage_decision_manifest", "triage_clusters", "triage_producer_recipe")
@@ -105,14 +92,13 @@ SEQUENCE = (
     (ATTESTATORES, "pipeline/3_attestatores/run.py"),
     ("perlector", "pipeline/4_perlector/run.py"),
     ("recensor", "pipeline/5_recensor/run.py"),
-    ("recovery", None),
     ("archetypus", "pipeline/6_archetypus/run.py"),
     ("armarium", "pipeline/7_armarium/run.py"),
 )
 
-STAGE_PROGRAMS = {name: program for name, program in SEQUENCE if program is not None}
+STAGE_PROGRAMS = dict(SEQUENCE)
 _PROGRAM_NAMES = {program: name for name, program in STAGE_PROGRAMS.items()}
-SEQUENCE_NAMES = tuple(name for name, _program in SEQUENCE)
+SEQUENCE_NAMES = tuple(STAGE_PROGRAMS)
 # Named here rather than imported from `operations.submit.gate`, because this
 # module imports only `common/` (see the module docstring) and the Door is the
 # one place the gate itself is loaded. The two spellings are held together by
@@ -438,15 +424,10 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         (
             ("--witness-context", args.witness_context),
             ("--witness-context-config", args.witness_context_config),
-            ("--nuda-per-mille", args.nuda_per_mille),
-            ("--nuda-approval-ref", args.nuda_approval_ref),
-            ("--perlector-instrument-per-mille", args.perlector_instrument_per_mille),
-            ("--perlector-instrument-approval-ref", args.perlector_instrument_approval_ref),
             ("--perlector-protocol-config", args.perlector_protocol_config),
             ("--perlector-audit-config", args.perlector_audit_config),
         )
     )
-    command += ["--blind-read", args.blind_read]
     if program == STAGE_PROGRAMS["perlector"]:
         # A scheduling choice, not run configuration: unsealed, so a resume may change it.
         command += _argv(
@@ -613,33 +594,6 @@ def _record_stage_timing(
         )
 
 
-def pending_recoveries(tree: RunTree, recovery_policy: dict) -> list[tuple[str, str, str]]:
-    """Checked `(act_id, request_id, recovery_kind)` triples the latest review asks for.
-
-    The kind travels alongside the request id because dispatch depends on it:
-    a Designator recrop and a Perlector page-level/continuation-aware reread
-    are two distinct operations (ARCHITECTURE, spec 09), and which one a
-    request means is not this function's business to decide, only to report.
-    """
-    by_subject: dict[str, list[dict]] = {}
-    for entry in tree.build_manifest(RECENSOR)["artifacts"]:
-        if entry["kind"] != "review":
-            continue
-        record = tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
-        by_subject.setdefault(record["subject_id"], []).append(record)
-    outstanding: list[tuple[str, str, str]] = []
-    for subject, records in by_subject.items():
-        review = latest_attempt(records, f"Recensor review of {subject}", operation="recense")
-        if review["outcome"] != "recovery-requested":
-            continue
-        # Indexed without a check: `current_recovery_request` refuses a request
-        # whose `recovery_kind` is outside `RECOVERY_KINDS` before returning one.
-        request = current_recovery_request(tree, subject, recovery_policy)
-        recovery_kind = request["payload"]["recovery_kind"]
-        outstanding.append((subject, request["artifact_id"], recovery_kind))
-    return sorted(outstanding)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--fixture", required=True)
@@ -706,33 +660,10 @@ def main() -> int:
         "fixture-only catalogue",
     )
     parser.add_argument(
-        "--perlector-instrument-per-mille",
-        type=int,
-        default=0,
-        help="per-mille rate at which the protocol's selection rule samples acts into "
-        "the primed-without-prior control arm (Lectio nuda has its own "
-        "--nuda-per-mille); raising it above 0 needs the project lead's permission, with "
-        "--perlector-instrument-approval-ref (config/README.md, R5a toggle register)",
-    )
-    parser.add_argument(
-        "--perlector-instrument-approval-ref",
-        default="",
-        help="the project lead's recorded approval reference for a nonzero instrument rate",
-    )
-    parser.add_argument(
         "--perlector-protocol-config",
         default=str(DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH),
         help="the sealed Perlector prior-draft protocol; its exact bytes enter every "
         "run's config digest",
-    )
-    parser.add_argument(
-        "--blind-read",
-        choices=BLIND_READ_MODES,
-        default="off",
-        help="the Perlector's image-only blind read (Pass A): off makes none (default); fed "
-        "feeds it to the establishing reading, which it can anchor; saved keeps it as a "
-        "training witness the establishing reading never sees "
-        "(config/README.md, R5a toggle register)",
     )
     parser.add_argument(
         "--perlector-audit-config", default=str(DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH)
@@ -796,7 +727,7 @@ def main() -> int:
     parser.add_argument(
         "--recovery-config",
         default=str(DEFAULT_RECOVERY_CONFIG_PATH),
-        help="the bounded recovery policy sealed into this run",
+        help="the re-ask budget sealed into this run",
     )
     parser.add_argument(
         "--hard-failure-config",
@@ -822,17 +753,6 @@ def main() -> int:
         "--witness-context-config",
         default=str(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH),
         help="the Perlector-owned factual witness-context declaration this run seals",
-    )
-    parser.add_argument(
-        "--nuda-per-mille",
-        type=int,
-        default=0,
-        help="the sealed Lectio nuda sampling rate, in thousandths (0 disables it)",
-    )
-    parser.add_argument(
-        "--nuda-approval-ref",
-        default="",
-        help="the project lead's reference for the predeclared Lectio nuda sampling design",
     )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument(
@@ -957,20 +877,6 @@ def run_sequence(
 ) -> int:
     """Run one contiguous selection without persisting its driver mode."""
     for name in names:
-        if name == "recovery":
-            # Recovery has no program whose open_context can verify Recensor;
-            # Archetypus's predecessor mapping names that required boundary.
-            # Isolated sequencing tests mock every stage and have no run tree.
-            recovery_tree = _run_tree(args)
-            if recovery_tree.resolve("run.json").exists():
-                verify_predecessor_seal(recovery_tree, "archetypus")
-            halted = drive_recovery(args, hard_failure_policy) or checkpoint(
-                args, name, hard_failure_policy
-            )
-            if halted is not None:
-                return _halt(args, halted)
-            continue
-
         result = invoke(STAGE_PROGRAMS[name], args)
         if result == EXIT_RUN_HALTED:
             return _halt(args, _entry_halt(args, name, hard_failure_policy))
@@ -986,8 +892,9 @@ def run_sequence(
         if name == ATTESTATORES and result == EXIT_HELD:
             print(f"run {args.run_id}: held; its reason is on stderr above")
             return EXIT_HELD
-        # Armarium is terminal; returning here would discard its named partial reasons.
-        if mode in ("semi", "manual") and result == EXIT_HELD and name != "armarium":
+        # A range that ends at the Armarium runs through held boundaries as auto mode
+        # does, so its export names every hold; the Armarium is terminal either way.
+        if mode in ("semi", "manual") and result == EXIT_HELD and names[-1] != "armarium":
             print(f"run {args.run_id}: {mode} mode stopped at held {name}")
             return EXIT_HELD
 
@@ -1054,11 +961,6 @@ def checkpoint(args, checkpoint_name: str, hard_failure_policy: dict) -> dict | 
     """
     tree = _run_tree(args)
     tally = tally_hard_failures(tree, hard_failure_policy)
-    if tally["instrument_count"]:
-        print(
-            f"run {args.run_id}: {tally['instrument_count']} Perlector instrument failure(s) "
-            "retained separately; they do not consume the project lead's production hard-failure cap"
-        )
     if tally["count"] == tally["threshold"] and tally["count"] > 0:
         print(
             f"run {args.run_id}: {tally['count']} hard failure(s) so far — the project lead's ruling "
@@ -1078,159 +980,6 @@ def report_halt(args, tally: dict) -> None:
     for kind, subjects in tally["by_kind"].items():
         if subjects:
             print(f"  - {kind}: {subjects}")
-
-
-def undispatchable_recovery_reason(
-    recovery_kind: str, *, real_route: bool, request_payload: dict | None = None
-) -> str | None:
-    """Why this orchestrator cannot answer one outstanding request, or `None`.
-
-    A real fallback recrop is dispatchable only when the retained request has
-    the measured-coverage shape the Designator can independently verify. Older
-    real requests that only name fixture-era geometry remain visibly refused;
-    no route substitutes a crop for an unsupported request.
-    """
-    if recovery_kind != FALLBACK_RECROP:
-        return (
-            f"names recovery_kind {recovery_kind!r}, which this orchestrator has no dispatch "
-            f"for; only {FALLBACK_RECROP!r} (a Designator recrop) is implemented today, and "
-            "the page-level reread belongs to the Perlector, which has not built it"
-        )
-    if real_route and not _is_measured_recrop_request(request_payload):
-        return (
-            "is a legacy fixture-only fallback recrop on a real submission: it lacks the "
-            "measured recovery bounds, coverage observation, or Ink Map reference required "
-            "for the Designator to verify and cut a real-image recrop"
-        )
-    return None
-
-
-def _is_measured_recrop_request(payload: dict | None) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    bounds = payload.get("recovery_bounds")
-    return (
-        payload.get("origin") == "coverage-observation"
-        and isinstance(bounds, dict)
-        and set(bounds) == {"x", "y", "w", "h"}
-        and all(
-            isinstance(bounds[name], int)
-            and not isinstance(bounds[name], bool)
-            and bounds[name] >= 0
-            for name in ("x", "y", "w", "h")
-        )
-        and bounds["w"] > 0
-        and bounds["h"] > 0
-        and isinstance(payload.get("coverage_observation"), dict)
-        and isinstance(payload.get("ink_map_ref"), dict)
-    )
-
-
-def report_undispatchable_recoveries(args, refused: list[tuple[str, str, str, str]]) -> None:
-    """Say every refused dispatch out loud, by act, before the run stops.
-
-    The only record of this refusal, since the orchestrator keeps no file. On
-    stderr because the operator surface keeps `completed.stderr or
-    completed.stdout` (`operations/operator/surface.py`), and the ContractError
-    that follows makes stderr non-empty: a listing on stdout would be dropped.
-    """
-    print(
-        f"run {args.run_id}: recovery cannot be dispatched for {len(refused)} outstanding "
-        "request(s); no stage was invoked and nothing in the run tree was changed",
-        file=sys.stderr,
-    )
-    for act_id, request_id, recovery_kind, reason in refused:
-        print(
-            f"  - act {act_id} (request {request_id}, kind {recovery_kind}): {reason}",
-            file=sys.stderr,
-        )
-
-
-def drive_recovery(args, hard_failure_policy: dict) -> dict | None:
-    """Dispatch every outstanding recovery request, then re-read and re-review.
-
-    Recovery lives here, not in the Recensor, so no stage recrops its own
-    evidence: only the Designator cuts. Each round screens the whole batch
-    before dispatching any of it, so no half-finished round is left behind.
-
-    Returns the hard-failure tally if the cap trips. A round is a Designator
-    section, a Perlector section and a Recensor pass, and the cap is read only
-    between sections, never between two acts: the project lead's shape for it.
-    """
-    tree = _run_tree(args)
-    recovery_policy = load_recovery_policy(args.recovery_config)
-    run = tree.read_run()
-    # The orchestrator holds no `StageContext`, so it proves the policy bounding
-    # this loop against the run's sealed digests itself, before the first round
-    # and before `is_real_ingress` (which can refuse too) gets to speak first.
-    require_sealed_config(
-        run_sealed_config_digests(run), "recovery", recovery_policy["config_sha256"]
-    )
-    real_route = is_real_ingress(run)
-    maximum_rounds = recovery_policy["absolute_cap"]
-
-    for round_number in range(maximum_rounds + 1):
-        outstanding = pending_recoveries(tree, recovery_policy)
-        if not outstanding:
-            return None
-        if round_number == maximum_rounds:
-            raise ContractError(
-                f"recovery is still outstanding for {outstanding} after "
-                f"{maximum_rounds} rounds. The run-bound policy stops the loop"
-            )
-        refused = _refused_recoveries(tree, outstanding, real_route)
-        if refused:
-            # A refusal, not a per-act hold: `recovery-requested` maps to no
-            # terminal Armarium category (`common/contracts/outcomes.py`), so
-            # skipping would only move the same dead end a stage later and lose
-            # its named cause. Making it terminal instead would let a run whose
-            # recovery never ran report itself partial.
-            report_undispatchable_recoveries(args, refused)
-            first_act, _first_request, _first_kind, first_reason = refused[0]
-            raise ContractError(f"act {first_act}'s outstanding recovery request {first_reason}")
-        sections = (
-            (
-                DESIGNATOR,
-                [
-                    {"operation": "recover", "act": act_id, "recovery_request": request_id}
-                    for act_id, request_id, _kind in outstanding
-                ],
-            ),
-            ("perlector", [{"act": act_id} for act_id, _request_id, _kind in outstanding]),
-            (RECENSOR, [{}]),
-        )
-        for stage, invocations in sections:
-            tally = _run_recovery_section(args, stage, invocations, hard_failure_policy)
-            if tally is not None:
-                return tally
-    return None
-
-
-def _run_recovery_section(
-    args, stage: str, invocations: list[dict], hard_failure_policy: dict
-) -> dict | None:
-    """Invoke `stage` once per entry, then checkpoint: a section finishes before the cap is read."""
-    for extra in invocations:
-        if invoke(STAGE_PROGRAMS[stage], args, **extra) == EXIT_RUN_HALTED:
-            return _entry_halt(args, stage, hard_failure_policy)
-    return checkpoint(args, stage, hard_failure_policy)
-
-
-def _refused_recoveries(
-    tree: RunTree, outstanding: list[tuple[str, str, str]], real_route: bool
-) -> list[tuple[str, str, str, str]]:
-    refused = []
-    for act_id, request_id, recovery_kind in outstanding:
-        payload = None
-        if real_route:
-            request = tree.read_artifact(RECENSOR, "recovery-request", request_id)
-            payload = request.get("payload")
-        reason = undispatchable_recovery_reason(
-            recovery_kind, real_route=real_route, request_payload=payload
-        )
-        if reason is not None:
-            refused.append((act_id, request_id, recovery_kind, reason))
-    return refused
 
 
 def _run_tree(args) -> RunTree:

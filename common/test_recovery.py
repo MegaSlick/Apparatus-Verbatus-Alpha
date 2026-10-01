@@ -4,53 +4,57 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.contracts.errors import ContractError, FatalAccounting
-from common.contracts.identities import attempt_id
+from common.contracts.errors import ContractError
 from common.contracts.stages import RECENSOR
 from common.recovery import (
     DEFAULT_RECOVERY_CONFIG_PATH,
-    FALLBACK_RECROP,
     RULED_ABSOLUTE_CAP,
     load_recovery_policy,
-    reconcile_recovery_requests,
 )
 from common.runtree.store import RunTree
 from common.stage import StageContext
 from conftest import run_stage
 
 
-def _policy(path, *, absolute_cap: int, fallback_recrop: int = 0, page_level_reread: int = 0):
-    path.write_text(
-        "\n".join(
-            (
-                f"absolute_cap = {absolute_cap}",
-                "[budget]",
-                f"fallback_recrop = {fallback_recrop}",
-                f"page_level_reread = {page_level_reread}",
-                "",
-            )
-        ),
-        encoding="utf-8",
-    )
+def _policy(path, body: str):
+    path.write_text(body, encoding="utf-8")
     return path
 
 
-def test_the_ruled_recovery_ceiling_accepts_three(tmp_path):
+def test_the_shipped_policy_bounds_re_asks_per_page():
+    assert load_recovery_policy()["page_level_reread"] == 1
+
+
+def test_the_ruled_ceiling_accepts_three_re_asks(tmp_path):
     policy = _policy(
-        tmp_path / "at-ceiling.toml",
-        absolute_cap=RULED_ABSOLUTE_CAP,
-        fallback_recrop=1,
-        page_level_reread=2,
+        tmp_path / "at-ceiling.toml", f"[budget]\npage_level_reread = {RULED_ABSOLUTE_CAP}\n"
     )
 
-    assert load_recovery_policy(policy)["absolute_cap"] == RULED_ABSOLUTE_CAP
+    assert load_recovery_policy(policy)["page_level_reread"] == RULED_ABSOLUTE_CAP
 
 
-def test_the_ruled_recovery_ceiling_refuses_a_larger_configured_cap(tmp_path):
-    policy = _policy(tmp_path / "over-ceiling.toml", absolute_cap=RULED_ABSOLUTE_CAP + 1)
+def test_the_ruled_ceiling_refuses_more_re_asks(tmp_path):
+    policy = _policy(
+        tmp_path / "over-ceiling.toml", f"[budget]\npage_level_reread = {RULED_ABSOLUTE_CAP + 1}\n"
+    )
 
-    with pytest.raises(ContractError, match="STOP AT 3"):
+    with pytest.raises(ContractError, match="above the ruled maximum"):
         load_recovery_policy(policy)
+
+
+@pytest.mark.parametrize(
+    "body,message",
+    [
+        ("absolute_cap = 3\n[budget]\npage_level_reread = 1\n", "absolute_cap"),
+        ("[budget]\nfallback_recrop = 1\npage_level_reread = 1\n", "unknown field"),
+        ("[budget]\npage_level_reread = -1\n", "not a non-negative integer"),
+        ("[budget]\npage_level_reread = true\n", "not a non-negative integer"),
+        ("[budget]\n", "not a non-negative integer"),
+    ],
+)
+def test_a_policy_outside_its_one_key_is_refused(tmp_path, body, message):
+    with pytest.raises(ContractError, match=message):
+        load_recovery_policy(_policy(tmp_path / "policy.toml", body))
 
 
 def test_a_context_without_a_sealed_recovery_policy_refuses_rather_than_reading_as_zero():
@@ -100,36 +104,3 @@ def test_the_run_authority_names_the_recovery_policy_it_was_sealed_under(tmp_pat
         run["sealed_config_digests"]["recovery"]
         == load_recovery_policy(recovery_path)["config_sha256"]
     )
-
-
-POLICY = load_recovery_policy()
-
-
-def _requests(count: int) -> list[dict]:
-    """`count` fallback-recrop requests for one act, each counter reconciled to its predecessors."""
-    return [
-        {
-            "outcome": "recovery-requested",
-            "attempt_id": attempt_id("act_1", "recover", ordinal),
-            "payload": {
-                "attempt_ordinal": ordinal,
-                "recovery_kind": FALLBACK_RECROP,
-                "budget_allowed": POLICY["allowed"],
-                "budget_used": ordinal - 1,
-                "kind_budget_allowed": POLICY["fallback_recrop"],
-                "kind_budget_used": ordinal - 1,
-                "recovery_policy": POLICY,
-            },
-        }
-        for ordinal in range(1, count + 1)
-    ]
-
-
-def test_requests_within_the_sealed_budget_reconcile_in_ordinal_order():
-    requests = _requests(POLICY["fallback_recrop"])
-    assert reconcile_recovery_requests(list(reversed(requests)), "act_1", POLICY) == requests
-
-
-def test_a_request_above_the_sealed_budget_is_refused_at_the_accounting_boundary():
-    with pytest.raises(FatalAccounting, match="above"):
-        reconcile_recovery_requests(_requests(POLICY["fallback_recrop"] + 1), "act_1", POLICY)

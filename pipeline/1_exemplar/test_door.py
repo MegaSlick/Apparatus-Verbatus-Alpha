@@ -3424,15 +3424,10 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
         witness_context_declaration_sha256=read_sealed_toml(
             door.DEFAULT_WITNESS_CONTEXT_CONFIG_PATH, "witness context"
         )[1],
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-        perlector_instrument_per_mille=0,
-        perlector_instrument_approval_ref="",
-        blind_read="off",
     )
     assert sealed.get("run-policy") == expected_policy, (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'run-policy' entry over the seven run-level reading knobs; without it "
+        "'run-policy' entry over the run-level reading knobs; without it "
         "`--witness-context blinded` on a resumed real run reaches the Perlector unchecked"
     )
     blinded = door._real_bindings(
@@ -3591,31 +3586,6 @@ def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry(
         == 0
     )
     assert order == ["require_triage_modes", "expand_sources"]
-
-
-def test_real_bindings_refuse_an_unapproved_prior_control_before_run_creation():
-    """The real ingress path shares the fixture path's approval refusal."""
-
-    models = _fixture_models()
-
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
-    )
-    with pytest.raises(ContractError, match="is not an approval record"):
-        door._real_bindings(
-            models,
-            ledger,
-            POLICY,
-            settings,
-            door.load_recovery_policy(),
-            door.load_hard_failure_policy(),
-            **_sealed_binding_digests(),
-            perlector_instrument_per_mille=1,
-        )
 
 
 @pytest.mark.parametrize(

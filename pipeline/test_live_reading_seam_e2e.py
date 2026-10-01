@@ -338,20 +338,10 @@ def stage_argv(run_root: Path, catalogue: Path, *, placement_tier: str | None) -
         "named",
         "--witness-context-config",
         str(config / "witness_context.toml"),
-        "--nuda-per-mille",
-        "0",
-        "--nuda-approval-ref",
-        "",
-        "--perlector-instrument-per-mille",
-        "0",
-        "--perlector-instrument-approval-ref",
-        "",
         "--perlector-protocol-config",
         str(config / "perlector_protocol.toml"),
         "--perlector-audit-config",
         str(config / "perlector_audit.toml"),
-        "--blind-read",
-        "off",
     ]
     return argv
 

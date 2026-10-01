@@ -68,7 +68,6 @@ from common.contracts.outcomes import (
 from common.contracts.outcomes import (
     WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES,
 )
-from common.contracts.prior_draft import BLIND_READ_MODES
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
     CHAIR_CALL_RECORD_SCHEMA,
@@ -87,7 +86,6 @@ from common.contracts.stages import (
     EXEMPLAR,
     INK_MAP,
     PERLECTOR,
-    RECENSOR,
     SEAL_PREDECESSORS,
     STAGES,
     TRIAGE_MODES,
@@ -119,13 +117,7 @@ from common.hard_failure import (
 from common.imaging import dimensions
 from common.native_witness import validate_presented, validate_presented_page_binding
 from common.page_accounting import DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH, load_page_accounting_policy
-from common.recovery import (
-    DEFAULT_RECOVERY_CONFIG_PATH,
-    RECOVERY_KINDS,
-    load_recovery_policy,
-    reconcile_recovery_requests,
-    recovery_kind_budget,
-)
+from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH, load_recovery_policy
 from common.residual_ink import ink_map_config_digest
 from common.runtree.store import PublishResult, RunTree, _inode_identity
 from common.sealed_config import read_sealed_toml, require_seal_method, require_sealed_config
@@ -165,14 +157,6 @@ DEFAULT_TRIAGE_MODES_CONFIG_PATH = _CONFIG_DIR / "triage_modes.toml"
 # The run-level blind/named toggle, named once so the CLI, the config digest and
 # the Perlectio schema cannot disagree about the closed set.
 WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
-MAX_NUDA_PER_MILLE: Final = 1000
-MAX_PERLECTOR_INSTRUMENT_PER_MILLE: Final = 1000
-# Experiment identities, not approval evidence: a changed design needs a new
-# subject; a changed rate needs a new approval of the resulting `config_digest`.
-# Approvals resolve after the run authority exists, so an approval is never part
-# of the configuration it approves.
-NUDA_APPROVAL_SUBJECT: Final = "lectio-nuda-sampling-design.v1"
-PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT: Final = "perlector-prior-draft-instrument-design.v1"
 
 # A constant, never argv: the real `config_digest` binds no scenario, so an argv
 # value would be a run-shaping fact nothing checks.
@@ -504,7 +488,7 @@ class StageContext:
 
     @property
     def recovery_policy(self) -> dict[str, Any]:
-        """This run's sealed bounded-recovery policy, parsed once at binding.
+        """This run's sealed re-ask budget, parsed once at binding.
 
         Refuses when absent, so a missing budget never reads as zero.
         """
@@ -512,8 +496,8 @@ class StageContext:
             raise ContractError(
                 "this context carries no run-sealed recovery policy; a stage may not read "
                 "the budget from `config/recovery.toml` itself, because a rewrite between "
-                "the run's binding check and that read publishes reviews and requests "
-                "under an allowance the run never sealed. Open the run with `open_context`"
+                "the run's binding check and that read would re-ask under an allowance the "
+                "run never sealed. Open the run with `open_context`"
             )
         return dict(self._recovery_policy)
 
@@ -538,30 +522,6 @@ class StageContext:
     @property
     def witness_context_config_path(self) -> str:
         return self.args.witness_context_config
-
-    # The four sampling knobs below are read from argv and sealed like `witness_context`.
-    @property
-    def nuda_per_mille(self) -> int:
-        """The Lectio nuda sampling rate, in thousandths."""
-        return self.args.nuda_per_mille
-
-    @property
-    def nuda_approval_ref(self) -> str:
-        """The sampling design this run draws nuda under; empty when nothing is sampled."""
-        return self.args.nuda_approval_ref
-
-    @property
-    def perlector_instrument_per_mille(self) -> int:
-        """The instrumented-reading rate, in thousandths."""
-        return self.args.perlector_instrument_per_mille
-
-    @property
-    def perlector_instrument_approval_ref(self) -> str:
-        return self.args.perlector_instrument_approval_ref
-
-    @property
-    def blind_read(self) -> str:
-        return self.args.blind_read
 
     @property
     def perlector_protocol_config_path(self) -> str:
@@ -1426,17 +1386,6 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         ),
     )
     parser.add_argument(
-        "--perlector-instrument-per-mille",
-        type=int,
-        default=0,
-        help="the sealed prior-draft control rate in thousandths (0 disables the control)",
-    )
-    parser.add_argument(
-        "--perlector-instrument-approval-ref",
-        default="",
-        help="the project lead's reference for the predeclared prior-draft instrument design",
-    )
-    parser.add_argument(
         "--perlector-protocol-config",
         default=str(DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH),
         help="the sealed Perlector prior-draft protocol declaration",
@@ -1445,14 +1394,6 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         "--perlector-audit-config",
         default=str(DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH),
         help="the sealed Perlector Pass-C audit declaration",
-    )
-    parser.add_argument(
-        "--blind-read",
-        choices=BLIND_READ_MODES,
-        default="off",
-        help="the Perlector's image-only blind read (Pass A): off makes none (default); fed "
-        "feeds it to the establishing reading as a prior; saved keeps it as a training "
-        "witness the establishing reading never sees",
     )
     parser.add_argument("--formats-config", default=str(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH))
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
@@ -1468,20 +1409,6 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
         "--witness-context-config",
         default=str(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH),
         help="the Perlector-owned factual witness-context declaration this run seals",
-    )
-    parser.add_argument(
-        "--nuda-per-mille",
-        type=int,
-        default=0,
-        help="the sealed Lectio nuda sampling rate, in thousandths (0 disables it)",
-    )
-    parser.add_argument(
-        "--nuda-approval-ref",
-        default="",
-        help=(
-            "the project lead's reference for the predeclared Lectio nuda sampling design; "
-            "required whenever --nuda-per-mille is not 0"
-        ),
     )
     parser.add_argument("--operation", default="initial")
     parser.add_argument(
@@ -1541,11 +1468,6 @@ def validate_witness_context_bindings(
     *,
     witness_context: str,
     witness_context_config_path: str | Path,
-    nuda_per_mille: int,
-    nuda_approval_ref: str,
-    perlector_instrument_per_mille: int,
-    perlector_instrument_approval_ref: str,
-    blind_read: str = "off",
 ) -> str:
     """Refuse a bad witness-context binding before a run tree exists, on every path.
 
@@ -1556,38 +1478,6 @@ def validate_witness_context_bindings(
         raise ContractError(
             f"witness_context {witness_context!r} is not one of {WITNESS_CONTEXT_REGIMES}"
         )
-    _require_sampling_knobs("nuda", nuda_per_mille, MAX_NUDA_PER_MILLE, nuda_approval_ref)
-    # A nuda sample needs the project lead's predeclared design, sealed beside
-    # the rate so no run can later claim an approval it did not start under.
-    if nuda_per_mille and nuda_approval_ref != NUDA_APPROVAL_SUBJECT:
-        raise ContractError(
-            f"a Lectio nuda rate of {nuda_per_mille}/1000 needs the project lead's predeclared "
-            f"sampling design selector {NUDA_APPROVAL_SUBJECT!r} in --nuda-approval-ref; an arbitrary "
-            "string is not an approval record"
-        )
-    _require_sampling_knobs(
-        "perlector_instrument",
-        perlector_instrument_per_mille,
-        MAX_PERLECTOR_INSTRUMENT_PER_MILLE,
-        perlector_instrument_approval_ref,
-    )
-    if (
-        perlector_instrument_per_mille
-        and perlector_instrument_approval_ref != PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT
-    ):
-        raise ContractError(
-            f"a Perlector prior-draft control rate of {perlector_instrument_per_mille}/1000 "
-            "needs the project lead's predeclared sampling design selector "
-            f"{PERLECTOR_INSTRUMENT_APPROVAL_SUBJECT!r} in "
-            "--perlector-instrument-approval-ref; an arbitrary string is not an approval record"
-        )
-    if perlector_instrument_per_mille and blind_read != "fed":
-        # Without Pass A the control sees exactly what production sees, so it
-        # would measure nothing.
-        raise ContractError(
-            "a Perlector prior-draft control needs --blind-read fed: without Pass A the "
-            "control is identical to the production reading"
-        )
     validation = validate_witness_context_configuration(
         models,
         witness_context_config_path,
@@ -1596,24 +1486,10 @@ def validate_witness_context_bindings(
     return validation.source_sha256
 
 
-def _require_sampling_knobs(name: str, per_mille: Any, maximum: int, approval_ref: Any) -> None:
-    if not is_plain_int(per_mille) or not 0 <= per_mille <= maximum:
-        raise ContractError(
-            f"{name}_per_mille must be an integer in [0, {maximum}], got {per_mille!r}"
-        )
-    if not isinstance(approval_ref, str):
-        raise ContractError(f"{name}_approval_ref must be a string")
-
-
 def real_run_policy_digest(
     *,
     witness_context: str,
     witness_context_declaration_sha256: str,
-    nuda_per_mille: int,
-    nuda_approval_ref: str,
-    perlector_instrument_per_mille: int,
-    perlector_instrument_approval_ref: str,
-    blind_read: str,
     mechanics_qualification: bool = False,
 ) -> str:
     """The digest a real run seals its run-level reading knobs under.
@@ -1622,8 +1498,6 @@ def real_run_policy_digest(
     knobs need their own seal or a resume could change them unchecked.  Called
     at creation and at every stage open, so both sides hash the same set.
     """
-    if blind_read not in BLIND_READ_MODES:
-        raise ContractError(f"blind_read must be one of {BLIND_READ_MODES}, got {blind_read!r}")
     if not isinstance(mechanics_qualification, bool):
         raise ContractError(
             f"mechanics_qualification must be a bool, got {mechanics_qualification!r}"
@@ -1632,11 +1506,6 @@ def real_run_policy_digest(
         {
             "witness_context_regime": witness_context,
             "witness_context_declaration_sha256": witness_context_declaration_sha256,
-            "nuda_per_mille": nuda_per_mille,
-            "nuda_approval_ref": nuda_approval_ref,
-            "perlector_instrument_per_mille": perlector_instrument_per_mille,
-            "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
-            "blind_read": blind_read,
             # Sealed so a run cannot mix ordinary and mechanics-only artefacts.
             "mechanics_qualification": mechanics_qualification,
         }
@@ -1662,13 +1531,8 @@ def run_config_bindings(
     hard_failure_config_path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH,
     witness_context: str = "named",
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
-    nuda_per_mille: int = 0,
-    nuda_approval_ref: str = "",
-    perlector_instrument_per_mille: int = 0,
-    perlector_instrument_approval_ref: str = "",
     perlector_protocol_config_path: str | Path = DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     perlector_audit_config_path: str | Path = DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
-    blind_read: str = "off",
     mechanics_qualification: bool = False,
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -1740,11 +1604,6 @@ def run_config_bindings(
         models,
         witness_context=witness_context,
         witness_context_config_path=witness_context_config_path,
-        nuda_per_mille=nuda_per_mille,
-        nuda_approval_ref=nuda_approval_ref,
-        perlector_instrument_per_mille=perlector_instrument_per_mille,
-        perlector_instrument_approval_ref=perlector_instrument_approval_ref,
-        blind_read=blind_read,
     )
     return {
         "witness_chairs": list(models.witness_chairs),
@@ -1772,13 +1631,8 @@ def run_config_bindings(
                 # Argv knobs: a resume under different values fails the digest.
                 "witness_context_regime": witness_context,
                 "witness_context_declaration_sha256": witness_context_config_digest,
-                "nuda_per_mille": nuda_per_mille,
-                "nuda_approval_ref": nuda_approval_ref,
-                "perlector_instrument_per_mille": perlector_instrument_per_mille,
-                "perlector_instrument_approval_ref": perlector_instrument_approval_ref,
                 "perlector_protocol_config_sha256": perlector_protocol_config_digest,
                 "perlector_audit_config_sha256": perlector_audit_config_digest,
-                "blind_read": blind_read,
                 "mechanics_qualification": mechanics_qualification,
                 "serving_config_inputs": serving_config_inputs,
             }
@@ -1828,11 +1682,6 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
         models,
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
-        nuda_per_mille=args.nuda_per_mille,
-        nuda_approval_ref=args.nuda_approval_ref,
-        perlector_instrument_per_mille=args.perlector_instrument_per_mille,
-        perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
-        blind_read=args.blind_read,
     )
     _, alignment_config_digest = load_alignment_limits(args.alignment_config)
     _corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
@@ -1890,11 +1739,6 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
             "run-policy": real_run_policy_digest(
                 witness_context=args.witness_context,
                 witness_context_declaration_sha256=witness_context_declaration_sha256,
-                nuda_per_mille=args.nuda_per_mille,
-                nuda_approval_ref=args.nuda_approval_ref,
-                perlector_instrument_per_mille=args.perlector_instrument_per_mille,
-                perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
-                blind_read=args.blind_read,
                 mechanics_qualification=getattr(args, "mechanics_qualification", False),
             ),
         },
@@ -5171,13 +5015,8 @@ def open_context(
         hard_failure_config_path=args.hard_failure_config,
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
-        nuda_per_mille=args.nuda_per_mille,
-        nuda_approval_ref=args.nuda_approval_ref,
-        perlector_instrument_per_mille=args.perlector_instrument_per_mille,
-        perlector_instrument_approval_ref=args.perlector_instrument_approval_ref,
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
-        blind_read=args.blind_read,
         mechanics_qualification=getattr(args, "mechanics_qualification", False),
         serving_recipes_config_path=args.serving_recipes_config,
         decoding_config_path=args.decoding_config,
@@ -5528,121 +5367,6 @@ def latest_attempt(records: list[dict[str, Any]], what: str, *, operation: str) 
             "here, and nothing is lost silently"
         )
     return max(records, key=lambda record: record["payload"]["attempt_ordinal"])
-
-
-def current_recovery_request(
-    tree: RunTree,
-    act_id: str,
-    recovery_policy: dict[str, Any],
-    *,
-    request_id: str | None = None,
-) -> dict[str, Any]:
-    """Return the exact request named by an act's current Recensor review.
-
-    The review, not the request, makes it current, so request, review,
-    Perlectio and policy must form one digest-checked chain.  Shared by the
-    dispatcher and the Designator so neither can bypass it.
-    """
-    recensor_artifacts = tree.build_manifest(RECENSOR)["artifacts"]
-    reviews = []
-    for entry in recensor_artifacts:
-        if entry["kind"] == "review" and entry["subject_id"] == act_id:
-            reviews.append(tree.read_artifact(RECENSOR, "review", entry["artifact_id"]))
-    review = latest_attempt(reviews, f"Recensor review of {act_id}", operation="recense")
-    if review["outcome"] != "recovery-requested":
-        raise ContractError(
-            f"act {act_id}'s latest Recensor review is {review['outcome']!r}, not an "
-            "outstanding recovery request"
-        )
-    review_payload = review.get("payload")
-    if not isinstance(review_payload, dict):
-        raise ContractError(f"recovery-requested review of {act_id} has no payload")
-    request_ref = review_payload.get("recovery_request_ref")
-    reading_ref = review_payload.get("perlectio_ref")
-    # Not the review's own `attempt_ordinal`; the two differ.
-    ordinal = review_payload.get("recovery_request_ordinal")
-    if (
-        not isinstance(request_ref, dict)
-        or request_ref not in review.get("inputs", [])
-        or not isinstance(reading_ref, dict)
-        or reading_ref not in review.get("inputs", [])
-        or not is_plain_int(ordinal)
-        or review_payload.get("recovery_policy") != recovery_policy
-    ):
-        raise ContractError(
-            f"recovery-requested review of {act_id} does not carry its exact request, "
-            "Perlectio, ordinal, and run-bound policy"
-        )
-    request = tree.read_artifact_reference(
-        request_ref,
-        stage=RECENSOR,
-        kind="recovery-request",
-        subject_id=act_id,
-    )
-    if request_id is not None and request["artifact_id"] != request_id:
-        raise ContractError(
-            f"the supplied recovery request {request_id!r} is not the exact current "
-            f"Recensor request for {act_id}"
-        )
-    request_payload = request.get("payload")
-    expected_id = artifact_id(
-        RECENSOR,
-        "recovery-request",
-        act_id,
-        attempt_id(act_id, "recover", ordinal),
-    )
-    if (
-        request["artifact_id"] != expected_id
-        or request["outcome"] != "recovery-requested"
-        or not isinstance(request_payload, dict)
-        or request_payload.get("attempt_ordinal") != ordinal
-        or request_payload.get("act_key") != review_payload.get("act_key")
-        or request_payload.get("perlectio_ref") != reading_ref
-        or reading_ref not in request.get("inputs", [])
-        or request_payload.get("recovery_policy") != recovery_policy
-    ):
-        raise ContractError(
-            f"recovery-requested review of {act_id} does not match its exact request, "
-            "Perlectio, and policy"
-        )
-    recovery_kind = request_payload.get("recovery_kind")
-    if (
-        not isinstance(recovery_kind, str)
-        or recovery_kind not in RECOVERY_KINDS
-        or review_payload.get("recovery_kind") != recovery_kind
-    ):
-        raise ContractError(
-            f"recovery-requested review of {act_id} does not carry one exact recovery kind"
-        )
-    # Counters rebuilt: a self-hash proves no later edit, not that they ever
-    # agreed with earlier requests.
-    reconcile_recovery_requests(
-        [
-            tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])
-            for entry in recensor_artifacts
-            if entry["kind"] == "recovery-request" and entry["subject_id"] == act_id
-        ],
-        act_id,
-        recovery_policy,
-    )
-    kind_allowed = recovery_kind_budget(recovery_policy, recovery_kind)
-    kind_used = request_payload.get("kind_budget_used")
-    if (
-        request_payload.get("kind_budget_allowed") != kind_allowed
-        or not _is_count(kind_used)
-        or kind_used >= kind_allowed
-    ):
-        raise ContractError(
-            f"recovery-requested review of {act_id} does not carry a usable {recovery_kind!r} "
-            "budget boundary"
-        )
-    tree.read_artifact_reference(
-        reading_ref,
-        stage=PERLECTOR,
-        kind="perlectio",
-        subject_id=act_id,
-    )
-    return request
 
 
 def reading_basis_regions(reading: dict[str, Any], what: str) -> list[dict[str, Any]]:

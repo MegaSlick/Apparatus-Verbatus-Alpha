@@ -50,7 +50,6 @@ from common.contracts.errors import (
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import attempt_id
 from common.contracts.identities import page_id as derive_page_id
-from common.contracts.prior_draft import BLIND_READ_MODES
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, INK_MAP
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH
 from common.fixture_identity import page_identity
@@ -1079,38 +1078,25 @@ def test_a_run_sealed_with_no_data_handling_digest_is_refused_by_name(real_root)
     assert "sealed no digest for the data-handling configuration" in str(refusal.value)
 
 
-def test_run_policy_digest_moves_with_each_of_its_eight_fields():
+def test_run_policy_digest_moves_with_each_of_its_three_fields():
     base = dict(
         witness_context="named",
         witness_context_declaration_sha256="a" * 64,
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-        perlector_instrument_per_mille=0,
-        perlector_instrument_approval_ref="",
-        blind_read="fed",
         mechanics_qualification=False,
     )
     moved = {
         "witness_context": "blinded",
         "witness_context_declaration_sha256": "b" * 64,
-        "nuda_per_mille": 1,
-        "nuda_approval_ref": "lectio-nuda-sampling-design.v1",
-        "perlector_instrument_per_mille": 1,
-        "perlector_instrument_approval_ref": "perlector-prior-draft-instrument-design.v1",
-        "blind_read": "saved",
         # A run created ordinarily must not resume under the mechanics flag and
         # pass the reuse check, mixing ordinary and mechanics-only artefacts in
         # one tree.
         "mechanics_qualification": True,
     }
     assert real_run_policy_digest(**base) == real_run_policy_digest(**base)
-    assert len({real_run_policy_digest(**{**base, "blind_read": m}) for m in BLIND_READ_MODES}) == 3
     for field, value in moved.items():
         assert real_run_policy_digest(**{**base, field: value}) != real_run_policy_digest(**base), (
             field
         )
-    with pytest.raises(ContractError, match="blind_read must be one of"):
-        real_run_policy_digest(**{**base, "blind_read": True})
     with pytest.raises(ContractError, match="mechanics_qualification must be a bool"):
         real_run_policy_digest(**{**base, "mechanics_qualification": 1})
 

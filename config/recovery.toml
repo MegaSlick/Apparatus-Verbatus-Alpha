@@ -1,46 +1,6 @@
-# How many times rework may be asked for before review.
-#
-# The project lead's ruling, quoted so a later reader does not have to go looking:
-# "PURE ABSOLUTE, STOP AT 3". The absolute cap below is that ruling; it is not a
-# suggestion a stage may argue with, and nothing in the pipeline may raise it at
-# run time.
-#
-# The per-act recovery budget below and the run-level hard-failure cap are
-# separate instruments and both stand. The run-level threshold is "more than
-# two": one hard failure is a fluke, two is an early warning, more than two
-# means something needs fixing and the run stops. This file governs the
-# per-act budget only; the run-level threshold lives in
-# `config/hard_failure.toml`.
-#
-# The two allowances below are two DISTINCT recovery OPERATIONS, not one pooled
-# total. Every `recovery-request` names which one it means in `recovery_kind`
-# (`fallback-recrop` or `page-level-reread`, spelled in `common/recovery.py`),
-# and each kind's usage is counted against its own line here. Only
-# `fallback-recrop` has a real implementation today -- a Designator recrop. The
-# Recensor never spends a page-level allowance as though it were another crop,
-# the Designator refuses to answer one, and the orchestrator refuses to dispatch
-# one; the operation belongs to the Perlector lane, which has not built it yet.
-#
-# The skeleton's own request gate (`pipeline/5_recensor/run.py`'s `wants_recovery`)
-# still grants an act at most one recovery-request in its whole lifetime, so
-# raising either number below does not create a second recovery round until a
-# real deterministic signal supplies a second, separately justified request. The
-# "held, the fallback-recrop budget is spent" branch is driven directly by
-# regression tests with a zero fallback budget and with a page-level-only budget,
-# so it is not a branch no configuration can falsify.
-#
-# Recovery recovers COVERAGE, never quality. A suspected
-# fabrication or a poor reading may be flagged for review; it may never be
-# re-rolled until it looks better. Nothing disappears inside a loop: every
-# request and every outcome is an artifact.
-
-# The ceiling no configuration below may exceed, and no stage may raise.
-absolute_cap = 3
+# How many times one page may be asked again before it is held for review.
+# Recovery recovers coverage, never quality: a poor reading is flagged, never
+# re-asked until it looks better. `common/recovery.py` reads and bounds it.
 
 [budget]
-# Per act, per run. The starting proposal from ARCHITECTURE is one fallback
-# recrop and one page-level reread; the real budget is established through alpha
-# testing, which has not happened yet. The walking skeleton needs exactly one
-# recrop to prove the loop, so that is what it is allowed.
-fallback_recrop = 1
 page_level_reread = 1
