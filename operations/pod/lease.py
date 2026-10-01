@@ -593,8 +593,7 @@ def _validate_close_record(
 
     A verified close asserts ``pod_get_absent`` and ``pod_list_absent`` about
     one exact pod, so a ``closed-verified`` lease that names no pod is evidence
-    about nothing.  Before this check, the binding check below skipped itself in
-    exactly that case and the phase was accepted.  The unverified path
+    about nothing.  The unverified path
     legitimately closes without a pod id -- a
     create that never bound one still has to close -- so only the verified
     phase requires it.

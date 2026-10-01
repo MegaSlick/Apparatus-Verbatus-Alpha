@@ -63,19 +63,15 @@ BOOTSTRAP_ENVIRONMENT = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_TERMINAL_PROMPT": "0",
     # uv resolves its cache through UV_CACHE_DIR, then XDG_CACHE_HOME, then
-    # $HOME. This environment is explicit and supplies none of those, so where
-    # `uv sync --locked` cached anything was left to whatever uv could
-    # infer from a passwd entry -- on the money path, with the GPU billing while
-    # it failed. Naming it makes the dependency visible instead of inferred.
+    # $HOME. This environment is explicit and supplies none of those, so the
+    # cache is named here rather than left to whatever uv infers from a passwd
+    # entry.
     #
     # `/tmp` because it is the one absolute path writable by whatever user the
     # pod image runs as. The cost is honest and bounded: the cache does not
     # survive a pod, so a fresh pod re-downloads the locked wheels once. It is
     # deliberately not under the checkout, which must stay exactly the pinned
     # commit, and not on the model volume, whose contents are evidence.
-    #
-    # Unverified against a real pod image, like the spend template's "$50.00":
-    # check it on the first live boot.
     "UV_CACHE_DIR": "/tmp/verbatus-uv-cache",
 }
 
@@ -330,12 +326,10 @@ def verify_image_contract(
 def _read_pointer_or_refuse(path: Path, repository: Path) -> str:
     """One git pointer file, read as an image fact or refused as one.
 
-    The config read in `verify_image_contract` is already wrapped for this
-    reason; these two were not, so a pod image whose checkout is a linked
-    worktree with a `.git` file this process cannot read raised a bare
-    `OSError`. `checkout_commit` catches only `ImageContractRefusal`, so the
-    refusal lost its name and its remedy and the operator saw a traceback
-    while the card billed.
+    An unreadable pointer file (for example the `.git` file of a linked
+    worktree) is refused as an `ImageContractRefusal`, which `checkout_commit`
+    catches, so the operator gets the named refusal and its remedy instead of
+    a bare `OSError`.
     """
 
     try:
