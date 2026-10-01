@@ -200,10 +200,8 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     `native_witness.py::validate_presented_page_binding` replays these same
     steps against the sealed page and refuses a digest mismatch.
 
-    Only a whole-page presentation is resized and recorded; a `region`
-    presentation (an act view of this page witness) is returned unchanged,
-    since no chair was ever shown those pixels. Unlike DAI's crop step, an
-    identity-sized target still records the vendor operation here, because
+    Only a whole page is presented. Unlike DAI's crop step, an identity-sized
+    target still records the vendor operation here, because
     `chandra-scale-to-fit.v1` names the vendor function -- which runs on every
     call, sometimes returning the size it was given -- not a resampler that
     may or may not have run.
@@ -211,7 +209,7 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
 
     validate_presented(presentation)
     if presentation["kind"] != "page":
-        return presentation
+        raise SchemaRefusal("Chandra reads whole pages; it is never shown a crop of one")
     transform = presentation["transform"]
     page_id = transform["source_page_id"]
     _, page_bytes = read_sealed_page(context.tree, page_id, what="Chandra")

@@ -1278,7 +1278,7 @@ def test_format_capabilities_for_refuses_a_malformed_adapter_declaration(bad_dec
     """A declaration that is not the two-key boolean object this seam knows is
     this seam's own bug -- an adapter is code in this tree, not a vendor
     response -- and is refused here, before an immutable Testimonium can carry
-    it, rather than only later at `run.py::validate_tallied_testimonium`."""
+    it, rather than only later at the attempt tally."""
 
     adapter = SimpleNamespace(format_capabilities=bad_declaration)
     with pytest.raises(SchemaRefusal, match="format_capabilities"):

@@ -225,17 +225,12 @@ def _validate_whole_page_adapter_crop(
     """Re-derive a page-witness adapter-crop from the source presentation alone.
 
     Shared by Churro and Chandra: both size a whole page by their own vendor
-    function and present the result as an ``adapter-crop``; an act
-    compatibility view keeps its Designator crop unchanged, since no chair was
-    shown those pixels. Calling the adapter's own transform builder keeps this
-    check from disagreeing with what the adapter itself writes.
+    function and present the result as an ``adapter-crop``. Calling the
+    adapter's own transform builder keeps this check from disagreeing with
+    what the adapter itself writes.
     """
     if source["kind"] != "page":
-        if presented != source:
-            raise SchemaRefusal(
-                f"{resolved} presentation differs from the exact image it was given"
-            )
-        return
+        raise SchemaRefusal(f"{resolved} reads whole pages; it is never shown a crop of one")
     bounds = source["transform"]["bounds"]
     expected = build_transform(
         source["source_page_id"],
@@ -253,25 +248,17 @@ def _validate_whole_page_adapter_crop(
 
 
 def validate_adapter_presentation(
-    name: object, source: dict[str, Any], presented: dict[str, Any], *, act_view: bool = False
+    name: object, source: dict[str, Any], presented: dict[str, Any]
 ) -> None:
     """Re-derive the exact presentation recipe an adapter can produce.
 
     Digest re-derivation proves that ``presented`` came from the sealed page,
     but not that this configured adapter could have produced that crop and
     target. Both facts are needed when an immutable Testimonium is tallied back.
-    ``act_view`` marks a page-scoped chair's act compatibility record, which
-    keeps the act's own Designator crop because the chair was not shown it.
     """
     resolved = resolve_witness_adapter_name(name)
     validate_presented(source)
     validate_presented(presented)
-    if act_view and resolved == "dai.v1":
-        if source["kind"] != "region" or presented != source:
-            raise SchemaRefusal(
-                "a page-scoped DAI act view does not keep its act's own proposal crop"
-            )
-        return
     if resolved == "churro.v1":
         _validate_whole_page_adapter_crop(
             resolved,

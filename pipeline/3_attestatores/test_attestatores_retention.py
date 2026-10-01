@@ -1,4 +1,4 @@
-"""Spec 07 retention and native-Testimonium tests over the real stage program."""
+"""Spec 07 retention and native page-Testimonium tests over the real stage program."""
 
 import ast
 import copy
@@ -18,37 +18,17 @@ from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRe
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.outcomes import witness_coverage
 from common.contracts.stages import ATTESTATORES, DESIGNATOR
+from common.native_witness import PAGE_TESTIMONIUM_REQUIRED_FIELDS
 from common.runtree.store import RunTree
 from common.stage import latest_per_chair
 from conftest import load_stage, programs_through
 
-EXPECTED_MANIFEST_CALLS = 9
+EXPECTED_MANIFEST_CALLS = 8
 
 ROOT = Path(__file__).resolve().parents[2]
-
+PAGE_KIND = "page-testimonium"
 
 attestatores = load_stage("3_attestatores")
-
-
-@pytest.mark.parametrize(
-    ("native_page_capture", "expected"),
-    [
-        (False, "non-reading-act-attempt-failed"),
-        (True, "non-reading-page-testimonium-failed"),
-    ],
-)
-def test_a_non_reading_alignment_reason_names_the_record_that_supplied_its_outcome(
-    native_page_capture, expected
-):
-    assert (
-        attestatores.non_reading_alignment_reason("failed", native_page_capture=native_page_capture)
-        == expected
-    )
-
-
-def test_a_reading_outcome_cannot_be_misnamed_as_a_non_reading_alignment_reason():
-    with pytest.raises(attestatores.FatalAccounting, match="reading outcome.*cannot explain"):
-        attestatores.non_reading_alignment_reason("read", native_page_capture=True)
 
 
 def invoke_stage(
@@ -77,8 +57,79 @@ def invoke_stage(
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
+def _argv(run_root: Path, scenario: str, *extra: str) -> list[str]:
+    return [
+        "run.py",
+        "--run-root",
+        str(run_root),
+        "--run-id",
+        "retention",
+        "--scenario",
+        scenario,
+        "--fixture-root",
+        str(ROOT / "proof"),
+        *extra,
+    ]
+
+
+def run_to_designator(tmp_path: Path, scenario: str) -> tuple[Path, RunTree]:
+    run_root = tmp_path / "runs"
+    for program in programs_through("designator"):
+        result = invoke_stage(run_root, "retention", scenario, program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+    return run_root, RunTree(run_root, "retention")
+
+
+def run_attestatores(run_root: Path, scenario: str = "happy", **extra) -> None:
+    result = invoke_stage(
+        run_root, "retention", scenario, "pipeline/3_attestatores/run.py", **extra
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def stage_context(run_root: Path, scenario: str = "happy"):
+    parser = attestatores.stage_parser("retention under test")
+    args = parser.parse_args(_argv(run_root, scenario)[1:])
+    return attestatores.open_stage_context(args, ATTESTATORES)
+
+
+def tally(run_root: Path, scenario: str = "happy", **kwargs) -> dict:
+    context = stage_context(run_root, scenario)
+    proposals = attestatores.sealed_proposal_regions(context)
+    return attestatores.attempt_tally(context, proposals=proposals, **kwargs)
+
+
+def _page_records(tree: RunTree) -> list[dict]:
+    return [
+        tree.read_artifact(ATTESTATORES, PAGE_KIND, entry["artifact_id"])
+        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
+        if entry["kind"] == PAGE_KIND
+    ]
+
+
+def _record_for(tree: RunTree, *, page_ordinal: int, chair: str, ordinal: int = 1) -> dict:
+    return next(
+        record
+        for record in _page_records(tree)
+        if record["payload"]["page_ordinal"] == page_ordinal
+        and record["payload"]["chair"] == chair
+        and record["payload"]["attempt_ordinal"] == ordinal
+    )
+
+
+def _record_path(tree: RunTree, record: dict) -> Path:
+    return tree.resolve(tree.artifact_path(ATTESTATORES, PAGE_KIND, record["artifact_id"]))
+
+
+def _reseal(tree: RunTree, record: dict, changed: dict, *, manifest: bool = True) -> None:
+    changed["self_hash"] = self_hash(changed)
+    _record_path(tree, record).write_bytes(canonical_bytes(changed))
+    if manifest:
+        tree.write_manifest(ATTESTATORES)
+
+
 def test_page_testimonium_role_with_an_unhashable_value_is_a_named_refusal():
-    payload = {field: None for field in attestatores.PAGE_TESTIMONIUM_FIELDS}
+    payload = {field: None for field in PAGE_TESTIMONIUM_REQUIRED_FIELDS}
     payload.update(
         {
             "scope": "page",
@@ -92,200 +143,105 @@ def test_page_testimonium_role_with_an_unhashable_value_is_a_named_refusal():
         attestatores.validate_page_testimonium_payload(payload)
 
 
-def run_to_designator(
-    tmp_path: Path,
-    scenario: str,
-    *,
-    fixture_root: Path = ROOT / "proof",
-    models_config: Path | None = None,
-) -> tuple[Path, RunTree]:
-    run_root = tmp_path / "runs"
-    extra = {} if models_config is None else {"models_config": models_config}
-    for program in programs_through("designator"):
-        result = invoke_stage(
-            run_root, "retention", scenario, program, fixture_root=fixture_root, **extra
-        )
-        expected = (
-            3
-            if program == "pipeline/2_designator/run.py"
-            and scenario in {"refused-page", "refused-first-page", "structure-failure"}
-            else 0
-        )
-        assert result.returncode == expected, f"{program}: {result.stderr}"
-    return run_root, RunTree(run_root, "retention")
-
-
-def _testimonia(tree: RunTree) -> list[dict]:
-    return [
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
-    ]
-
-
-def _testimonium_for(tree: RunTree, *, act_key: str, chair: str, ordinal: int) -> dict:
-    return next(
-        record
-        for record in _testimonia(tree)
-        if record["payload"]["act_key"] == act_key
-        and record["payload"]["chair"] == chair
-        and record["payload"]["attempt_ordinal"] == ordinal
-    )
-
-
 def test_a_whole_pass_appends_its_next_ordinal_and_keeps_every_earlier_attempt(tmp_path):
     run_root, tree = run_to_designator(tmp_path, "happy")
-    first_result = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        attempt_ordinal=1,
-    )
-    assert first_result.returncode == 0, first_result.stderr
-    first = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
-    first_path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", first["artifact_id"]))
-    first_bytes = first_path.read_bytes()
+    run_attestatores(run_root, attempt_ordinal=1)
+    first = _record_for(tree, page_ordinal=1, chair="attestator_1")
+    first_bytes = _record_path(tree, first).read_bytes()
 
     # A same-ordinal resume is exact-byte reuse, not an overwrite path.
-    resumed = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        attempt_ordinal=1,
-    )
-    assert resumed.returncode == 0, resumed.stderr
-    assert first_path.read_bytes() == first_bytes
+    run_attestatores(run_root, attempt_ordinal=1)
+    assert _record_path(tree, first).read_bytes() == first_bytes
 
-    appended = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        attempt_ordinal=2,
-    )
-    assert appended.returncode == 0, appended.stderr
+    run_attestatores(run_root, attempt_ordinal=2)
     records = [
         record
-        for record in _testimonia(tree)
-        if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_1"
+        for record in _page_records(tree)
+        if record["payload"]["page_ordinal"] == 1 and record["payload"]["chair"] == "attestator_1"
     ]
-    assert [
-        record["payload"]["attempt_ordinal"]
-        for record in sorted(records, key=lambda record: record["payload"]["attempt_ordinal"])
-    ] == [1, 2]
-    assert first_path.read_bytes() == first_bytes
+    assert sorted(record["payload"]["attempt_ordinal"] for record in records) == [1, 2]
+    assert _record_path(tree, first).read_bytes() == first_bytes
     assert len({record["artifact_id"] for record in records}) == 2
-    current = next(
-        record
-        for record in latest_per_chair(records, "appended Testimonia")
-        if record["payload"]["chair"] == "attestator_1"
-    )
+    (current,) = latest_per_chair(records, "appended page Testimonia")
     assert current["payload"]["attempt_ordinal"] == 2
     # The fixture declares no answer for attempt 2, so the new attempt is not-run
     # and attempt 1's reading is kept beside it.
     assert current["outcome"] == "not-run"
-    assert attestatores.attempt_tally(tree)["count"] == 12
+    assert tally(run_root)["count"] == 12
 
 
 def test_an_unsealed_whole_pass_resumes_over_what_it_already_sealed(tmp_path, monkeypatch):
     """A crash mid-pass resumes at the same ordinal, and the run still completes.
 
-    The injected exception comes *after* the normal writer has sealed the first
-    configured chair's Testimonium, so the next process meets a folder holding
-    immutable evidence, no stored inventory and no stage seal. It must repeat
-    the pass at its own ordinal rather than move the pairs it finds to a new
-    one: the sealed record is reused byte-for-byte, every pair ends at ordinal
-    one with no gap, and `latest_attempt` resolves for all of them.
-
-    This test forbids a per-pair resume ordinal: a page witness has no
-    attempt of its own per act to repeat, so taking the crashed pair to ordinal 2
-    while the page Testimonium and the act attachment stayed at ordinal 1
-    would publish a `not-run` over that chair's good `read`, dropping it out
-    of the act's witness coverage and holding the whole run at the Recensor.
-    The stage's own tally reports KNOWN throughout, which is why the assertion
-    below is the downstream one as well as the local one.
+    The crash follows the first sealed page record, so the next process meets
+    immutable evidence, no stored inventory and no stage seal. It repeats the
+    pass at its own ordinal: the sealed record is reused byte-for-byte and every
+    page/chair pair ends at ordinal one. A per-pair resume ordinal would publish
+    a `not-run` over that chair's good `read` and cost the page its coverage.
     """
     run_root, tree = run_to_designator(tmp_path, "page-unbroken")
-    real_publish = attestatores.publish_attempt
+    real_publish = attestatores.publish_page_testimonium
     writes = 0
 
-    def crash_after_first_real_chair(*args, **kwargs):
+    def crash_after_first_page(*args, **kwargs):
         nonlocal writes
         real_publish(*args, **kwargs)
         writes += 1
-        raise RuntimeError("simulated process crash after one real chair response")
+        raise RuntimeError("simulated process crash after one page response")
 
-    monkeypatch.setattr(attestatores, "publish_attempt", crash_after_first_real_chair)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run.py",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "retention",
-            "--scenario",
-            "page-unbroken",
-            "--fixture-root",
-            str(ROOT / "proof"),
-        ],
-    )
+    monkeypatch.setattr(attestatores, "publish_page_testimonium", crash_after_first_page)
+    monkeypatch.setattr(sys, "argv", _argv(run_root, "page-unbroken"))
     with pytest.raises(RuntimeError, match="simulated process crash"):
         attestatores.main()
     assert writes == 1
-    first = _testimonia(tree)
-    assert len(first) == 1
-    assert first[0]["outcome"] == "read", "the crash must follow a configured chair response"
+    (first,) = _page_records(tree)
+    assert first["outcome"] == "read", "the crash must follow a configured chair response"
     assert not tree.resolve(tree.manifest_path(ATTESTATORES)).exists()
     monkeypatch.undo()
 
-    resumed = invoke_stage(run_root, "retention", "page-unbroken", "pipeline/3_attestatores/run.py")
+    run_attestatores(run_root, "page-unbroken")
 
-    assert resumed.returncode == 0, resumed.stderr
-    records = _testimonia(tree)
+    records = _page_records(tree)
     by_pair: dict[tuple[str, str], list[int]] = {}
     for record in records:
         key = (record["subject_id"], record["payload"]["chair"])
         by_pair.setdefault(key, []).append(record["payload"]["attempt_ordinal"])
-    crashed_pair = (first[0]["subject_id"], first[0]["payload"]["chair"])
+    crashed_pair = (first["subject_id"], first["payload"]["chair"])
     assert crashed_pair in by_pair
-    # Every pair, including the one the crash caught, at exactly ordinal one.
     assert all(sorted(ordinals) == [1] for ordinals in by_pair.values()), by_pair
-    # The record the crashed invocation sealed was reused, never rewritten.
     survivor = next(
         record
         for record in records
         if (record["subject_id"], record["payload"]["chair"]) == crashed_pair
     )
-    assert survivor == first[0]
-    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+    assert survivor == first
+    assert tally(run_root, "page-unbroken")["state"] == "KNOWN"
 
-    # The resumed folder is not merely self-consistent: it still reads as a
-    # complete witness layer to the stages that consume it. A resume that
-    # quietly cost one chair its coverage passed every check above.
+    # The resumed folder still reads as a complete witness layer downstream.
     for program in (
         "pipeline/4_perlector/run.py",
         "pipeline/5_recensor/run.py",
         "pipeline/6_archetypus/run.py",
-        "pipeline/7_armarium/run.py",
     ):
         result = invoke_stage(run_root, "retention", "page-unbroken", program)
         assert result.returncode == 0, f"{program}: {result.stderr}"
 
 
-def test_resume_does_not_ask_an_already_sealed_pair_to_decode_again(tmp_path, monkeypatch):
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    real_publish = attestatores.publish_attempt
-    real_resolve = attestatores.resolve_attempt
-    calls: dict[tuple[str, str], int] = {}
+def test_a_resume_that_would_answer_a_sealed_page_differently_is_refused(tmp_path, monkeypatch):
+    """A fixture resume resolves every page again; a sealed page must not change.
 
-    def changing_resolve(context, act, chair, resolved, declarations):
-        key = (act["act_key"], chair)
+    The refusal comes before any write, so the record the crashed pass sealed
+    stays the only evidence for that pair.
+    """
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    real_publish = attestatores.publish_page_testimonium
+    real_attempt = attestatores.fixture_page_attempt
+    calls: dict[tuple[int, str], int] = {}
+
+    def changing_attempt(context, page_ordinal, chair, resolved, ordinal):
+        key = (page_ordinal, chair)
         calls[key] = calls.get(key, 0) + 1
-        attempt = real_resolve(context, act, chair, resolved, declarations)
+        attempt = real_attempt(context, page_ordinal, chair, resolved, ordinal)
         if calls[key] > 1 and isinstance(attempt.native_payload, str):
             changed = attempt.native_payload + " [different resumed decode]"
             return attempt._replace(
@@ -294,355 +250,157 @@ def test_resume_does_not_ask_an_already_sealed_pair_to_decode_again(tmp_path, mo
             )
         return attempt
 
-    def crash_after_first_real_chair(*args, **kwargs):
+    def crash_after_first_page(*args, **kwargs):
         real_publish(*args, **kwargs)
-        raise RuntimeError("simulated process crash after one real chair response")
+        raise RuntimeError("simulated process crash after one page response")
 
-    monkeypatch.setattr(attestatores, "resolve_attempt", changing_resolve)
-    monkeypatch.setattr(attestatores, "publish_attempt", crash_after_first_real_chair)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run.py",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "retention",
-            "--scenario",
-            "happy",
-            "--fixture-root",
-            str(ROOT / "proof"),
-        ],
-    )
+    monkeypatch.setattr(attestatores, "fixture_page_attempt", changing_attempt)
+    monkeypatch.setattr(attestatores, "publish_page_testimonium", crash_after_first_page)
+    monkeypatch.setattr(sys, "argv", _argv(run_root, "happy"))
     with pytest.raises(RuntimeError, match="simulated process crash"):
         attestatores.main()
+    (sealed,) = _page_records(tree)
+    sealed_bytes = _record_path(tree, sealed).read_bytes()
 
-    (sealed,) = _testimonia(tree)
-    sealed_key = (sealed["payload"]["act_key"], sealed["payload"]["chair"])
-    sealed_bytes = tree.resolve(
-        tree.artifact_path(ATTESTATORES, "testimonium", sealed["artifact_id"])
-    ).read_bytes()
+    monkeypatch.setattr(attestatores, "publish_page_testimonium", real_publish)
+    assert attestatores.main() == attestatores.EXIT_HELD
 
-    monkeypatch.setattr(attestatores, "publish_attempt", real_publish)
-    assert attestatores.main() == 0
-
-    # Preflight resolved every pair before the injected publication crash. On
-    # resume the unfinished pairs are resolved again and may honestly differ;
-    # the sealed pair alone is recovered from its retained record.
-    assert calls[sealed_key] == 1
-    assert all(count == 2 for key, count in calls.items() if key != sealed_key)
-    assert (
-        tree.resolve(
-            tree.artifact_path(ATTESTATORES, "testimonium", sealed["artifact_id"])
-        ).read_bytes()
-        == sealed_bytes
-    )
-
-    # The resumed pairs honestly re-decoded and one text now departs from the
-    # other chairs' retained testimony, so the composed review semantics may
-    # legitimately hold the act rather than deliver it. What this test pins is
-    # the dedup above; downstream, the tree must stay consumable -- complete or
-    # visibly held, never a crash or a silent loss.
-    perlector = invoke_stage(run_root, "retention", "happy", "pipeline/4_perlector/run.py")
-    assert perlector.returncode == 0, f"perlector: {perlector.stderr}"
-    recensor = invoke_stage(run_root, "retention", "happy", "pipeline/5_recensor/run.py")
-    assert recensor.returncode in (0, 3), f"recensor: {recensor.stderr}"
-    if recensor.returncode == 0:
-        for program in ("pipeline/6_archetypus/run.py", "pipeline/7_armarium/run.py"):
-            result = invoke_stage(run_root, "retention", "happy", program)
-            assert result.returncode == 0, f"{program}: {result.stderr}"
+    assert _page_records(tree) == [sealed]
+    assert _record_path(tree, sealed).read_bytes() == sealed_bytes
 
 
-def test_a_resume_over_a_lost_proposal_crop_refuses_by_name_not_an_indexerror(
-    tmp_path, monkeypatch, capsys
-):
-    """A crash mid-pass, then a lost proposal crop before resume, must still
-    name the missing crop rather than die inside the tally.
+def test_a_resume_over_a_lost_proposal_crop_refuses_by_name_before_any_write(tmp_path, monkeypatch):
+    """A crash mid-pass, then a lost Designator proposal before resume.
 
-    The crash leaves one chair's `read` Testimonium sealed with no stored
-    inventory, so the resume revalidates it through
-    `validate_tallied_testimonium`. If that act's own proposal crop is gone by
-    the time the resume runs, the *current* pass cannot verify a region for it
-    either, so preflight seeds an empty cache entry for the act -- which must
-    still let the tally re-derive and name the refusal, not die on `regions[0]`
-    with a bare `IndexError`.
+    The proposals are read before anything else, so the resume names the lost
+    proposal and leaves the sealed record alone.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
-    real_publish = attestatores.publish_attempt
-    real_proposed_regions = attestatores.proposed_regions
+    real_publish = attestatores.publish_page_testimonium
 
-    def crash_after_first_real_chair(*args, **kwargs):
+    def crash_after_first_page(*args, **kwargs):
         real_publish(*args, **kwargs)
-        raise RuntimeError("simulated process crash after one real chair response")
+        raise RuntimeError("simulated process crash after one page response")
 
-    monkeypatch.setattr(attestatores, "publish_attempt", crash_after_first_real_chair)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run.py",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "retention",
-            "--scenario",
-            "happy",
-            "--fixture-root",
-            str(ROOT / "proof"),
-        ],
-    )
+    monkeypatch.setattr(attestatores, "publish_page_testimonium", crash_after_first_page)
+    monkeypatch.setattr(sys, "argv", _argv(run_root, "happy"))
     with pytest.raises(RuntimeError, match="simulated process crash"):
         attestatores.main()
-    (sealed,) = _testimonia(tree)
-    assert sealed["outcome"] == "read", "the crash must follow a configured chair response"
-    crashed_act_id = sealed["subject_id"]
+    (sealed,) = _page_records(tree)
 
-    def lost_crop(context, act_id):
-        if act_id == crashed_act_id:
-            raise attestatores.ContractError(
-                f"act {act_id} has no proposed region for a witness to read"
-            )
-        return real_proposed_regions(context, act_id)
+    def lost_crop(context):
+        raise attestatores.ContractError("a proposed region's crop is gone from the tree")
 
-    monkeypatch.setattr(attestatores, "publish_attempt", real_publish)
-    monkeypatch.setattr(attestatores, "proposed_regions", lost_crop)
+    monkeypatch.setattr(attestatores, "publish_page_testimonium", real_publish)
+    monkeypatch.setattr(attestatores, "sealed_proposal_regions", lost_crop)
 
-    result = attestatores.main()
-
-    assert result == attestatores.EXIT_HELD
-    assert "has no proposed region for a witness to read" in capsys.readouterr().err
-    assert _testimonia(tree) == [sealed], "the held resume must not touch the sealed record"
+    with pytest.raises(attestatores.ContractError, match="crop is gone"):
+        attestatores.main()
+    assert _page_records(tree) == [sealed], "the refused resume must not touch the sealed record"
 
 
-def test_a_whole_pass_resolves_designator_inputs_once_per_act_not_once_per_chair(
-    tmp_path, monkeypatch
-):
-    """Preflight and publication share regions and exact resolved attempts.
+def test_a_whole_pass_resolves_each_page_once_and_reads_the_proposals_once(tmp_path, monkeypatch):
+    """Preflight and publication share the resolved attempts and the proposals.
 
-    The append/collision history is indexed by one manifest walk, while the
-    closing tally remains an independent rebuild. This stage reads no
-    Designator `page-fallback` records at all.
+    The append/collision history is one manifest walk, and the closing tally
+    remains an independent rebuild.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
-    region_calls: list[str] = []
+    proposal_reads = 0
     attempt_calls = 0
-    attestatores_manifest_calls = 0
-    real_proposed_regions = attestatores.proposed_regions
-    real_resolve_attempt = attestatores.resolve_attempt
+    manifest_calls = 0
+    real_proposals = attestatores.sealed_proposal_regions
+    real_attempt = attestatores.fixture_page_attempt
     real_build_manifest = RunTree.build_manifest
 
-    def counted_regions(context, act_id):
-        region_calls.append(act_id)
-        return real_proposed_regions(context, act_id)
+    def counted_proposals(context):
+        nonlocal proposal_reads
+        proposal_reads += 1
+        return real_proposals(context)
 
     def counted_attempt(*args, **kwargs):
         nonlocal attempt_calls
         attempt_calls += 1
-        return real_resolve_attempt(*args, **kwargs)
+        return real_attempt(*args, **kwargs)
 
     def counted_manifest(self, stage, **kwargs):
-        nonlocal attestatores_manifest_calls
+        nonlocal manifest_calls
         if self.root == tree.root and stage == ATTESTATORES:
-            attestatores_manifest_calls += 1
+            manifest_calls += 1
         return real_build_manifest(self, stage, **kwargs)
 
-    monkeypatch.setattr(attestatores, "proposed_regions", counted_regions)
-    monkeypatch.setattr(attestatores, "resolve_attempt", counted_attempt)
+    monkeypatch.setattr(attestatores, "sealed_proposal_regions", counted_proposals)
+    monkeypatch.setattr(attestatores, "fixture_page_attempt", counted_attempt)
     monkeypatch.setattr(RunTree, "build_manifest", counted_manifest)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run.py",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "retention",
-            "--scenario",
-            "happy",
-            "--fixture-root",
-            str(ROOT / "proof"),
-        ],
-    )
+    monkeypatch.setattr(sys, "argv", _argv(run_root, "happy"))
 
     assert attestatores.main() == 0
-    # A fixed number of stage-level walks, measured on the composed tree: the
-    # history index, the whole-pass boundary check, the sealed page Testimonia
-    # read once before DAI's pages and once before the page records, the
-    # pre-close manifest the tally reconciles, the independent tally, the two
-    # reads of the stage-seal inventory, and the final manifest.
-    # The exact count is empirical and pinned so completion evidence cannot
-    # quietly reintroduce a walk per act or chair.
-    assert attestatores_manifest_calls == EXPECTED_MANIFEST_CALLS
-    # One per act and chair, never re-resolved for publication; DAI's act views
-    # come from its page records instead.
+    # A fixed number of stage-level walks, measured on the composed tree, pinned
+    # so completion evidence cannot quietly reintroduce a walk per page or chair.
+    assert manifest_calls == EXPECTED_MANIFEST_CALLS
+    # Two pages for each of the two whole-page chairs; DAI reads its detector's
+    # records instead.
     assert attempt_calls == 4
-
-    act_ids = {record["subject_id"] for record in _testimonia(tree)}
-    assert len(act_ids) == 2
-    assert {act_id: region_calls.count(act_id) for act_id in act_ids} == {
-        act_id: 2 for act_id in act_ids
-    }
-
-
-def _act_id_for(tree: RunTree, act_key: str) -> str:
-    return next(
-        record["subject_id"]
-        for record in _testimonia(tree)
-        if record["payload"]["act_key"] == act_key
-    )
+    assert proposal_reads == 1
 
 
 def test_a_whole_pass_may_not_skip_an_ordinal_over_any_seat(tmp_path):
     """A whole pass repeats or appends an ordinal, never skips one: `current + 2`
     would leave a hole where an attempt that existed is no longer here."""
     run_root, tree = run_to_designator(tmp_path, "happy")
-    assert (
-        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
-        == 0
-    )
-    before = len(_testimonia(tree))
+    run_attestatores(run_root)
+    before = len(_page_records(tree))
 
     skipped = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        attempt_ordinal=3,
+        run_root, "retention", "happy", "pipeline/3_attestatores/run.py", attempt_ordinal=3
     )
 
     assert skipped.returncode == 3
     assert "neither a rerun of an attempt it holds" in skipped.stderr
-    assert len(_testimonia(tree)) == before
-
-
-def test_an_operation_this_stage_does_not_implement_is_refused(tmp_path):
-    """`--operation` carries no argparse `choices` — the same parser serves every
-    stage — so an unrecognized one would fall through to the whole pass and exit 0
-    over an instruction it never carried out."""
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    assert (
-        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
-        == 0
-    )
-    before = len(_testimonia(tree))
-
-    result = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        operation="reraed",
-        act=_act_id_for(tree, "a1"),
-    )
-    assert result.returncode == 2
-    assert "has no 'reraed' operation" in result.stderr
-    assert len(_testimonia(tree)) == before
-
-
-def test_a_whole_pass_refuses_to_narrow_to_one_act_or_chair(tmp_path):
-    """A whole pass reads every chair on every page; an `--act` or `--chair` beside it
-    would be an instruction the operator gave and the stage did not carry out."""
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    assert (
-        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
-        == 0
-    )
-    before = len(_testimonia(tree))
-
-    narrowed = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        act=_act_id_for(tree, "a1"),
-    )
-    assert narrowed.returncode == 2
-    assert "cannot narrow to it" in narrowed.stderr
-
-    chair = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        chair="attestator_3",
-    )
-    assert chair.returncode == 2
-    assert "does not accept it" in chair.stderr
-
-    assert len(_testimonia(tree)) == before
+    assert len(_page_records(tree)) == before
 
 
 def test_a_pass_interrupted_before_its_manifest_was_written_can_still_be_completed(tmp_path):
-    """A pass killed part way through leaves attempts on disk and no stored tally.
+    """A pass killed part way through leaves records on disk and no stored tally.
 
-    The tally staying UNKNOWN until someone re-derives it is spec 07 test 5 and it
-    is kept. What is not kept is the second gate behind it: the act/chair
-    denominator was demanded *before* the pass, so the pass that would have
-    supplied the missing pairs was refused for their being missing, and the folder
-    could never be finished at all — only abandoned and re-run under a new run id,
-    taking every earlier stage's work with it. The denominator is a closing check,
-    and it still holds the folder after the pass if it does not reconcile.
+    The tally stays UNKNOWN until someone re-derives the inventory; after that
+    the same command supplies the missing pairs, and the page/chair denominator
+    is checked when the pass closes.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
-    assert (
-        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
-        == 0
-    )
-    manifest = tree.resolve(tree.manifest_path(ATTESTATORES))
-    manifest.unlink()
-    for record in _testimonia(tree)[:2]:
-        tree.resolve(
-            tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"])
-        ).unlink()
+    run_attestatores(run_root)
+    tree.resolve(tree.manifest_path(ATTESTATORES)).unlink()
+    for record in _page_records(tree)[:2]:
+        _record_path(tree, record).unlink()
 
     held = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
     assert held.returncode == 3, "an absent stored tally still holds, before anything else"
     assert "UNKNOWN" in held.stderr
 
     tree.write_manifest(ATTESTATORES)
-    assert len(_testimonia(tree)) == 4
+    assert len(_page_records(tree)) == 4
 
-    resumed = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
+    run_attestatores(run_root)
 
-    assert resumed.returncode == 0, resumed.stderr
-    assert len(_testimonia(tree)) == 6
-    assert all(record["payload"]["attempt_ordinal"] == 1 for record in _testimonia(tree))
-    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+    assert len(_page_records(tree)) == 6
+    assert all(record["payload"]["attempt_ordinal"] == 1 for record in _page_records(tree))
+    assert tally(run_root)["state"] == "KNOWN"
 
 
 def test_a_wiped_attempt_layer_holds_rather_than_silently_restarting_history(tmp_path):
     """The stored inventory is evidence that attempts existed, even with none left.
 
-    Losing *some* of a folder's attempts holds it: the stored manifest no longer
-    equals the rebuilt one, `attempt_tally` says UNKNOWN, and nothing is written
-    until someone re-derives the inventory deliberately. Losing *all* of them must
-    hold too, rather than take the first-run path, write attempt 1 for every pair,
-    rewrite the inventory over the one that said otherwise, and exit 0.
-
-    An appended second pass is what makes the loss material rather than merely
-    re-derivable: the fixture's chairs are deterministic, so the ordinal-1 attempts
-    would come back byte-identical, but the ordinal-2 attempts would not come back
-    at all.
+    Losing all of them must hold rather than take the first-run path and write
+    attempt 1 for every pair. An appended second pass makes the loss material:
+    the ordinal-2 attempts would not come back at all.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
     for ordinal in (1, 2):
-        assert (
-            invoke_stage(
-                run_root,
-                "retention",
-                "happy",
-                "pipeline/3_attestatores/run.py",
-                attempt_ordinal=ordinal,
-            ).returncode
-            == 0
-        )
+        run_attestatores(run_root, attempt_ordinal=ordinal)
     manifest = tree.resolve(tree.manifest_path(ATTESTATORES))
     stored = json.loads(manifest.read_text(encoding="utf-8"))
-    # Two acts, three chairs, two ordinals of act Testimonia.
-    assert len([entry for entry in stored["artifacts"] if entry["kind"] == "testimonium"]) == 12
-    assert any(record["payload"]["attempt_ordinal"] == 2 for record in _testimonia(tree))
+    # Two pages, three chairs, two ordinals of page Testimonia.
+    assert len([entry for entry in stored["artifacts"] if entry["kind"] == PAGE_KIND]) == 12
 
     shutil.rmtree(tree.resolve("3_attestatores/artifacts"))
 
@@ -650,52 +408,32 @@ def test_a_wiped_attempt_layer_holds_rather_than_silently_restarting_history(tmp
 
     assert wiped.returncode == 3, wiped.stderr
     assert "UNKNOWN" in wiped.stderr
-    assert _testimonia(tree) == [], "a held pass writes no attempt over a damaged inventory"
+    assert _page_records(tree) == [], "a held pass writes no attempt over a damaged inventory"
     assert json.loads(manifest.read_text(encoding="utf-8")) == stored, (
         "the inventory that recorded the lost attempts must survive the refusal"
     )
 
 
 def test_an_interrupted_second_pass_resumes_once_its_manifest_is_re_derived(tmp_path, monkeypatch):
-    """A crash inside an appending pass leaves one act's chairs at different ordinals.
+    """A crash inside an appending pass leaves one page's chairs at different ordinals.
 
-    The stored manifest from the first pass no longer matches the folder, so the
-    stage holds until the manifest is re-derived; after that one step the same
-    command finishes the pass at its own ordinal, and every pair holds 1 and 2.
+    The stage holds until the manifest is re-derived; then the same command
+    finishes the pass at its own ordinal, and every pair holds 1 and 2.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
-    assert (
-        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
-        == 0
-    )
-    real_publish = attestatores.publish_attempt
+    run_attestatores(run_root)
+    real_publish = attestatores.publish_page_testimonium
 
     def crash_after_first_write(*args, **kwargs):
         real_publish(*args, **kwargs)
         raise RuntimeError("simulated process crash inside the second pass")
 
-    monkeypatch.setattr(attestatores, "publish_attempt", crash_after_first_write)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run.py",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "retention",
-            "--scenario",
-            "happy",
-            "--fixture-root",
-            str(ROOT / "proof"),
-            "--attempt-ordinal",
-            "2",
-        ],
-    )
+    monkeypatch.setattr(attestatores, "publish_page_testimonium", crash_after_first_write)
+    monkeypatch.setattr(sys, "argv", _argv(run_root, "happy", "--attempt-ordinal", "2"))
     with pytest.raises(RuntimeError, match="simulated process crash"):
         attestatores.main()
     monkeypatch.undo()
-    assert sum(record["payload"]["attempt_ordinal"] == 2 for record in _testimonia(tree)) == 1
+    assert sum(record["payload"]["attempt_ordinal"] == 2 for record in _page_records(tree)) == 1
 
     held = invoke_stage(
         run_root, "retention", "happy", "pipeline/3_attestatores/run.py", attempt_ordinal=2
@@ -704,47 +442,40 @@ def test_an_interrupted_second_pass_resumes_once_its_manifest_is_re_derived(tmp_
     assert "UNKNOWN" in held.stderr
 
     tree.write_manifest(ATTESTATORES)
-    resumed = invoke_stage(
-        run_root, "retention", "happy", "pipeline/3_attestatores/run.py", attempt_ordinal=2
-    )
+    run_attestatores(run_root, attempt_ordinal=2)
 
-    assert resumed.returncode == 0, resumed.stderr
     by_pair: dict[tuple[str, str], set[int]] = {}
-    for record in _testimonia(tree):
+    for record in _page_records(tree):
         key = (record["subject_id"], record["payload"]["chair"])
         by_pair.setdefault(key, set()).add(record["payload"]["attempt_ordinal"])
     assert len(by_pair) == 6
     assert all(ordinals == {1, 2} for ordinals in by_pair.values()), by_pair
-    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+    assert tally(run_root)["state"] == "KNOWN"
 
 
 def test_the_closing_tally_holds_when_the_folder_no_longer_accounts_for_every_pair(tmp_path):
-    """The closing act/chair denominator: a missing pair is never a complete layer.
+    """The closing page/chair denominator: a missing pair is never a complete layer.
 
-    The inventory is re-derived deliberately, so the divergent-inventory refusal is
-    not what fires and the denominator check is the only thing left that can.
+    The inventory is re-derived deliberately, so the divergent-inventory refusal
+    is not what fires and the denominator check is the only thing left that can.
     """
     run_root, tree = run_to_designator(tmp_path, "happy")
-    assert (
-        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
-        == 0
+    run_attestatores(run_root)
+    pages = sorted(
+        {
+            (record["payload"]["page_ordinal"], record["subject_id"])
+            for record in _page_records(tree)
+        }
     )
-    records = _testimonia(tree)
-    acts = [{"act_id": act_id} for act_id in sorted({record["subject_id"] for record in records})]
-    chairs = ["attestator_1", "attestator_2", "attestator_3"]
-    assert attestatores.attempt_tally(tree, acts=acts, chairs=chairs)["state"] == "KNOWN"
+    assert tally(run_root, pages=pages)["state"] == "KNOWN"
 
-    missing = next(
-        record
-        for record in records
-        if record["payload"]["act_key"] == "a2" and record["payload"]["chair"] == "attestator_2"
-    )
-    tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", missing["artifact_id"])).unlink()
+    missing = _record_for(tree, page_ordinal=2, chair="attestator_2")
+    _record_path(tree, missing).unlink()
     tree.write_manifest(ATTESTATORES)
 
-    tally = attestatores.attempt_tally(tree, acts=acts, chairs=chairs)
-    assert tally["hold"] is True
-    assert "does not account for every expected act/chair pair" in tally["reason"]
+    held = tally(run_root, pages=pages)
+    assert held["hold"] is True
+    assert "does not account for every sealed page/chair pair" in held["reason"]
 
 
 # --- `witness_reported`: kept, and demoted ---------------------------------------
@@ -753,34 +484,22 @@ def test_the_closing_tally_holds_when_the_folder_no_longer_accounts_for_every_pa
 def test_a_confident_self_report_is_retained_verbatim_and_grades_nothing(tmp_path):
     """Spec 07's reason for `format_capabilities`.
 
-    Chair 1's output format cannot express uncertainty at all and claims high
-    confidence anyway. The claim is retained exactly as the witness made it and
-    reaches neither the outcome nor `content_health`: a witness that cannot say
-    "unsure" must not be read as confident merely for having said something.
+    The Chandra chair's format cannot express uncertainty and claims high
+    confidence anyway. The claim is retained exactly as made and reaches
+    neither the outcome nor `content_health`.
     """
     run_root, tree = run_to_designator(tmp_path, "witness-capabilities")
-    assert (
-        invoke_stage(
-            run_root,
-            "retention",
-            "witness-capabilities",
-            "pipeline/3_attestatores/run.py",
-        ).returncode
-        == 0
-    )
+    run_attestatores(run_root, "witness-capabilities")
 
-    cannot_say_unsure = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    cannot_say_unsure = _record_for(tree, page_ordinal=1, chair="attestator_1")
     assert cannot_say_unsure["payload"]["format_capabilities"]["can_express_uncertainty"] is False
     assert cannot_say_unsure["payload"]["witness_reported"] == {"confidence": "high"}
     assert cannot_say_unsure["outcome"] == "read"
 
-    silent = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    silent = _record_for(tree, page_ordinal=1, chair="attestator_3")
     assert silent["payload"]["witness_reported"] is None, (
         "a witness that said nothing about itself has nothing invented for it"
     )
-    # The confident claim and the silence produce the same outcome and the same
-    # computed health shape. Nothing here grades a witness by what it says about
-    # itself.
     assert silent["outcome"] == cannot_say_unsure["outcome"]
     assert set(silent["payload"]["content_health"]) == set(
         cannot_say_unsure["payload"]["content_health"]
@@ -788,26 +507,11 @@ def test_a_confident_self_report_is_retained_verbatim_and_grades_nothing(tmp_pat
 
 
 def test_no_self_report_can_reach_a_coverage_count_or_an_outcome_class():
-    """Structural, not incidental: `witness_coverage` takes chair outcomes and a
-    floor, and the outcome vocabulary is a closed set of strings. There is no
-    parameter anywhere on that boundary through which a witness's claim about
-    itself could reach a count or a class."""
+    """`witness_coverage` takes chair outcomes and a floor; no parameter on that
+    boundary could carry a witness's claim about itself to a count or a class."""
     parameters = inspect.signature(witness_coverage).parameters
-    assert set(parameters) == {"chair_outcomes", "configured_floor", "attachments"}
+    assert "witness_reported" not in parameters
     assert "witness_reported" not in inspect.signature(attestatores.content_health).parameters
-
-
-def test_conflicting_fixture_outcomes_are_refused_instead_of_selected():
-    context = SimpleNamespace(
-        scenario="conflict",
-        fixture={
-            "witness_failure": [{"scenario": "conflict", "act_key": "a1", "chair": "attestator_1"}],
-            "witness_empty": [{"scenario": "conflict", "act_key": "a1", "chair": "attestator_1"}],
-        },
-    )
-
-    with pytest.raises(SchemaRefusal, match="conflicting witness outcomes"):
-        attestatores.declarations_for(context, 1)
 
 
 @pytest.mark.parametrize(
@@ -815,92 +519,64 @@ def test_conflicting_fixture_outcomes_are_refused_instead_of_selected():
     ("witness_failure", "witness_empty", "witness_not_run", "witness_malformed"),
 )
 def test_a_witness_declaration_without_a_scenario_names_its_table_and_row(fixture_key):
-    row = {"act_key": "a1", "chair": "attestator_1"}
+    row = {"page_ordinal": 1, "chair": "attestator_3"}
     if fixture_key == "witness_malformed":
         row["reason"] = "provider body was malformed"
-    context = SimpleNamespace(scenario="happy", fixture={fixture_key: [row]})
+    context = SimpleNamespace(
+        scenario="happy",
+        witness_chairs=[],
+        fixture={"page": [{"ordinal": 1}], fixture_key: [row]},
+        registry=SimpleNamespace(config=SimpleNamespace(chairs={})),
+    )
 
     with pytest.raises(
         SchemaRefusal,
         match=rf"fixture \[\[{fixture_key}\]\] row 1 has no scenario",
     ):
-        attestatores.declarations_for(context, 1)
-
-
-def test_scenario_specific_testimony_overrides_scenario_agnostic_testimony():
-    shared = {
-        "act_key": "a1",
-        "chair": "attestator_1",
-        "payload": "shared response",
-    }
-    scenario_specific = {
-        "scenario": "happy",
-        "act_key": "a1",
-        "chair": "attestator_1",
-        "payload": "happy response",
-    }
-    context = SimpleNamespace(
-        scenario="happy",
-        fixture={"testimony": [shared, scenario_specific]},
-    )
-
-    assert attestatores.testimony_for(context, "a1", "attestator_1", 1) is scenario_specific
+        attestatores.validate_declared_page_responses(context, {"attestator_3"})
 
 
 def test_an_excluded_testimonium_without_an_approval_reference_is_refused_at_the_schema():
     """Spec 07 test 2: `excluded` exists only as a reference to a project-lead
-    approval-record artifact. Absent that artifact, a chair that did not read is
-    `not-run`, `dead` or `failed` — all of which force visible partial status —
-    and the word `excluded` alone buys nothing.
-
-    The refusal is generic (`common/contracts/envelope.py` calls `require_approval`
-    on the way out as well as on the way in), and it is pinned here because spec 07
-    names it as this stage's test and a generic guarantee nobody exercises for a
-    stage is one a later change can quietly stop covering.
-    """
+    approval-record artifact; the word alone buys nothing."""
+    subject = "page_0123456789abcdef"
     envelope = dict(
         run_id="r",
-        subject_id="act_0123456789abcdef",
+        subject_id=subject,
         stage=ATTESTATORES,
-        kind="testimonium",
+        kind=PAGE_KIND,
         config_digest="0" * 64,
         adapter_revision="test",
         inputs=[],
         payload={"chair": "attestator_1"},
-        attempt=attempt_id("act_0123456789abcdef", "read:attestator_1", 1),
+        attempt=attempt_id(subject, "read:attestator_1", 1),
     )
-    envelope["artifact_id"] = artifact_id(
-        ATTESTATORES, "testimonium", envelope["subject_id"], envelope["attempt"]
-    )
+    envelope["artifact_id"] = artifact_id(ATTESTATORES, PAGE_KIND, subject, envelope["attempt"])
 
     with pytest.raises(ApprovalRefusal, match="only the project lead approves an exclusion"):
         build_envelope(outcome="excluded", **envelope)
 
-    # The generic envelope accepts a non-empty, well-formed-looking identifier.
-    # It does not resolve or verify approval-record bytes; this assertion pins
-    # only the negative guarantee above and must not be read as proof that the
-    # positive exclusion path required by Spec 07 exists.
+    # The generic envelope accepts a well-formed-looking identifier; it does not
+    # resolve approval-record bytes, so this pins only the negative guarantee.
     approved = build_envelope(outcome="excluded", approval_ref="art_0123456789abcdef", **envelope)
     assert approved["approval_ref"] == "art_0123456789abcdef"
 
 
-def test_an_actual_testimonium_identity_refuses_replacement_at_the_store_boundary(tmp_path):
+def test_an_actual_page_testimonium_identity_refuses_replacement_at_the_store_boundary(tmp_path):
     run_root, tree = run_to_designator(tmp_path, "happy")
-    result = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
-    assert result.returncode == 0, result.stderr
-    original = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
-    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", original["artifact_id"]))
-    before = path.read_bytes()
+    run_attestatores(run_root)
+    original = _record_for(tree, page_ordinal=1, chair="attestator_1")
+    before = _record_path(tree, original).read_bytes()
     changed = copy.deepcopy(original)
     changed["payload"]["payload"] = "different native witness output"
     changed["self_hash"] = self_hash(changed)
 
     with pytest.raises(IncompatibleReuse, match="immutable"):
         tree.publish_artifact(changed)
-    assert path.read_bytes() == before
+    assert _record_path(tree, original).read_bytes() == before
 
 
-def test_every_testimonium_outcome_uses_one_identity_bearing_writer():
+def test_every_page_testimonium_is_written_by_one_of_two_identity_bearing_writers():
     module = ast.parse(inspect.getsource(attestatores))
     publishers = []
     for node in ast.walk(module):
@@ -909,42 +585,39 @@ def test_every_testimonium_outcome_uses_one_identity_bearing_writer():
         if node.func.attr != "publish":
             continue
         kind = next((item.value for item in node.keywords if item.arg == "kind"), None)
-        if isinstance(kind, ast.Constant) and kind.value == "testimonium":
+        if isinstance(kind, ast.Constant) and kind.value == PAGE_KIND:
             publishers.append(node.lineno)
-    source_lines, start = inspect.getsourcelines(attestatores.publish_attempt)
-    assert len(publishers) == 1
-    assert start <= publishers[0] < start + len(source_lines)
+    spans = []
+    for writer in (
+        attestatores.publish_page_testimonium,
+        attestatores.publish_detector_page_testimonium,
+    ):
+        lines, start = inspect.getsourcelines(writer)
+        spans.append(range(start, start + len(lines)))
+    assert len(publishers) == 2
+    assert all(any(line in span for span in spans) for line in publishers)
+    assert all(any(line in span for line in publishers) for span in spans)
 
 
-def test_parseable_native_payload_and_self_report_remain_separate_in_a_real_artifact(tmp_path):
-    run_root, tree = run_to_designator(tmp_path, "structured-witness")
-    result = invoke_stage(
-        run_root,
-        "retention",
-        "structured-witness",
-        "pipeline/3_attestatores/run.py",
-    )
-    assert result.returncode == 0, result.stderr
-    record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+def test_parseable_native_payload_and_self_report_remain_separate():
     native = {"tokens": ["μ", "beta"], "layout": {"line": 4}, "uncertain": True}
-    self_report = {"confidence": "certain", "note": "witness claim only"}
-    assert record["payload"]["payload"] == native
-    assert record["payload"]["witness_reported"] == self_report
-    assert "reported" not in record["payload"]
-    assert record["payload"]["content_health"] == attestatores.content_health(
-        native, completed=True
+    payload, self_report, _, health, problem = attestatores.prepared_response(
+        {"payload": native, "witness_reported": {"confidence": "certain"}}
     )
+    assert problem is None
+    assert payload == native
+    assert self_report == {"confidence": "certain"}
+    assert health == attestatores.content_health(native, completed=True)
     _, _, _, changed_health, problem = attestatores.prepared_response(
         {"payload": native, "witness_reported": {"confidence": "unsure"}}
     )
     assert problem is None
-    assert changed_health == record["payload"]["content_health"]
+    assert changed_health == health
 
 
 def test_unrecordable_native_output_becomes_failed_without_replacement_text():
-    bad_native = "\ud800"
     native, self_report, capabilities, health, problem = attestatores.prepared_response(
-        {"payload": bad_native}
+        {"payload": "\ud800"}
     )
     assert native is None
     assert self_report is None
@@ -952,30 +625,11 @@ def test_unrecordable_native_output_becomes_failed_without_replacement_text():
     assert health["recordable"] is False
     assert health["encoding"] == "invalid-or-unrecordable"
     assert "valid UTF-8" in problem
-    record = attestatores.testimonium_payload(
-        chair="attestator_1",
-        act_key="a1",
-        ordinal=1,
-        regions=[],
-        provenance={},
-        format_capabilities=capabilities,
-        native_payload=native,
-        witness_reported=self_report,
-        health=health,
-        outcome="failed",
-        reason=problem,
-    )
-    assert record["payload"] is None
-    assert "reported" not in record
-    assert "�" not in str(record)
 
 
 def test_a_deeply_nested_native_payload_becomes_failed_not_a_recursion_crash():
-    """A witness response nested past Python's recursion limit must become one
-    isolated `failed` attempt, the same as any other malformed response -- never
-    an uncaught RecursionError that would crash the whole stage process and take
-    every other act and chair in the pass down with it (spec 07's isolation
-    bullet: "one ... malformed response never kills the folder")."""
+    """A response nested past Python's recursion limit is one `failed` attempt,
+    never an uncaught RecursionError that takes the whole pass down."""
     nested = "leaf"
     for _ in range(5000):
         nested = [nested]
@@ -997,7 +651,6 @@ def test_a_deeply_nested_native_payload_becomes_failed_not_a_recursion_crash():
     assert prepared_health["recordable"] is False
     assert prepared_problem == problem
 
-    # Reasonable real-world nesting must not be caught by the same guard.
     reasonable = {"tokens": ["a", "b"], "layout": {"line": 4, "spans": [{"a": 1}, {"b": 2}]}}
     assert attestatores._native_problem(reasonable) is None
 
@@ -1009,15 +662,10 @@ def test_a_deeply_nested_native_payload_becomes_failed_not_a_recursion_crash():
 def test_a_float_in_a_native_payload_is_a_failed_attempt_not_a_coerced_number(
     native, expected_type, where
 ):
-    """The contract names this gap; nothing exercised it.
-
-    The shared canonical writer refuses floating-point numbers, so a witness
-    returning one — bare, or buried in an otherwise ordinary object — cannot be
-    retained verbatim. What this stage owes that response is a `failed` attempt
-    that says so, never a rounded, stringified or dropped number quietly wearing
-    `read`. The fixture builder cannot declare a float (`toml_value` refuses one),
-    so this is the boundary at which the claim can be checked at all.
-    """
+    """The canonical writer refuses floats, so a witness returning one gets a
+    `failed` attempt that says so, never a rounded or dropped number wearing
+    `read`. The fixture builder cannot declare a float, so this is the boundary
+    at which the claim can be checked."""
     payload, self_report, capabilities, health, problem = attestatores.prepared_response(
         {"payload": native}
     )
@@ -1028,36 +676,24 @@ def test_a_float_in_a_native_payload_is_a_failed_attempt_not_a_coerced_number(
     assert health["recordable"] is False
     assert health["native_type"] == expected_type
     assert problem == f"{where} has unsupported native type 'float'"
-    # And the record such an attempt lands in is a coherent one: the tally's own
-    # validator has to accept this exact shape, or the refusal would itself be
-    # unaccountable evidence.
     attestatores.validate_content_health(payload, health)
 
 
 def test_configured_never_attempted_seat_is_not_run_not_dead(tmp_path):
     run_root, tree = run_to_designator(tmp_path, "not-run-witness")
-    result = invoke_stage(
-        run_root, "retention", "not-run-witness", "pipeline/3_attestatores/run.py"
-    )
-    assert result.returncode == 0, result.stderr
-    record = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    run_attestatores(run_root, "not-run-witness")
+    record = _record_for(tree, page_ordinal=1, chair="attestator_3")
     assert record["outcome"] == "not-run"
     assert record["inputs"] == []
-    assert record["payload"]["regions"] == []
+    assert record["payload"]["presented"] == {}
     assert record["payload"]["payload"] is None
     assert record["payload"]["provenance"]["chair_state"] == "configured"
     assert record["payload"]["provenance"]["receipt_ref"] is None
 
 
 def test_a_crop_broken_after_the_designator_sealed_it_stops_at_that_boundary(tmp_path):
-    """Crop bytes that moved after the boundary are tree damage, not a bad crop.
-
-    The Designator's completion seal reads every blob's content back off disk,
-    so this is refused before the Attestatores reads an act. The retention
-    property the test below proves is a different claim about a different tree
-    state, and both are worth holding: this one says the pipeline notices, that
-    one says it degrades per act when the crop was bad all along.
-    """
+    """Crop bytes that moved after the boundary are tree damage: the Designator's
+    seal reads every blob back, so this is refused before any page is witnessed."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     entry = next(
         entry for entry in tree.build_manifest(DESIGNATOR)["artifacts"] if entry["kind"] == "region"
@@ -1070,313 +706,151 @@ def test_a_crop_broken_after_the_designator_sealed_it_stops_at_that_boundary(tmp
     assert result.returncode == 2, result.stderr
     assert "designator stage-seal" in result.stderr
     assert "named inventory no longer matches disk" in result.stderr
-    assert _testimonia(tree) == []
-
-
-def test_one_refused_crop_records_its_chairs_and_leaves_the_other_act_intact(
-    tmp_path, rewitness_boundary
-):
-    """Spec 07's isolation rule: one unreadable crop never kills the folder.
-
-    The Designator seals the crop it actually wrote, so a crop a real detector
-    cut badly reaches the Attestatores *inside* a coherent boundary. Modelling
-    that means planting a *correctly addressed* bad crop: the broken bytes go in
-    as their own content-addressed blob and the region record is repointed to it,
-    exactly as the Designator would have written it had the detector cut badly.
-    Overwriting the existing blob in place instead would leave a blob whose name
-    no longer matches its content, which both the Designator's seal and the
-    Attestatores' reading of that seal refuse by name — that is the neighbouring
-    test above, a different tree state and a different claim.
-    """
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    entry = next(
-        entry for entry in tree.build_manifest(DESIGNATOR)["artifacts"] if entry["kind"] == "region"
-    )
-    region = tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-    refused_key = region["payload"]["act_key"]
-    intact_key = "a2" if refused_key == "a1" else "a1"
-    digest, stored = tree.put_blob(DESIGNATOR, b"broken crop bytes")
-    region["payload"]["image_path"] = stored.relative_path
-    region["payload"]["image_sha256"] = digest
-    region["self_hash"] = self_hash(region)
-    tree.resolve(entry["relative_path"]).write_bytes(canonical_bytes(region))
-    # A sibling Designator artifact retained a reference to the region record's
-    # pre-repoint bytes, so a seal rebind alone would leave the Designator's own
-    # boundary self-contradictory and the Attestatores would stop at that instead
-    # of reaching the per-act degradation this test measures. The boundary is
-    # rewitnessed, retained input references included, so the pass runs on and
-    # degrades the one refused act -- which is what the assertions below read.
-    rewitness_boundary(tree, DESIGNATOR)
-
-    result = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
-
-    assert result.returncode == 0, result.stderr
-    records = _testimonia(tree)
-    assert len(records) == 6
-    refused = [record for record in records if record["payload"]["act_key"] == refused_key]
-    intact = [record for record in records if record["payload"]["act_key"] == intact_key]
-    assert len(refused) == len(intact) == 3
-    assert all(record["outcome"] == "not-run" for record in refused)
-    assert all(record["inputs"] == [] and record["payload"]["regions"] == [] for record in refused)
-    assert all(record["outcome"] == "read" for record in intact)
+    assert _page_records(tree) == []
 
 
 def test_malformed_one_witness_response_is_a_failed_attempt_that_does_not_hold_the_folder(
     tmp_path,
 ):
-    """Spec 07's isolation bullet: "one malformed response never kills the folder".
+    """Spec 07's isolation bullet: one malformed response never kills the folder.
 
-    The response is refused without repair — no replacement characters, no
-    `str()`, no empty reading — and the refusal is one `failed` attempt with its
-    reason. That attempt is countable and counted, so the tally stays KNOWN and
-    the other two chairs' readings of the same act reach the Perlector. The act
-    goes under-witnessed and the run goes visibly partial; that is where this is
-    reported, and it is not a reason to stop reading ink nobody doubted.
+    The response is refused without repair, as one `failed` attempt with its
+    reason; it is counted, so the tally stays KNOWN and the other chairs'
+    readings of the same page reach the Perlector.
     """
     run_root, tree = run_to_designator(tmp_path, "malformed-witness")
-    result = invoke_stage(
-        run_root, "retention", "malformed-witness", "pipeline/3_attestatores/run.py"
-    )
-    assert result.returncode == 0, result.stderr
-    records = _testimonia(tree)
+    run_attestatores(run_root, "malformed-witness")
+    records = _page_records(tree)
     assert len(records) == 6
-    malformed = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    malformed = _record_for(tree, page_ordinal=1, chair="attestator_3")
     assert malformed["outcome"] == "failed"
     assert malformed["payload"]["payload"] is None
     assert malformed["payload"]["content_health"]["recordable"] is False
     assert malformed["payload"]["reason"]
-    assert "reported" not in malformed["payload"]
+    assert "�" not in str(malformed)
     assert sum(record["outcome"] == "read" for record in records) == 5
-    tally = attestatores.attempt_tally(tree)
-    assert tally["state"] == "KNOWN"
-    assert tally["count"] == 6
-    assert tally["hold"] is False
+    counted = tally(run_root, "malformed-witness")
+    assert counted["state"] == "KNOWN"
+    assert counted["count"] == 6
+    assert counted["hold"] is False
 
 
 def test_malformed_capabilities_fail_one_attempt_without_aborting_other_chairs(tmp_path):
     run_root, tree = run_to_designator(tmp_path, "malformed-capabilities")
-    result = invoke_stage(
-        run_root,
-        "retention",
-        "malformed-capabilities",
-        "pipeline/3_attestatores/run.py",
-    )
-    assert result.returncode == 0, result.stderr
-    records = _testimonia(tree)
+    run_attestatores(run_root, "malformed-capabilities")
+    records = _page_records(tree)
     assert len(records) == 6
-    malformed = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    malformed = _record_for(tree, page_ordinal=1, chair="attestator_3")
     assert malformed["outcome"] == "failed"
-    assert malformed["payload"]["payload"] == "SYNTHETIC ACT ONE alpha beta"
+    assert malformed["payload"]["payload"] == (
+        "SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
+    )
     assert malformed["payload"]["format_capabilities"] is None
     assert malformed["payload"]["content_health"]["recordable"] is True
     assert "format capabilities could not be retained" in malformed["payload"]["reason"]
     assert malformed["inputs"]
-    assert malformed["payload"]["provenance"]["receipt_ref"] is not None
     assert sum(record["outcome"] == "read" for record in records) == 5
-    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+    assert tally(run_root, "malformed-capabilities")["state"] == "KNOWN"
 
 
-def test_combined_unrecordable_witness_metadata_fails_one_attempt_without_crashing(
-    tmp_path, monkeypatch
+CHURRO_PAGE_ONE = "SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
+CHANDRA_PAGE_ONE = "SYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta"
+CHANDRA_RAW_RESPONSES = [
+    '{"schema":"fixture-chandra-response.v1","markdown":"SYNTHETIC ACT ONE alpha beta gamma",'
+    '"blocks":[{"bbox":[20.25,20.5,180,100.1]}]}',
+    '{"schema":"fixture-chandra-response.v1","markdown":"SYNTHETIC ACT TWO delta epsilon zeta '
+    'eta","blocks":[{"bbox":[20.25,120.5,180,220.1]}]}',
+]
+
+
+def _declare(monkeypatch, chair: str, row: dict) -> None:
+    """Replace one page-1 declaration at the fixture-reader seam."""
+    real = attestatores.declared_page_response
+
+    def declared(context, page_ordinal, asked_chair, ordinal):
+        if (page_ordinal, asked_chair, ordinal) == (1, chair, 1):
+            return "testimony", {"page_ordinal": 1, "chair": chair, **row}
+        return real(context, page_ordinal, asked_chair, ordinal)
+
+    monkeypatch.setattr(attestatores, "declared_page_response", declared)
+
+
+@pytest.mark.parametrize(
+    ("chair", "row"),
+    (
+        ("attestator_3", {"payload": CHURRO_PAGE_ONE}),
+        (
+            "attestator_1",
+            {"payload": CHANDRA_PAGE_ONE, "raw_responses": CHANDRA_RAW_RESPONSES},
+        ),
+    ),
+)
+def test_combined_unrecordable_witness_metadata_fails_one_attempt_without_holding_the_pass(
+    tmp_path, monkeypatch, chair, row
 ):
-    """Both metadata defects are retained in one failed attempt's reason.
-
-    The row is injected at the fixture-reader seam so the real preflight,
-    canonical writer, manifest, and tally all run without adding a pin-moving
-    scenario to the sealed fixture.
-    """
+    """Both metadata defects are retained in one failed attempt's reason, on
+    each whole-page chair's own path, and the native text is still kept."""
     run_root, tree = run_to_designator(tmp_path, "happy")
-    real_testimony_for = attestatores.testimony_for
-
-    def combined_testimony(context, act_key, chair, ordinal):
-        if (act_key, chair, ordinal) == ("a1", "attestator_3", 1):
-            return {
-                "payload": "SYNTHETIC ACT ONE alpha beta",
-                "format_capabilities": "not an object",
-                "witness_reported": "\ud800",
-            }
-        return real_testimony_for(context, act_key, chair, ordinal)
-
-    monkeypatch.setattr(attestatores, "testimony_for", combined_testimony)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run.py",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "retention",
-            "--scenario",
-            "happy",
-            "--fixture-root",
-            str(ROOT / "proof"),
-        ],
+    _declare(
+        monkeypatch,
+        chair,
+        {**row, "format_capabilities": "not an object", "witness_reported": "\ud800"},
     )
+    monkeypatch.setattr(sys, "argv", _argv(run_root, "happy"))
 
     assert attestatores.main() == 0
-    records = _testimonia(tree)
+    records = _page_records(tree)
     assert len(records) == 6
-    malformed = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    malformed = _record_for(tree, page_ordinal=1, chair=chair)
     assert malformed["outcome"] == "failed"
-    assert malformed["payload"]["payload"] == "SYNTHETIC ACT ONE alpha beta"
+    assert malformed["payload"]["payload"] == row["payload"]
     assert malformed["payload"]["format_capabilities"] is None
     assert malformed["payload"]["witness_reported"] is None
     reason = malformed["payload"]["reason"]
     assert "format capabilities could not be retained" in reason
     assert "self-report could not be retained" in reason
+    if "raw_responses" in row:
+        assert malformed["payload"]["raw_response_refs"]
     assert sum(record["outcome"] == "read" for record in records) == 5
-    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
-
-
-def test_chandra_combined_unrecordable_metadata_fails_one_attempt_without_holding_the_pass(
-    tmp_path, monkeypatch
-):
-    """The Chandra branch of `resolve_attempt` is untrusted input too.
-
-    `attestator_1` is the fixture's Chandra chair: its `raw_response` string
-    takes a different path through `resolve_attempt` than every other chair's
-    declared `payload`, and a malformed `format_capabilities`/`witness_reported`
-    on that path must fail this one attempt, not raise `SchemaRefusal` past the
-    per-attempt outcome vocabulary and hold the *whole* pass over one witness's
-    bad self-report -- exactly what this stage's other untrusted-input guards
-    (e.g. `_MAX_NATIVE_DEPTH`) exist to prevent. Mirrors
-    `test_combined_unrecordable_witness_metadata_fails_one_attempt_without_crashing`
-    for this chair's own path.
-    """
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    real_testimony_for = attestatores.testimony_for
-
-    def combined_chandra_testimony(context, act_key, chair, ordinal):
-        if (act_key, chair, ordinal) == ("a1", "attestator_1", 1):
-            return {
-                "payload": "SYNTHETIC ACT ONE alpha beta gamma",
-                "raw_response": (
-                    '{"schema":"fixture-chandra-response.v1","markdown":"SYNTHETIC ACT ONE alpha beta gamma",'
-                    '"blocks":[{"bbox":[20.25,20.5,180,100.1]}]}'
-                ),
-                "format_capabilities": "not an object",
-                "witness_reported": "\ud800",
-            }
-        return real_testimony_for(context, act_key, chair, ordinal)
-
-    monkeypatch.setattr(attestatores, "testimony_for", combined_chandra_testimony)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run.py",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "retention",
-            "--scenario",
-            "happy",
-            "--fixture-root",
-            str(ROOT / "proof"),
-        ],
-    )
-
-    assert attestatores.main() == 0
-    records = _testimonia(tree)
-    assert len(records) == 6
-    malformed = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
-    assert malformed["outcome"] == "failed"
-    # The native text a real witness sent is still retained as evidence -- only
-    # the untrustworthy self-report is discarded ("kept, and
-    # demoted").
-    assert malformed["payload"]["payload"] == "SYNTHETIC ACT ONE alpha beta gamma"
-    assert malformed["payload"]["format_capabilities"] is None
-    assert malformed["payload"]["witness_reported"] is None
-    assert malformed["payload"]["raw_response_ref"] is not None
-    reason = malformed["payload"]["reason"]
-    assert "format capabilities could not be retained" in reason
-    assert "self-report could not be retained" in reason
-    assert sum(record["outcome"] == "read" for record in records) == 5
-    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+    assert tally(run_root)["state"] == "KNOWN"
 
 
 def test_chandra_malformed_confidence_alone_fails_one_attempt_and_keeps_capabilities(
     tmp_path, monkeypatch
 ):
-    """A closed-ordinal violation is refused even with valid format capabilities.
-
-    Distinct from the combined case above: this pins that `_confidence_problem`
-    is actually consulted for the Chandra branch (not merely reached alongside
-    a capabilities failure), and that a clean `format_capabilities` value
-    survives untouched when only the self-report is bad.
-    """
+    """A closed-ordinal violation is refused even with valid format capabilities,
+    and a clean capabilities record survives untouched."""
     run_root, tree = run_to_designator(tmp_path, "happy")
-    real_testimony_for = attestatores.testimony_for
-
-    def bad_confidence_only(context, act_key, chair, ordinal):
-        if (act_key, chair, ordinal) == ("a1", "attestator_1", 1):
-            return {
-                "payload": "SYNTHETIC ACT ONE alpha beta gamma",
-                "raw_response": (
-                    '{"schema":"fixture-chandra-response.v1","markdown":"SYNTHETIC ACT ONE alpha beta gamma",'
-                    '"blocks":[{"bbox":[20.25,20.5,180,100.1]}]}'
-                ),
-                "witness_reported": {"confidence": "extremely-confident"},
-            }
-        return real_testimony_for(context, act_key, chair, ordinal)
-
-    monkeypatch.setattr(attestatores, "testimony_for", bad_confidence_only)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run.py",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "retention",
-            "--scenario",
-            "happy",
-            "--fixture-root",
-            str(ROOT / "proof"),
-        ],
+    _declare(
+        monkeypatch,
+        "attestator_1",
+        {
+            "payload": CHANDRA_PAGE_ONE,
+            "raw_responses": CHANDRA_RAW_RESPONSES,
+            "witness_reported": {"confidence": "extremely-confident"},
+        },
     )
+    monkeypatch.setattr(sys, "argv", _argv(run_root, "happy"))
 
     assert attestatores.main() == 0
-    malformed = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    malformed = _record_for(tree, page_ordinal=1, chair="attestator_1")
     assert malformed["outcome"] == "failed"
-    assert malformed["payload"]["payload"] == "SYNTHETIC ACT ONE alpha beta gamma"
+    assert malformed["payload"]["payload"] == CHANDRA_PAGE_ONE
     assert malformed["payload"]["format_capabilities"] == attestatores.DEFAULT_FORMAT_CAPABILITIES
     assert malformed["payload"]["witness_reported"] is None
     assert "self-report could not be retained" in malformed["payload"]["reason"]
-    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+    assert tally(run_root)["state"] == "KNOWN"
 
 
-def test_validate_testimonium_payload_refuses_a_witness_reported_confidence_outside_the_closed_set():
-    """The shared envelope validator is the one both the writer and the crash
-    resume's `validate_tallied_testimonium` call -- so closing this here closes
-    it for both, including a retained record a resumed pass would otherwise
-    revalidate as fine and carry forward into a freshly published record."""
-    base = attestatores.testimonium_payload(
-        chair="attestator_1",
-        act_key="a1",
-        ordinal=1,
-        regions=[],
-        provenance={
-            "chair": "attestator_1",
-            "chair_state": "absent",
-            "absence": {"kind": "roster-omission", "reason": "not configured"},
-            "resolved_identity": None,
-            "resolved_revision": None,
-            "receipt_ref": None,
-            "adapter_revision": "test",
-        },
-        format_capabilities=None,
-        native_payload=None,
-        witness_reported=None,
-        health=attestatores.no_response_health(reason="not-attempted"),
-        outcome="not-run",
-        reason="no attempt was made for this configured chair",
-    )
-    forged = {**base, "witness_reported": {"confidence": "extremely-confident"}}
+def test_a_page_record_refuses_a_witness_reported_confidence_outside_the_closed_set(tmp_path):
+    """The one validator both the writer and the tally call; closing it here closes
+    it for a retained record a resumed pass would otherwise carry forward."""
+    run_root, tree = run_to_designator(tmp_path, "happy")
+    run_attestatores(run_root)
+    record = _record_for(tree, page_ordinal=1, chair="attestator_3")
+    forged = {**record["payload"], "witness_reported": {"confidence": "extremely-confident"}}
     with pytest.raises(SchemaRefusal, match="closed ordinal set"):
-        attestatores.validate_testimonium_payload(forged)
+        attestatores.validate_page_testimonium_payload(forged, testimonium_id=record["artifact_id"])
 
 
 def test_witness_metadata_cannot_rewrite_native_content_health():
@@ -1399,22 +873,11 @@ def test_witness_metadata_cannot_rewrite_native_content_health():
 
 
 def test_a_reading_that_claims_its_own_channel_was_unrecordable_is_unknown(tmp_path):
-    """The one `recordable=False` shape that is #23's UNKNOWN rather than an
-    accounted failure: a record claiming to be a *reading* while recording that
-    nothing could retain what it read. A reading nothing could keep is not a
-    reading, and it is the shape a resealed artifact would take to slip a lost
-    payload past the tally as though it were counted evidence.
-
-    The resealed health record here is otherwise exactly what this stage writes
-    for an unrecordable channel, so the outcome is the only thing wrong with it:
-    the tally has to refuse it for claiming to be a reading, not for some other
-    damage that happens to be alongside."""
+    """A record claiming to be a reading while recording that nothing could keep
+    what it read is not a reading; the tally refuses it for that alone."""
     run_root, tree = run_to_designator(tmp_path, "happy")
-    assert (
-        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
-        == 0
-    )
-    record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    run_attestatores(run_root)
+    record = _record_for(tree, page_ordinal=2, chair="attestator_1")
     assert record["outcome"] == "read"
     changed = copy.deepcopy(record)
     changed["payload"]["payload"] = None
@@ -1428,33 +891,22 @@ def test_a_reading_that_claims_its_own_channel_was_unrecordable_is_unknown(tmp_p
         "characters": None,
         "truncation_basis": "the provider body could not be retained",
     }
-    changed["self_hash"] = self_hash(changed)
-    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
-    path.write_bytes(canonical_bytes(changed))
-    tree.write_manifest(ATTESTATORES)
+    _reseal(tree, record, changed)
 
-    tally = attestatores.attempt_tally(tree)
+    held = tally(run_root)
 
-    assert tally["state"] == "UNKNOWN"
-    assert tally["count"] is None
-    assert tally["hold"] is True
-    assert "is not a reading" in tally["reason"]
+    assert held["state"] == "UNKNOWN"
+    assert held["count"] is None
+    assert held["hold"] is True
+    assert "is not a reading" in held["reason"]
 
 
 def test_an_unrecordable_channel_may_not_assert_facts_nothing_measured(tmp_path):
-    """`content_health` is computed deterministically here, never self-reported.
-
-    A `recordable=False` record must not also claim a character count, a
-    truncation state, a valid encoding or a full native payload -- all
-    uncomputable by definition, since the premise of that branch is that
-    nothing could be kept.
-    """
+    """A `recordable=False` record must not also claim a character count, a
+    truncation state, a valid encoding or a native payload."""
     run_root, tree = run_to_designator(tmp_path, "happy")
-    assert (
-        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
-        == 0
-    )
-    record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    run_attestatores(run_root)
+    record = _record_for(tree, page_ordinal=2, chair="attestator_1")
     fabricated = copy.deepcopy(record)
     fabricated["outcome"] = "failed"
     fabricated["payload"]["reason"] = "the provider response was refused without repair"
@@ -1468,60 +920,39 @@ def test_an_unrecordable_channel_may_not_assert_facts_nothing_measured(tmp_path)
         "characters": 9999,
         "truncation_basis": "trusted-response-boundary",
     }
-    fabricated["self_hash"] = self_hash(fabricated)
-    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
-    path.write_bytes(canonical_bytes(fabricated))
-    tree.write_manifest(ATTESTATORES)
+    _reseal(tree, record, fabricated)
 
-    tally = attestatores.attempt_tally(tree)
+    held = tally(run_root)
 
-    assert tally["state"] == "UNKNOWN"
-    assert tally["hold"] is True
-    assert "retains a native payload" in tally["reason"]
+    assert held["state"] == "UNKNOWN"
+    assert held["hold"] is True
+    assert "retains a native payload" in held["reason"]
 
 
 def test_a_failed_attempt_with_an_unrecordable_channel_and_no_reason_is_unknown(tmp_path):
-    """An absence with no reason is the silent loss this stage exists to refuse,
-    so it cannot buy its way into the count by wearing `failed`."""
+    """An absence with no reason is the silent loss this stage exists to refuse."""
     run_root, tree = run_to_designator(tmp_path, "malformed-witness")
-    assert (
-        invoke_stage(
-            run_root, "retention", "malformed-witness", "pipeline/3_attestatores/run.py"
-        ).returncode
-        == 0
-    )
-    record = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    run_attestatores(run_root, "malformed-witness")
+    record = _record_for(tree, page_ordinal=1, chair="attestator_3")
     changed = copy.deepcopy(record)
     del changed["payload"]["reason"]
-    changed["self_hash"] = self_hash(changed)
-    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
-    path.write_bytes(canonical_bytes(changed))
-    tree.write_manifest(ATTESTATORES)
+    _reseal(tree, record, changed)
 
-    tally = attestatores.attempt_tally(tree)
+    held = tally(run_root, "malformed-witness")
 
-    assert tally["state"] == "UNKNOWN"
-    assert tally["hold"] is True
-    assert "records no reason" in tally["reason"]
+    assert held["state"] == "UNKNOWN"
+    assert held["hold"] is True
+    assert "records no reason" in held["reason"]
 
 
 def test_a_failed_attempt_with_recordable_native_evidence_still_requires_a_reason(tmp_path):
     run_root, tree = run_to_designator(tmp_path, "malformed-capabilities")
-    initial = invoke_stage(
-        run_root,
-        "retention",
-        "malformed-capabilities",
-        "pipeline/3_attestatores/run.py",
-    )
-    assert initial.returncode == 0, initial.stderr
-    record = _testimonium_for(tree, act_key="a1", chair="attestator_3", ordinal=1)
+    run_attestatores(run_root, "malformed-capabilities")
+    record = _record_for(tree, page_ordinal=1, chair="attestator_3")
     assert record["payload"]["content_health"]["recordable"] is True
     changed = copy.deepcopy(record)
     del changed["payload"]["reason"]
-    changed["self_hash"] = self_hash(changed)
-    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
-    path.write_bytes(canonical_bytes(changed))
-    tree.write_manifest(ATTESTATORES)
+    _reseal(tree, record, changed)
 
     retry = invoke_stage(
         run_root,
@@ -1533,19 +964,15 @@ def test_a_failed_attempt_with_recordable_native_evidence_still_requires_a_reaso
 
     assert retry.returncode == 3
     assert "records no reason" in retry.stderr
-    assert all(item["payload"]["attempt_ordinal"] == 1 for item in _testimonia(tree))
+    assert all(item["payload"]["attempt_ordinal"] == 1 for item in _page_records(tree))
 
 
 @pytest.mark.parametrize("damage", ("absent", "garbled", "truncated", "recursion"))
 def test_damaged_attempt_tally_is_unknown_and_refuses_to_add_a_replacement(tmp_path, damage):
-    """`recursion` pins the one JSON reader in this stage not covered by
-    `common/runtree/store.py::_read_json`'s `RecursionError` guard:
-    `attempt_tally` reads the stored manifest through its own bare
-    `json.loads`, so a manifest replaced with deep enough nesting must still
-    become UNKNOWN and hold, not an uncaught traceback."""
+    """`recursion` pins the manifest read `attempt_tally` does through its own
+    `json.loads`: deep nesting must become UNKNOWN and hold, not a traceback."""
     run_root, tree = run_to_designator(tmp_path, "happy")
-    initial = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
-    assert initial.returncode == 0, initial.stderr
+    run_attestatores(run_root)
     manifest_path = tree.resolve(tree.manifest_path(ATTESTATORES))
     original = manifest_path.read_bytes()
     if damage == "absent":
@@ -1568,49 +995,27 @@ def test_damaged_attempt_tally_is_unknown_and_refuses_to_add_a_replacement(tmp_p
     else:
         manifest_path.write_bytes(original[:-1])
 
-    tally = attestatores.attempt_tally(tree)
-    assert tally["state"] == "UNKNOWN"
-    assert tally["count"] is None
-    assert tally["hold"] is True
+    held = tally(run_root)
+    assert held["state"] == "UNKNOWN"
+    assert held["count"] is None
+    assert held["hold"] is True
     retry = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        attempt_ordinal=2,
+        run_root, "retention", "happy", "pipeline/3_attestatores/run.py", attempt_ordinal=2
     )
     assert retry.returncode == 3
     assert "UNKNOWN" in retry.stderr
-    assert all(record["payload"]["attempt_ordinal"] == 1 for record in _testimonia(tree))
+    assert all(record["payload"]["attempt_ordinal"] == 1 for record in _page_records(tree))
 
 
-# --- Invariant #10 is fatal, and a hold is not the same fact ---------------------
+# --- An accounting imbalance is fatal, and a hold is not the same fact ------------
 
 
 def test_an_accounting_imbalance_is_fatal_and_never_becomes_a_hold(tmp_path, monkeypatch):
-    """`FatalAccounting` must not be caught here and turned into UNKNOWN + hold.
-
-    The two states say different things. A hold says *the count is unknown* and a
-    caller may wait for it to become known. An accounting imbalance says *the
-    partition itself is broken* — a unit in no terminal set, or in more than one —
-    and `FatalAccounting`'s own docstring is the rule: "nothing may catch this and
-    carry on". `attempt_tally` calls `latest_attempt`, which raises it in five
-    places, from inside a block whose broadest handler caught every `ContractError`.
-    So the fatal case reported as merely unknown, and a caller that holds on an
-    unknown count would have waited politely for a broken partition to resolve
-    itself.
-    """
-
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    result = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        attempt_ordinal=1,
-    )
-    assert result.returncode == 0, result.stderr
-    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+    """A hold says the count is unknown; an accounting imbalance says the
+    partition itself is broken, and nothing may catch it and carry on."""
+    run_root, _tree = run_to_designator(tmp_path, "happy")
+    run_attestatores(run_root)
+    assert tally(run_root)["state"] == "KNOWN"
 
     def imbalanced(*_args, **_kwargs):
         raise attestatores.FatalAccounting("a unit is in no terminal set")
@@ -1618,30 +1023,25 @@ def test_an_accounting_imbalance_is_fatal_and_never_becomes_a_hold(tmp_path, mon
     monkeypatch.setattr(attestatores, "latest_attempt", imbalanced)
 
     with pytest.raises(attestatores.FatalAccounting, match="no terminal set"):
-        attestatores.attempt_tally(tree)
+        tally(run_root)
 
 
 def test_an_outer_manifest_accounting_imbalance_is_fatal_and_never_becomes_a_hold(
     tmp_path, monkeypatch
 ):
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    result = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        attempt_ordinal=1,
-    )
-    assert result.returncode == 0, result.stderr
-    assert attestatores.attempt_tally(tree)["state"] == "KNOWN"
+    run_root, _tree = run_to_designator(tmp_path, "happy")
+    run_attestatores(run_root)
+    context = stage_context(run_root)
+    proposals = attestatores.sealed_proposal_regions(context)
+    assert attestatores.attempt_tally(context, proposals=proposals)["state"] == "KNOWN"
 
     def imbalanced(_stage):
         raise attestatores.FatalAccounting("the outer manifest partition is broken")
 
-    monkeypatch.setattr(tree, "build_manifest", imbalanced)
+    monkeypatch.setattr(context.tree, "build_manifest", imbalanced)
 
     with pytest.raises(attestatores.FatalAccounting, match="outer manifest partition"):
-        attestatores.attempt_tally(tree)
+        attestatores.attempt_tally(context, proposals=proposals)
 
 
 def test_a_fatal_closing_tally_does_not_publish_a_completion_seal(tmp_path, monkeypatch):
@@ -1651,302 +1051,33 @@ def test_a_fatal_closing_tally_does_not_publish_a_completion_seal(tmp_path, monk
         raise attestatores.FatalAccounting("the closing partition is broken")
 
     monkeypatch.setattr(attestatores, "attempt_tally", imbalanced)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "pipeline/3_attestatores/run.py",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "retention",
-            "--scenario",
-            "happy",
-            "--fixture-root",
-            str(ROOT / "proof"),
-        ],
-    )
+    monkeypatch.setattr(sys, "argv", _argv(run_root, "happy"))
 
     with pytest.raises(attestatores.FatalAccounting, match="closing partition"):
         attestatores.main()
 
-    # The premise, asserted rather than assumed. Without it a regression that
-    # died before writing a single Testimonium would satisfy the seal assertion
-    # below, and the test could not tell a seal correctly withheld after a full
-    # pass from a pass that never happened.
-    assert len(_testimonia(tree)) == 6
+    # The premise, asserted: the seal was withheld after a full pass, not
+    # missing because the pass never happened.
+    assert len(_page_records(tree)) == 6
     assert not any(
         entry["kind"] == "stage-seal" for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
     )
 
 
 def test_main_does_not_turn_a_fatal_manifest_outcome_into_a_hold(tmp_path):
-    """The initial existing-attempt check builds the manifest before the tally.
-    Its FatalAccounting must reach the stage boundary as fatal, not be caught by
-    the neighbouring ordinary ContractError-to-hold path."""
+    """The existing-attempt check builds the manifest before the tally; its
+    FatalAccounting must reach the stage boundary as fatal, not as a hold."""
     run_root, tree = run_to_designator(tmp_path, "happy")
-    initial = invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py")
-    assert initial.returncode == 0, initial.stderr
-    record = _testimonium_for(tree, act_key="a1", chair="attestator_1", ordinal=1)
+    run_attestatores(run_root)
+    record = _record_for(tree, page_ordinal=1, chair="attestator_1")
     damaged = copy.deepcopy(record)
     damaged["outcome"] = "outside-the-closed-vocabulary"
-    damaged["self_hash"] = self_hash(damaged)
-    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
-    path.write_bytes(canonical_bytes(damaged))
+    _reseal(tree, record, damaged, manifest=False)
 
     retry = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        attempt_ordinal=2,
+        run_root, "retention", "happy", "pipeline/3_attestatores/run.py", attempt_ordinal=2
     )
 
     assert retry.returncode == 2
     assert "outside-the-closed-vocabulary" in retry.stderr
     assert "attempt tally UNKNOWN" not in retry.stderr
-
-
-# --- Audit-and-repair regression (F-O5) -----------------------------------------
-#
-# Opus audit-and-repair seat 3, R0. The act-level tally walk filters on
-# `kind == "testimonium"`, so the `payload["scope"] == "page"` skip inside the loop
-# was unreachable. Had anything reached it, one self-reported field would have
-# carried an act-scoped record past every check in `attempt_tally` -- its closed
-# field set, its named chair, its content health, and `validate_tallied_testimonium`.
-# `scope` and `page_ordinal` were also listed as optional act-level payload fields,
-# which is what made the disguise well-formed in the first place.
-
-
-def test_an_act_scoped_testimonium_cannot_wear_page_scope_to_skip_the_tally(tmp_path):
-    """A field nothing validates is a field nothing downstream can trust.
-
-    This is the file's own rule about its closed payload, applied to the two
-    fields that belong to the page-scoped kind. A resealed act-scoped record
-    claiming `scope: "page"` must make the count UNKNOWN, not disappear from it.
-    """
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    assert (
-        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
-        == 0
-    )
-    record = _testimonium_for(tree, act_key="a1", chair="attestator_2", ordinal=1)
-    changed = copy.deepcopy(record)
-    changed["payload"]["scope"] = "page"
-    changed["payload"]["page_ordinal"] = 1
-    changed["self_hash"] = self_hash(changed)
-    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
-    path.write_bytes(canonical_bytes(changed))
-    tree.write_manifest(ATTESTATORES)
-
-    tally = attestatores.attempt_tally(tree)
-
-    assert tally["state"] == "UNKNOWN"
-    assert tally["hold"] is True
-    assert "unknown field(s) ['page_ordinal', 'scope']" in tally["reason"], tally["reason"]
-
-
-# --- Fresh-context review (P2): the same disguise, in the sibling walk -----------
-#
-# `_attempt_history` carried the identical `payload["scope"] == "page"` skip behind
-# the identical `kind == "testimonium"` filter, and F-O5 removed only the one in
-# `attempt_tally`. Unreachable for any record this stage writes -- page testimony is
-# a kind of its own -- its one reachable effect was on a record that lied, and it
-# was the wrong effect: the disguised record left the append/collision history
-# entirely, so `require_appendable_ordinal` would judge that act/chair pair against
-# no history at all. The tally is what refuses such a record (the sibling test
-# above); the history's job is to see it.
-
-
-def test_a_page_scope_claim_cannot_hide_an_act_scoped_attempt_from_the_history(tmp_path):
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    assert (
-        invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
-        == 0
-    )
-    record = _testimonium_for(tree, act_key="a1", chair="attestator_2", ordinal=1)
-    changed = copy.deepcopy(record)
-    changed["payload"]["scope"] = "page"
-    changed["payload"]["page_ordinal"] = 1
-    changed["self_hash"] = self_hash(changed)
-    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", record["artifact_id"]))
-    path.write_bytes(canonical_bytes(changed))
-    tree.write_manifest(ATTESTATORES)
-
-    history = attestatores._attempt_history(SimpleNamespace(tree=tree)).by_pair
-
-    surviving = [
-        item["artifact_id"] for item in history.get((record["subject_id"], "attestator_2"), [])
-    ]
-    assert record["artifact_id"] in surviving, (
-        "an act-scoped Testimonium claiming page scope vanished from the attempt history; "
-        "the append/collision bound would then be derived for that pair without the "
-        "disguised record it exists to see"
-    )
-
-
-def test_a_normalized_match_with_no_raw_counterpart_is_retained_as_unaligned(tmp_path, monkeypatch):
-    """A synthesized separator is not a raw span at the normalized offset.
-
-    When every normalized character in a clipped match maps to ``None``, the
-    caller must not publish `(start, start)` in raw coordinates -- that would
-    assert alignment to an empty raw slice the witness never supplied. Both
-    page chairs must retain an explicit unaligned fact, with no zero-length
-    text alignment surviving; a separate geometric attachment basis may still
-    attach the page Testimonium, but never by turning that non-existent raw
-    text span back into alignment.
-    """
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    loss = {
-        "markup_characters": 0,
-        "whitespace_characters": 1,
-        "unicode_reencoded_characters": 0,
-    }
-
-    def separator_only_alignment(_witness, _anchor, _limits):
-        return {
-            "status": "aligned",
-            "witness": {"text": " ", "offset_map": [None], "loss": loss},
-            "anchor": {"text": "S", "offset_map": [0], "loss": loss},
-            "spans": [
-                {
-                    "witness": {"start": 0, "end": 1},
-                    "anchor": {"start": 0, "end": 1},
-                }
-            ],
-        }
-
-    monkeypatch.setattr(attestatores, "align_to_anchor", separator_only_alignment)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run.py",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "retention",
-            "--scenario",
-            "happy",
-            "--fixture-root",
-            str(ROOT / "proof"),
-        ],
-    )
-
-    assert attestatores.main() == 0
-    a1 = next(
-        tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "act-attachment"
-        and tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])["payload"][
-            "act_key"
-        ]
-        == "a1"
-    )
-    # DAI's act view is placed by its detector's records, never by text alignment.
-    page_attachments = [
-        row
-        for row in a1["payload"]["attachments"]
-        if row["page_witness"] and row["chair"] != "attestator_2"
-    ]
-    assert page_attachments
-    assert all(
-        row["alignment"] == {"status": "unaligned", "reason": "no-raw-counterpart-for-aligned-span"}
-        for row in page_attachments
-    )
-    assert all(
-        row["attached"] is True and row["attachment_basis"] == "geometric-overlap"
-        for row in page_attachments
-    )
-    assert all(row["span"] is None for row in page_attachments)
-
-
-def test_a_page_scoped_act_view_reads_its_sealed_page_once(tmp_path, monkeypatch):
-    """One sealed-page read per act view's own derivations.
-
-    `publish_attempt` needs the sealed page's size twice for a page-scoped act
-    view: once to convert the wire contract's normalized boxes
-    (`chandra.observe`, `churro.observe`), and once for the page-edge overshoot
-    split. It called
-    `_sealed_source_page` at both, and that function reads the whole page blob
-    and re-digests it every time -- two full reads and two SHA-256 passes per
-    act view, for one number that cannot change between them. The size is now
-    bound once.
-
-    `validate_testimonium_presentation`'s own read is deliberately excluded
-    from the count, not folded in. It exists to re-derive the sealed page and
-    its bytes from the tree as a check on the payload just built; handing it a
-    value computed by the code it is checking would make it validate its own
-    input, and it is also called from two read-back sites that have no earlier
-    read to share. Counted rather than asserted structurally, so that a later
-    edit adding a third derivation that needs the size reintroduces a read this
-    test can see.
-    """
-    run_root, tree = run_to_designator(tmp_path, "happy")
-    real_sealed_source_page = attestatores._sealed_source_page
-    real_publish_attempt = attestatores.publish_attempt
-    real_validate = attestatores.validate_testimonium_presentation
-    validating: list[bool] = []
-    reads: list[str] = []
-    reads_per_view: list[tuple[str, int]] = []
-
-    def counting_sealed_source_page(context, presented):
-        if not validating:
-            reads.append(presented["source_page_id"])
-        return real_sealed_source_page(context, presented)
-
-    def watched_validate(context, record):
-        validating.append(True)
-        try:
-            return real_validate(context, record)
-        finally:
-            validating.pop()
-
-    def counting_publish_attempt(context, **fields):
-        before = len(reads)
-        result = real_publish_attempt(context, **fields)
-        reads_per_view.append((fields["chair"], len(reads) - before))
-        return result
-
-    monkeypatch.setattr(attestatores, "_sealed_source_page", counting_sealed_source_page)
-    monkeypatch.setattr(attestatores, "validate_testimonium_presentation", watched_validate)
-    monkeypatch.setattr(attestatores, "publish_attempt", counting_publish_attempt)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run.py",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "retention",
-            "--scenario",
-            "happy",
-            "--fixture-root",
-            str(ROOT / "proof"),
-        ],
-    )
-
-    assert attestatores.main() == 0
-    # Six act views: two acts times three chairs. One chair needs the sealed
-    # size -- `attestator_1` (Chandra), whose grammar reports boxes normalized
-    # against the whole page, so its declared fixture observations get the
-    # page-edge check. Neither of the other two does: DAI reports no geometry, and
-    # Churro's `HistoricalDocument` carries no coordinate anywhere, so its
-    # `observe` takes no page size and its registry entry says so
-    # (`takes_page_size`). What this test protects is unchanged and is the
-    # reason it counts rather than asserts a ceiling: ONE read per view that
-    # needs it, never one per derivation, and never zero because no view
-    # reached the derivation at all -- and the per-chair contract explicitly,
-    # not only the bare counts: Chandra reads the sealed page once per act
-    # view it appears in, DAI and Churro read it zero times, so moving the
-    # read to either of those chairs' views (same counts, wrong chair) fails
-    # this by name.
-    assert sorted(reads_per_view) == [
-        ("attestator_1", 1),
-        ("attestator_1", 1),
-        ("attestator_2", 0),
-        ("attestator_2", 0),
-        ("attestator_3", 0),
-        ("attestator_3", 0),
-    ]

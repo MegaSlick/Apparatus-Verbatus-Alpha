@@ -383,17 +383,18 @@ def test_the_registry_binds_the_native_intake_contract_seams():
             "bounds": {"x": 0, "y": 0, "w": 20, "h": 10},
         },
     }
-    # An act compatibility view is returned unchanged: no chair was shown those
-    # pixels, so minting the vendor's recipe over them would record a step that
-    # never ran. A whole *page* presentation is prepared instead, and that path
-    # needs a run tree; `test_attestatores_retention.py` exercises it there.
+    # A whole-page reader is never shown a crop: one is refused, not passed through
+    # under a vendor recipe that never ran. A whole *page* presentation needs a
+    # run tree; `test_attestatores_retention.py` exercises it there.
     region = {
         **presented,
         "kind": "region",
         "region_ref": {"region_id": "r1"},
         "transform": {**presented["transform"], "operation": "crop"},
     }
-    assert adapters.resolve_runnable_adapter("churro.v1").present(object(), region) is region
+    for name in ("churro.v1", "chandra.v1"):
+        with pytest.raises(SchemaRefusal, match="reads whole pages"):
+            adapters.resolve_runnable_adapter(name).present(object(), region)
     # Churro reports no geometry at all -- `HistoricalDocument` carries no
     # coordinate anywhere -- so every body derives the honest presented echo
     # that routing and coverage exclude, and no page size is needed or accepted.
