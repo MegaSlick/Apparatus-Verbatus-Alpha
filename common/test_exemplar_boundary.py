@@ -26,11 +26,8 @@ this interface is the only place both sides can be held at once.
 
 import copy
 import struct
-import subprocess
-import sys
 import zlib
 from io import BytesIO
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -48,31 +45,11 @@ from common.exemplar_boundary import (
 from common.imaging import decode_grayscale_png, encode_grayscale_png
 from common.runtree.store import RunTree
 
-ROOT = Path(__file__).resolve().parents[1]
-ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
-
 
 @pytest.fixture
-def sealed(tmp_path):
+def sealed(orchestrated_run, tmp_path):
     """One real synthetic run, and its first sealed page with its ledger row."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ORCHESTRATOR),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "page-unbroken",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--run-id",
-            "boundary-unit",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
+    orchestrated_run(tmp_path / "runs", "boundary-unit", "page-unbroken")
     tree = RunTree(tmp_path / "runs", "boundary-unit")
     run = tree.read_run()
     page = next(
@@ -171,26 +148,9 @@ def test_a_door_admission_bound_to_a_different_run_refuses(sealed):
 
 
 @pytest.fixture
-def cropped(tmp_path):
+def cropped(orchestrated_run, tmp_path):
     """One real synthetic run, and the first act region the Perlector cut."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ORCHESTRATOR),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            "page-unbroken",
-            "--run-root",
-            str(tmp_path / "runs"),
-            "--run-id",
-            "crop-lineage",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
+    orchestrated_run(tmp_path / "runs", "crop-lineage", "page-unbroken")
     tree = RunTree(tmp_path / "runs", "crop-lineage")
     region = next(
         record
