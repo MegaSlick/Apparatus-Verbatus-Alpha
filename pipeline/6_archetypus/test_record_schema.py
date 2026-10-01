@@ -98,6 +98,7 @@ def test_the_only_public_constructor_resolves_the_accepted_evidence_itself():
         "review_ref",
         "page_testimonia",
         "applied",
+        "approvals",
     )
 
 
