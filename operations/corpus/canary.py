@@ -272,7 +272,10 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                     )
 
         # The reader is checked page by page: every entry it read on a canary
-        # page, joined in order, against that page's reference text.
+        # page, joined in order, against that page's reference text. A page
+        # read whole holds every entry on a page with any hold, and a held
+        # entry still carries its reading, so it counts as read.
+        read_outcomes = {"read", "held"}
         try:
             readings = _canary_readings(tree, ordinals)
         except FatalAccounting:
@@ -291,7 +294,7 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 continue
             texts = [row.get("payload", {}).get("text") for row in rows]
             if (
-                any(row.get("outcome") != "read" for row in rows)
+                any(row.get("outcome") not in read_outcomes for row in rows)
                 or not all(isinstance(text, str) and text.strip() for text in texts)
                 or _repeated("\n".join(texts))
             ):

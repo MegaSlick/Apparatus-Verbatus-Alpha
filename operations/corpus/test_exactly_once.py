@@ -211,12 +211,15 @@ def one_act_each() -> list[dict]:
     return [{"cites": [f"A{k + 1}", f"L{k + 1}"], "text": entry_text(k)} for k in range(3)]
 
 
-def report(pages: list[dict], records: list[dict] | None = None) -> dict:
+def report(
+    pages: list[dict], records: list[dict] | None = None, sealed: set[str] | None = None
+) -> dict:
     return exactly_once_report(
         pages,
         records or [gold(k) for k in range(3)],
         policy=POLICY,
         sealed_policy_sha256=POLICY.sha256,
+        sealed_page_sha256s=sealed if sealed is not None else {PAGE_SHA},
     )
 
 
@@ -503,7 +506,13 @@ def test_a_run_sealed_under_another_policy_is_refused_even_without_accountings()
     unaccounted["accounting"] = None
 
     with pytest.raises(Refusal, match="policy-mismatch"):
-        exactly_once_report([unaccounted], [gold(0)], policy=POLICY, sealed_policy_sha256="b" * 64)
+        exactly_once_report(
+            [unaccounted],
+            [gold(0)],
+            policy=POLICY,
+            sealed_policy_sha256="b" * 64,
+            sealed_page_sha256s={PAGE_SHA},
+        )
 
 
 def test_gold_records_join_the_ledger_box_and_the_gold_text():
@@ -673,3 +682,253 @@ def test_a_record_between_an_act_s_cited_lines_is_not_inside_its_region():
 
     assert rows["rec-1"]["text"] == "no-region"
     assert rows["rec-1"]["outcome"] == "lost"
+
+
+def reasked_page() -> dict:
+    """Page 1 read twice: the first reading found records 0 and 1, the re-ask record 2.
+
+    The final accounting accounts for the three entries combined; the first
+    accounting for the first reading's two.
+    """
+    acts = one_act_each()
+    final = page(acts)
+    final["first_accounting"] = page(acts[:2])["accounting"]
+    final["reask"] = {**final["reading"], "attempt_ordinal": 2}
+    final["reask_usage"] = {"prompt_tokens": 5200}
+    final["act_regions"][2] = {**final["act_regions"][2], "reading_attempt": 2, "reading_n": 1}
+    return final
+
+
+def test_a_reasked_page_is_judged_on_its_final_accounting_and_reports_what_the_reask_recovered():
+    result = report([reasked_page()])
+
+    assert result["gate"]["passed"] is True
+    assert result["records"]["by_outcome"] == {"exactly-once": 3}
+    reask = result["reask"]
+    assert reask["pages_reasked"] == 1
+    assert reask["reasked_page_ids"] == ["page-1"]
+    assert reask["reask_by_parse_state"] == {"parsed": 1}
+    assert reask["acts_recovered_on_reask"] == 1
+    assert reask["entries_added_by_reask"] == {"act": 1}
+    assert reask["before_reask"] == {
+        "records": 3,
+        "exactly_once": 2,
+        "exactly_once_bp": 6_666,
+        "by_outcome": {"exactly-once": 2, "lost": 1},
+    }
+    assert reask["after_reask"]["exactly_once"] == 3
+    assert reask["on_reasked_pages"]["before_reask"]["exactly_once"] == 2
+    assert reask["records_now_exactly_once"] == 1
+    assert reask["records_no_longer_exactly_once"] == 0
+    # Both calls are compared against the engine's count.
+    assert result["pages"]["prompt_tokens"]["compared"] == 2
+
+
+def test_a_page_never_reasked_reads_the_same_before_and_after():
+    result = report([page(one_act_each())])
+
+    assert result["reask"]["pages_reasked"] == 0
+    assert result["reask"]["acts_recovered_on_reask"] == 0
+    assert result["reask"]["before_reask"] == result["reask"]["after_reask"]
+    assert result["reask"]["on_reasked_pages"]["after_reask"]["records"] == 0
+
+
+def test_a_reasked_page_whose_last_reading_has_no_accounting_is_unchecked():
+    reasked = reasked_page()
+    reasked["accounting"] = None
+
+    result = report([reasked])
+
+    assert result["gate"]["unchecked_pages"] == 1
+    assert result["gate"]["passed"] is False
+    # The first reading was accounted, so it is judged before the re-ask.
+    assert result["reask"]["before_reask"]["exactly_once"] == 2
+
+
+def test_gold_on_pages_the_run_did_not_seal_is_left_out_and_counted():
+    elsewhere = {**gold(0), "record_id": "rec-elsewhere", "page_sha256": "b" * 64}
+    records = [gold(k) for k in range(3)] + [elsewhere]
+
+    result = report([page(one_act_each())], records)
+
+    assert result["gate"]["passed"] is True
+    assert result["records"]["total"] == 3
+    assert result["scope"] == {
+        "sealed_pages": 1,
+        "sealed_pages_with_gold": 1,
+        "sealed_pages_with_gold_not_read": 0,
+        "ledger_pages_outside_run": 1,
+        "ledger_records_outside_run": 1,
+    }
+    assert "rec-elsewhere" not in {row["record_id"] for row in result["rows"]}
+
+
+def test_a_run_that_sealed_none_of_the_ledger_pages_measures_nothing_and_fails():
+    result = report([], [gold(0)], sealed={"b" * 64})
+
+    assert result["records"]["total"] == 0
+    assert result["gate"]["exactly_once_bp"] is None
+    assert result["gate"]["passed"] is False
+    assert result["scope"]["ledger_records_outside_run"] == 1
+
+
+def test_a_sealed_page_with_gold_and_no_feed_is_counted_as_not_read():
+    result = report([], [gold(0)])
+
+    assert result["scope"]["sealed_pages_with_gold_not_read"] == 1
+    assert result["rows"][0]["outcome"] == "lost"
+
+
+def _reask_tree_records(built: dict, first: dict) -> dict:
+    """Page records in the re-ask's shapes: two readings, two accountings, numbered entries."""
+    base = {"page_id": "page-1", "engine_call": None}
+    records = {
+        (PERLECTOR, "page-feed", "f"): {"subject_id": "page-1", "payload": built["feed"]},
+        (PERLECTOR, "page-reading", "r1"): {
+            "subject_id": "page-1",
+            "payload": {**built["reading"], **base, "attempt_ordinal": 1},
+        },
+        (PERLECTOR, "page-reading", "r2"): {
+            "subject_id": "page-1",
+            "payload": {**built["reading"], **base, "attempt_ordinal": 2},
+        },
+        (PERLECTOR, "page-accounting", "p1"): {
+            "subject_id": "page-1",
+            "payload": {**first["accounting"], "answer_basis": "attempt-1"},
+        },
+        (PERLECTOR, "page-accounting", "p2"): {
+            "subject_id": "page-1",
+            "payload": {**built["accounting"], "answer_basis": "combined"},
+        },
+    }
+    for region, perlectio in zip(built["act_regions"], built["perlectios"], strict=True):
+        act_id = f"act-{region['n']}"
+        recovered = {"reading_attempt": 2, "reading_n": 1} if region["n"] == 3 else {}
+        records[(PERLECTOR, "act-region", act_id)] = {
+            "subject_id": act_id,
+            "payload": {**region, "page_id": "page-1", **recovered},
+        }
+        records[(PERLECTOR, "perlectio", act_id)] = {
+            "subject_id": act_id,
+            "payload": {**perlectio, **recovered},
+        }
+    return records
+
+
+def test_reask_records_are_read_by_schema_and_kept_apart(monkeypatch):
+    acts = one_act_each()
+    built, first = page(acts), page(acts[:2])
+    records = _reask_tree_records(built, first)
+    monkeypatch.setattr(
+        "operations.corpus.exactly_once.load_exemplar_page_shas", lambda tree: {1: PAGE_SHA}
+    )
+
+    [loaded] = load_page_records(_Tree(records, {}))
+
+    assert loaded["reading"]["attempt_ordinal"] == 1
+    assert loaded["reask"]["attempt_ordinal"] == 2
+    assert loaded["accounting"]["answer_basis"] == "combined"
+    assert loaded["first_accounting"]["answer_basis"] == "attempt-1"
+    result = report([loaded])
+    assert result["gate"]["passed"] is True
+    assert result["reask"]["acts_recovered_on_reask"] == 1
+    assert result["reask"]["before_reask"]["exactly_once"] == 2
+
+    # The order the manifest lists them in does not decide which accounting is final.
+    reordered = dict(reversed(list(records.items())))
+    [again] = load_page_records(_Tree(reordered, {}))
+    assert again["accounting"]["answer_basis"] == "combined"
+
+    twice = {
+        **records,
+        (PERLECTOR, "page-accounting", "p3"): records[(PERLECTOR, "page-accounting", "p2")],
+    }
+    with pytest.raises(Refusal, match="two accountings at attempt 2"):
+        load_page_records(_Tree(twice, {}))
+
+    no_reask = {key: value for key, value in records.items() if key[2] != "r2"}
+    with pytest.raises(Refusal, match="accounting for a reading it does not have"):
+        load_page_records(_Tree(no_reask, {}))
+
+    third = dict(records)
+    third[(PERLECTOR, "page-reading", "r2")] = {
+        "subject_id": "page-1",
+        "payload": {**records[(PERLECTOR, "page-reading", "r2")]["payload"], "attempt_ordinal": 3},
+    }
+    with pytest.raises(Refusal, match="reading attempt 3"):
+        load_page_records(_Tree(third, {}))
+
+
+def test_the_command_scores_a_selection_and_never_overwrites_or_writes_into_the_tree(tmp_path):
+    from common.contracts.canonical import canonical_bytes, self_hash
+    from common.runtree.store import RunTree
+
+    from .exactly_once import main
+    from .test_evaluate import _fixture_reference_for_page_one, _ledger_for, _orchestrate
+
+    completed = _orchestrate(tmp_path / "runs", "page-unbroken")
+    assert completed.returncode == 0, completed.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    reference = _fixture_reference_for_page_one(tree)
+    ledger = _ledger_for(reference)
+    (tmp_path / "ledger.json").write_bytes(canonical_bytes(ledger))
+    (tmp_path / "gold.jsonl").write_text(
+        "".join(
+            json.dumps({"record_id": act["record_id"], "text": act["text"]}) + "\n"
+            for act in reference["acts"]
+        )
+    )
+    selection = {
+        "ledger_self_hash": ledger["self_hash"],
+        "pages": [{"page_sha256": reference["page"]["sha256"]}, {"page_sha256": "b" * 64}],
+    }
+    selection["self_hash"] = self_hash(selection)
+    (tmp_path / "selection.json").write_bytes(canonical_bytes(selection))
+    args = ["--run-root", str(tmp_path / "runs"), "--run-id", "r"]
+    args += ["--gold", str(tmp_path / "gold.jsonl"), "--ledger", str(tmp_path / "ledger.json")]
+    out = tmp_path / "exactly-once.json"
+
+    main([*args, "--selection", str(tmp_path / "selection.json"), "--out", str(out)])
+
+    written = json.loads(out.read_text())
+    assert written["scope"]["basis"] == "selection"
+    assert written["scope"]["sealed_pages"] == 2
+    assert written["ledger_self_hash"] == ledger["self_hash"]
+    with pytest.raises(Refusal, match="^output-exists:"):
+        main([*args, "--out", str(out)])
+    with pytest.raises(Refusal, match="^output-in-run-tree:"):
+        main([*args, "--out", str(tree.root / "exactly-once.json")])
+    selection["ledger_self_hash"] = "c" * 64
+    (tmp_path / "selection.json").write_bytes(canonical_bytes(selection))
+    with pytest.raises(Refusal, match="^malformed-record:"):
+        main([*args, "--selection", str(tmp_path / "selection.json"), "--out", str(tmp_path / "x")])
+
+
+def test_a_real_reasked_run_is_read_with_its_reask_as_the_receipt_binds_it(tmp_path):
+    """`reask-recovers` under the committed re-ask budget: page 1's first reading
+    reads a1 alone and the re-ask recovers a2. The loader reads the re-ask's real
+    records -- attempt 2, its combined accounting, its recovered region -- and the
+    page it re-asked is the one the Recensor's v5 receipt binds a re-ask to."""
+    from common.recensor_receipt import RECENSOR_PARTITION_RECEIPT_SCHEMA_V5
+    from common.runtree.store import RunTree
+
+    from .compare import ReadOnlyRunTree
+    from .test_evaluate import _orchestrate
+
+    completed = _orchestrate(tmp_path / "runs", "reask-recovers")
+    assert completed.returncode in (0, 3), completed.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+
+    pages = load_page_records(ReadOnlyRunTree(tree))
+    reasked = [page for page in pages if page["reask"] is not None]
+    [page] = reasked
+    assert page["reask"]["attempt_ordinal"] == 2
+    assert page["accounting"]["answer_basis"] == "combined"
+    assert page["first_accounting"]["answer_basis"] == "attempt-1"
+    recovered = [r for r in page["act_regions"] if r.get("reading_attempt") == 2]
+    assert [region["kind"] for region in recovered] == ["act"]
+
+    receipt = tree.read_recensor_partition_receipt()
+    assert receipt["schema"] == RECENSOR_PARTITION_RECEIPT_SCHEMA_V5
+    bound = [row["page_ordinal"] for row in receipt["pages"] if row["reask_ref"] is not None]
+    assert bound == [page["feed"]["page_ordinal"]]

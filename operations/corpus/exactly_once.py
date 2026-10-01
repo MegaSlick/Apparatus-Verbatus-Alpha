@@ -39,6 +39,12 @@ reader read them as one act; the merged outcome here is what measures it.
 The report holds counts and identifiers only, never text. It chooses nothing:
 it runs after the tree is sealed and returns nothing to the pipeline.
 
+Only gold on pages the run sealed is scored; ledger pages outside the run are
+counted, not lost, so a run over part of a set is judged on its own pages. A
+page may be re-asked once: its records are judged on the sealed final
+accounting and every act region the page holds, and again on the first
+reading alone, so the report states what the re-ask recovered.
+
 The gate: at least 95% of gold records read exactly once, no failure without
 a located catch and no page unchecked.
 """
@@ -49,11 +55,11 @@ import json
 import statistics
 import sys
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
-from common.contracts.canonical import digest_bytes, is_sha256
+from common.contracts.canonical import digest_bytes, is_sha256, verify_self_hash
 from common.contracts.stages import PERLECTOR
 from common.page_accounting import (
     DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
@@ -73,9 +79,10 @@ from common.runtree.store import RunTree
 from common.stage import run_sealed_config_digests
 
 from . import CorpusRefusal
+from .cache import write_new_file
 from .compare import ReadOnlyRunTree, load_exemplar_page_shas
 
-SCHEMA: Final = "exactly-once-report.v1"
+SCHEMA: Final = "exactly-once-report.v2"
 GATE_EXACTLY_ONCE_BP: Final = 9_500
 # A gold record's text is read when its character error rate against the best
 # holding act's reading is at most this (basis points): stricter than the
@@ -97,9 +104,21 @@ LOST: Final = "lost"
 MERGED: Final = "merged"
 DUPLICATED: Final = "duplicated"
 FAILURES: Final = frozenset({LOST, MERGED})
+# A page is read once and may be re-asked once; each reading has its own accounting.
+FIRST_READING: Final = 1
+REASK_READING: Final = 2
+READING_ATTEMPTS: Final = (FIRST_READING, REASK_READING)
+ANSWER_BASES: Final = {"attempt-1": FIRST_READING, "combined": REASK_READING}
 
 EXACTLY_ONCE_REFUSAL_REASONS: Final = frozenset(
-    {"malformed-record", "not-page-read", "policy-mismatch", "missing-file"}
+    {
+        "malformed-record",
+        "missing-file",
+        "not-page-read",
+        "output-exists",
+        "output-in-run-tree",
+        "policy-mismatch",
+    }
 )
 
 
@@ -168,14 +187,39 @@ def _read_ref_json(tree: RunTree | ReadOnlyRunTree, ref: Any) -> dict[str, Any]:
     return json.loads(body)
 
 
+def _attempt(value: Any, what: str) -> int:
+    if value not in READING_ATTEMPTS:
+        raise Refusal(f"malformed-record: {what} names reading attempt {value!r}")
+    return value
+
+
+def _accounting_attempt(payload: Mapping[str, Any]) -> int:
+    """Which reading of the page an accounting accounts for, read from its own schema.
+
+    A `page-accounting.v1` accounts for the page's only reading; a v2 says so
+    in `answer_basis`: the first reading alone, or the re-ask combined with it.
+    """
+    if "answer_basis" not in payload:
+        return FIRST_READING
+    basis = payload["answer_basis"]
+    if basis not in ANSWER_BASES:
+        raise Refusal(f"malformed-record: a page accounting has answer basis {basis!r}")
+    return ANSWER_BASES[basis]
+
+
 def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
     """The Perlector's page records of a page-read tree, grouped by page, read-only.
 
-    Each page is `{page_sha256, feed, reading, act_regions, perlectios,
-    accounting, usage}`: payloads as published; `usage` is the engine's usage
-    from the page reading's call record, or `None` without a call. A tree with
-    no page feed, or a page record under another
-    schema than `PAGE_KIND_SCHEMAS` names, is refused `not-page-read`.
+    Each page is `{page_sha256, feed, reading, usage, reask, reask_usage,
+    act_regions, perlectios, accounting, first_accounting}`: payloads as
+    published. `reading` is the page's first reading and `reask` its re-ask
+    (`attempt_ordinal` 2), or `None`; `usage` and `reask_usage` are the engine's
+    usage from each one's call record, or `None` without a call. `accounting`
+    is the sealed final accounting -- the re-ask's on a re-asked page, `None`
+    when the last reading has none -- and `first_accounting` the first
+    reading's. Two records for one reading of a page are refused. A tree with
+    no page feed, or a page record under another schema than
+    `PAGE_KIND_SCHEMAS` names, is refused `not-page-read`.
     """
     shas = load_exemplar_page_shas(tree)
     by_kind: dict[str, list[dict[str, Any]]] = {kind: [] for kind in PAGE_KIND_SCHEMAS}
@@ -201,11 +245,11 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
         pages[feed["page_id"]] = {
             "page_sha256": shas[ordinal],
             "feed": feed,
-            "reading": None,
+            "readings": {},
+            "usages": {},
+            "accountings": {},
             "act_regions": [],
             "perlectios": [],
-            "accounting": None,
-            "usage": None,
         }
 
     def page_of(payload: Mapping[str, Any], what: str) -> dict[str, Any]:
@@ -215,24 +259,69 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
         return page
 
     for record in by_kind["page-reading"]:
-        page = page_of(record["payload"], "page reading")
-        page["reading"] = record["payload"]
-        engine_call = record["payload"].get("engine_call")
-        if engine_call is not None:
-            page["usage"] = _read_ref_json(tree, engine_call["call_record_ref"]).get("usage")
+        payload = record["payload"]
+        page = page_of(payload, "page reading")
+        attempt = _attempt(payload.get("attempt_ordinal", FIRST_READING), "a page reading")
+        if attempt in page["readings"]:
+            raise Refusal(
+                f"malformed-record: page {payload['page_id']!r} has two readings at attempt "
+                f"{attempt}"
+            )
+        page["readings"][attempt] = payload
+        engine_call = payload.get("engine_call")
+        page["usages"][attempt] = (
+            None
+            if engine_call is None
+            else _read_ref_json(tree, engine_call["call_record_ref"]).get("usage")
+        )
+    for record in by_kind["page-accounting"]:
+        payload = record["payload"]
+        page = page_of(payload, "page accounting")
+        attempt = _accounting_attempt(payload)
+        if attempt in page["accountings"]:
+            raise Refusal(
+                f"malformed-record: page {payload['page_id']!r} has two accountings at attempt "
+                f"{attempt}"
+            )
+        page["accountings"][attempt] = payload
     act_pages: dict[str, dict[str, Any]] = {}
     for record in by_kind["act-region"]:
-        page = page_of(record["payload"], "act region")
-        page["act_regions"].append(record["payload"])
+        payload = record["payload"]
+        page = page_of(payload, "act region")
+        _attempt(payload.get("reading_attempt", FIRST_READING), "an act region")
+        page["act_regions"].append(payload)
         act_pages[record["subject_id"]] = page
     for record in by_kind["perlectio"]:
         page = act_pages.get(record["subject_id"])
         if page is None:
             raise Refusal(f"malformed-record: perlectio {record['subject_id']!r} has no act region")
         page["perlectios"].append(record["payload"])
-    for record in by_kind["page-accounting"]:
-        page_of(record["payload"], "page accounting")["accounting"] = record["payload"]
-    return [pages[page_id] for page_id in sorted(pages)]
+
+    loaded = []
+    for page_id in sorted(pages):
+        page = pages[page_id]
+        readings, usages, accountings = (
+            page.pop("readings"),
+            page.pop("usages"),
+            page.pop("accountings"),
+        )
+        if REASK_READING in readings and FIRST_READING not in readings:
+            raise Refusal(f"malformed-record: page {page_id!r} has a re-ask and no first reading")
+        if set(accountings) - set(readings):
+            raise Refusal(
+                f"malformed-record: page {page_id!r} has an accounting for a reading it does not have"
+            )
+        last = max(readings, default=FIRST_READING)
+        page.update(
+            reading=readings.get(FIRST_READING),
+            usage=usages.get(FIRST_READING),
+            reask=readings.get(REASK_READING),
+            reask_usage=usages.get(REASK_READING),
+            accounting=accountings.get(last),
+            first_accounting=accountings.get(FIRST_READING),
+        )
+        loaded.append(page)
+    return loaded
 
 
 def sealed_policy_sha256(tree: RunTree | ReadOnlyRunTree) -> str:
@@ -344,34 +433,12 @@ def _witness_classes(page: Mapping[str, Any]) -> list[tuple[str, Mapping[str, in
     return units
 
 
-def exactly_once_report(
+def _score_records(
     pages: Sequence[Mapping[str, Any]],
     gold: Sequence[Mapping[str, Any]],
-    *,
     policy: PageAccountingPolicy,
-    sealed_policy_sha256: str,
-    seconds_per_page: Mapping[str, float] | None = None,
-) -> dict[str, Any]:
-    """The `exactly-once-report.v1` body for page records against gold records.
-
-    `pages` as `load_page_records` returns them; `gold` as `gold_records`
-    returns them; `sealed_policy_sha256` the page-accounting digest the run
-    sealed; `seconds_per_page` is `{page_id: seconds}` from outside the tree,
-    which records no durations. A policy other than the one the run sealed, or
-    a page accounting sealed under another, is refused, so "inside" means one
-    thing throughout -- including on pages that have no accounting.
-    """
-    if sealed_policy_sha256 != policy.sha256:
-        raise Refusal(
-            "policy-mismatch: the run sealed another page-accounting policy than the one given"
-        )
-    for page in pages:
-        accounting = page["accounting"]
-        if accounting is not None and accounting["policy_sha256"] != policy.sha256:
-            raise Refusal(
-                f"policy-mismatch: page {page['feed']['page_id']!r} was accounted under another "
-                "page-accounting policy"
-            )
+) -> list[dict[str, Any]]:
+    """One row per gold record, judged on the act regions and accounting each page gives."""
     by_sha = {page["page_sha256"]: page for page in pages}
     gold_by_page: dict[str, list[Mapping[str, Any]]] = {}
     for record in gold:
@@ -451,6 +518,123 @@ def exactly_once_report(
                 "merge_classes": merge_classes,
             }
         )
+    return rows
+
+
+def _region_attempt(region: Mapping[str, Any]) -> int:
+    return region.get("reading_attempt", FIRST_READING)
+
+
+def _first_reading_view(page: Mapping[str, Any]) -> dict[str, Any]:
+    """The page as its first reading left it: its entries and its accounting only."""
+    first = [region for region in page["act_regions"] if _region_attempt(region) == FIRST_READING]
+    numbers = {region["n"] for region in first}
+    return {
+        **page,
+        "act_regions": first,
+        "perlectios": [p for p in page["perlectios"] if p["n"] in numbers],
+        "accounting": page.get("first_accounting", page["accounting"]),
+    }
+
+
+def _outcome_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    outcomes = Counter(row["outcome"] for row in rows)
+    return {
+        "records": len(rows),
+        "exactly_once": outcomes[EXACTLY_ONCE],
+        "exactly_once_bp": _share(outcomes[EXACTLY_ONCE], len(rows)),
+        "by_outcome": dict(sorted(outcomes.items())),
+    }
+
+
+def _reask_effect(
+    pages: Sequence[Mapping[str, Any]],
+    before: Sequence[Mapping[str, Any]],
+    after: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """What the re-ask changed: pages re-asked, entries it added, records before and after."""
+    reasked = sorted(page["feed"]["page_id"] for page in pages if page.get("reask") is not None)
+    added = [
+        region
+        for page in pages
+        for region in page["act_regions"]
+        if _region_attempt(region) == REASK_READING
+    ]
+    on_reasked = set(reasked)
+    pairs = list(zip(before, after, strict=True))
+    return {
+        "pages_reasked": len(reasked),
+        "reasked_page_ids": reasked,
+        "reask_by_parse_state": dict(
+            sorted(
+                Counter(
+                    page["reask"]["parse_state"] for page in pages if page.get("reask") is not None
+                ).items()
+            )
+        ),
+        "entries_added_by_reask": dict(sorted(Counter(r["kind"] for r in added).items())),
+        "acts_recovered_on_reask": sum(1 for region in added if region["kind"] == "act"),
+        "before_reask": _outcome_counts(before),
+        "after_reask": _outcome_counts(after),
+        "on_reasked_pages": {
+            "before_reask": _outcome_counts([b for b, _ in pairs if b["page_id"] in on_reasked]),
+            "after_reask": _outcome_counts([a for _, a in pairs if a["page_id"] in on_reasked]),
+        },
+        "records_now_exactly_once": sum(
+            1 for b, a in pairs if b["outcome"] != EXACTLY_ONCE and a["outcome"] == EXACTLY_ONCE
+        ),
+        "records_no_longer_exactly_once": sum(
+            1 for b, a in pairs if b["outcome"] == EXACTLY_ONCE and a["outcome"] != EXACTLY_ONCE
+        ),
+    }
+
+
+def exactly_once_report(
+    pages: Sequence[Mapping[str, Any]],
+    gold: Sequence[Mapping[str, Any]],
+    *,
+    policy: PageAccountingPolicy,
+    sealed_policy_sha256: str,
+    sealed_page_sha256s: Collection[str],
+    seconds_per_page: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
+    """The `exactly-once-report.v2` body for page records against gold records.
+
+    `pages` as `load_page_records` returns them; `gold` as `gold_records`
+    returns them; `sealed_policy_sha256` the page-accounting digest the run
+    sealed; `sealed_page_sha256s` the digests of the pages the Exemplar sealed:
+    only gold on those pages is scored, and the rest of the ledger is counted
+    under `scope`, so a run over a subset of the ledger is judged on its own
+    pages. A caller may pass the pages chosen for the run instead, so a chosen
+    page the run did not seal is lost. `seconds_per_page` is `{page_id: seconds}` from outside the tree,
+    which records no durations. A policy other than the one the run sealed, or
+    a page accounting sealed under another, is refused, so "inside" means one
+    thing throughout -- including on pages that have no accounting.
+
+    The gate is judged on each page's sealed final accounting and every act
+    region the page holds; `reask` reports the same records judged on the
+    first readings alone.
+    """
+    if sealed_policy_sha256 != policy.sha256:
+        raise Refusal(
+            "policy-mismatch: the run sealed another page-accounting policy than the one given"
+        )
+    for page in pages:
+        for accounting in (page["accounting"], page.get("first_accounting")):
+            if accounting is not None and accounting["policy_sha256"] != policy.sha256:
+                raise Refusal(
+                    f"policy-mismatch: page {page['feed']['page_id']!r} was accounted under "
+                    "another page-accounting policy"
+                )
+    sealed = set(sealed_page_sha256s)
+    outside = [record for record in gold if record["page_sha256"] not in sealed]
+    gold = [record for record in gold if record["page_sha256"] in sealed]
+    gold_by_page: dict[str, list[Mapping[str, Any]]] = {}
+    for record in gold:
+        gold_by_page.setdefault(record["page_sha256"], []).append(record)
+
+    rows = _score_records(pages, gold, policy)
+    first_rows = _score_records([_first_reading_view(page) for page in pages], gold, policy)
 
     outcomes = Counter(row["outcome"] for row in rows)
     exactly = outcomes[EXACTLY_ONCE]
@@ -493,11 +677,13 @@ def exactly_once_report(
             finish_length += int(reading.get("finish_reason") == "length")
             capacity = reading.get("capacity")
             if isinstance(capacity, dict):
-                admitted = capacity["image_prompt_tokens"] + capacity["prompt_tokens"]
                 fits["fits" if capacity["need"] <= FIT_CONTEXT_TOKENS else "does-not-fit"] += 1
-                engine = (page["usage"] or {}).get("prompt_tokens")
-                if isinstance(engine, int):
-                    tokens.append((admitted, engine))
+        # Each call's admitted prompt against the engine's own count, re-ask included.
+        for sent, usage in ((reading, page["usage"]), (page.get("reask"), page.get("reask_usage"))):
+            capacity = (sent or {}).get("capacity")
+            engine = (usage or {}).get("prompt_tokens")
+            if isinstance(capacity, dict) and isinstance(engine, int):
+                tokens.append((capacity["image_prompt_tokens"] + capacity["prompt_tokens"], engine))
         if accounting is None:
             continue
         hold_codes.update(accounting["holds"])
@@ -521,6 +707,7 @@ def exactly_once_report(
 
     seconds = sorted((seconds_per_page or {}).values())
     exactly_bp = _share(exactly, len(rows))
+    run_shas = {page["page_sha256"] for page in pages}
     return {
         "schema": SCHEMA,
         "policy_sha256": policy.sha256,
@@ -534,6 +721,13 @@ def exactly_once_report(
             and exactly_bp >= GATE_EXACTLY_ONCE_BP
             and not uncaught
             and not unchecked_pages,
+        },
+        "scope": {
+            "sealed_pages": len(sealed),
+            "sealed_pages_with_gold": len(gold_by_page),
+            "sealed_pages_with_gold_not_read": len(set(gold_by_page) - run_shas),
+            "ledger_pages_outside_run": len({record["page_sha256"] for record in outside}),
+            "ledger_records_outside_run": len(outside),
         },
         "records": {
             "total": len(rows),
@@ -561,6 +755,7 @@ def exactly_once_report(
             "uncaught_record_ids": [row["record_id"] for row in uncaught],
             "by_merge_class": dict(sorted(merge_split.items())),
         },
+        "reask": _reask_effect(pages, first_rows, rows),
         "merged_detection": {
             "fired_on_true_merge": rule_i[("fired", True)],
             "fired_on_single_record": rule_i[("fired", False)],
@@ -610,6 +805,11 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         f"not credited: page-wide {records['failures_caught_page_wide_by_rule']}, "
         f"unplaced-only {records['failures_caught_unplaced_only_by_rule']}",
         f"by merge class: {records['by_merge_class']}",
+        f"scope: {report['scope']}",
+        f"re-ask: {report['reask']['pages_reasked']} page(s), "
+        f"{report['reask']['acts_recovered_on_reask']} act(s) recovered; exactly once "
+        f"{report['reask']['before_reask']['exactly_once']} before, "
+        f"{report['reask']['after_reask']['exactly_once']} after",
         f"merged-detection: fired on true merge {rule_i['fired_on_true_merge']}, on single "
         f"record {rule_i['fired_on_single_record']}; silent on true merge "
         f"{rule_i['silent_on_true_merge']}",
@@ -628,6 +828,19 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
+def selected_page_sha256s(path: Path, ledger_self_hash: str) -> set[str]:
+    """The page digests a `proof_pages` selection chose from this ledger."""
+    if not path.is_file():
+        raise Refusal(f"missing-file: {path} is not a file")
+    selection = json.loads(path.read_bytes())
+    if not verify_self_hash(selection) or selection.get("ledger_self_hash") != ledger_self_hash:
+        raise Refusal(
+            "malformed-record: the selection does not hash to itself or was drawn from another "
+            "ledger"
+        )
+    return {page["page_sha256"] for page in selection["pages"]}
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -638,7 +851,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", required=True, help="a sealed run read by page")
     parser.add_argument("--gold", type=Path, required=True, help="the set's gold.jsonl")
     parser.add_argument("--ledger", type=Path, required=True, help="its local admission ledger")
-    parser.add_argument("--out", type=Path, required=True, help="where the JSON report goes")
+    parser.add_argument("--out", type=Path, required=True, help="a new file outside the run tree")
+    parser.add_argument(
+        "--selection",
+        type=Path,
+        help=(
+            "proof_pages' selection.json: score the pages chosen for the run, so a chosen page "
+            "the run did not seal is lost rather than left out"
+        ),
+    )
     parser.add_argument(
         "--seconds-per-page", type=Path, help="optional JSON {page_id: seconds} from the pod log"
     )
@@ -647,11 +868,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    run_tree = RunTree(args.run_root, args.run_id)
+    if args.out.resolve().is_relative_to(run_tree.root.resolve()):
+        raise Refusal("output-in-run-tree: the report must be written outside the run tree")
     policy = load_page_accounting_policy(args.page_accounting_config)
     ledger = load_local_admission_ledger(args.ledger)
     gold = gold_records(_read_jsonl(args.gold), ledger["rows"])
-    tree = ReadOnlyRunTree(RunTree(args.run_root, args.run_id))
+    tree = ReadOnlyRunTree(run_tree)
     pages = load_page_records(tree)
+    scope = (
+        selected_page_sha256s(args.selection, ledger["self_hash"])
+        if args.selection
+        else set(load_exemplar_page_shas(tree).values())
+    )
     seconds = (
         json.loads(args.seconds_per_page.read_text(encoding="utf-8"))
         if args.seconds_per_page
@@ -662,9 +891,14 @@ def main(argv: list[str] | None = None) -> int:
         gold,
         policy=policy,
         sealed_policy_sha256=sealed_policy_sha256(tree),
+        sealed_page_sha256s=scope,
         seconds_per_page=seconds,
     )
-    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    report["ledger_self_hash"] = ledger["self_hash"]
+    report["scope"]["basis"] = "selection" if args.selection else "sealed"
+    body = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if not write_new_file(args.out, body):
+        raise Refusal(f"output-exists: {args.out}")
     for line in summary_lines(report):
         print(line)
     return 0 if report["gate"]["passed"] else 1

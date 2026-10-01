@@ -12,6 +12,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import tracemalloc
 import zipfile
@@ -7188,3 +7189,82 @@ def test_a_copied_state_directory_reads_exports_closes_and_resumes_at_its_new_pa
     lines.clear()
     relocated.run(run_id="portable-run")
     assert lines[0].startswith("Run portable-run already has saved state complete")
+
+
+def _fetched_page_run(tmp_path: Path, run_id: str) -> tuple[OperatorSurface, Path]:
+    """A page-read fixture run on a volume, brought home by a state that never ran it."""
+
+    volume = tmp_path / "volume"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "pipeline" / "orchestrator" / "run.py"),
+            "--fixture",
+            "synthetic-two-page-v0",
+            "--scenario",
+            "page-unbroken",
+            "--run-id",
+            run_id,
+            "--run-root",
+            str(volume / "runs"),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
+    into = tmp_path / "local-runs"
+    surface.fetch_run(run_id=run_id, into=into, reader=DirectoryRunReader(volume))
+    return surface, into
+
+
+def test_export_takes_a_run_fetch_run_brought_home(tmp_path: Path) -> None:
+    surface, into = _fetched_page_run(tmp_path, "fetched-run")
+    assert not surface.descriptor.load()["history"].get("run")
+
+    bundle = surface.export(run_id="fetched-run")
+
+    assert bundle.is_file()
+    receipt = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+    assert receipt["state"] == "complete"
+    assert receipt["run_root"] == str(into.resolve())
+    assert receipt["sha256"] == sha256_file(bundle)
+    # Named or not, the fetched run is the one exported.
+    assert surface.export().name == bundle.name
+
+
+def test_export_does_not_take_a_fetch_that_stopped_before_the_tree_was_verified(
+    tmp_path: Path,
+) -> None:
+    volume, reader = _volume_run(tmp_path, "half-fetched")
+    (volume / "runs" / "half-fetched" / "run.json").write_bytes(b"{}")
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
+    with pytest.raises(OperatorError):
+        surface.fetch_run(run_id="half-fetched", into=tmp_path / "local-runs", reader=reader)
+    states = [
+        surface.receipts.read(path)["payload"]["state"]
+        for path in surface.receipts.receipts.glob("*.json")
+    ]
+    assert states == ["partial"]
+
+    with pytest.raises(OperatorError) as missing:
+        surface.export(run_id="half-fetched")
+
+    assert missing.value.code is ErrorCode.EXPORT_MISSING
+
+
+def test_export_does_not_take_a_fetch_that_verified_a_stage_by_envelope_only(
+    tmp_path: Path,
+) -> None:
+    volume, reader = _volume_run(tmp_path, "envelope-only")
+    (volume / "runs" / "envelope-only" / "2_designator" / "manifest.json").unlink()
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
+    receipt = surface.fetch_run(run_id="envelope-only", into=tmp_path / "local", reader=reader)
+    assert surface.receipts.read(receipt)["payload"]["state"] == "verified-partial"
+
+    with pytest.raises(OperatorError) as missing:
+        surface.export(run_id="envelope-only")
+
+    assert missing.value.code is ErrorCode.EXPORT_MISSING

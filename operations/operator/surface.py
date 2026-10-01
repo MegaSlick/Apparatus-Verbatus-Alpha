@@ -1607,12 +1607,13 @@ class OperatorSurface:
     def export(self, *, run_id: str | None = None, run_root: Path | None = None) -> Path:
         """Make a local evidence bundle from the base-tree Armarium artifact.
 
-        With no `run_id` the most recent run is chosen and named first. A
+        A run is one this state ran, or one `fetch-run` brought home verified.
+        With no `run_id` the most recent of them is chosen and named first. A
         `run_id` recorded under two run roots is two different runs, so it is
         refused unless `run_root` says which.
         """
 
-        run_records = self._run_receipts()
+        run_records = self._export_sources()
         if not run_records:
             raise OperatorError(ErrorCode.EXPORT_MISSING)
         if run_id is None:
@@ -2235,6 +2236,35 @@ class OperatorSurface:
             path = self._receipt_path(entry)
             loaded.append((path, self._read_receipt(path)["payload"]))
         return loaded
+
+    def _export_sources(self) -> list[tuple[Path, dict[str, Any]]]:
+        """Every run `export` can name, oldest first, as `{run_id, run_root}` records.
+
+        A run receipt is one; so is a fetch-run receipt whose whole tree was
+        verified against its stage manifests on arrival, with the folder it was
+        fetched into as its run root. A fetch that stopped (`partial`) or left a
+        stage verified by envelope only (`unmanifested_stages`) is not.
+        """
+
+        descriptor = self._load_descriptor()
+        if descriptor is None:
+            return []
+        sources: list[tuple[str, Path, dict[str, Any]]] = []
+        for action in ("run", "fetch-run"):
+            for entry in descriptor["history"].get(action, []):
+                path = self._receipt_path(entry)
+                record = self._read_receipt(path)
+                payload = record["payload"]
+                if action == "fetch-run":
+                    if (
+                        payload.get("state") == "partial"
+                        or payload.get("unmanifested_stages") != []
+                    ):
+                        continue
+                    payload = {"run_id": payload.get("run_id"), "run_root": payload.get("into")}
+                sources.append((record["recorded_at"], path, payload))
+        sources.sort(key=lambda source: source[0])
+        return [(path, payload) for _recorded_at, path, payload in sources]
 
     def _state_relative(self, path: Path) -> str:
         """Record a path under the state root relative to it.
