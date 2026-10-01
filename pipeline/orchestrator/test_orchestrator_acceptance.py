@@ -2347,12 +2347,16 @@ def _further_seal_readers() -> list[tuple[str, str]]:
     ]
 
 
+def test_the_perlector_seal_has_a_further_reader_in_the_coniector():
+    """The battery below is parametrized over this list, so an empty list would skip it."""
+    assert (PERLECTOR, CONIECTOR) in _further_seal_readers()
+
+
 @pytest.mark.full
 @pytest.mark.parametrize("producer,reader", _further_seal_readers())
 def test_every_further_reader_of_a_seal_refuses_it_corrupted(happy_run, tmp_path, producer, reader):
     """A seal read by more than one stage (the Perlector's, by the Recensor and the
     Coniector) is refused by each reader, not only the one the battery above names."""
-    assert (PERLECTOR, CONIECTOR) in _further_seal_readers()
     source_root, _ = happy_run
     root = tmp_path / "runs"
     shutil.copytree(source_root, root)
