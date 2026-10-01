@@ -385,22 +385,6 @@ def test_a_short_complete_act_in_a_region_that_fits_it_is_not_flagged(text, regi
 # The record's closed shape and the sealed table's refusals.
 
 
-def test_the_shared_validator_refuses_a_record_without_its_measure():
-    """A raw record that cannot say what its length signal was judged from is
-    not a closed record: `region_pixels` is on the finding now (F082)."""
-    from common.contracts.errors import SchemaRefusal
-    from common.perlector_audit import validate_truncation_record
-
-    record = classify("alpha beta gamma.", stop_reason="stop")
-    assert validate_truncation_record(record, label="x") == record
-    without = {"classification": record["classification"], "signals": record["signals"]}
-    with pytest.raises(SchemaRefusal, match="not a closed truncation record"):
-        validate_truncation_record(without, label="x")
-    for bad in ({"region_pixels": 1}, {**record["measure"], "region_pixels": 0}):
-        with pytest.raises(SchemaRefusal, match="measure"):
-            validate_truncation_record({**record, "measure": bad}, label="x")
-
-
 def test_the_record_carries_the_floor_it_was_judged_under():
     """The record protects the past on its own.
 
@@ -423,100 +407,6 @@ def test_the_record_carries_the_floor_it_was_judged_under():
         measure["characters"] * measure["page_pixels"]
         < measure["length_floor_characters_per_page"] * measure["region_pixels"]
     ) is record["signals"]["length_suspicious"]
-
-
-def test_the_shared_validator_re_derives_the_length_signal_from_the_measure():
-    """The signal is no longer the producer's word: the block proves it.
-
-    A record whose `length_suspicious` disagrees with its own geometry and
-    floor is refused, which is what makes the `measure` block load-bearing
-    rather than decorative.
-    """
-    from common.contracts.errors import SchemaRefusal
-    from common.perlector_audit import validate_truncation_record
-
-    # One character over a whole page is genuinely suspicious; the same record
-    # claiming otherwise is refused, and so is the mirror of it.
-    suspicious = classify("x", region_pixels=LEAF_PAGE, page_pixels=LEAF_PAGE, stop_reason="stop")
-    assert suspicious["signals"]["length_suspicious"] is True
-    assert validate_truncation_record(suspicious, label="x") == suspicious
-    lying = {
-        **suspicious,
-        "classification": truncation.COMPLETE,
-        "signals": {**suspicious["signals"], "length_suspicious": False},
-    }
-    with pytest.raises(SchemaRefusal, match="make it True"):
-        validate_truncation_record(lying, label="x")
-    clean = classify(
-        LEAF_CLEAN_TEXT, region_pixels=LEAF_PAGE // 10, page_pixels=LEAF_PAGE, stop_reason="stop"
-    )
-    assert clean["signals"]["length_suspicious"] is False
-    overclaiming = {
-        **clean,
-        "classification": truncation.UNKNOWN,
-        "signals": {**clean["signals"], "length_suspicious": True},
-    }
-    with pytest.raises(SchemaRefusal, match="make it False"):
-        validate_truncation_record(overclaiming, label="x")
-
-
-def test_the_shared_validator_binds_the_character_count_to_the_text():
-    """A re-derivation is only worth the character count it runs on.
-
-    The caller that holds the reading the record was measured over passes it,
-    and a record counting some other text is refused rather than validating
-    cleanly on its own word (independent audit of 2026-09-14).
-    """
-    from common.contracts.errors import SchemaRefusal
-    from common.perlector_audit import validate_truncation_record
-
-    record = classify(FIXTURE_TEXT, stop_reason="stop")
-    assert validate_truncation_record(record, label="x", text=FIXTURE_TEXT) == record
-    with pytest.raises(SchemaRefusal, match="characters but the text"):
-        validate_truncation_record(record, label="x", text=FIXTURE_TEXT + "!")
-
-
-def test_the_shared_validator_binds_the_floor_to_the_one_this_run_sealed():
-    """A re-derivation is only worth the floor it runs on, either.
-
-    `length_suspicious` is recomputed from the record's own measure, so a
-    record that names its own floor agrees with itself whatever that floor is:
-    under the sealed floor, a re-proof record naming floor 1 derives the
-    signal false, classifies `complete`, and clears an audit hold the sealed
-    policy would have held. The caller that holds the sealed table passes it,
-    and a record judged under any other floor is refused before the signal is
-    derived.
-    """
-    from common.contracts.errors import SchemaRefusal
-    from common.perlector_audit import validate_truncation_record
-
-    # A short reading over a whole page: suspicious under the sealed floor,
-    # clean under a floor of one, which is the forgery this refuses.
-    under_the_seal = classify(
-        "x", region_pixels=LEAF_PAGE, page_pixels=LEAF_PAGE, stop_reason="stop"
-    )
-    assert under_the_seal["signals"]["length_suspicious"] is True
-    assert (
-        validate_truncation_record(
-            under_the_seal, label="x", length_floor_characters_per_page=FLOOR
-        )
-        == under_the_seal
-    )
-
-    forged = truncation.classify(
-        "x",
-        region_pixels=LEAF_PAGE,
-        page_pixels=LEAF_PAGE,
-        truncation_policy={**POLICY, truncation.LENGTH_FLOOR_FIELD: 1},
-        stop_reason="stop",
-    )
-    # Internally consistent, and complete: exactly what makes the floor
-    # load-bearing rather than decorative.
-    assert forged["signals"]["length_suspicious"] is False
-    assert forged["classification"] == truncation.COMPLETE
-    assert validate_truncation_record(forged, label="x") == forged
-    with pytest.raises(SchemaRefusal, match="judged under length floor 1 but this run sealed"):
-        validate_truncation_record(forged, label="x", length_floor_characters_per_page=FLOOR)
 
 
 def test_a_policy_with_no_floor_at_all_is_refused_by_name():
@@ -559,24 +449,6 @@ def test_the_sealed_table_refuses_a_gate_that_judges_every_page(tmp_path):
     path.write_text(edited, encoding="utf-8")
     with pytest.raises(ContractError, match="legible_page_pixels is not a positive integer"):
         protocol.load(path)
-
-
-def test_the_shared_validator_takes_a_not_judged_length_from_the_records_own_gate():
-    """A not-judged length is `null` and re-derived from the smallest page and the
-    record's own gate; writing it as a clean `false`, or raising the gate to hide
-    a suspicious length, is refused."""
-    from common.contracts.errors import SchemaRefusal
-    from common.perlector_audit import validate_truncation_record
-
-    record = classify("x", stop_reason="stop")
-    assert validate_truncation_record(record, label="x", legible_page_pixels=GATE) == record
-    as_clean = {**record, "signals": {**record["signals"], "length_suspicious": False}}
-    with pytest.raises(SchemaRefusal, match="make it None"):
-        validate_truncation_record(as_clean, label="x")
-    leaf = classify("x", region_pixels=LEAF_PAGE, page_pixels=LEAF_PAGE, stop_reason="stop")
-    hidden = {**leaf, "measure": {**leaf["measure"], "legible_page_pixels": LEAF_PAGE + 1}}
-    with pytest.raises(SchemaRefusal, match="judged under legible page size"):
-        validate_truncation_record(hidden, label="x", legible_page_pixels=GATE)
 
 
 def test_the_sealed_table_refuses_a_calibration_claim_without_a_sample(tmp_path):

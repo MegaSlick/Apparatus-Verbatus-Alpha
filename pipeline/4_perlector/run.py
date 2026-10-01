@@ -9,7 +9,7 @@ replies a resume must account for, and the facts of a failed call.
 The sealed serving-recipe row picks the reader. A `kind = "vllm"` row for the
 Perlector chair reads live; any other row reads the fixture's declared page
 answers, which prove wiring only. A real submission has no fixture
-declaration, so a non-live row there refuses (`fixture_reader_for`).
+declaration, so a non-live row there refuses (`refuse_unlive_real_reading`).
 
     python pipeline/4_perlector/run.py --run-root <dir> --run-id <id>
 """
@@ -32,7 +32,6 @@ import audit  # noqa: E402
 import page_run  # noqa: E402
 import protocol  # noqa: E402
 from live_reader import EngineSignalRefusal  # noqa: E402
-from reader import FixtureReader  # noqa: E402
 
 import operations.serving.errors as serving_errors  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
@@ -59,7 +58,6 @@ from common.stage import (  # noqa: E402
     fixture_serving_details,
     is_real_ingress,
     open_stage_context,
-    recovery_region_count,
     run_stage,
     stage_parser,
     verify_retained_call_sampling,
@@ -97,35 +95,19 @@ def real_ingress(context) -> bool:
     return is_real_ingress(context.run)
 
 
-def declared_reading_failure(context, act_key: str) -> str | None:
-    """The non-completed outcome a fixture scenario declares for a key, if any.
-
-    A real submission declares nothing and never reads the fixture.
-    """
-    if real_ingress(context):
-        return None
-    for row in context.fixture.get("reading_failure", []):
-        if row["scenario"] == context.scenario and row["act_key"] == act_key:
-            return row["outcome"]
-    return None
-
-
-def fixture_reader_for(context, chair: ChairIdentity | AbsentChair, serving_mode: str):
+def refuse_unlive_real_reading(
+    context, chair: ChairIdentity | AbsentChair, serving_mode: str
+) -> None:
     """Refuse a non-live row on a real submission, before anything is published.
 
-    A declared text cannot stand in for real ink. An absent chair reads nothing and
-    live mode starts its chair on first use, so both return `None`. The fixture route
-    returns the fixture's reader, which the page path does not use.
+    A declared page answer cannot stand in for real ink. A fixture run, a live row and
+    an absent chair, which reads nothing, all pass.
     """
-    if serving_mode == "live":
-        return None
-    if not real_ingress(context):
-        return FixtureReader(context.fixture, context.scenario)
-    if isinstance(chair, AbsentChair):
-        return None
+    if serving_mode == "live" or not real_ingress(context) or isinstance(chair, AbsentChair):
+        return
     raise ContractError(
-        f"the Perlector cannot read a real submission through the fixture reader: the sealed "
-        f"serving-recipe row for chair {chair.role!r} is not a live row, and a declared text "
+        f"the Perlector cannot read a real submission from declared fixture answers: the "
+        f"sealed serving-recipe row for chair {chair.role!r} is not a live row, and a declared text "
         "cannot stand in for a reading of real ink. Start a new run sealed under a catalogue "
         "whose Perlector row is live; a sealed run's catalogue cannot be changed"
     )
@@ -555,7 +537,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     """Run the pass, and guarantee any chair it started is stopped.
 
     Both parameters are test seams; neither decides which engine answers, which is the
-    sealed serving-recipe row's business. `_read_the_acts` stops the chair before
+    sealed serving-recipe row's business. `_read_the_pages` stops the chair before
     sealing; the `finally` covers a pass that raised first.
 
     `ChairResponseRefusal` is a `RuntimeError`, which `run_stage` does not catch, so it
@@ -565,14 +547,14 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     """
     service = ResidentChair()
     try:
-        return _read_the_acts(registry_factory, serving_factory, service)
+        return _read_the_pages(registry_factory, serving_factory, service)
     except ChairResponseRefusal as refusal:
         raise ContractError(f"{type(refusal).__name__}: {refusal}") from refusal
     finally:
         service.close()
 
 
-def _read_the_acts(registry_factory, serving_factory, service: ResidentChair) -> int:
+def _read_the_pages(registry_factory, serving_factory, service: ResidentChair) -> int:
     """One Perlector pass: every sealed page read whole (`page_run.py`), then the seal."""
     run = _open_pass(registry_factory, serving_factory, service)
     page_run.read_the_pages(
@@ -647,7 +629,7 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
     context.require_sealed_config("decoding", decoding_sha256)
     chair = perlector_chair(context)
     serving_mode = perlector_serving_mode(context, args, chair)
-    fixture_reader_for(context, chair, serving_mode)
+    refuse_unlive_real_reading(context, chair, serving_mode)
     protocol_config, protocol_sha256 = protocol.load(context.perlector_protocol_config_path)
     context.require_sealed_config("perlector-protocol", protocol_sha256)
     audit_policy, audit_sha256 = audit.load(context.perlector_audit_config_path)
@@ -766,19 +748,6 @@ def _in_order_window(width: int, jobs) -> list[Any]:
     if error is not None:
         raise error
     return finished
-
-
-def _next_attempt(context, act_id: str, regions: list[dict]) -> int:
-    """Which reading attempt this is, derived from the act rather than from history.
-
-    One reading of the proposal plus one per recovery region cut since, so a rerun that
-    changed nothing recomputes the same ordinal and reuses the same bytes. Witness
-    testimony is not counted: a Testimonium primes a reading and never makes a new
-    attempt.
-
-    Counted by the shared `recovery_region_count`, which refuses an unknown origin.
-    """
-    return recovery_region_count(act_id, regions) + 1
 
 
 if __name__ == "__main__":

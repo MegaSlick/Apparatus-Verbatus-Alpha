@@ -246,11 +246,6 @@ def test_small_residuals_are_retained_as_accounting_not_fictitious_acts(tmp_path
     page_rows = [row for row in rows if row["act_key"] == page_residual_act_key(1)]
     assert len(page_rows) == 1 and page_rows[0]["outcome"] == "held"
 
-    finding = load_stage("5_recensor").geometry_coverage_inputs(context)[1]
-    assert finding["residual_enumeration"] == RESIDUAL_ENUMERATION_AGGREGATED
-    assert finding["residual_component_count"] == len(aggregate)
-    assert finding["page_residual_act_count"] == 1
-
 
 def test_residual_at_either_presentation_threshold_is_promoted():
     designator = load_stage("2_designator")

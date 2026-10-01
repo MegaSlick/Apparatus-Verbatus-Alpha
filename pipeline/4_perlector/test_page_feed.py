@@ -10,7 +10,6 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
-import dossier
 import protocol
 import pytest
 from PIL import Image, ImageColor, ImageDraw
@@ -544,8 +543,44 @@ def test_the_named_regime_requires_the_chair_as_its_label():
         feed_for(blobs, rows=rows)
 
 
+# Fragments, not exact names: a field that reintroduces a preference will be called
+# `trust_score` or `witness_priority` rather than `trust`.
+_PREFERENCE_FRAGMENTS = (
+    "primary",
+    "prefer",
+    "order",
+    "rank",
+    "trust",
+    "weight",
+    "score",
+    "reliab",
+    "select",
+    "winner",
+    "chosen",
+    "priority",
+    "better",
+    "best",
+    "picker",
+    "consensus",
+    "majority",
+    "vote",
+    "quorum",
+)
+
+
+def _keys(value) -> list[str]:
+    if isinstance(value, dict):
+        return [key for item_key, item in value.items() for key in (item_key, *_keys(item))]
+    if isinstance(value, (list, tuple)):
+        return [key for item in value for key in _keys(item)]
+    return []
+
+
 def test_the_feed_names_no_preference_among_witnesses():
-    dossier.assert_no_order_bearing_field(feed_for(_Blobs()))
+    """No key anywhere in the feed may name a preference among witnesses."""
+    keys = _keys(feed_for(_Blobs()))
+    assert keys
+    assert [key for key in keys if any(f in key.lower() for f in _PREFERENCE_FRAGMENTS)] == []
 
 
 # --- every switch -------------------------------------------------------------------

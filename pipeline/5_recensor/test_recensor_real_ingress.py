@@ -2,9 +2,8 @@
 
 Three stages, one test file, because the wiring is one change: each stage's
 `main` opens through `common.stage.open_stage_context` instead of the
-fixture-only `open_context`, and the Perlector's declared `reading_failure`, a
-fixture concept, is answered by name on a real submission rather than by an
-empty table. The stage programs are loaded by path under unambiguous names (every
+fixture-only `open_context`, and the Perlector refuses by name a real submission it could
+only answer from fixture declarations. The stage programs are loaded by path under unambiguous names (every
 stage has a top-level `run`), and the real run is driven by the real programs:
 Door, Exemplar and Ink Map over the synthetic fixture's own two pages, submitted
 as a real folder. No pod, no socket, no model.
@@ -13,10 +12,9 @@ What is proven:
 
 - each `main` hands its parsed argv, its own stage name and the registry factory
   it was given to `open_stage_context`, and calls no opener of its own;
-- `declared_reading_failure` is `None` on a real run without touching the
-  refusing fixture accessor, and still reads the declaration on the fixture route;
-- `fixture_reader_for` refuses a real submission whose sealed row is not live,
-  by name, and needs no reader for an absent chair;
+- `refuse_unlive_real_reading` refuses a real submission whose sealed row is not
+  live, by name, before anything is written, and passes an absent chair, a live
+  row and the fixture route;
 - driven as programs over a real submission, all three stages refuse at their
   own missing predecessor seal with their contexts already opened: no "sealed no
   digest", no fixture accessor, no binding refusal, no traceback, nothing written.
@@ -146,50 +144,25 @@ def test_each_stage_opens_through_the_shared_constructor_and_owns_no_opener(
     assert not hasattr(module, "_open"), "a stage-private opener is the drift this closes"
 
 
-# --- the Perlector's two fixture concepts -------------------------------------------
+# --- the Perlector's refusal of an unlive real reading ------------------------------
 
 
-def test_a_real_run_declares_no_reading_failure_and_never_asks_for_the_fixture():
-    """`None` by name on the real route. The refusing accessor would have turned a
-    `.get` into a refusal; the point is that the function never reaches it, so a
-    real reading's outcome is the engine's stop reason and nothing else."""
-    context = _real_context(PERLECTOR)
-
-    assert PERLECTOR_RUN.declared_reading_failure(context, "structural:1:1") is None
-    with pytest.raises(ContractError, match="perlector asked its context for fixture"):
-        _ = context.fixture
-
-
-def test_the_fixture_route_still_reads_its_declared_reading_failure():
-    """The branch is gated on the run authority, not on the fixture's shape."""
-    fixture = {
-        "reading_failure": [
-            {"scenario": "declared", "act_key": "k", "outcome": "truncated"},
-            {"scenario": "other", "act_key": "k", "outcome": "no-readable-text"},
-        ]
-    }
-    context = _fixture_context(PERLECTOR, fixture, "declared")
-
-    assert PERLECTOR_RUN.declared_reading_failure(context, "k") == "truncated"
-    assert PERLECTOR_RUN.declared_reading_failure(context, "absent") is None
-
-
-def test_the_fixture_reader_is_refused_by_name_on_a_real_submission():
+def test_an_unlive_row_is_refused_by_name_on_a_real_submission():
     """A configured chair whose sealed row is not live has nothing to read from
     on a real run: no declaration exists, and one cannot be invented."""
     context = _real_context(PERLECTOR)
     chair = SimpleNamespace(role="perlector")
 
     with pytest.raises(ContractError) as refusal:
-        PERLECTOR_RUN.fixture_reader_for(context, chair, "fixture")
+        PERLECTOR_RUN.refuse_unlive_real_reading(context, chair, "fixture")
     message = str(refusal.value)
-    assert "cannot read a real submission through the fixture reader" in message
+    assert "cannot read a real submission from declared fixture answers" in message
     assert "'perlector'" in message
     assert "asked its context for fixture" not in message, "refused by name, not by accessor"
 
 
-def test_the_fixture_reader_refusal_actually_fires_before_any_write(real_root, monkeypatch):
-    """Drives `_read_the_acts` itself, so deleting the refusal -- or
+def test_the_unlive_refusal_actually_fires_before_any_write(real_root, monkeypatch):
+    """Drives `_read_the_pages` itself, so deleting the refusal -- or
     introducing a write ahead of it under any name -- fails this test. It is
     the whole proof that the refusal lands before the partition blob is
     written: a companion test comparing the two calls' positions in the
@@ -222,35 +195,34 @@ def test_the_fixture_reader_refusal_actually_fires_before_any_write(real_root, m
 
     before = _tree_bytes(real_root)
     with pytest.raises(
-        ContractError, match="cannot read a real submission through the fixture reader"
+        ContractError, match="cannot read a real submission from declared fixture answers"
     ):
-        PERLECTOR_RUN._read_the_acts(
+        PERLECTOR_RUN._read_the_pages(
             registry_factory=ChairRegistry.from_toml,
             serving_factory=None,
             service=None,
         )
-    assert _tree_bytes(real_root) == before, "a refused fixture reader must write nothing"
+    assert _tree_bytes(real_root) == before, "a refused unlive reading must write nothing"
 
 
-def test_an_absent_chair_on_a_real_run_needs_no_reader_and_a_live_row_starts_none_yet():
-    """Two `None`s for two different reasons: an absent chair reads nothing and
-    publishes `not-run` for every act; a live row starts its chair on first use."""
+def test_an_absent_chair_or_a_live_row_on_a_real_run_is_not_refused():
+    """An absent chair reads nothing and publishes `not-run`; a live row reads real ink."""
     context = _real_context(PERLECTOR)
     absent = AbsentChair(role="perlector", reason="test-only absence")
 
-    assert PERLECTOR_RUN.fixture_reader_for(context, absent, "fixture") is None
-    assert PERLECTOR_RUN.fixture_reader_for(context, SimpleNamespace(role="p"), "live") is None
+    assert PERLECTOR_RUN.refuse_unlive_real_reading(context, absent, "fixture") is None
+    assert (
+        PERLECTOR_RUN.refuse_unlive_real_reading(context, SimpleNamespace(role="p"), "live") is None
+    )
 
 
-def test_the_fixture_route_constructs_its_reader_exactly_as_before():
-    fixture = {"act": [], "page": [], "scenario": []}
-    context = _fixture_context(PERLECTOR, fixture, "happy")
+def test_the_fixture_route_is_not_refused():
+    context = _fixture_context(PERLECTOR, {"act": [], "page": [], "scenario": []}, "happy")
 
-    reader = PERLECTOR_RUN.fixture_reader_for(context, SimpleNamespace(role="p"), "fixture")
-
-    assert isinstance(reader, PERLECTOR_RUN.FixtureReader)
-    assert reader._fixture is fixture
-    assert reader._scenario == "happy"
+    assert (
+        PERLECTOR_RUN.refuse_unlive_real_reading(context, SimpleNamespace(role="p"), "fixture")
+        is None
+    )
 
 
 def test_the_real_route_reads_the_ingress_record_the_constructor_read():

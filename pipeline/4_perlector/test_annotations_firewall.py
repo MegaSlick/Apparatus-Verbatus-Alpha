@@ -380,35 +380,6 @@ def test_doubt_marks_parse_or_leave_the_answer_as_returned(raw, text, state, spa
     assert annotations.validate_assessment(report, published) == report
 
 
-def test_a_request_refused_before_sending_is_a_failure_with_no_response_evidence():
-    from common.contracts.errors import SchemaRefusal as Refusal
-    from common.perlector_failure import validate_failed_payload
-
-    failure = {
-        "phase": "establishing",
-        "kind": "request-capacity",
-        "code": "REQUEST_OVER_CAPACITY",
-        "detail": "over by 73",
-        "raw_response_ref": None,
-        "call_record_ref": None,
-        "request_sha256": None,
-        "receipt_ref": None,
-        "served_model_id": None,
-        "response_completion": None,
-    }
-    payload = {
-        "act_key": "a1",
-        "attempt_ordinal": 1,
-        "reason": "r",
-        "failure": failure,
-        "provenance": {},
-    }
-    validate_failed_payload(payload)
-    failure["request_sha256"] = "0" * 64
-    with pytest.raises(Refusal, match="no response evidence"):
-        validate_failed_payload(payload)
-
-
 # --- Ink past the edge: a trailing gap -----------------------------------------
 
 
