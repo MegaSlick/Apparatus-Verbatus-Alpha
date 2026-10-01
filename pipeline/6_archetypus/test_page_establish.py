@@ -278,7 +278,10 @@ def test_the_constructor_refuses_a_reading_that_carries_holds(page_review, tmp_p
     _context, _rows, establish = _constructor(
         page_review, tmp_path, "page-review", accept_held=["p2:1"]
     )
-    with pytest.raises(archetypus.FatalAccounting, match="a held reading is never written"):
+    with pytest.raises(
+        archetypus.FatalAccounting,
+        match="a held reading is written only when operator decisions override",
+    ):
         establish("p2:1", disposition="read", hold_codes=[])
 
 

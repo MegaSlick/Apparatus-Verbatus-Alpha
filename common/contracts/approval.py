@@ -18,7 +18,8 @@ closed `review` block naming the run, scope, page, decision and finding, and a
 (`common.review_decisions`). Readers accept both. The Recensor applies every v1
 decision a run stores (`pipeline/5_recensor/CONTRACT.md`, "Operator review
 decisions"). One is built with `build_review_decision_record` and stored with
-`RunTree.write_approval_record`; no operator command writes one.
+`RunTree.write_approval_record`; `verbatus decide` (`operations/operator/decide.py`)
+is the operator command that writes one.
 
 `timestamp` is present here and absent from every other artifact in this package.
 Deterministic artifacts carry no timestamps, because two identical runs must

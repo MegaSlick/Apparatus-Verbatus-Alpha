@@ -42,9 +42,11 @@ from armarium_export import (  # noqa: E402
     continuation_join_row,
     edge_hold_pages_from_rows,
     review_aggregate_arguments,
+    systemic_aggregate_argument,
     unpaired_continuations,
 )
 from coniector_layer import export_rows  # noqa: E402
+from operator_layer import released_row  # noqa: E402
 
 from common import page_path  # noqa: E402
 from common.background import (  # noqa: E402
@@ -81,8 +83,12 @@ from common.exemplar_boundary import (  # noqa: E402
 from common.imaging import dimensions  # noqa: E402
 from common.page_accounting import require_page_accounting_policy  # noqa: E402
 from common.page_review import (  # noqa: E402
+    applied_decision_hashes,
     continuation_links,
     current_page_reviews,
+    held_share,
+    operator_override,
+    reading_holds_allowed,
     require_current_review_decisions,
     require_establishable,
     require_recensor_passed,
@@ -106,7 +112,7 @@ from common.residual_ink import (  # noqa: E402
     reconcile_edge_finding_with_runs,
     resolve_coverage_audit_policy,
 )
-from common.review_decisions import aggregate_clearances  # noqa: E402
+from common.review_decisions import REVIEW_FIELD, aggregate_clearances  # noqa: E402
 from common.sealed_config import read_sealed_toml
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -690,7 +696,11 @@ def export_run_identity(context) -> tuple[str | None, str | None, dict[str, str]
 
 
 def _page_category(
-    context, row: dict, review: dict, manifest_cache: dict[str, dict]
+    context,
+    row: dict,
+    review: dict,
+    manifest_cache: dict[str, dict],
+    applied: frozenset[str] = frozenset(),
 ) -> tuple[ArmariumCategory, dict | None]:
     """One row's terminal category, from its review and (when accepted) its one Archetypus."""
     established = artifacts_for(context, ARCHETYPUS, "archetypus", row["act_id"], manifest_cache)
@@ -714,8 +724,9 @@ def _page_category(
             "category; the export may not complete over an undecided reading"
         )
     # The denominator's disposition is binding: a held row is accepted only
-    # when the review releases exactly its releasable holds by name.
-    require_establishable(row, review)
+    # when the review releases exactly its releasable holds by name, or
+    # current operator decisions override every hold it carries.
+    require_establishable(row, review, applied)
     if len(established) != 1:
         raise FatalAccounting(
             f"{row['act_key']} was accepted by the Recensor but carries {len(established)} "
@@ -725,13 +736,15 @@ def _page_category(
 
 
 def verify_established_page_record(
-    context, row: dict, review: dict, established: dict
+    context, row: dict, review: dict, established: dict, applied: frozenset[str] = frozenset()
 ) -> tuple[dict, dict]:
     """Reconcile a page-path Archetypus against its row, its review and its reading.
 
     Returns the record's payload and the reading. The region is re-proven from
     the Exemplar here, not read out of the record, and the damage layers are
-    recomputed from the reading.
+    recomputed from the reading. A held reading stands only under current
+    operator decisions that override every hold it carries (`applied` as in
+    `page_review.operator_override`).
     """
     payload = established.get("payload")
     if not isinstance(payload, dict) or not verify_self_hash(payload):
@@ -769,11 +782,13 @@ def verify_established_page_record(
     if not isinstance(reading_payload, dict) or reading_payload.get("act_region_ref") != region_ref:
         raise FatalAccounting(f"the reading of {row['act_key']} names another act-region")
     if (
-        reading.get("outcome") != "read"
-        or reading_payload.get("schema") != page_path.PERLECTIO_SCHEMA
+        reading_payload.get("schema") != page_path.PERLECTIO_SCHEMA
         or reading_payload.get("kind") != row["kind"]
-        or reading_payload.get("holds") != []
-        or reading_payload.get("page_holds") != []
+        or not reading_holds_allowed(
+            reading,
+            # Only a review an operator decision concerns can override a hold.
+            operator_override(row, review, applied) if REVIEW_FIELD in review["payload"] else None,
+        )
     ):
         raise FatalAccounting(
             f"the reading of {row['act_key']} is held or is not the row's own page reading, "
@@ -1063,16 +1078,92 @@ def _act_reading(row: dict) -> str | None:
     return _ACT_READING_LABELS[row["reading_attempt"]]
 
 
-def review_decisions_basis(context, canaries: set[int]) -> dict[str, list] | None:
+def operator_action(
+    row: dict, review: dict, applied: frozenset[str], approvals: dict[str, tuple]
+) -> dict | None:
+    """The operator layer's row for a delivered reading a person released, or None.
+
+    A reading is labelled when current decisions the Recensor applied cleared
+    any hold on it: a `release` of the unit, a `no-missed-act` of its page.
+    Each decision is named with the approval it was stored as (`approvals`,
+    the run's stored decisions by digest), who made it and when.
+    """
+    block = review["payload"].get(REVIEW_FIELD)
+    if block is None:
+        return None
+    cleared = sorted(set(block["cleared"]["unit"]) | set(block["cleared"]["page"]))
+    if not cleared:
+        return None
+    clearing = {("unit", row["act_id"], "release"), ("page", row["page_id"], "no-missed-act")}
+    decisions = []
+    for summary in block["decisions"]:
+        if (
+            summary["state"] != "current"
+            or summary["decision_hash"] not in applied
+            or (summary["scope"], summary["subject_id"], summary["decision"]) not in clearing
+        ):
+            continue
+        reference, record = _stored_decision(row, summary, approvals)
+        decisions.append(
+            {
+                "decision": summary["decision"],
+                "scope": summary["scope"],
+                "subject_id": summary["subject_id"],
+                "approver": record["approver"],
+                "timestamp": record["timestamp"],
+                "reason": record["reason"],
+                "approval_ref": reference.to_record(),
+                "decision_hash": summary["decision_hash"],
+            }
+        )
+    if not decisions:
+        raise FatalAccounting(
+            f"{row['act_key']} was cleared of {', '.join(cleared)} by no current decision the "
+            "Recensor applied; the export cannot say who released it"
+        )
+    override = require_establishable(row, review, applied)
+    return released_row(row, override, cleared, decisions)
+
+
+def _stored_decision(row: dict, summary: dict, approvals: dict[str, tuple]) -> tuple:
+    """The stored approval a decision summary names, refused unless it records that decision.
+
+    The label names who decided, when and why from this record, so it must be
+    in the run and be the decision the review says was applied: same hash,
+    decision, scope and subject.
+    """
+    stored = approvals.get(summary["record_sha256"])
+    if stored is None:
+        raise FatalAccounting(
+            f"{row['act_key']} was cleared by decision {summary['decision_hash']}, whose stored "
+            f"approval {summary['record_sha256']} is not in the run; the export cannot say who "
+            "released it"
+        )
+    reference, record = stored
+    review = record.get("review") if isinstance(record, dict) else None
+    if (
+        not isinstance(review, dict)
+        or record.get("self_hash") != summary["decision_hash"]
+        or (review.get("decision"), review.get("scope"), record.get("subject_ids"))
+        != (summary["decision"], summary["scope"], [summary["subject_id"]])
+    ):
+        raise FatalAccounting(
+            f"{row['act_key']}'s review names a {summary['scope']} {summary['decision']} of "
+            f"{summary['subject_id']}, but its stored approval {reference.relative_path} records "
+            "another decision; the export cannot say who released it"
+        )
+    return reference, record
+
+
+def review_decisions_basis(decisions: dict | None, canaries: set[int]) -> dict[str, list] | None:
     """What the Recensor's operator review decisions give the run aggregate, or None without any.
 
-    `{clearances, page_holds}`: each hold a decision cleared, as
-    `run_aggregate`'s `review_clearances` rows naming units by act key, and
-    each page still held after review, `{page, codes}`. A canary page is
-    outside the export, so its rows are too. Refused when a decision was
-    recorded after the Recensor's last pass, which no review applied.
+    `decisions` is the Recensor's current `review-decisions` record
+    (`require_current_review_decisions`). `{clearances, page_holds}`: each
+    hold a decision cleared, as `run_aggregate`'s `review_clearances` rows
+    naming units by act key, and each page still held after review, `{page,
+    codes}`. A canary page is outside the export, so its rows are too.
     """
-    decisions = require_current_review_decisions(context)
     if decisions is None:
         return None
     return {
@@ -1089,10 +1180,33 @@ def review_decisions_basis(context, canaries: set[int]) -> dict[str, list] | Non
     }
 
 
+def systemic_review_basis(context) -> dict | None:
+    """The run's systemic held share for its aggregate, or None when it is within its limit.
+
+    The Armarium runs over a held Recensor only on a person's advance, which
+    may pass a systemic share; the share is measured here as the orchestrator's
+    alarm measured it (`common.page_review.held_share`), so the export names
+    it as a reason. None too for a run that sealed no review policy.
+    """
+    share = held_share(context.tree, context.sealed_config_digests, context.args.review_config)
+    if share is None or not share["systemic"]:
+        return None
+    return {key: share[key] for key in ("held_pages", "pages", "max_held_page_share")}
+
+
 def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> int:
     """Export the run: acts, the other layer, page rows, and the page accounting."""
     # Before anything is published, so a decision no review applied refuses cleanly.
-    review_basis = review_decisions_basis(context, canaries)
+    decisions = require_current_review_decisions(context)
+    review_basis = review_decisions_basis(decisions, canaries)
+    systemic_basis = systemic_review_basis(context)
+    applied = applied_decision_hashes(decisions)
+    approvals = (
+        {reference.sha256: (reference, record) for reference, record in stored}
+        if (stored := context.tree.review_decision_records())
+        else {}
+    )
+    operator_actions: list[dict] = []
     submission_id, fixture_id, run_identity = export_run_identity(context)
     real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
     denominator = reading_denominator(context)
@@ -1121,7 +1235,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
     canary_acts: list[dict] = []
     for row in rows:
         review = reviews[row["act_id"]]
-        category, established = _page_category(context, row, review, manifest_cache)
+        category, established = _page_category(context, row, review, manifest_cache, applied)
         # An exclusion cites the operator decision its review rests on.
         approval_ref = (
             review.get("approval_ref")
@@ -1159,7 +1273,9 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
         if established is not None and category is ArmariumCategory.DELIVERED:
             refusal = missing_export_provenance(established.get("payload"))
             if refusal is None:
-                payload, reading = verify_established_page_record(context, row, review, established)
+                payload, reading = verify_established_page_record(
+                    context, row, review, established, applied
+                )
                 try:
                     validate_serving_provenance(
                         context,
@@ -1189,6 +1305,9 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                         }
                     )
                     delivered.append(entry)
+                    action = operator_action(row, review, applied, approvals)
+                    if action is not None:
+                        operator_actions.append(action)
             if refusal is not None:
                 category = ArmariumCategory.REFUSED_WITH_REASON
                 entry["category"] = category.value
@@ -1274,6 +1393,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             {act["act_id"]: act["act_key"] for act in projected_acts},
         ),
         **review_aggregate_arguments(review_basis),
+        **systemic_aggregate_argument(systemic_basis),
     )
     real_sealed = {
         ordinal for ordinal, page in real_census.items() if page.get("outcome") == "sealed"
@@ -1312,6 +1432,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                 "continuation_flags": continuation_flags,
                 "page_witness_chairs": sorted(declared_page_witness_chairs(context)),
                 **({} if review_basis is None else {"review_decisions": review_basis}),
+                **({} if systemic_basis is None else {"systemic_review": systemic_basis}),
             },
             ink_map_pages=ink_map_pages,
             not_measured_basis=page_not_measured_basis(
@@ -1323,6 +1444,12 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             other_readings=tuple(projected_others),
             page_accounting=tuple(page_accounting_rows(context, pages, real_sealed)),
             reconstructions=tuple(reconstructions),
+            operator_actions=tuple(sorted(operator_actions, key=lambda row: row["act_id"])),
+            reading_hold_codes=(
+                None
+                if review_basis is None
+                else {item["act_id"]: sorted(set(item["hold_codes"])) for item in delivered}
+            ),
         ),
         formats,
         context.tree.read_bytes,

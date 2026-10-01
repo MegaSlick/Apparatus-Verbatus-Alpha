@@ -15,13 +15,22 @@ disagree about them.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any, Final
 
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.stages import RECENSOR
-from common.page_path import FIRST_READING
+from common.page_path import (
+    DOUBT_MARKS_MALFORMED,
+    ENTRY_NO_READABLE_TEXT,
+    FIRST_READING,
+    READING_CLASS,
+    UNPLACED,
+)
 from common.review_decisions import EXCLUDED, REVIEW_FIELD, decisions_digest
+from common.review_policy import SEALED_CONFIG_NAME as REVIEW_CONFIG_NAME
+from common.review_policy import load_review_policy, systemic
+from common.sealed_config import require_sealed_config
 from common.stage import (
     COUNTED_READING_CLASSES,
     NO_ACT_ON_PAGE_HOLD,
@@ -42,6 +51,18 @@ RELEASABLE_HOLDS: Final = frozenset({PAGE_BLANK_HOLD, NO_ACT_ON_PAGE_HOLD})
 # read as holding no act holds none, the page's other readings are established.
 # A blank page has no reading to establish.
 RELEASABLE_READING_HOLDS: Final = frozenset({NO_ACT_ON_PAGE_HOLD})
+# The reading holds no operator decision overrides, each with why: an override
+# exports the model's reading as read, and the export cannot carry these.
+NOT_OVERRIDABLE: Final = {
+    UNPLACED: "the reading has no region on its page, so the export cannot cite where it is",
+    DOUBT_MARKS_MALFORMED: (
+        "its doubt marks could not be read, and the export delivers a reading only with a "
+        "doubt report it can anchor"
+    ),
+    ENTRY_NO_READABLE_TEXT: (
+        "it has no readable text, and an empty reading is exported only as a proved blank"
+    ),
+}
 # A page review's payload, as the Recensor builds it; `publish_review` adds
 # `attempt_ordinal`.
 PAGE_REVIEW_FIELDS: Final = frozenset(
@@ -227,13 +248,100 @@ def _require_review_of_row(review: Mapping[str, Any], row: Mapping[str, Any]) ->
         )
 
 
-def require_establishable(row: Mapping[str, Any], review: Mapping[str, Any]) -> None:
+def override_refusal(row: Mapping[str, Any]) -> str | None:
+    """Why no operator decision can send this held reading to export, or None when one can.
+
+    An override exports the model's reading as read, so the reading must be
+    one the export can carry: placed on its page, with a doubt report it can
+    anchor and text to deliver.
+    """
+    if row["perlectio_ref"] is None or row["class"] != READING_CLASS:
+        return (
+            f"{row['act_key']} is a {row['class']} row, which has no region on its page to export"
+        )
+    blocked = sorted(set(row["hold_codes"]) & set(NOT_OVERRIDABLE))
+    if blocked:
+        return "; ".join(f"{code}: {NOT_OVERRIDABLE[code]}" for code in blocked)
+    return None
+
+
+def operator_override(
+    row: Mapping[str, Any],
+    review: Mapping[str, Any],
+    applied: Collection[str] | None = None,
+) -> dict[str, Any] | None:
+    """The current operator decisions that release a held reading to export, or None.
+
+    A row's own hold codes (its Perlectio's `holds` and `page_holds`, and a
+    page with no act) are overridden when its accepted review's
+    `operator_review` block shows every one of them cleared: a unit-scope code
+    by a current `release` of this unit at the review's basis, a page-scope one
+    by a current `no-missed-act` of its page at the page basis. `applied` is
+    the decision hashes the Recensor's current `review-decisions` record
+    applied; a stage after the Recensor passes it, so a decision that record
+    did not apply overrides nothing. Returns `{"codes", "decisions"}`: the
+    codes overridden and the decision summaries that did it. Refused when the
+    block claims an override no current decision makes, or of a reading that
+    `override_refusal` says no decision may send to export.
+    """
+    payload = _payload(review)
+    block = payload.get(REVIEW_FIELD)
+    codes = sorted(set(row["hold_codes"]))
+    if review.get("outcome") != "accepted" or not isinstance(block, Mapping) or not codes:
+        return None
+    what = f"the operator override of {row['act_key']}"
+    try:
+        cleared = {scope: set(block["cleared"][scope]) for scope in ("unit", "page")}
+        decisions = list(block["decisions"])
+    except (KeyError, TypeError) as error:
+        raise FatalAccounting(f"{what} has no operator review block to rest on") from error
+    if not set(codes) <= cleared["unit"] | cleared["page"]:
+        return None
+    if (refusal := override_refusal(row)) is not None:
+        raise FatalAccounting(f"{what} is refused: {refusal}")
+    needed = []
+    if set(codes) & cleared["unit"]:
+        needed.append(("unit", row["act_id"], "release", block["basis_digest"]))
+    if set(codes) & cleared["page"]:
+        needed.append(("page", row["page_id"], "no-missed-act", block["page_basis_digest"]))
+    found = []
+    for scope, subject, decision, basis in needed:
+        matching = sorted(
+            (
+                summary
+                for summary in decisions
+                if isinstance(summary, Mapping)
+                and summary.get("scope") == scope
+                and summary.get("subject_id") == subject
+                and summary.get("decision") == decision
+                and summary.get("state") == "current"
+                and summary.get("basis_digest") == basis
+                and (applied is None or summary.get("decision_hash") in applied)
+            ),
+            key=lambda summary: summary["decision_hash"],
+        )
+        if not matching:
+            raise FatalAccounting(
+                f"{what} clears its {scope} holds with no current {decision} of its {scope} "
+                "that the Recensor's review-decisions record applied"
+            )
+        found.extend(dict(summary) for summary in matching)
+    return {"codes": codes, "decisions": found}
+
+
+def require_establishable(
+    row: Mapping[str, Any],
+    review: Mapping[str, Any],
+    applied: Collection[str] | None = None,
+) -> dict[str, Any] | None:
     """An accepted review stands over a reading the denominator reads, or releases its hold.
 
     A row with no reading has no text to establish. A held row may be accepted
-    only when every hold it carries is one a review may release and the review
-    names exactly those codes in its `release`; otherwise a stage after the
-    Recensor would be resurrecting a held reading.
+    when every hold it carries is one a review may release and the review
+    names exactly those codes in its `release`, or when current operator
+    decisions override every one of them (`operator_override`, whose result is
+    returned; `applied` as there). Otherwise a stage after the Recensor would
+    be resurrecting a held reading.
     """
     if review.get("outcome") != "accepted":
         raise FatalAccounting(f"the review of {row['act_key']} did not accept it")
@@ -244,7 +352,9 @@ def require_establishable(row: Mapping[str, Any], review: Mapping[str, Any]) -> 
         )
     release = _payload(review).get("release")
     if row["disposition"] == "read" and release is None:
-        return
+        return None
+    if release is None and (override := operator_override(row, review, applied)) is not None:
+        return override
     codes = list(row["hold_codes"])
     if (
         not codes
@@ -257,6 +367,27 @@ def require_establishable(row: Mapping[str, Any], review: Mapping[str, Any]) -> 
             "accepted it without releasing exactly those holds; a stage may not resurrect a "
             "held reading into an established one"
         )
+    return None
+
+
+def reading_holds_allowed(reading: Mapping[str, Any], override: Mapping[str, Any] | None) -> bool:
+    """A reading is establishable as read: unheld, or held only on codes an override cleared."""
+    payload = reading.get("payload") or {}
+    holds, page_holds = payload.get("holds"), payload.get("page_holds")
+    if not isinstance(holds, list) or not isinstance(page_holds, list):
+        return False
+    if override is None:
+        return reading.get("outcome") == "read" and not holds and not page_holds
+    return reading.get("outcome") in ("read", "held") and set(holds) | set(page_holds) <= set(
+        override["codes"]
+    )
+
+
+def applied_decision_hashes(decisions: Mapping[str, Any] | None) -> frozenset[str]:
+    """The decisions a `review-decisions` record applied, by self-hash; none without a record."""
+    if decisions is None:
+        return frozenset()
+    return frozenset(summary["decision_hash"] for summary in decisions["applied"])
 
 
 def review_reason(review: Mapping[str, Any]) -> str:
@@ -393,6 +524,47 @@ def require_recensor_passed(tree) -> None:
             "seal; record review decisions and re-run the Recensor, or advance its seal with "
             "`verbatus advance --stage recensor`, before this stage runs"
         )
+
+
+def held_pages_after_review(tree) -> tuple[list[int], int]:
+    """The pages the Recensor's current records hold, and how many distinct pages it reviewed.
+
+    The count is the distinct page ordinals of the Recensor's current `review`
+    records, not the census: a page is counted when the Recensor reviewed a
+    unit on it (a page with no reading is reviewed through its page row). That
+    is the right denominator because only a reviewed page can be held after
+    review, so the share compares held pages with the pages that could have
+    been; a page the Recensor never reached (refused at the Door, say) is the
+    census's to report, not a page the review passed. A page is held when any
+    unit on it is held, or when the current `review-decisions` record still
+    holds it (a page whose every unit was excluded keeps its page holds). Read
+    from the run tree alone, like `held_by_recensor`.
+    """
+    reviews: dict[str, list[dict[str, Any]]] = {}
+    decisions: list[dict[str, Any]] = []
+    for entry in tree.build_manifest(RECENSOR, verify_inputs=False)["artifacts"]:
+        if entry["kind"] == REVIEW_KIND:
+            reviews.setdefault(entry["subject_id"], []).append(
+                tree.read_artifact(RECENSOR, REVIEW_KIND, entry["artifact_id"])
+            )
+        elif entry["kind"] == REVIEW_DECISIONS_KIND:
+            decisions.append(
+                tree.read_artifact(RECENSOR, REVIEW_DECISIONS_KIND, entry["artifact_id"])
+            )
+    pages: set[int] = set()
+    held: set[int] = set()
+    for subject_id, records in reviews.items():
+        review = latest_attempt(records, f"review of {subject_id}", operation=REVIEW_OPERATION)
+        ordinal = _payload(review)["page_ordinal"]
+        pages.add(ordinal)
+        if review.get("outcome") == HELD:
+            held.add(ordinal)
+    if decisions:
+        record = latest_attempt(
+            decisions, "Recensor review-decisions record", operation=REVIEW_DECISIONS_OPERATION
+        )
+        held |= {row["page_ordinal"] for row in _payload(record)["page_holds"]}
+    return sorted(held), len(pages)
 
 
 def review_coverage(review: Mapping[str, Any]) -> dict[str, Any]:
@@ -569,3 +741,25 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
             }
         )
     return sorted(links, key=lambda link: (link["from_page_ordinal"], link["to_page_ordinal"]))
+
+
+def held_share(tree, sealed: Mapping[str, str], review_config_path) -> dict[str, Any] | None:
+    """The run's held share after the Recensor, measured against its sealed review policy.
+
+    `{held_pages, pages, max_held_page_share, systemic}` (`held_pages_after_review`
+    and `common.review_policy.systemic`), or None for a run that sealed no review
+    policy, where the share was not checked. `sealed` is the run's sealed
+    configuration digests; the policy at `review_config_path` is refused unless
+    its bytes are the ones the run sealed.
+    """
+    if REVIEW_CONFIG_NAME not in sealed:
+        return None
+    policy = load_review_policy(review_config_path)
+    require_sealed_config(sealed, REVIEW_CONFIG_NAME, policy["config_sha256"])
+    held, pages = held_pages_after_review(tree)
+    return {
+        "held_pages": held,
+        "pages": pages,
+        "max_held_page_share": policy["max_held_page_share"],
+        "systemic": bool(pages) and systemic(len(held), pages, policy),
+    }

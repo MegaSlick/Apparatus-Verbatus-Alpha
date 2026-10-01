@@ -39,6 +39,15 @@ and records anything it refuses.
 
 **held** — set aside for human review rather than silently dropped or passed as done.
 
+**override** — a person's decision that sends a held reading to export as the model read
+it, its own holds included. It is labelled "released by operator" with who, when, why
+and the holds it cleared. It is never available for a reading with no place on the page,
+unreadable doubt marks or no text.
+
+**systemic hold** — a run in which more than 1 in 50 of the pages are held after the
+Recensor. Such a run has a problem of its own, not just a few hard pages, and says so in
+its stop report, its export and its notification.
+
 **failed page** — a page whose reading could not be made: the page did not load or the
 reader's call failed. It is held and counts toward the run's failure cap; it is never
 counted as an empty page.

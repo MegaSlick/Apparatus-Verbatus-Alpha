@@ -63,9 +63,10 @@ from common.hard_failure import (  # noqa: E402
     tally_hard_failures,
 )
 from common.page_accounting import DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH  # noqa: E402
-from common.page_review import held_by_recensor  # noqa: E402
+from common.page_review import held_by_recensor, held_share  # noqa: E402
 from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH  # noqa: E402
 from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH  # noqa: E402
+from common.review_policy import DEFAULT_REVIEW_CONFIG_PATH, alarm_line  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_DECODING_CONFIG_PATH,
@@ -397,6 +398,7 @@ def invoke(program: str, args: argparse.Namespace) -> int:
                 ("--formats-config", args.formats_config),
                 ("--recovery-config", args.recovery_config),
                 ("--hard-failure-config", args.hard_failure_config),
+                ("--review-config", args.review_config),
             )
         ),
     ]
@@ -746,6 +748,14 @@ def main() -> int:
         help="the run-level hard-failure cap this orchestrator checkpoints against",
     )
     parser.add_argument(
+        "--review-config",
+        default=str(DEFAULT_REVIEW_CONFIG_PATH),
+        help=(
+            "the share of the run's pages that may stay held after the recensor before the "
+            "run itself is called systemic, sealed into this run"
+        ),
+    )
+    parser.add_argument(
         "--placement-tier",
         default=None,
         help=(
@@ -1022,6 +1032,9 @@ def recensor_holds(args) -> list[dict]:
         return []
     held = held_by_recensor(tree)
     if held and boundary_advanced(tree, RECENSOR):
+        # A person's advance passes even a systemic share; the alarm still sounds,
+        # and the export carries it as a reason.
+        report_systemic_share(args)
         print(
             f"run {args.run_id}: the recensor holds {len(held)} item(s); an advance record "
             "passes its current seal, so the run continues and the export names every hold"
@@ -1030,8 +1043,32 @@ def recensor_holds(args) -> list[dict]:
     return held
 
 
+def report_systemic_share(args) -> None:
+    """Print the systemic alarm line when the run's held share is above its sealed limit.
+
+    The line (`common.review_policy.alarm_line`) is what the operator's
+    notification carries. A run that sealed no review policy says the share
+    was not checked.
+    """
+    tree = _run_tree(args)
+    share = held_share(tree, run_sealed_config_digests(tree.read_run()), args.review_config)
+    if share is None:
+        print(
+            f"run {args.run_id}: this run sealed no review policy, so whether its held share "
+            "is systemic was not checked"
+        )
+    elif share["systemic"]:
+        print(alarm_line(args.run_id, share["held_pages"], share["pages"], share))
+
+
 def report_held_recensor(args, held: list[dict], ran_after_hold: list[str]) -> None:
-    """Say what a held Recensor holds and how the run goes on from it."""
+    """Say what a held Recensor holds and how the run goes on from it.
+
+    When more of the run's pages are held than its sealed review policy allows
+    (`common.review_policy`), the report opens with the systemic alarm line,
+    which the operator's notification carries.
+    """
+    report_systemic_share(args)
     print(
         f"  the recensor holds {len(held)} item(s), and nothing is exported until they are decided:"
     )

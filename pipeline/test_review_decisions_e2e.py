@@ -40,7 +40,12 @@ from common.contracts.approval import build_review_decision_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.stages import ARCHETYPUS, ARMARIUM
 from common.page_review import held_by_recensor
-from common.review_decisions import READING_HELD, basis_digest, page_basis_digest
+from common.review_decisions import (
+    READING_HELD,
+    aggregate_clearances,
+    basis_digest,
+    page_basis_digest,
+)
 from common.runtree.store import RunTree
 from common.stage import EXIT_COMPLETE, EXIT_HELD
 from conftest import advance_held_recensor, build_page_tree, load_stage, run_stage
@@ -447,11 +452,13 @@ def _bundle_established(root: Path) -> set[str]:
     }
 
 
-def test_a_decision_that_would_accept_a_reading_its_page_reading_holds_keeps_it_held(tmp_path):
-    """page-review's p2:1 is held by its own reading, which the Archetypus would not establish.
+def test_a_decision_that_would_release_an_unplaced_reading_keeps_it_held(tmp_path):
+    """page-review's p2:1 is unplaced: no region on its page, so no decision can export it.
 
-    The pass goes on: the unit stays held under `review-reading-held` with its
-    reading's codes, and the rest of the run's reviews are published.
+    The release is stored by hand, since `decide` refuses to record it. The pass
+    goes on: the unit stays held under `review-reading-held` with its reading's
+    codes and why, the rest of the run's reviews are published, and nothing that
+    still holds it is reported as cleared.
     """
     root, options = build_page_tree(tmp_path, "page-review")
     recensor = "pipeline/5_recensor/run.py"
@@ -468,5 +475,18 @@ def test_a_decision_that_would_accept_a_reading_its_page_reading_holds_keeps_it_
     codes = review["payload"]["hold_codes"]
     assert "reading-unplaced" in codes and "residual-ink" not in codes
     assert READING_HELD in review["payload"]["operator_review"]["added"]
-    assert "a decision clears only this stage's own holds" in review["payload"]["reason"]
-    assert _decisions(root)["applied"], "the decisions were applied, not refused"
+    assert "no decision can send that reading to export" in review["payload"]["reason"]
+    assert "reading-unplaced row, which has no region on its page" in review["payload"]["reason"]
+    decisions = _decisions(root)
+    assert decisions["applied"], "the decisions were applied, not refused"
+    # Only what took effect is reported cleared: the unit release cleared nothing
+    # that still holds it, so no unit clearance reaches the aggregate. The page
+    # decision cleared every code of p2's, yet all but the residual ink still hold
+    # its reading, so the page row reports the residual ink alone.
+    cleared = review["payload"]["operator_review"]["cleared"]
+    assert not set(cleared["unit"] + cleared["page"]) & set(codes)
+    assert cleared["page"] == ["residual-ink"]
+    rows = aggregate_clearances(decisions, unit_key="act_key")
+    assert [(row["scope"], row["subject"], row["cleared"]) for row in rows] == [
+        ("page", 2, ["residual-ink"])
+    ]

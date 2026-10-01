@@ -49,6 +49,7 @@ def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
         formats_config=ROOT / "config" / "formats.toml",
         recovery_config=ROOT / "config" / "recovery.toml",
         hard_failure_config=ROOT / "config" / "hard_failure.toml",
+        review_config=ROOT / "config" / "review.toml",
         pdf_target_dpi=None,
         placement_tier=None,
         mechanics_qualification=False,

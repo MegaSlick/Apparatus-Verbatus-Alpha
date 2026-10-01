@@ -1,0 +1,16 @@
+# How much of a run may stay held after the Recensor before the run itself is
+# treated as having a problem. `common/review_policy.py` reads and bounds it; the
+# Door seals it into every run as `review`, and the orchestrator and the Armarium
+# check the seal where they use it.
+#
+# More than 1 in 50 of a run's pages held means the run has a systemic problem.
+# Such a run stops before export, as any hold does, and its report and the
+# operator's notification say the share points to a problem with the run rather
+# than a few hard pages. A person's advance may pass it; the export then carries
+# the same line as a reason. At or below 1/50 the holds are a person's to decide
+# one by one.
+#
+# `max_held_page_share`: a fraction "N/D" with 0 < N <= D, compared exactly.
+
+[review]
+max_held_page_share = "1/50"

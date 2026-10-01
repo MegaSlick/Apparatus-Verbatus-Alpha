@@ -184,16 +184,27 @@ unchanged repeat:
 
 The Armarium hands `clearances` and `page_holds` to the run aggregate, where each is a
 named reason, so a run a person cleared stays `partial`. `requests` records the re-asks
-and re-shoots asked for; no stage acts on them.
+and re-shoots asked for. An operator's page `re-ask` is the request to send the page
+through the Perlector again; the operator's tool records it and does not start the re-read
+(`operations/operator/README.md`, "Recording a review decision"), so the subject stays
+held under its `review-*` code.
 
-**A decision clears only this stage's own holds.** A `release` or `no-missed-act`
-completes a unit only when what remains held it is this stage's measurement; a hold the
-page reading itself carries (its Perlectio's own `holds` or `page_holds`) stays,
-because the Archetypus establishes only a reading the Perlector did not hold
-(`common/page_review.py::require_establishable`). When the decisions about a unit would
-accept such a reading, the unit stays held under `review-reading-held`
-(`common.review_decisions.READING_HELD`) with the reading's own codes, its reason says
-why, and the rest of the pass goes on.
+**An override sends a held reading to export.** A `release` clears the unit's own holds
+and a `no-missed-act` its page's, the reading's own included: the codes its Perlectio
+holds it on (`holds`, `page_holds`) as well as this stage's. When current decisions
+clear every hold the reading carries, the unit is `accepted`, and the Archetypus
+establishes the reading exactly as read (`common/page_review.py::operator_override`,
+the one check all three stages make); the Armarium labels it "released by operator".
+Three holds no decision overrides, because the export cannot carry the reading
+(`common/page_review.py::NOT_OVERRIDABLE`): `reading-unplaced` (no region on the page to
+cite), `doubt-marks-malformed` (no doubt report the export can anchor) and
+`entry-no-readable-text` (no text, and an empty reading is exported only as a proved
+blank). When the decisions about such a unit would accept it, it stays held under
+`review-reading-held` (`common.review_decisions.READING_HELD`) with the reading's own
+codes, its reason says why, and the rest of the pass goes on. Only what took effect is
+reported cleared: the unit's `operator_review.cleared` and its row in `clearances` drop
+every code that holds it again, and a unit row left with nothing cleared is dropped, so
+the aggregate never reports a release that did not happen.
 
 The Archetypus and the Armarium each compare the digest of the decisions stored when
 they run (`common.review_decisions.decisions_digest`) with this record's

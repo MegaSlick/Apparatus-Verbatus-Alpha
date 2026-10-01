@@ -36,6 +36,7 @@ from common.chairs.config import load_models_toml, parse_models_config
 from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, validate_run_id
+from common.contracts.outcomes import SYSTEMIC_REASON_PREFIX
 from common.contracts.stages import ARMARIUM, WRITING_DIRECTORIES
 from common.durability import is_temporary_name
 from common.runtree.store import (
@@ -1478,11 +1479,20 @@ class OperatorSurface:
             self.present(f"Hold reason: {reason}")
         self._present_review_command(run_root, run_id)
         # A hold asks a person to decide, so notify now. `notification_reasons`
-        # carries the UNREADABLE marker the console showed.
+        # carries the UNREADABLE marker the console showed; a systemic share a
+        # person's advance passed leads the notice, as it does at a stop.
+        systemic = _systemic_reason(notification_reasons)
+        others = "; ".join(str(reason) for reason in notification_reasons if reason != systemic)
         self._notify(
             "decision",
-            f"Verbatus run {run_id} is held and needs a decision: "
-            f"{'; '.join(str(reason) for reason in notification_reasons) or 'no reason recorded'}",
+            (
+                f"Verbatus run {run_id} has a systemic problem and needs a decision: "
+                f"{systemic.removeprefix(SYSTEMIC_REASON_PREFIX)}"
+                + (f"; {others}" if others else "")
+            )
+            if systemic is not None
+            else f"Verbatus run {run_id} is held and needs a decision: "
+            f"{others or 'no reason recorded'}",
         )
         raise OperatorError(
             ErrorCode.RUN_HELD,
@@ -1513,6 +1523,11 @@ class OperatorSurface:
             )
             if stopped is None:
                 report = []
+            # More of the run held than its sealed review policy allows: the
+            # orchestrator's alarm line, which the notification leads with.
+            systemic = next(
+                (line for line in report if line.startswith(f"run {run_id}: systemic: ")), None
+            )
             reason = (
                 stopped
                 or _last_line(completed.stderr)
@@ -1542,9 +1557,16 @@ class OperatorSurface:
                 if line != stopped:
                     self.present(line)
             self._present_review_command(run_root, run_id)
-            self._notify(
-                "decision", f"Verbatus run {run_id} is held and needs a decision: {reason}"
-            )
+            if systemic is not None:
+                self._notify(
+                    "decision",
+                    f"Verbatus run {run_id} has a systemic problem and needs a decision: "
+                    f"{systemic.removeprefix(f'run {run_id}: systemic: ')}",
+                )
+            else:
+                self._notify(
+                    "decision", f"Verbatus run {run_id} is held and needs a decision: {reason}"
+                )
             return OperatorError(
                 ErrorCode.RUN_HELD, detail=f"{reason} Saved run receipt: {receipt}"
             )
@@ -1758,9 +1780,16 @@ class OperatorSurface:
             f"This export is PARTIAL: the run's recorded state is {state}, and the bundle holds "
             "only what was delivered."
         )
+        systemic = _systemic_reason(reasons if isinstance(reasons, list) else [])
         self._notify(
             "milestone",
-            f"Verbatus export for run {recorded_id} landed as {state}, not complete: {destination}",
+            f"Verbatus export for run {recorded_id} landed as {state}, not complete: {destination}"
+            + (
+                ""
+                if systemic is None
+                else f"; the run has a systemic problem: "
+                f"{systemic.removeprefix(SYSTEMIC_REASON_PREFIX)}"
+            ),
         )
         raise OperatorError(
             ErrorCode.EXPORT_PARTIAL,
@@ -3738,6 +3767,18 @@ def bounded_tail(text: str) -> str:
     return (
         f"[{omitted} earlier characters omitted from this receipt]\n"
         + text[-MAX_RECEIPT_OUTPUT_CHARACTERS:]
+    )
+
+
+def _systemic_reason(reasons: Sequence[Any]) -> str | None:
+    """The aggregate's systemic reason (`common.contracts.outcomes.systemic_reason`), if any."""
+    return next(
+        (
+            reason
+            for reason in reasons
+            if isinstance(reason, str) and reason.startswith(SYSTEMIC_REASON_PREFIX)
+        ),
+        None,
     )
 
 

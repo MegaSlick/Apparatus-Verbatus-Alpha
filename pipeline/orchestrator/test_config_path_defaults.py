@@ -28,6 +28,7 @@ SEALED_CONFIG_FLAGS = (
     "--formats-config",
     "--recovery-config",
     "--hard-failure-config",
+    "--review-config",
     "--witness-context-config",
 )
 

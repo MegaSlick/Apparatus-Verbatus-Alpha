@@ -195,6 +195,27 @@ shape, so a consumer keying on it never reads an older shape out of a newer reco
   section) in every folder that sections that act. A reconstruction whose act is not
   delivered, or a join with a piece not delivered, is not shown at all: the
   Coniector's records in the run tree keep it.
+- The operator layer (`operator_layer.py`): every delivered reading an operator review
+  decision released, act or `other`, as one `armarium-operator-action.v1` row
+  `{act_id, act_key, kind, label: "released by operator", cleared_codes,
+  reading_hold_codes, decisions}`. `cleared_codes` are every hold the decisions cleared;
+  `reading_hold_codes` those among them the reading's own Perlectio held it on, which an
+  override exported anyway. Each decision names what was decided, its scope and subject,
+  who (`approver`), when (`timestamp`), why (`reason`), its `decision_hash` and the
+  stored approval as a retained-run reference. The text is the model's reading as read:
+  no row changes a literal. `sources.json` carries every row as `operator_actions`, so
+  the label travels in every package whatever its formats; `operator.jsonl` carries the
+  same rows with `jsonl`, and the text bundle shows each beneath its reading's section
+  as an `operator_label:` line, then `operator_row:` and the whole row. The clean
+  verifier requires each row to be about a reading the package delivers, once, and every
+  format that carries the layer to show exactly the rows `sources.json` records. A run
+  with no such reading writes none of it. Whenever the run has review decisions (the
+  aggregate basis's `review_decisions`, from which the aggregate is recomputed),
+  `sources.json` also carries `reading_hold_codes`: every delivered reading's own hold
+  codes by id, empty for a reading that carried none. The verifier requires every
+  reading with codes to have a row whose `reading_hold_codes` are exactly them, so a
+  label dropped from every format is refused even when no page hold shows the release;
+  a package with operator rows and no review decisions is refused.
 - `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
   act identifiers or canonical-text fields; promotion requires recorded approval
   and pipeline re-entry, never an export-time act.
@@ -324,7 +345,20 @@ them. Before it publishes anything, the stage refuses a run whose stored decisio
 not the set that record's pass applied
 (`common/page_review.py::require_current_review_decisions`), saying to re-run the
 Recensor, so a decision recorded after the Recensor's last pass never goes unapplied in
-silence.
+silence. A reading an operator override released (`pipeline/5_recensor/CONTRACT.md`,
+"An override sends a held reading to export") is established and delivered like any
+other, after `page_review.operator_override` checks again that current decisions the
+record applied cleared every hold it carries; it is labelled in the operator layer.
+
+**A systemic held share travels with the export.** The stage runs over a held Recensor
+only on a person's advance, which may pass a run whose held share after the Recensor is
+above its sealed `review` limit (`pipeline/orchestrator/CONTRACT.md`). The stage
+measures that share as the orchestrator's alarm does (`common.page_review.held_share`)
+and, when it is above the limit, records `aggregate_basis.systemic_review`
+(`{held_pages, pages, max_held_page_share}`); the aggregate then carries the alarm's
+line as a `systemic: ...` reason, and the run stays `partial`. The clean verifier
+recomputes the aggregate with it and refuses a record whose share is within its limit.
+A run within its limit, or one that sealed no review policy, carries no such field.
 `confirmed-blank` reaches the export only on a `page-blank` row whose review confirms
 it.
 
@@ -502,7 +536,9 @@ status, recomputes the ledger with its `other` units, requires the acts
 database's schema id to be the one this build writes, binds Pass C's
 `pages_read` to the real sealed pages, requires `aggregate_basis.act_pages` to
 name every page a delivered act's cited regions were cut from, recomputes each
-join, and refuses a page the accounting holds that delivered any reading.
+join, and refuses a page the accounting holds that delivered any reading, unless every
+reading it delivered carries an operator row naming all of that page's hold codes among
+those it overrode.
 
 ## Boundary checks
 

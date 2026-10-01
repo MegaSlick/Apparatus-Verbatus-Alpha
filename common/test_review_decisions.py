@@ -32,6 +32,7 @@ from common.review_decisions import (
     classify_holds,
     current_basis,
     held_pages,
+    published_basis,
     review_decision,
 )
 from common.stage import NO_ACT_ON_PAGE_HOLD, PAGE_BLANK_HOLD, PAGE_UNREAD_HOLD
@@ -910,3 +911,45 @@ def test_a_page_decision_whose_page_is_gone_is_returned_unkept():
         ("page-3", SUBJECT_ABSENT)
     ]
     assert result["requests"] == []
+
+
+# --- the basis read back from published reviews ---------------------------------------
+
+
+def _published(derived, applied):
+    """Each unit as a Recensor pass published it: the applied review's payload."""
+    return [
+        {
+            **machine,
+            "outcome": applied["units"][machine["act_id"]]["outcome"],
+            "payload": applied["units"][machine["act_id"]]["payload"],
+        }
+        for machine in derived["units"]
+    ]
+
+
+def test_the_basis_read_back_from_published_reviews_is_the_one_the_recensor_derives():
+    """A decision bound to the reviews a person read is current on the stage's next pass."""
+    derived = derived_review()
+    decisions = [
+        decide(derived, "unit", "a1", "exclude"),
+        decide(derived, "unit", "b1", "hold", finding="text-misread"),
+    ]
+    applied = apply_decisions(derived, decisions)
+    assert REVIEW_FIELD in applied["units"]["a1"]["payload"]
+    assert REVIEW_FIELD not in applied["units"]["a2"]["payload"]
+    assert published_basis(RUN, _published(derived, applied), decisions) == current_basis(
+        derived, decisions
+    )
+
+
+def test_a_basis_read_back_without_the_operator_block_would_bind_to_the_wrong_review():
+    """The block keeps the machine's basis: the decided payload is not what a decision binds to."""
+    derived = derived_review()
+    decisions = [decide(derived, "unit", "b1", "hold", finding="text-misread")]
+    applied = apply_decisions(derived, decisions)
+    published = _published(derived, applied)
+    decided = applied["units"]["b1"]["payload"]
+    assert published_basis(RUN, published, decisions)["units"]["b1"]["basis_digest"] != (
+        digest_of({key: value for key, value in decided.items() if key != REVIEW_FIELD})
+    )

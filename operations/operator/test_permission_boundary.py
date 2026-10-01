@@ -582,8 +582,8 @@ def test_a_boundary_that_stopped_verifying_is_refused_before_the_worker_is_launc
     } == receipts_before
 
 
-def test_write_approval_record_has_exactly_one_direct_production_spelling() -> None:
-    """One direct spelling: only `advance.record_advance` names this writer.
+def test_write_approval_record_has_exactly_two_direct_production_spellings() -> None:
+    """Two direct spellings: `advance.record_advance` and `decide.record_decision` name this writer.
 
     `RunTree.write_approval_record` is the generic append-only writer several
     approval subjects share (Lectio nuda sampling, the Perlector's prior-draft
@@ -610,7 +610,7 @@ def test_write_approval_record_has_exactly_one_direct_production_spelling() -> N
             if "write_approval_record(" in line:
                 call_sites.add(str(path.relative_to(root)))
                 break
-    assert call_sites == {"operations/operator/advance.py"}
+    assert call_sites == {"operations/operator/advance.py", "operations/operator/decide.py"}
 
 
 def test_console_process_cannot_import_writers_or_keep_provider_credentials():
@@ -2682,9 +2682,11 @@ def test_hostile_projection_content_reaches_the_terminal_only_as_inert_escaped_t
 
 
 # Producer code under `pipeline/` and `common/` may never mint its own approval.
-# The operator package has one narrower exception for recording a human advance:
-# only this module may reach the builder or writer, and only for that action.
-APPROVAL_MINTING_OPERATOR_MODULES = frozenset({"operations/operator/advance.py"})
+# The operator package has two narrower exceptions, each for one human act: the
+# advance module records an advance, and the decide module a review decision.
+APPROVAL_MINTING_OPERATOR_MODULES = frozenset(
+    {"operations/operator/advance.py", "operations/operator/decide.py"}
+)
 
 OPERATOR_PACKAGE = Path(__file__).resolve().parent
 
@@ -2751,6 +2753,17 @@ def test_only_the_advance_module_may_reach_the_approval_builder_or_writer():
         f"{reachable} bind the approval builder under another name, so the operator surface "
         "reaches it without ever spelling it"
     )
+
+
+def test_the_decide_module_mints_only_review_decisions():
+    """Statically: it reaches the review builder alone, never the generic one."""
+    from operations.operator import decide
+
+    source = code_text(decide)
+    assert "build_review_decision_record" in source
+    assert "build_approval_record" not in source
+    for other in ("exclusion", "salvage-promotion", "ADVANCE_ACTION"):
+        assert other not in source
 
 
 def test_the_advance_module_names_no_approval_action_but_advance():

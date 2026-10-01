@@ -97,6 +97,7 @@ from common.reconstruction import (  # noqa: E402
 )
 from common.recovery import load_recovery_policy  # noqa: E402
 from common.residual_ink import ink_map_config_digest  # noqa: E402
+from common.review_policy import DEFAULT_REVIEW_CONFIG_PATH, load_review_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.sealed_config import read_sealed_toml  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -1732,6 +1733,7 @@ def fixture_submission(args, registry) -> int:
         armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,
+        review_config_path=args.review_config,
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
         perlector_protocol_config_path=args.perlector_protocol_config,
@@ -1916,6 +1918,7 @@ def real_submission(args, registry) -> int:
         load_recovery_policy(args.recovery_config),
         load_hard_failure_policy(args.hard_failure_config),
         args.formats_config,
+        review_config_path=args.review_config,
         pdf_render_config_sha256=pdf_render_binding.config_sha256,
         data_handling_config_sha256=data_policy_binding.config_sha256,
         designator_geometry_config_sha256=read_sealed_toml(
@@ -2090,6 +2093,7 @@ def _real_bindings(
     serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     canary_ledger: dict[str, Any] | None = None,
+    review_config_path: str | Path = DEFAULT_REVIEW_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
@@ -2197,6 +2201,7 @@ def _real_bindings(
             "pdf-render": pdf_render_config_sha256,
             "recovery": recovery_policy["config_sha256"],
             "hard-failure": hard_failure_policy["config_sha256"],
+            "review": load_review_policy(review_config_path)["config_sha256"],
             "triage-modes": triage_modes_config_sha256,
             # Real ingress only: the fixture route is not gated.
             "data-handling": data_handling_config_sha256,

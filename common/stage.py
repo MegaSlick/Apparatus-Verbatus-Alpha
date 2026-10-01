@@ -109,6 +109,7 @@ from common.page_accounting import DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH, load_pag
 from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH, load_reconstruction_policy
 from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH, load_recovery_policy
 from common.residual_ink import ink_map_config_digest
+from common.review_policy import DEFAULT_REVIEW_CONFIG_PATH, load_review_policy
 from common.runtree.store import PublishResult, RunTree, _inode_identity
 from common.sealed_config import read_sealed_toml, require_seal_method, require_sealed_config
 from common.witness_adapters import validate_witness_adapter_bindings
@@ -1378,6 +1379,11 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     )
     parser.add_argument("--recovery-config", default=str(DEFAULT_RECOVERY_CONFIG_PATH))
     parser.add_argument("--hard-failure-config", default=str(DEFAULT_HARD_FAILURE_CONFIG_PATH))
+    parser.add_argument(
+        "--review-config",
+        default=str(DEFAULT_REVIEW_CONFIG_PATH),
+        help="the share of pages a run may hold after the Recensor before it is called systemic",
+    )
     parser.add_argument("--pdf-target-dpi", type=int, default=None)
     parser.add_argument(
         "--witness-context",
@@ -1500,6 +1506,7 @@ def run_config_bindings(
     armarium_formats_config_path: str | Path = DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
     recovery_config_path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH,
     hard_failure_config_path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH,
+    review_config_path: str | Path = DEFAULT_REVIEW_CONFIG_PATH,
     witness_context: str = "named",
     witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     perlector_protocol_config_path: str | Path = DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
@@ -1563,6 +1570,7 @@ def run_config_bindings(
     }
     recovery_policy = load_recovery_policy(recovery_config_path)
     hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
+    review_policy = load_review_policy(review_config_path)
     validate_witness_adapter_bindings(models)
     witness_context_config_digest = validate_witness_context_bindings(
         models,
@@ -1619,6 +1627,7 @@ def run_config_bindings(
             "pdf-render": pdf_render_config_digest,
             "recovery": recovery_policy["config_sha256"],
             "hard-failure": hard_failure_policy["config_sha256"],
+            "review": review_policy["config_sha256"],
             "triage-modes": triage_modes_config_digest,
         },
         "armarium_formats": armarium_formats,
@@ -1688,6 +1697,7 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
             "pdf-render": read_sealed_toml(args.pdf_render_config, "PDF render configuration")[1],
             "recovery": recovery_policy["config_sha256"],
             "hard-failure": hard_failure_policy["config_sha256"],
+            "review": load_review_policy(args.review_config)["config_sha256"],
             "triage-modes": load_triage_modes(DEFAULT_TRIAGE_MODES_CONFIG_PATH),
             "serving-recipes": serving_recipes_config_digest,
             "pod-placement": pod_placement_config_digest,
@@ -3410,6 +3420,7 @@ def open_context(
         armarium_formats_config_path=args.formats_config,
         recovery_config_path=args.recovery_config,
         hard_failure_config_path=args.hard_failure_config,
+        review_config_path=args.review_config,
         witness_context=args.witness_context,
         witness_context_config_path=args.witness_context_config,
         perlector_protocol_config_path=args.perlector_protocol_config,

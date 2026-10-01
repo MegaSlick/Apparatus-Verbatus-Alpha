@@ -82,6 +82,31 @@ that applies new decisions re-seals, so an advance given before it passes nothin
 The Recensor is in `common.stage.ALWAYS_HELD_BOUNDARIES` for this reason, beside the
 Attestatores and the Armarium, and `advance` accepts it in every mode.
 
+**More than 1 in 50 of a run's pages held means the run has a systemic problem.** At
+that stop the orchestrator counts the run's held pages
+(`common/page_review.py::held_pages_after_review`: a page with any held unit, or still
+held by the `review-decisions` record, of the distinct pages the Recensor reviewed).
+When their share is more than the run's sealed `[review] max_held_page_share`
+(`config/review.toml`, read by `common/review_policy.py` and checked against the run's
+`review` seal), the report opens with one line, `run <id>: systemic: <held> of <pages>
+page(s) are held after the recensor, more than the sealed limit of <share> ...`,
+naming the held pages. The run stops all the same: the alarm adds a reason, never a
+pass. A run sealed before the policy existed says the check was not made.
+
+A person's recorded `advance` of the Recensor's seal may still pass a systemic run: it
+is an explicit choice, and the run is not trapped. The alarm never goes silent:
+
+- the orchestrator measures the share again at the advance check and prints the same
+  `systemic:` line before the run continues;
+- the Armarium measures it the same way (`common.page_review.held_share`) and records it
+  in the aggregate basis as `systemic_review` `{held_pages, pages,
+  max_held_page_share}`, so the aggregate carries the line as a `systemic: ...` reason,
+  the run stays partial, the terminal report names it, and the package verifier
+  recomputes it (`pipeline/7_armarium/CONTRACT.md`);
+- `verbatus run` notifies the line as a `decision` through `operations/notify` when
+  notifications are on, at the stop and on a held export, and `verbatus export` names it
+  in a partial export's notification.
+
 ## Mode is an invocation choice, never durable bytes
 
 No selection reaches a manifest, a seal, an artifact, a receipt, or any other file. `invoke`
