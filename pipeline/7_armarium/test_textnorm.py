@@ -63,12 +63,11 @@ def test_search_fold_never_empties_a_string_that_carries_a_letter_or_digit():
         assert search_fold(value) != ""
 
 
-def test_search_fold_is_idempotent_for_the_accented_ligature_the_window_folded_twice():
+def test_search_fold_is_idempotent_for_an_accented_ligature_outside_the_table():
     """A single fold must reach the fixed point in one pass, not two.
 
-    "The window" is the read-only view onto the old repository this module's
-    substitution table was read through. U+01E3 is not in that
-    table; it decomposes to the bare ligature plus a combining macron.
+    U+01E3 is not in the substitution table; it decomposes to the bare
+    ligature plus a combining macron.
     Substituting before decomposing would leave the bare ligature standing for
     a second fold to change again.
     """

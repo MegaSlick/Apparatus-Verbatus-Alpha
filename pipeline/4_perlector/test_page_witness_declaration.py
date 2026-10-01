@@ -1,8 +1,8 @@
 """The Perlector independently enforces page-witness scope.
 
-Unit 10A moves the source of truth from the fixture to the sealed model
-configuration: scope is each configured occupant's `witness_scope`. What does
-not change is that this side reads it for itself. Trusting the producer here
+Page-witness scope is read from each configured occupant's `witness_scope` in
+the sealed model configuration, never from the fixture, and this side reads it
+for itself. Trusting the producer here
 would leave a malformed roster able to erase page coverage without
 contradicting any attachment in the run tree.
 """

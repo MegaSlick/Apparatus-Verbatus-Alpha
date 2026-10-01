@@ -1349,7 +1349,7 @@ def test_the_overlay_is_byte_identical_when_redrawn_in_a_fresh_process(tmp_path)
     assert result.stdout.strip() == feed["overlay"]["image_sha256"] == digest_bytes(png)
 
 
-# --- second review: provenance, health, DAI, flat placement, letters, image off ---------
+# --- provenance, health, DAI, flat placement, letters, image off ---------
 
 
 def test_a_testimonium_naming_another_chair_is_refused():

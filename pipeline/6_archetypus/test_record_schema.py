@@ -1,11 +1,8 @@
 """The record's field set is closed, and the closure is what refuses the dead shape.
 
-Spec 10: "Exactly one `text` field. No fallback chain, no alternate-text fields,
-no display variant stored beside it... a reviewer finding a second text-bearing
-field finds a defect." The old pipeline's export reached through
-`consolidated_literal`, `reader_text`, `literal`, `text`, `markdown` for whichever
-was non-empty (read in the window at `remote/export_views.py::_unit_text`; nothing
-from it is carried here). A closed field set is what stops that being rebuilt one
+A record has exactly one `text` field: no fallback chain, no alternate-text
+fields, no display variant stored beside it, so a second text-bearing field is a
+defect. A closed field set is what stops a chain of text fields being rebuilt one
 field at a time, and it is checked mechanically rather than by reading the
 constructor.
 """
@@ -184,7 +181,7 @@ def test_status_is_the_record_level_literal_and_never_mirrors_text_status():
 
 
 def test_dissent_travels_by_reference_and_never_by_value():
-    """Ruling 4d. The pointer is the Perlectio; no dissent rows are copied in."""
+    """The pointer is the Perlectio; no dissent rows are copied in."""
     record = make_record()
     assert record["dissent_ref"] == READING_REF
     assert record["dissent_ref"] == record["perlectio_ref"]
@@ -235,7 +232,7 @@ def test_record_validation_refuses_a_bad_nested_self_hash():
 
 
 def test_record_validation_refuses_a_dissent_pointer_that_left_its_perlectio():
-    """Ruling 4d is that dissent travels *to this record's own Perlectio*.
+    """Dissent travels *to this record's own Perlectio*.
 
     A `dissent_ref` naming some other artifact would send a reader looking for
     this act's dissent at a reading this record did not establish from.
@@ -273,9 +270,9 @@ def test_record_validation_refuses_a_gap_whose_position_label_lies_about_its_own
 
     A resealed record must not claim `leading` three characters in, or
     `internal` at the very edge of the text: a labelled gap's bounds are
-    checked against what that label means, the same way `pipeline/4_perlector/
-    annotations.py`'s producer-side `validate_gaps` already checks them, so
-    the canonical projection layer does not trust a restatement its own
+    checked against what that label means, the same way the producer-side
+    `common/reading_annotations.py::validate_gaps` checks them, so the
+    canonical projection layer does not trust a restatement its own
     producer would have refused to write.
     """
     with pytest.raises(SchemaRefusal, match=expected):
@@ -318,15 +315,11 @@ def test_record_validation_refuses_a_proved_blank_that_also_declares_a_gap():
 
     Every bounds rule is satisfied vacuously over an empty text -- `leading`
     starts at 0 and `trailing` ends at `len("")` -- and the whole-act rule only
-    runs when the label already says `whole-act`. So this record sealed clean:
-    `no_readable_text` with the blank proof that finding owes, and beside it a
-    gap declaring a partly-read position. Two claims about the same act, one
-    saying the page held no readable ink and the other that ink was seen and
-    not read.
-
-    `whole-act` is the position the pipeline binds to `no-readable-text`
-    upstream (`validate_whole_act_consistency`), so requiring it here is what
-    makes the reseal gate ask the question the producer already asks.
+    runs when the label already says `whole-act`. Without its own check this
+    record would seal clean: `no_readable_text` with the blank proof that
+    finding owes, and beside it a gap declaring a partly-read position. Two
+    claims about the same act, one saying the page held no readable ink and the
+    other that ink was seen and not read.
     """
     gap = {"position": "leading", "start": 0, "end": 0, "witness_evidence": []}
     with pytest.raises(SchemaRefusal, match="over an empty text"):
