@@ -49,6 +49,7 @@ from typing import Any, Final
 from common.chairs.models import is_hf_revision
 from common.chairs.receipts import receipt_record, validate_receipt
 from common.contracts.approval import (
+    SCHEMA_V1,
     ApprovalRecordReference,
     parse_ingress_record,
     validate_approval_record,
@@ -592,6 +593,36 @@ class RunTree:
                 f"approval record {parsed.relative_path} could not be read: {error}"
             ) from error
         return validate_approval_record(decoded)
+
+    def review_decision_records(self) -> list[tuple[ApprovalRecordReference, dict[str, Any]]]:
+        """Every operator review decision stored in this run, each with its checked reference.
+
+        Review decisions share `receipts/sha256/` with serving receipts and the
+        other approval records; they are the `approval-record.v1` among them,
+        in path order. Each is read back through `read_approval_record`, so one
+        whose bytes no longer hash to its name, or fail their own self-hash, is
+        refused, never skipped. A dot-file is an unfinished write, not a record.
+        """
+        directory = self.resolve(RECEIPTS_DIR)
+        if not directory.is_dir():
+            return []
+        found = []
+        for path in sorted(directory.iterdir()):
+            if path.name.startswith("."):
+                continue
+            relative = f"{RECEIPTS_DIR}/{path.name}"
+            digest = path.name.removesuffix(".json")
+            if not path.name.endswith(".json") or not is_sha256(digest):
+                raise SchemaRefusal(f"{relative} is not a content-addressed receipt")
+            try:
+                decoded = json.loads(self._read_record_bytes(relative).decode("utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError, RecursionError) as error:
+                raise SchemaRefusal(f"receipt {relative} could not be read: {error}") from error
+            if not isinstance(decoded, dict) or decoded.get("schema") != SCHEMA_V1:
+                continue
+            reference = ApprovalRecordReference(relative, digest)
+            found.append((reference, self.read_approval_record(reference)))
+        return found
 
     def _read_receipt_bytes(
         self,

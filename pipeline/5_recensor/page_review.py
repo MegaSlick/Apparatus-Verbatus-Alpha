@@ -24,6 +24,14 @@ with every reason named. Nothing here reads, repairs or chooses text, and
 nothing asks for a recovery: `recoveries_used` is the page's re-asks, which
 stage 4 planned itself (0 or 1, from the page's row), and the receipt binds
 each page's re-ask and what it did.
+
+The run's operator review decisions (`approval-record.v1` under
+`receipts/sha256/`) apply on top of the machine's reviews
+(`common.review_decisions.apply_decisions`): a current decision clears or adds
+the holds it names, a stale one releases nothing and keeps any hold it raised,
+and an excluded unit's review cites its decision. The pass records what it
+applied, found stale or could not keep in one `review-decisions` record. A run
+with no decision publishes exactly what the machine derives.
 """
 
 from __future__ import annotations
@@ -31,15 +39,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Final
 
-from common.contracts.errors import FatalAccounting
+from common.contracts.approval import UNIT_SCOPE
+from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.outcomes import (
     WITNESS_READING_OUTCOMES,
+    OutcomeClass,
     classify,
     witness_coverage,
     witnessed_count,
 )
-from common.contracts.stages import ATTESTATORES, EXEMPLAR, PERLECTOR, RECENSOR
+from common.contracts.stages import ARCHETYPUS, ATTESTATORES, EXEMPLAR, PERLECTOR, RECENSOR
 from common.page_accounting import NOT_APPLICABLE, PASS
 from common.page_path import (
     ACT_REGION_SCHEMA,
@@ -53,8 +63,15 @@ from common.page_review import (
     HELD,
     PAGE_REVIEW_FIELDS,
     RELEASABLE_HOLDS,
+    REVIEW_DECISIONS_KIND,
+    REVIEW_DECISIONS_OPERATION,
+    REVIEW_DECISIONS_SCHEMA,
+    REVIEW_DECISIONS_SUBJECT,
+    REVIEWED_PAGE_REVIEW_FIELDS,
     act_entries_by_page,
+    current_review_decisions,
     page_breaks,
+    require_establishable,
     reviewed_rows,
 )
 from common.page_testimonia import (
@@ -64,6 +81,12 @@ from common.page_testimonia import (
     require_page_roster,
 )
 from common.recensor_receipt import build_recensor_reading_receipt
+from common.review_decisions import (
+    EXCLUDED,
+    REVIEW_FIELD,
+    apply_decisions,
+    held_pages,
+)
 from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_CLASS,
@@ -563,11 +586,145 @@ def review_of(
 
 def validate_page_review_payload(subject_id: str, payload: dict) -> None:
     """Refuse a page review whose payload is not the closed page-review shape."""
-    if set(payload) != PAGE_REVIEW_FIELDS:
+    fields = REVIEWED_PAGE_REVIEW_FIELDS if REVIEW_FIELD in payload else PAGE_REVIEW_FIELDS
+    if set(payload) != fields:
         raise FatalAccounting(
             f"the Recensor page review of {subject_id!r} is not the closed page-review shape: "
-            f"{sorted(set(payload) ^ PAGE_REVIEW_FIELDS)}"
+            f"{sorted(set(payload) ^ fields)}"
         )
+
+
+# --- operator review decisions -----------------------------------------------------------
+
+
+def derived_review(context, planned: list[tuple[dict, str, dict, list[dict]]]) -> dict[str, Any]:
+    """The machine's reviews as `common.review_decisions` reads them, before any decision.
+
+    Each unit's own and page holds are its Perlectio's `holds` and
+    `page_holds`, as sealed; a page row has no reading and holds for its page.
+    """
+    units = []
+    for act, outcome, payload, _inputs in planned:
+        holds: list[str] = []
+        page_holds: list[str] = []
+        if act["perlectio_ref"] is not None:
+            reading = context.tree.read_artifact_reference(
+                act["perlectio_ref"], stage=PERLECTOR, kind="perlectio", subject_id=act["act_id"]
+            )
+            holds, page_holds = reading["payload"]["holds"], reading["payload"]["page_holds"]
+        units.append(
+            {
+                "act_id": act["act_id"],
+                "page_id": act["page_id"],
+                "outcome": outcome,
+                "payload": payload,
+                "unit_holds": holds,
+                "page_holds": page_holds,
+            }
+        )
+    return {"run_id": context.tree.run_id, "units": units}
+
+
+def decide_reviews(
+    context, planned: list[tuple[dict, str, dict, list[dict]]]
+) -> tuple[list[tuple[dict, str, dict, list[dict], str | None]], dict[str, Any] | None]:
+    """Every planned review with the run's operator decisions applied, and their record.
+
+    Returns `(act, outcome, payload, inputs, approval_ref)` per unit, in the
+    plan's order, and the `review-decisions` payload (`None` when the run holds
+    no decision, so every review is the machine's own). An excluded unit's
+    `approval_ref` is the stored path of a current exclusion of it. A decision
+    that would accept a reading its page reading holds is refused: the
+    Archetypus establishes only a reading the Perlector did not hold.
+    """
+    stored = context.tree.review_decision_records()
+    if not stored:
+        return [(*plan, None) for plan in planned], None
+    paths = {reference.sha256: reference.relative_path for reference, _record in stored}
+    result = apply_decisions(derived_review(context, planned), [record for _, record in stored])
+    if missing := sorted({s["record_sha256"] for s in result["applied"]} - set(paths)):
+        raise FatalAccounting(f"applied review decision(s) {missing} are not stored in this run")
+    decided = []
+    for act, machine_outcome, _payload, inputs in planned:
+        unit = result["units"][act["act_id"]]
+        approval_ref = None
+        if unit["outcome"] == EXCLUDED:
+            approval_ref = paths[
+                min(
+                    s["record_sha256"]
+                    for s in result["applied"]
+                    if s["scope"] == UNIT_SCOPE
+                    and s["subject_id"] == act["act_id"]
+                    and s["decision"] == "exclude"
+                )
+            ]
+        if unit["outcome"] == ACCEPTED and machine_outcome != ACCEPTED:
+            _require_decided_establishable(act, unit)
+        decided.append((act, unit["outcome"], unit["payload"], inputs, approval_ref))
+    record = {
+        "schema": REVIEW_DECISIONS_SCHEMA,
+        "decisions_digest": result["decisions_digest"],
+        "applied": result["applied"],
+        "stale": result["stale"],
+        "conflicting": result["conflicting"],
+        "carried": result["carried"],
+        "unkept": result["unkept"],
+        "clearances": result["clearances"],
+        "page_holds": [
+            {"page_ordinal": ordinal, "hold_codes": codes}
+            for ordinal, codes in sorted(held_pages(result).items())
+        ],
+        "requests": result["requests"],
+    }
+    return decided, record
+
+
+def _require_decided_establishable(act: dict, unit: dict) -> None:
+    """Refuse a decision that accepts a reading the stages after this one would not establish."""
+    if act["perlectio_ref"] is None:
+        return
+    try:
+        require_establishable(act, {"outcome": ACCEPTED, "payload": unit["payload"]})
+    except FatalAccounting as error:
+        hashes = sorted(s["decision_hash"] for s in unit["payload"][REVIEW_FIELD]["decisions"])
+        raise ApprovalRefusal(
+            f"operator review decision(s) {hashes} would accept {act['act_key']}, which its "
+            f"page reading holds ({', '.join(act['hold_codes'])}); the Archetypus establishes "
+            "only a reading the Perlector did not hold, so no decision clears a hold the "
+            "reading itself carries"
+        ) from error
+
+
+def _review_decisions_ordinal(context, record: dict[str, Any]) -> int:
+    """The attempt ordinal the pass's `review-decisions` record is published at.
+
+    The current one's when nothing changed, so a repeat reuses its bytes, and
+    the next one otherwise. A decision recorded after the Archetypus has
+    published cannot reach what it established, so a changed record is refused
+    once the Archetypus has any record: a new run is needed.
+    """
+    current = current_review_decisions(context)
+    if current is not None:
+        ordinal = current.pop("attempt_ordinal")
+        if current == record:
+            return ordinal
+    if context.tree.build_manifest(ARCHETYPUS)["artifacts"]:
+        raise ApprovalRefusal(
+            "operator review decisions changed after the Archetypus published; a decision "
+            "recorded after establishment cannot reach the export, so a new run is needed"
+        )
+    return 1 if current is None else ordinal + 1
+
+
+def publish_review_decisions(context, record: dict[str, Any], ordinal: int) -> None:
+    """Publish the pass's `review-decisions` record at `_review_decisions_ordinal`'s ordinal."""
+    context.publish(
+        kind=REVIEW_DECISIONS_KIND,
+        subject_id=REVIEW_DECISIONS_SUBJECT,
+        outcome="recorded",
+        attempt=attempt_id(REVIEW_DECISIONS_SUBJECT, REVIEW_DECISIONS_OPERATION, ordinal),
+        payload={**record, "attempt_ordinal": ordinal},
+    )
 
 
 # --- the pass --------------------------------------------------------------------------
@@ -649,6 +806,8 @@ def review_pages(
     """
     pages = denominator["pages"]
     acts, planned = plan_reviews(context, denominator, page_coverage_findings)
+    decided, decisions = decide_reviews(context, planned)
+    ordinal = None if decisions is None else _review_decisions_ordinal(context, decisions)
     by_id = {act["act_id"]: act for act in acts}
     links = [
         (subject, payload, link_inputs(payload, by_id, pages))
@@ -656,7 +815,7 @@ def review_pages(
     ]
 
     held = 0
-    for act, outcome, payload, inputs in planned:
+    for act, outcome, payload, inputs, approval_ref in decided:
         publish_review(
             context,
             subject_id=act["act_id"],
@@ -665,8 +824,11 @@ def review_pages(
             inputs=inputs,
             payload=payload,
             check=validate_page_review_payload,
+            approval_ref=approval_ref,
         )
         held += outcome == HELD
+    if decisions is not None:
+        publish_review_decisions(context, decisions, ordinal)
     for subject, payload, inputs in links:
         outcome = link_outcome(payload)
         context.publish(
@@ -756,6 +918,21 @@ def require_derived_outcome(act: dict, review: dict, coverage: dict, off_edge: l
         )
 
 
+def release_reason(act: dict, review: dict) -> str | None:
+    """Why a unit its page reading held is completed at review, or None for any other unit.
+
+    The machine's release names its confirmation; a unit an operator decision
+    completed names that decision through its review's reason.
+    """
+    payload = review["payload"]
+    if (payload.get("release") or {}).get("reason") is not None:
+        return payload["release"]["reason"]
+    completed = classify(RECENSOR, review["outcome"]) is OutcomeClass.COMPLETED
+    if act["disposition"] == "held" and completed and REVIEW_FIELD in payload:
+        return payload["reason"]
+    return None
+
+
 def current_links(context, expected: list[tuple[str, dict]], by_id, pages) -> list[dict]:
     """Every continuation-link on disk, matched one to one against the breaks disk derives."""
     derived = {subject: payload for subject, payload in expected}
@@ -821,6 +998,16 @@ def write_reading_receipt(
     denominator = reading_denominator(context)
     pages = denominator["pages"]
     acts, planned = plan_reviews(context, denominator, page_coverage_findings)
+    decided, decisions = decide_reviews(context, planned)
+    recorded = current_review_decisions(context)
+    if recorded is not None:
+        recorded.pop("attempt_ordinal")
+    if recorded != decisions:
+        raise FatalAccounting(
+            "the Recensor's review-decisions record is not what the run's operator review "
+            "decisions give against the reviews disk measures"
+        )
+    machine = {act["act_id"]: (outcome, payload) for act, outcome, payload, _inputs in planned}
     by_id = {act["act_id"]: act for act in acts}
     reviews: dict[str, list[dict]] = {act_id: [] for act_id in by_id}
     for entry in context.tree.build_manifest(RECENSOR)["artifacts"]:
@@ -840,7 +1027,9 @@ def write_reading_receipt(
         reviews[record["subject_id"]].append(record)
     off_edge = continuation_off_edge(acts)
     items = []
-    for act, outcome, expected, inputs in sorted(planned, key=lambda plan: plan[0]["act_id"]):
+    for act, outcome, expected, inputs, approval_ref in sorted(
+        decided, key=lambda plan: plan[0]["act_id"]
+    ):
         act_id = act["act_id"]
         if not reviews[act_id]:
             raise FatalAccounting(f"unit {act_id} ({act['act_key']}) has no Recensor review")
@@ -858,7 +1047,13 @@ def write_reading_receipt(
                 f"Recensor review of {act_id} does not retain the unit key and witness coverage "
                 "recomputed from disk"
             )
-        require_derived_outcome(act, review, coverage, off_edge.get(act_id, []))
+        if REVIEW_FIELD in payload:
+            # A decided review derives from the machine's, which `decide_reviews` recomputes.
+            machine_outcome, machine_payload = machine[act_id]
+            derived = {"outcome": machine_outcome, "payload": machine_payload}
+        else:
+            derived = review
+        require_derived_outcome(act, derived, coverage, off_edge.get(act_id, []))
         sealed = {name: value for name, value in payload.items() if name != "attempt_ordinal"}
         differing = sorted(
             name for name in set(sealed) | set(expected) if sealed.get(name) != expected.get(name)
@@ -867,6 +1062,8 @@ def write_reading_receipt(
             differing.insert(0, "outcome")
         if refs_by_path(review.get("inputs", [])) != refs_by_path(inputs):
             differing.append("inputs")
+        if review.get("approval_ref") != approval_ref:
+            differing.append("approval_ref")
         if differing:
             raise FatalAccounting(
                 f"Recensor review of {act_id} is not the review disk measures: its "
@@ -877,7 +1074,7 @@ def write_reading_receipt(
                 "act_id": act_id,
                 "act_key": act["act_key"],
                 "page_disposition": act["disposition"],
-                "release_reason": (payload.get("release") or {}).get("reason"),
+                "release_reason": release_reason(act, review),
                 "review_ref": context.artifact_ref(RECENSOR, "review", review["artifact_id"]),
                 "review_outcome": review["outcome"],
                 "partition_class": classify(RECENSOR, review["outcome"]).value,

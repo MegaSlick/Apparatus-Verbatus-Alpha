@@ -217,6 +217,7 @@ def publish_review(
     inputs: list[dict],
     payload: dict,
     check,
+    approval_ref: str | None = None,
 ) -> dict:
     """Write a review only after rejecting witness-selection vocabulary.
 
@@ -228,7 +229,8 @@ def publish_review(
 
     The whole payload is screened, so a future payload field cannot carry
     witness-selection vocabulary unchecked. `check` validates the payload's own
-    closed shape.
+    closed shape. `approval_ref` cites the operator decision an excluded unit's
+    review rests on.
     """
     refuse_capture_preference(payload, what="a Recensor review")
     check(subject_id, payload)
@@ -241,6 +243,7 @@ def publish_review(
             attempt=attempt_id(subject_id, "recense", ordinal),
             inputs=inputs,
             payload={**payload, "attempt_ordinal": ordinal},
+            approval_ref=approval_ref,
         )
 
     if prior is None:

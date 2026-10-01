@@ -6,10 +6,13 @@ and records decisions as `approval-record.v1` (`common.contracts.approval`),
 outside the sealed stage records. This module is how current decisions apply
 on top of the Recensor's derived review, as pure functions over data: no I/O.
 
-Not wired in: no stage calls these functions and no operator CLI builds or shows
-a decision, so a recorded decision is not applied and a held unit stays held.
-`common.contracts.outcomes.run_aggregate` takes the `review_clearances` and
-`review_page_holds` that `apply_decisions` returns, but no caller passes them.
+The Recensor's page path (`pipeline/5_recensor/page_review.py`) reads every
+decision the run stores (`RunTree.review_decision_records`) and applies them
+with `apply_decisions` on every pass, recording the result in its
+`review-decisions` record; the Armarium hands that record's clearances and held
+pages to `common.contracts.outcomes.run_aggregate` as `review_clearances`
+(`aggregate_clearances`) and `review_page_holds` (`held_pages`). No operator
+command builds or shows a decision yet.
 
 The input is the derived review, the Recensor's review as the machine derives
 it before any decision:

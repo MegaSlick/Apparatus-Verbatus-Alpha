@@ -3,10 +3,14 @@
 A page-read run's Recensor publishes one `review` per counted unit of
 `common.stage.reading_acts` (an act or other reading of a page, or the one row
 standing for a page with none) and one `continuation-link` per page break
-either side's answer flag names (`pipeline/5_recensor/CONTRACT.md`). The
-Recensor writes them in the shapes named here, and the Archetypus and the
-Armarium read them through this module, so no two stages can disagree about
-them.
+either side's answer flag names (`pipeline/5_recensor/CONTRACT.md`). When the
+run holds operator review decisions, each review a decision concerns carries
+an `operator_review` block (`common.review_decisions`), an excluded unit's
+review cites its decision as the envelope's `approval_ref`, and one
+`review-decisions` record names every decision the pass applied, found stale or
+could not keep. The Recensor writes them in the shapes named here, and the
+Archetypus and the Armarium read them through this module, so no two stages can
+disagree about them.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from typing import Any, Final
 from common.contracts.errors import FatalAccounting
 from common.contracts.stages import RECENSOR
 from common.page_path import FIRST_READING
+from common.review_decisions import EXCLUDED, REVIEW_FIELD
 from common.stage import (
     COUNTED_READING_CLASSES,
     NO_ACT_ON_PAGE_HOLD,
@@ -61,8 +66,31 @@ PAGE_REVIEW_FIELDS: Final = frozenset(
     }
 )
 PUBLISHED_PAGE_REVIEW_FIELDS: Final = PAGE_REVIEW_FIELDS | {"attempt_ordinal"}
+# A review an operator decision concerns adds its `operator_review` block.
+REVIEWED_PAGE_REVIEW_FIELDS: Final = PAGE_REVIEW_FIELDS | {REVIEW_FIELD}
 RELEASE_FIELDS: Final = frozenset({"hold_codes", "reason"})
 NOTE_FIELDS: Final = frozenset({"code", "flags"})
+
+# The one record of what a Recensor pass did with the run's operator review
+# decisions, published only when the run holds any.
+REVIEW_DECISIONS_KIND: Final = "review-decisions"
+REVIEW_DECISIONS_SCHEMA: Final = "recensor-review-decisions.v1"
+REVIEW_DECISIONS_SUBJECT: Final = "operator-review"
+REVIEW_DECISIONS_OPERATION: Final = "decide"
+REVIEW_DECISIONS_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "decisions_digest",
+        "applied",
+        "stale",
+        "conflicting",
+        "carried",
+        "unkept",
+        "clearances",
+        "page_holds",
+        "requests",
+    }
+)
 
 CONTINUATION_LINK_KIND: Final = "continuation-link"
 CONTINUATION_LINK_SCHEMA: Final = "recensor-continuation-link.v1"
@@ -144,11 +172,15 @@ def _require_review_of_row(review: Mapping[str, Any], row: Mapping[str, Any]) ->
     """
     payload = _payload(review)
     what = f"the Recensor review of {row['act_key']}"
-    if set(payload) != PUBLISHED_PAGE_REVIEW_FIELDS:
+    fields = PUBLISHED_PAGE_REVIEW_FIELDS | ({REVIEW_FIELD} if REVIEW_FIELD in payload else set())
+    if set(payload) != fields:
         raise FatalAccounting(
-            f"{what} is not the closed page-review shape: "
-            f"{sorted(set(payload) ^ PUBLISHED_PAGE_REVIEW_FIELDS)}"
+            f"{what} is not the closed page-review shape: {sorted(set(payload) ^ fields)}"
         )
+    # Only an operator decision excludes, and an excluded unit keeps its page's holds.
+    excluded = review.get("outcome") == EXCLUDED
+    if excluded and REVIEW_FIELD not in payload:
+        raise FatalAccounting(f"{what} is excluded, but no operator review decided it")
     reading_ref = payload["perlectio_ref"]
     if (
         payload["act_key"] != row["act_key"]
@@ -169,7 +201,7 @@ def _require_review_of_row(review: Mapping[str, Any], row: Mapping[str, Any]) ->
     if (
         not isinstance(payload["reason"], str)
         or not _strings(payload["hold_codes"])
-        or (review.get("outcome") == HELD) != bool(payload["hold_codes"])
+        or (not excluded and (review.get("outcome") == HELD) != bool(payload["hold_codes"]))
         or not (
             release is None
             or (
@@ -190,7 +222,7 @@ def _require_review_of_row(review: Mapping[str, Any], row: Mapping[str, Any]) ->
     ):
         raise FatalAccounting(
             f"{what} does not carry its reason, hold codes, release and notes in the "
-            "page-review shape, held exactly when it names a hold code"
+            "page-review shape, held exactly when it names a hold code unless excluded"
         )
 
 
@@ -236,6 +268,34 @@ def review_reason(review: Mapping[str, Any]) -> str:
         named = ", ".join(str(code) for code in codes)
         return f"{reason} (holds: {named})" if reason else f"holds: {named}"
     return reason
+
+
+def current_review_decisions(context) -> dict[str, Any] | None:
+    """The payload of the Recensor's current `review-decisions` record, or None when it has none.
+
+    Only a run that holds operator review decisions has one.
+    """
+    records = [
+        context.tree.read_artifact(RECENSOR, REVIEW_DECISIONS_KIND, entry["artifact_id"])
+        for entry in stage_manifest(context, RECENSOR)["artifacts"]
+        if entry["kind"] == REVIEW_DECISIONS_KIND
+    ]
+    if not records:
+        return None
+    record = latest_attempt(
+        records, "Recensor review-decisions record", operation=REVIEW_DECISIONS_OPERATION
+    )
+    payload = _payload(record)
+    if (
+        record.get("subject_id") != REVIEW_DECISIONS_SUBJECT
+        or set(payload) != REVIEW_DECISIONS_FIELDS | {"attempt_ordinal"}
+        or payload["schema"] != REVIEW_DECISIONS_SCHEMA
+    ):
+        raise FatalAccounting(
+            f"Recensor review-decisions record {record.get('artifact_id')!r} is not a "
+            f"{REVIEW_DECISIONS_SCHEMA} record"
+        )
+    return dict(payload)
 
 
 def review_coverage(review: Mapping[str, Any]) -> dict[str, Any]:
