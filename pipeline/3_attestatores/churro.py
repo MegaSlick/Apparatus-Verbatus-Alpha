@@ -6,9 +6,7 @@ their retained blob at three stages, none of which may import this module.
 
 Churro-DS carries no geometry -- one continuous reading-order text string per
 page -- so this chair is asked no coordinate channel and `observe` reports
-only the presented-page echo, excluded from routing and coverage. Attachment
-for an act instead runs on the Perlector's `anchor-line` basis for an aligned
-page witness.
+only the presented-page echo, excluded from routing and coverage.
 
 Provenance: `github.com/stanford-oval/Churro` (Apache-2.0) at tag `v0.3.0` =
 `4abb17386d9656199c2776195926545fc527a691` for the registry string, the image
@@ -42,10 +40,7 @@ PRESENT_COLOUR_MODE: Final = "rgb"
 
 #: Declared from the vendor grammar, not assumed. `HistoricalDocument` has no
 #: coordinate anywhere in its XSD, so layout is false; it does carry doubt
-#: (`Illegible`, `Gap`, `Deletion`, `Addition`), so uncertainty is true -- safe
-#: to declare because this chair attaches on the anchor-line basis, so an act
-#: it reaches always has a comparison view and an act it doesn't stays
-#: `compared: "unknown"` regardless.
+#: (`Illegible`, `Gap`, `Deletion`, `Addition`), so uncertainty is true.
 FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
     {"can_express_uncertainty": True, "can_express_layout": False}
 )
@@ -174,17 +169,14 @@ def present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     `native_witness.py::validate_presented_page_binding` replays these same
     steps against the sealed page and refuses a digest mismatch.
 
-    Only a whole-page presentation is transformed and recorded; a `region`
-    presentation (an act view of this page witness) is returned unchanged,
-    since no chair was ever shown those pixels and minting a vendor recipe
-    over them would claim a step that never ran. A page already inside the
-    2,500-pixel square still records the operation, since the vendor's own
-    function still runs on it.
+    Only a whole page is presented. A page already inside the 2,500-pixel
+    square still records the operation, since the vendor's own function still
+    runs on it.
     """
 
     validate_presented(presentation)
     if presentation["kind"] != "page":
-        return presentation
+        raise SchemaRefusal("Churro reads whole pages; it is never shown a crop of one")
     transform = presentation["transform"]
     page_id = transform["source_page_id"]
     _, page_bytes = read_sealed_page(context.tree, page_id, what="Churro")

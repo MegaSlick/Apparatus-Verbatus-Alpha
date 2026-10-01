@@ -1,7 +1,7 @@
 """Unit 2: a run's decoding posture is sealed at creation and named if it moves.
 
-`config/decoding.toml` is every reading chair's sampling values and the
-labelled variance experiment's seed and pass count. It joins the sealing family: its
+`config/decoding.toml` is every reading chair's sampling values, the
+Perlector's whole-page output cap and Chandra's native recipe. It joins the sealing family: its
 exact bytes are digested into `config_digest`, filed under `decoding` in
 `sealed_config_digests`, and re-read at each point of use.
 
@@ -104,7 +104,7 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, change:
         "sampling": source.replace(
             "[chair_decoding.perlector]\n", "[chair_decoding.perlector]\ndo_sample = true\n", 1
         ),
-        "legacy": source.replace('schema = "decoding.v6"', 'schema = "decoding.v3"', 1),
+        "legacy": source.replace('schema = "decoding.v7"', 'schema = "decoding.v3"', 1),
     }[change]
     substitute.write_text(body, encoding="utf-8")
     run_root = tmp_path / "runs"
@@ -135,7 +135,7 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, change:
 def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(tmp_path, program: str):
     """Refused, and refused *by name*: the message says `decoding` moved.
 
-    A moved variance seed leaves a valid policy; the substitution is what is refused.
+    A moved page cap leaves a valid policy; the substitution is what is refused.
 
     Naming the policy matters as much as refusing it. "different config_digest,
     sealed_config_digests" is true whichever of the ten sealed files moved, and
@@ -144,7 +144,7 @@ def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(tmp_pat
     run_root, _tree = _through_designator(tmp_path)
     substitute = tmp_path / "decoding.toml"
     source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
-    body = source.replace("seed = 20260820", "seed = 20260821", 1)
+    body = source.replace("page_max_tokens = 12288", "page_max_tokens = 12287", 1)
     substitute.write_text(body, encoding="utf-8")
     assert load_decoding_policy(substitute)[1] != load_decoding_policy()[1]
 

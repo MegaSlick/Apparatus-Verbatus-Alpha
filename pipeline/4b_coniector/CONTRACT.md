@@ -21,15 +21,11 @@ reconstruction is counted in any denominator.
   departure bounds `common.reconstruction.load_reconstruction_policy` reads.
 - The sealed decoding policy: the `reconstructor` chair's sampling row and
   `[reconstructor_generation] answer_max_tokens`.
-- On a page-read run, `common.stage.reading_acts`: every entry of each read page
-  answer (classes `reading` and `reading-unplaced`), each read through its
-  `perlectio.v2`. Its diplomatic text is the Perlectio's text with its doubt
+- `common.stage.reading_acts`: every entry of each read page answer (classes
+  `reading` and `reading-unplaced`), each read through its `perlectio.v3`. Its diplomatic text is the Perlectio's text with its doubt
   marks rendered back (`render_doubt_marks`).
 - The `reconstructor` chair from the run's roster: the Perlector's model at the
   Perlector's revision, asked text only.
-
-An act-read run has no page answers to reconstruct over; its plan says so and
-asks nothing.
 
 ## Records
 
@@ -37,8 +33,8 @@ Shapes and derivations are `common/reconstruction_records.py`, the one module
 both this stage and the Armarium derive them with.
 
 `reconstruction-plan` (subject `coniector`, outcome `planned`), schema
-`coniector-plan.v1`: `{mode, pages_are_consecutive, policy_sha256,
-reading_unit, not_applicable, calls}`. `calls` is
+`coniector-plan.v2`: `{mode, pages_are_consecutive, policy_sha256, calls}`
+(v1 also named the run's reading unit, which every run now reads whole). `calls` is
 `common.reconstruction.reconstruction_plan` over the entries: one call per page,
 `{page_ordinal, subjects, chains, context}`. Chains (an act crossing an agreed
 page break) and context (the neighbouring pages' edge acts) exist only when the

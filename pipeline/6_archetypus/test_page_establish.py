@@ -2,7 +2,7 @@
 
 The trees are the fixture's `happy`, `page-review`, `page-other` and
 `page-no-act-unbroken` (`page-no-act` with nothing running across the page
-break) scenarios read with `reading_unit = "page"` and reviewed by the real
+break) scenarios, read page by page and reviewed by the real
 Recensor. Two tests forge a review the
 Recensor does not write on the fixture (`conftest.forge_page_review`), each
 saying why.
@@ -21,7 +21,7 @@ from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.stages import ARCHETYPUS, RECENSOR
 from common.exemplar_boundary import verify_reading_region_lineage
 from common.page_review import current_page_reviews
-from common.page_testimonia import current_page_testimonia, sealed_proposal_regions
+from common.page_testimonia import current_page_testimonia
 from common.runtree.store import RunTree
 from common.stage import NO_ACT_ON_PAGE_HOLD, reading_acts
 from conftest import (
@@ -253,7 +253,7 @@ def _constructor(tree_dir, tmp_path, scenario="happy", accept_held=()):
     context = page_context(root, RUN_ID, scenario, options)
     rows = {row["act_key"]: row for row in reading_acts(context)}
     reviews = current_page_reviews(context, list(rows.values()))
-    testimonia = current_page_testimonia(context, sealed_proposal_regions(context))
+    testimonia = current_page_testimonia(context)
 
     def establish(key, **row_changes):
         row = {**rows[key], **row_changes}

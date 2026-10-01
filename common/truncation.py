@@ -123,7 +123,7 @@ def _stop_reason_signal(stop_reason: str | None) -> str | None:
     """The one declared signal. `None` means nothing was declared.
 
     This module only ever sees `"stop"` or `"length"`: the fixture reader
-    declares them directly, and `live_reader.py::_mapped_stop_reason` maps a
+    declares them directly, and `operations/serving/chat_request.py::mapped_stop_reason` maps a
     real engine's own finish-reason word into the same two before it reaches
     here, refusing anything it does not recognize rather than letting an
     unmapped word through.

@@ -28,7 +28,6 @@ from common.imaging import (
 )
 from common.imaging_ports import scale_to_fit_chandra
 from common.native_witness import (
-    partition_disagreement,
     validate_capture_text_view,
     validate_native_capture,
     validate_observed,
@@ -36,10 +35,21 @@ from common.native_witness import (
 )
 from common.runtree.store import RunTree
 from common.stage import StageContext
-from conftest import load_stage
+from conftest import load_stage, run_through
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE = Path(__file__).resolve().parent
+
+
+def _read_attempt(attestatores, text: str):
+    return attestatores.Attempt(
+        "read",
+        text,
+        None,
+        attestatores.DEFAULT_FORMAT_CAPABILITIES,
+        attestatores.content_health(text, completed=True),
+        None,
+    )
 
 
 def _presented():
@@ -76,38 +86,23 @@ def test_chandra_quantizes_retained_float_boxes_by_its_declared_rule():
 
 def test_fixture_run_retains_chandra_bytes_and_names_an_unverified_shape(tmp_path):
     run_root = tmp_path / "runs"
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--fixture-root",
-            str(ROOT / "proof"),
-            "--scenario",
-            "happy",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "r",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
+    run_through(run_root, "r", "happy", "attestatores")
     tree = RunTree(run_root, "r")
     records = [
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
+        tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
         for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
+        if entry["kind"] == "page-testimonium"
     ]
-    chandra_records = [record for record in records if record["payload"]["chair"] == "attestator_1"]
+    chandra_records = [
+        record
+        for record in records
+        if record["payload"]["chair"] == "attestator_1" and record["payload"]["page_ordinal"] == 1
+    ]
     assert chandra_records
     for record in chandra_records:
         payload = record["payload"]
-        raw = payload["raw_response_ref"]
-        assert digest_bytes(tree.read_bytes(raw["relative_path"])) == raw["sha256"]
+        for raw in payload["raw_response_refs"]:
+            assert digest_bytes(tree.read_bytes(raw["relative_path"])) == raw["sha256"]
         assert payload["provenance"]["resolved_identity"] is not None
         assert payload["adapter_metadata"] == {
             "geometry_quantization": load_stage("3_attestatores", "chandra").QUANTIZATION_RULE
@@ -150,6 +145,21 @@ def test_chandra_shape_surprise_keeps_bytes_with_a_named_parse_outcome(tmp_path)
     ) == {"parse_outcome": "malformed-block-geometry"}
 
 
+def _chandra_page_row(scenario: str, raw_responses, **fields) -> dict:
+    return {
+        "scenario": scenario,
+        "page_ordinal": 1,
+        "chair": "attestator_1",
+        "payload": "declared fixture text",
+        "raw_responses": raw_responses,
+        **fields,
+    }
+
+
+def _resolve(attestatores, context, resolved):
+    return attestatores.fixture_page_attempt(context, 1, "attestator_1", resolved, 1)
+
+
 def test_chandra_shape_surprise_is_a_failed_attempt_not_a_successful_read(tmp_path):
     attestatores = load_stage("3_attestatores")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
@@ -158,28 +168,18 @@ def test_chandra_shape_surprise_is_a_failed_attempt_not_a_successful_read(tmp_pa
         scenario="shape-surprise",
         fixture={
             "testimony": [
-                {
-                    "scenario": "shape-surprise",
-                    "act_key": "a1",
-                    "chair": "attestator_1",
-                    "payload": "declared fixture text",
-                    "raw_response": '{"schema":"fixture-chandra-response.v1","unknown":"shape"}',
-                }
-            ],
-            "witness_empty": [],
+                _chandra_page_row(
+                    "shape-surprise",
+                    ['{"schema":"fixture-chandra-response.v1","unknown":"shape"}'],
+                )
+            ]
         },
     )
-    attempt = attestatores.resolve_attempt(
-        context,
-        {"act_key": "a1"},
-        "attestator_1",
-        resolved,
-        {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
-    )
+    attempt = _resolve(attestatores, context, resolved)
     assert attempt.outcome == "failed"
     assert attempt.native_payload == {"parse_outcome": "missing-text"}
     assert attempt.reason == "the Chandra response shape was not recognized: missing-text"
-    assert attempt.raw_response_ref is not None
+    assert attempt.retained_responses
 
 
 def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_path):
@@ -192,31 +192,12 @@ def test_chandra_raw_text_must_equal_the_fixture_payload_after_retention(tmp_pat
         scenario="mismatch",
         fixture={
             "testimony": [
-                {
-                    "scenario": "mismatch",
-                    "act_key": "a1",
-                    "chair": "attestator_1",
-                    "payload": "different declaration",
-                    "raw_response": raw.decode(),
-                }
-            ],
-            "witness_empty": [],
+                _chandra_page_row("mismatch", [raw.decode()], payload="different declaration")
+            ]
         },
     )
     with pytest.raises(SchemaRefusal, match="raw response text differs"):
-        attestatores.resolve_attempt(
-            context,
-            {"act_key": "a1"},
-            "attestator_1",
-            resolved,
-            {
-                "ordinal": 1,
-                "empty": set(),
-                "not_run": set(),
-                "failures": set(),
-                "malformed": {},
-            },
-        )
+        _resolve(attestatores, context, resolved)
     digest = digest_bytes(raw)
     assert tree.read_bytes(f"3_attestatores/blobs/sha256/{digest}") == raw
 
@@ -229,30 +210,19 @@ def test_chandra_malformed_capabilities_fail_only_that_retained_attempt(tmp_path
         scenario="bad-capabilities",
         fixture={
             "testimony": [
-                {
-                    "scenario": "bad-capabilities",
-                    "act_key": "a1",
-                    "chair": "attestator_1",
-                    "payload": "actual",
-                    "raw_response": (
-                        '{"schema":"fixture-chandra-response.v1","markdown":"actual","blocks":[]}'
-                    ),
-                    "format_capabilities": "not-an-object",
-                }
-            ],
-            "witness_empty": [],
+                _chandra_page_row(
+                    "bad-capabilities",
+                    ['{"schema":"fixture-chandra-response.v1","markdown":"actual","blocks":[]}'],
+                    payload="actual",
+                    format_capabilities="not-an-object",
+                )
+            ]
         },
     )
-    attempt = attestatores.resolve_attempt(
-        context,
-        {"act_key": "a1"},
-        "attestator_1",
-        resolved,
-        {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
-    )
+    attempt = _resolve(attestatores, context, resolved)
     assert attempt.outcome == "failed"
     assert attempt.native_payload == "actual"
-    assert attempt.raw_response_ref is not None
+    assert attempt.retained_responses
     assert "format capabilities could not be retained" in attempt.reason
 
 
@@ -364,14 +334,15 @@ def test_an_unverified_chandra_wire_shape_cannot_acquire_fixture_geometry():
 
 
 @pytest.mark.parametrize(
-    ("adapter_name", "raw_response", "message"),
+    ("adapter_name", "raw_responses", "message"),
     (
-        ("chandra.v1", 7, "raw_response is not text encoding"),
-        ("churro.v1", "native bytes", "has no native byte route"),
+        ("chandra.v1", [7], "raw_responses is not a list of retained response texts"),
+        ("chandra.v1", [], "raw_responses is not a list of retained response texts"),
+        ("churro.v1", ["native bytes"], "have no native byte route"),
     ),
 )
 def test_fixture_raw_response_cannot_be_silently_discarded(
-    tmp_path, adapter_name, raw_response, message
+    tmp_path, adapter_name, raw_responses, message
 ):
     attestatores = load_stage("3_attestatores")
     resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
@@ -380,43 +351,25 @@ def test_fixture_raw_response_cannot_be_silently_discarded(
     context = _Context(
         tree=RunTree(tmp_path / "runs", "r"),
         scenario="bad-raw",
-        fixture={
-            "testimony": [
-                {
-                    "scenario": "bad-raw",
-                    "act_key": "a1",
-                    "chair": "attestator_1",
-                    "payload": "declared text",
-                    "raw_response": raw_response,
-                }
-            ],
-            "witness_empty": [],
-        },
+        fixture={"testimony": [_chandra_page_row("bad-raw", raw_responses)]},
     )
     with pytest.raises(SchemaRefusal, match=message):
-        attestatores.resolve_attempt(
-            context,
-            {"act_key": "a1"},
-            "attestator_1",
-            resolved,
-            {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
-        )
+        _resolve(attestatores, context, resolved)
 
 
 def test_a_second_fixture_native_adapter_cannot_be_filed_under_chandras_boundary(
     tmp_path, monkeypatch
 ):
-    """The retain recipe inside that branch is Chandra's, and now it says so.
+    """The retain recipe inside that branch is Chandra's, and it says so.
 
     `FIXTURE_NATIVE_RESPONSE_ADAPTERS` decides whose fixture rows may declare
-    `raw_response` bytes; the branch it opens retains them through Chandra's own
-    registry entry, `chandra.FIXTURE_PROMPT` and the `json` parser. Widening the
-    set without writing the new adapter's own branch would therefore publish a
-    Testimonium whose retained view and parser name a chair that never produced
-    those bytes -- the resolved identity and the record disagreeing, which
-    provenance does not permit. A comment said so and nothing checked it; this
-    is the check, and it fires where the set widens rather than at whatever
-    later reads the misfiled record.
+    `raw_responses` bytes; the branch it opens retains them through Chandra's
+    own registry entry, `chandra.FIXTURE_PROMPT` and the `json` parser.
+    Widening the set without writing the new adapter's own branch would
+    therefore publish a Testimonium whose retained view and parser name a
+    chair that never produced those bytes. This is the check, and it fires
+    where the set widens rather than at whatever later reads the misfiled
+    record.
     """
     attestatores = load_stage("3_attestatores")
     monkeypatch.setattr(
@@ -429,61 +382,35 @@ def test_a_second_fixture_native_adapter_cannot_be_filed_under_chandras_boundary
     context = _Context(
         tree=RunTree(tmp_path / "runs", "r"),
         scenario="bad-raw",
-        fixture={
-            "testimony": [
-                {
-                    "scenario": "bad-raw",
-                    "act_key": "a1",
-                    "chair": "attestator_1",
-                    "payload": "declared text",
-                    "raw_response": "<output>declared text</output>",
-                }
-            ],
-            "witness_empty": [],
-        },
+        fixture={"testimony": [_chandra_page_row("bad-raw", ["<output>declared text</output>"])]},
     )
     with pytest.raises(SchemaRefusal, match="would be retained through Chandra's recipe"):
-        attestatores.resolve_attempt(
-            context,
-            {"act_key": "a1"},
-            "attestator_1",
-            resolved,
-            {"ordinal": 1, "empty": set(), "not_run": set(), "failures": set(), "malformed": {}},
-        )
+        _resolve(attestatores, context, resolved)
 
 
-def test_empty_fixture_raw_response_cannot_be_silently_discarded(tmp_path):
+def test_an_empty_response_row_carrying_bytes_is_refused_not_discarded():
+    """An empty declaration has no response channel to carry, so a row that
+    names bytes anyway is refused by name rather than read without them."""
     attestatores = load_stage("3_attestatores")
-    resolved = load_models_toml(ROOT / "config/models.toml").chairs["attestator_1"]
-    context = _Context(
-        tree=RunTree(tmp_path / "runs", "r"),
+    config = load_models_toml(ROOT / "config/models.toml")
+    context = SimpleNamespace(
         scenario="bad-empty-raw",
+        witness_chairs=["attestator_1"],
+        registry=SimpleNamespace(config=config),
         fixture={
-            "testimony": [],
+            "page": [{"ordinal": 1}],
             "witness_empty": [
                 {
                     "scenario": "bad-empty-raw",
-                    "act_key": "a1",
+                    "page_ordinal": 1,
                     "chair": "attestator_1",
-                    "raw_response": 7,
+                    "raw_responses": ["{}"],
                 }
             ],
         },
     )
-    with pytest.raises(SchemaRefusal, match="raw_response is not text encoding"):
-        attestatores.resolve_attempt(
-            context,
-            {"act_key": "a1"},
-            "attestator_1",
-            resolved,
-            {
-                "ordinal": 1,
-                "empty": {("a1", "attestator_1")},
-                "not_run": set(),
-                "failures": set(),
-                "malformed": {},
-            },
-        )
+    with pytest.raises(SchemaRefusal, match=r"declares unknown field\(s\) \['raw_responses'\]"):
+        attestatores.validate_declared_page_responses(context, {"attestator_1"})
 
 
 def test_chandra_out_of_order_stage_invocation_holds_cleanly(tmp_path):
@@ -632,7 +559,7 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
     `ceil` on a max edge means any block whose float edge sits fractionally past
     the sealed page derives a box the shared wall refuses.  That fact belongs to
     this block, not to a valid neighbouring block from the same retained response.
-    The durable page partition therefore carries the exact, out-of-page box as a
+    The durable page record therefore carries the exact, out-of-page box as a
     response-linked finding and retains the valid block in its ordinary observed
     list.  Clamping would instead hand a fallback crop retrospective witness
     coverage it never received.
@@ -665,40 +592,21 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
         }
     ]
 
-    disagreement = partition_disagreement(
-        {
-            "artifact_id": "page-testimonium",
-            "payload": {"presented": _presented(), "observed": surviving},
-        },
-        [],
-        page_edge_overshoots=overshoots,
-    )
     durable = attestatores.page_testimonium_payload(
-        page_ordinal=1,
-        page_role="primary",
-        unjoined_act_attempts=[],
-        partition_disagreement=disagreement,
-        testimonium_id="page-testimonium",
-        raw_response_refs=[raw_ref],
-        adapter_metadata={"geometry_quantization": chandra.QUANTIZATION_RULE},
         chair="attestator_1",
-        act_key="page-1",
+        page_ordinal=1,
         ordinal=1,
-        regions=[],
         provenance={"chair": "attestator_1"},
-        format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
-        native_payload="two",
-        witness_reported=None,
-        health=attestatores.content_health("two", completed=True),
+        attempt=_read_attempt(attestatores, "two"),
         presented=_presented(),
         observed=surviving,
-        unpresented_regions=[],
-        outcome="read",
+        testimonium_id="page-testimonium",
+        page_edge_overshoots=overshoots,
+        raw_response_refs=[raw_ref],
+        adapter_metadata={"geometry_quantization": chandra.QUANTIZATION_RULE},
     )
-    assert durable["partition_disagreement"]["observed_boxes"] == [
-        {"ordinal": 0, "bounds": {"x": 10, "y": 10, "w": 90, "h": 90}, "bounds_source": "native"}
-    ]
-    assert durable["partition_disagreement"]["page_edge_overshoots"] == [overshoots[0]]
+    assert durable["observed"] == surviving
+    assert durable["page_edge_overshoots"] == [overshoots[0]]
 
     # The shared wall remains the refusal: the finding preserves these exact
     # derived bounds, and they still cannot masquerade as an observation.
@@ -717,18 +625,14 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
         )
 
 
-def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot():
-    """Two acts on one page legitimately re-derive the same chair's response.
+def test_one_response_derived_twice_does_not_double_count_its_overshoot():
+    """A page may retain one response twice (the same placeholder bytes).
 
-    `publish_page_testimonia_and_attachments` calls `page_partition_entries`
-    once per act on a page for a page-scoped Chandra chair, and two acts commonly
-    share one raw response (the page record already dedupes `raw_response_refs` for
-    exactly this reason). Re-deriving an out-of-page block from that same response
-    twice must not double-count it: `validate_partition_disagreement` refuses one
-    page-edge finding named twice, so an unrefined concatenation would abort the
-    whole page's publish over ordinary shared testimony rather than a malformed
-    record. The page writer must dedupe by the finding's own identity --
-    `(response_sha256, ordinal)` -- exactly as it already dedupes response refs.
+    Re-deriving an out-of-page block from that same response twice must not
+    double-count it: `validate_page_edge_overshoots` refuses one page-edge
+    finding named twice, so an unrefined concatenation would abort the page's
+    publish. The page writer dedupes by the finding's own identity --
+    `(response_sha256, ordinal)` -- exactly as it dedupes response refs.
     """
     chandra = load_stage("3_attestatores", "chandra")
     attestatores = load_stage("3_attestatores")
@@ -738,7 +642,7 @@ def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot
         "sha256": digest_bytes(raw),
     }
 
-    # Two acts on the page independently re-derive the identical response.
+    # The page's partition re-derives the identical response twice.
     first_survivors, first_overshoots = attestatores.page_partition_entries(
         chandra.observe(_presented(), raw), page_size=(200, 260), raw_response_ref=raw_ref
     )
@@ -748,7 +652,7 @@ def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot
     assert first_overshoots == second_overshoots
 
     # Mirrors the page writer's own renumbering of the aggregate `observed`
-    # list across every act contributing to this page/chair
+    # list across every retained response of this page/chair
     # (`observed.append({**item, "ordinal": len(observed)})`), so this test
     # isolates the overshoot-identity question from ordinary survivor
     # renumbering, which the writer already gets right.
@@ -757,40 +661,22 @@ def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot
         merged_observed.append({**item, "ordinal": len(merged_observed)})
 
     def _build(overshoots):
-        disagreement = partition_disagreement(
-            {
-                "artifact_id": "page-testimonium",
-                "payload": {"presented": _presented(), "observed": merged_observed},
-            },
-            [],
-            page_edge_overshoots=overshoots,
-        )
         return attestatores.page_testimonium_payload(
-            page_ordinal=1,
-            page_role="primary",
-            unjoined_act_attempts=[],
-            partition_disagreement=disagreement,
-            testimonium_id="page-testimonium",
-            raw_response_refs=[raw_ref],
-            adapter_metadata={"geometry_quantization": chandra.QUANTIZATION_RULE},
             chair="attestator_1",
-            act_key="page-1",
+            page_ordinal=1,
             ordinal=1,
-            regions=[],
             provenance={"chair": "attestator_1"},
-            format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
-            native_payload="two",
-            witness_reported=None,
-            health=attestatores.content_health("two", completed=True),
+            attempt=_read_attempt(attestatores, "two"),
             presented=_presented(),
             observed=merged_observed,
-            unpresented_regions=[],
-            outcome="read",
+            testimonium_id="page-testimonium",
+            page_edge_overshoots=overshoots,
+            raw_response_refs=[raw_ref],
+            adapter_metadata={"geometry_quantization": chandra.QUANTIZATION_RULE},
         )
 
-    # Naively concatenating both acts' re-derivations names one page-edge
-    # finding twice -- the exact crash this defect let a normal, shared page
-    # response trigger mid-publish.
+    # Naively concatenating both re-derivations names one page-edge finding
+    # twice, which the shared validator refuses.
     with pytest.raises(SchemaRefusal, match="names one page-edge finding twice"):
         _build([*first_overshoots, *second_overshoots])
 
@@ -805,7 +691,7 @@ def test_two_acts_sharing_one_chandra_response_do_not_double_count_its_overshoot
             seen.add(key)
             deduped.append(overshoot)
     durable = _build(deduped)
-    assert durable["partition_disagreement"]["page_edge_overshoots"] == first_overshoots
+    assert durable["page_edge_overshoots"] == first_overshoots
 
 
 @pytest.mark.parametrize(
@@ -876,29 +762,30 @@ def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record
     assert retained["stop_reason"] == "partial-parse-unrecognized-shape"
     assert tree.read_bytes(retained["raw_response_ref"]["relative_path"]) == raw
 
-    payload = attestatores.testimonium_payload(
+    native = {"parse_outcome": retained["parse"]["outcome"]}
+    payload = attestatores.page_testimonium_payload(
         chair="attestator_1",
-        act_key="a1",
+        page_ordinal=1,
         ordinal=1,
-        regions=[],
         provenance={"chair": "attestator_1"},
-        format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
-        native_payload={"parse_outcome": retained["parse"]["outcome"]},
-        witness_reported=None,
-        health=attestatores.content_health(
-            {"parse_outcome": retained["parse"]["outcome"]}, completed=True
+        attempt=attestatores.Attempt(
+            "failed",
+            native,
+            None,
+            attestatores.DEFAULT_FORMAT_CAPABILITIES,
+            attestatores.content_health(native, completed=True),
+            "the Chandra response shape was not recognized: malformed-block-geometry",
         ),
         presented={},
         observed=[],
-        unpresented_regions=[],
-        outcome="read",
-        raw_response_ref=retained["raw_response_ref"],
+        testimonium_id="page-testimonium",
+        raw_response_refs=[retained["raw_response_ref"]],
         adapter_metadata={
             "geometry_quantization": load_stage("3_attestatores", "chandra").QUANTIZATION_RULE
         },
     )
     assert payload["payload"] == {"parse_outcome": "malformed-block-geometry"}
-    assert payload["raw_response_ref"] == retained["raw_response_ref"]
+    assert payload["raw_response_refs"] == [retained["raw_response_ref"]]
     assert "reported" not in payload
     assert payload["content_health"]["recordable"] is True
 
@@ -922,10 +809,12 @@ def test_quantization_metadata_belongs_to_the_recorded_adapter_and_blob():
     payload = {
         "provenance": {"resolved_identity": {"witness_adapter": "churro.v1"}},
         "adapter_metadata": {"geometry_quantization": chandra_rule},
-        "raw_response_ref": {
-            "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
-            "sha256": "a" * 64,
-        },
+        "raw_response_refs": [
+            {
+                "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
+                "sha256": "a" * 64,
+            }
+        ],
     }
     with pytest.raises(SchemaRefusal, match="does not belong"):
         attestatores.validate_adapter_metadata(payload)
@@ -937,7 +826,7 @@ def test_quantization_metadata_belongs_to_the_recorded_adapter_and_blob():
         attestatores.validate_retained_response_pairing(
             {
                 "provenance": {"resolved_identity": {"witness_adapter": "chandra.v1"}},
-                "raw_response_ref": payload["raw_response_ref"],
+                "raw_response_refs": payload["raw_response_refs"],
             }
         )
 
@@ -965,7 +854,7 @@ def test_retained_response_reference_is_the_exact_lowercase_digest_path(referenc
         attestatores.validate_raw_response_ref(reference)
 
 
-def test_act_tally_rechecks_retained_response_bytes(tmp_path):
+def test_the_tally_rechecks_retained_response_bytes(tmp_path):
     attestatores = load_stage("3_attestatores")
     tree = RunTree(tmp_path / "runs", "r")
     raw = b"retained response"
@@ -977,7 +866,7 @@ def test_act_tally_rechecks_retained_response_bytes(tmp_path):
         attestatores.validate_retained_response_blob(tree, reference)
 
 
-def test_resume_collision_compares_native_response_digest_not_only_parsed_text():
+def test_a_repeated_pass_compares_native_response_digests_not_only_parsed_text():
     attestatores = load_stage("3_attestatores")
     sealed_ref = {
         "relative_path": "3_attestatores/blobs/sha256/" + "a" * 64,
@@ -989,7 +878,7 @@ def test_resume_collision_compares_native_response_digest_not_only_parsed_text()
     }
     health = attestatores.content_health("same text", completed=True)
     history = {
-        ("act-1", "attestator_1"): [
+        ("page-1", "attestator_1"): [
             {
                 "outcome": "read",
                 "payload": {
@@ -998,7 +887,7 @@ def test_resume_collision_compares_native_response_digest_not_only_parsed_text()
                     "witness_reported": None,
                     "format_capabilities": attestatores.DEFAULT_FORMAT_CAPABILITIES,
                     "content_health": health,
-                    "raw_response_ref": sealed_ref,
+                    "raw_response_refs": [sealed_ref],
                 },
             }
         ]
@@ -1010,48 +899,21 @@ def test_resume_collision_compares_native_response_digest_not_only_parsed_text()
         format_capabilities=attestatores.DEFAULT_FORMAT_CAPABILITIES,
         health=health,
         reason=None,
-        raw_response_ref=candidate_ref,
-        observation_payload=b"different layout bytes",
+        retained_responses=((b"different layout bytes", candidate_ref),),
     )
 
     with pytest.raises(SchemaRefusal, match="would record a different attempt"):
-        attestatores._refuse_write_collision(
-            history,
-            {"act_id": "act-1", "act_key": "a1"},
-            "attestator_1",
-            1,
-            candidate,
-        )
+        attestatores._refuse_write_collision(history, "page-1", "attestator_1", 1, candidate)
 
 
 def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp_path):
     """The geometry record must name the retained response that produced it.
 
     The page Testimonium carries integer boxes derived from native floats. Its
-    response reference must travel in that same record rather than require a
-    later join through compatibility records.
+    response reference must travel in that same record.
     """
     run_root = tmp_path / "runs"
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--fixture-root",
-            str(ROOT / "proof"),
-            "--scenario",
-            "happy",
-            "--run-root",
-            str(run_root),
-            "--run-id",
-            "r",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
+    run_through(run_root, "r", "happy", "attestatores")
     tree = RunTree(run_root, "r")
     pages = [
         tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
@@ -1080,6 +942,7 @@ def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp
         record["payload"]
         for record in pages
         if all(item["bounds_source"] == "presented" for item in record["payload"]["observed"])
+        and record["payload"]["chair"] == "attestator_1"
     ]
     assert echoes
     for payload in echoes:
@@ -1089,26 +952,7 @@ def test_the_page_record_names_the_bytes_its_own_geometry_was_quantized_from(tmp
 
 def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp_path):
     complete_root = tmp_path / "complete"
-    complete = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/orchestrator/run.py"),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--fixture-root",
-            str(ROOT / "proof"),
-            "--scenario",
-            "happy",
-            "--run-root",
-            str(complete_root),
-            "--run-id",
-            "r",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert complete.returncode == 0, complete.stderr
+    run_through(complete_root, "r", "happy", "attestatores")
     sealed = RunTree(complete_root, "r")
     seals = [
         sealed.read_artifact(ATTESTATORES, "stage-seal", entry["artifact_id"])
@@ -1118,7 +962,7 @@ def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp
     assert len(seals) == 1
     census = {(row["kind"], row["outcome"]): row["count"] for row in seals[0]["payload"]["census"]}
     assert census[("page-testimonium", "read")] > 0
-    assert census[("testimonium", "read")] > 0
+    assert "testimonium" not in {kind for kind, _outcome in census}
 
     held_root = tmp_path / "held"
     door = subprocess.run(
@@ -1130,7 +974,7 @@ def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp
             "--fixture-root",
             str(ROOT / "proof"),
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-root",
             str(held_root),
             "--run-id",
@@ -1150,7 +994,7 @@ def test_the_stage_seals_its_boundary_and_an_out_of_order_pass_seals_nothing(tmp
             "--fixture-root",
             str(ROOT / "proof"),
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-root",
             str(held_root),
             "--run-id",
@@ -1428,13 +1272,9 @@ def test_a_chandra_presentation_that_is_not_the_vendors_own_size_is_refused_at_r
         adapters.validate_adapter_presentation("chandra.v1", source, forged)
 
 
-def test_a_chandra_act_view_keeps_the_crop_it_was_given_and_mints_no_resize():
-    """No chair was shown an act crop of a page witness, so none is recorded.
-
-    An act view of a page witness restates one page reading against one act's
-    Designator crop. Minting the vendor's resize recipe over those pixels would
-    record a preprocessing step that never ran, on an image nobody sent.
-    """
+def test_a_chandra_chair_is_never_shown_a_crop_of_a_page():
+    """Chandra reads whole pages: a crop presented to it is refused rather than
+    passed through under a vendor resize recipe that never ran."""
     chandra = load_stage("3_attestatores", "chandra")
     adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     page = _page_png(200, 260)
@@ -1454,14 +1294,10 @@ def test_a_chandra_act_view_keeps_the_crop_it_was_given_and_mints_no_resize():
         },
     }
 
-    presented = chandra.present(context, region)
-
-    assert presented == region
-    adapters.validate_adapter_presentation("chandra.v1", region, presented)
-    with pytest.raises(SchemaRefusal, match="differs from the exact image it was given"):
-        adapters.validate_adapter_presentation(
-            "chandra.v1", region, {**region, "image_sha256": "2" * 64}
-        )
+    with pytest.raises(SchemaRefusal, match="reads whole pages"):
+        chandra.present(context, region)
+    with pytest.raises(SchemaRefusal, match="reads whole pages"):
+        adapters.validate_adapter_presentation("chandra.v1", region, region)
 
 
 def test_a_layout_answer_reads_as_page_text_with_one_box_per_placed_block():

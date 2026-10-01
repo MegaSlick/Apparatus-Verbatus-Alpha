@@ -48,7 +48,6 @@ from common.page_accounting import (
     is_inside,
     validate_answer,
 )
-from common.recovery import PAGE_LEVEL_REREAD, recovery_kind_budget
 
 # The findings a re-ask is asked about, and every other finding code.
 RE_ASKABLE: Final = frozenset({UNACCOUNTED_WITNESS_UNIT, UNREAD_LINE, RECORD_NOT_READ})
@@ -58,8 +57,12 @@ MAX_REASKS: Final = 1
 
 
 def reask_budget(recovery_policy: Mapping[str, Any]) -> int:
-    """The sealed `[budget] page_level_reread`: 0 turns the re-ask off, 1 allows one."""
-    budget = recovery_kind_budget(dict(recovery_policy), PAGE_LEVEL_REREAD)
+    """The sealed `[budget] page_level_reread`: 0 turns the re-ask off, 1 allows one.
+
+    `recovery_policy` is `common.recovery.load_recovery_policy`'s record, which has
+    already refused a value that is not a non-negative integer within the ruled cap.
+    """
+    budget = recovery_policy["page_level_reread"]
     if budget > MAX_REASKS:
         raise ContractError(
             f"the sealed page_level_reread is {budget}, but a page is re-asked at most "

@@ -2,12 +2,12 @@
 
 This module owns exactly the seam between an already-issued
 :class:`~operations.serving.client.ChairResponse` and the ``Attempt``-shaped
-facts `run.py::resolve_attempt` derives from a retained recordable response.
+facts `run.py::fixture_page_attempt` derives from a retained recordable response.
 It never wires a pass, never schedules a chair, and never imports ``run.py``.
 
-``act_chair_request``/``page_chair_request`` take a ready-made
-``presentation`` (the exact shape ``run.py``'s ``presentation_for_region``/
-``presentation_for_page`` build) rather than computing it themselves, to keep
+``record_chair_request`` (one DAI detector record) and ``page_chair_request``
+(one whole page) take a ready-made ``presentation`` (the exact shape
+``run.py``'s ``presentation_for_region``/``presentation_for_page`` build) rather than computing it themselves, to keep
 one source of truth for how a presentation is built and avoid a circular
 import.
 
@@ -20,7 +20,7 @@ names which of the two a given record holds. A wire body that could not be
 parsed at all produces ``native_capture = None``: no adapter ever ran, so
 there is no adapter-shaped capture to retain.
 
-**The generation split** (DAI, act-scoped): ``generation_declared`` retains
+**The generation split** (DAI): ``generation_declared`` retains
 DAI's whole carried ``generation_config.json`` as evidence. Its sampling
 values reach the wire only through the sealed decoding table
 (``config/decoding.toml``'s ``chair_decoding``), which ``ChairClient`` applies
@@ -46,17 +46,17 @@ and never a silent downscale.
 **DAI's closed model view**: unlike Churro or Chandra, DAI's retained view is
 closed to its own schema (``feeding.validate_dai_model_view``).
 ``live_attempt_from_response`` builds it with ``feeding.dai_model_view`` from
-the act's presentation, the adapter's published crop, its exact prompt text
-and declared generation config. The no-resize case is satisfied by content,
-not path identity: DAI's crop on that path is ``crop_png`` of the same sealed
-page at the same bounds as the Designator's proposal crop, so the two
+the record crop's presentation, the adapter's published crop, its exact prompt
+text and declared generation config. The no-resize case is satisfied by
+content, not path identity: DAI's crop on that path is ``crop_png`` of the same
+sealed page at the same bounds as the Designator's record crop, so the two
 references share one digest under two stage-owned paths.
 
 **Confirming a blank response**: ``genuinely-empty`` is confirmed only when
 the transport word is a recognized natural completion; an empty response
 whose stop word is a cut-off, unreported, or unrecognized is held as
 ``failed`` instead (none of those default to "finished
-naturally"). This applies on both the page-scoped and act-scoped paths alike.
+naturally"). This applies to a whole-page response and a DAI record response alike.
 """
 
 from __future__ import annotations
@@ -82,8 +82,8 @@ from common.imaging import dimensions
 from common.native_witness import native_parse_refusal
 from common.request_capacity import (
     DECLARED_ANSWER_BOUND_TOKENS,
-    act_answer_budget,
     dense_page_answer_budget,
+    record_answer_budget,
     refuse_unless_it_fits,
     sealed_prompt_tokens,
     sendable_max_tokens,
@@ -122,12 +122,12 @@ class LiveAttempt:
 
 
 @dataclass(frozen=True, slots=True)
-class ActChairRequest:
+class RecordChairRequest:
     """One DAI request, plus the exact presented crop and prompt it came from.
 
     Carried forward so `live_attempt_from_response` can build DAI's closed
     model view once the response comes back without running `adapter.present`
-    -- a real crop and resize -- a second time for the same act.
+    -- a real crop and resize -- a second time for the same record.
     """
 
     request: ChairRequest
@@ -230,8 +230,9 @@ def request_capacity_or_refuse(
     resize. The prompt cost is the measured constant for this chair, bound to
     a digest of the exact text (no tokenizer is available offline here). The
     answer budget is that chair's own measured response at the scope it was
-    asked at: a page chair reserves a dense page's answer, an act chair one
-    act's answer, since reserving a page's would refuse ordinary act crops.
+    asked at (``"page"`` or ``"record"``): Chandra reserves a dense page's
+    answer, DAI one record's answer, since reserving a page's would refuse
+    ordinary record crops.
     Churro is the exception: its whole vendor answer bound is reserved, so a
     row that cannot hold it refuses the page rather than letting the engine
     stop the answer short of what the vendor's own pipeline allows.
@@ -248,7 +249,12 @@ def request_capacity_or_refuse(
             f"request cannot be checked against a serving row; the named adapters are "
             f"{sorted(_ADAPTER_CHAIRS)}"
         )
-    budget = dense_page_answer_budget if scope == "page" else act_answer_budget
+    budgets = {"page": dense_page_answer_budget, "record": record_answer_budget}
+    if scope not in budgets:
+        raise SchemaRefusal(
+            f"a witness request was checked at scope {scope!r}; the scopes are {sorted(budgets)}"
+        )
+    budget = budgets[scope]
     answer = DECLARED_ANSWER_BOUND_TOKENS[chair] if adapter_name == "churro.v1" else budget(chair)
     return refuse_unless_it_fits(
         profile,
@@ -259,17 +265,15 @@ def request_capacity_or_refuse(
     )
 
 
-def act_chair_request(
+def record_chair_request(
     context: Any, adapter: Any, presentation: Mapping[str, Any], *, profile: Any
-) -> ActChairRequest:
-    """Build one act-scoped (DAI) reading request from an act's proposal presentation.
+) -> RecordChairRequest:
+    """Build one DAI reading request from one detector record crop's presentation.
 
     ``presentation`` is exactly what `run.py::presentation_for_region` returns
-    for the act's one proposal region; ``adapter.present`` is DAI's own
-    crop-and-resize step, publishing and returning the image this request
-    embeds. ``profile`` is the sealed serving row this chair runs under. Even
-    a page-fallback act's crop (one fallback band, not a whole page) is real
-    pixels this seam weighs against the row rather than assuming away.
+    for the record's crop; ``adapter.present`` is DAI's own crop-and-resize
+    step, publishing and returning the image this request embeds. ``profile``
+    is the sealed serving row this chair runs under.
     """
 
     presented = adapter.present(context, dict(presentation))
@@ -280,7 +284,7 @@ def act_chair_request(
         "dai.v1",
         prompt,
         [image_bytes],
-        scope="act",
+        scope="record",
         what=f"the dai.v1 request for region {presentation.get('region_ref')!r}",
     )
     messages = (
@@ -299,7 +303,7 @@ def act_chair_request(
         generation_sent=generation_sent,
         capacity=capacity,
     )
-    return ActChairRequest(
+    return RecordChairRequest(
         request=request,
         presented=presented,
         prompt=prompt,
@@ -496,7 +500,7 @@ def _unrecordable_health(reason: str) -> dict[str, Any]:
 def _unconfirmed_blank_reason(kind: str, transport_stop_reason: str, cut_off: bool | None) -> str:
     """Why an empty response is held rather than confirmed as ``genuinely-empty``.
 
-    ``kind`` names what was read (``"page"`` or ``"act"``); ``cut_off`` is
+    ``kind`` names what was read (``"page"`` or ``"record"``); ``cut_off`` is
     ``True`` for a recognized cut-off word and ``None`` for an unreported or
     unrecognized one -- both land here rather than becoming a confirmed blank.
     """
@@ -519,7 +523,7 @@ def _failed_parse_composition(
 ) -> tuple[str, str]:
     """Compose a parse failure's ``reason`` suffix and content-health basis.
 
-    Shared by the act-scoped and page-scoped parse-failure branches so a
+    Shared by the DAI record and whole-page parse-failure branches so a
     provider-truncated response cannot go on being folded into one and
     dropped from the other. When ``cut_off`` is ``True`` — the provider's stop
     word was a recognized cut-off — both strings name the truncation ahead of
@@ -544,7 +548,7 @@ def dai_model_view(
     generation_declared: Mapping[str, Any],
     generation_accounting: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build DAI's closed model view (`feeding.dai_model_view`) for this act.
+    """Build DAI's closed model view (`feeding.dai_model_view`) for this record.
 
     ``source_image_ref`` is the Designator's own region crop; ``model_image_ref``
     is DAI's further crop-and-resize output. The no-resize case is satisfied by
@@ -593,10 +597,10 @@ def _live_attempt_from_capture(
     parse_failure_reason: Callable[[Mapping[str, Any]], str],
     observation_payload: Any = None,
 ) -> LiveAttempt:
-    """Turn one adapter's retained capture into a `LiveAttempt`, act or page alike.
+    """Turn one adapter's retained capture into a `LiveAttempt`, record or page alike.
 
     Shared by `live_attempt_from_response` and `captured_page_attempt`: both
-    mirror `resolve_attempt`'s three-way split -- ``read``/``genuinely-empty``
+    mirror `fixture_page_attempt`'s three-way split -- ``read``/``genuinely-empty``
     (confirmed only on a recognized natural stop), ``failed`` for an
     unconfirmed empty response, and ``failed`` for a parse failure -- and
     differ only in ``kind`` (used in the unconfirmed-blank reason),
@@ -652,7 +656,7 @@ def _malformed_response_attempt(response: ChairResponse, *, adapter: Any) -> Liv
 
     Retained (the raw bytes are already on disk via ``raw_response_ref``),
     never repaired, never re-requested -- the same "malformed" branch
-    `resolve_attempt` takes for a fixture-declared malformed response.
+    `fixture_page_attempt` takes for a fixture-declared malformed response.
     ``format_capabilities`` still names the adapter's own grammar
     (`witness_adapters.declared_format_capabilities`): what a chair's grammar can carry is a fact
     about the chair, not about whether this one body happened to parse.
@@ -687,19 +691,19 @@ def live_attempt_from_response(
     parser: str,
     generation_accounting: Mapping[str, Any] | None = None,
 ) -> LiveAttempt:
-    """Derive one act-scoped chair's `LiveAttempt` from its retained response.
+    """Derive one DAI record reading's `LiveAttempt` from its retained response.
 
-    ``dai.v1`` is the only act-scoped adapter today; refuses any other name
-    rather than guessing at a view shape it does not know.
+    ``dai.v1`` is the only adapter read one crop at a time; refuses any other
+    name rather than guessing at a view shape it does not know.
     ``presentation``/``presented``/``prompt`` are exactly what
-    `act_chair_request` computed for this same act, reused here so DAI's real
-    crop and resize runs once per act, not twice.
+    `record_chair_request` computed for this same record, reused here so DAI's real
+    crop and resize runs once per record, not twice.
     """
 
     if adapter_name != "dai.v1":
         raise SchemaRefusal(
             f"live_attempt_from_response has no capture recipe for adapter {adapter_name!r}; "
-            "only dai.v1 is act-scoped today"
+            "only dai.v1 is read one crop at a time"
         )
     if response.parse_problem is not None:
         return _malformed_response_attempt(response, adapter=adapter)
@@ -728,7 +732,7 @@ def live_attempt_from_response(
         adapter,
         capture,
         response,
-        kind="act",
+        kind="record",
         completed=completed,
         cut_off=cut_off,
         transport_stop_reason=transport_stop_reason,

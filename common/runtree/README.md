@@ -53,7 +53,7 @@ render settings, sealed configuration digests and seal method. That is a differe
 run wearing an old name.
 
 It deliberately does not predeclare acts. Pages are given; acts are discovered, and
-the Designator's proposal seal is the downstream expected-act authority.
+the Perlector's whole-page reading names them.
 
 ## Run receipts
 

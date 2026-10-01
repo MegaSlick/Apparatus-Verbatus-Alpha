@@ -33,11 +33,6 @@ def test_pins_come_from_configured_chairs_and_vendor_source_constants() -> None:
             "huggingface",
         ),
         (
-            "datalab-to/chandra-ocr-2",
-            "af93b47dba1b47b6640c86ccf487ed2260ab9a09",
-            "huggingface",
-        ),
-        (
             "Teklia/Qwen2.5-VL-7B-DAI-CReTDHI-RecordGold-ATR",
             "e371095d4ffe585f31f4974462931ddbac61ff64",
             "huggingface",

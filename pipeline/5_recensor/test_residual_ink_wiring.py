@@ -1,30 +1,17 @@
-"""Residual-ink page coverage: the wiring, proven against a real run tree.
+"""Residual-ink page coverage: the wiring, proven against real run trees.
 
 `test_residual_ink.py` proves the pixel-level arithmetic against hand-built
-canvases. This proves the extraction functions in `run.py`
-(`regions_by_source_page`, `sealed_page_images`, `page_coverage_findings`,
-`page_coverage_for`) read the *real* Designator/Exemplar artifact shapes
-correctly, and that `residual_ink` fires on genuine pipeline pixel bytes
-when handed an incomplete covered set -- not a synthetic canvas standing in
-for one.
+canvases. This proves that `run.py`'s `sealed_page_images` and
+`page_coverage_findings` read the real Exemplar artifacts and page pixels, that
+the measure fires on genuine pipeline bytes when a reading region is missing,
+and that a flagged or unmeasurable page reaches every review through `main()`.
 
-What this file cannot yet prove end-to-end through `main()`: the walking
-skeleton's synthetic Designator derives every act from the declared fixture,
-so it never proposes a *short* denominator the way a real structural detector
-eventually could -- there is no scenario in which the real pipeline, run
-start to finish, actually misses an act on `proof/skeleton_fixture.toml`'s
-pages (their ink is painted to exactly match the declared act bounds by
-construction; see `proof/synthetic_pages.py`). Forging a missing region
-directly is not a shortcut either: `common/stage.py`'s proposal-seal
-reconciliation refuses a region set that disagrees with the sealed seal's own
-evidence list before Recensor ever runs, which is a working guard, not a gap
-to route around. So this exercises every function `main()` actually calls,
-against a real tree, with the one input the walking skeleton cannot yet
-supply (a genuinely short covered set) provided directly -- exactly the
-boundary named in CONTRACT.md.
+The fixture's ink is painted to match its declared acts
+(`proof/synthetic_pages.py`), so no scenario leaves ink outside every reading
+region; the tests that need one drop a region or substitute the finding.
 """
 
-import copy
+import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,53 +20,48 @@ import pytest
 
 from common.background import (
     DEFAULT_INK_MAP_CONFIG_PATH,
-    load_background_config,
-    resolve_background_policy,
 )
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
-from common.contracts.stages import DESIGNATOR, RECENSOR
-from common.imaging import encode_grayscale_png, grayscale_rows
-from common.residual_ink import (
-    MINIMUM_INK_PIXELS_FIELD,
-    load_coverage_audit_config,
-    residual_ink,
-    resolve_coverage_audit_policy,
-)
+from common.contracts.stages import RECENSOR
+from common.imaging import encode_grayscale_png
+from common.page_review import reviewed_rows
 from common.runtree.store import RunTree
-from common.sealed_config import read_sealed_toml
-from conftest import load_stage, programs_through, run_stage
-
-ROOT = Path(__file__).resolve().parents[2]
-
+from common.stage import reading_denominator
+from conftest import build_page_tree, load_stage, page_context, programs_through, run_stage
 
 RUN = load_stage("5_recensor")
-MINIMUM_INK_PIXELS = load_coverage_audit_config()["coverage_audit"][MINIMUM_INK_PIXELS_FIELD]
-
-
-def _measure_page(image_bytes, covered):
-    """`residual_ink` over the decoded page, under its own resolved policies."""
-    width, height, rows = grayscale_rows(image_bytes)
-    return residual_ink(
-        width,
-        height,
-        rows,
-        covered,
-        background_policy=resolve_background_policy(load_background_config(), width, height),
-        coverage_policy=resolve_coverage_audit_policy(load_coverage_audit_config(), width, height),
-    )
-
-
-def _invoke(root: Path, run_id: str, scenario: str, program: str) -> None:
-    result = run_stage(root, run_id, scenario, program)
-    assert result.returncode == 0, f"{program}: {result.stderr}"
+page_review = load_stage("5_recensor", "page_review")
 
 
 def _built_through_designator(tmp_path, scenario="happy"):
     root = tmp_path / "runs"
     for program in programs_through("designator"):
-        _invoke(root, "r", scenario, program)
+        result = run_stage(root, "r", scenario, program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
     return RunTree(root, "r")
+
+
+@pytest.fixture(scope="module")
+def page_tree(tmp_path_factory) -> Path:
+    """A `happy` run read by page through the Perlector; copy it before running a stage."""
+    root, options = build_page_tree(tmp_path_factory.mktemp("happy"), "happy")
+    assert not options
+    return root
+
+
+def _copy(page_tree: Path, tmp_path: Path) -> Path:
+    shutil.copytree(page_tree, tmp_path / "runs")
+    return tmp_path / "runs"
+
+
+def _reading_regions(root: Path) -> dict[int, list[dict]]:
+    """The regions the page review counts as covering each sealed page's ink."""
+    context = page_context(root, "r", "happy", {})
+    denominator = reading_denominator(context)
+    return page_review.reading_regions_by_page(
+        context, denominator["pages"], reviewed_rows(denominator["acts"])
+    )
 
 
 class _FakeContext:
@@ -101,19 +83,6 @@ class _FakeContext:
         if self.run["sealed_config_digests"].get(name) != observed_sha256:
             raise ContractError(f"sealed {name} digest does not match the consumer input")
         self.required_configs.append((name, observed_sha256))
-
-
-def test_regions_by_source_page_reads_every_real_designator_region(tmp_path):
-    tree = _built_through_designator(tmp_path)
-    by_page = RUN.regions_by_source_page(_FakeContext(tree))
-
-    # The happy-scenario fixture: a1 on page 1, a2 on page 1 with a
-    # continuation region on page 2 (proof/skeleton_fixture.toml).
-    assert set(by_page) == {1, 2}
-    assert len(by_page[1]) == 2  # a1's region and a2's page-1 region
-    assert len(by_page[2]) == 1  # a2's continuation region
-    for bounds in by_page[1] + by_page[2]:
-        assert {"x", "y", "w", "h"} == set(bounds)
 
 
 def test_sealed_page_images_reads_every_real_sealed_page(tmp_path):
@@ -177,36 +146,7 @@ def test_sealed_page_images_refuses_duplicate_ordinals_instead_of_selecting_one(
         RUN.sealed_page_images(_FakeContext(DuplicatePageTree()))
 
 
-def test_a_region_whose_bounds_are_missing_a_side_is_refused_not_indexed(tmp_path):
-    """`regions_by_source_page` hands `bounds` straight to `residual_ink`, which
-    indexes all four sides, so a rectangle that is an object and nothing more
-    would reach the pixel arithmetic and leave by `KeyError`. Driven through a
-    stand-in tree rather than a tampered artifact on purpose: the proposal seal
-    references every region by digest, so a real edited region is refused by
-    `build_manifest` long before this function sees it (verified). The shape this
-    guards is therefore a Designator regression, not an attacker -- and a
-    regression deserves the named refusal, not a traceback."""
-
-    class ShortBoundsTree:
-        def build_manifest(self, _stage):
-            return {"artifacts": [{"kind": "region", "artifact_id": "region-a"}]}
-
-        def read_artifact(self, _stage, _kind, artifact_id):
-            return {
-                "artifact_id": artifact_id,
-                "payload": {
-                    "transform": {"source_page_ordinal": 1, "bounds": {"x": 0, "y": 0}},
-                },
-            }
-
-        def read_run(self):
-            return {}  # never reached: the refusal is on the region, before any page
-
-    with pytest.raises(FatalAccounting, match="invalid transform"):
-        RUN.regions_by_source_page(_FakeContext(ShortBoundsTree()))
-
-
-def test_the_residual_ink_check_refuses_page_bytes_it_did_not_verify(tmp_path):
+def test_the_residual_ink_check_refuses_page_bytes_it_did_not_verify(page_tree):
     """`sealed_page_images` verifies each page's pixels; `page_coverage_findings`
     then reads that path AGAIN to measure it. Two reads of one path is a check
     followed by a use of something else, and only the second read's bytes are
@@ -215,11 +155,9 @@ def test_the_residual_ink_check_refuses_page_bytes_it_did_not_verify(tmp_path):
 
     A single-process test cannot land a writer between the two reads, so the
     race is modelled: this tree is honest on every read the verification makes
-    and returns a different page on the second read of the same path. Before the
-    digest check below, this produced `flagged: False` for both pages of the
-    real fixture over pixels nobody verified -- a measurement recorded as a pass
-    without having been made."""
-    real = _built_through_designator(tmp_path)
+    and returns a different page on the second read of the same path, which
+    must be refused rather than measured."""
+    real = RunTree(page_tree, "r")
 
     class RacingTree:
         def __init__(self, tree):
@@ -238,252 +176,19 @@ def test_the_residual_ink_check_refuses_page_bytes_it_did_not_verify(tmp_path):
     context = _FakeContext(real)
     context.tree = RacingTree(real)
     with pytest.raises(FatalAccounting, match="changed under a sealed reference"):
-        RUN.page_coverage_findings(context)
+        RUN.page_coverage_findings(context, regions=_reading_regions(page_tree))
 
 
-def test_page_coverage_findings_does_not_flag_the_real_fully_covered_fixture(tmp_path):
-    """The fixture's own ink is painted to exactly match its declared act
-    bounds (`proof/synthetic_pages.py`) -- proof the check does not misfire
-    on ordinary, fully-accounted-for pages."""
-    tree = _built_through_designator(tmp_path)
-    findings = RUN.page_coverage_findings(_FakeContext(tree))
-    assert set(findings) == {1, 2}
-    for ordinal, finding in findings.items():
-        assert finding["flagged"] is False, f"page {ordinal}: {finding}"
-        assert finding["outside_ink_pixels"] == 0
-
-
-def test_a_genuinely_incomplete_covered_set_flags_real_pipeline_pixels(tmp_path):
-    """Real sealed page-1 bytes (Designator/Exemplar output, not a hand-built
-    canvas), with a1's region deliberately left out of `covered` -- exactly
-    the shape of evidence a Designator that missed an act would leave behind.
-    Proves detection against genuine pipeline pixels, not synthetic ones."""
-    tree = _built_through_designator(tmp_path)
-    context = _FakeContext(tree)
-    by_page = RUN.regions_by_source_page(context)
-    pages = RUN.sealed_page_images(context)
-    image_bytes = tree.read_bytes(pages[1]["payload"]["image_path"])
-
-    # a1 is the smaller-x0/y0 region (x=20,y=20); a2 is x=20,y=120. Keep only
-    # the region with the larger y as "covered", omitting a1's.
-    incomplete_coverage = [max(by_page[1], key=lambda bounds: bounds["y"])]
-    assert len(incomplete_coverage) < len(by_page[1])
-
-    finding = _measure_page(image_bytes, incomplete_coverage)
-    assert finding["flagged"] is True
-    assert finding["outside_ink_pixels"] > 0
-
-    # And the full, real coverage set clears it, on the identical bytes.
-    full_finding = _measure_page(image_bytes, by_page[1])
-    assert full_finding["flagged"] is False
-
-
-def test_page_coverage_for_reads_every_page_an_acts_own_regions_touch(tmp_path):
-    """Exercises the exact call `main()` makes -- real `state["regions"]`-shaped
-    region records against a synthetic findings dict, so the ACT-level
-    extraction (which page ordinals an act's regions touch, and whether any of
-    them is flagged) is proven independent of the pixel arithmetic."""
-    tree = _built_through_designator(tmp_path)
-    a2_regions = [
-        record
-        for record in (
-            tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])
-            for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
-            if entry["kind"] == "region"
-        )
-        if record["payload"]["act_key"] == "a2"
-    ]
-    assert {region["payload"]["transform"]["source_page_ordinal"] for region in a2_regions} == {
-        1,
-        2,
-    }
-
-    def coverage(findings):
-        return RUN.page_coverage_for(a2_regions, findings)
-
-    def flagged(findings):
-        return coverage(findings)["flagged_pages"]
-
-    # `checked_pages` is every page the act's regions touch AND findings has an
-    # entry for -- a page absent from findings entirely is never reported as
-    # checked, so "checked and clear" cannot be confused with "never checked".
-    assert coverage({1: {"flagged": False}, 2: {"flagged": False}})["checked_pages"] == [1, 2]
-    assert coverage({1: {"flagged": False}})["checked_pages"] == [1]
-    assert coverage({})["checked_pages"] == []
-    assert flagged({1: {"flagged": False}, 2: {"flagged": False}}) == []
-    assert flagged({1: {"flagged": False}, 2: {"flagged": True}}) == [2]
-    assert flagged({1: {"flagged": True}, 2: {"flagged": True}}) == [1, 2]
-    # A page with no finding at all (never checked) is never treated as flagged.
-    assert flagged({}) == []
-
-
-def test_a_flagged_page_holds_every_act_that_touches_it_through_main(tmp_path, monkeypatch):
-    """The one consequence of this whole instrument -- `flagged_pages` routing an
-    act to `held-for-review`, and gating `confirmed-blank` -- that no test reached
-    through `main()` before this one. The skeleton's synthetic Designator can
-    never produce a genuinely short region set (see the module docstring), so
-    `page_coverage_findings` itself is substituted with one that flags every
-    page it finds, on a real run tree built through the real Perlector -- the
-    same technique four other test files in this directory already use to load
-    this module, applied here to drive the wiring rather than the arithmetic.
-    """
-    root = tmp_path / "runs"
-    for program in programs_through("perlector"):
-        _invoke(root, "r", "happy", program)
-
-    # `main` now hands the verified sealed-page map down rather than letting
-    # each consumer re-derive it, so the substitute takes it and ignores it:
-    # this test drives the flagged-page wiring, not the pixel verification the
-    # map carries.
-    def flags_every_page(context, unused_sealed_pages=None):
-        return {ordinal: {"flagged": True} for ordinal in RUN.regions_by_source_page(context)}
-
-    monkeypatch.setattr(RUN, "page_coverage_findings", flags_every_page)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["run.py", "--run-root", str(root), "--run-id", "r", "--scenario", "happy"],
-    )
-    exit_code = RUN.main()
-    assert exit_code == RUN.EXIT_HELD
-
-    tree = RunTree(root, "r")
-    reviews = [
-        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review"
-    ]
-    assert {review["payload"]["act_key"] for review in reviews} == {"a1", "a2"}
-    for review in reviews:
-        assert review["outcome"] == "held-for-review"
-        assert review["payload"]["page_coverage"]["flagged_pages"]
-        assert "carry ink outside every region currently cut" in review["payload"]["reason"]
-
-
-def test_a_second_recensor_pass_that_clears_a_flag_does_not_collide_with_the_first(
-    tmp_path, monkeypatch
+def test_a_page_whose_paper_cannot_be_inferred_is_unmeasurable_and_never_checked(
+    page_tree, monkeypatch
 ):
-    """F132: a review's identity must survive a page-wide fact changing for an act
-    that never itself recovered.
-
-    `page_coverage_for` is deliberately page-wide (CONTRACT.md: "a flagged page
-    holds every act that touches it ... a successful recovery crop that reaches
-    the missed ink clears the finding on the very next Recensor pass"), but
-    before this fix a review's identity (`attempt_id(act_id, "recense",
-    used_total + 1)`) was a function only of the act's OWN recovery-request
-    count. Two acts sharing a page, neither of which ever requests its own
-    recovery (`used_total` stays 0 for both across every pass), both publish
-    at recense ordinal 1 every time `main()` runs -- so if the page's finding
-    changes between passes for a reason unrelated to either act's own
-    recovery, the second pass republishes different bytes under the same
-    identity, and the immutable writer refuses it (`IncompatibleReuse`),
-    killing the whole run.
-
-    Reproduced here exactly as the sibling test above drives the flagged-page
-    wiring: substitute `page_coverage_findings` to flag every page for pass 1,
-    then run `main()` again with the substitute removed -- standing in for "a
-    recovery crop elsewhere reached the missed ink" without needing a real
-    recovery round, since the collision depends only on the review's content
-    changing while its ordinal does not.
-    """
-    root = tmp_path / "runs"
-    for program in programs_through("perlector"):
-        _invoke(root, "r", "happy", program)
-
-    def flags_every_page(context, unused_sealed_pages=None):
-        return {ordinal: {"flagged": True} for ordinal in RUN.regions_by_source_page(context)}
-
-    monkeypatch.setattr(RUN, "page_coverage_findings", flags_every_page)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["run.py", "--run-root", str(root), "--run-id", "r", "--scenario", "happy"],
-    )
-    first_exit = RUN.main()
-    assert first_exit == RUN.EXIT_HELD
-
-    monkeypatch.undo()
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["run.py", "--run-root", str(root), "--run-id", "r", "--scenario", "happy"],
-    )
-    second_exit = RUN.main()
-    assert second_exit == RUN.EXIT_COMPLETE
-
-    tree = RunTree(root, "r")
-    manifest_entries = [
-        entry for entry in tree.build_manifest(RECENSOR)["artifacts"] if entry["kind"] == "review"
-    ]
-    reviews_by_act: dict[str, list[dict]] = {}
-    for entry in manifest_entries:
-        review = tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
-        reviews_by_act.setdefault(review["payload"]["act_key"], []).append(review)
-    assert set(reviews_by_act) == {"a1", "a2"}
-    for act_key, reviews in reviews_by_act.items():
-        ordinals = sorted(review["payload"]["attempt_ordinal"] for review in reviews)
-        assert ordinals == [1, 2], f"act {act_key} did not publish two distinct reviews: {ordinals}"
-        by_ordinal = {review["payload"]["attempt_ordinal"]: review for review in reviews}
-        assert by_ordinal[1]["outcome"] == "held-for-review"
-        assert by_ordinal[1]["payload"]["page_coverage"]["flagged_pages"]
-        assert (
-            by_ordinal[2]["outcome"] != "held-for-review"
-            or not by_ordinal[2]["payload"]["page_coverage"]["flagged_pages"]
-        )
-
-    third_exit = RUN.main()
-    assert third_exit == RUN.EXIT_COMPLETE
-    unchanged_entries = [
-        entry for entry in tree.build_manifest(RECENSOR)["artifacts"] if entry["kind"] == "review"
-    ]
-    assert {entry["artifact_id"] for entry in unchanged_entries} == {
-        entry["artifact_id"] for entry in manifest_entries
-    }, "a third identical pass must not mint a new review artifact"
-
-
-def test_an_unmeasurable_page_qualifies_an_otherwise_accepted_reason_through_main(
-    tmp_path, monkeypatch
-):
-    root = tmp_path / "runs"
-    for program in programs_through("perlector"):
-        _invoke(root, "r", "happy", program)
-
-    def unmeasurable_pages(context, unused_sealed_pages=None):
-        return {
-            ordinal: {"ink_measurable": False} for ordinal in RUN.regions_by_source_page(context)
-        }
-
-    monkeypatch.setattr(RUN, "page_coverage_findings", unmeasurable_pages)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["run.py", "--run-root", str(root), "--run-id", "r", "--scenario", "happy"],
-    )
-    assert RUN.main() == RUN.EXIT_COMPLETE
-    tree = RunTree(root, "r")
-    reviews = [
-        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review"
-    ]
-    assert {review["outcome"] for review in reviews} == {"accepted"}
-    assert all(review["payload"]["page_coverage"]["unmeasurable_pages"] for review in reviews)
-    assert all(
-        "page ink could not be measured or reconciled" in review["payload"]["reason"]
-        for review in reviews
-    )
-
-
-def test_a_page_whose_paper_cannot_be_inferred_is_unmeasurable_and_never_checked(tmp_path):
     """The audit refuses the page rather than reporting zero residual ink on it.
 
-    The page substituted here is the inverted scan
-    `pipeline/2_designator/test_structure.py` uses -- 80% at 30, 20% at 220 --
+    The page substituted here is an inverted scan -- 80% at 30, 20% at 220 --
     whose mode is darker than its own mean and whose interior is dark, so no
-    branch of the shared inference can call anything on it paper. Before
-    2026-09-06 this check would have taken 30 as the paper value, found no pixel
-    40 levels below it, and reported the page as carrying no ink outside
-    coverage at all: a green coverage proof over a page nobody measured.
+    branch of the shared inference can call anything on it paper. Taking 30 as
+    the paper value would find no pixel 40 levels below it and report the page
+    clean: a coverage proof over a page nobody measured.
 
     Page 1's bytes are substituted at the read this check makes, with the page
     record's own declared digest moved to match, so the boundary check passes
@@ -491,7 +196,7 @@ def test_a_page_whose_paper_cannot_be_inferred_is_unmeasurable_and_never_checked
     sealed blob on disk is left alone: the run tree verifies every artifact
     input when it builds a manifest, and rewriting it would fail there first.
     """
-    tree = _built_through_designator(tmp_path)
+    tree = RunTree(page_tree, "r")
     context = _FakeContext(tree)
     pages = RUN.sealed_page_images(context)
     relative_path = pages[1]["payload"]["image_path"]
@@ -513,7 +218,8 @@ def test_a_page_whose_paper_cannot_be_inferred_is_unmeasurable_and_never_checked
             return substituted if path == relative_path else self._inner.read_bytes(path)
 
     context.tree = SubstitutingTree(tree)
-    findings = RUN.page_coverage_findings(context, sealed_pages=pages)
+    monkeypatch.setattr(RUN, "sealed_page_images", lambda _context: pages)
+    findings = RUN.page_coverage_findings(context, regions=_reading_regions(page_tree))
     assert findings[1]["ink_measurable"] is False
     assert findings[1]["named_finding"] == "ink-not-measurable"
     assert "majority ink" in findings[1]["background_refusal"]
@@ -524,265 +230,131 @@ def test_a_page_whose_paper_cannot_be_inferred_is_unmeasurable_and_never_checked
     # Page 2 was not substituted and still measures normally, so the refusal is
     # about the page rather than about the run.
     assert findings[2]["flagged"] is False
+    assert page_review.page_coverage_of(1, findings)["unmeasurable_pages"] == [1]
+    assert page_review.page_coverage_of(2, findings)["checked_pages"] == [2]
 
-    regions = [
-        {"payload": {"transform": {"source_page_ordinal": 1}}},
-        {"payload": {"transform": {"source_page_ordinal": 2}}},
+
+def test_page_coverage_findings_does_not_flag_the_real_fully_covered_fixture(page_tree):
+    """The fixture's ink lies inside its reading regions, so the check does not
+    misfire on ordinary, fully accounted-for pages."""
+    findings = RUN.page_coverage_findings(
+        _FakeContext(RunTree(page_tree, "r")), regions=_reading_regions(page_tree)
+    )
+    assert set(findings) == {1, 2}
+    for ordinal, finding in findings.items():
+        assert finding["flagged"] is False, f"page {ordinal}: {finding}"
+        assert finding["outside_ink_pixels"] == 0
+
+
+def test_a_missing_reading_region_flags_real_pipeline_pixels(page_tree):
+    """Real sealed page-1 bytes with one reading region left out of the covered
+    set: the evidence a reading that missed an act would leave behind."""
+    context = _FakeContext(RunTree(page_tree, "r"))
+    regions = _reading_regions(page_tree)
+    assert len(regions[1]) > 1
+
+    short = RUN.page_coverage_findings(context, regions={**regions, 1: regions[1][1:]})
+    assert short[1]["flagged"] is True and short[1]["outside_ink_pixels"] > 0
+    assert short[2]["flagged"] is False
+    # The full set clears it, on the identical bytes.
+    assert RUN.page_coverage_findings(context, regions=regions)[1]["flagged"] is False
+
+
+def _run_main(root: Path, monkeypatch) -> int:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run.py", "--run-root", str(root), "--run-id", "r", "--scenario", "happy"],
+    )
+    return RUN.main()
+
+
+def _reviews(root: Path) -> list[dict]:
+    tree = RunTree(root, "r")
+    return [
+        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+        for entry in tree.build_manifest(RECENSOR)["artifacts"]
+        if entry["kind"] == "review"
     ]
-    coverage = RUN.page_coverage_for(regions, findings)
-    assert coverage == {
-        "checked_pages": [2],
-        "flagged_pages": [],
-        "unmeasurable_pages": [1],
-    }
 
 
-def test_an_unmeasurable_page_confirms_no_witness_pointer_and_authorizes_no_recovery():
-    """`None` in the ink map is not `0` and is not a missing artifact.
+def _substituted(monkeypatch, change) -> None:
+    """Replace `page_coverage_findings` with the real measure, each finding changed."""
+    measure = RUN.page_coverage_findings
 
-    Recovery requires independently measured ink outside every current cut. A
-    page the Ink Map published as `ink-not-measurable` has no measurement at
-    all, so no pointer at it can be confirmed -- and the absence must not be
-    read as a missing artifact either, which is a fatal accounting gap with a
-    different repair. The page is not lost: every act touching it carries it in
-    `page_coverage.unmeasurable_pages`.
+    def substitute(context, *, regions):
+        return {
+            ordinal: change(finding)
+            for ordinal, finding in measure(context, regions=regions).items()
+        }
+
+    monkeypatch.setattr(RUN, "page_coverage_findings", substitute)
+
+
+def _flagged(finding: dict) -> dict:
+    return {**finding, "flagged": True}
+
+
+def test_a_flagged_page_holds_every_unit_on_it_through_main(page_tree, tmp_path, monkeypatch):
+    root = _copy(page_tree, tmp_path)
+    _substituted(monkeypatch, _flagged)
+    assert _run_main(root, monkeypatch) == RUN.EXIT_HELD
+
+    reviews = _reviews(root)
+    assert reviews
+    for review in reviews:
+        assert review["outcome"] == "held-for-review"
+        assert review["payload"]["page_coverage"]["flagged_pages"]
+        assert page_review.RESIDUAL_INK in review["payload"]["hold_codes"]
+
+
+def test_a_second_pass_that_clears_a_flag_does_not_collide_with_the_first(
+    page_tree, tmp_path, monkeypatch
+):
+    """A review's content can change between passes while its unit does not.
+
+    Pass 1 flags every page; pass 2 measures honestly. Each unit's second
+    review is minted at a fresh ordinal rather than republished under the
+    first's identity, which the immutable writer would refuse; a third,
+    identical pass mints nothing.
     """
-    observation = {"bounds": {"x": 0, "y": 0, "w": 10, "h": 10}}
+    root = _copy(page_tree, tmp_path)
+    _substituted(monkeypatch, _flagged)
+    assert _run_main(root, monkeypatch) == RUN.EXIT_HELD
+    monkeypatch.undo()
+    assert _run_main(root, monkeypatch) == RUN.EXIT_COMPLETE
 
-    assert (
-        RUN.unclaimed_ink_observations(
-            {1: None}, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
-        )
-        == []
-    )
-    with pytest.raises(FatalAccounting, match="no ink-map page-space evidence"):
-        RUN.unclaimed_ink_observations(
-            {}, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
-        )
+    by_unit: dict[str, dict[int, dict]] = {}
+    for review in _reviews(root):
+        by_unit.setdefault(review["subject_id"], {})[review["payload"]["attempt_ordinal"]] = review
+    assert by_unit
+    for unit, reviews in by_unit.items():
+        assert sorted(reviews) == [1, 2], f"unit {unit}: {sorted(reviews)}"
+        assert reviews[1]["outcome"] == "held-for-review"
+        assert reviews[2]["outcome"] == "accepted"
+        assert reviews[2]["payload"]["page_coverage"]["flagged_pages"] == []
 
-
-def test_ink_map_by_page_accepts_the_actual_refusal_record_from_the_ink_map(monkeypatch):
-    """A real refused PNG crosses the producer/consumer boundary unchanged."""
-    ink_map = load_stage("1_ink_map")
-    rows = [bytearray([30] * 100) for _ in range(100)]
-    for y in range(80, 100):
-        rows[y] = bytearray([220] * 100)
-    page = {
-        "subject_id": "page-1",
-        "payload": {"image_path": "page.png", "source_sha256": "0" * 64},
-    }
-    expected_digest = read_sealed_toml(DEFAULT_INK_MAP_CONFIG_PATH, "config")[1]
-
-    class ProducerContext:
-        def __init__(self):
-            self.tree = object()  # The checked-byte storage boundary is supplied below.
-            self.run = {"ingress": {"mode": "synthetic-fixture"}}
-            self.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
-            self.published = []
-            self.sealed_config_digests = {"ink-map": expected_digest}
-            self.required_configs = []
-
-        def require_sealed_config(self, name, observed_sha256):
-            if self.sealed_config_digests.get(name) != observed_sha256:
-                raise ContractError(f"sealed {name} digest does not match the producer input")
-            self.required_configs.append((name, observed_sha256))
-
-        def input_ref(self, path):
-            return {"relative_path": path, "sha256": "0" * 64}
-
-        def publish(self, **record):
-            self.published.append(record)
-
-        def seal_boundary(self):
-            pass
-
-        def finish(self):
-            pass
-
-    producer = ProducerContext()
-
-    class Parser:
-        @staticmethod
-        def parse_args():
-            return SimpleNamespace()
-
-    monkeypatch.setattr(ink_map, "stage_parser", lambda *_args: Parser())
-    monkeypatch.setattr(ink_map, "open_stage_context", lambda *_args, **_kwargs: producer)
-    monkeypatch.setattr(ink_map, "sealed_pages", lambda _context: [(1, page, "page.json")])
-    monkeypatch.setattr(
-        ink_map, "measured_page_bytes", lambda *_args: encode_grayscale_png(100, 100, rows)
-    )
-    assert ink_map.main(registry_factory=None) == ink_map.EXIT_COMPLETE
-    (record,) = producer.published
-    assert record["outcome"] == "ink-not-measurable"
-    assert record["payload"]["background_config_sha256"] == expected_digest
-    # Ink Map reads the background and coverage-audit views independently from
-    # the same sealed file; both readers must prove those bytes against the run.
-    assert producer.required_configs == [("ink-map", expected_digest)] * 2
-
-    class ConsumerTree:
-        def build_manifest(self, _stage):
-            return {"artifacts": [{"kind": "ink-map", "artifact_id": "page-1"}]}
-
-        def read_artifact(self, _stage, _kind, _artifact_id):
-            return record
-
-    context = _FakeContext.__new__(_FakeContext)
-    context.tree = ConsumerTree()
-    context.run = {"sealed_config_digests": {"ink-map": expected_digest}}
-    context.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
-    context.required_configs = []
-    assert RUN.ink_map_by_page(context, {1: (100, 100)}) == {1: None}
-    assert context.required_configs == [("ink-map", expected_digest)]
+    before = {review["artifact_id"] for review in _reviews(root)}
+    assert _run_main(root, monkeypatch) == RUN.EXIT_COMPLETE
+    assert {review["artifact_id"] for review in _reviews(root)} == before
 
 
-def test_ink_map_by_page_accepts_the_actual_measured_record_from_the_ink_map(monkeypatch):
-    """A producer record proves the measured envelope before the consumer reads runs."""
-    ink_map = load_stage("1_ink_map")
-    rows = [bytearray([220] * 100) for _ in range(100)]
-    for y in range(80, 100):
-        rows[y] = bytearray([0] * 100)
-    page = {
-        "subject_id": "page-1",
-        "payload": {"image_path": "page.png", "source_sha256": "0" * 64},
-    }
-    expected_digest = read_sealed_toml(DEFAULT_INK_MAP_CONFIG_PATH, "config")[1]
-
-    class ProducerContext:
-        def __init__(self):
-            self.tree = object()
-            self.run = {"ingress": {"mode": "synthetic-fixture"}}
-            self.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
-            self.published = []
-            self.sealed_config_digests = {"ink-map": expected_digest}
-            self.required_configs = []
-
-        def require_sealed_config(self, name, observed_sha256):
-            if self.sealed_config_digests.get(name) != observed_sha256:
-                raise ContractError(f"sealed {name} digest does not match the producer input")
-            self.required_configs.append((name, observed_sha256))
-
-        def input_ref(self, path):
-            return {"relative_path": path, "sha256": "0" * 64}
-
-        def publish(self, **record):
-            self.published.append(record)
-
-        def seal_boundary(self):
-            pass
-
-        def finish(self):
-            pass
-
-    producer = ProducerContext()
-
-    class Parser:
-        @staticmethod
-        def parse_args():
-            return SimpleNamespace()
-
-    monkeypatch.setattr(ink_map, "stage_parser", lambda *_args: Parser())
-    monkeypatch.setattr(ink_map, "open_stage_context", lambda *_args, **_kwargs: producer)
-    monkeypatch.setattr(ink_map, "sealed_pages", lambda _context: [(1, page, "page.json")])
-    monkeypatch.setattr(
-        ink_map, "measured_page_bytes", lambda *_args: encode_grayscale_png(100, 100, rows)
-    )
-    assert ink_map.main(registry_factory=None) == ink_map.EXIT_COMPLETE
-    (record,) = producer.published
-    assert record["outcome"] in {"mapped", "unclaimed-edge-ink"}
-    assert record["payload"]["ink_measurable"] is True
-    assert record["payload"]["background"]["config_sha256"] == expected_digest
-
-    class ConsumerTree:
-        def build_manifest(self, _stage):
-            return {"artifacts": [{"kind": "ink-map", "artifact_id": "page-1"}]}
-
-        def read_artifact(self, _stage, _kind, _artifact_id):
-            return record
-
-    context = _FakeContext.__new__(_FakeContext)
-    context.tree = ConsumerTree()
-    context.run = {"sealed_config_digests": {"ink-map": expected_digest}}
-    context.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
-    context.required_configs = []
-    assert RUN.ink_map_by_page(context, {1: (100, 100)}) == {1: record["payload"]["edge_findings"]}
-    assert context.required_configs == [("ink-map", expected_digest)]
-
-    # The same outcome is not enough: shorten one retained edge run while the
-    # producer's published count remains intact. Both versions still flag, but
-    # only the original is the measurement the producer made.
-    assert record["outcome"] == "unclaimed-edge-ink"
-    record = copy.deepcopy(record)
-    record["payload"]["edge_findings"]["rows"][-1][0][1] = 40
-    with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
-        RUN.ink_map_by_page(context, {1: (100, 100)})
-
-
-def test_ink_map_by_page_refuses_an_unmeasurable_payload_with_a_wrong_seal():
-    class RefusalTree:
-        def build_manifest(self, _stage):
-            return {"artifacts": [{"kind": "ink-map", "artifact_id": "page-1"}]}
-
-        def read_artifact(self, _stage, _kind, _artifact_id):
-            return {
-                "outcome": "ink-not-measurable",
-                "payload": {
-                    "page_ordinal": 1,
-                    "ink_measurable": False,
-                    "background_refusal": "the page is majority ink",
-                    "background_config_sha256": "1" * 64,
-                },
-            }
-
-    context = _FakeContext.__new__(_FakeContext)
-    context.tree = RefusalTree()
-    context.run = {"sealed_config_digests": {"ink-map": "0" * 64}}
-    context.required_configs = []
-    with pytest.raises(FatalAccounting, match="invalid sealed ink-not-measurable payload"):
-        RUN.ink_map_by_page(context, {1: (1, 1)})
-
-
-@pytest.mark.parametrize(
-    "defect", ["base-era", "wrong-seal", "missing-background-field", "array-source"]
-)
-def test_ink_map_by_page_refuses_a_measured_payload_without_current_background_provenance(defect):
-    payload = {
-        "page_ordinal": 1,
-        "ink_measurable": True,
-        "background": {
-            "background_level": 220,
-            "background_source": "inferred-modal",
-            "dark_mode": 0,
-            "ink_margin": 73,
-            "contrast_below_background": 40,
-            "ink_threshold": 180,
-            "config_sha256": "0" * 64,
+def test_an_unmeasurable_page_holds_every_unit_on_it_through_main(page_tree, tmp_path, monkeypatch):
+    root = _copy(page_tree, tmp_path)
+    _substituted(
+        monkeypatch,
+        lambda finding: {
+            "ink_measurable": False,
+            "named_finding": "ink-not-measurable",
+            "background_refusal": "no paper value",
+            "background_config_sha256": finding["background_config_sha256"],
         },
-        "edge": {},
-        "edge_findings": {"schema": "ink-runs.v2", "width": 1, "height": 1, "rows": [[]]},
-    }
-    if defect == "base-era":
-        del payload["ink_measurable"]
-        del payload["background"]
-        del payload["edge"]
-    elif defect == "wrong-seal":
-        payload["background"]["config_sha256"] = "1" * 64
-    elif defect == "missing-background-field":
-        del payload["background"]["ink_threshold"]
-    else:
-        payload["background"]["background_source"] = []
+    )
+    assert _run_main(root, monkeypatch) == RUN.EXIT_HELD
 
-    class MeasuredTree:
-        def build_manifest(self, _stage):
-            return {"artifacts": [{"kind": "ink-map", "artifact_id": "page-1"}]}
-
-        def read_artifact(self, _stage, _kind, _artifact_id):
-            return {"outcome": "mapped", "payload": payload}
-
-    context = _FakeContext.__new__(_FakeContext)
-    context.tree = MeasuredTree()
-    context.run = {"sealed_config_digests": {"ink-map": "0" * 64}}
-    context.args = SimpleNamespace(ink_map_config=str(DEFAULT_INK_MAP_CONFIG_PATH))
-    context.required_configs = []
-    with pytest.raises(FatalAccounting, match="invalid sealed measured payload"):
-        RUN.ink_map_by_page(context, {1: (1, 1)})
+    reviews = _reviews(root)
+    assert reviews
+    for review in reviews:
+        assert review["outcome"] == "held-for-review"
+        assert review["payload"]["page_coverage"]["unmeasurable_pages"]
+        assert page_review.RESIDUAL_INK_NOT_MEASURABLE in review["payload"]["hold_codes"]

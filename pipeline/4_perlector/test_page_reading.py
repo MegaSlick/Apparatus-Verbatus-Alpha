@@ -1,8 +1,8 @@
 """The Perlector's page path, proven end to end on the synthetic fixture and fake serving.
 
-A run sealed with `reading_unit = "page"` reads every sealed page whole: a
+A run reads every sealed page whole: a
 `page-feed`, a `page-reading`, the page's `page-accounting` and, for a parsed
-and valid answer, one `act-region` and one `perlectio.v2` per entry, each
+and valid answer, one `act-region` and one `perlectio.v3` per entry, each
 naming the accounting and held when the page is. The fixture tests run the
 real chain as subprocesses; the live tests run the stage in this process
 against `operations/serving/fakes.py`, as `test_live_perlector.py` does.
@@ -47,6 +47,7 @@ from common.decoding import (
     recorded_wire_decimals,
 )
 from common.exemplar_boundary import read_sealed_page
+from common.hard_failure import load_hard_failure_policy, tally_hard_failures
 from common.imaging import crop_png
 from common.page_accounting import is_inside, load_page_accounting_policy, placement_boxes
 from common.page_witness_units import DAI
@@ -54,9 +55,8 @@ from common.runtree.store import RunTree
 from common.stage import open_context, reading_acts, stage_parser
 from conftest import (
     file_bytes_snapshot,
+    floor_models_config,
     load_stage,
-    page_models_config,
-    page_serving_recipes_config,
     programs_through,
     reask_recovery_config,
     rewitness_stage_boundary,
@@ -68,6 +68,7 @@ from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
 ROOT = Path(__file__).resolve().parents[2]
 BUDGET = load_dissent_limits()[0].max_comparison_steps
 PERLECTOR_PROGRAM = "pipeline/4_perlector/run.py"
+MODELS = ROOT / "config" / "models.toml"
 CHAIN = programs_through("attestatores")
 FIXTURE = tomllib.loads((ROOT / "proof" / "skeleton_fixture.toml").read_text(encoding="utf-8"))
 PAGE_ANSWERS = {
@@ -84,9 +85,8 @@ perlector = load_stage("4_perlector")
 
 
 def _page_protocol(directory: Path, **feed: Any) -> Path:
-    """The shipped protocol sealed to read whole pages, with any `[feed]` switch changed."""
+    """The shipped protocol, which reads whole pages, with any `[feed]` switch changed."""
     text = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
-    text = text.replace('reading_unit = "act"', 'reading_unit = "page"')
     for key, value in feed.items():
         head, table = text.split("[feed]\n")
         lines = [
@@ -97,14 +97,7 @@ def _page_protocol(directory: Path, **feed: Any) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "perlector_protocol.toml"
     path.write_text(text, encoding="utf-8")
-    if not _page_roster(path).exists():
-        page_models_config(_page_roster(path).parent)
     return path
-
-
-def _page_roster(protocol: Path) -> Path:
-    """The page-read roster written beside a page protocol (`conftest.page_models_config`)."""
-    return protocol.parent / "models" / "models.toml"
 
 
 def _feed_value(value: Any) -> str:
@@ -128,26 +121,12 @@ def _run(
             scenario,
             "--perlector-protocol-config",
             str(protocol),
-            *_roster_flags(protocol, extra),
             *extra,
         ],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
-
-
-def _roster_flags(protocol: Path, extra: tuple[str, ...]) -> tuple[str, ...]:
-    """The page-read roster and its catalogue, unless `extra` names its own."""
-    flags: tuple[str, ...] = ()
-    models = _page_roster(protocol)
-    if "--models-config" in extra:
-        models = Path(extra[extra.index("--models-config") + 1])
-    else:
-        flags += ("--models-config", str(models))
-    if "--serving-recipes-config" not in extra:
-        flags += ("--serving-recipes-config", str(page_serving_recipes_config(models)))
-    return flags
 
 
 def _chain(
@@ -193,8 +172,8 @@ def _union(boxes: list[dict[str, int]]) -> dict[str, int]:
 
 
 def _roster(base: Path, *replacements: tuple[str, str]) -> Path:
-    """The page-read roster with chair blocks replaced, beside its fixture snapshots."""
-    path = page_models_config(base / "chair-config")
+    """The committed roster with chair blocks replaced, beside its fixture snapshots."""
+    path = floor_models_config(base / "chair-config", 3)
     text = path.read_text(encoding="utf-8")
     for old, new in replacements:
         assert old in text
@@ -253,7 +232,6 @@ def test_every_sealed_page_is_read_whole_into_a_feed_a_reading_and_its_acts(page
         assert payload["answer"] == json.loads(PAGE_ANSWERS[payload["page_ordinal"]])
         assert payload["audit"]["state"] == "not-run"
         assert payload["engine_call"] is None and payload["capacity"] is None
-        assert payload["reading_unit"] == "page"
     feed = feeds[0]["payload"]
     # The fixture roster runs Surya in stage 2, so every feed shows its census.
     assert feed["surya"]["census_ref"] is not None and "absent" not in feed["surya"]
@@ -265,9 +243,9 @@ def test_every_sealed_page_is_read_whole_into_a_feed_a_reading_and_its_acts(page
         ("C", "attestator_3"),
     ]
     assert len(_records(root, "act-region")) == len(_records(root, "perlectio")) == 3
-    # The act path read nothing: no reading of a Designator act was published.
+    # Every Perlectio is a page-path reading.
     assert all(
-        record["payload"]["schema"] == "perlectio.v2" for record in _records(root, "perlectio")
+        record["payload"]["schema"] == "perlectio.v3" for record in _records(root, "perlectio")
     )
 
 
@@ -444,30 +422,6 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, r
     assert duplicate == {"code": "reask-duplicate", "n": 2, "reading_n": 1, "attempt_1_n": 1}
 
 
-def test_a_page_read_pass_refuses_to_read_one_act_by_name(page_tree, tmp_path):
-    root, protocol = page_tree
-    copy = tmp_path / "runs"
-    shutil.copytree(root, copy)
-    before = file_bytes_snapshot(copy)
-    result = _run(PERLECTOR_PROGRAM, copy, protocol, "--act", "act_0000000000000001")
-    assert result.returncode != 0
-    assert "run the pass without --act" in result.stderr
-    assert file_bytes_snapshot(copy) == before
-
-
-def test_the_page_path_refuses_a_blind_read_or_a_sampled_control_by_name():
-    base = {"blind_read": "off", "nuda_per_mille": 0, "perlector_instrument_per_mille": 0}
-    page_run.refuse_unsupported_settings(SimpleNamespace(**base))
-    for name, value in (
-        ("blind_read", "fed"),
-        ("blind_read", "saved"),
-        ("nuda_per_mille", 5),
-        ("perlector_instrument_per_mille", 5),
-    ):
-        with pytest.raises(ContractError, match=name):
-            page_run.refuse_unsupported_settings(SimpleNamespace(**{**base, name: value}))
-
-
 # Each switch changes what the page is shown, so it changes the sealed feed and,
 # where it changes the text, page 1's prompt (page 2 has one unboxed unit per
 # witness, which no witness switch changes). The fixture page is smaller than
@@ -619,9 +573,8 @@ def _detector_tree(
     its page and ordinal.
     """
     protocol = _page_protocol(base / "config")
-    flags = _roster_flags(protocol, ())
     root = base / "runs"
-    _chain(root, protocol, *flags, programs=programs_through("ink-map"))
+    _chain(root, protocol, programs=programs_through("ink-map"))
     designator = load_stage("2_designator")
     original = designator.fixture_record_detector
 
@@ -647,14 +600,12 @@ def _detector_tree(
             "happy",
             "--perlector-protocol-config",
             str(protocol),
-            *flags,
         ],
     )
     assert designator.main() == 0
     _chain(
         root,
         protocol,
-        *flags,
         programs=programs_through("attestatores")[len(programs_through("designator")) :],
         through_perlector=True,
     )
@@ -1121,17 +1072,10 @@ def test_the_page_path_refuses_to_publish_dissent_its_own_validator_refuses(monk
 # --- live serving, against the fakes ------------------------------------------------
 
 
-def _catalogue(destination: Path, models: Path, rows: str = "", **overrides: Any) -> Path:
-    """The page-read roster's fixture catalogue with its Perlector row live, and any field changed.
-
-    `models` is the page-read roster (`conftest.page_models_config`), whose
-    catalogue adds the record detector's rows to the committed one.
-    """
+def _catalogue(destination: Path, rows: str = "", **overrides: Any) -> Path:
+    """The committed fixture catalogue with its Perlector row live, and any field changed."""
     committed = (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8")
-    source = page_serving_recipes_config(models).read_text(encoding="utf-8")
-    assert source.startswith(committed)
     head = committed.split('[[profiles]]\nkind = "fixture"\nrecipe = "fake-perlector-v0"')[0]
-    rows = source[len(committed) :].lstrip("\n") + rows
     row = {**_live_row(_perlector_identity()), **overrides}
     row["preflight_digest"] = profile_preflight_digest(row)
     body = "\n".join(f"{key} = {_toml_value(value)}" for key, value in row.items())
@@ -1160,7 +1104,7 @@ def _live_chain(
 ) -> _Live:
     """A live tree through the Attestatores, sealed with the page re-ask budget `reask`."""
     protocol = _page_protocol(base / "config", **(feed or {}))
-    catalogue = _catalogue(base / "config", _page_roster(protocol), **row)
+    catalogue = _catalogue(base / "config", **row)
     recovery = reask_recovery_config(base / "config", reask)
     extra = ("--serving-recipes-config", str(catalogue), "--recovery-config", str(recovery))
     _chain(base / "runs", protocol, *extra, scenario=scenario)
@@ -1209,7 +1153,7 @@ def _read_pages(tree: _Live, tmp_path, monkeypatch, *answers: ScriptedAnswer, ex
             "--perlector-protocol-config",
             str(tree.protocol),
             "--models-config",
-            str(_page_roster(tree.protocol)),
+            str(MODELS),
             "--recovery-config",
             str(tree.recovery),
             *extra,
@@ -1365,14 +1309,59 @@ def test_an_answer_that_cannot_stand_is_held_whole_with_no_act_record(
     assert exit_code == 0
     readings = _records(root, "page-reading")
     assert [r["payload"]["parse_state"] for r in readings] == [parse_state] * 2
+    outcome = "failed" if parse_state == "call-failed" else "held"
     for reading in readings:
-        assert reading["outcome"] == "held" and reading["payload"]["disposition"] == "held"
+        assert reading["outcome"] == outcome and reading["payload"]["disposition"] == "held"
         assert reading["payload"]["answer"] is None and reading["payload"]["problems"]
     assert _records(root, "act-region") == [] and _records(root, "perlectio") == []
     if parse_state == "call-failed":
         failure = readings[0]["payload"]["failure"]
         assert failure["code"] == "ENGINE_FINISH_REASON_UNRECOGNIZED"
         assert failure["raw_response_ref"] in readings[0]["inputs"]
+
+
+def test_a_failed_page_call_is_counted_unread_and_tallied_as_a_hard_failure(
+    live_tree, tmp_path, monkeypatch
+):
+    """A page whose call failed stays in the denominator as a held `page-unread`
+    unit, never zero acts, and its reading's `failed` outcome is what the
+    run-level hard-failure cap counts, so a page-read run whose calls keep
+    failing trips it."""
+    root = live_tree.root
+    transport = ScriptedAnswer(transport_failure="connection reset after dispatch")
+    unrecognized = ScriptedAnswer(content="{}", finish_reason="eos_token")
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, transport, unrecognized)
+    assert exit_code == 0
+    readings = _records(root, "page-reading")
+    assert [
+        (r["outcome"], r["payload"]["parse_state"], r["payload"]["disposition"]) for r in readings
+    ] == [("failed", "call-failed", "held")] * 2
+    codes = [r["payload"]["failure"]["code"] for r in readings]
+    assert codes[1] == "ENGINE_FINISH_REASON_UNRECOGNIZED"
+
+    rows = reading_acts(_denominator_context(live_tree))
+    assert [(row["act_key"], row["class"], row["disposition"]) for row in rows] == [
+        ("p1:unread", "page-unread", "held"),
+        ("p2:unread", "page-unread", "held"),
+    ]
+    for row, code in zip(rows, codes, strict=True):
+        assert {"page-unread", code} <= set(row["hold_codes"])
+
+    tally = tally_hard_failures(RunTree(root, "r"), load_hard_failure_policy())
+    assert tally["by_kind"]["perlector:failed"] == sorted(r["subject_id"] for r in readings)
+    assert tally["count"] == 2 and tally["breached"] is False
+
+
+def test_a_failed_page_call_recorded_as_held_is_refused_by_the_denominator(
+    live_tree, tmp_path, monkeypatch
+):
+    """A failed call recorded under the held outcome would hide it from the hard-failure cap."""
+    failing = ScriptedAnswer(content="{}", finish_reason="eos_token")
+    _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, failing, failing)
+    assert exit_code == 0
+    _forge_reading(live_tree, 1, lambda payload: None, outcome="held")
+    with pytest.raises(FatalAccounting, match="not a page-path reading of this page"):
+        reading_acts(_denominator_context(live_tree))
 
 
 def test_a_parsed_answer_with_no_finish_reason_is_kept_and_held_whole(
@@ -1505,11 +1494,11 @@ def test_a_page_over_the_rows_capacity_is_held_whole_and_never_sent(tmp_path, mo
 
 
 def _without_testimony(monkeypatch, ordinal: int) -> None:
-    """Stage 3 serving no page Testimonium for one page, as for a page with no proposed act."""
+    """Stage 3 serving no page Testimonium for one page."""
     original = page_run.current_page_testimonia
 
-    def dropped(context, proposal_regions):
-        current = original(context, proposal_regions)
+    def dropped(context):
+        current = original(context)
         page_id = page_run.exemplar_page_ids(context)[ordinal]
         return {page: rows for page, rows in current.items() if page != page_id}
 
@@ -1614,7 +1603,7 @@ def test_the_denominator_reads_a_live_reading_again_from_its_retained_reply(
             "--perlector-protocol-config",
             str(live_tree.protocol),
             "--models-config",
-            str(_page_roster(live_tree.protocol)),
+            str(MODELS),
         ]
     )
     acts = reading_acts(open_context(args, RECENSOR, serving_reader=SERVING_READER))
@@ -1635,15 +1624,16 @@ def _denominator_context(tree: _Live, serving_reader=SERVING_READER):
             "--perlector-protocol-config",
             str(tree.protocol),
             "--models-config",
-            str(_page_roster(tree.protocol)),
+            str(MODELS),
         ]
     )
     return open_context(args, RECENSOR, serving_reader=serving_reader)
 
 
-def _forge_reading(tree: _Live, ordinal: int, change) -> None:
-    """Rewrite one page reading and rewitness the Perlector's boundary, so only the
-    denominator's own recomputation is left to catch it."""
+def _forge_reading(tree: _Live, ordinal: int, change, outcome: str | None = None) -> None:
+    """Rewrite one page reading (and its outcome, when given) and rewitness the
+    Perlector's boundary, so only the denominator's own recomputation is left to
+    catch it."""
     directory = tree.root / "r" / "4_perlector" / "artifacts" / "page-reading"
     [path] = [
         path
@@ -1652,6 +1642,8 @@ def _forge_reading(tree: _Live, ordinal: int, change) -> None:
     ]
     record = json.loads(path.read_text(encoding="utf-8"))
     change(record["payload"])
+    if outcome is not None:
+        record["outcome"] = outcome
     record["self_hash"] = self_hash({k: v for k, v in record.items() if k != "self_hash"})
     path.write_bytes(canonical_bytes(record))
     rewitness_stage_boundary(RunTree(tree.root, "r"), PERLECTOR)

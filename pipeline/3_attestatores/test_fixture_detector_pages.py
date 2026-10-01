@@ -1,7 +1,7 @@
 """DAI read record by record on the fixture pass, as a served DAI is read.
 
-The runs use the page-read roster (`conftest.page_models_config`): DAI
-(`attestator_2`) page-scoped and its record detector on a fixture row, which
+The runs use the committed roster: DAI (`attestator_2`) page-scoped and its
+record detector on a fixture row, which
 answers from the fixture's `[[detector_record]]` rows. DAI's answer to each
 record is the fixture's `[[dai_record_response]]` row for it; everything else
 -- the crop it is shown, the closed model view, the retained capture -- is
@@ -24,7 +24,6 @@ from common.runtree.store import RunTree
 from conftest import (
     file_bytes_snapshot,
     load_stage,
-    page_roster_options,
     programs_through,
     run_stage,
 )
@@ -54,7 +53,7 @@ def _dai_pages(tree: RunTree) -> dict[int, dict]:
 
 
 def _through_designator(base: Path) -> tuple[Path, dict]:
-    options: dict[str, object] = {**page_roster_options(base / "models")}
+    options: dict[str, object] = {}
     root = base / "runs"
     for program in programs_through("designator"):
         result = run_stage(root, RUN_ID, "happy", program, **options)
@@ -116,20 +115,17 @@ def test_dai_reads_each_detector_record_on_its_page_with_its_declared_answer(wit
         assert receipt["endpoint"].startswith("fixture://")
 
 
-def test_each_act_view_is_published_from_its_primary_page_record(witnessed):
+def test_each_sealed_page_holds_one_dai_record_and_no_act_view(witnessed):
     root, _options = witnessed
     tree = RunTree(root, RUN_ID)
-    pages = _dai_pages(tree)
-    views = [
+    kinds = {entry["kind"] for entry in tree.build_manifest(ATTESTATORES)["artifacts"]}
+    assert "testimonium" not in kinds and "act-attachment" not in kinds
+    pages = [
         record
-        for record in _records(tree, ATTESTATORES, "testimonium")
+        for record in _records(tree, ATTESTATORES, "page-testimonium")
         if record["payload"]["chair"] == DAI
     ]
-    assert len(views) == 2
-    for view in views:
-        # Both acts' primary page is page 1, so both views carry its reading.
-        assert view["outcome"] == pages[1]["outcome"]
-        assert view["payload"]["payload"] == pages[1]["payload"]["payload"]
+    assert sorted(record["payload"]["page_ordinal"] for record in pages) == [1, 2]
 
 
 def test_a_second_pass_over_a_sealed_page_repeats_nothing(witnessed, tmp_path):

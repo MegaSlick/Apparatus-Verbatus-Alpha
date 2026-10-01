@@ -25,7 +25,7 @@ from manifest import (
 
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.stages import TRIAGE_MODES, TRIAGE_ROW_FIELDS
+from common.contracts.stages import TRIAGE_MODES
 
 DIGEST_A = "a" * 64
 DIGEST_B = "b" * 64
@@ -643,71 +643,6 @@ def test_the_mode_triple_is_the_shared_vocabulary_not_a_private_one():
     assert TRIAGE_MODES == ("manual", "semi", "auto")
     for mode in TRIAGE_MODES:
         assert validate_manifest(manifest([row(mode=mode)]))
-
-
-def test_the_row_vocabulary_still_covers_unit_20s_comparability_facts():
-    """The comparability derivation reads `mode`, `actor` and `human_override`
-    off this stage's rows; a new row field must be read there or named here."""
-    from common.capture_comparability import (  # noqa: PLC0415
-        ACTOR_FACT_FIELDS,
-        TRIAGE_FACT_FIELDS,
-        comparability_from_triage,
-    )
-
-    assert set(TRIAGE_FACT_FIELDS) <= TRIAGE_ROW_FIELDS
-    # Fail closed on schema growth: every row field is either a capture-
-    # condition fact the comparability derivation reads, or a member of this
-    # explicit non-condition allowlist (identity, geometry, provenance-of-row).
-    # A new row field forces a decision here -- read it in the derivation, or
-    # name it below as not describing the capture condition -- instead of two
-    # differently-captured rows quietly comparing equal.
-    assert TRIAGE_ROW_FIELDS - set(TRIAGE_FACT_FIELDS) == {
-        "corpus_id",
-        "source_frame_sha256",
-        "frame",
-        "split",
-        "re_shoot_cluster_id",
-        "confidence",
-        "manifest_row_sha256",
-    }
-    sealed = make_row(
-        corpus_id="montebello",
-        source_frame_sha256="a" * 64,
-        frame={"width": 100, "height": 100},
-        split=make_split(
-            [
-                make_part(
-                    {"x": 0, "y": 0, "w": 100, "h": 100},
-                    {"x": 0, "y": 0, "w": 100, "h": 100},
-                    0,
-                    colour_mode="keep",
-                )
-            ]
-        ),
-        re_shoot_cluster_id=None,
-        confidence=4,
-        mode="auto",
-        actor={"kind": "producer", "identity": "verbatus-triage", "revision": "0.0.0"},
-        human_override=False,
-    )
-    assert set(ACTOR_FACT_FIELDS) == set(sealed["actor"])
-    assert comparability_from_triage(sealed, sealed)["comparably_captured"] is True
-    # And a pair that really differs must fail with named codes -- a
-    # self-comparison alone proves only that the extractor accepts the row,
-    # not that the comparability rule can ever say no.
-    differing = make_row(
-        **{
-            **{key: value for key, value in sealed.items() if key != "manifest_row_sha256"},
-            "mode": "manual",
-            "human_override": True,
-        }
-    )
-    verdict = comparability_from_triage(sealed, differing)
-    assert verdict["comparably_captured"] is False
-    assert set(verdict["difference_codes"]) == {
-        "triage-mode-differs",
-        "triage-human-override-differs",
-    }
 
 
 def _sealed(**changes):

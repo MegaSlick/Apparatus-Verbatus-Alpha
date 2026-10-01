@@ -146,15 +146,15 @@ def _retain_dai_model_view(
 def _dai_present(context: Any, presentation: dict[str, Any]) -> dict[str, Any]:
     """Cut and resize DAI's view of one region from its sealed source page.
 
-    Page-scoped, the region is one record DAI's own project's detector found
-    (a Designator `detector-region`); act-scoped, it is the act's proposal. The
-    crop is the region's axis-aligned bounds, never rotated. Its presentation is
+    The region is one record DAI's own project's detector found (a Designator
+    `detector-region`). The crop is the region's axis-aligned bounds, never
+    rotated. Its presentation is
     an ``adapter-crop`` so the complete crop→resize recipe remains executable in
     sealed-page space.
     """
     validate_presented(presentation)
     if presentation["kind"] != "region":
-        raise SchemaRefusal("DAI accepts an act proposal region, not a page presentation")
+        raise SchemaRefusal("DAI accepts a region crop, not a page presentation")
     source_transform = presentation["transform"]
     page_id = source_transform["source_page_id"]
     _, page_bytes = read_sealed_page(context.tree, page_id, what="DAI")
@@ -225,17 +225,12 @@ def _validate_whole_page_adapter_crop(
     """Re-derive a page-witness adapter-crop from the source presentation alone.
 
     Shared by Churro and Chandra: both size a whole page by their own vendor
-    function and present the result as an ``adapter-crop``; an act
-    compatibility view keeps its Designator crop unchanged, since no chair was
-    shown those pixels. Calling the adapter's own transform builder keeps this
-    check from disagreeing with what the adapter itself writes.
+    function and present the result as an ``adapter-crop``. Calling the
+    adapter's own transform builder keeps this check from disagreeing with
+    what the adapter itself writes.
     """
     if source["kind"] != "page":
-        if presented != source:
-            raise SchemaRefusal(
-                f"{resolved} presentation differs from the exact image it was given"
-            )
-        return
+        raise SchemaRefusal(f"{resolved} reads whole pages; it is never shown a crop of one")
     bounds = source["transform"]["bounds"]
     expected = build_transform(
         source["source_page_id"],
@@ -253,25 +248,17 @@ def _validate_whole_page_adapter_crop(
 
 
 def validate_adapter_presentation(
-    name: object, source: dict[str, Any], presented: dict[str, Any], *, act_view: bool = False
+    name: object, source: dict[str, Any], presented: dict[str, Any]
 ) -> None:
     """Re-derive the exact presentation recipe an adapter can produce.
 
     Digest re-derivation proves that ``presented`` came from the sealed page,
     but not that this configured adapter could have produced that crop and
     target. Both facts are needed when an immutable Testimonium is tallied back.
-    ``act_view`` marks a page-scoped chair's act compatibility record, which
-    keeps the act's own Designator crop because the chair was not shown it.
     """
     resolved = resolve_witness_adapter_name(name)
     validate_presented(source)
     validate_presented(presented)
-    if act_view and resolved == "dai.v1":
-        if source["kind"] != "region" or presented != source:
-            raise SchemaRefusal(
-                "a page-scoped DAI act view does not keep its act's own proposal crop"
-            )
-        return
     if resolved == "churro.v1":
         _validate_whole_page_adapter_crop(
             resolved,
@@ -300,7 +287,7 @@ def validate_adapter_presentation(
             "here beside its runnable binding"
         )
     if source["kind"] != "region":
-        raise SchemaRefusal("DAI accepts an act proposal region, not a page presentation")
+        raise SchemaRefusal("DAI accepts a region crop, not a page presentation")
     bounds = source["transform"]["bounds"]
     target_width, target_height = feeding.dai_dimensions(bounds["w"], bounds["h"])
     transform: dict[str, Any] = {
@@ -394,6 +381,7 @@ def declared_quantization_rules() -> frozenset[str]:
 def validate_runnable_adapter_bindings(models: ModelsConfig) -> None:
     """Refuse shared declarations that have no stage-local callable route.
 
+    Every witness reads whole pages, so a chair scoped any other way is refused.
     Also checks the roster's declared framings, since only the stage knows
     which framings an adapter declares; refused before a run opens rather than
     at the first request on a billing card.
@@ -403,6 +391,11 @@ def validate_runnable_adapter_bindings(models: ModelsConfig) -> None:
         identity = models.chairs[chair]
         if isinstance(identity, AbsentChair):
             continue
+        if identity.witness_scope != "page":
+            raise SchemaRefusal(
+                f"chair {chair!r} is scoped {identity.witness_scope!r}; every witness reads "
+                "whole pages, so set its witness_scope to 'page'"
+            )
         adapter = resolve_runnable_adapter(identity.witness_adapter)
         if reads_detector_records(identity) and not isinstance(
             models.chairs.get(SECONDARY_PROPOSER_CHAIR), ChairIdentity
@@ -410,8 +403,7 @@ def validate_runnable_adapter_bindings(models: ModelsConfig) -> None:
             raise SchemaRefusal(
                 f"chair {chair!r} reads the page as {identity.witness_adapter!r} does, one "
                 f"record at a time as its own detector finds them, and the {SECONDARY_PROPOSER_CHAIR!r} "
-                "chair that runs that detector is not configured; configure it, or scope "
-                "this chair 'act'"
+                "chair that runs that detector is not configured; configure it"
             )
         declared = models.witness_framings.get(chair)
         if declared is None:

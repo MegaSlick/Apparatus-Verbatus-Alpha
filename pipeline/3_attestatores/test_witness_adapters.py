@@ -383,17 +383,18 @@ def test_the_registry_binds_the_native_intake_contract_seams():
             "bounds": {"x": 0, "y": 0, "w": 20, "h": 10},
         },
     }
-    # An act compatibility view is returned unchanged: no chair was shown those
-    # pixels, so minting the vendor's recipe over them would record a step that
-    # never ran. A whole *page* presentation is prepared instead, and that path
-    # needs a run tree; `test_attestatores_retention.py` exercises it there.
+    # A whole-page reader is never shown a crop: one is refused, not passed through
+    # under a vendor recipe that never ran. A whole *page* presentation needs a
+    # run tree; `test_attestatores_retention.py` exercises it there.
     region = {
         **presented,
         "kind": "region",
         "region_ref": {"region_id": "r1"},
         "transform": {**presented["transform"], "operation": "crop"},
     }
-    assert adapters.resolve_runnable_adapter("churro.v1").present(object(), region) is region
+    for name in ("churro.v1", "chandra.v1"):
+        with pytest.raises(SchemaRefusal, match="reads whole pages"):
+            adapters.resolve_runnable_adapter(name).present(object(), region)
     # Churro reports no geometry at all -- `HistoricalDocument` carries no
     # coordinate anywhere -- so every body derives the honest presented echo
     # that routing and coverage exclude, and no page size is needed or accepted.
@@ -658,6 +659,15 @@ def test_the_default_is_resolved_and_recorded_even_when_the_roster_names_none():
 
     adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     assert adapters.framing_for(_roster({}), "attestator_3") == "registry-v0.3.0"
+
+
+def test_a_witness_chair_scoped_anything_but_page_is_refused_before_the_run_opens():
+    adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
+    config = _roster()
+    region_scoped = dataclasses.replace(config.chairs["attestator_2"], witness_scope="region")
+    roster = dataclasses.replace(config, chairs={**config.chairs, "attestator_2": region_scoped})
+    with pytest.raises(SchemaRefusal, match="scoped 'region'; every witness reads whole pages"):
+        adapters.validate_runnable_adapter_bindings(roster)
 
 
 def test_a_roster_naming_a_framing_no_adapter_declares_is_refused_before_the_run_opens():

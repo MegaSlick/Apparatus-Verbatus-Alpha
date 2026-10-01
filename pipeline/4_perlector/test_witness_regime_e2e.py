@@ -1,5 +1,5 @@
 """The named/blinded toggle, driven end to end through the real orchestrator
-rather than only unit-tested against `dossier.build_dossier` directly.
+rather than only unit-tested against `common/page_feed.py` directly.
 """
 
 import subprocess
@@ -9,6 +9,7 @@ from pathlib import Path
 from common.contracts.canonical import canonical_text
 from common.contracts.stages import PERLECTOR
 from common.runtree.store import RunTree
+from common.witness_regime import pseudonym_for
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -32,39 +33,52 @@ def orchestrate(run_root: Path, run_id: str, scenario: str, *, witness_context: 
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
-def test_a_blinded_run_completes_and_seals_the_regime_on_every_reading(tmp_path):
+def _records(tree: RunTree, kind: str) -> list[dict]:
+    return [
+        tree.read_artifact(PERLECTOR, kind, entry["artifact_id"])
+        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
+        if entry["kind"] == kind
+    ]
+
+
+def test_a_blinded_run_completes_and_seals_the_regime_on_every_page_record(tmp_path):
     root = tmp_path / "runs"
-    result = orchestrate(root, "r", "happy", witness_context="blinded")
+    result = orchestrate(root, "r", "page-unbroken", witness_context="blinded")
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
-    readings = [
-        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
-        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
-        if entry["kind"] == "perlectio"
-    ]
-    assert len(readings) == 2
-    for reading in readings:
-        assert reading["payload"]["provenance"]["witness_regime"] == "blinded"
-        assert reading["payload"]["dossier"]["witness_regime"] == "blinded"
+    feeds = _records(tree, "page-feed")
+    readings = _records(tree, "page-reading")
+    perlectiones = _records(tree, "perlectio")
+    assert feeds and readings and perlectiones
+    assert {feed["payload"]["witness_regime"] for feed in feeds} == {"blinded"}
+    for record in readings + perlectiones:
+        assert record["payload"]["provenance"]["witness_regime"] == "blinded"
 
 
-def test_a_blinded_run_leaks_no_configured_chair_name_anywhere_in_the_dossier(tmp_path):
+def test_a_blinded_run_leaks_no_configured_chair_name_into_any_page_feed(tmp_path):
     root = tmp_path / "runs"
-    result = orchestrate(root, "r", "happy", witness_context="blinded")
+    result = orchestrate(root, "r", "page-unbroken", witness_context="blinded")
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
     configured_chairs = set(tree.read_run()["witness_chairs"])
     assert configured_chairs, "the run must actually have configured witnesses to test blinding"
-
-    for entry in tree.build_manifest(PERLECTOR)["artifacts"]:
-        if entry["kind"] != "perlectio":
-            continue
-        reading = tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
-        dossier_text = canonical_text(reading["payload"]["dossier"])
+    feeds = _records(tree, "page-feed")
+    assert any(feed["payload"]["witnesses"] for feed in feeds)
+    # Reversal is recomputing the same deterministic function over the public roster
+    # in `run.json`, never a second stored copy of it.
+    run = tree.read_run()
+    recomputed = {
+        pseudonym_for(chair, run_id="r", config_digest=run["config_digest"])
+        for chair in configured_chairs
+    }
+    for feed in feeds:
+        labels = [row["witness_label"] for row in feed["payload"]["witnesses"]]
+        assert len(set(labels)) == len(labels) and set(labels) <= recomputed
+        feed_text = canonical_text(feed["payload"])
         for chair in configured_chairs:
-            assert chair not in dossier_text, (
-                f"blinded run leaked configured chair name {chair!r} into the dossier "
-                f"of {entry['artifact_id']}"
+            assert chair not in feed_text, (
+                f"blinded run leaked configured chair name {chair!r} into page feed "
+                f"{feed['artifact_id']}"
             )
 
 
@@ -74,28 +88,23 @@ def test_named_and_blinded_runs_of_the_same_scenario_produce_different_config_di
     like `pdf_target_dpi`."""
     named_root = tmp_path / "named"
     blinded_root = tmp_path / "blinded"
-    assert orchestrate(named_root, "r", "happy", witness_context="named").returncode == 0
-    assert orchestrate(blinded_root, "r", "happy", witness_context="blinded").returncode == 0
+    assert orchestrate(named_root, "r", "page-unbroken", witness_context="named").returncode == 0
+    assert (
+        orchestrate(blinded_root, "r", "page-unbroken", witness_context="blinded").returncode == 0
+    )
     named_digest = RunTree(named_root, "r").read_run()["config_digest"]
     blinded_digest = RunTree(blinded_root, "r").read_run()["config_digest"]
     assert named_digest != blinded_digest
 
 
 def test_a_named_run_still_carries_the_real_chair_names(tmp_path):
-    """The default regime is unaffected: named dossiers still show real chair
-    identity, exactly as the walking skeleton always has."""
+    """The default regime is unaffected: a named feed shows each witness by its chair."""
     root = tmp_path / "runs"
-    result = orchestrate(root, "r", "happy", witness_context="named")
+    result = orchestrate(root, "r", "page-unbroken", witness_context="named")
     assert result.returncode == 0, result.stderr
     tree = RunTree(root, "r")
     configured_chairs = set(tree.read_run()["witness_chairs"])
-    entry = next(
-        entry
-        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
-        if entry["kind"] == "perlectio"
-    )
-    reading = tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
-    labels = {row["witness_label"] for row in reading["payload"]["dossier"]["testimonia"]}
-    assert labels == configured_chairs, (
-        "a named dossier must show every configured chair; a short roster is a lost witness"
-    )
+    feed = next(feed for feed in _records(tree, "page-feed") if feed["payload"]["witnesses"])
+    rows = feed["payload"]["witnesses"]
+    assert {row["witness_label"] for row in rows} == {row["chair"] for row in rows}
+    assert {row["chair"] for row in rows} <= configured_chairs

@@ -14,7 +14,14 @@ from common.contracts.errors import ApprovalRefusal, ContractError, FatalAccount
 from common.contracts.outcomes import OutcomeClass, classify, terminal_category
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, INK_MAP
 from common.imaging import encode_grayscale_png
-from common.residual_ink import ink_map_page, residual_ink
+from common.residual_ink import (
+    edge_ink_from_runs,
+    ink_map_page,
+    load_coverage_audit_config,
+    residual_ink,
+    residual_ink_from_runs,
+    resolve_coverage_audit_policy,
+)
 from common.runtree.store import RunTree
 from conftest import load_stage
 from operations.submit import gate, submit
@@ -653,7 +660,6 @@ def test_a_recorded_margin_the_sealed_fraction_does_not_derive_is_refused(monkey
     carrying a field the contract no longer has.
     """
     from common.background import validate_measured_ink_map_payload
-    from common.contracts.errors import ContractError
     from common.residual_ink import MINIMUM_CONTRAST_BELOW_BACKGROUND, load_coverage_audit_config
 
     payload = _measured_payload(monkeypatch)
@@ -675,7 +681,6 @@ def test_a_recorded_margin_the_sealed_fraction_does_not_derive_is_refused(monkey
 
 def test_retained_runs_for_another_page_size_are_refused_by_the_shared_reconciler(monkeypatch):
     """Runs and finding that agree with each other still have to fit the sealed page."""
-    from common.contracts.errors import ContractError
     from common.residual_ink import reconcile_edge_finding_with_runs
 
     payload = _measured_payload(monkeypatch)
@@ -691,8 +696,7 @@ def test_retained_runs_for_another_page_size_are_refused_by_the_shared_reconcile
 def test_a_page_whose_paper_cannot_be_inferred_is_named_rather_than_mapped(monkeypatch):
     """`ink-not-measurable`: in the census, with no counts and no retained runs.
 
-    The page is the inverted scan `pipeline/2_designator/test_structure.py`
-    uses -- 80% at 30, 20% at 220 -- whose mode is darker than its own mean and
+    The page is an inverted scan -- 80% at 30, 20% at 220 -- whose mode is darker than its own mean and
     whose interior is dark, so no branch can call anything on it paper. Taking
     the raw mode (30) as the paper value would find no pixel 40 levels below
     it, and would publish `mapped` with `total_ink_pixels: 0`: a
@@ -813,18 +817,17 @@ def test_a_real_submission_names_edge_ink_and_an_unmeasurable_page(tmp_path):
     ],
 )
 def test_every_reader_of_the_retained_runs_refuses_the_same_row(row, defect):
-    """The Recensor and the Designator check a retained row through one validator."""
-    designator = load_stage("2_designator")
+    """The edge re-measure and the residual count check a retained row through one validator."""
     evidence = {"schema": "ink-runs.v2", "width": 4, "height": 1, "rows": [row]}
-    box = {"x": 0, "y": 0, "w": 4, "h": 1}
+    policy = resolve_coverage_audit_policy(load_coverage_audit_config(), 4, 1)
 
-    with pytest.raises(FatalAccounting, match=defect):
-        RECENSOR_RUN._ink_outside_cuts_in_box(evidence, box, [])
-    with pytest.raises(ContractError, match=defect):
-        designator._ink_outside_cut_union(evidence, box, [])
+    for reader in (edge_ink_from_runs, residual_ink_from_runs):
+        with pytest.raises(ValueError, match=defect):
+            reader(evidence, [], coverage_policy=policy)
+    valid = {**evidence, "rows": [[[0, 1], [2, 2]]]}
     assert (
-        RECENSOR_RUN._ink_outside_cuts_in_box({**evidence, "rows": [[[0, 1], [2, 2]]]}, box, [])
-        == designator._ink_outside_cut_union({**evidence, "rows": [[[0, 1], [2, 2]]]}, box, [])
+        edge_ink_from_runs(valid, [], coverage_policy=policy)["total_ink_pixels"]
+        == residual_ink_from_runs(valid, [], coverage_policy=policy)["total_ink_pixels"]
         == 3
     )
 
@@ -845,11 +848,9 @@ _RUNS = {"schema": "ink-runs.v2", "width": 4, "height": 1, "rows": [[[0, 1]]]}
     ],
 )
 def test_every_reader_of_the_retained_runs_refuses_the_same_envelope(evidence, defect):
-    """The Recensor and the Designator check the run record through one validator."""
-    designator = load_stage("2_designator")
-    box = {"x": 0, "y": 0, "w": 4, "h": 1}
+    """The edge re-measure and the residual count check the run record through one validator."""
+    policy = resolve_coverage_audit_policy(load_coverage_audit_config(), 4, 1)
 
-    with pytest.raises(FatalAccounting, match=defect):
-        RECENSOR_RUN._ink_outside_cuts_in_box(evidence, box, [])
-    with pytest.raises(ContractError, match=defect):
-        designator._ink_outside_cut_union(evidence, box, [])
+    for reader in (edge_ink_from_runs, residual_ink_from_runs):
+        with pytest.raises(ValueError, match=defect):
+            reader(evidence, [], coverage_policy=policy)

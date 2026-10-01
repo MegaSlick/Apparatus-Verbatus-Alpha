@@ -1,6 +1,6 @@
 """The Perlector's page feed: everything one whole-page reading is shown.
 
-Under `reading_unit = "page"` the Perlector reads one page per call and
+The Perlector reads one page per call and
 establishes the acts itself. What it is shown is this feed: the page image
 (carried beside the text, not in it), each witness's page text broken into
 that witness's own units, and Surya's detected lines and blocks. Every input
@@ -83,9 +83,9 @@ this page whose payload names the row's chair; no two rows may share a ref. Ever
 each line's and block's `ref`) is an input the caller binds on the page-feed
 record.
 
-A page the Attestatores served no page Testimonium at all (stage 3 serves only
-pages with a proposed Designator act) is built with `no_testimony=True` and no
-witnesses: its feed records `witness_testimony: "none"` and no row, so the
+A page with no page Testimonium at all (the sealed roster seats no page
+witness, or the Attestatores recorded none for it) is built with
+`no_testimony=True` and no witnesses: its feed records `witness_testimony: "none"` and no row, so the
 absence is stated rather than silent. A roster chair missing beside others
 that did testify is still refused.
 
@@ -120,7 +120,6 @@ from common.contracts.errors import ContractError, SchemaRefusal
 from common.native_witness import REPETITION_FINDING_KINDS
 from common.page_path import (
     PAGE_TESTIMONIUM_KIND,
-    READING_UNIT,
     SURYA_ORDER_HEAD,
     SURYA_RASTER_FALLBACK,
 )
@@ -712,7 +711,7 @@ def assemble_page_feed(
     when it is off. `page_render_bytes` are the render's bytes, needed only
     when `page_overlay` is on, to draw the overlay and seal its digest.
 
-    Returns `{schema, page_id, page_ordinal, page_size: {w, h}, reading_unit,
+    Returns `{schema, page_id, page_ordinal, page_size: {w, h},
     witness_regime, switches, page_render, overlay, witness_testimony,
     witnesses, surya, answer_measure, prompt, feed_digest}`; `prompt` is `None`
     when `serving_recipe` is `None` or the feed shows nothing; `overlay` is `None` when the switch
@@ -750,7 +749,6 @@ def assemble_page_feed(
         "page_id": page_id,
         "page_ordinal": page_ordinal,
         "page_size": {"w": width, "h": height},
-        "reading_unit": READING_UNIT,
         "witness_regime": witness_regime,
         "switches": switches,
         "page_render": _checked_page_render(page_render, switches["page_image"], page_size),

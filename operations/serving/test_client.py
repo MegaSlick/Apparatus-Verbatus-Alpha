@@ -35,7 +35,6 @@ from common.decoding import (
     engine_effective_sampling,
     load_decoding_policy,
     recorded_wire_decimals,
-    variance_arm_seed,
 )
 from common.sealed_config import table_seal
 
@@ -507,71 +506,6 @@ def test_chandra_native_transport_failure_retains_intent_and_physical_request(
     assert record["generation_sent"]["top_p"]["decimal"] == "0.95"
     assert "seed" not in record["generation_sent"]
     assert record["transport_problem"]["request_delivery"] == "unknown"
-
-
-def test_only_the_structure_chair_has_recovery_attempts(tmp_path: Path) -> None:
-    client, endpoint, blob_store, _ = _built(tmp_path)
-    with client:
-        with pytest.raises(ChairRequestRefusal, match="only the Designator structure chair"):
-            client.read(_request(structure_attempt_ordinal=2))
-    assert endpoint.requests == []
-    assert len(blob_store) == 0
-
-
-@pytest.mark.parametrize(
-    ("ordinal", "temperature", "top_p"), [(1, 0.0, 0.1), (2, 0.2, 0.95), (3, 0.4, 0.95)]
-)
-def test_a_structure_recovery_attempt_sends_chandras_own_retry_request(
-    tmp_path: Path, ordinal: int, temperature: float, top_p: float
-) -> None:
-    chair = _identity(role="designator_structure")
-    client, endpoint, blob_store, _ = _built(tmp_path, chair=chair)
-    with client:
-        endpoint.script(ScriptedAnswer(content="layout", finish_reason="stop"))
-        response = client.read(_request(structure_attempt_ordinal=ordinal))
-    record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
-    posted = endpoint.requests[0]
-    assert (posted["temperature"], posted["top_p"], posted["seed"]) == (temperature, top_p, 7)
-    assert record["generation_sent"] == recorded_wire_decimals(
-        {
-            **chair_decoding(SHIPPED_POLICY, "designator_structure"),
-            "temperature": temperature,
-            "top_p": top_p,
-            "seed": 7,
-        }
-    )
-
-
-def test_a_structure_attempt_past_the_sealed_ceiling_is_refused(tmp_path: Path) -> None:
-    client, endpoint, _blob_store, _ = _built(
-        tmp_path, chair=_identity(role="designator_structure")
-    )
-    with client, pytest.raises(ChairRequestRefusal, match="no attempt 4"):
-        client.read(_request(structure_attempt_ordinal=4))
-    assert endpoint.requests == []
-
-
-@pytest.mark.parametrize("arm", ["lectio-prior", "lectio-nuda"])
-def test_a_variance_arm_sends_its_own_sealed_seed(tmp_path: Path, arm: str) -> None:
-    client, endpoint, blob_store, _ = _built(tmp_path, chair=_identity(role="perlector"))
-    with client:
-        endpoint.script(ScriptedAnswer(content="lectio", finish_reason="stop"))
-        response = client.read(_request(variance_arm=arm))
-    record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
-    expected = variance_arm_seed(SHIPPED_POLICY, arm)
-    assert endpoint.requests[0]["seed"] == record["generation_sent"]["seed"] == expected
-    assert variance_arm_seed(SHIPPED_POLICY, "lectio-prior") != variance_arm_seed(
-        SHIPPED_POLICY, "lectio-nuda"
-    )
-
-
-def test_only_the_perlector_reads_a_variance_arm(tmp_path: Path) -> None:
-    client, endpoint, _blob_store, _ = _built(tmp_path)
-    with client, pytest.raises(ChairRequestRefusal, match="only the Perlector"):
-        client.read(_request(variance_arm="lectio-nuda"))
-    with pytest.raises(ChairRequestRefusal, match="not one of"):
-        _request(variance_arm="perlectio")
-    assert endpoint.requests == []
 
 
 # --- pre-send refusals: nothing is built or sent ------------------------------

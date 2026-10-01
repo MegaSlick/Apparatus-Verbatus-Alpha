@@ -291,9 +291,7 @@ def test_production_stage_code_never_imports_the_reseal_forgery_helper():
     violations = [
         f"{path} imports {full!r}"
         for path in repository_python_files()
-        if _stage_of(path) is not None
-        and not Path(path).name.startswith("test_")
-        and Path(path).name != "reseal_chain.py"
+        if _stage_of(path) is not None and not Path(path).name.startswith("test_")
         for root, full in _imports_in(ROOT / path)
         if _is_forgery_import(root, full)
     ]

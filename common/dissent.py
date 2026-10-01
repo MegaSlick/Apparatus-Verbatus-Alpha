@@ -37,7 +37,6 @@ from typing import Any, Final
 from common.alignment import AlignmentStepLimit, StepCountedMatcher, markup_text_view
 from common.contracts.errors import SchemaRefusal
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES
-from common.contracts.prior_draft import unmeasured_comparison
 
 # `SequenceMatcher`'s alignment cost is not simply the product of the two
 # lengths: a reading and a report that differ in many scattered places --
@@ -50,6 +49,19 @@ from common.contracts.prior_draft import unmeasured_comparison
 # `[dissent] max_comparison_steps` in `config/alignment.toml`, which every
 # caller passes in, does that.
 MAX_COMPARISON_CHARACTER_PAIRS: Final = 100_000_000
+
+# A comparison stopped by its sealed step budget. Named so the record says the
+# instrument stopped, not that the reading and the witness were found to agree.
+COMPARISON_STEP_LIMIT_REASON: Final = "comparison-step-limit"
+
+
+def unmeasured_comparison(max_comparison_steps: int) -> dict[str, Any]:
+    """The explicit non-verdict of a comparison that would pass its step budget."""
+    return {
+        "measured": False,
+        "reason": COMPARISON_STEP_LIMIT_REASON,
+        "max_comparison_steps": max_comparison_steps,
+    }
 
 
 def comparison_view(text: str) -> dict[str, object]:
@@ -126,13 +138,11 @@ def is_comparable(record: dict[str, Any]) -> bool:
     clean established text would count markup characters as disagreement,
     which is not what dissent means. Such a chair stays unmeasurable UNLESS a
     derived comparison view already exists for it (`comparison_reported`,
-    never the raw `reported`): an anchored, markup-stripped page slice for a
-    page witness, or `common/alignment.py::bracket_marker_view` for an
-    act-scoped one. A chair with one rejoins the instrument through that safe
-    view; one without -- a page witness whose alignment failed -- stays
-    honestly unknown with its reason recorded rather than folded into a
-    coverage count. An act-scoped chair always gets the bracket view
-    (`run.py::comparison_views`), so a future chair whose notation is not
+    never the raw `reported`): the text of the units an entry cites with its
+    doubt markers removed (`common/alignment.py::bracket_marker_view`). A
+    chair with one rejoins the instrument through that safe view; one without
+    stays honestly unknown with its reason recorded rather than folded into a
+    coverage count. A chair given the bracket view whose notation is not
     brackets would rejoin as comparable anyway, its own markers surviving as
     false disagreement; nothing here reads a notation field to catch that.
     """
@@ -151,14 +161,13 @@ def dissent_against(
     Computed after the reading is fixed. A chair that failed or never ran has
     no opinion to depart from, and is recorded as having none rather than as
     agreeing -- silence is not assent. `compared: "unknown"` is what a chair that
-    did report but could not be compared receives, and it has five causes:
+    did report but could not be compared receives, and it has four causes:
     retained testimony that is not text, a declared format that cannot be reduced
-    to a comparison view, a page witness unattached to this act and carrying no
-    `comparison_reported`, a report large enough to refuse outright
+    to a comparison view, a report large enough to refuse outright
     (`MAX_COMPARISON_CHARACTER_PAIRS`), and an alignment that would pass
     `max_comparison_steps`, the sealed dissent budget, which that row records
-    beside its reason. Never guessed at, and never silently dropped from the
-    record either.
+    beside its reason. The same texts always give the same rows. Never guessed
+    at, and never silently dropped from the record either.
     """
     reading_view = comparison_view(reading)
     rows = []
@@ -167,7 +176,7 @@ def dissent_against(
         if record["outcome"] not in WITNESS_READING_OUTCOMES:
             rows.append({"chair": chair, "compared": False, "reason": record["outcome"]})
             continue
-        # An act-aligned page slice (`comparison_reported`) is compared first;
+        # A derived comparison view (`comparison_reported`) is compared first;
         # otherwise the retained `payload`, or `reported` where a record names
         # its text so.
         reported = record["payload"].get(
@@ -195,25 +204,6 @@ def dissent_against(
                     "reason": (
                         "this witness's declared format cannot be reduced to a plain "
                         "comparison view"
-                    ),
-                }
-            )
-            continue
-        if (
-            record["payload"].get("page_witness") is True
-            and "comparison_reported" not in record["payload"]
-        ):
-            rows.append(
-                {
-                    "chair": chair,
-                    "compared": "unknown",
-                    # An attached page witness always carries a comparison
-                    # view, so absence means exactly one thing: the chair's
-                    # recorded alignment is explicitly unaligned.
-                    "reason": (
-                        "page witness is not attached to this act; its recorded alignment "
-                        "is explicitly unaligned, so there is no act-anchored comparison "
-                        "view to diff"
                     ),
                 }
             )

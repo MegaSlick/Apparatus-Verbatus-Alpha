@@ -28,9 +28,7 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         models_config="config/models.toml",
         serving_recipes_config="config/serving_recipes.toml",
         pdf_render_config="config/pdf_render.toml",
-        designator_padding_config="config/designator_padding.toml",
         designator_geometry_config="config/designator_geometry.toml",
-        designator_grouping_config="config/designator_grouping.toml",
         alignment_config="config/alignment.toml",
         page_accounting_config="config/page_accounting.toml",
         reconstruction_config="config/reconstruction.toml",
@@ -43,14 +41,9 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         corpus_register=None,
         witness_context="named",
         witness_context_config="config/witness_context.toml",
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-        perlector_instrument_per_mille=0,
-        perlector_instrument_approval_ref="",
         perlector_protocol_config="config/perlector_protocol.toml",
         decoding_config="config/decoding.toml",
         perlector_audit_config="config/perlector_audit.toml",
-        blind_read="fed",
         # The real-submission argv surface. `require_coherent_ingress_options`
         # reads these three by name on every `invoke`, so a stand-in Namespace
         # that omits them is not the surface it claims to mirror.
@@ -131,7 +124,6 @@ def test_the_timing_journal_names_the_perlector_concurrency_asked_for(tmp_path):
         orchestrator._record_stage_timing(
             args,
             program=program,
-            extra={},
             started_at="2026-01-01T00:00:00Z",
             finished_at="2026-01-01T00:00:01Z",
             duration_ms=1000,

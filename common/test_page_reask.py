@@ -130,11 +130,11 @@ def test_the_re_ask_is_off_at_a_budget_of_zero_and_refused_above_one():
     assert plan(missing_last(), budget=0) == []
     with pytest.raises(ContractError, match="a page re-ask budget of 2"):
         plan(missing_last(), budget=2)
-    policy = {"absolute_cap": 3, "fallback_recrop": 1, "page_level_reread": 1, "allowed": 2}
+    policy = {"config_sha256": "0" * 64, "page_level_reread": 1}
     assert reask_budget(policy) == MAX_REASKS == 1
     assert reask_budget({**policy, "page_level_reread": 0}) == 0
     with pytest.raises(ContractError, match="sealed page_level_reread is 2"):
-        reask_budget({**policy, "page_level_reread": 2, "allowed": 3})
+        reask_budget({**policy, "page_level_reread": 2})
 
 
 @pytest.mark.parametrize(

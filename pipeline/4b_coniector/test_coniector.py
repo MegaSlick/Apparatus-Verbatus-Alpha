@@ -25,7 +25,6 @@ from common.reconstruction_records import (
     CALL_KIND,
     CHAIR_ABSENT,
     LABEL,
-    NOT_APPLICABLE_ACT_READ,
     PLAN_KIND,
     RECONSTRUCTION_KIND,
 )
@@ -181,18 +180,6 @@ def test_what_is_not_made_says_why_and_the_diplomatic_is_still_delivered(reviewe
     export = verify_final_seal(RunTree(root, RUN_ID))
     delivered = {act["act_key"]: act["text"] for act in export["payload"]["delivered"]}
     assert delivered["p1:1"] == "SYNTHETIC ACT ONE alpha beta gamma"
-
-
-def test_an_act_read_run_plans_nothing_and_says_why(tmp_path):
-    root = tmp_path / "runs"
-    config = _config(tmp_path / "config-r")
-    for program in (*programs_through("archetypus"), CONIECTOR_PROGRAM):
-        result = run_stage(root, RUN_ID, "happy", program, reconstruction_config=config)
-        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
-    (plan,) = _records(root, PLAN_KIND)
-    assert plan["payload"]["reading_unit"] == "act"
-    assert plan["payload"]["not_applicable"] == NOT_APPLICABLE_ACT_READ
-    assert plan["payload"]["calls"] == []
 
 
 def test_a_run_whose_chair_is_absent_makes_nothing_and_names_the_absence(tmp_path):
@@ -361,7 +348,7 @@ def _tamper(root: Path, kind: str, keys_or_page, change) -> None:
 
 def _verified(root: Path, options: dict):
     from common.reconstruction_records import verified_reconstructions
-    from common.stage import READING_UNIT_PAGE, reading_acts
+    from common.stage import reading_acts
     from conftest import page_context
     from operations.serving.assembly import SERVING_READER
 
@@ -371,7 +358,7 @@ def _verified(root: Path, options: dict):
     context = page_context(
         root, RUN_ID, "happy", options, stage=CONIECTOR, serving_reader=SERVING_READER
     )
-    return verified_reconstructions(context, READING_UNIT_PAGE, reading_acts(context))
+    return verified_reconstructions(context, reading_acts(context))
 
 
 @pytest.mark.parametrize(
@@ -645,7 +632,7 @@ def _toml_profile(row: dict) -> str:
 
 
 def _live_reconstructor_catalogue(catalogue: Path, models: Path) -> None:
-    """The page roster's catalogue with the reconstructor's fixture rows served live."""
+    """The catalogue with the reconstructor's fixture rows served live."""
     from common.chairs.registry import ChairRegistry
     from operations.serving.config import load_serving_recipes
 
@@ -684,7 +671,6 @@ def _declared_answers() -> list[str]:
 def live(tmp_path_factory):
     """The `unconsecutive` run with its reconstructor served live: a real ChairClient and
     ServingManager over a scripted endpoint, the stage's own `main` in process."""
-    from conftest import page_roster_options
     from operations.serving.assembly import retain_chair_bytes
     from operations.serving.client import ChairClient
     from operations.serving.config import ServingConfigInputs, load_serving_recipes
@@ -693,8 +679,12 @@ def live(tmp_path_factory):
     from operations.serving.residency import FileResidencyLease
 
     base = tmp_path_factory.mktemp("live")
-    roster = page_roster_options(base / "live-models")
-    _live_reconstructor_catalogue(roster["serving_recipes_config"], roster["models_config"])
+    repository = Path(__file__).resolve().parents[2]
+    catalogue = base / "live-models" / "serving_recipes.toml"
+    catalogue.parent.mkdir(parents=True)
+    catalogue.write_bytes((repository / "config" / "serving_recipes.toml").read_bytes())
+    _live_reconstructor_catalogue(catalogue, repository / "config" / "models.toml")
+    roster = {"serving_recipes_config": catalogue}
     root, options = build_page_tree(
         base, "happy", reconstruction_config=_config(base / "config-r"), **roster
     )

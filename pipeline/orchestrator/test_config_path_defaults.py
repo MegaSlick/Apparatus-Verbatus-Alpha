@@ -17,9 +17,7 @@ from conftest import load_stage
 SEALED_CONFIG_FLAGS = (
     "--decoding-config",
     "--pdf-render-config",
-    "--designator-padding-config",
     "--designator-geometry-config",
-    "--designator-grouping-config",
     "--alignment-config",
     "--page-accounting-config",
     "--reconstruction-config",

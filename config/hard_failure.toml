@@ -1,5 +1,5 @@
-# The run-level hard-failure cap. Distinct from `recovery.toml`'s per-act
-# recovery budget: that file bounds how often ONE act may ask for rework; this
+# The run-level hard-failure cap. Distinct from `recovery.toml`'s per-page
+# re-ask budget: that file bounds how often ONE page may be asked again; this
 # one bounds how many accounted hard failures ONE RUN may carry before it needs
 # the project lead rather than another automatic stage invocation.
 #
@@ -42,22 +42,18 @@ threshold = 2
 #
 # `(perlector, truncated)` is REMOVED for exactly this reason. ARCHITECTURE's
 # "truncation is a failure, not an output" is true and is honoured -- a
-# truncated Perlectio never completes its act (`common/contracts/outcomes.py`
-# classifies it FAILED at the per-act level, and the Recensor holds it) -- but
-# that is a question about ONE reading, not about whether the RUN is going
-# wrong. A page with an unusually long entry (a marriage record with many
-# witnesses, a lengthy marginal note) will truncate routinely in real parish
+# truncated entry of a page reading is held, never delivered -- but that is a
+# question about ONE reading, not about whether the RUN is going wrong. A page
+# with an unusually long entry (a marriage record with many witnesses, a
+# lengthy marginal note) will truncate routinely in real parish
 # registers; folding that into a 2-failure early-warning cap would trip it on
 # ordinary document variance and defeat the cap's purpose. `(perlector, failed)`
-# is KEPT, but the mapping is not yet certain: pipeline/4_perlector/run.py is a
-# built stage (dossiers, Lectio nuda, dissent recording, the truncation
-# instrument), but its only reader is still the fixture
-# (pipeline/4_perlector/reader.py, FixtureReader) -- so nothing in the shipped
-# code yet says whether a real `failed` outcome will mean "an exception escaped
-# the read path" (the old pipeline's HARD_GENERATE_EXCEPTION, genuinely hard) or
-# "the model answered badly after every retry" (the old pipeline's
-# SOFT_READ_FAILED, a tough page, genuinely soft). Kept as hard conservatively;
-# revisit when a real reader gives `failed` a real trigger.
+# is KEPT, and on the page path it means the old pipeline's "exception escaping
+# the read path": a page whose engine call failed (transport failure, endpoint
+# unavailable, an engine refusal or an unrecognised stop) is published as a
+# `page-reading` with outcome `failed` and parse state `call-failed`, its page
+# held for review as `page-unread`. A capacity refusal is not counted: like a
+# truncation, it is a page too large for the sealed row, not a broken run.
 #
 # `(door, refused, reason="corrupt")` and `(door, refused, reason="unreadable")`
 # are ADDED. `pipeline/1_exemplar/admission.py`'s closed `RefusalReason`
@@ -90,9 +86,8 @@ threshold = 2
 # failure today, so counting it would double-count exactly the `(door,
 # refused, reason=...)` incidents above.
 #
-# (recensor, held-for-review) and (recensor, recovery-requested) are
-# UNRESOLVED, not FAILED, and are the ordinary, expected shape of a run that is
-# working correctly -- holding for a human or asking for bounded rework is the
+# (recensor, held-for-review) is UNRESOLVED, not FAILED, and is the ordinary,
+# expected shape of a run that is working correctly -- holding for a human is the
 # system succeeding at its job, not failing at it. Witness (attestatores)
 # outcomes are deliberately left out even though `failed`/`dead` classify FAILED:
 # no witness outcome ever terminates an act on its own (the transition table
@@ -103,7 +98,7 @@ threshold = 2
 # turns out to be a real early-warning signal in alpha.
 #
 # (designator, failed) and (archetypus, refused) are named even though neither
-# stage emits them today (the Designator emits only `proposed`/`held`, the
+# stage emits them today (the Designator emits only `proposed`, the
 # Archetypus only `established`) -- the outcome algebra already reserves both as
 # FAILED-classified members of their stage's closed vocabulary, and this policy
 # is ready for the day a stage actually uses them without needing a second edit.

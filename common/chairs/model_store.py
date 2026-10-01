@@ -90,14 +90,6 @@ SURYA_BUNDLE_DIGEST_MANIFEST = "ad19b0280bec623e7edd1b7ca5197ded1add35af9ff0ec76
 # at the pinned revision, not a reading of its terms.
 REQUIRED_ARTIFACTS = (
     RequiredArtifact(
-        "designator_structure",
-        "chandra-ocr-2",
-        "huggingface",
-        "datalab-to/chandra-ocr-2",
-        "af93b47dba1b47b6640c86ccf487ed2260ab9a09",
-        "openrail",
-    ),
-    RequiredArtifact(
         "attestator_1",
         "chandra-ocr-2",
         "huggingface",
@@ -655,7 +647,7 @@ def _refuse_unpinned_additions(snapshot: Path, artifact: str) -> None:
 
 
 def _unique_requirements() -> list[RequiredArtifact]:
-    """Roster order, one entry per artifact: chandra fills two chairs at one pin."""
+    """Roster order, one entry per artifact, however many chairs one fills."""
 
     unique: dict[str, RequiredArtifact] = {}
     for item in REQUIRED_ARTIFACTS:

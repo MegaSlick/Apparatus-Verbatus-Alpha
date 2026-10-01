@@ -22,7 +22,6 @@ from pathlib import Path
 import pytest
 
 from common.contracts.canonical import digest_bytes
-from common.contracts.prior_draft import unmeasured_comparison
 from common.runtree.store import RunTree
 from operations.operator import cli, review, review_text
 from operations.operator.errors import ErrorCode, OperatorError
@@ -30,10 +29,12 @@ from operations.operator.errors import ErrorCode, OperatorError
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 RUN_ID = "r"
-SCENARIO = "audit-reproof-cutoff"
+SCENARIO = "happy"
 
 
-def _orchestrate(run_root: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+def _orchestrate(
+    run_root: Path, *extra: str, scenario: str = SCENARIO
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
@@ -41,7 +42,7 @@ def _orchestrate(run_root: Path, *extra: str) -> subprocess.CompletedProcess[str
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            SCENARIO,
+            scenario,
             "--run-id",
             RUN_ID,
             "--run-root",
@@ -91,6 +92,15 @@ def witnessed_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return run_root
 
 
+@pytest.fixture(scope="module")
+def read_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """One run carried to the Perlector boundary and stopped there."""
+    run_root = tmp_path_factory.mktemp("read") / "runs"
+    completed = _orchestrate(run_root, "--from", "door", "--to", "perlector")
+    assert completed.returncode == 0, completed.stderr
+    return run_root
+
+
 def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_has_not_run(
     witnessed_run: Path,
 ):
@@ -135,26 +145,44 @@ def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_
     assert projected.pages_declared == 2
 
     # The exact images, verified against the sealed digests, each row naming
-    # the Exemplar or Designator record it came from rather than an export.
+    # the Exemplar record it came from rather than an export.
     assert [page["ordinal"] for page in projected.pages] == [1, 2]
     for page in projected.pages:
         assert page["outcome"] == "sealed"
         assert page["image_path"].startswith("1_exemplar/blobs/sha256/")
         assert digest_bytes(tree.read_bytes(page["image_path"])) == page["image_sha256"]
         assert page["record_ref"]["relative_path"].startswith("1_exemplar/artifacts/page/")
-    assert {act["act_key"] for act in projected.acts} == {"a1", "a2"}
+    # Acts are named by the page reading, which has not run: none is listed,
+    # and the count says why rather than reading as a run with no acts.
+    assert projected.acts == ()
+    assert projected.acts_denominator_note == review._NO_READING_NOTE
+
+    text = "\n".join(review_text.render(dataclasses.asdict(projected)))
+    assert "perlector: not-run" in text
+    assert "Acts (0; the Perlector has not read the pages" in text
+    assert "Review queue: not produced (there is no Armarium export record" in text
+    assert "Pages (2 of 2 declared)" in text
+    assert f"`verbatus run --run-id {RUN_ID}`" in text
+
+
+def test_a_run_stopped_after_the_perlector_shows_each_entry_it_read_with_its_crop(
+    read_run: Path,
+):
+    """Before export, the acts are the Perlector's own entries, each with its crop."""
+    projected = _projection(read_run)
+    tree = RunTree(read_run, RUN_ID)
+
+    assert projected.next_action["resume_from"] == "recensor"
+    assert projected.acts, "the happy pages carry entries the Perlector read"
+    assert projected.acts_denominator_note == review._PRE_EXPORT_ACTS_NOTE
     for act in projected.acts:
-        assert act["category"] == "witnessed, awaiting the Perlector"
-        assert "the Perlector has not read it" in act["reason"]
-        assert act["crops"], "every marked-out act shows the crop the witnesses saw"
+        assert act["category"].startswith("read: ")
+        assert act["category"].endswith(", awaiting the Recensor")
+        assert act["record_ref"]["relative_path"].startswith("4_perlector/artifacts/act-region/")
+        assert act["crops"], "every placed entry shows the crop the Perlector cut"
         for crop in act["crops"]:
-            assert crop["image_path"].startswith("2_designator/blobs/sha256/")
             assert digest_bytes(tree.read_bytes(crop["image_path"])) == crop["image_sha256"]
-            assert crop["origin"] == "proposal"
-        assert act["record_ref"]["relative_path"].startswith(
-            "2_designator/artifacts/proposal-seal/"
-        )
-        assert act["row"]["reading"] is None
+        assert act["row"]["reading"] is not None
         assert act["row"]["review"] is None
         assert act["row"]["established"] is None
         assert len(act["row"]["testimonia"]) == 3
@@ -163,157 +191,53 @@ def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_
         ), "each witness row says which attempt it was"
 
     text = "\n".join(review_text.render(dataclasses.asdict(projected)))
-    assert "perlector: not-run" in text
-    assert "witnessed, awaiting the Perlector" in text
-    assert "Review queue: not produced (there is no Armarium export record" in text
-    assert "Pages (2 of 2 declared)" in text
-    assert f"`verbatus run --run-id {RUN_ID}`" in text
+    assert "recensor: not-run" in text
+    assert "awaiting the Recensor" in text
     assert "(attempt 1)" in text
+
+
+@pytest.mark.parametrize(
+    ("scenario", "page_two"),
+    [("page-unread", "page 2 held (not-json)"), ("page-blank", "page 2 read, no entry")],
+)
+def test_a_page_read_without_an_entry_is_named_before_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str, page_two: str
+):
+    """A held or blank page reading is named, so a partial result never reads as not started."""
+    run_root = tmp_path / "runs"
+    completed = _orchestrate(run_root, "--from", "door", "--to", "perlector", scenario=scenario)
+    assert completed.returncode in (0, 3), completed.stderr
+
+    projected = _projection(run_root)
+    assert {act["row"]["page_ordinal"] for act in projected.acts} == {1}
+    note = projected.acts_denominator_note
+    assert note.startswith(review._PRE_EXPORT_ACTS_NOTE)
+    assert page_two in note and "page 1" not in note
+
+    # Every page read, none with an entry: the note still names each page.
+    monkeypatch.setattr(review, "_progressive_acts", lambda *_args: ())
+    projected = _projection(run_root)
+    assert projected.acts == ()
+    note = projected.acts_denominator_note
+    assert note != review._NO_READING_NOTE
+    assert "page 1 read, no entry" in note and page_two in note
+    text = "\n".join(review_text.render(dataclasses.asdict(projected)))
+    assert "the Perlector has not read the pages" not in text
+    assert "pages read without an entry: page 1" in text
 
 
 def test_opening_an_unfinished_run_changes_no_path_bytes_size_or_mtime(witnessed_run: Path):
     before = _census(witnessed_run / RUN_ID)
     projected = _projection(witnessed_run)
-    assert projected.pages and projected.acts
+    assert projected.pages
     assert _census(witnessed_run / RUN_ID) == before
-
-
-def test_the_failed_reproof_run_can_be_opened_and_understood_before_export(
-    witnessed_run: Path, tmp_path: Path
-):
-    """A held act remains visible before an export exists."""
-    run_root = _writable_copy(witnessed_run, tmp_path / "runs")
-    resumed = _orchestrate(run_root, "--from", "perlector", "--to", "recensor")
-    assert resumed.returncode == 3, resumed.stderr
-    assert "stopped at held recensor" in resumed.stdout
-
-    projected = _projection(run_root)
-    assert projected.export["present"] is False
-    states = {row["stage"]: row["state"] for row in projected.progress}
-    assert states["perlector"] == "sealed" and states["recensor"] == "sealed"
-    assert states["archetypus"] == "not-run" and states["armarium"] == "not-run"
-
-    (held,) = projected.holds
-    assert held["act_key"] == "a1"
-    assert held["source"] == "recensor"
-    assert held["outcome"] == "held-for-review"
-    assert held["audit_examination"] == "incomplete"
-    assert "audit re-proof of this act did not complete" in held["reason"]
-    assert held["record_ref"]["relative_path"].startswith("5_recensor/artifacts/review/")
-
-    by_key = {act["act_key"]: act for act in projected.acts}
-    cut = by_key["a1"]
-    assert cut["category"] == "held-for-review"
-    assert cut["reason"] == held["reason"]
-    assert cut["row"]["reading"]["outcome"] == "read"
-    assert cut["row"]["reading"]["truncation"]["classification"] == "complete"
-    assert cut["row"]["reading"]["audit"] == {"unresolved": True, "examination": "incomplete"}
-    assert isinstance(cut["row"]["reading"]["text"], str) and cut["row"]["reading"]["text"]
-    assert cut["row"]["review"]["outcome"] == "held-for-review"
-    assert cut["crops"], "the held act's crop is the image a person needs to see"
-    assert by_key["a2"]["category"] == "accepted, awaiting establishment"
-    assert by_key["a2"]["row"]["reading"]["audit"] == {
-        "unresolved": False,
-        "examination": "complete",
-    }
-
-    assert projected.next_action["held_acts"] == 1
-    assert projected.next_action["resume_from"] == "archetypus"
-    summary = projected.next_action["summary"]
-    assert "`advance` records permission to pass one sealed stage boundary" in summary
-    assert "neither certifies a reading nor clears a hold" in summary
-    assert "outside the pipeline" in summary
-
-    text = "\n".join(review_text.render(dataclasses.asdict(projected)))
-    assert "held-for-review by the recensor [Recensor review]; audit examination incomplete" in text
-    assert "did not complete" in text
-    assert "machine reading:" in text
-
-    # Between the two stages: the accepted act is established and waiting for an
-    # export that does not exist yet, which is its own sentence and not "read,
-    # awaiting the Recensor".
-    established_run = _orchestrate(run_root, "--stage", "archetypus")
-    assert established_run.returncode == 0, established_run.stderr
-    between = _projection(run_root)
-    assert between.export["present"] is False
-    by_key = {act["act_key"]: act for act in between.acts}
-    assert by_key["a2"]["category"] == "established, awaiting export"
-    assert "the Armarium has not exported it" in by_key["a2"]["reason"]
-    assert by_key["a2"]["row"]["established"]["text_status"]
-    assert between.next_action["resume_from"] == "coniector"
-    assert "established, awaiting export" in "\n".join(
-        review_text.render(dataclasses.asdict(between))
-    )
-
-    # The export arrives; the same surface now shows its accounting, and the
-    # hold neither disappears nor changes its reason.
-    reconstructed = _orchestrate(run_root, "--stage", "coniector")
-    assert reconstructed.returncode == 0, reconstructed.stderr
-    exported = _orchestrate(run_root, "--stage", "armarium")
-    assert exported.returncode == 3, exported.stderr
-    after = _projection(run_root)
-    assert after.export["present"] is True
-    # A held act means a partial export, and this is the run that produces one:
-    # the surface says so in the record's own words instead of announcing "a
-    # completed export" over a bundle that claims otherwise.
-    assert after.export["complete"] is False
-    assert after.export["outcome"] == "held-for-review"
-    assert after.export["claims_status"] != "complete"
-    assert "partial export (held-for-review)" in after.export["note"]
-    assert after.export["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
-    assert after.export["review_items_absent_because"] is None
-    assert after.review_items is not None and len(after.review_items) == 1
-    assert [hold["act_key"] for hold in after.holds] == ["a1"]
-    assert after.holds[0]["reason"] == held["reason"]
-    assert {act["act_key"]: act["category"] for act in after.acts} == {
-        "a1": "held-for-review",
-        "a2": "delivered",
-    }
-    assert after.next_action["resume_from"] is None
-    assert after.next_action["held_acts"] == 1
-    assert {row["stage"]: row["state"] for row in after.progress} == {
-        stage: "sealed"
-        for stage in (
-            "door",
-            "exemplar",
-            "ink-map",
-            "designator",
-            "attestatores",
-            "perlector",
-            "recensor",
-            "archetypus",
-            "coniector",
-            "armarium",
-        )
-    }
-
-    # The post-export plain rendering -- the most common real use of this
-    # screen, and the one shape no test had ever rendered.
-    exported_text = "\n".join(review_text.render(dataclasses.asdict(after)))
-    assert "Export: present but partial" in exported_text
-    assert "partial export (held-for-review)" in exported_text
-    assert "Review queue (1)" in exported_text
-    assert "delivered text:" in exported_text
-    assert "Pages (2 of 2 declared)" in exported_text
-    # The witnesses survive the export: the same act shows its chairs before and
-    # after, under the export's own field name.
-    assert "witnesses:" in exported_text
-    before_chairs = {entry["chair"] for entry in by_key["a2"]["row"]["testimonia"]}
-    exported_a2 = next(act for act in after.acts if act["act_key"] == "a2")
-    exported_chairs = {entry["chair"] for entry in exported_a2["row"]["testimonia"]}
-    assert exported_chairs, "the witnesses do not vanish once the run exports"
-    assert exported_chairs <= before_chairs, (
-        "the export names the evidence-backed witness basis, never a chair the "
-        "Attestatores did not seal"
-    )
-    assert "review record:" in exported_text
 
 
 @pytest.mark.parametrize("what", ["page", "crop"])
 def test_an_image_whose_bytes_moved_is_refused_by_name_before_export(
-    witnessed_run: Path, tmp_path: Path, what: str
+    read_run: Path, tmp_path: Path, what: str
 ):
-    run_root = _writable_copy(witnessed_run, tmp_path / "runs")
+    run_root = _writable_copy(read_run, tmp_path / "runs")
     projected = _projection(run_root)
     if what == "page":
         relative = projected.pages[0]["image_path"]
@@ -368,28 +292,6 @@ def test_a_seal_that_no_longer_verifies_is_named_as_that_and_never_as_a_stage_th
     assert "no record and no seal found here" in text
 
 
-def _seal_row(payload: dict[str, object], artifact: str = "") -> dict[str, object]:
-    """One stage-record row of the shape `_record_row` produces, for a seal test."""
-    from common.contracts.canonical import self_hash
-    from common.contracts.identities import artifact_id
-
-    sealed = dict(payload)
-    sealed["self_hash"] = self_hash(sealed)
-    return {
-        "stage": "designator",
-        "artifact_id": artifact
-        or artifact_id("designator", "proposal-seal", "proposal-seal", None),
-        "kind": "proposal-seal",
-        "subject_id": "proposal-seal",
-        "outcome": "sealed",
-        "record_ref": {
-            "relative_path": "2_designator/artifacts/proposal-seal/x.json",
-            "sha256": "",
-        },
-        "record": {"payload": sealed},
-    }
-
-
 def _review_record(act_id: str, outcome: str, payload: dict[str, object]) -> dict[str, object]:
     """A Recensor review record shaped the way `latest_attempt` insists on reading one.
 
@@ -419,100 +321,33 @@ def _review_record(act_id: str, outcome: str, payload: dict[str, object]) -> dic
     }
 
 
-def _expected_row(act_id: str, outcome: str = "proposed") -> dict[str, object]:
-    return {
-        "act_id": act_id,
-        "act_key": act_id,
-        "page_id": "p1",
-        "page_ordinal": 1,
-        "has_continuation": False,
-        "outcome": outcome,
-        "evidence": [],
-    }
+def _act(act_id: str) -> dict[str, object]:
+    """One entry as `_progressive_acts` hands it to `_act_summary`."""
+    return {"act_id": act_id, "act_key": act_id, "page_id": "p1", "page_ordinal": 1}
 
 
-@pytest.mark.parametrize(
-    "damage, said",
-    [
-        ("artifact-id", "no canonical proposal seal"),
-        ("self-hash", "does not verify against its own self-hash"),
-        ("count", "do not reconcile"),
-    ],
-)
-def test_a_proposal_seal_the_pipeline_would_refuse_is_refused_here_too(damage: str, said: str):
-    """The act denominator is read with the pipeline's own checks, not a weaker set.
-
-    `common/stage.py::expected_acts` verifies the payload's self-hash, that
-    `count` reconciles with the rows, and that the seal is the run's one
-    canonical proposal-seal artifact. A console that checked only "an object
-    with an act_id" would show fewer acts than the seal itself claims, silently,
-    while every stage below read the longer list.
-    """
-    rows = [_expected_row("act1"), _expected_row("act2")]
-    seal = _seal_row({"expected_acts": rows, "count": len(rows)})
-    if damage == "artifact-id":
-        seal["artifact_id"] = "art_0000000000000000"
-    elif damage == "self-hash":
-        seal["record"]["payload"]["count"] = 2  # after the self-hash was computed
-        seal["record"]["payload"]["expected_acts"] = [*rows, _expected_row("act3")]
-    else:
-        seal = _seal_row({"expected_acts": rows, "count": 3})
-
-    with pytest.raises(OperatorError) as refused:
-        review._expected_acts([seal])
-    assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
-    assert said in (refused.value.detail or "")
-
-
-def test_an_act_the_designator_ended_is_not_left_waiting_for_a_witness():
-    """`excluded` and `failed` are terminal there; nothing downstream will speak."""
-    for outcome, category in (
-        ("excluded", "excluded by the Designator"),
-        ("failed", "failed at the Designator"),
-    ):
-        summary = review._act_summary([], _expected_row("act1", outcome))
-        assert summary["category"] == category
-        assert "no witness, reading or review will follow" in summary["reason"]
-    proposed = review._act_summary([], _expected_row("act1"))
-    assert proposed["category"] == "marked out, awaiting witnesses"
-
-
-def test_one_act_held_by_both_stages_is_two_labelled_records_and_one_held_act():
-    """The Recensor writes its own held review quoting a Designator hold."""
+def test_a_held_review_is_one_labelled_record_and_one_held_act():
+    """The Recensor's current review is the hold; its reason is shown beside it."""
     act_id = "act1"
-    designator_hold = {
-        "stage": "designator",
-        "artifact_id": "art_1",
-        "kind": "hold",
-        "subject_id": act_id,
-        "outcome": "held",
-        "record_ref": {"relative_path": "2_designator/artifacts/hold/a.json", "sha256": ""},
-        "record": {"payload": {"act_key": "a1", "reason": "the margin is torn"}},
-    }
     recensor_review = _review_record(
         act_id,
         "held-for-review",
         {
             "act_key": "a1",
-            "reason": "the Designator held this act",
+            "reason": "the witnesses disagree",
             "attempt_ordinal": 1,
-            "audit_examination": "complete",
         },
     )
-    holds = review._holds([designator_hold, recensor_review], None)
-    assert [hold["label"] for hold in holds] == ["Designator hold", "Recensor review of that hold"]
+    holds = review._holds([recensor_review])
+    assert [hold["label"] for hold in holds] == ["Recensor review"]
+    assert holds[0]["reason"] == "the witnesses disagree"
     action = review._next_action(RUN_ID, (), {"present": False}, holds)
-    assert action["held_acts"] == 1, "one act, twice attested, is not two held acts"
-    assert action["hold_records"] == 2
-    assert "1 act(s) are held or unresolved, listed below as 2 record(s)" in action["summary"]
+    assert action["held_acts"] == 1
+    assert action["hold_records"] == 1
 
     text = "\n".join(review_text.render({"run_id": "r", "holds": [dict(hold) for hold in holds]}))
-    assert "[Designator hold]" in text and "[Recensor review of that hold]" in text
-    # F041: the header counts acts, not hold records -- one act attested twice
-    # is "Held or unresolved acts (1)", matching the distinct count in the
-    # summary sentence just above it, not len(holds).
+    assert "[Recensor review]" in text
     assert "Held or unresolved acts (1)" in text
-    assert "Held or unresolved acts (2)" not in text
 
 
 def test_a_review_outcome_outside_the_recensor_vocabulary_is_refused_not_skipped():
@@ -523,7 +358,7 @@ def test_a_review_outcome_outside_the_recensor_vocabulary_is_refused_not_skipped
         "act1", "sent-back-for-rework", {"act_key": "a1", "attempt_ordinal": 1}
     )
     with pytest.raises(FatalAccounting) as refused:
-        review._holds([invented], None)
+        review._holds([invented])
     assert "sent-back-for-rework" in str(refused.value), (
         "the refusal names the outcome word, so the attempt chain was read and the "
         "vocabulary check is what refused"
@@ -546,7 +381,7 @@ def test_a_vocabulary_refusal_reaches_the_operator_as_a_named_console_refusal(
     """
     from common.contracts.errors import FatalAccounting
 
-    def refuse(stage_records, found):
+    def refuse(stage_records):
         raise FatalAccounting(
             "recensor produced outcome 'sent-back-for-rework', which is in no terminal set"
         )
@@ -576,78 +411,9 @@ def test_an_act_with_two_archetypus_records_is_refused_rather_than_read_position
         for index in (1, 2)
     ]
     with pytest.raises(OperatorError) as refused:
-        review._act_summary(rows, _expected_row("act1"))
+        review._act_summary(rows, _act("act1"))
     assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
     assert "2 Archetypus records" in (refused.value.detail or "")
-
-
-def test_the_excluded_sentence_states_only_what_this_surface_read():
-    """An exclusion is valid only with an approval, and nothing here reads one."""
-    summary = review._act_summary([], _expected_row("act1", "excluded"))
-    assert summary["category"] == "excluded by the Designator"
-    assert "recorded this act as excluded" in summary["reason"]
-    assert "which this surface does not read and does not claim" in summary["reason"]
-    assert "with approval;" not in summary["reason"]
-
-
-def test_a_terminal_act_with_downstream_records_says_the_two_disagree():
-    """Nothing is hidden either way; the disagreement is named rather than left to notice."""
-    testimonium = {
-        "stage": "attestatores",
-        "artifact_id": "art_t",
-        "kind": "testimonium",
-        "subject_id": "act1",
-        "outcome": "read",
-        "record_ref": {
-            "relative_path": "3_attestatores/artifacts/testimonium/t.json",
-            "sha256": "",
-        },
-        "record": {"payload": {"chair": "chair-a", "attempt_ordinal": 1}},
-    }
-    summary = review._act_summary([testimonium], _expected_row("act1", "excluded"))
-    assert summary["category"] == "excluded by the Designator"
-    assert "this run also holds witnesses for this act" in summary["reason"]
-    assert "the export would refuse" in summary["reason"]
-    # And an act with no downstream record says nothing of the kind.
-    assert "also holds" not in review._act_summary([], _expected_row("act1", "excluded"))["reason"]
-
-
-@pytest.mark.parametrize(
-    "field, value, said",
-    [
-        ("page_id", "", "no page_id"),
-        ("page_ordinal", True, "page_ordinal that is not an integer"),
-        ("has_continuation", "yes", "has_continuation that is not true or false"),
-        ("evidence", {}, "evidence value that is not a list"),
-    ],
-)
-def test_the_seal_row_field_types_the_pipeline_requires_are_required_here(
-    field: str, value: object, said: str
-):
-    """A seal the shared reader would refuse is not read out here as if it were whole."""
-    row = _expected_row("act1")
-    row[field] = value
-    seal = _seal_row({"expected_acts": [row], "count": 1})
-    with pytest.raises(OperatorError) as refused:
-        review._expected_acts([seal])
-    assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
-    assert said in (refused.value.detail or "")
-
-
-def test_two_records_under_the_canonical_seal_id_refuse_rather_than_pick_the_first():
-    """Two denominators are not a neighbour to name; nothing here chooses between them."""
-    rows = [_expected_row("act1")]
-    first = _seal_row({"expected_acts": rows, "count": 1})
-    second = _seal_row({"expected_acts": rows + [_expected_row("act2")], "count": 2})
-    second["record_ref"] = {
-        "relative_path": "2_designator/artifacts/proposal-seal/again.json",
-        "sha256": "",
-    }
-    with pytest.raises(OperatorError) as refused:
-        review._expected_acts([first, second])
-    assert refused.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
-    assert "one of 2 records" in (refused.value.detail or "")
-    assert "again.json" in (refused.value.detail or "")
 
 
 @pytest.mark.parametrize(
@@ -675,65 +441,17 @@ def test_only_a_scenario_token_is_repeated_into_the_resume_command(value: str, r
     assert review._recorded_scenario([row]) == repeated
 
 
-def test_a_foreign_proposal_seal_beside_the_canonical_one_is_named_not_a_refusal():
-    """Stricter than the pipeline is the wrong kind of strict on a surface for damaged trees."""
-    rows = [_expected_row("act1")]
-    canonical = _seal_row({"expected_acts": rows, "count": 1})
-    foreign = _seal_row({"expected_acts": rows, "count": 1}, artifact="art_0000000000000000")
-    foreign["record_ref"] = {
-        "relative_path": "2_designator/artifacts/proposal-seal/other.json",
-        "sha256": "",
-    }
-    seal, expected, note = review._expected_acts([canonical, foreign])
-    assert seal is canonical and expected == rows
-    assert "1 further proposal-seal record(s)" in note
-    assert "other.json" in note
-    assert "are not read" in note
-    # With no canonical seal at all, there is nothing to read and it refuses.
-    with pytest.raises(OperatorError) as refused:
-        review._expected_acts([foreign])
-    assert "no canonical proposal seal" in (refused.value.detail or "")
-
-
-def test_an_act_the_seal_calls_held_is_in_the_holds_list_even_with_no_hold_record():
-    """One screen must not say an act is held in one section and count zero in another."""
-    seal = _seal_row(
-        {
-            "expected_acts": [_expected_row("act1", "held"), _expected_row("act2", "failed")],
-            "count": 2,
-        }
-    )
-    found = review._expected_acts([seal])
-    holds = review._holds([seal], found)
-    assert [hold["act_id"] for hold in holds] == ["act1", "act2"]
-    assert {hold["label"] for hold in holds} == {"proposal seal, no hold record found"}
-    assert holds[0]["outcome"] == "held" and holds[1]["outcome"] == "failed"
-    assert "no hold record carrying a reason was found beside it" in holds[0]["reason"]
-    action = review._next_action("r", (), {"present": False}, holds)
-    assert action["held_acts"] == 2
-
-    # A COMPLETED-class outcome is not a hold: `proposed` and `excluded` stay out.
-    ordinary = _seal_row(
-        {
-            "expected_acts": [_expected_row("act1"), _expected_row("act2", "excluded")],
-            "count": 2,
-        }
-    )
-    assert review._holds([ordinary], review._expected_acts([ordinary])) == ()
-
-
 def test_an_act_count_with_no_denominator_says_so_rather_than_reading_as_no_acts():
     text = "\n".join(
         review_text.render(
             {
                 "run_id": "r",
                 "acts": [],
-                "acts_denominator_note": "the Designator has sealed no proposal, so nothing "
-                "in this tree declares how many acts this run has",
+                "acts_denominator_note": review._NO_READING_NOTE,
             }
         )
     )
-    assert "Acts (0; the Designator has sealed no proposal" in text
+    assert "Acts (0; the Perlector has not read the pages" in text
     assert "Acts (0)\n" not in text
 
 
@@ -935,7 +653,6 @@ def test_the_plain_rendering_keeps_hostile_text_inert():
                 "source": "recensor",
                 "outcome": "held",
                 "reason": "adversarial\x1b escape",
-                "audit_examination": None,
             }
         ],
         "pages": [],
@@ -1003,7 +720,7 @@ def test_the_review_verb_prints_plain_language_by_default_and_json_on_request(
     assert "What you can do next" in plain
     assert f"`verbatus run --run-id {RUN_ID}`" in plain
     assert "picks up from perlector" in plain
-    assert "witnessed, awaiting the Perlector" in plain
+    assert "the Perlector has not read the pages" in plain
     assert not plain.lstrip().startswith("{")
 
     cli._review_in_custody(witnessed_run, RUN_ID, ROOT, raw=True)
@@ -1071,10 +788,6 @@ def test_a_projection_list_entry_that_is_not_an_object_is_refused_by_field_and_i
         ({"holds": [{"act_id": "a", "record_ref": "somewhere"}]}, "holds[].record_ref"),
         ({"acts": [{"act_id": "a", "row": "a row"}]}, "acts[].row"),
         (
-            {"acts": [{"act_id": "a", "row": {"reading": {"audit": 3}}}]},
-            "acts[].row.reading.audit",
-        ),
-        (
             {"acts": [{"act_id": "a", "row": {"reading": {"truncation": "length"}}}]},
             "acts[].row.reading.truncation",
         ),
@@ -1088,8 +801,8 @@ def test_an_object_valued_projection_field_of_the_wrong_type_is_refused_by_name(
 
     The list fields were shape-checked from the first candidate and the object
     fields were not, so `export`, `next_action`, a hold's `record_ref`, a
-    reading's `audit` and an act's `row` each crashed the renderer instead of
-    refusing.
+    reading's `truncation` and an act's `row` each crashed the renderer instead
+    of refusing.
     """
     with pytest.raises(review_text.ProjectionShapeError) as refused:
         review_text.render({"run_id": "r", **projection})
@@ -1116,7 +829,7 @@ def _delivered_act(uncertainty: dict, text: str = "alpha beta") -> dict:
 
 
 def test_a_published_span_is_shown_beside_the_state_that_says_who_did_not_report_it():
-    """The exhausted-cap projection mints spans on acts whose reader has no channel."""
+    """Spans published under a `not-assessed` state are not credited to the reader."""
     lines = review_text.render(
         _delivered_act(
             {
@@ -1166,65 +879,37 @@ def test_a_doubt_layer_entry_that_is_not_an_object_is_refused_by_field_and_index
     assert "entry -1" not in str(gaps.value)
 
 
-def test_an_audited_reading_does_not_credit_the_reader_with_the_audits_own_spans():
-    """The union is not attributable on this surface, so it is not attributed.
-
-    Under a sealed cap of 0 the audit mints exhausted-cap spans, and a reader
-    that also assesses adds its own; the published layer holds both and nothing
-    in it says which is which. Saying "assessed by the reader; 3 span(s)" would
-    credit a person's reading of the screen to an instrument that reported one
-    of them.
-    """
-    projected = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
-    reader = {"start": 6, "end": 10, "alternatives": ["beta"], "confidence": "high"}
-    audited = "\n".join(
+def test_an_assessed_layer_is_credited_to_the_reader():
+    """No audit runs, so every published span of an assessed layer is the reader's own."""
+    first = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
+    second = {"start": 6, "end": 10, "alternatives": ["beta"], "confidence": "high"}
+    delivered = "\n".join(
         review_text.render(
             _delivered_act(
                 {
                     "assessment": {"state": "assessed", "problem": None},
-                    "uncertain_spans": [projected, reader],
+                    "uncertain_spans": [first, second],
                     "gaps": [],
                 }
             )
         )
     )
+    assert "doubts: assessed by the reader; 2 uncertain span(s), 0 gap(s)" in delivered
 
-    assert "assessed by the reader; this view cannot tell which of the span(s) below are" in (
-        audited
-    )
-    assert "its report and which the audit's; 2 uncertain span(s), 0 gap(s)" in audited
-
-    # A record with no audit behind it publishes only the reader's own spans, and
-    # there the attribution is provable. Every Perlectio carries an audit, so
-    # this form is reserved for a record kind that does not -- the instrument
-    # readings, which no projection puts on this screen today. Kept as the
-    # rule's other half rather than left to a reader to assume.
-    instrument = "\n".join(
+    read = "\n".join(
         review_text.render(
-            {
-                "run_id": "r",
-                "acts": [
-                    {
-                        "act_id": "a",
-                        "act_key": "a1",
-                        "category": "read: read, awaiting the Recensor",
-                        "crops": [],
-                        "row": {
-                            "reading": {
-                                "outcome": "read",
-                                "text": "alpha beta",
-                                "audit": None,
-                                "uncertainty_assessment": {"state": "assessed", "problem": None},
-                                "uncertain_spans": [reader],
-                                "gaps": [],
-                            }
-                        },
-                    }
-                ],
-            }
+            _reading_act(
+                {
+                    "outcome": "read",
+                    "text": "alpha beta",
+                    "uncertainty_assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [second],
+                    "gaps": [],
+                }
+            )
         )
     )
-    assert "doubts: assessed by the reader; 1 uncertain span(s), 0 gap(s)" in instrument
+    assert "doubts: assessed by the reader; 1 uncertain span(s), 0 gap(s)" in read
 
 
 def test_an_identical_pair_is_one_line_with_the_count_and_no_claim_about_its_source():
@@ -1232,10 +917,7 @@ def test_an_identical_pair_is_one_line_with_the_count_and_no_claim_about_its_sou
 
     Dropping the repeat in the producer would have erased that the layer carried
     it twice, and printing it twice would say two doubts were found where one
-    entry appears twice. Naming the two instruments would say a third thing no
-    artifact records: nothing in the run names the instrument behind any one
-    span, and two audit flags of different classes may share one location, so a
-    fold is evidence of a repeat and of nothing else.
+    entry appears twice. A fold is evidence of a repeat and of nothing else.
     """
     span = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
     for state, assessment in (
@@ -1299,75 +981,6 @@ def _reading_act(reading: dict) -> dict:
             }
         ],
     }
-
-
-def test_withheld_reading_displays_unmeasured_self_revisions():
-    reading = {
-        "outcome": "read",
-        "text": "alpha beta",
-        "lectio_kind": "primed-draft-withheld",
-        "self_revision": None,
-        "uncertain_spans": [],
-        "gaps": [],
-        "uncertainty_assessment": {"state": "assessed", "problem": None},
-    }
-    text = "\n".join(review_text.render(_reading_act(reading)))
-    assert "self-revisions not measured (primed-draft-withheld)" in text
-    with pytest.raises(review_text.ProjectionShapeError, match="null for a withheld draft"):
-        review_text.render(_reading_act({**reading, "self_revision": []}))
-
-
-def test_a_fed_reading_whose_comparison_ran_out_displays_unmeasured_self_revisions():
-    """Only the Perlectio's explicit non-verdict reads as a budget stop there.
-    A missing field is labelled not recorded, never passed off as the stop,
-    and an empty list is a measurement with no revisions."""
-    reading = {
-        "outcome": "read",
-        "text": "alpha beta",
-        "lectio_kind": "primed-with-prior",
-        "self_revision": unmeasured_comparison(10),
-        "uncertain_spans": [],
-        "gaps": [],
-        "uncertainty_assessment": {"state": "assessed", "problem": None},
-    }
-    stopped = "self-revisions not measured (the comparison ran out of its step budget)"
-    unrecorded = "self-revisions not recorded (the reading carries no such field)"
-    text = "\n".join(review_text.render(_reading_act(reading)))
-    assert stopped in text and unrecorded not in text
-    text = "\n".join(review_text.render(_reading_act({**reading, "self_revision": None})))
-    assert unrecorded in text and stopped not in text
-    text = "\n".join(review_text.render(_reading_act({**reading, "self_revision": []})))
-    assert "self-revisions not" not in text
-
-
-def test_a_delivered_fed_act_with_null_self_revisions_displays_the_budget_stop():
-    """On the canonical layer a fed reading's null has one meaning, the budget
-    stop, since canonical validation admits null for a fed kind for nothing else."""
-    uncertainty = {
-        "uncertain_spans": [],
-        "gaps": [],
-        "self_revisions": None,
-        "assessment": {"state": "assessed", "problem": None},
-        "lectio_kind": "primed-with-prior",
-    }
-    act = _delivered_act(uncertainty)
-    text = "\n".join(review_text.render(act))
-    assert "self-revisions not measured (the comparison ran out of its step budget)" in text
-    act = _delivered_act({**uncertainty, "self_revisions": []})
-    assert "self-revisions not" not in "\n".join(review_text.render(act))
-
-
-def test_a_delivered_fed_act_missing_self_revisions_is_not_read_as_the_budget_stop():
-    """Only a present null is the stop; a layer without the key recorded nothing."""
-    uncertainty = {
-        "uncertain_spans": [],
-        "gaps": [],
-        "assessment": {"state": "assessed", "problem": None},
-        "lectio_kind": "primed-with-prior",
-    }
-    text = "\n".join(review_text.render(_delivered_act(uncertainty)))
-    assert "self-revisions not recorded (the reading carries no such field)" in text
-    assert "ran out of its step budget" not in text
 
 
 def test_a_delivered_act_with_no_uncertainty_layer_still_says_so():
@@ -1550,7 +1163,7 @@ def test_an_unrecognised_state_is_named_as_one_rather_than_echoed():
     assert "doubts: no state recorded —" in stateless
 
 
-def test_a_gap_names_the_chairs_that_corroborate_it_and_the_layer_its_revisions():
+def test_a_gap_names_the_chairs_that_corroborate_it():
     """The record holds more than position and offset, and a person reviewing a
     gap against the ink should see what it holds, not take it on faith. Naming the chairs an
     absence rests on is not a selection among them: nothing here chooses, and no
@@ -1571,35 +1184,31 @@ def test_a_gap_names_the_chairs_that_corroborate_it_and_the_layer_its_revisions(
                         ],
                     }
                 ],
-                "self_revisions": [
-                    {"reading_span": {"start": 0, "end": 1}, "prior_span": {"start": 0, "end": 1}}
-                ],
             }
         )
     )
     text = "\n".join(lines)
 
-    assert "1 uncertain span(s), 1 gap(s), 1 self-revision(s)" not in text
-    assert "0 uncertain span(s), 1 gap(s), 1 self-revision(s)" in text
+    assert "0 uncertain span(s), 1 gap(s)" in text
     assert "gap (internal) at 6; corroborated by attestator_1, attestator_2" in text
 
 
 @pytest.fixture(scope="module")
 def exported_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """One run carried through the Armarium, holding at least one act.
+    """One run carried through the Armarium, holding at least one reading.
 
-    `audit-reproof-cutoff` holds a1 on a re-examination that did not finish, so
-    the run is partial, exits 3, and writes an export that delivers one act and
-    not the other -- which is the pair this screen has to show after the export.
+    `page-review` holds a reading at the Recensor, so the run is partial, exits
+    3, and writes an export that delivers some readings and not others -- the
+    pair this screen has to show after the export.
     """
     run_root = tmp_path_factory.mktemp("exported") / "runs"
-    completed = _orchestrate(run_root)
+    completed = _orchestrate(run_root, scenario="page-review")
     assert completed.returncode == 3, completed.stderr
     return run_root
 
 
-def test_a_held_acts_reading_and_doubt_survive_the_export(exported_run: Path):
-    """The screen this exists for shows a held act; the export writes it no text."""
+def test_a_held_readings_text_and_doubt_survive_the_export(exported_run: Path):
+    """The screen this exists for shows a held reading; the export writes it no text."""
     projection = dataclasses.asdict(_projection(exported_run))
     assert projection["export"]["present"] is True
     held = [
@@ -1608,15 +1217,13 @@ def test_a_held_acts_reading_and_doubt_survive_the_export(exported_run: Path):
         if (act.get("row") or {}).get("text") is None and (act.get("row") or {}).get("reading")
     ]
     assert held, "this exported run must carry a non-delivered act with a sealed reading"
-    assert all(act["row"]["reading"]["lectio_kind"] == "primed-draft-withheld" for act in held)
-    assert all(act["row"]["reading"]["self_revision"] is None for act in held)
+    assert all(isinstance(act["row"]["reading"]["text"], str) for act in held)
+    assert all(act["crops"] for act in projection["acts"] if act["category"] == "delivered")
     text = "\n".join(review_text.render(projection))
 
-    # Both halves of the same screen: the delivered act's layer, and the held
+    # Both halves of the same screen: the delivered acts' layers, and the held
     # act's reading read back from the run tree.
     assert text.count("doubts:") == len(projection["acts"])
-    assert "doubts: not-assessed — the reader reports no doubt assessment" in text
-    assert "self-revisions not measured (primed-draft-withheld)" in text
 
 
 def test_the_pre_export_reading_path_prints_every_state_the_same_way():
@@ -1626,18 +1233,15 @@ def test_the_pre_export_reading_path_prints_every_state_the_same_way():
     its own cases: it is the path a person meets while a run is still stopped,
     which is what this screen is for.
     """
-    absent = "\n".join(
-        review_text.render(_reading_act({"outcome": "read", "text": "alpha beta", "audit": {}}))
-    )
+    absent = "\n".join(review_text.render(_reading_act({"outcome": "read", "text": "alpha beta"})))
     assert "doubts: not recorded — this reading was sealed before" in absent
 
-    audited = "\n".join(
+    assessed = "\n".join(
         review_text.render(
             _reading_act(
                 {
                     "outcome": "read",
                     "text": "alpha beta",
-                    "audit": {"unresolved": False, "examination": "complete"},
                     "uncertainty_assessment": {"state": "assessed", "problem": None},
                     "uncertain_spans": [
                         {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
@@ -1647,7 +1251,7 @@ def test_the_pre_export_reading_path_prints_every_state_the_same_way():
             )
         )
     )
-    assert "assessed by the reader; this view cannot tell which of the span(s) below are" in audited
+    assert "doubts: assessed by the reader; 1 uncertain span(s), 0 gap(s)" in assessed
 
     with pytest.raises(review_text.ProjectionShapeError) as refused:
         review_text.render(
@@ -1655,29 +1259,12 @@ def test_the_pre_export_reading_path_prints_every_state_the_same_way():
                 {
                     "outcome": "read",
                     "text": "alpha beta",
-                    "audit": {},
                     "uncertainty_assessment": "assessed",
                 }
             )
         )
     assert refused.value.field == "acts[].row.reading.uncertainty_assessment"
     assert refused.value.index is None
-
-
-def test_a_stopped_runs_own_render_carries_a_doubt_line_for_every_reading(
-    witnessed_run: Path, tmp_path: Path
-):
-    """The projection keys are pinned by a real run, not only by hand-built rows."""
-    run_root = _writable_copy(witnessed_run, tmp_path / "runs")
-    resumed = _orchestrate(run_root, "--from", "perlector", "--to", "recensor")
-    assert resumed.returncode == 3, resumed.stderr
-    projection = dataclasses.asdict(_projection(run_root))
-    assert projection["export"]["present"] is False
-    text = "\n".join(review_text.render(projection))
-
-    assert "machine reading:" in text
-    assert text.count("doubts:") == len(projection["acts"])
-    assert "doubts: not-assessed — the reader reports no doubt assessment" in text
 
 
 def test_a_malformed_layer_beside_a_missing_assessment_is_still_refused():
@@ -1762,16 +1349,6 @@ def test_a_falsey_witness_evidence_value_is_refused_rather_than_read_as_none():
         assert refused.value.index is None
 
 
-def test_a_malformed_audit_on_a_reading_is_refused_rather_than_read_as_absent():
-    """Mapped to `None` at the projection, a fault printed as an ordinary absence."""
-    with pytest.raises(review_text.ProjectionShapeError) as refused:
-        review_text.render(
-            _reading_act({"outcome": "read", "text": "alpha beta", "audit": "complete"})
-        )
-    assert refused.value.field == "acts[].row.reading.audit"
-    assert refused.value.index is None
-
-
 def test_a_delivered_export_row_without_a_witness_basis_is_refused_not_recovered():
     """Recovery is for the rows the Armarium deliberately writes thin.
 
@@ -1806,9 +1383,7 @@ def test_an_act_that_was_never_read_is_not_told_its_reading_predates_a_contract(
     )
     assert "doubts: not recorded — this act was not read" in not_run
 
-    sealed = "\n".join(
-        review_text.render(_reading_act({"outcome": "read", "text": "alpha beta", "audit": {}}))
-    )
+    sealed = "\n".join(review_text.render(_reading_act({"outcome": "read", "text": "alpha beta"})))
     assert "doubts: not recorded — this reading was sealed before" in sealed
 
     # A reading that ran and carries no text is a damaged record, not an act

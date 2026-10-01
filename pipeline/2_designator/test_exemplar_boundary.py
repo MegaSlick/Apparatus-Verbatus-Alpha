@@ -1,6 +1,6 @@
-"""The Designator reconciles the Exemplar before cutting ink: most tests run
+"""The Designator reconciles the Exemplar before reading a page: most tests run
 the real orchestrator, damage only the Exemplar's written evidence, and check
-the Designator stops before publishing any new proposal. The missing-outcome
+the Designator stops before publishing any record. The missing-outcome
 test also damages the Ink Map's own accounting so the run reaches census
 reconciliation; the TOCTOU test below calls the Designator's internals
 directly, on pixels tampered after the upfront check.
@@ -22,14 +22,14 @@ from common.contracts.stages import EXEMPLAR, INK_MAP
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, EXIT_HELD, open_context, stage_parser
 from conftest import file_bytes_snapshot as snapshot
-from conftest import load_stage, programs_through
+from conftest import load_stage, programs_through, run_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 
 
-def populated_run(tmp_path, scenario: str = "happy") -> RunTree:
+def populated_run(tmp_path, scenario: str = "page-unbroken") -> RunTree:
     result = subprocess.run(
         [
             sys.executable,
@@ -47,12 +47,11 @@ def populated_run(tmp_path, scenario: str = "happy") -> RunTree:
         capture_output=True,
         text=True,
     )
-    expected = EXIT_HELD if scenario.startswith("refused-") else 0
-    assert result.returncode == expected, result.stderr
+    assert result.returncode == 0, result.stderr
     return RunTree(tmp_path / "runs", "boundary")
 
 
-def invoke_designator(tmp_path, scenario: str = "happy") -> subprocess.CompletedProcess:
+def invoke_designator(tmp_path, scenario: str = "page-unbroken") -> subprocess.CompletedProcess:
     return subprocess.run(
         [
             sys.executable,
@@ -147,7 +146,10 @@ def test_a_missing_sealed_pixel_blob_is_a_named_boundary_failure_not_a_traceback
 
 
 def test_a_refused_page_keeps_its_door_alarm_evidence_at_the_downstream_boundary(tmp_path):
-    tree = populated_run(tmp_path, "refused-page")
+    for program in programs_through("ink-map"):
+        result = run_stage(tmp_path / "runs", "boundary", "refused-page", program)
+        assert result.returncode in (0, EXIT_HELD), f"{program}: {result.stderr}"
+    tree = RunTree(tmp_path / "runs", "boundary")
     refused = next(
         tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
         for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
@@ -264,8 +266,4 @@ def test_a_sealed_pixel_blob_tampered_after_the_upfront_check_is_still_caught(tm
     blob_path.write_bytes(output.getvalue())
 
     with pytest.raises(ContractError, match="changed under a sealed reference"):
-        designator.page_pixels(
-            context,
-            page_record,
-            grouping_policy=designator.grouping_config.load_grouping_config(),
-        )
+        designator._read_checked_page_bytes(context, page_record)

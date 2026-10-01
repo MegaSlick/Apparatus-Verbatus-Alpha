@@ -12,19 +12,15 @@ from common.decoding import (
     DEFAULT_DECODING_CONFIG_PATH,
     ENGINE_FILLED_SAMPLING_FIELDS,
     READING_CHAIRS,
-    VARIANCE_ARMS,
     chair_attempt_decoding,
     chair_decoding,
     decoded_wire_decimals,
     engine_effective_sampling,
     load_decoding_policy,
-    perlector_max_tokens,
     perlector_page_max_tokens,
     reconstructor_max_tokens,
     recorded_wire_decimals,
     refuse_retired_call_record,
-    structure_recovery_policy,
-    variance_arm_seed,
     verify_call_sampling,
 )
 
@@ -35,7 +31,6 @@ _VLLM_UNSENT = {"top_k": 0, "min_p": 0.0, "repetition_penalty": 1.0}
 MAKERS_SAMPLING = {
     # datalab-to/chandra@d4f7467, chandra/model/vllm.py::generate_vllm defaults,
     # sent to a vLLM server; the rest are vllm==0.30.0's request defaults.
-    "designator_structure": {"temperature": 0.0, "top_p": 0.1, **_VLLM_UNSENT},
     "attestator_1": {"temperature": 0.0, "top_p": 0.1, **_VLLM_UNSENT},
     # Teklia DAI generation_config.json @ e371095; min_p unset in transformers.
     "attestator_2": {
@@ -113,13 +108,10 @@ def test_a_chair_without_a_row_is_refused_by_name():
         chair_decoding(policy, "attestator_9")
 
 
-def test_the_chandra_chairs_must_keep_the_pinned_recipes_first_request(tmp_path: Path):
+def test_the_chandra_chair_must_keep_the_pinned_recipes_first_request(tmp_path: Path):
     source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
-    moved = source.replace(
-        "[chair_decoding.designator_structure]\n# datalab-to/chandra-ocr-2, read the way Chandra's own page pipeline reads a\n# page: `generate_vllm` sends a vLLM server only temperature and top_p.\ntemperature = 0.0",
-        "[chair_decoding.designator_structure]\ntemperature = 1",
-        1,
-    )
+    head, row, tail = source.partition("[chair_decoding.attestator_1]")
+    moved = head + row + tail.replace("temperature = 0.0", "temperature = 1", 1)
     assert moved != source
     path = tmp_path / "decoding.toml"
     path.write_text(moved, encoding="utf-8")
@@ -138,32 +130,28 @@ def test_a_sampling_value_change_moves_the_decoding_digest(tmp_path: Path):
     assert chair_decoding(policy, "perlector")["presence_penalty"] == 1.5
 
 
-def test_shipped_decoding_policy_declares_its_sections_and_variance_shape():
+def test_shipped_decoding_policy_declares_its_sections():
     policy, digest = load_decoding_policy()
-    assert policy["variance_experiment"] == {"seed": 20260820}
-    assert policy["schema"] == "decoding.v6"
-    assert policy["perlector_generation"] == {
-        "reading_max_tokens": 4096,
-        "reproof_max_tokens": 8192,
-        "page_max_tokens": 12288,
+    assert set(policy) == {
+        "schema",
+        "chair_decoding",
+        "perlector_generation",
+        "reconstructor_generation",
+        "chandra_native_inference",
     }
-    assert perlector_max_tokens(policy) == (4096, 8192)
+    assert policy["schema"] == "decoding.v7"
+    assert policy["perlector_generation"] == {"page_max_tokens": 12288}
     assert perlector_page_max_tokens(policy) == 12288
     assert policy["reconstructor_generation"] == {"answer_max_tokens": 8192}
     assert reconstructor_max_tokens(policy) == 8192
     assert policy["chandra_native_inference"] == recipe_record()
-    assert policy["structure"] == {
-        "recovery_schedule": "chandra-native-retry",
-        "recovery_max_attempts": 3,
-    }
-    assert structure_recovery_policy(policy) == {
-        "max_attempts": 3,
-        "sampling_schedule": "chandra-native-retry",
-    }
     assert len(digest) == 64
 
 
-@pytest.mark.parametrize("schema", ["decoding.v1", "decoding.v2", "decoding.v3", "decoding.v4"])
+@pytest.mark.parametrize(
+    "schema",
+    ["decoding.v1", "decoding.v2", "decoding.v3", "decoding.v4", "decoding.v5", "decoding.v6"],
+)
 def test_legacy_decoding_schema_is_refused_by_name(tmp_path: Path, schema: str):
     path = tmp_path / "decoding.toml"
     path.write_text(f'schema = "{schema}"\n', encoding="utf-8")
@@ -189,13 +177,11 @@ def test_non_string_decoding_schema_gets_a_named_refusal(tmp_path: Path):
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        ("seed = 20260820", "seed = 20260820\npasses = 2", "wrong closed schema"),
-        ("[structure]", "[missing_structure]", "wrong closed schema"),
-        ("[structure]\n", "[structure]\ntemperature = 1\n", "only its coverage recovery"),
+        ("[perlector_generation]", "[missing_generation]", "wrong closed schema"),
         (
-            'recovery_schedule = "chandra-native-retry"',
-            'recovery_schedule = "base-plus-attempt-ordinal-minus-one"',
-            "'chandra-native-retry' schedule",
+            "page_max_tokens = 12288",
+            "page_max_tokens = 12288\nreading_max_tokens = 4096",
+            "perlector_generation must declare a positive integer",
         ),
         (
             "temperature = 0.7",
@@ -244,23 +230,6 @@ def test_shipped_policy_refuses_invalid_postures(tmp_path, old, new, message):
 
 
 @pytest.mark.parametrize(
-    "change",
-    [
-        {"seed": True},
-        {"seed": -1},
-        {"seed": 2**63 - 1},
-        {"seed": 20260820, "label": "variance.v1"},
-    ],
-)
-def test_a_malformed_variance_experiment_is_refused(change):
-    policy, _digest = load_decoding_policy()
-    policy["variance_experiment"] = change
-
-    with pytest.raises(ContractError, match="decoding variance_experiment"):
-        structure_recovery_policy(policy)
-
-
-@pytest.mark.parametrize(
     ("body", "message"),
     [
         (b"\xff", "not valid UTF-8"),
@@ -282,18 +251,17 @@ def test_decoding_policy_parse_refusals_name_the_actual_cause(tmp_path, body, me
     ["0", "-1", "4096.0", '"4096"', "true"],
     ids=["zero", "negative", "float", "str", "bool"],
 )
-@pytest.mark.parametrize("field", ["reading_max_tokens", "reproof_max_tokens", "page_max_tokens"])
-def test_a_perlector_output_bound_that_is_not_a_positive_integer_is_refused(
-    tmp_path: Path, field: str, bound: str
-):
+def test_a_page_output_bound_that_is_not_a_positive_integer_is_refused(tmp_path: Path, bound: str):
     source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
     path = tmp_path / "decoding.toml"
     path.write_text(
-        re.sub(rf"^{field} = \d+$", f"{field} = {bound}", source, count=1, flags=re.M),
+        re.sub(
+            r"^page_max_tokens = \d+$", f"page_max_tokens = {bound}", source, count=1, flags=re.M
+        ),
         encoding="utf-8",
     )
 
-    with pytest.raises(ContractError, match="perlector_generation must declare positive integer"):
+    with pytest.raises(ContractError, match="perlector_generation must declare a positive integer"):
         load_decoding_policy(path)
 
 
@@ -302,7 +270,7 @@ def test_a_missing_perlector_generation_section_is_refused(tmp_path: Path):
     before, _section, after = source.partition("[perlector_generation]")
     path = tmp_path / "decoding.toml"
     path.write_text(
-        before + "[variance_experiment]" + after.partition("[variance_experiment]")[2],
+        before + "[chandra_native_inference]" + after.partition("[chandra_native_inference]")[2],
         encoding="utf-8",
     )
 
@@ -315,39 +283,31 @@ def test_a_perlector_generation_section_without_the_page_cap_is_refused(tmp_path
     path = tmp_path / "decoding.toml"
     path.write_text(re.sub(r"^page_max_tokens = \d+\n", "", source, flags=re.M), encoding="utf-8")
 
-    with pytest.raises(ContractError, match="perlector_generation must declare positive integer"):
+    with pytest.raises(ContractError, match="perlector_generation must declare a positive integer"):
         load_decoding_policy(path)
 
 
 # --- per-attempt, per-arm and engine-effective sampling -----------------------
 
 
-def test_the_structure_chair_recovers_along_chandras_own_retry_schedule():
+def test_only_the_chandra_chair_retries_along_chandras_own_schedule():
     policy, _digest = load_decoding_policy()
-    assert [chair_attempt_decoding(policy, "designator_structure", n) for n in (1, 2, 3)] == [
+    assert [chair_attempt_decoding(policy, "attestator_1", n) for n in (1, 2, 3)] == [
         {"temperature": 0.0, "top_p": 0.1, **_VLLM_UNSENT},
         {"temperature": 0.2, "top_p": 0.95, **_VLLM_UNSENT},
         {"temperature": 0.4, "top_p": 0.95, **_VLLM_UNSENT},
     ]
-    with pytest.raises(ContractError, match="no attempt 4"):
-        chair_attempt_decoding(policy, "designator_structure", 4)
     assert chair_attempt_decoding(policy, "attestator_1", 7) == {
         "temperature": 0.8,
         "top_p": 0.95,
         **_VLLM_UNSENT,
     }
-    with pytest.raises(ContractError, match="only the Chandra chairs retry"):
+    with pytest.raises(ContractError, match="no attempt 8"):
+        chair_attempt_decoding(policy, "attestator_1", 8)
+    with pytest.raises(ContractError, match="only the Chandra chair retries"):
         chair_attempt_decoding(policy, "perlector", 2)
     with pytest.raises(ContractError, match="positive integer"):
-        chair_attempt_decoding(policy, "designator_structure", 0)
-
-
-def test_each_variance_arm_draws_under_its_own_seed():
-    policy, _digest = load_decoding_policy()
-    seeds = [variance_arm_seed(policy, arm) for arm in VARIANCE_ARMS]
-    assert seeds == [20260820, 20260821]
-    with pytest.raises(ContractError, match="not an arm"):
-        variance_arm_seed(policy, "perlectio")
+        chair_attempt_decoding(policy, "attestator_1", 0)
 
 
 @pytest.mark.parametrize(
@@ -448,12 +408,12 @@ def test_a_caller_generation_field_is_admitted_on_the_call_record():
     verify_call_sampling(call, policy, "attestator_2", expected_seed=7)
 
 
-def test_a_structure_attempt_call_is_verified_against_its_own_attempt():
+def test_a_retry_call_is_verified_against_its_own_attempt():
     policy, _digest = load_decoding_policy()
-    call = _call("designator_structure", 2)
-    verify_call_sampling(call, policy, "designator_structure", attempt_ordinal=2, expected_seed=7)
+    call = _call("attestator_1", 2)
+    verify_call_sampling(call, policy, "attestator_1", attempt_ordinal=2, expected_seed=7)
     with pytest.raises(ContractError, match="for attempt 1"):
-        verify_call_sampling(call, policy, "designator_structure", expected_seed=7)
+        verify_call_sampling(call, policy, "attestator_1", expected_seed=7)
 
 
 def test_a_request_that_sends_no_seed_is_stated_and_held_to_it():
@@ -467,16 +427,6 @@ def test_a_request_that_sends_no_seed_is_stated_and_held_to_it():
         )
     with pytest.raises(ContractError, match="sent seed None"):
         verify_call_sampling(unseeded, policy, "attestator_1", attempt_ordinal=4, expected_seed=7)
-
-
-def test_each_variance_arm_call_is_held_to_its_own_seed():
-    policy, _digest = load_decoding_policy()
-    prior, nuda = (variance_arm_seed(policy, arm) for arm in VARIANCE_ARMS)
-    verify_call_sampling(_call("perlector", seed=nuda), policy, "perlector", expected_seed=nuda)
-    with pytest.raises(ContractError, match=f"not {prior}"):
-        verify_call_sampling(
-            _call("perlector", seed=nuda), policy, "perlector", expected_seed=prior
-        )
 
 
 @pytest.mark.parametrize("schema", sorted(RETIRED_CALL_RECORD_SCHEMAS))

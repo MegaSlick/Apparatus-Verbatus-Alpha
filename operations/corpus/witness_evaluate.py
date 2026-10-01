@@ -1,8 +1,9 @@
-"""Read-only per-witness RecordGold scoring over sealed act attachments.
+"""Read-only per-witness RecordGold scoring over sealed page Testimonia.
 
-Designator geometry is paired once, independently of witness and reference
-text. Each chair is then scored from the exact sealed Testimonium slice that
-the current ``act-attachment`` assigns to that matched proposal.
+Every witness reads a whole page, so each chair is scored on its current sealed
+page Testimonium against the reference page's acts joined in reference order.
+The Perlector's act geometry is paired independently of witness and reference text,
+and a reference act no read act matched is counted, never dropped.
 """
 
 from __future__ import annotations
@@ -40,14 +41,14 @@ from .compare import (
     ReadOnlyRunTree,
     compare_page_geometry,
     load_exemplar_page_shas,
-    load_pipeline_proposal_acts,
+    load_pipeline_reading_acts,
 )
 from .local_admission import validate_local_admission_ledger
 from .reference import validate_reference_page
 
-DESCRIPTION = "Read-only per-witness RecordGold scoring over sealed act attachments."
+DESCRIPTION = "Read-only per-witness RecordGold scoring over sealed page Testimonia."
 
-SCHEMA = "recordgold-witness-evaluation.v1"
+SCHEMA = "recordgold-witness-evaluation.v2"
 CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
 
 WITNESS_EVALUATION_REFUSAL_REASONS = frozenset(
@@ -78,52 +79,30 @@ class _SealedPageBinding:
     size: tuple[int, int]
 
 
-def witness_reading(
-    attachment: Mapping[str, Any], testimonium: Mapping[str, Any]
-) -> tuple[OutputStatus, str | None, str | None]:
-    """Return one defensible sealed excerpt, never choosing it with reference text."""
-    if attachment.get("attached") is not True:
-        return OutputStatus.UNAVAILABLE, None, "unattached"
-    if attachment.get("comparable") is not True:
-        return OutputStatus.UNAVAILABLE, None, "not-comparable"
-
-    payload = testimonium.get("payload")
-    if not isinstance(payload, Mapping) or not isinstance(payload.get("payload"), str):
-        raise Refusal("malformed-record: referenced Testimonium has no retained text payload")
+def witness_reading(testimonium: Mapping[str, Any]) -> tuple[OutputStatus, str | None, str | None]:
+    """Return one page witness's retained text and its completion, never chosen by reference."""
     outcome = testimonium.get("outcome")
     if outcome not in {"read", "genuinely-empty"}:
         return OutputStatus.UNAVAILABLE, None, f"non-reading-{outcome!r}"
-
-    # Attachment health is the current act-attempt currency check even for a
-    # page witness. Completion of the scored text belongs to its Testimonium.
+    payload = testimonium.get("payload")
+    if not isinstance(payload, Mapping):
+        raise Refusal("malformed-record: page Testimonium has no payload")
     health = payload.get("content_health")
     if not isinstance(health, Mapping) or health.get("recordable") is not True:
         return OutputStatus.MALFORMED, None, "unrecordable-response"
+    if not isinstance(payload.get("payload"), str):
+        return OutputStatus.UNAVAILABLE, None, "structured-payload"
     if health.get("truncated") is None:
         return OutputStatus.UNAVAILABLE, None, "unknown-truncation"
     if not isinstance(health.get("truncated"), bool):
-        raise Refusal("malformed-record: referenced Testimonium has invalid truncation health")
-
-    text = payload["payload"]
-    span = attachment.get("span")
-    if span is None:
-        return OutputStatus.UNAVAILABLE, None, "no-defensible-span"
-    if (
-        not isinstance(span, Mapping)
-        or set(span) != {"start", "end"}
-        or not all(isinstance(span[key], int) and not isinstance(span[key], bool) for key in span)
-    ):
-        raise Refusal("malformed-record: attachment span is not a closed integer range")
-    if not 0 <= span["start"] <= span["end"] <= len(text):
-        raise Refusal("malformed-record: attachment span exceeds its retained Testimonium")
+        raise Refusal("malformed-record: page Testimonium has invalid truncation health")
     status = OutputStatus.TRUNCATED if health["truncated"] else OutputStatus.COMPLETE
-    return status, text[span["start"] : span["end"]], None
+    return status, payload["payload"], None
 
 
 def _score_row(
     reference: Mapping[str, Any],
     *,
-    pipeline_act_id: str | None,
     chair: str,
     status: OutputStatus,
     text: str | None,
@@ -131,8 +110,7 @@ def _score_row(
 ) -> dict[str, Any]:
     score = score_response(reference["text"], status=status, text=text, profile=GRAPHEMIC_V1)
     return {
-        "record_id": reference["record_id"],
-        "pipeline_act_id": pipeline_act_id,
+        "record_ids": list(reference["record_ids"]),
         "chair": chair,
         "status": status.value,
         "reason": reason,
@@ -144,7 +122,7 @@ def _score_row(
 
 
 def _totals(
-    rows: Sequence[Mapping[str, Any]], chairs: tuple[str, ...]
+    rows: Sequence[Mapping[str, Any]], chairs: tuple[str, ...], missing_proposals: int
 ) -> dict[str, dict[str, Any]]:
     totals: dict[str, dict[str, Any]] = {}
     for chair in chairs:
@@ -159,7 +137,7 @@ def _totals(
             "cer_units": sum(row["cer_units"] for row in chair_rows),
             "wer_errors": sum(row["wer"] for row in chair_rows),
             "wer_units": sum(row["wer_units"] for row in chair_rows),
-            "missing_proposals": sum(row["reason"] == "missing-proposal" for row in chair_rows),
+            "missing_proposals": missing_proposals,
         }
     return totals
 
@@ -169,67 +147,31 @@ def evaluate_page(
     reference_page: dict[str, Any],
     source_page_ordinal: int,
     proposals: list[dict[str, Any]],
-    attachments: Mapping[str, Mapping[str, list[dict[str, Any]]]],
+    witnesses: Mapping[str, Mapping[str, Any]],
     chairs: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Score every reference act for every chair on one source page."""
+    """Score every chair's whole page reading against the reference page's acts."""
     reference_page = validate_reference_page(reference_page)
     geometry = compare_page_geometry(reference_page, proposals)
-    references = {act["physical_act_id"]: act for act in reference_page["acts"]}
+    reference = {
+        "record_ids": [act["record_id"] for act in reference_page["acts"]],
+        "text": "\n".join(act["text"] for act in reference_page["acts"]),
+    }
     rows: list[dict[str, Any]] = []
-    for pair in geometry["matched_pairs"]:
-        act_id = pair["pipeline_act_id"]
-        reference = references[pair["reference_physical_act_id"]]
-        for chair in chairs:
-            candidates = attachments.get(act_id, {}).get(chair, [])
-            matches = [
-                item
-                for item in candidates
-                if not item["attachment"]["page_witness"]
-                or item["attachment"]["page_ordinal"] == source_page_ordinal
-            ]
-            if len(matches) > 1:
-                raise Refusal("malformed-record: duplicate attachments for one matched act page")
-            if not matches:
-                status, text, reason = OutputStatus.MISSING, None, "missing-act-attachment"
-            else:
-                status, text, reason = witness_reading(
-                    matches[0]["attachment"], matches[0]["testimonium"]
-                )
-            rows.append(
-                _score_row(
-                    reference,
-                    pipeline_act_id=act_id,
-                    chair=chair,
-                    status=status,
-                    text=text,
-                    reason=reason,
-                )
-            )
-
-    # A missed proposal is checked ink and contributes full deletions to all
-    # three chairs instead of disappearing from their denominators.
-    for miss in geometry["misses"]:
-        reference = references[miss["physical_act_id"]]
-        for chair in chairs:
-            rows.append(
-                _score_row(
-                    reference,
-                    pipeline_act_id=None,
-                    chair=chair,
-                    status=OutputStatus.MISSING,
-                    text=None,
-                    reason="missing-proposal",
-                )
-            )
-
+    for chair in chairs:
+        testimonium = witnesses.get(chair)
+        if testimonium is None:
+            status, text, reason = OutputStatus.MISSING, None, "missing-page-testimonium"
+        else:
+            status, text, reason = witness_reading(testimonium)
+        rows.append(_score_row(reference, chair=chair, status=status, text=text, reason=reason))
     body = {
         "schema": SCHEMA,
         "reference_page_self_hash": reference_page["self_hash"],
         "source_page_ordinal": source_page_ordinal,
         "geometry": geometry,
         "rows": rows,
-        "totals": _totals(rows, chairs),
+        "totals": _totals(rows, chairs, len(geometry["misses"])),
     }
     body["self_hash"] = self_hash(body)
     return body
@@ -341,139 +283,47 @@ def _validate_page_binding(
         ) from error
 
 
-def attachment_index(
+def page_witness_index(
     tree: ReadOnlyRunTree,
     *,
     sealed_pages: Mapping[str, _SealedPageBinding] | None = None,
-) -> dict[str, dict[str, list[dict[str, Any]]]]:
+) -> dict[int, dict[str, dict[str, Any]]]:
+    """Every chair's current page Testimonium by source page ordinal, each bound to its page."""
     if sealed_pages is None:
         sealed_pages = sealed_page_bindings(tree)
-    histories: dict[str, list[dict[str, Any]]] = {}
-    act_testimonia: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    page_testimonia: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    histories: dict[tuple[int, str], list[dict[str, Any]]] = {}
     for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] == "act-attachment":
-            histories.setdefault(entry["subject_id"], []).append(
-                tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
-            )
-        elif entry["kind"] == "testimonium":
-            record = tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-            chair = record.get("payload", {}).get("chair")
-            if not isinstance(chair, str):
-                raise Refusal("malformed-record: Testimonium has no chair")
-            act_testimonia.setdefault((entry["subject_id"], chair), []).append(record)
-        elif entry["kind"] == "page-testimonium":
-            record = tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
-            payload = record.get("payload")
-            chair = payload.get("chair") if isinstance(payload, dict) else None
-            ordinal = payload.get("page_ordinal") if isinstance(payload, dict) else None
-            if (
-                not isinstance(chair, str)
-                or not isinstance(ordinal, int)
-                or isinstance(ordinal, bool)
-            ):
-                raise Refusal(
-                    "malformed-record: page Testimonium has no chair/source-page identity"
-                )
-            page_testimonia.setdefault((ordinal, chair), []).append(record)
+        if entry["kind"] != "page-testimonium":
+            continue
+        record = tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
+        payload = record.get("payload")
+        chair = payload.get("chair") if isinstance(payload, dict) else None
+        ordinal = payload.get("page_ordinal") if isinstance(payload, dict) else None
+        if not isinstance(chair, str) or not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise Refusal("malformed-record: page Testimonium has no chair/source-page identity")
+        if chair not in CHAIRS:
+            raise Refusal("malformed-record: page Testimonium names an unknown chair")
+        histories.setdefault((ordinal, chair), []).append(record)
 
-    current_acts = {
-        pair: latest_attempt(
+    indexed: dict[int, dict[str, dict[str, Any]]] = {}
+    for (ordinal, chair), records in histories.items():
+        current = latest_attempt(
             records,
-            f"Testimonium for {pair!r}",
-            operation=f"read:{pair[1]}",
+            f"page Testimonium for page {ordinal}, chair {chair}",
+            operation=f"read:{chair}",
         )
-        for pair, records in act_testimonia.items()
-    }
-    current_pages = {
-        pair: latest_attempt(
-            records,
-            f"page Testimonium for page {pair[0]}, chair {pair[1]}",
-            operation=f"read:{pair[1]}",
-        )
-        for pair, records in page_testimonia.items()
-    }
-
-    indexed: dict[str, dict[str, list[dict[str, Any]]]] = {}
-    for act_id, records in histories.items():
-        record = latest_attempt(records, f"act-attachment for {act_id}", operation="act-attachment")
-        rows = record.get("payload", {}).get("attachments")
-        if not isinstance(rows, list):
-            raise Refusal("malformed-record: act attachment has no attachment list")
-        seen_pairs: set[tuple[str, int | None]] = set()
-        for attachment in rows:
-            if not isinstance(attachment, dict) or not isinstance(attachment.get("chair"), str):
-                raise Refusal("malformed-record: act attachment has malformed chair entry")
-            if attachment["chair"] not in CHAIRS:
-                raise Refusal("malformed-record: act attachment names an unknown chair")
-            if not isinstance(attachment.get("page_witness"), bool):
-                raise Refusal("malformed-record: attachment has no page-witness scope")
-            if not isinstance(attachment.get("attached"), bool) or not isinstance(
-                attachment.get("comparable"), bool
-            ):
-                raise Refusal(
-                    "malformed-record: attachment has no boolean attached/comparable facts"
-                )
-            if attachment["comparable"] and not attachment["attached"]:
-                raise Refusal("malformed-record: attachment is comparable without being attached")
-            page_ordinal = attachment.get("page_ordinal")
-            if attachment["page_witness"]:
-                if not isinstance(page_ordinal, int) or isinstance(page_ordinal, bool):
-                    raise Refusal("malformed-record: page attachment has no page ordinal")
-            elif page_ordinal is not None:
-                raise Refusal("malformed-record: act attachment carries a page ordinal")
-            pair = (attachment["chair"], page_ordinal)
-            if pair in seen_pairs:
-                raise Refusal("malformed-record: duplicate attachment chair/source-page pair")
-            seen_pairs.add(pair)
-            reference = attachment.get("testimonium_ref")
-            if not isinstance(reference, dict):
-                raise Refusal("malformed-record: attachment has no Testimonium reference")
-            kind = "page-testimonium" if attachment["page_witness"] else "testimonium"
-            testimony = tree.read_artifact_reference(
-                reference,
-                stage=ATTESTATORES,
-                kind=kind,
-                subject_id=None if attachment["page_witness"] else act_id,
+        payload = current["payload"]
+        try:
+            validate_page_testimonium_payload(
+                payload,
+                testimonium_id=current.get("artifact_id"),
+                read_bytes=tree.read_bytes,
             )
-            payload = testimony.get("payload")
-            if not isinstance(payload, dict) or payload.get("chair") != attachment["chair"]:
-                raise Refusal("malformed-record: attachment points to another chair")
-            current_act = current_acts.get((act_id, attachment["chair"]))
-            if current_act is None:
-                raise Refusal("malformed-record: attachment has no current act Testimonium")
-            if attachment.get("content_health") != current_act.get("payload", {}).get(
-                "content_health"
-            ):
-                raise Refusal(
-                    "malformed-record: attachment health differs from current act Testimonium"
-                )
-            if attachment["page_witness"]:
-                try:
-                    validate_page_testimonium_payload(
-                        payload,
-                        testimonium_id=testimony.get("artifact_id"),
-                        read_bytes=tree.read_bytes,
-                    )
-                except ContractError as error:
-                    raise Refusal(
-                        f"malformed-record: referenced page Testimonium is invalid: {error}"
-                    ) from error
-                _validate_page_binding(
-                    payload,
-                    sealed_pages=sealed_pages,
-                    read_bytes=tree.read_bytes,
-                )
-                if payload["page_ordinal"] != page_ordinal:
-                    raise Refusal("malformed-record: attachment points to another page")
-                current = current_pages.get((page_ordinal, attachment["chair"]))
-            else:
-                current = current_act
-            if current is None or testimony.get("artifact_id") != current.get("artifact_id"):
-                raise Refusal("malformed-record: attachment points to a stale Testimonium")
-            indexed.setdefault(act_id, {}).setdefault(attachment["chair"], []).append(
-                {"attachment": attachment, "testimonium": testimony}
-            )
+        except ContractError as error:
+            raise Refusal(f"malformed-record: page Testimonium is invalid: {error}") from error
+        if payload["presented"]:
+            _validate_page_binding(payload, sealed_pages=sealed_pages, read_bytes=tree.read_bytes)
+        indexed.setdefault(ordinal, {})[chair] = current
     return indexed
 
 
@@ -551,7 +401,11 @@ def page_health_counts(
 def _aggregate_page_totals(
     reports: Sequence[Mapping[str, Any]], chairs: tuple[str, ...]
 ) -> dict[str, dict[str, Any]]:
-    return _totals([row for report in reports for row in report["rows"]], chairs)
+    return _totals(
+        [row for report in reports for row in report["rows"]],
+        chairs,
+        sum(len(report["geometry"]["misses"]) for report in reports),
+    )
 
 
 def evaluate_run(
@@ -604,8 +458,8 @@ def evaluate_run(
         if digest in ordinal_by_sha:
             raise Refusal("malformed-record: two sealed source pages carry the same sha256")
         ordinal_by_sha[digest] = ordinal
-    proposals = load_pipeline_proposal_acts(read_only)
-    attached = attachment_index(read_only, sealed_pages=sealed_pages)
+    proposals = load_pipeline_reading_acts(read_only)
+    witnessed = page_witness_index(read_only, sealed_pages=sealed_pages)
     page_records = [
         read_only.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
         for entry in read_only.build_manifest(ATTESTATORES)["artifacts"]
@@ -648,7 +502,7 @@ def evaluate_run(
                 reference_page=page,
                 source_page_ordinal=ordinal,
                 proposals=[proposal for proposal in proposals if proposal["page_sha256"] == digest],
-                attachments=attached,
+                witnesses=witnessed.get(ordinal, {}),
                 chairs=chairs,
             )
         )
@@ -658,7 +512,9 @@ def evaluate_run(
         "ledger_sha256": digest_bytes(ledger_bytes),
         "selected_page_ids": sorted(requested),
         "chairs": list(chairs),
-        "reference_records": sum(len(report["rows"]) for report in reports) // len(chairs),
+        "reference_records": sum(
+            len(report["rows"][0]["record_ids"]) for report in reports if report["rows"]
+        ),
         "page_health": page_health_counts(
             page_records,
             page_sha256_by_ordinal=selected_ordinals,

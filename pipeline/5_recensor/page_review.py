@@ -1,7 +1,6 @@
 """The Recensor's page path: one review for every unit a page-read run counts.
 
-Under the sealed `reading_unit = "page"` the Perlector read each sealed page
-whole and established the acts on it (`pipeline/4_perlector/CONTRACT.md`,
+The Perlector read each sealed page whole and established the acts on it (`pipeline/4_perlector/CONTRACT.md`,
 "Page reading"). The units counted here are `common.stage.reading_acts`, whose
 rows the shared denominator has already proven from the Perlector's records,
 page accounting and hold codes included. On top of each row this stage adds
@@ -34,7 +33,12 @@ from typing import Any, Final
 
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
-from common.contracts.outcomes import WITNESS_READING_OUTCOMES, classify, witness_coverage
+from common.contracts.outcomes import (
+    WITNESS_READING_OUTCOMES,
+    classify,
+    witness_coverage,
+    witnessed_count,
+)
 from common.contracts.stages import ATTESTATORES, EXEMPLAR, PERLECTOR, RECENSOR
 from common.page_accounting import NOT_APPLICABLE, PASS
 from common.page_path import (
@@ -58,9 +62,8 @@ from common.page_testimonia import (
     current_page_testimonia,
     declared_page_witness_chairs,
     require_page_roster,
-    sealed_proposal_regions,
 )
-from common.recensor_receipt import build_recensor_reading_receipt, witnessed_count
+from common.recensor_receipt import build_recensor_reading_receipt
 from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_CLASS,
@@ -118,7 +121,7 @@ def page_testimonia(context, chairs: set[str]) -> dict[str, list[dict[str, Any]]
     must carry every configured page witness and no other, as the Perlector
     required when it read the page.
     """
-    current = current_page_testimonia(context, sealed_proposal_regions(context))
+    current = current_page_testimonia(context)
     for page_id, records in current.items():
         require_page_roster(page_id, records, chairs)
     return current
@@ -132,7 +135,7 @@ def page_witness_coverage(records: list[dict[str, Any]], floor: int, chairs: set
     attached to an act. A roster chair with no Testimonium for the page is
     `not-run`. The floor counts chairs that read the page (`read` or
     `genuinely-empty`) and were not cut off, by the page-read receipt's own formula
-    (`recensor_receipt.witnessed_count`). A reading chair whose Testimonium
+    (`outcomes.witnessed_count`). A reading chair whose Testimonium
     records no truncation state counts toward the floor, and is named in
     `health_unrecorded`; `shortfalls` counts the failed and truncated ones.
     """
@@ -156,7 +159,7 @@ def page_witness_coverage(records: list[dict[str, Any]], floor: int, chairs: set
         },
     }
     # The page-read floor formula the page-read receipt checks, not `witness_coverage`'s own.
-    coverage["under_witnessed"] = witnessed_count(coverage, page_read=True) < floor
+    coverage["under_witnessed"] = witnessed_count(coverage) < floor
     return coverage
 
 
@@ -409,7 +412,7 @@ def coverage_findings(coverage: dict, ordinal: int) -> list[tuple[str, str]]:
         findings.append(
             (
                 UNDER_WITNESSED,
-                f"{witnessed_count(coverage, page_read=True)} page witness(es) read page "
+                f"{witnessed_count(coverage)} page witness(es) read page "
                 f"{ordinal} against a floor of "
                 f"{coverage['floor']}"
                 + (f" ({truncated} truncated reading(s) not counted)" if truncated else ""),

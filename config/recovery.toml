@@ -1,33 +1,13 @@
-# How many times each kind of rework may be asked for before a unit goes to review.
+# How many times one page may be asked again before it is held for review.
+# Recovery recovers coverage, never quality: a poor reading is flagged, never
+# re-asked until it looks better. `common/recovery.py` reads and bounds it.
 #
-# `absolute_cap` is the ceiling on every budget below; nothing in the pipeline may
-# raise it at run time (`common/recovery.py`). The run-level hard-failure
-# threshold is a separate instrument in `config/hard_failure.toml`; this file
-# governs only the rework budgets.
-#
-# The two budgets are two distinct operations, each counted against its own line,
-# never one pooled total:
-#
-# - `fallback_recrop`: per act, per act-read run. The Recensor asks for it with a
-#   `recovery-request` naming `recovery_kind = "fallback-recrop"`
-#   (`common/recovery.py`), and the Designator answers it with a recrop. The
-#   Recensor's request gate (`pipeline/5_recensor/run.py`, `wants_recovery`)
-#   grants an act at most one recovery-request in its lifetime, so raising the
-#   number alone adds no second round.
-# - `page_level_reread`: per page, per page-read run. It bounds how many times the
-#   Perlector re-asks a page (`common/page_reask.py`): 0 turns the re-ask off, 1
-#   lets a page whose first reading left witness units, lines or detector records
-#   unaccounted for be asked once more about exactly those, and more is refused
-#   by name. Stage 4 plans the re-ask itself; no `recovery-request` asks for one,
-#   the Designator refuses to answer one and the orchestrator refuses to
-#   dispatch one.
-#
-# Recovery recovers coverage, never quality. A suspected fabrication or a poor
-# reading may be flagged for review; it is never re-rolled until it looks
-# better. Every request and every outcome is an artifact.
-
-absolute_cap = 3
+# `page_level_reread`: per page, per page-read run. It bounds how many times the
+# Perlector re-asks a page (`common/page_reask.py`): 0 turns the re-ask off, 1
+# lets a page whose first reading left witness units, lines or detector records
+# unaccounted for be asked once more about exactly those, and more is refused
+# by name. Stage 4 plans the re-ask itself. Every request and every outcome is
+# an artifact.
 
 [budget]
-fallback_recrop = 1
 page_level_reread = 1

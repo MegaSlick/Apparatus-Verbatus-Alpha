@@ -9,8 +9,8 @@
 # a refusal — nothing picks, in the sense of choosing among stored copies rather
 # than among models.
 #
-# Roles are configuration keys, not concepts — `designator_structure`,
-# `attestator_1..n`, `perlector`, `secondary_proposer`, `annotator`. A role added
+# Roles are configuration keys, not concepts — `attestator_1..n`, `perlector`,
+# `secondary_proposer`, `designator_surya`, `annotator`. A role added
 # later resolves without a schema change; nothing in `common/chairs/` hard-codes
 # this list.
 #
@@ -58,15 +58,6 @@ archetypus = "fake-archetypus-v0"
 coniector = "fake-coniector-v0"
 armarium = "fake-armarium-v0"
 
-[chairs.designator_structure]
-state = "configured"
-source = "local-repository"
-path = "designator_structure"
-digest_manifest = "52a8dd17b3a77f6a3f2e7c39b242339180a91d0c2fe0a6906b4e3d1d125e0313"
-manifest = "manifests/designator_structure.json"
-serving_recipe = "fake-designator-v0"
-license_note = "fixture identity only; no model weights or model license apply"
-
 [chairs.attestator_1]
 state = "configured"
 source = "local-repository"
@@ -87,7 +78,7 @@ manifest = "manifests/attestator_2.json"
 serving_recipe = "fake-attestatores-v0"
 license_note = "fixture identity only; no model weights or model license apply"
 witness_adapter = "dai.v1"
-witness_scope = "act"
+witness_scope = "page"
 
 [chairs.attestator_3]
 state = "configured"
@@ -122,14 +113,21 @@ manifest = "manifests/reconstructor.json"
 serving_recipe = "fake-reconstructor-v0"
 license_note = "fixture identity only; no model weights or model license apply"
 
+# DAI's record detector. The fixture row answers from the synthetic fixture's
+# `[[detector_record]]` rows; DAI reads the records it finds on each page.
 [chairs.secondary_proposer]
-state = "absent"
-reason = "no secondary proposer is configured for the offline walking skeleton"
+state = "configured"
+source = "local-repository"
+path = "secondary_proposer"
+digest_manifest = "2c6d06cb7a37cb40b5ef4f0bdd1c158fe026c15bace57bb4e8c7e1db9a0a2982"
+manifest = "manifests/secondary_proposer.json"
+serving_recipe = "fake-secondary-proposer-v0"
+license_note = "fixture identity only; no model weights or model license apply"
 
-# Surya's text-line and layout detector, run on every page beside the structure
-# chair. Its fixture row answers the fixture pass from the synthetic fixture's
-# `[[surya_line]]` and `[[surya_block]]` rows; a live pass refuses a fixture row
-# and needs a `subprocess` row in its serving catalogue.
+# Surya's text-line and layout detector, run on every page. Its fixture row
+# answers a synthetic run from the synthetic fixture's `[[surya_line]]` and
+# `[[surya_block]]` rows; a real submission refuses a fixture row and needs a
+# `subprocess` row in its serving catalogue.
 [chairs.designator_surya]
 state = "configured"
 source = "local-repository"
@@ -145,10 +143,7 @@ license_note = "fixture identity only; no model weights or model license apply"
 # Membership is therefore settled and is not a session's to revisit.
 # It stays commented because activating a chair needs more than a name — a
 # verified manifest and a serving-recipe row per tier, neither of which exists
-# yet (see the note above). chandra-ocr-2 also fills the structure chair ("one
-# model may serve more than one role... configuration, not architecture",
-# ARCHITECTURE), so it is pinned twice at the same revision. The roles the ruling did
-# not speak to — secondary_proposer and the absent annotator — stand as drafted
+# yet (see the note above). The roles the ruling did not speak to — secondary_proposer and the absent annotator — stand as drafted
 # from WITNESS_BENCH's "Chair today" column and are not part of that ruling.
 #
 # The abbreviated revisions the archived research file carries (`af93b47…`,
@@ -181,19 +176,6 @@ license_note = "fixture identity only; no model weights or model license apply"
 # Qwen/Qwen3.8-27B:
 # git ls-remote --exit-code https://huggingface.co/Qwen/Qwen3.8-27B refs/heads/main
 # 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0	refs/heads/main
-#
-# [chairs.designator_structure]
-# state = "configured"
-# source = "huggingface"
-# repo = "datalab-to/chandra-ocr-2"
-# revision = "af93b47dba1b47b6640c86ccf487ed2260ab9a09"
-# digest_manifest = "<sha256-of-canonical-manifest>"
-# manifest = "manifests/designator_structure-af93b47dba1b47b6640c86ccf487ed2260ab9a09.json"
-# serving_recipe = "<serving-recipe>"
-# license_note = "Revenue-capped; competitive use barred. Accepted under the research track (2026-08-20)"
-#
-# WITNESS_BENCH lists chandra-ocr-2 as "Designator structure + witness", so it
-# fills two roles and is pinned twice, at the same revision.
 #
 # [chairs.attestator_1]
 # state = "configured"

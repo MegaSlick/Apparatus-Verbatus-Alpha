@@ -39,7 +39,7 @@ _EXPORT_REF = {"relative_path": "7_armarium/artifacts/export/art_test.json", "sh
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
-def _make_run(tmp_path: Path, *, scenario: str = "happy") -> tuple[Path, str]:
+def _make_run(tmp_path: Path, *, scenario: str = "page-unbroken") -> tuple[Path, str]:
     run_root = tmp_path / "runs"
     completed = subprocess.run(
         [
@@ -59,7 +59,7 @@ def _make_run(tmp_path: Path, *, scenario: str = "happy") -> tuple[Path, str]:
         text=True,
         check=False,
     )
-    assert completed.returncode == (3 if scenario == "review" else 0), completed.stderr
+    assert completed.returncode == (3 if scenario == "page-review" else 0), completed.stderr
     return run_root, "reviewed"
 
 
@@ -129,16 +129,15 @@ def test_read_surface_walks_stage_records_seals_census_pages_and_crops(tmp_path:
         and row["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
         for row in projected.pages
     )
-    # The fixture delivers one act per page. Without this count the `all(...)`
-    # below is vacuously true over an empty tuple, so a projection that dropped
-    # the whole delivered list would still pass the assertion written to catch
+    # The fixture delivers two acts on page 1 and one on page 2, each cut by the
+    # Perlector from the page it read. Without this count the `all(...)` below
+    # is vacuously true over an empty tuple, so a projection that dropped the
+    # whole delivered list would still pass the assertion written to catch
     # exactly that loss.
-    assert len(projected.acts) == 2
+    assert len(projected.acts) == 3
     assert all(
         act["crops"]
-        and all(
-            crop["image_path"].startswith("2_designator/blobs/sha256/") for crop in act["crops"]
-        )
+        and all(crop["image_path"].startswith("4_perlector/blobs/sha256/") for crop in act["crops"])
         and "image_data_url" not in act["crops"][0]
         and act["record_ref"]["relative_path"].startswith("7_armarium/artifacts/export/")
         for act in projected.acts
@@ -152,7 +151,7 @@ def test_read_surface_walks_stage_records_seals_census_pages_and_crops(tmp_path:
 
 
 def test_held_armarium_review_rows_keep_their_bundle_and_export_record_trace(tmp_path: Path):
-    run_root, run_id = _make_run(tmp_path, scenario="review")
+    run_root, run_id = _make_run(tmp_path, scenario="page-review")
 
     projected = review.ReadOnlyRun(run_root, run_id).projection()
 
@@ -1399,7 +1398,7 @@ def test_review_marks_invalid_and_advance_refuses_when_a_sealed_inventory_lost_e
     testimony = next(
         row
         for row in tree.build_manifest("attestatores", verify_inputs=False)["artifacts"]
-        if row["kind"] not in {"stage-seal", "decode-environment"}
+        if row["kind"] == "page-testimonium"
     )
     tree.resolve(testimony["relative_path"]).unlink()
 
@@ -1670,7 +1669,7 @@ def test_review_pages_across_boundaries_without_loss(tmp_path: Path, monkeypatch
 
 
 def test_projection_selects_a_later_review_page(tmp_path: Path, monkeypatch):
-    run_root, run_id = _make_run(tmp_path, scenario="review")
+    run_root, run_id = _make_run(tmp_path, scenario="page-review")
     monkeypatch.setattr(review, "REVIEW_PAGE_SIZE", 2)
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
@@ -3075,7 +3074,7 @@ def test_tampered_evidence_is_refused_naming_the_file_whose_bytes_moved(
     tmp_path: Path, evidence: str
 ):
     """The rendered refusal must name the file; its `__cause__` is not shown."""
-    run_root, run_id = _make_run(tmp_path, scenario="review")
+    run_root, run_id = _make_run(tmp_path, scenario="page-review")
     tree = RunTree(run_root, run_id)
     projected = review.ReadOnlyRun(run_root, run_id).projection()
     if evidence == "page":
@@ -3111,7 +3110,7 @@ def test_tampered_evidence_is_refused_naming_the_file_whose_bytes_moved(
 
 def test_opening_a_run_for_review_changes_no_path_bytes_size_or_mtime(tmp_path: Path):
     """The unconfined parent projection must preserve the entire run tree."""
-    run_root, run_id = _make_run(tmp_path, scenario="review")
+    run_root, run_id = _make_run(tmp_path, scenario="page-review")
     root = run_root / run_id
 
     def census() -> dict[str, object]:
@@ -3185,7 +3184,7 @@ def test_export_references_refuse_a_digest_that_disagrees_with_the_named_bytes(
     tmp_path: Path, evidence: str
 ):
     """Review may not replace a contradictory recorded digest with a fresh one."""
-    run_root, run_id = _make_run(tmp_path, scenario="review")
+    run_root, run_id = _make_run(tmp_path, scenario="page-review")
     tree = RunTree(run_root, run_id)
     export_id = artifact_id(ARMARIUM, "export", "export", None)
     record = tree.read_artifact(ARMARIUM, "export", export_id)
@@ -3216,7 +3215,7 @@ def test_export_references_refuse_a_digest_that_disagrees_with_the_named_bytes(
 
 def test_review_refuses_a_compressed_bundle_member_before_decompressing_it(tmp_path: Path):
     """The review bundle is only ever written stored (`build_armarium_bundle`)."""
-    run_root, run_id = _make_run(tmp_path, scenario="review")
+    run_root, run_id = _make_run(tmp_path, scenario="page-review")
     tree = RunTree(run_root, run_id)
     export_id = artifact_id(ARMARIUM, "export", "export", None)
     record = tree.read_artifact(ARMARIUM, "export", export_id)

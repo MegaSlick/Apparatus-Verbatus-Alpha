@@ -2,12 +2,7 @@
 
 `no_readable_text` requires its evidence reference; an empty `text` with
 `established` status is refused directly at the pure validation function, not
-only observed as a side effect of a full run. The end-to-end empty-reading
-case (an accepted review over an empty-text reading is refused, not
-established, because the current Recensor never supplies the blank-proof
-evidence reference this status requires -- CONTRACT.md's named cross-stage
-gap) and its success path (a forged review that does carry that evidence) live
-in `pipeline/orchestrator/test_orchestrator_acceptance.py`.
+only observed as a side effect of a full run.
 """
 
 import pytest

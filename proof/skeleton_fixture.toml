@@ -31,31 +31,6 @@ width = 200
 height = 260
 scenarios = ["ink-free-page", "ink-free-page-unwitnessed"]
 
-[[act]]
-key = "a1"
-page_ordinal = 1
-proposal_ordinal = 0
-x = 20
-y = 20
-w = 160
-h = 80
-text = "SYNTHETIC ACT ONE alpha beta gamma"
-
-[[act]]
-key = "a2"
-page_ordinal = 1
-proposal_ordinal = 1
-x = 20
-y = 120
-w = 160
-h = 100
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[chandra_anchor]]
-page_ordinal = 1
-html = "<p>SYNTHETIC ACT ONE alpha beta gamma </p><p>SYNTHETIC ACT TWO delta epsilon zeta eta</p>"
-lines = [{ act_key = "a1", h = 80, text = "SYNTHETIC ACT ONE alpha beta gamma", w = 160, x = 20, y = 20 }, { act_key = "a2", h = 100, text = "SYNTHETIC ACT TWO delta epsilon zeta eta", w = 160, x = 20, y = 120 }]
-
 [[native_observation]]
 chair = "attestator_3"
 page_ordinal = 1
@@ -63,24 +38,6 @@ x = 12
 y = 15
 w = 188
 h = 223
-
-[[native_observation]]
-scenario = "review"
-chair = "attestator_1"
-page_ordinal = 1
-x = 0
-y = 200
-w = 10
-h = 40
-
-[[native_observation]]
-scenario = "coverage-recovery"
-chair = "attestator_1"
-page_ordinal = 1
-x = 0
-y = 200
-w = 10
-h = 40
 
 [[surya_line]]
 page_ordinal = 1
@@ -166,748 +123,40 @@ raw_label = "Text"
 position = 0
 confidence_bp = 9500
 
-[[prior_reading]]
-scenario = "happy"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "happy"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "witness-capabilities"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "witness-capabilities"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "review"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "review"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "continuation-recovery"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "continuation-recovery"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "audit-change"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "audit-change"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "audit-reproof-cutoff"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "audit-reproof-cutoff"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "reader-doubt"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "reader-doubt"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "reader-doubt-malformed"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "reader-doubt-malformed"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "reader-doubt-unreadable"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "reader-doubt-unreadable"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "refused-page"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "refused-page"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "truncated-reading"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "truncated-reading"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "genuinely-empty-witness"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "genuinely-empty-witness"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "confirmed-blank"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "confirmed-blank"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "blank-with-dissent"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "blank-with-dissent"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "engine-truncated-reading"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "engine-truncated-reading"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "no-readable-text-reading"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "no-readable-text-reading"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "ink-free-page"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "ink-free-page"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "ink-free-page-unwitnessed"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "ink-free-page-unwitnessed"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "reread-failure"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "reread-failure"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "reread-success"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "reread-success"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "not-run-witness"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "not-run-witness"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "malformed-witness"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "malformed-witness"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "structured-witness"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "structured-witness"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "malformed-capabilities"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "malformed-capabilities"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "coverage-recovery"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "coverage-recovery"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "churro-native"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "churro-native"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[prior_reading]]
-scenario = "churro-truncation"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta ganna"
-
-[[prior_reading]]
-scenario = "churro-truncation"
-act_key = "a2"
-text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-
-[[audit_reproof]]
-scenario = "audit-change"
-act_key = "a1"
-text = "SYNTHETIC ACT ONE alpha beta gamma!"
-
-[[reader_assessment]]
-scenario = "reader-doubt"
-act_key = "a1"
-state = "assessed"
-problem = ""
-
-[[reader_assessment]]
-scenario = "reader-doubt"
-act_key = "a2"
-state = "assessed"
-problem = ""
-
-[[reader_assessment]]
-scenario = "reader-doubt-malformed"
-act_key = "a1"
-state = "assessed"
-problem = ""
-
-[[reader_assessment]]
-scenario = "audit-change"
-act_key = "a1"
-state = "assessed"
-problem = ""
-pass_kind = "perlectio"
-
-[[reader_assessment]]
-scenario = "audit-change"
-act_key = "a1"
-state = "assessed"
-problem = ""
-pass_kind = "audit-reproof"
-
-[[reader_assessment]]
-scenario = "reader-doubt-unreadable"
-act_key = "a1"
-state = "assessed"
-problem = ""
-
-[[reader_doubt]]
-scenario = "reader-doubt"
-act_key = "a1"
-start = 29
-end = 34
-alternatives = ["gamna", "gaMma"]
-confidence = "low"
-
-[[reader_doubt]]
-scenario = "audit-change"
-act_key = "a1"
-start = 29
-end = 34
-alternatives = ["gamma"]
-confidence = "low"
-pass_kind = "perlectio"
-
-[[reader_doubt]]
-scenario = "audit-change"
-act_key = "a1"
-start = 29
-end = 35
-alternatives = ["gamma"]
-confidence = "medium"
-pass_kind = "audit-reproof"
-
-[[reader_doubt]]
-scenario = "reader-doubt-malformed"
-act_key = "a1"
-start = 29
-end = 99
-alternatives = []
-confidence = "low"
-
-[[reader_doubt]]
-scenario = "reader-doubt-unreadable"
-act_key = "a1"
-start = 29
-end = 34
-alternatives = ["gamna"]
-confidence = "low"
-
-[[reader_gap]]
-scenario = "reader-doubt"
-act_key = "a1"
-position = "internal"
-offset = 23
-
-[[continuation]]
-act_key = "a2"
-page_ordinal = 2
-x = 20
-y = 20
-w = 160
-h = 60
-
-[[recovery]]
-act_key = "a1"
-x = 0
-y = 0
-w = 200
-h = 114
-
-[[recovery]]
-act_key = "a2"
-x = 0
-y = 114
-w = 200
-h = 146
-
 [[testimony]]
-act_key = "a1"
+page_ordinal = 1
 chair = "attestator_1"
-payload = "SYNTHETIC ACT ONE alpha beta gamma"
-raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT ONE alpha beta gamma\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
+payload = "SYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta"
+raw_responses = ["{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT ONE alpha beta gamma\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}", "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"blocks\":[{\"bbox\":[20.25,120.5,180,220.1]}]}"]
 
 [[testimony]]
-act_key = "a1"
-chair = "attestator_2"
-payload = "SYNTHETIC ACT ONE alpha beta gamna"
-
-[[testimony]]
-act_key = "a1"
-chair = "attestator_3"
-payload = "SYNTHETIC ACT ONE alpha beta"
-
-[[testimony]]
-act_key = "a2"
+page_ordinal = 2
 chair = "attestator_1"
 payload = "SYNTHETIC ACT TWO delta epsilon zeta eta"
-raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"blocks\":[{\"bbox\":[20.25,120.5,180,220.1]}]}"
-
-[[testimony]]
-act_key = "a2"
-chair = "attestator_2"
-payload = "SYNTHETIC ACT TWO delta epsilon zeta"
-
-[[testimony]]
-act_key = "a2"
-chair = "attestator_3"
-payload = "SYNTHETIC ACT TWO delta epsiIon zeta eta"
 
 [[testimony]]
 scenario = "witness-capabilities"
-act_key = "a1"
+page_ordinal = 1
 chair = "attestator_1"
-payload = "SYNTHETIC ACT ONE alpha beta gamma"
+payload = "SYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta"
+raw_responses = ["{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT ONE alpha beta gamma\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}", "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"blocks\":[{\"bbox\":[20.25,120.5,180,220.1]}]}"]
 witness_reported = { confidence = "high" }
 format_capabilities = { can_express_layout = false, can_express_uncertainty = false }
-raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"SYNTHETIC ACT ONE alpha beta gamma\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
-
-[[testimony]]
-scenario = "witness-capabilities"
-act_key = "a1"
-chair = "attestator_2"
-payload = "SYNTHETIC ACT ONE alpha beta gamna"
-witness_reported = { confidence = "low", note = "faded ink" }
-format_capabilities = { can_express_layout = false, can_express_uncertainty = true }
-
-[[testimony]]
-scenario = "structured-witness"
-act_key = "a1"
-chair = "attestator_1"
-payload = { layout = { line = 4 }, tokens = ["μ", "beta"], uncertain = true }
-witness_reported = { confidence = "certain", note = "witness claim only" }
 
 [[testimony]]
 scenario = "malformed-capabilities"
-act_key = "a1"
+page_ordinal = 1
 chair = "attestator_3"
-payload = "SYNTHETIC ACT ONE alpha beta"
+payload = "SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
 format_capabilities = "provider supplied a non-object capability declaration"
 
-[[testimony]]
-scenario = "reread-success"
-act_key = "a2"
-chair = "attestator_2"
-payload = "SYNTHETIC ACT TWO delta epsilon zeta eta, reread"
-attempt_ordinal = 2
-
 [[churro_page_response]]
-scenario = "happy"
 page_ordinal = 1
 chair = "attestator_3"
 raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
 transport_stop_reason = "eos"
 
 [[churro_page_response]]
-scenario = "happy"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-review"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-review"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-no-act"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-no-act"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-other"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-other"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-unread"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-unread"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-blank"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-blank"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-review-other"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-review-other"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-unbroken"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-unbroken"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-other-unbroken"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-other-unbroken"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-no-act-unbroken"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-no-act-unbroken"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-flags-disagree"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-flags-disagree"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-runs-past-end"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "page-runs-past-end"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-recovers"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-recovers"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-sets-aside"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-sets-aside"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-malformed"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-malformed"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-cut-off"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-cut-off"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-off"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-off"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-duplicate"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-duplicate"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-cited-forgot"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-cited-forgot"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-continuation"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "reask-continuation"
-page_ordinal = 2
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "blank-then-recovered"
-page_ordinal = 1
-chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
-transport_stop_reason = "eos"
-
-[[churro_page_response]]
-scenario = "blank-then-recovered"
 page_ordinal = 2
 chair = "attestator_3"
 raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
@@ -1036,398 +285,135 @@ detector_ordinal = 0
 chair = "attestator_2"
 text = "SYNTHETIC ACT TWO delta epsilon zeta"
 
-# The happy scenario establishes both acts. The review scenario recovers act
-# a1 once -- act identity stable, region and attempt identities changing -- and
-# holds act a2, which therefore reaches no Archetypus at all.
-#
-# The refused-page scenario loses page 2 at the door, so act a2's declared
-# continuation cannot be cut and the act is held rather than delivered on half
-# its ink. The refused-first-page scenario loses page 1, the page both acts
-# live on: neither act can be marked out at all, and both must still end in
-# exactly one terminal category with the page loss named in the aggregate.
-
 [[scenario]]
 name = "happy"
-recover_acts = []
-hold_acts = []
 
+# witness-capabilities: Chandra reports its own confidence and format capabilities on page 1; both are retained as testimony and grade nothing.
 [[scenario]]
 name = "witness-capabilities"
-recover_acts = []
-hold_acts = []
 
-[[scenario]]
-name = "review"
-recover_acts = ["a1"]
-hold_acts = ["a2"]
-
-# page-review is the review scenario of a page-read run (reading_unit =
-# "page"): its page 2 answer cites no boxed id, so the page accounting holds
-# that entry. Read act by act it declares neither a recovery nor a hold.
+# page-review: Its page 2 answer cites no boxed id, so the page accounting holds that entry.
 [[scenario]]
 name = "page-review"
-recover_acts = []
-hold_acts = []
 
-# page-no-act is a page-read run whose page 2 answer names one `other`
-# entry and no act, on a page the record detector finds nothing on. Read act
-# by act it declares neither a recovery nor a hold.
+# page-no-act: Its page 2 answer names one `other` entry and no act, on a page the record detector finds nothing on.
 [[scenario]]
 name = "page-no-act"
-recover_acts = []
-hold_acts = []
 
-# page-other is a page-read run whose page 1 answer reads a1 as `other`, over
-# which the record detector finds no record. Read act by act it declares
-# neither a recovery nor a hold.
+# page-other: Its page 1 answer reads a1 as `other`, over which the record detector finds no record.
 [[scenario]]
 name = "page-other"
-recover_acts = []
-hold_acts = []
 
-# Each page-read scenario below is its base scenario with the reader answering
-# one or both pages otherwise (proof/build_fixture.py, PAGE_ANSWER_VARIANTS).
-# Read act by act it declares neither a recovery nor a hold.
-# page-unread: happy, answered otherwise.
+# page-unread: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "page-unread"
-recover_acts = []
-hold_acts = []
 
-# page-blank: happy, answered otherwise.
+# page-blank: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "page-blank"
-recover_acts = []
-hold_acts = []
 
-# page-review-other: page-review, answered otherwise.
+# page-review-other: page-review, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "page-review-other"
-recover_acts = []
-hold_acts = []
 
-# page-unbroken: happy, answered otherwise.
+# page-unbroken: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "page-unbroken"
-recover_acts = []
-hold_acts = []
 
-# page-other-unbroken: page-other, answered otherwise.
+# page-other-unbroken: page-other, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "page-other-unbroken"
-recover_acts = []
-hold_acts = []
 
-# page-no-act-unbroken: page-no-act, answered otherwise.
+# page-no-act-unbroken: page-no-act, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "page-no-act-unbroken"
-recover_acts = []
-hold_acts = []
 
-# page-flags-disagree: happy, answered otherwise.
+# page-flags-disagree: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "page-flags-disagree"
-recover_acts = []
-hold_acts = []
 
-# page-runs-past-end: happy, answered otherwise.
+# page-runs-past-end: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "page-runs-past-end"
-recover_acts = []
-hold_acts = []
 
-# reask-recovers: happy, answered otherwise.
+# reask-recovers: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "reask-recovers"
-recover_acts = []
-hold_acts = []
 
-# reask-sets-aside: happy, answered otherwise.
+# reask-sets-aside: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "reask-sets-aside"
-recover_acts = []
-hold_acts = []
 
-# reask-malformed: happy, answered otherwise.
+# reask-malformed: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "reask-malformed"
-recover_acts = []
-hold_acts = []
 
-# reask-cut-off: happy, answered otherwise.
+# reask-cut-off: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "reask-cut-off"
-recover_acts = []
-hold_acts = []
 
-# reask-off: happy, answered otherwise.
+# reask-off: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "reask-off"
-recover_acts = []
-hold_acts = []
 
-# reask-duplicate: happy, answered otherwise.
+# reask-duplicate: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "reask-duplicate"
-recover_acts = []
-hold_acts = []
 
-# reask-cited-forgot: happy, answered otherwise.
+# reask-cited-forgot: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "reask-cited-forgot"
-recover_acts = []
-hold_acts = []
 
-# reask-continuation: happy, answered otherwise.
+# reask-continuation: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "reask-continuation"
-recover_acts = []
-hold_acts = []
 
-# blank-then-recovered: happy, answered otherwise.
+# blank-then-recovered: happy, answered otherwise (PAGE_ANSWER_VARIANTS).
 [[scenario]]
 name = "blank-then-recovered"
-recover_acts = []
-hold_acts = []
 
-[[scenario]]
-name = "continuation-recovery"
-recover_acts = ["a2"]
-hold_acts = []
-
-# coverage-recovery declares neither a recovery nor a hold. Its only
-# departure from `happy` is one page witness's native observation of ink
-# outside every sealed proposal, so any recovery request or hold this
-# scenario produces has exactly one possible origin.
-[[scenario]]
-name = "coverage-recovery"
-recover_acts = []
-hold_acts = []
-
-# churro-native declares neither a recovery nor a hold either. What it
-# declares is two real-format Churro page responses -- one that parses
-# and one the provider cut mid-element, retained unparseable -- so the
-# full-page capture boundary runs through the stage program rather than
-# through unit tests alone. The visibly cut but still parseable response
-# is churro-truncation's, below.
+# churro-native: Two real-format Churro page responses: one that parses, and one the provider cut mid-element, retained unparseable.
 [[scenario]]
 name = "churro-native"
-recover_acts = []
-hold_acts = []
 
-# churro-truncation isolates the visibly cut, still-parseable response:
-# the transport said `length`, the text is kept, truncated is true, and
-# nothing completes or re-asks it.
+# churro-truncation: A visibly cut, still-parseable Churro response: the transport said `length`, the text is kept, truncated is true, and nothing completes or re-asks it.
 [[scenario]]
 name = "churro-truncation"
-recover_acts = []
-hold_acts = []
 
-[[scenario]]
-name = "audit-change"
-recover_acts = []
-hold_acts = []
-
-# reader-doubt and reader-doubt-malformed declare neither a recovery nor a
-# hold; their only departure from `happy` is the reader's declared doubt
-# report (READER_ASSESSMENTS / READER_DOUBTS / READER_GAPS). The hold the
-# malformed scenario produces has exactly one origin: a report the
-# annotation schema could not anchor to the text.
-[[scenario]]
-name = "reader-doubt"
-recover_acts = []
-hold_acts = []
-
-[[scenario]]
-name = "reader-doubt-malformed"
-recover_acts = []
-hold_acts = []
-
-# reader-doubt-unreadable is a declared doubt colliding with an emptied
-# reading: the outcome says nothing was readable, and the doubt names
-# characters the published empty text does not have. It must end as a
-# visible `malformed` assessment and a hold, never as an `assessed`
-# state beside layers that were quietly emptied. It declares no recovery
-# and no hold of its own, so the hold it produces has exactly one origin.
-[[scenario]]
-name = "reader-doubt-unreadable"
-recover_acts = []
-hold_acts = []
-
-# audit-reproof-cutoff declares neither a recovery nor a hold, and no
-# reading failure: a1's Pass-B reading completes, and the only declared
-# departure from `happy` is the `length` stop word on its Pass-C re-proof
-# (STOP_REASONS). Any hold this scenario produces has exactly one origin,
-# the re-examination that did not finish.
-[[scenario]]
-name = "audit-reproof-cutoff"
-recover_acts = []
-hold_acts = []
-
+# refused-page: The Door refuses page 2: no witness and no reader is shown it.
 [[scenario]]
 name = "refused-page"
-recover_acts = []
-hold_acts = []
 
+# refused-first-page: The Door refuses page 1, the page both acts start on.
 [[scenario]]
 name = "refused-first-page"
-recover_acts = []
-hold_acts = []
 
-[[scenario]]
-name = "truncated-reading"
-recover_acts = []
-hold_acts = []
-
+# genuinely-empty-witness: Churro returns an empty body for page 1: a completed empty reading, never a missing or failed attempt.
 [[scenario]]
 name = "genuinely-empty-witness"
-recover_acts = []
-hold_acts = []
 
-[[scenario]]
-name = "confirmed-blank"
-recover_acts = []
-hold_acts = []
-
-[[scenario]]
-name = "blank-with-dissent"
-recover_acts = []
-hold_acts = []
-
-# engine-truncated-reading exercises the truncation detector's own
-# authority over a declared engine stop-reason, rather than a directly
-# declared reading_failure outcome (see STOP_REASONS below).
-
-[[scenario]]
-name = "engine-truncated-reading"
-recover_acts = []
-hold_acts = []
-
-# no-readable-text-reading exercises the sibling hazard to a truncated
-# reading: an act the Perlector could not read at all, rather than one
-# it read part of.
-
-[[scenario]]
-name = "no-readable-text-reading"
-recover_acts = []
-hold_acts = []
-
-[[scenario]]
-name = "structure-failure"
-recover_acts = []
-hold_acts = []
-
-# A third, scenario-only page is uniform paper with no declared act.
-# The Designator must tile it, and the witnesses and Perlector must
-# actually read those tiles rather than crashing on its minted act key.
-
+# ink-free-page: A third, scenario-only page of uniform paper with no declared act; every chair reads it and returns nothing.
 [[scenario]]
 name = "ink-free-page"
-recover_acts = []
-hold_acts = []
 
-# The same ink-free page with no witness response declared for the
-# minted fallback act. Every configured chair must therefore end
-# `not-run` -- no receipt, no regions, no reading -- and the act must
-# hold rather than be sealed a proved blank on testimony nobody gave.
-
+# ink-free-page-unwitnessed: The same page with no response declared for it: Chandra and Churro end `not-run`.
 [[scenario]]
 name = "ink-free-page-unwitnessed"
-recover_acts = []
-hold_acts = []
 
-[[scenario]]
-name = "reread-failure"
-recover_acts = []
-hold_acts = []
-
-[[scenario]]
-name = "reread-success"
-recover_acts = []
-hold_acts = []
-
+# not-run-witness: Churro is never asked about page 1.
 [[scenario]]
 name = "not-run-witness"
-recover_acts = []
-hold_acts = []
 
+# malformed-witness: Churro's page 1 body could not be retained: a failed attempt that holds no other witness.
 [[scenario]]
 name = "malformed-witness"
-recover_acts = []
-hold_acts = []
 
-[[scenario]]
-name = "structured-witness"
-recover_acts = []
-hold_acts = []
-
+# malformed-capabilities: Churro's page 1 response declares a capability record that is not an object.
 [[scenario]]
 name = "malformed-capabilities"
-recover_acts = []
-hold_acts = []
 
-# A reading that did not succeed. `truncated` is a failed-class Perlector
-# outcome that still carries text, which is the combination that matters: the
-# Recensor used to ask only whether a reading existed, and the Archetypus
-# copied the text out of whichever reading was latest. Stale text from a
-# reading nobody completed could therefore be established as the one text.
-# This scenario drives that exact path, and asserts the act is held instead.
-# no-readable-text-reading drives the sibling hazard: an unresolved, not
-# failed, outcome for an act nothing could be read from at all.
-
-[[reading_failure]]
-scenario = "truncated-reading"
-act_key = "a1"
-outcome = "truncated"
-
-[[reading_failure]]
-scenario = "no-readable-text-reading"
-act_key = "a1"
-outcome = "no-readable-text"
-
-[[reading_failure]]
-scenario = "reader-doubt-unreadable"
-act_key = "a1"
-outcome = "no-readable-text"
-
-# The one declared, fixture-only truncation signal: a stand-in for a real
-# serving engine's own stop-reason, read by
-# `common/truncation.py` and authoritative for `truncated`
-# when it declares `length` -- named explicitly as a fixture stand-in
-# rather than a computed signal.
-
-# The Perlector's own direct finding of no readable text. Under
-# `confirmed-blank` every configured chair also independently reports
-# `genuinely-empty` (see WITNESS_EMPTY below), so the Recensor's blank
-# corroboration has unanimous evidence and may seal `confirmed-blank`.
-# Under `blank-with-dissent` only two of three chairs agree -- the third
-# reads real text -- so the identical Perlector finding must instead be
-# held for review: a single dissenting witness is exactly the
-# disagreement that must never be silently resolved.
-
-[[reading_failure]]
-scenario = "confirmed-blank"
-act_key = "a1"
-outcome = "no-readable-text"
-
-[[reading_failure]]
-scenario = "blank-with-dissent"
-act_key = "a1"
-outcome = "no-readable-text"
-
-[[stop_reason]]
-scenario = "engine-truncated-reading"
-act_key = "a1"
-stop_reason = "length"
-
-[[stop_reason]]
-scenario = "audit-reproof-cutoff"
-act_key = "a1"
-stop_reason = "length"
-pass_kind = "audit-reproof"
-
-# The fake Perlector's answer to a whole-page reading, one per scenario and page,
-# read only under reading_unit = "page". `answer` is the reply text exactly.
+# The fake Perlector's answer to a whole-page reading, one per scenario and page.
+# `answer` is the reply text exactly.
 
 [[page_answer]]
 scenario = "happy"
@@ -1550,6 +536,116 @@ page_ordinal = 2
 answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
 
 [[page_answer]]
+scenario = "witness-capabilities"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "witness-capabilities"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "churro-native"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "churro-native"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "churro-truncation"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "churro-truncation"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "refused-page"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "refused-page"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "refused-first-page"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "refused-first-page"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "genuinely-empty-witness"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "genuinely-empty-witness"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "not-run-witness"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "not-run-witness"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "malformed-witness"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "malformed-witness"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "malformed-capabilities"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "malformed-capabilities"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "ink-free-page"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "ink-free-page"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "ink-free-page-unwitnessed"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "ink-free-page-unwitnessed"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
 scenario = "reask-recovers"
 page_ordinal = 1
 answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
@@ -1638,6 +734,16 @@ answer = "{\"acts\":[],\"set_aside\":[]}"
 scenario = "blank-then-recovered"
 page_ordinal = 2
 answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "ink-free-page"
+page_ordinal = 3
+answer = "{\"acts\":[],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "ink-free-page-unwitnessed"
+page_ordinal = 3
+answer = "{\"acts\":[],\"set_aside\":[]}"
 
 # The fake Perlector's answer to a page's one re-ask, one per re-asked scenario
 # and page, read only with the re-ask on. `answer` is the reply text exactly.
@@ -1728,95 +834,36 @@ page_ordinal = 2
 pages_are_consecutive = false
 answer = "the reply is not JSON"
 
-# One declared provider RESPONSE per row: an empty body from that chair on
-# that act. The Attestatores derives `genuinely-empty` from the retained
-# payload, so a completed empty Testimonium always means the chair was asked
-# and returned nothing -- deliberately distinct from a missing or failed
-# attempt, and no longer reachable without a row here. `page-fallback:3` is
-# the minted act over the ink-free page; `ink-free-page-unwitnessed` is the
-# same page with these three rows deliberately absent.
-
-# Per-scenario declared digests the checked-in bytes cannot match, so the
-# door refuses those pages through its real inspection path. The declared
-# digest is all zeros: unmistakably not the digest of anything here.
 
 [[witness_empty]]
 scenario = "genuinely-empty-witness"
-act_key = "a1"
-chair = "attestator_3"
-
-[[witness_empty]]
-scenario = "ink-free-page"
-act_key = "page-fallback:3"
-chair = "attestator_1"
-
-[[witness_empty]]
-scenario = "ink-free-page"
-act_key = "page-fallback:3"
-chair = "attestator_2"
-
-[[witness_empty]]
-scenario = "ink-free-page"
-act_key = "page-fallback:3"
-chair = "attestator_3"
-
-[[witness_empty]]
-scenario = "confirmed-blank"
-act_key = "a1"
-chair = "attestator_1"
-raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
-
-[[witness_empty]]
-scenario = "confirmed-blank"
-act_key = "a1"
-chair = "attestator_2"
-
-[[witness_empty]]
-scenario = "confirmed-blank"
-act_key = "a1"
-chair = "attestator_3"
-
-[[witness_empty]]
-scenario = "blank-with-dissent"
-act_key = "a1"
-chair = "attestator_1"
-raw_response = "{\"schema\":\"fixture-chandra-response.v1\",\"markdown\":\"\",\"blocks\":[{\"bbox\":[20.25,20.5,180,100.1]}]}"
-
-[[witness_empty]]
-scenario = "blank-with-dissent"
-act_key = "a1"
-chair = "attestator_2"
-
-# A recorded structure-chair failure: the Designator holds the page and every
-# act that needed it, with the reason named, rather than skipping either.
-
-[[structure_failure]]
-scenario = "structure-failure"
 page_ordinal = 1
-reason_code = "recorded-fixture-structure-failure"
-
-[[witness_failure]]
-scenario = "review"
-act_key = "a2"
 chair = "attestator_3"
-attempt_ordinal = 1
 
-[[witness_failure]]
-scenario = "reread-failure"
-act_key = "a1"
-chair = "attestator_2"
-attempt_ordinal = 2
+[[witness_empty]]
+scenario = "ink-free-page"
+page_ordinal = 3
+chair = "attestator_1"
+
+[[witness_empty]]
+scenario = "ink-free-page"
+page_ordinal = 3
+chair = "attestator_3"
 
 [[witness_not_run]]
 scenario = "not-run-witness"
-act_key = "a1"
+page_ordinal = 1
 chair = "attestator_3"
 
 [[witness_malformed]]
 scenario = "malformed-witness"
-act_key = "a1"
+page_ordinal = 1
 chair = "attestator_3"
 reason = "fixture declares an invalid UTF-8 provider body"
+
+# Per-scenario declared digests the checked-in bytes cannot match, so the
+# door refuses those pages through its real inspection path. The declared
+# digest is all zeros: unmistakably not the digest of anything here.
 
 [[page_refusal]]
 scenario = "refused-page"

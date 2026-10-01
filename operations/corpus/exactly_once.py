@@ -1,8 +1,7 @@
 """Whether a page-read run read every RecordGold record exactly once.
 
-Reads a run tree read with `reading_unit = "page"` -- the Perlector's
-`page-feed`, `page-reading`, `act-region`, `perlectio` (`perlectio.v2`) and
-`page-accounting` records -- beside the admitted RecordGold records of its
+Reads a run tree -- the Perlector's `page-feed`, `page-reading`,
+`act-region`, `perlectio` and `page-accounting` records -- beside the admitted RecordGold records of its
 pages, and gives each gold record one outcome:
 
 - exactly once: one `act` region holds at least half of it, that region holds
@@ -69,7 +68,7 @@ from common.page_accounting import (
 )
 from common.page_accounting import SCHEMA as PAGE_ACCOUNTING_SCHEMA
 from common.page_feed import SCHEMA as PAGE_FEED_SCHEMA
-from common.page_path import ACT_REGION_SCHEMA, PAGE_READING_SCHEMA
+from common.page_path import ACT_REGION_SCHEMA, PAGE_READING_SCHEMA, PERLECTIO_SCHEMA
 from common.runtree.store import RunTree
 from common.stage import run_sealed_config_digests
 
@@ -84,13 +83,12 @@ GATE_EXACTLY_ONCE_BP: Final = 9_500
 MAX_GOLD_CER_BP: Final = 2_000
 FIT_CONTEXT_TOKENS: Final = 65_536
 BASIS_POINTS: Final = 10_000
-PERLECTIO_V2: Final = "perlectio.v2"
 # The payload schema each page kind is read under; any other is refused `not-page-read`.
 PAGE_KIND_SCHEMAS: Final = {
     "page-feed": PAGE_FEED_SCHEMA,
     "page-reading": PAGE_READING_SCHEMA,
     "act-region": ACT_REGION_SCHEMA,
-    "perlectio": PERLECTIO_V2,
+    "perlectio": PERLECTIO_SCHEMA,
     "page-accounting": PAGE_ACCOUNTING_SCHEMA,
 }
 DETECTOR_RECORD: Final = "detector-record"
@@ -176,7 +174,7 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
     Each page is `{page_sha256, feed, reading, act_regions, perlectios,
     accounting, usage}`: payloads as published; `usage` is the engine's usage
     from the page reading's call record, or `None` without a call. A tree with
-    no page feed, a feed not read by page, or a page record under another
+    no page feed, or a page record under another
     schema than `PAGE_KIND_SCHEMAS` names, is refused `not-page-read`.
     """
     shas = load_exemplar_page_shas(tree)
@@ -197,8 +195,6 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
     pages: dict[str, dict[str, Any]] = {}
     for record in by_kind["page-feed"]:
         feed = record["payload"]
-        if feed.get("reading_unit") != "page":
-            raise Refusal(f"not-page-read: page feed {record['subject_id']!r} is not read by page")
         ordinal = feed["page_ordinal"]
         if ordinal not in shas:
             raise Refusal(f"malformed-record: page ordinal {ordinal} has no sealed Exemplar page")

@@ -64,7 +64,8 @@ CALL_KIND: Final = "reconstruction-call"
 RECONSTRUCTION_KIND: Final = "reconstruction"
 CONIECTOR_KINDS: Final = frozenset({PLAN_KIND, CALL_KIND, RECONSTRUCTION_KIND})
 
-PLAN_SCHEMA: Final = "coniector-plan.v1"
+# v2 drops v1's `reading_unit` and `not_applicable`: every run reads pages whole.
+PLAN_SCHEMA: Final = "coniector-plan.v2"
 CALL_SCHEMA: Final = "coniector-call.v1"
 RECONSTRUCTION_SCHEMA: Final = "coniector-reconstruction.v1"
 
@@ -96,20 +97,12 @@ DOES_NOT_CONTINUE: Final = "does-not-continue"
 # The call's parse state beyond the grammar's own: no reply to parse.
 NOT_ASKED: Final = "not-asked"
 
-# The reading unit a Coniector reconstructs over: each page read whole.
-NOT_APPLICABLE_ACT_READ: Final = (
-    "the run read Designator acts one at a time; the Coniector reconstructs over whole-page "
-    "readings, whose entries carry their answer order and continuation flags"
-)
-
 PLAN_FIELDS: Final = frozenset(
     {
         "schema",
         "mode",
         "pages_are_consecutive",
         "policy_sha256",
-        "reading_unit",
-        "not_applicable",
         "calls",
     }
 )
@@ -237,19 +230,15 @@ def diplomatic_entries(
 
 
 def plan_payload(
-    policy: ReconstructionPolicy, reading_unit: str, plan_entries: list[dict[str, Any]] | None
+    policy: ReconstructionPolicy, plan_entries: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    """The `reconstruction-plan` payload: the switches and every call, or why none applies."""
+    """The `reconstruction-plan` payload: the switches and every call."""
     return {
         "schema": PLAN_SCHEMA,
         "mode": policy.mode,
         "pages_are_consecutive": policy.pages_are_consecutive,
         "policy_sha256": policy.sha256,
-        "reading_unit": reading_unit,
-        "not_applicable": NOT_APPLICABLE_ACT_READ if plan_entries is None else None,
-        "calls": []
-        if plan_entries is None
-        else reconstruction_plan(
+        "calls": reconstruction_plan(
             plan_entries, mode=policy.mode, pages_are_consecutive=policy.pages_are_consecutive
         ),
     }
@@ -652,13 +641,10 @@ def _require_not_asked_evidence(context, payload: Mapping[str, Any], what: str) 
                 raise FatalAccounting(f"{what} names retained bytes that are not on disk as named")
 
 
-def verified_reconstructions(
-    context, reading_unit: str, rows: Sequence[Mapping[str, Any]] | None
-) -> dict[str, Any]:
+def verified_reconstructions(context, rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Every Coniector record, each recomputed and proven, for the Armarium to show.
 
-    `reading_unit` is the run's sealed reading unit and `rows` its
-    `reading_acts` rows, or `None` for an act-read run.
+    `rows` are the run's `reading_acts` rows.
     The plan is derived again from the Perlector's sealed readings under the
     sealed switches; each call's reply must be the one the fixture declared or
     the engine returned (read again from its retained bytes), and parse as
@@ -686,8 +672,8 @@ def verified_reconstructions(
         raise FatalAccounting("the Coniector did not publish exactly one reconstruction plan")
     (plan_record,) = records[PLAN_KIND]
     plan = _closed(plan_record["payload"], PLAN_FIELDS, PLAN_SCHEMA, "the reconstruction plan")
-    plan_entries, shown = (None, {}) if rows is None else diplomatic_entries(context, rows)
-    expected_plan = plan_payload(policy, reading_unit, plan_entries)
+    plan_entries, shown = diplomatic_entries(context, rows)
+    expected_plan = plan_payload(policy, plan_entries)
     if dict(plan) != expected_plan:
         raise FatalAccounting(
             "the reconstruction plan is not the one the sealed switches and the Perlector's "

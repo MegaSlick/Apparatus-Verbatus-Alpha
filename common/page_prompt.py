@@ -1,7 +1,7 @@
 """The text part of one whole-page Perlector request, rendered from its page feed.
 
 The request is the page image (when the feed shows one) as the first content
-item, as `live_reader.py` sends a page render, then the page overlay when the
+item, as `operations/serving/chat_request.py` sends a page render, then the page overlay when the
 feed draws one (`page_overlay.py`), then this text: the feed's
 witness units, Surya's lines and blocks, and last the instruction, so the
 instruction is never the reader's first framing.
@@ -15,9 +15,8 @@ cited, also where another witness's unit reads the same text; only an id with
 nothing to read, or a Surya detection repeating another, is set aside, so the
 instruction never invites a choice between witnesses.
 
-A builder is registered per serving recipe as `prompts.py` registers act
-builders, and a recipe with none refuses rather than borrowing another's
-template. The rendered text reads only the feed fields that describe what is
+A builder is registered per serving recipe, and a recipe with none refuses
+rather than borrowing another's template. The rendered text reads only the feed fields that describe what is
 shown -- never `prompt`, `feed_digest`, `unit_kind` or `findings` -- so the
 same bytes are rebuilt from a sealed feed.
 
@@ -64,9 +63,8 @@ from common.page_path import SURYA_ORDER_HEAD
 
 BUILDER_SHA256: Final[str] = code_digest(Path(__file__).resolve().read_text(encoding="utf-8"))
 
-# The doubt-mark sentences are the act instruction's
-# (`prompts.TRANSCRIPTION_INSTRUCTION`) word for word, so
-# `annotations.read_doubt_marks` reads both the same way.
+# What the reader is asked to write, and how it marks ink it cannot read or is
+# unsure of; `annotations.read_doubt_marks` reads exactly these marks back.
 TRANSCRIBE_SENTENCE: Final = (
     "Transcribe the ink exactly as it is written on the page. Do not modernize spelling, "
     "expand abbreviations, or correct the scribe. "

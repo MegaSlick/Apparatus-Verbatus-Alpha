@@ -13,7 +13,7 @@ import pytest
 
 from common.background import load_background_config, resolve_background_policy
 from common.contracts.errors import ContractError, FatalAccounting
-from common.contracts.stages import DESIGNATOR, INK_MAP
+from common.contracts.stages import INK_MAP
 from common.residual_ink import (
     edge_ink_from_runs,
     ink_map_page,
@@ -435,49 +435,33 @@ def test_a_page_ordinal_that_is_not_an_integer_is_refused():
 def test_a_crop_that_no_longer_verifies_cannot_release_an_edge_finding(monkeypatch):
     """A stale crop is not evidence of coverage, whatever its recorded bounds.
 
-    `claimed_bounds_by_page` is the ONLY source of the rectangles a release is
-    measured against, and it re-verifies each one against the Exemplar page it
-    claims to be a crop of. A region whose lineage no longer checks out would
-    otherwise release a page on pixels nobody can prove were ever cut.
+    `reading_region_bounds_by_page` is the ONLY source of the rectangles a
+    release is measured against, and it re-verifies each act-region against the
+    Exemplar page it claims to be a crop of. A region whose lineage no longer
+    checks out would otherwise release a page on pixels nobody can prove were
+    ever cut.
     """
     armarium = load_stage("7_armarium")
-    region = {
-        "artifact_id": "region-1",
-        "subject_id": "act-1",
-        "payload": {
-            "transform": {"source_page_ordinal": 1, "bounds": {"x": 0, "y": 0, "w": 40, "h": 2}}
-        },
-    }
-    context = _context({DESIGNATOR: [region]})
-
+    bounds = {"x": 0, "y": 0, "w": 40, "h": 2}
+    row = {"act_id": "act-1", "act_key": "p1-e1", "class": "reading", "region_ref": {"r": 1}}
+    unplaced = {**row, "act_key": "p1-e2", "class": "reading-unplaced", "region_ref": None}
+    context = SimpleNamespace(
+        run={},
+        tree=SimpleNamespace(read_artifact_reference=lambda *_args, **_kwargs: {"payload": {}}),
+    )
     monkeypatch.setattr(
         armarium,
-        "verify_exemplar_crop_lineage",
-        lambda *_args: {"source_page_ordinal": 1},
+        "verify_reading_region_lineage",
+        lambda *_args: {"source_page_ordinal": 1, "transform": {"bounds": bounds}},
     )
-    assert armarium.claimed_bounds_by_page(context, {}) == {1: [{"x": 0, "y": 0, "w": 40, "h": 2}]}
+    assert armarium.reading_region_bounds_by_page(context, [row, unplaced]) == {1: [bounds]}
 
     def stale(*_args):
         raise ContractError("the crop bytes do not match the sealed page region")
 
-    monkeypatch.setattr(armarium, "verify_exemplar_crop_lineage", stale)
+    monkeypatch.setattr(armarium, "verify_reading_region_lineage", stale)
     with pytest.raises(FatalAccounting, match="cannot be verified as a crop"):
-        armarium.claimed_bounds_by_page(context, {})
-
-
-def test_a_verified_region_with_no_bounds_is_refused_not_skipped(monkeypatch):
-    """A region that verifies but states no rectangle releases nothing silently."""
-    armarium = load_stage("7_armarium")
-    region = {
-        "artifact_id": "region-1",
-        "subject_id": "act-1",
-        "payload": {"transform": {"source_page_ordinal": 1}},
-    }
-    monkeypatch.setattr(
-        armarium, "verify_exemplar_crop_lineage", lambda *_args: {"source_page_ordinal": 1}
-    )
-    with pytest.raises(FatalAccounting, match="no crop bounds"):
-        armarium.claimed_bounds_by_page(_context({DESIGNATOR: [region]}), {})
+        armarium.reading_region_bounds_by_page(context, [row])
 
 
 def test_an_unmeasurable_page_stays_in_the_denominator_and_can_never_be_held():

@@ -12,8 +12,6 @@ from common.request_capacity import (
     PAGE_ANSWER_WRAPPER,
     PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS,
     PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST,
-    PERLECTOR_PROMPT_OVERHEAD_TOKENS,
-    PERLECTOR_PROMPT_TEMPLATE_DIGEST,
     PROMPT_TOKENS_ADMITTING_BASES,
     PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
     RequestCapacityRefusal,
@@ -21,7 +19,6 @@ from common.request_capacity import (
     page_prompt_charge,
     page_request_capacity,
     perlector_page_prompt_bound,
-    perlector_prompt_bound,
     reask_answer_measure,
 )
 
@@ -64,17 +61,9 @@ def _admit(
     )
 
 
-def test_the_fixed_page_prose_is_charged_at_the_act_rate_named_as_carried():
+def test_the_fixed_page_prose_is_charged_at_the_carried_rate():
     tokens, basis = _bound("x" * 10_000)
-    act_tokens, _ = perlector_prompt_bound(
-        "x" * 10_000, template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST
-    )
-    # The same rate and margin as the act prompt; only the chat overhead differs
-    # (two images at most, the render and its overlay, not the act path's thirty-two).
-    assert (
-        tokens - PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS
-        == act_tokens - PERLECTOR_PROMPT_OVERHEAD_TOKENS
-    )
+    assert tokens - PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS == 4334
     assert tokens == 56 + 4334
     assert basis == PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED
     assert PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED in PROMPT_TOKENS_ADMITTING_BASES

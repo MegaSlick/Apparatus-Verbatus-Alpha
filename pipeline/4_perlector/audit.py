@@ -1,52 +1,17 @@
-"""Deterministic Pass-C flags, neutral span re-proof, and closed audit records.
+"""The sealed Pass-C audit policy, loaded and checked.
 
-The flag pass sees one frozen collection of semi-finals for a page.  It never
-receives the re-proof result, which makes a second cascade structurally
-impossible.  Re-proof is location-only: no prompt text may state a wanted
-character or claim the semi-final is wrong.
-
-The validation surface both this stage and the Recensor need (see the import
-block below, which is the list) lives in `common/perlector_audit.py` — a stage
-may not import another stage's uniquely named module
-(`pipeline/test_stage_import_boundaries.py`) — and is re-exported here so this
-module's public API is unchanged for its own run.py and tests. The
-`audit_request`/`reproof_plan` pair is what makes the re-proof plan a delivered
-instrument rather than a sealed claim about one.
+Every `page-reading` records the policy it was sealed under, as not run
+(`common.perlector_audit.audit_not_run`); this checks the declaration's closed
+schema before stage 4 seals it into a reading.
 """
 
 from __future__ import annotations
 
-import re
-from collections import defaultdict
 from pathlib import Path
 from typing import Any, Final
 
-from common.contracts.errors import ContractError, SchemaRefusal
-from common.perlector_audit import (  # noqa: F401  (re-export)
-    AUDIT_PROMPT_SCHEMA,
-    EXAMINATION_CAP_EXHAUSTED,
-    FLAG_CLASSES,
-    LEGACY_SCHEMA,
-    RETIRED_SCHEMAS,
-    SCHEMA,
-    WITNESS_DERIVED_LOCATION_CLASSES,
-    ReproofResponseRefusal,
-    assemble_reproof_response,
-    audit_digest,
-    audit_prompt_evidence,
-    audit_request,
-    change_records_from_edits,
-    examination_state,
-    reproof_delivery_due,
-    reproof_plan,
-    text_change_span,
-    unresolved_state,
-    validate_audit_prompt_evidence,
-    validate_chain,
-    validate_draft,
-    validate_finding,
-    validate_perlectio_audit,
-)
+from common.contracts.errors import ContractError
+from common.perlector_audit import LEGACY_SCHEMA, RETIRED_SCHEMAS, SCHEMA
 from common.sealed_config import read_sealed_toml
 
 _CONFIG_FIELDS: Final = frozenset(
@@ -96,158 +61,12 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
             "the audit loop may not raise itself"
         )
     if policy["round_cap"] > 1:
-        # `absolute_round_cap` is the sealed declaration of how far the cap may
-        # ever be raised; this is what the code can currently honour. Pass C runs
-        # exactly ONE span-scoped re-proof (design v2.1 §3: "ONE span-scoped
-        # re-proof pass ... no cascade re-opening"; never repairing model output
-        # and recovery's coverage-only rule both bear
-        # against multi-round text-changing loops), so a second round has no
-        # implementation to run. Accepting `round_cap = 2` would seal that number
-        # into every audit draft and finding on the run while still performing one
-        # round: a recorded budget nothing measured, and an
-        # approval granted for work that never happens. Refuse it here
-        # rather than in the config file, so the sealed ceiling stays the standing
-        # declaration and this refusal is what a multi-round build lifts.
+        # `absolute_round_cap` is how far the cap may ever be raised; no pass in this
+        # build runs a second round, so a higher cap would be a recorded budget nothing
+        # measured.
         raise ContractError(
-            "this build performs exactly one span-scoped audit re-proof, so an audit round "
-            f"cap of {policy['round_cap']} would be sealed into every audit record without "
-            "ever being run; raising it needs the multi-round pass, not only an approval "
-            "reference"
+            "this build runs no second audit round, so an audit round cap of "
+            f"{policy['round_cap']} would be sealed into every audit record without ever "
+            "being run; raising it needs a multi-round pass, not only an approval reference"
         )
     return policy, digest
-
-
-def _flag(flag_class: str, start: int, end: int) -> dict[str, Any]:
-    if flag_class not in FLAG_CLASSES:
-        raise SchemaRefusal(f"unknown audit flag class {flag_class!r}")
-    return {"class": flag_class, "location": {"start": start, "end": end}}
-
-
-def _numeric_key(digits: str) -> tuple[int, str]:
-    """Order one decimal run against another without converting it to an int.
-
-    `int()` raises `ValueError` on a digit run longer than CPython's 4300-digit
-    string-conversion limit, and the text these flags are computed over is
-    whatever the reader emitted. A degenerate run of digits from a real reader
-    would have ended the Perlector mid-page with an unnamed `ValueError`
-    instead of a flag -- and surviving what a model emits is this stage's job,
-    not the model's, so nothing here may quietly drop or rewrite what came back.
-
-    Length-then-lexicographic over the run with leading zeros stripped is
-    exactly `int` ordering for non-negative decimals, at any length, with no
-    limit to reach. The values are only ever compared with each other.
-    """
-    trimmed = digits.lstrip("0") or "0"
-    return len(trimmed), trimmed
-
-
-def flags_once_per_page(semi_finals: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    """Compute every deterministic flag from the frozen semi-finals exactly once.
-
-    The result is keyed by act id.  It contains no re-proof result or mutable
-    state, so callers cannot make a changed result trigger flags for another act.
-
-    A continuation appears once per contributing page for cross-act comparisons,
-    but its text, testimony, and crop-containment flags remain act-local. Cross-act
-    flags are deduplicated because their record shape carries no page identity.
-    """
-    by_page: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    by_act: dict[str, dict[str, Any]] = {}
-    for row in semi_finals:
-        if not isinstance(row.get("act_id"), str) or not isinstance(row.get("page_id"), str):
-            raise SchemaRefusal("an audit semi-final has no act or page identity")
-        if not isinstance(row.get("text"), str) or not isinstance(row.get("testimonia"), list):
-            raise SchemaRefusal("an audit semi-final has no text or testimonia")
-        if not isinstance(row.get("order"), int) or isinstance(row.get("order"), bool):
-            raise SchemaRefusal("an audit semi-final has no integer declared order")
-        geometry_order = row.get("geometry_order")
-        # Proved comparable, not merely present: this is a sort key, and a
-        # shape `sorted` cannot compare ends the whole page's flag pass in an
-        # unnamed TypeError rather than one named refusal.
-        if (
-            not isinstance(geometry_order, tuple)
-            or len(geometry_order) != 2
-            or any(not isinstance(part, int) or isinstance(part, bool) for part in geometry_order)
-        ):
-            raise SchemaRefusal("an audit semi-final has no two-integer geometry order")
-        # Proved present like every other field in this loop: `.get` with a
-        # True default read a row that never stated its crop containment as
-        # "fully inside", and the within-crop flag class silently stopped
-        # firing for any future producer that omitted the key.
-        if not isinstance(row.get("within_crop"), bool):
-            raise SchemaRefusal("an audit semi-final does not say whether it stays within its crop")
-        by_page[row["page_id"]].append(row)
-        # Page rows for one act must restate one sealed reading; otherwise
-        # iteration order would choose the facts used by the act-local pass.
-        first = by_act.setdefault(row["act_id"], row)
-        if (first["text"], first["testimonia"], first["within_crop"]) != (
-            row["text"],
-            row["testimonia"],
-            row["within_crop"],
-        ):
-            raise SchemaRefusal(
-                "two audit semi-finals for one act state different text, testimony or "
-                "crop containment; page order would decide which facts are measured; rebuild "
-                "the page rows from one sealed Perlectio"
-            )
-    output: dict[str, list[dict[str, Any]]] = {row["act_id"]: [] for row in semi_finals}
-    for row in by_act.values():
-        text = row["text"]
-        for testimony in row["testimonia"]:
-            if not isinstance(testimony, str):
-                raise SchemaRefusal("an audit testimony comparison is not text")
-            if testimony != text:
-                start, end = text_change_span(text, testimony)
-                output[row["act_id"]].append(_flag("testimony-diff", start, end))
-        repeated = re.search(r"\b(\w+)\s+\1\b", text, flags=re.IGNORECASE)
-        if repeated:
-            output[row["act_id"]].append(_flag("repetition", repeated.start(), repeated.end()))
-        # Page partition and residual ink are Recensor facts; these offsets are
-        # confined to the text delivered for this act.
-        if not row["within_crop"]:
-            output[row["act_id"]].append(_flag("within-crop", 0, len(text)))
-    # These classes compare an act with the other acts on the same page.
-    cross_act: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for rows in by_page.values():
-        ordered = sorted(rows, key=lambda row: (row["order"], row["act_id"]))
-        dates: list[tuple[tuple[int, str], dict[str, Any]]] = []
-        numbers: list[tuple[tuple[int, str], dict[str, Any]]] = []
-        for row in ordered:
-            date = re.search(r"\b(\d{4})\b", row["text"])
-            if date:
-                dates.append((_numeric_key(date.group(1)), row))
-            number = re.search(r"\b(?:no\.?|number)\s*(\d+)\b", row["text"], flags=re.IGNORECASE)
-            if number:
-                numbers.append((_numeric_key(number.group(1)), row))
-        for values, flag_class in ((dates, "date-sequence"), (numbers, "numbering")):
-            for previous, current in zip(values, values[1:], strict=False):
-                if current[0] < previous[0]:
-                    cross_act[current[1]["act_id"]].append(
-                        _flag(flag_class, 0, len(current[1]["text"]))
-                    )
-        expected_order = sorted(rows, key=lambda row: (row["geometry_order"], row["act_id"]))
-        for declared, geometric in zip(ordered, expected_order, strict=True):
-            if declared["act_id"] != geometric["act_id"]:
-                cross_act[declared["act_id"]].append(_flag("order", 0, len(declared["text"])))
-    for act_id, flags in cross_act.items():
-        seen: set[tuple[str, int, int]] = set()
-        for flag in flags:
-            key = (flag["class"], flag["location"]["start"], flag["location"]["end"])
-            if key in seen:
-                continue
-            seen.add(key)
-            output[act_id].append(flag)
-    canonical: dict[str, list[dict[str, Any]]] = {}
-    for act_id, flags in output.items():
-        distinct: dict[tuple[str, int, int], dict[str, Any]] = {}
-        for flag in flags:
-            key = (flag["class"], flag["location"]["start"], flag["location"]["end"])
-            distinct.setdefault(key, flag)
-        canonical[act_id] = sorted(
-            distinct.values(), key=lambda row: (row["location"]["start"], row["class"])
-        )
-    return canonical
-
-
-def policy_record(policy: dict[str, Any], sha256: str) -> dict[str, str]:
-    return {"schema": SCHEMA, "sha256": sha256, "approval_ref": policy["approval_ref"]}

@@ -13,7 +13,7 @@ from typing import Final
 from common.chairs.models import AbsentChair, ModelsConfig
 from common.contracts.errors import ContractError, SchemaRefusal
 
-WITNESS_SCOPES: Final = frozenset({"page", "act"})
+WITNESS_SCOPES: Final = frozenset({"page"})
 KNOWN_WITNESS_ADAPTER_NAMES: Final = frozenset({"chandra.v1", "churro.v1", "dai.v1"})
 # Bounded before scanning, so a malformed config cannot flood its refusal message.
 MAX_WITNESS_ADAPTER_NAME_LENGTH: Final = 128
@@ -90,8 +90,8 @@ def validate_witness_adapter_bindings(models: ModelsConfig) -> None:
             )
         if identity.witness_scope not in WITNESS_SCOPES:
             raise ContractError(
-                f"chair {chair!r} has invalid witness_scope {identity.witness_scope!r}. Its "
-                "adapter cannot determine whether to run per page or per act. Set witness_scope "
-                "to exactly 'page' or 'act' before starting a run"
+                f"chair {chair!r} has invalid witness_scope {identity.witness_scope!r}. Every "
+                "witness reads whole pages. Set witness_scope to exactly 'page' before starting "
+                "a run"
             )
         resolve_witness_adapter_name(identity.witness_adapter)

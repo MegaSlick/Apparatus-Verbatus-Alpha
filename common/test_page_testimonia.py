@@ -18,7 +18,6 @@ from common.contracts.stages import ATTESTATORES
 from common.page_testimonia import (
     declared_page_witness_chairs,
     require_page_roster,
-    sealed_proposal_regions,
     validate_page_testimonium_record,
 )
 from common.runtree.store import RunTree
@@ -132,15 +131,15 @@ def blank_testimony(tmp_path_factory):
         and record["payload"]["page_ordinal"] == 2
     ]
     context = page_context(root, "r", "page-no-act", options)
-    return context, record, sealed_proposal_regions(context)
+    return context, record
 
 
 def test_a_page_the_detector_found_nothing_on_is_dais_blank_testimony(blank_testimony):
-    context, record, regions = blank_testimony
+    context, record = blank_testimony
     assert record["outcome"] == "genuinely-empty"
     assert record["payload"]["payload"] == "" and record["payload"]["presented"] == {}
     assert page_testimonia.is_detector_blank_testimony(context, record)
-    validate_page_testimonium_record(context, record, regions)
+    validate_page_testimonium_record(context, record)
 
 
 def _text(record):
@@ -178,18 +177,18 @@ FORGED = (
 def test_blank_testimony_that_is_not_the_detectors_census_is_refused(
     blank_testimony, change, refusal
 ):
-    context, record, regions = blank_testimony
+    context, record = blank_testimony
     forged = copy.deepcopy(record)
     change(forged)
     with pytest.raises(SchemaRefusal, match=refusal):
-        validate_page_testimonium_record(context, forged, regions)
+        validate_page_testimonium_record(context, forged)
 
 
 def test_blank_testimony_needs_a_census_of_no_record_below_a_stated_cap(
     blank_testimony, monkeypatch
 ):
     # A detector that states no cap, or a census naming records, gives no census.
-    context, record, regions = blank_testimony
+    context, record = blank_testimony
     monkeypatch.setattr(page_testimonia, "empty_detector_page", lambda *_args: None)
     with pytest.raises(SchemaRefusal, match="not one of no record below a stated cap"):
-        validate_page_testimonium_record(context, record, regions)
+        validate_page_testimonium_record(context, record)

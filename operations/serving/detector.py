@@ -1,8 +1,7 @@
 """DAI's own record detector, run in-process by the Designator.
 
 Teklia's YOLOv26-m OBB record detector finds the records DAI was trained to
-read. The Designator runs it itself, on the CPU and after its structure chair
-has closed, so no card is shared and one model is resident at a time. Two
+read. The Designator runs it itself, on the CPU, so no card is shared. Two
 detectors answer the same call: the Ultralytics runtime over the verified
 weights, and a fixture that returns the boxes a synthetic fixture declares.
 

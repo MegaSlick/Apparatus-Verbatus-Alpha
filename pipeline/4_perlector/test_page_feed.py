@@ -10,8 +10,6 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
-import dossier
-import prompts
 import protocol
 import pytest
 from PIL import Image, ImageColor, ImageDraw
@@ -294,9 +292,8 @@ def feed_for(
 # --- the protocol's feed table ----------------------------------------------------
 
 
-def test_the_shipped_protocol_reads_by_act_with_every_feed_input_on():
+def test_the_shipped_protocol_shows_every_feed_input():
     sealed, _digest = protocol.load(ROOT / "config" / "perlector_protocol.toml")
-    assert sealed["reading_unit"] == "act"
     assert sealed["feed"] == {
         "page_image": "legible",
         "witnesses": "all",
@@ -320,7 +317,6 @@ def _write(tmp_path, old: str, new: str):
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        ('reading_unit = "act"', 'reading_unit = "region"', "reading_unit"),
         ('crops = "off"', 'crops = "on-request"', "crops"),
         ('page_image = "legible"', 'page_image = "tiny"', "page_image"),
         ('witness_units = "own"', 'witness_units = "lines"', "witness_units"),
@@ -348,13 +344,9 @@ def test_the_feed_table_refuses_an_unknown_key_or_value(tmp_path, old, new, mess
 
 
 def test_a_page_reading_protocol_with_a_witness_subset_loads(tmp_path):
-    path = _write(tmp_path, 'reading_unit = "act"', 'reading_unit = "page"')
-    path.write_text(
-        path.read_text().replace('witnesses = "all"', 'witnesses = ["attestator_1"]'),
-        encoding="utf-8",
-    )
+    path = _write(tmp_path, 'witnesses = "all"', 'witnesses = ["attestator_1"]')
     sealed, _digest = protocol.load(path)
-    assert (sealed["reading_unit"], sealed["feed"]["witnesses"]) == ("page", ["attestator_1"])
+    assert sealed["feed"]["witnesses"] == ["attestator_1"]
 
 
 # --- units, ids and the record ------------------------------------------------------
@@ -364,7 +356,7 @@ def test_the_default_feed_shows_each_witness_in_its_own_units():
     blobs = _Blobs()
     feed = feed_for(blobs)
     assert feed["schema"] == "perlector-page-feed.v2"
-    assert feed["reading_unit"] == "page"
+    assert "reading_unit" not in feed
     assert [row["letter"] for row in feed["witnesses"]] == ["A", "B", "C"]
     assert feed["page_size"] == {"w": 2550, "h": 3300}
     chandra, dai, churro = feed["witnesses"]
@@ -553,8 +545,44 @@ def test_the_named_regime_requires_the_chair_as_its_label():
         feed_for(blobs, rows=rows)
 
 
+# Fragments, not exact names: a field that reintroduces a preference will be called
+# `trust_score` or `witness_priority` rather than `trust`.
+_PREFERENCE_FRAGMENTS = (
+    "primary",
+    "prefer",
+    "order",
+    "rank",
+    "trust",
+    "weight",
+    "score",
+    "reliab",
+    "select",
+    "winner",
+    "chosen",
+    "priority",
+    "better",
+    "best",
+    "picker",
+    "consensus",
+    "majority",
+    "vote",
+    "quorum",
+)
+
+
+def _keys(value) -> list[str]:
+    if isinstance(value, dict):
+        return [key for item_key, item in value.items() for key in (item_key, *_keys(item))]
+    if isinstance(value, (list, tuple)):
+        return [key for item in value for key in _keys(item)]
+    return []
+
+
 def test_the_feed_names_no_preference_among_witnesses():
-    dossier.assert_no_order_bearing_field(feed_for(_Blobs()))
+    """No key anywhere in the feed may name a preference among witnesses."""
+    keys = _keys(feed_for(_Blobs()))
+    assert keys
+    assert [key for key in keys if any(f in key.lower() for f in _PREFERENCE_FRAGMENTS)] == []
 
 
 # --- every switch -------------------------------------------------------------------
@@ -701,7 +729,7 @@ def test_the_fixture_recipe_renders_the_same_inputs_without_the_instruction():
         page_prompt.build_page_prompt("some-other-recipe", feed)
 
 
-def test_the_page_instruction_keeps_the_act_instructions_doubt_marks_word_for_word():
+def test_the_page_instruction_states_the_doubt_marks_word_for_word():
     marks = (
         "Transcribe the ink exactly as it is written on the page. Do not modernize spelling, "
         "expand abbreviations, or correct the scribe. ",
@@ -710,7 +738,6 @@ def test_the_page_instruction_keeps_the_act_instructions_doubt_marks_word_for_wo
     )
     instruction = page_prompt.page_reading_instruction(feed_for(_Blobs()))
     for sentence in marks:
-        assert sentence in prompts.TRANSCRIPTION_INSTRUCTION
         assert sentence in instruction
     for feed in (feed_for(_Blobs()), feed_for(_Blobs(), render=None, page_image="off")):
         example = page_prompt.page_reading_instruction(feed).split("in this form: ", 1)[1]

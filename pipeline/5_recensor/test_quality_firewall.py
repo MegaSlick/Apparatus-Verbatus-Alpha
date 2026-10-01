@@ -1,4 +1,4 @@
-"""Recovery requests depend on coverage and budget, never reading quality."""
+"""The Recensor reviews coverage and never re-reads: it asks for no recovery and runs nothing."""
 
 import ast
 from pathlib import Path
@@ -6,84 +6,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 RECENSOR_DIRECTORY = ROOT / "pipeline/5_recensor"
 
-# **Every non-test source file in the stage, not just `run.py`.** This firewall
-# parsed one file while the stage had grown to two, so a `publish(kind=
-# "recovery-request", ...)` that moved into `residual_ink.py` would have left the
-# gate unguarded while `_recovery_request_publications`'s own docstring went on
-# claiming it found "every call site in the stage". A structural guard that scans
-# less than it says it scans is worse than none: it reports a pass for ground it
-# never covered.
-#
-# `rglob`, not `glob`: a guard that scans one directory while the stage has
-# grown a subpackage would repeat the exact same failure one level deeper.
+# Every non-test source file in the stage, not just `run.py`, and `rglob` so a
+# subpackage is scanned too: a guard that scans less than it says reports a
+# pass for ground it never covered.
 RECENSOR_SOURCES = sorted(
     path for path in RECENSOR_DIRECTORY.rglob("*.py") if not path.name.startswith("test_")
 )
 
-# Every name the recovery gate is allowed to consult is a coverage or budget
-# fact. None can be derived from what a reading said, which is the firewall this
-# file exists to hold.
-_COVERAGE_AND_BUDGET_NAMES = {
-    "continuation_shortfall",
-    "wants_recovery",
-    "used_fallback",
-    "allowed_fallback",
-    "used_total",
-    "budget",
-}
-
-# Names in this stage that carry a reading's quality rather than its coverage.
-# None of them may appear in the gate, or in what the gate is computed from.
-_QUALITY_NAMES = {
-    "reading_class",
-    "latest",
-    "latest_payload",
-    "basis_regions",
-    "reading_ref",
-    "blank_evidence",
-    "corroborating_chairs",
-    "OutcomeClass",
-    "classify",
-}
+INVOCATION_MODULES = frozenset(
+    {"subprocess", "os", "importlib", "multiprocessing", "runpy", "pty", "asyncio"}
+)
 
 
 def _modules() -> list[tuple[Path, ast.Module]]:
     """Every source file of this stage, parsed, so nothing hides in a sibling."""
     assert RECENSOR_SOURCES, "the stage has no source files; this guard found nothing to guard"
     return [(path, ast.parse(path.read_text(encoding="utf-8"))) for path in RECENSOR_SOURCES]
-
-
-def _names(node: ast.AST) -> set[str]:
-    return {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
-
-
-def _recovery_request_publications(
-    modules: list[tuple[Path, ast.Module]],
-) -> list[tuple[Path, ast.Module, ast.Call]]:
-    """Every `publish(kind="recovery-request", ...)` call site in the stage.
-
-    Across every source file, which is what "in the stage" has to mean. Each hit
-    carries the file and tree it came from so the caller can find its enclosing
-    conditional in the right module rather than in whichever one it guessed.
-    """
-    found = []
-    for path, tree in modules:
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            for keyword in node.keywords:
-                if (
-                    keyword.arg == "kind"
-                    and isinstance(keyword.value, ast.Constant)
-                    and keyword.value.value == "recovery-request"
-                ):
-                    found.append((path, tree, node))
-    return found
-
-
-INVOCATION_MODULES = frozenset(
-    {"subprocess", "os", "importlib", "multiprocessing", "runpy", "pty", "asyncio"}
-)
 
 
 def _top_level_imports(trees) -> set[str]:
@@ -98,160 +36,36 @@ def _top_level_imports(trees) -> set[str]:
     return imported
 
 
-def _enclosing_ifs(tree: ast.Module, target: ast.Call) -> list[ast.If]:
-    """Every `if` whose body contains this call, innermost first.
-
-    Not only the innermost: a gate wrapped in a second, outer conditional is
-    still a gate on the request, and a forbidden name added to that outer
-    `if` would let a reading-quality fact decide whether recovery is even
-    considered -- exactly the accidental re-roll this firewall exists to
-    catch -- while looking clean to a check that only read the inner one.
-    """
-    enclosing = [
-        node
+def test_no_place_in_the_stage_publishes_a_recovery_request():
+    """A reading is reviewed as it stands; nothing here asks for it again."""
+    sites = [
+        str(path.relative_to(ROOT))
+        for path, tree in _modules()
         for node in ast.walk(tree)
-        if isinstance(node, ast.If)
+        if isinstance(node, ast.Call)
         and any(
-            target is descendant for statement in node.body for descendant in ast.walk(statement)
+            keyword.arg == "kind"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "recovery-request"
+            for keyword in node.keywords
         )
     ]
-    assert enclosing, "the recovery request is not inside any conditional at all"
-    # `ast.walk` is breadth-first, so a shallower (more outer) enclosing `if`
-    # is found before a deeper one; reversed so callers that want "just the
-    # gate" via `enclosing[0]` still get the innermost.
-    return list(reversed(enclosing))
-
-
-def test_exactly_one_place_in_the_stage_can_ask_for_recovery():
-    """One gate, so "the gate is coverage-only" is a statement about all of them."""
-    sites = _recovery_request_publications(_modules())
-    assert len(sites) == 1, (
-        f"expected one recovery-request site across the whole stage, found "
-        f"{[str(path.relative_to(ROOT)) for path, _, _ in sites]}"
-    )
-
-
-def test_the_recovery_gate_consults_coverage_and_budget_and_nothing_else():
-    """The condition guarding the request may not name a reading-quality fact.
-
-    This is the firewall itself. A future edit that added `or reading_class is
-    OutcomeClass.FAILED` to this condition -- the single most natural way to
-    build an accidental re-roll -- fails here, by name.
-    """
-    _, tree, site = _recovery_request_publications(_modules())[0]
-    gates = _enclosing_ifs(tree, site)
-    # Every enclosing conditional, not only the innermost -- a forbidden name in
-    # an outer `if` gates the request exactly as one in the inner `if` would.
-    consulted = set().union(*(_names(gate.test) for gate in gates))
-    # Meta-invariant #88: a subset assertion is satisfied by an empty set, so an
-    # `_enclosing_ifs` that found the wrong node(s) would pass silently. The gate
-    # is known to consult these two, and saying so is what stops this passing
-    # vacuously.
-    assert {"wants_recovery", "continuation_shortfall"} <= consulted, (
-        f"the conditional(s) found guarding the recovery request consult {sorted(consulted)}, "
-        "which is not the coverage gate; this test located the wrong node, or the coverage "
-        "admission condition no longer guards request publication"
-    )
-    assert consulted <= _COVERAGE_AND_BUDGET_NAMES, (
-        f"the recovery gate consults {sorted(consulted - _COVERAGE_AND_BUDGET_NAMES)}, which is "
-        "outside the coverage and budget facts it is allowed to see"
-    )
-    assert not consulted & _QUALITY_NAMES
-
-
-def test_what_the_gate_is_computed_from_is_coverage_only():
-    """`wants_recovery` itself must not be derived from a reading's quality.
-
-    Constraining the `if` alone would be satisfied by computing the same forbidden
-    thing one line earlier and calling it a coverage name.
-    """
-    assignments = [
-        node
-        for _, tree in _modules()
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(target, ast.Name) and target.id == "wants_recovery"
-            for target in node.targets
-        )
-    ]
-    assert len(assignments) == 1
-    sources = _names(assignments[0].value)
-    # Consult §4.5: an unclaimed observation is a coverage *pointer*, confirmed
-    # against Unit 9's own ink map before it may reach the gate.
-    # `outside_ink_requests` is that confirmed fact -- still coverage evidence,
-    # never a reading's quality -- and is what the expression names now that
-    # the raw `content_coverage` dict no longer reaches it directly.
-    assert "outside_ink_requests" in sources, (
-        "the ink-confirmed Unit 10C coverage finding must reach the gate"
-    )
-    # `act` and `funded_pages` join the set for consult base question 11's
-    # page-wide bound (one unclaimed observation funds one recovery request on
-    # its page). Both are coverage-and-budget facts: `act` supplies only the
-    # act's own sealed `page_ordinal`, and `funded_pages` is a count of recovery
-    # requests already recorded in the tree by origin. Neither carries anything
-    # a reading said, and neither carries anything a witness reported.
-    # `declared_recovery` is the named accessor for the scenario's declared
-    # crop set (`scenario["recover_acts"]`, gated `False` with no scenario at
-    # all); it is a coverage-and-declaration fact drawn from `act_key` and
-    # `scenario`, still nothing a reading said.
-    assert sources <= {
-        "_wants_recovery",
-        "act",
-        "act_key",
-        "bool",
-        "declared_recovery",
-        "funded_pages",
-        "outside_ink_requests",
-        "scenario",
-        "used_total",
-    }, (
-        f"wants_recovery is derived from {sorted(sources)}; recovery is requested on coverage "
-        "evidence, never on what a reading said"
-    )
+    assert sites == [], f"the Recensor publishes a recovery-request in {sites}"
 
 
 def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     """The deeper structural guarantee: this stage has no way to run anything.
 
-    Even a gate that consulted only coverage could re-roll if the stage could
-    invoke the Perlector itself. It cannot: recovery is dispatched by the
-    orchestrator, from an artifact the Recensor appended, which is what keeps the
-    loop countable and stops a stage from recropping its own evidence until it
-    likes it. A `subprocess` import here would be the first step of undoing that.
+    A stage that could invoke the Perlector itself could re-read until it liked
+    the answer. A `subprocess` import here would be the first step towards that.
     """
-    # Across every source file of the stage. This scanned `run.py` alone while
-    # the stage had two, so a `subprocess` import in `residual_ink.py` would have
-    # passed a guard whose whole subject is "this stage cannot invoke anything".
     imported = _top_level_imports(tree for _, tree in _modules())
-    # One binding, used by both the assertion and its message. Written out twice
-    # they had already drifted: the check refused `multiprocessing` and the message
-    # intersected a set without it, so a Recensor that imported `multiprocessing`
-    # would have failed reporting an empty list of offending modules — the failure
-    # naming nothing it failed on.
-    # `runpy` is on this list because it needs none of the others: one
-    # `runpy.run_path("pipeline/4_perlector/run.py")` re-invokes the reading
-    # stage in this very process, importing nothing banned, and the guard would
-    # have reported a pass over exactly the re-roll that recovery must forbid,
-    # since recovery restores coverage, never quality -- and this file exists
-    # to make that impossible. `pty` reaches a shell the same way
-    # `subprocess` does.
-    #
-    # `asyncio` is here even though its subprocess routes all land on
-    # `subprocess` itself — true of what CPython executes, and irrelevant to
-    # what this test reads. This walks the
-    # stage's own `import` statements and never follows a transitive import, so
-    # `import asyncio` followed by `asyncio.create_subprocess_exec(...)` puts
-    # the word `subprocess` nowhere in this stage's source and passes. The
-    # Recensor is synchronous and imports none of these; if it ever genuinely
-    # needs `asyncio`, that is a decision to take deliberately rather than a
-    # hole to leave open now.
-    #
-    # **This guard covers direct imports only.** A dynamic route —
-    # `__import__(name)` from a computed string, or an attribute reached
-    # through an already-imported module — is outside what a static scan of
-    # import statements can see.
+    # `runpy` re-invokes a stage in this process and `pty` reaches a shell, each
+    # importing nothing else on the list. `asyncio` is listed because this scan
+    # reads the stage's own imports and never follows a transitive one, so
+    # `asyncio.create_subprocess_exec` would otherwise pass. The scan covers
+    # direct imports only; `__import__` of a computed name is outside it.
     assert not imported & INVOCATION_MODULES, (
-        f"the Recensor imports {sorted(imported & INVOCATION_MODULES)}; it appends recovery "
-        "requests and never invokes the stage that answers one"
+        f"the Recensor imports {sorted(imported & INVOCATION_MODULES)}; it reviews "
+        "readings and never invokes the stage that makes them"
     )

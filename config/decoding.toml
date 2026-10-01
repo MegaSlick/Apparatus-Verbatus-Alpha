@@ -1,23 +1,15 @@
 # Its values are sealed into every run's decoding provenance.
-schema = "decoding.v6"
+schema = "decoding.v7"
 
 [perlector_generation]
-# Output bounds for the Perlector's replies, far above any honest reading, so a
-# reply that runs away stops as a visible truncation and holds its act rather
-# than filling the context. One value covers every reading pass so the passes
-# stay one condition; the re-proof answers in JSON and repeats the span it
-# corrects, so it has its own. These are the policy caps, seen through this
-# file's digest; the value sent is cut to the context the prompt leaves and is
-# recorded on each call record.
-reading_max_tokens = 4096
-reproof_max_tokens = 8192
-# A whole-page reading (`reading_unit = "page"`) answers every act on the page
-# in one JSON object, so it has its own cap. A dense synthetic page (20 acts,
-# about 12,000 characters per witness, 120 Surya lines each cited on its own)
-# reserves 7,319 tokens for its answer (`common/request_capacity.py`,
-# `page_answer_bound`); this leaves room above
-# that for doubt marks and long set-aside lists while still stopping a runaway
-# reply as a visible length cut-off.
+# The output cap of one whole-page reading, which answers every act on the page
+# in one JSON object. A dense synthetic page (20 acts, about 12,000 characters
+# per witness, 120 Surya lines each cited on its own) reserves 7,319 tokens for
+# its answer (`common/request_capacity.py`, `page_answer_bound`); this leaves
+# room above that for doubt marks and long set-aside lists while still stopping
+# a runaway reply as a visible length cut-off. It is the policy cap, seen
+# through this file's digest; the value sent is cut to the context the prompt
+# leaves and is recorded on each call record.
 page_max_tokens = 12288
 
 [reconstructor_generation]
@@ -27,24 +19,6 @@ page_max_tokens = 12288
 # reconstructions not made. The value sent is cut to the context the prompt
 # leaves (`common/request_capacity.py`, `reconstruction_answer_bound`).
 answer_max_tokens = 8192
-
-[variance_experiment]
-# Lectio nuda and the lectio-prior draft send the same request to measure the
-# Perlector's sampling variance, so each arm needs its own seed to be its own
-# draw. The arm at index i of `common.decoding.VARIANCE_ARMS` sends this seed
-# plus i, recorded on its call record; it is never a retry.
-seed = 20260820
-
-[structure]
-# The Designator structure chair's coverage recovery follows Chandra's own
-# retry schedule, the maker's recovery from a degenerate page: attempt one sends
-# the chair's row in `chair_decoding` below, and attempt n sends that row with
-# the pinned recipe's request n temperature and top_p (`chandra_native_inference`),
-# with the serving row's seed on every attempt. Each attempt's values are recorded
-# on its call record and its structure-answer record.
-recovery_schedule = "chandra-native-retry"
-recovery_max_attempts = 3
-
 [chandra_native_inference]
 # Exact upstream inference recipe admitted only for Attestator 1's Chandra
 # page-reading route. This is not an ambient retry or sampling switch.
@@ -66,28 +40,17 @@ error_backoff_seconds = [2, 4, 6, 8, 10, 12]
 # a model's generation_config.json (`common.decoding.ENGINE_FILLED_SAMPLING_FIELDS`):
 # the maker's value where the maker gives one, otherwise the value the maker's
 # own pipeline runs under. The serving client sends a chair's row on each of its
-# requests, with the seed that request's reader expects (the serving row's, or a
-# variance arm's; a Chandra native request sends none), and records both on the
-# call record beside the values the pinned engine samples under. No caller may
-# add or change a sampling field. `source` and `revision` name where the maker's
+# requests, with the serving row's seed (a Chandra native request sends none),
+# and records both on the call record beside the values the pinned engine
+# samples under. No caller may add or change a sampling field. `source` and `revision` name where the maker's
 # values were read; `verification` says who read them. Detection has no decoding
 # and so has no row.
 
-[chair_decoding.designator_structure]
-# datalab-to/chandra-ocr-2, read the way Chandra's own page pipeline reads a
-# page: `generate_vllm` sends a vLLM server only temperature and top_p.
-temperature = 0.0         # maker: `generate_vllm`'s default
-top_p = 0.1               # maker: `generate_vllm`'s default
-top_k = 0                 # vLLM 0.30.0 default for an unsent field (off)
-min_p = 0.0               # vLLM 0.30.0 default for an unsent field (off)
-repetition_penalty = 1.0  # vLLM 0.30.0 default for an unsent field (off)
-source = "https://github.com/datalab-to/chandra/blob/d4f7467435aa4137d9539f000ddf0b7ced3eb43f/chandra/model/vllm.py"
-revision = "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
-verification = "read from the pinned source by the vendor-decoding session (Claude), and checked on every load to equal the first request of common/chandra_native_retry.py's port over vLLM's defaults"
-
 [chair_decoding.attestator_1]
-# The same model and pipeline. A page read under `chandra_native_inference`
-# sends this as its first request and follows the recipe's retry schedule.
+# datalab-to/chandra-ocr-2, read the way Chandra's own page pipeline reads a
+# page: `generate_vllm` sends a vLLM server only temperature and top_p. A page
+# read under `chandra_native_inference` sends this as its first request and
+# follows the recipe's retry schedule.
 temperature = 0.0         # maker: `generate_vllm`'s default
 top_p = 0.1               # maker: `generate_vllm`'s default
 top_k = 0                 # vLLM 0.30.0 default for an unsent field (off)

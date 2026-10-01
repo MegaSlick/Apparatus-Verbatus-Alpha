@@ -42,9 +42,7 @@ _OBSERVED_ENTRY_FIELDS: Final = frozenset({"ordinal", "bounds", "bounds_source",
 PAGE_TESTIMONIUM_REQUIRED_FIELDS: Final = frozenset(
     {
         "chair",
-        "act_key",
         "attempt_ordinal",
-        "regions",
         "provenance",
         "format_capabilities",
         "payload",
@@ -52,17 +50,15 @@ PAGE_TESTIMONIUM_REQUIRED_FIELDS: Final = frozenset(
         "content_health",
         "presented",
         "observed",
-        "unpresented_regions",
         "scope",
         "page_ordinal",
-        "page_role",
-        "unjoined_act_attempts",
     }
 )
 PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
     {
         "reason",
-        "partition_disagreement",
+        # Witness boxes that ran past the sealed page edge, kept as findings.
+        "page_edge_overshoots",
         # Plural: a page partition may be assembled from several responses.
         "raw_response_refs",
         "adapter_metadata",
@@ -75,9 +71,10 @@ PAGE_TESTIMONIUM_OPTIONAL_FIELDS: Final = frozenset(
         "presentations",
         "unit_captures",
         "unit_call_refs",
+        # The retained call record of the one request a whole-page chair was sent.
+        "serving_call_ref",
     }
 )
-PAGE_ROLES: Final = frozenset({"primary", "continuation", "mixed"})
 
 # Each resizing operation's rounding rule; the key set is also the set of
 # operations that resize.  Chandra snaps to its 28-pixel grid, which is not `floor`.
@@ -381,7 +378,6 @@ def validate_observed(
     presented: dict[str, Any],
     page_size: tuple[int, int] | None = None,
     retained_text: Any = None,
-    presentation_is_witness_view: bool = True,
     unit_presentations: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Validate dense witness order, source-page boxes, and non-overlapping text spans.
@@ -415,10 +411,7 @@ def validate_observed(
                 "a presented-source observed box differs from the presented transform"
             )
         bounds = _bounds(item["bounds"], "a Testimonium observed box", page_size=page_size)
-        # A page witness's act view restates page-level geometry, so its boxes
-        # may exceed this record's crop; they stay bounded by the sealed page.
-        presented_bounds = shown["transform"]["bounds"]
-        if presentation_is_witness_view and not _contains(presented_bounds, bounds):
+        if not _contains(shown["transform"]["bounds"], bounds):
             raise SchemaRefusal(
                 "a Testimonium observed box falls outside the exact image presentation. "
                 "The record would attribute unseen page pixels to this witness. Correct the "
@@ -497,8 +490,8 @@ def validate_native_witness_geometry(
 ) -> dict[str, Any]:
     """Validate the two derived blocks and recursively refuse preference claims.
 
-    An empty pair records that the chair was never shown an image (held acts,
-    refused pages, absent chairs).
+    An empty pair records that the chair was never shown an image (refused
+    pages, absent chairs).
     """
     if not isinstance(payload, dict):
         raise SchemaRefusal("a Testimonium payload is not an object")
@@ -520,13 +513,6 @@ def validate_native_witness_geometry(
         presented=presented,
         page_size=page_size,
         retained_text=payload.get("payload"),
-        # The one record that does not present the witness's own view is a page
-        # witness's act view (`page_witness: True`, scope != "page"); consumers
-        # reconcile the flag against the sealed declaration, so an act chair
-        # cannot forge it.
-        presentation_is_witness_view=(
-            payload.get("scope") == "page" or payload.get("page_witness") is not True
-        ),
         unit_presentations=unit_presentations,
     )
     return payload
@@ -615,69 +601,6 @@ def validate_presented_page_binding(
             )
 
 
-def validate_unpresented_regions(payload: Any) -> list[str]:
-    """Close the explicit list of bound proposal regions outside one presentation."""
-    if not isinstance(payload, dict):
-        raise SchemaRefusal("a Testimonium payload is not an object")
-    unpresented = payload.get("unpresented_regions")
-    if (
-        not isinstance(unpresented, list)
-        or any(not isinstance(region_id, str) or not region_id for region_id in unpresented)
-        or len(set(unpresented)) != len(unpresented)
-    ):
-        raise SchemaRefusal(
-            "a Testimonium's unpresented_regions is not a unique list of region ids"
-        )
-    if payload.get("presented") == {} and unpresented:
-        raise SchemaRefusal(
-            "a Testimonium with no presentation at all cannot name regions its presentation "
-            "does not speak for"
-        )
-    return unpresented
-
-
-def unpresented_region_ids(
-    presented: dict[str, Any] | list[dict[str, Any]], proposal_regions: list[dict[str, Any]]
-) -> list[str]:
-    """Re-derive which bound proposal crops fall outside every presented image.
-
-    Takes one presented block or a record's whole list of presentations. The
-    list is inapplicable to an empty presentation. For a real presentation, a
-    proposal is expressible by this record exactly when it lies wholly inside
-    one presentation's page-space bounds; changing presentation kind must not
-    change that disclosure rule.
-    """
-    presentations = presented if isinstance(presented, list) else [presented]
-    presentations = [item for item in presentations if item != {}]
-    if not presentations:
-        return []
-    boxes: list[tuple[str, dict[str, int]]] = []
-    for item in presentations:
-        if not isinstance(item, dict):
-            raise SchemaRefusal("a Testimonium presented block is not an object")
-        page_id = item.get("source_page_id")
-        transform = item.get("transform")
-        presented_bounds = transform.get("bounds") if isinstance(transform, dict) else None
-        if not isinstance(page_id, str) or not isinstance(presented_bounds, dict):
-            raise SchemaRefusal("a Testimonium presentation cannot locate its page-space bounds")
-        boxes.append((page_id, presented_bounds))
-
-    unpresented: list[str] = []
-    for region in proposal_regions:
-        payload = region.get("payload") if isinstance(region, dict) else None
-        transform = payload.get("transform") if isinstance(payload, dict) else None
-        bounds = transform.get("bounds") if isinstance(transform, dict) else None
-        region_id = payload.get("region_id") if isinstance(payload, dict) else None
-        if not isinstance(region_id, str) or not region_id or not isinstance(bounds, dict):
-            raise SchemaRefusal("a bound proposal region has no page-space identity to compare")
-        if not any(
-            transform.get("source_page_id") == page_id and _contains(box, bounds)
-            for page_id, box in boxes
-        ):
-            unpresented.append(region_id)
-    return unpresented
-
-
 def _truncation_from_stop_word(transport_stop_reason: str) -> tuple[bool | None, str]:
     """Truncated, not truncated, or unknown when the engine reported no stop reason.
 
@@ -702,17 +625,12 @@ def validate_page_testimonium_payload(
         raise SchemaRefusal("a page Testimonium is not its closed schema")
     if missing := sorted(PAGE_TESTIMONIUM_REQUIRED_FIELDS - set(payload)):
         raise SchemaRefusal(f"a page Testimonium lacks required field(s) {missing}")
-    page_role = payload["page_role"]
     if (
         payload["scope"] != "page"
         or not is_plain_int(payload["page_ordinal"])
         or payload["page_ordinal"] < 1
-        or not isinstance(page_role, str)
-        or page_role not in PAGE_ROLES
-        or not isinstance(payload["unjoined_act_attempts"], list)
     ):
         raise SchemaRefusal("a page Testimonium has invalid page scope facts")
-    validate_unpresented_regions(payload)
     validated = validate_native_witness_geometry(payload)
     # The page spoken for and the page shown must agree, or a consumer keying on
     # `page_ordinal` reads another page's geometry, breaking the trace back
@@ -724,15 +642,15 @@ def validate_page_testimonium_payload(
             "observed geometry would be attributed to ink the chair was never shown. Restore "
             "the page ordinal of the presentation actually served"
         )
-    if "partition_disagreement" in payload:
-        disagreement = validate_partition_disagreement(
-            payload["partition_disagreement"],
-            observed=payload["observed"],
-            source_page_id=presented.get("source_page_id") if presented else None,
-            testimonium_id=testimonium_id,
-        )
+    if "page_edge_overshoots" in payload:
+        if not presented:
+            raise SchemaRefusal(
+                "a page Testimonium with no presentation names page-edge findings; a chair "
+                "shown nothing reported no box to reject"
+            )
         _validate_page_edge_overshoot_response_refs(
-            disagreement["page_edge_overshoots"], payload.get("raw_response_refs")
+            validate_page_edge_overshoots(payload["page_edge_overshoots"]),
+            payload.get("raw_response_refs"),
         )
     if "native_capture" in payload:
         capture = validate_native_capture(payload["native_capture"])
@@ -748,6 +666,8 @@ def validate_page_testimonium_payload(
         _validate_unit_call_refs(payload, read_bytes)
     elif "presentations" in payload:
         raise SchemaRefusal("a page Testimonium shown several images names no unit call records")
+    if "serving_call_ref" in payload:
+        _validate_serving_call_ref(payload, read_bytes)
     validate_retained_response_refs(payload, read_bytes=read_bytes)
     return validated
 
@@ -795,6 +715,25 @@ def _validate_unit_call_refs(
             )
         if read_bytes is not None:
             read_verified(read_bytes, reference, "page Testimonium unit call record")
+
+
+def _validate_serving_call_ref(
+    payload: dict[str, Any], read_bytes: Callable[[str], bytes] | None
+) -> None:
+    """One retained call record for a chair sent the whole page in one request."""
+    if "unit_call_refs" in payload:
+        raise SchemaRefusal(
+            "a page Testimonium names both one serving call and a call per image; a chair "
+            "is sent either the whole page or one request per image"
+        )
+    reference = payload["serving_call_ref"]
+    digest_ref(reference, "a page Testimonium serving call record reference")
+    if reference["relative_path"] != _attestatores_blob_path(reference["sha256"]):
+        raise SchemaRefusal(
+            "a page Testimonium serving call record reference is not a closed blob reference"
+        )
+    if read_bytes is not None:
+        read_verified(read_bytes, reference, "page Testimonium serving call record")
 
 
 def _validate_churro_page_health(payload: dict[str, Any], capture: dict[str, Any]) -> None:
@@ -923,48 +862,6 @@ def validate_retained_response_refs(
             )
 
 
-# Declared and unmeasured: only zero overlap is recorded, because a near-overlap
-# threshold would be a measurement claim nobody has made.
-UNROUTED_OBSERVATION_OVERLAP: Final = {"rule": "positive-area", "status": "unmeasured"}
-
-
-def _overlaps(left: dict[str, int], right: dict[str, int]) -> bool:
-    """Whether two page-pixel boxes share positive area, never containment."""
-    return min(left["x"] + left["w"], right["x"] + right["w"]) > max(left["x"], right["x"]) and min(
-        left["y"] + left["h"], right["y"] + right["h"]
-    ) > max(left["y"], right["y"])
-
-
-def validate_reportable_observations(observed: Any) -> list[dict[str, Any]]:
-    """Close only the observation fields a coverage derivation indexes by name.
-
-    For consumers without the presentation `validate_observed` needs, so a
-    malformed row is a named refusal rather than a KeyError.
-    """
-    if not isinstance(observed, list):
-        raise SchemaRefusal("a Testimonium observed block is not a list")
-    for item in observed:
-        if not isinstance(item, dict):
-            raise SchemaRefusal("a Testimonium observed entry is not an object")
-        if not is_plain_int(item.get("ordinal")):
-            raise SchemaRefusal("a Testimonium observed entry has no integer ordinal")
-        if item.get("bounds_source") not in BOUNDS_SOURCES:
-            raise SchemaRefusal("a Testimonium observed box has an unknown bounds_source")
-        # A `presented` echo is never compared, so its box is not required.
-        if item["bounds_source"] in REPORTED_BOUNDS_SOURCES:
-            _bounds(item.get("bounds"), "a Testimonium observed box", page_size=None)
-    return observed
-
-
-def reported_geometry_overlaps(observed: list[dict[str, Any]], bounds: dict[str, int]) -> bool:
-    """Presentation echoes never count as reported geometric overlap."""
-    return any(
-        observation.get("bounds_source") in REPORTED_BOUNDS_SOURCES
-        and _overlaps(observation["bounds"], bounds)
-        for observation in observed
-    )
-
-
 def split_page_edge_overshoots(
     observed: list[dict[str, Any]], *, page_size: tuple[int, int]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1029,157 +926,6 @@ def split_page_edge_overshoots(
         else:
             survivors.append({**item, "ordinal": len(survivors), "bounds": dict(bounds)})
     return survivors, overshoots
-
-
-def unrouted_observations(
-    testimonia: list[dict[str, Any]],
-    proposal_regions: list[dict[str, Any]],
-    *,
-    prior_findings: set[tuple[str, int]] | None = None,
-) -> list[dict[str, Any]]:
-    """Named, non-fatal findings for reported ink no sealed proposal accounts for.
-
-    Coverage evidence for the Recensor's fallback recrop, never an act.  The
-    comparison is against every proposal on the page, not one act's, or a
-    neighbouring act's ink would become a false finding.
-    """
-    prior_findings = prior_findings or set()
-    proposal_boxes = [
-        region["payload"]["transform"]
-        for region in proposal_regions
-        if region.get("payload", {}).get("origin") == "proposal"
-    ]
-    findings: list[dict[str, Any]] = []
-    for testimony in testimonia:
-        payload = testimony["payload"]
-        presented = payload["presented"]
-        if not presented:
-            continue
-        for observation in payload["observed"]:
-            if observation.get("bounds_source") not in REPORTED_BOUNDS_SOURCES:
-                continue
-            key = (testimony["artifact_id"], observation["ordinal"])
-            if key in prior_findings:
-                continue
-            bounds = observation["bounds"]
-            overlaps = any(
-                transform["source_page_id"] == presented["source_page_id"]
-                and _overlaps(bounds, transform["bounds"])
-                for transform in proposal_boxes
-            )
-            if not overlaps:
-                findings.append(
-                    {
-                        "kind": "unrouted-observation",
-                        "testimonium_id": testimony["artifact_id"],
-                        "ordinal": observation["ordinal"],
-                        "source_page_id": presented["source_page_id"],
-                        "bounds": dict(bounds),
-                        "overlap_rule": dict(UNROUTED_OBSERVATION_OVERLAP),
-                    }
-                )
-    return findings
-
-
-def _proposal_order(box: dict[str, int]) -> tuple[int, int, int, int]:
-    return (box["y"], box["x"], box["h"], box["w"])
-
-
-def _box_key(box: dict[str, int]) -> tuple[int, int, int, int]:
-    return (box["x"], box["y"], box["w"], box["h"])
-
-
-def _reported_observation_boxes(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "ordinal": observation["ordinal"],
-            "bounds": dict(observation["bounds"]),
-            "bounds_source": observation["bounds_source"],
-        }
-        for observation in observed
-        if observation.get("bounds_source") in REPORTED_BOUNDS_SOURCES
-    ]
-
-
-def _edge_offsets(observed: dict[str, int], proposal: dict[str, int]) -> dict[str, int]:
-    return {
-        "left": observed["x"] - proposal["x"],
-        "top": observed["y"] - proposal["y"],
-        "right": observed["x"] + observed["w"] - proposal["x"] - proposal["w"],
-        "bottom": observed["y"] + observed["h"] - proposal["y"] - proposal["h"],
-    }
-
-
-def partition_disagreement(
-    testimonium: dict[str, Any],
-    proposal_regions: list[dict[str, Any]],
-    *,
-    page_edge_overshoots: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Record page/chair partition facts without selecting any pairing."""
-    payload = testimonium["payload"]
-    presented = payload["presented"]
-    page_id = presented.get("source_page_id") if isinstance(presented, dict) else None
-    proposals = sorted(
-        [
-            dict(region["payload"]["transform"]["bounds"])
-            for region in proposal_regions
-            if region.get("payload", {}).get("origin") == "proposal"
-            and region["payload"]["transform"].get("source_page_id") == page_id
-        ],
-        key=_proposal_order,
-    )
-    observations = _reported_observation_boxes(payload.get("observed", []))
-    deltas, unobserved_proposals, ambiguous_pairings = _partition_pairing_facts(
-        proposals, observations
-    )
-    return {
-        "proposal_boxes": proposals,
-        "observed_boxes": observations,
-        "unclaimed_observations": unrouted_observations([testimonium], proposal_regions),
-        "unobserved_proposals": unobserved_proposals,
-        "boundary_deltas": deltas,
-        "ambiguous": bool(ambiguous_pairings),
-        "ambiguous_pairings": ambiguous_pairings,
-        "overlap_rule": dict(UNROUTED_OBSERVATION_OVERLAP),
-        "page_edge_overshoots": [] if page_edge_overshoots is None else page_edge_overshoots,
-    }
-
-
-def _partition_pairing_facts(
-    proposals: list[dict[str, int]], observations: list[dict[str, Any]]
-) -> tuple[list[dict[str, Any]], list[dict[str, int]], list[dict[str, Any]]]:
-    """Ambiguity is symmetric, so neither side may choose a single pairing."""
-    deltas: list[dict[str, Any]] = []
-    pairing_keys: list[tuple[int, int, int, int]] = []
-    # Counted from both sides: one observation over several proposals, or
-    # several observations on one proposal.
-    observation_match_counts: dict[int, int] = {}
-    proposal_match_counts: dict[tuple[int, int, int, int], int] = {}
-    for observation in observations:
-        matches = [proposal for proposal in proposals if _overlaps(observation["bounds"], proposal)]
-        observation_match_counts[observation["ordinal"]] = len(matches)
-        for proposal in matches:
-            key = _box_key(proposal)
-            proposal_match_counts[key] = proposal_match_counts.get(key, 0) + 1
-            pairing = {
-                "proposal_box": dict(proposal),
-                "observed_ordinal": observation["ordinal"],
-                "observed_box": dict(observation["bounds"]),
-                "edge_offsets": _edge_offsets(observation["bounds"], proposal),
-            }
-            deltas.append(pairing)
-            pairing_keys.append(key)
-    ambiguous_pairings = [
-        pairing
-        for pairing, key in zip(deltas, pairing_keys, strict=True)
-        if observation_match_counts[pairing["observed_ordinal"]] > 1
-        or proposal_match_counts[key] > 1
-    ]
-    unobserved_proposals = [
-        proposal for proposal in proposals if _box_key(proposal) not in proposal_match_counts
-    ]
-    return deltas, unobserved_proposals, ambiguous_pairings
 
 
 _NATIVE_CAPTURE_FIELDS: Final = frozenset(
@@ -1711,84 +1457,13 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
     return value
 
 
-def validate_partition_disagreement(
-    value: Any,
-    *,
-    observed: Any = None,
-    source_page_id: str | None = None,
-    testimonium_id: str | None = None,
-    proposal_boxes: list[dict[str, int]] | None = None,
-) -> dict[str, Any]:
-    """Close the retained facts without converting them into a verdict."""
-    required = {
-        "proposal_boxes",
-        "observed_boxes",
-        "unclaimed_observations",
-        "unobserved_proposals",
-        "boundary_deltas",
-        "ambiguous",
-        "ambiguous_pairings",
-        "overlap_rule",
-        "page_edge_overshoots",
-    }
-    if not isinstance(value, dict) or set(value) != required:
-        raise SchemaRefusal("a page Testimonium partition_disagreement is not its closed schema")
-    for field in ("proposal_boxes", "unobserved_proposals"):
-        if not isinstance(value[field], list):
-            raise SchemaRefusal(
-                "a page Testimonium partition disagreement has malformed proposal boxes"
-            )
-        for box in value[field]:
-            _bounds(box, "a page Testimonium partition proposal box", page_size=None)
-    if proposal_boxes is not None and value["proposal_boxes"] != sorted(
-        proposal_boxes, key=_proposal_order
-    ):
-        raise SchemaRefusal(
-            "a page Testimonium partition disagreement contradicts the sealed proposals on its page"
-        )
-    if not isinstance(value["observed_boxes"], list):
-        raise SchemaRefusal(
-            "a page Testimonium partition disagreement has malformed observed boxes"
-        )
-    for observation in value["observed_boxes"]:
-        if not isinstance(observation, dict) or set(observation) != {
-            "ordinal",
-            "bounds",
-            "bounds_source",
-        }:
-            raise SchemaRefusal("a page Testimonium partition observed box is malformed")
-        if (
-            not is_plain_int(observation["ordinal"])
-            or observation["bounds_source"] not in REPORTED_BOUNDS_SOURCES
-        ):
-            raise SchemaRefusal(
-                "a page Testimonium partition observed box is not reported geometry"
-            )
-        _bounds(observation["bounds"], "a page Testimonium partition observed box", page_size=None)
-    if observed is not None:
-        if value["observed_boxes"] != _reported_observation_boxes(observed):
-            raise SchemaRefusal(
-                "a page Testimonium partition disagreement contradicts its observed geometry"
-            )
-    if value["overlap_rule"] != UNROUTED_OBSERVATION_OVERLAP:
-        raise SchemaRefusal(
-            "a page Testimonium partition disagreement changes its declared overlap rule"
-        )
-    if not isinstance(value["ambiguous"], bool):
-        raise SchemaRefusal(
-            "a page Testimonium partition disagreement ambiguous flag is not boolean"
-        )
-    for field in ("unclaimed_observations", "boundary_deltas", "ambiguous_pairings"):
-        if not isinstance(value[field], list):
-            raise SchemaRefusal(
-                "a page Testimonium partition disagreement has malformed retained facts"
-            )
-    overshoots = value["page_edge_overshoots"]
+def validate_page_edge_overshoots(overshoots: Any) -> list[dict[str, Any]]:
+    """Close a page Testimonium's page-edge findings: each rejected box, once, as reported."""
     if not isinstance(overshoots, list):
         raise SchemaRefusal(
-            "the page Testimonium partition disagreement has malformed page-edge findings. "
+            "the page Testimonium has malformed page-edge findings. "
             "The rejected witness geometry cannot be accounted from this value. "
-            "Rebuild the partition disagreement with a list of closed findings."
+            "Rebuild the page-edge findings as a list of closed findings."
         )
     seen_overshoots: set[tuple[str, int]] = set()
     for finding in overshoots:
@@ -1843,61 +1518,7 @@ def validate_partition_disagreement(
                 "Remove the duplicate and rebuild the page partition."
             )
         seen_overshoots.add(key)
-    expected_deltas, expected_unobserved, expected_ambiguous = _partition_pairing_facts(
-        value["proposal_boxes"], value["observed_boxes"]
-    )
-    if value["unobserved_proposals"] != expected_unobserved:
-        raise SchemaRefusal(
-            "a page Testimonium partition disagreement contradicts its unobserved proposals"
-        )
-    if value["boundary_deltas"] != expected_deltas:
-        raise SchemaRefusal(
-            "a page Testimonium partition disagreement contradicts its boundary deltas"
-        )
-    if value["ambiguous_pairings"] != expected_ambiguous or value["ambiguous"] != bool(
-        expected_ambiguous
-    ):
-        raise SchemaRefusal(
-            "a page Testimonium partition disagreement contradicts its ambiguous pairings"
-        )
-    expected_unclaimed = [
-        observation
-        for observation in value["observed_boxes"]
-        if not any(
-            _overlaps(observation["bounds"], proposal) for proposal in value["proposal_boxes"]
-        )
-    ]
-    if len(value["unclaimed_observations"]) != len(expected_unclaimed):
-        raise SchemaRefusal(
-            "a page Testimonium partition disagreement contradicts its unclaimed observations"
-        )
-    for finding, observation in zip(
-        value["unclaimed_observations"], expected_unclaimed, strict=True
-    ):
-        if (
-            not isinstance(finding, dict)
-            or set(finding)
-            != {
-                "kind",
-                "testimonium_id",
-                "ordinal",
-                "source_page_id",
-                "bounds",
-                "overlap_rule",
-            }
-            or finding["kind"] != "unrouted-observation"
-            or not isinstance(finding["testimonium_id"], str)
-            or not finding["testimonium_id"]
-            or (testimonium_id is not None and finding["testimonium_id"] != testimonium_id)
-            or finding["ordinal"] != observation["ordinal"]
-            or (source_page_id is not None and finding["source_page_id"] != source_page_id)
-            or finding["bounds"] != observation["bounds"]
-            or finding["overlap_rule"] != UNROUTED_OBSERVATION_OVERLAP
-        ):
-            raise SchemaRefusal(
-                "a page Testimonium partition disagreement has a malformed unclaimed observation"
-            )
-    return value
+    return overshoots
 
 
 def _validate_page_edge_overshoot_response_refs(

@@ -24,7 +24,7 @@ FORBIDDEN_TEXT_KEYS = frozenset(
 )
 
 
-def refuse_text_fields(value, path: str = "$", *, kind: str = "act-group") -> None:
+def refuse_text_fields(value, path: str = "$", *, kind: str) -> None:
     """Walk a payload and refuse any forbidden content-bearing key, at any depth."""
     if isinstance(value, dict):
         for key, item in value.items():

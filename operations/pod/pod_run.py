@@ -94,8 +94,8 @@ pod timer reads an early exit as ``completed-early``.
 
 **A resume is checked against its seal before the bootstrap.**  When the run
 tree already has its ``run.json``, the Perlector protocol this launch names
-(or the default) and, on a real run, the run policy (``--blind-read``,
-``--mechanics-qualification``) are compared with the digests the run sealed,
+(or the default) and, on a real run, the run policy
+(``--mechanics-qualification``) are compared with the digests the run sealed,
 so a resume the stages would refuse is refused before a card is paid for.
 
 **The data gate is checked before the bootstrap spends anything.**  The
@@ -129,7 +129,6 @@ from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity, is_witness_role
 from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
-from common.contracts.prior_draft import BLIND_READ_MODES
 from common.contracts.stages import SEAL_PREDECESSORS
 from common.runtree.store import RunTree
 from common.sealed_config import read_sealed_toml
@@ -191,13 +190,7 @@ PID1_ENVIRON = Path("/proc/1/environ")
 GUARD_HEARTBEAT_STALE_SECONDS = 300
 # The run-policy knobs pod_run never forwards, so the orchestrator's own argv
 # defaults govern them; a resume's run-policy digest is recomputed under them.
-ORCHESTRATOR_RUN_POLICY_DEFAULTS: Mapping[str, object] = {
-    "witness_context": "named",
-    "nuda_per_mille": 0,
-    "nuda_approval_ref": "",
-    "perlector_instrument_per_mille": 0,
-    "perlector_instrument_approval_ref": "",
-}
+ORCHESTRATOR_RUN_POLICY_DEFAULTS: Mapping[str, object] = {"witness_context": "named"}
 PERLECTOR_PROTOCOL_WHAT = "Perlector protocol configuration"
 
 # The transcript's two bounds. The head is written to the volume as it arrives,
@@ -288,7 +281,6 @@ class RunPlan:
     interval_seconds: float
     dry_run: bool
     mechanics_qualification: bool = False
-    blind_read: str = "off"
     perlector_protocol_config: Path | None = None
     no_hold: bool = False
     stage: str | None = None
@@ -436,8 +428,6 @@ class RunPlan:
         command += ["--store-root", str(store_root)]
         if self.mechanics_qualification:
             command.append("--mechanics-qualification")
-        if self.blind_read != "off":
-            command += ["--blind-read", self.blind_read]
         if self.perlector_protocol_config is not None:
             command += ["--perlector-protocol-config", str(self.perlector_protocol_config)]
         if self.stage is not None:
@@ -479,7 +469,6 @@ class RunPlan:
             "interval_seconds": self.interval_seconds,
             "dry_run": self.dry_run,
             "mechanics_qualification": self.mechanics_qualification,
-            "blind_read": self.blind_read,
             # None: the orchestrator's own default protocol.
             "perlector_protocol_config": str(self.perlector_protocol_config)
             if self.perlector_protocol_config
@@ -532,8 +521,8 @@ class RunPlan:
         selected = set(self.selected_stages())
         roles: set[str] = set()
         if "designator" in selected:
-            roles.update(("designator_structure", "secondary_proposer", "designator_surya"))
-        if selected & {"perlector", "recovery"}:
+            roles.update(("secondary_proposer", "designator_surya"))
+        if "perlector" in selected:
             roles.add("perlector")
         try:
             configured = load_models_toml(self.models_config).chairs
@@ -581,7 +570,7 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
     bootstrap. Compared here, for a run tree that already has its authority:
     the ``perlector-protocol`` digest against the file this launch would hand
     the orchestrator (read by the same seal reader the run binding uses), and,
-    on a real run, the ``run-policy`` digest recomputed from ``--blind-read``,
+    on a real run, the ``run-policy`` digest recomputed from
     ``--mechanics-qualification``, the witness-context declaration and the
     orchestrator defaults pod_run leaves in place. A fixture run seals those
     knobs only inside its ``config_digest``, which this cannot recompute; its
@@ -607,7 +596,7 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
             if sealed["run-policy"] != policy:
                 mismatches.append(
                     "its run policy (sealed "
-                    f"{sealed['run-policy']}, this launch {policy}); pass the --blind-read and "
+                    f"{sealed['run-policy']}, this launch {policy}); pass the "
                     "--mechanics-qualification the run started with, against the same "
                     "--witness-context-config"
                 )
@@ -634,12 +623,10 @@ def _recomputed_run_policy(plan: RunPlan) -> str:
     declaration = validate_witness_context_bindings(
         load_models_toml(plan.models_config),
         witness_context_config_path=plan.witness_context_config,
-        blind_read=plan.blind_read,
         **defaults,  # type: ignore[arg-type]
     )
     return real_run_policy_digest(
         witness_context_declaration_sha256=declaration,
-        blind_read=plan.blind_read,
         mechanics_qualification=plan.mechanics_qualification,
         **defaults,  # type: ignore[arg-type]
     )
@@ -707,13 +694,6 @@ def build_parser() -> bootstrap_main.RefusingParser:
         "--mechanics-qualification",
         action="store_true",
         help="run real mechanics with unproven profiles; does not mark them proven",
-    )
-    parser.add_argument(
-        "--blind-read",
-        choices=BLIND_READ_MODES,
-        default="off",
-        help="the Perlector's blind read, passed to the orchestrator (sealed into the run): "
-        "off (default), fed, or saved as a training witness",
     )
     parser.add_argument(
         "--perlector-protocol-config",
@@ -901,7 +881,6 @@ def resolve_run_plan(
         interval_seconds=interval,
         dry_run=args.dry_run or bootstrap.dry_run,
         mechanics_qualification=args.mechanics_qualification,
-        blind_read=args.blind_read,
         perlector_protocol_config=perlector_protocol_config,
         no_hold=args.no_hold,
         stage=stage,

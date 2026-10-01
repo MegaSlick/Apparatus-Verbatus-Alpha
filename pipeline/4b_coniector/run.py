@@ -65,12 +65,10 @@ from common.request_capacity import (  # noqa: E402
 )
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
-    READING_UNIT_PAGE,
     fixture_serving_details,
     open_stage_context,
     reading_acts,
     run_stage,
-    sealed_reading_unit,
     stage_parser,
 )
 from operations.serving.assembly import (  # noqa: E402
@@ -340,12 +338,8 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     context.require_sealed_config("reconstruction", policy.sha256)
     decoding, decoding_sha256 = load_decoding_policy(args.decoding_config)
     context.require_sealed_config("decoding", decoding_sha256)
-    reading_unit = sealed_reading_unit(context)
-    if reading_unit == READING_UNIT_PAGE:
-        plan_entries, shown = diplomatic_entries(context, reading_acts(context))
-    else:
-        plan_entries, shown = None, {}
-    plan = plan_payload(policy, reading_unit, plan_entries)
+    plan_entries, shown = diplomatic_entries(context, reading_acts(context))
+    plan = plan_payload(policy, plan_entries)
     context.publish(kind=PLAN_KIND, subject_id=PLAN_SUBJECT, outcome="planned", payload=plan)
     chair = None
     try:
@@ -384,8 +378,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
         if chair is not None:
             chair.close()
     print(
-        f"coniector: mode {policy.mode}, {len(plan['calls'])} call(s)"
-        + (f"; {plan['not_applicable']}" if plan["not_applicable"] else ""),
+        f"coniector: mode {policy.mode}, {len(plan['calls'])} call(s)",
         file=sys.stderr,
     )
     context.seal_boundary()

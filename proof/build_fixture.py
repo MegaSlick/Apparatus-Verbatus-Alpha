@@ -26,8 +26,6 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from common.alignment import markup_text_view  # noqa: E402
-from common.imaging import crop_png  # noqa: E402
 from proof.synthetic_pages import ALL_PAGES, FIXTURE_ID, render_page  # noqa: E402
 
 PROOF_ROOT = Path(__file__).resolve().parent
@@ -49,149 +47,6 @@ ACTS = (
         "proposal_ordinal": 1,
         "text": "SYNTHETIC ACT TWO delta epsilon zeta eta",
     },
-)
-
-# Pass A readings: one departs from the established text and one equals it, so a
-# self-revision is measurable without treating disagreement as success. Every
-# scenario that reaches the Perlector declares its own priors; the reader refuses to
-# borrow another scenario's. `refused-first-page` and `structure-failure` hold every
-# act before the Perlector and need none.
-_DEFAULT_PRIOR_TEXT = {
-    "a1": "SYNTHETIC ACT ONE alpha beta ganna",
-    "a2": "SYNTHETIC ACT TWO delta epsilon zeta eta",
-}
-_PRIOR_READING_SCENARIOS = (
-    "happy",
-    "witness-capabilities",
-    "review",
-    "continuation-recovery",
-    # Its departure is the declared audit re-proof (AUDIT_REPROOFS).
-    "audit-change",
-    # Same reach as `happy`; its one departure is the re-proof's stop word.
-    "audit-reproof-cutoff",
-    # Same reach as `happy`; their departure is a declared reader doubt report.
-    "reader-doubt",
-    "reader-doubt-malformed",
-    # A declared doubt colliding with an emptied reading.
-    "reader-doubt-unreadable",
-    "refused-page",
-    "truncated-reading",
-    "genuinely-empty-witness",
-    "confirmed-blank",
-    "blank-with-dissent",
-    "engine-truncated-reading",
-    "no-readable-text-reading",
-    "ink-free-page",
-    "ink-free-page-unwitnessed",
-    "reread-failure",
-    "reread-success",
-    "not-run-witness",
-    "malformed-witness",
-    "structured-witness",
-    "malformed-capabilities",
-    # No declared recovery or hold may mask the geometry-triggered route.
-    "coverage-recovery",
-    # Churro-native reaches the same Perlector seam and requires the same priors.
-    "churro-native",
-    "churro-truncation",
-)
-PRIOR_READINGS = tuple(
-    {"scenario": scenario, "act_key": act_key, "text": text}
-    for scenario in _PRIOR_READING_SCENARIOS
-    for act_key, text in _DEFAULT_PRIOR_TEXT.items()
-)
-
-# The reader's own doubt report, per scenario, act and optional pass. In
-# `reader-doubt`, a2 is assessed with no doubt, so an empty list must mean "no
-# doubt" honestly. Undeclared scenarios stay `not-assessed`.
-# In `audit-change` each doubt is anchored to the text of its own pass; the
-# Perlectio carries only the re-proof's, because that text is the one published.
-READER_ASSESSMENTS = (
-    {"scenario": "reader-doubt", "act_key": "a1", "state": "assessed", "problem": ""},
-    {"scenario": "reader-doubt", "act_key": "a2", "state": "assessed", "problem": ""},
-    {"scenario": "reader-doubt-malformed", "act_key": "a1", "state": "assessed", "problem": ""},
-    {
-        "scenario": "audit-change",
-        "act_key": "a1",
-        "state": "assessed",
-        "problem": "",
-        "pass_kind": "perlectio",
-    },
-    {
-        "scenario": "audit-change",
-        "act_key": "a1",
-        "state": "assessed",
-        "problem": "",
-        "pass_kind": "audit-reproof",
-    },
-    {"scenario": "reader-doubt-unreadable", "act_key": "a1", "state": "assessed", "problem": ""},
-)
-READER_DOUBTS = (
-    # `text` is checked against the span at generation time.
-    {
-        "scenario": "reader-doubt",
-        "act_key": "a1",
-        "start": 29,
-        "end": 34,
-        "text": "gamma",
-        "alternatives": ["gamna", "gaMma"],
-        "confidence": "low",
-    },
-    {
-        "scenario": "audit-change",
-        "act_key": "a1",
-        "start": 29,
-        "end": 34,
-        "text": "gamma",
-        "alternatives": ["gamma"],
-        "confidence": "low",
-        "pass_kind": "perlectio",
-    },
-    {
-        "scenario": "audit-change",
-        "act_key": "a1",
-        "start": 29,
-        "end": 35,
-        "text": "gamma!",
-        "alternatives": ["gamma"],
-        "confidence": "medium",
-        "pass_kind": "audit-reproof",
-    },
-    # Deliberately out of bounds, so the report is sealed `malformed` and the act
-    # held; the generator checks that it stays so.
-    {
-        "scenario": "reader-doubt-malformed",
-        "act_key": "a1",
-        "start": 29,
-        "end": 99,
-        "alternatives": [],
-        "confidence": "low",
-    },
-    # In bounds for the declared text, impossible over the empty text published.
-    {
-        "scenario": "reader-doubt-unreadable",
-        "act_key": "a1",
-        "start": 29,
-        "end": 34,
-        "text": "gamma",
-        "alternatives": ["gamna"],
-        "confidence": "low",
-    },
-)
-READER_GAPS = (
-    # `before` is checked against the text at generation time.
-    {
-        "scenario": "reader-doubt",
-        "act_key": "a1",
-        "position": "internal",
-        "offset": 23,
-        "before": "SYNTHETIC ACT ONE alpha",
-    },
-)
-
-# Fixture-only Pass C response, kept apart from the `prior_reading` rows.
-AUDIT_REPROOFS = (
-    {"scenario": "audit-change", "act_key": "a1", "text": "SYNTHETIC ACT ONE alpha beta gamma!"},
 )
 
 # Chair 1 agrees, chair 2 differs in one token and chair 3 stops short, so the
@@ -240,109 +95,16 @@ def chandra_raw_response_for_act(payload: str, act_key: str) -> str:
     )
 
 
-# Fixture Chandra view, kept as HTML so alignment exercises tag stripping and
-# offsets. The space before the first `</p>` is the only separator left after
-# stripping; without it a1's and a2's page spans overlap, which the pipeline refuses.
-CHANDRA_ANCHORS = (
-    {
-        "page_ordinal": 1,
-        "html": "<p>SYNTHETIC ACT ONE alpha beta gamma </p><p>SYNTHETIC ACT TWO delta epsilon zeta eta</p>",
-        "lines": ("a1", "a2"),
-    },
-)
-
 # Declared page geometry. It is deterministic stimulus for an unmeasured
 # positive-area rule, not a calibrated threshold or an act assignment.
 NATIVE_OBSERVATIONS = (
     # attestator_1 (Chandra) derives geometry from its native responses, so a box
     # here would double-count. attestator_3's box contains both proposals.
     # No live Churro response can produce this box: its format has no coordinates.
-    # The fixture publishes it as native anyway, so the offline run counts three
-    # of three witnesses and delivers; the live path delivers too, through anchor
-    # lines. proof/test_fixture_declaration_contract.py
+    # The fixture publishes it as native anyway; proof/test_fixture_declaration_contract.py
     # pins this row as the one whose chair cannot express layout.
     {"chair": "attestator_3", "page_ordinal": 1, "x": 12, "y": 15, "w": 188, "h": 223},
-    # Ink outside every proposal (page 1's proposals start at x=12), kept for
-    # the Recensor's bounded recovery route.
-    {
-        "scenario": "review",
-        "chair": "attestator_1",
-        "page_ordinal": 1,
-        "x": 0,
-        "y": 200,
-        "w": 10,
-        "h": 40,
-    },
-    # No competing route is declared, so only this geometry can cause a recovery.
-    {
-        "scenario": "coverage-recovery",
-        "chair": "attestator_1",
-        "page_ordinal": 1,
-        "x": 0,
-        "y": 200,
-        "w": 10,
-        "h": 40,
-    },
 )
-
-# The first two rows exercise both sides of `format_capabilities`: a witness that
-# cannot say "unsure" must not be read as confident. Chair 1 cannot express
-# uncertainty yet claims high confidence; chair 2 can, and reports doubt. The
-# structured row tests the stage 3 schema only; the text-only Perlector cannot use it.
-SCENARIO_TESTIMONY = (
-    {
-        "scenario": "witness-capabilities",
-        "act_key": "a1",
-        "chair": "attestator_1",
-        "payload": TESTIMONY["a1"]["attestator_1"],
-        "raw_response": chandra_raw_response_for_act(TESTIMONY["a1"]["attestator_1"], "a1"),
-        "witness_reported": {"confidence": "high"},
-        "format_capabilities": {"can_express_uncertainty": False, "can_express_layout": False},
-    },
-    {
-        "scenario": "witness-capabilities",
-        "act_key": "a1",
-        "chair": "attestator_2",
-        "payload": TESTIMONY["a1"]["attestator_2"],
-        "witness_reported": {"confidence": "low", "note": "faded ink"},
-        "format_capabilities": {"can_express_uncertainty": True, "can_express_layout": False},
-    },
-    {
-        "scenario": "structured-witness",
-        "act_key": "a1",
-        "chair": "attestator_1",
-        "payload": {"tokens": ["μ", "beta"], "layout": {"line": 4}, "uncertain": True},
-        "witness_reported": {"confidence": "certain", "note": "witness claim only"},
-    },
-    {
-        "scenario": "malformed-capabilities",
-        "act_key": "a1",
-        "chair": "attestator_3",
-        "payload": "SYNTHETIC ACT ONE alpha beta",
-        "format_capabilities": "provider supplied a non-object capability declaration",
-    },
-    # Rereads target attestator_2 because only an act-scoped chair can reread one
-    # act; the reread pass refuses page witnesses.
-    {
-        "scenario": "reread-success",
-        "act_key": "a2",
-        "chair": "attestator_2",
-        "attempt_ordinal": 2,
-        "payload": "SYNTHETIC ACT TWO delta epsilon zeta eta, reread",
-    },
-)
-
-# Recovery recrops. Each is a strict superset of the act's padded capture
-# rectangle (a1's is 12,15,188,99 under config/designator_padding.toml): the
-# recovery pass refuses a recrop adding no pixel, and a superset widens rather
-# than trading one edge for another. a1 stops at y=114, where
-# a2's capture rectangle begins, so every pixel is cut under exactly one act.
-# a2 is cross-page: recropping its primary page must keep its continuation page
-# in the evidence denominator.
-RECOVERY_BOUNDS = {
-    "a1": {"x": 0, "y": 0, "w": 200, "h": 114},
-    "a2": {"x": 0, "y": 114, "w": 200, "h": 146},
-}
 
 # Declared digests (all zeros) that cannot match the checked-in bytes, so the
 # door refuses the page through its real inspection path, not a scenario branch.
@@ -350,92 +112,7 @@ PAGE_REFUSALS = (
     {"scenario": "refused-page", "ordinal": 2},
     {"scenario": "refused-first-page", "ordinal": 1},
 )
-# Each row declares one empty provider response, not an outcome; the Attestatores
-# derives `genuinely-empty` from it, and no other path reaches that outcome.
-# `page-fallback:3` is the Designator-minted act over the ink-free page, declared
-# per chair so no chair is recorded as reading a page it was never asked about.
-# `ink-free-page-unwitnessed` is the same page without these rows.
-WITNESS_EMPTY = (
-    {"scenario": "genuinely-empty-witness", "act_key": "a1", "chair": "attestator_3"},
-    # No raw geometry: a later empty response must not give a recovery crop
-    # retrospective coverage.
-    {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_1"},
-    {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_2"},
-    {"scenario": "ink-free-page", "act_key": "page-fallback:3", "chair": "attestator_3"},
-    # All three chairs, so blank corroboration has a unanimous absence to confirm.
-    {
-        "scenario": "confirmed-blank",
-        "act_key": "a1",
-        "chair": "attestator_1",
-        "raw_response": chandra_raw_response_for_act("", "a1"),
-    },
-    {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_2"},
-    {"scenario": "confirmed-blank", "act_key": "a1", "chair": "attestator_3"},
-    # Two of three: the third chair reads real text, so blank corroboration must refuse.
-    {
-        "scenario": "blank-with-dissent",
-        "act_key": "a1",
-        "chair": "attestator_1",
-        "raw_response": chandra_raw_response_for_act("", "a1"),
-    },
-    {"scenario": "blank-with-dissent", "act_key": "a1", "chair": "attestator_2"},
-)
-
-# A recorded structure failure (there is no live structure model to fail). The
-# page and every act on it must be held visibly, never skipped.
-STRUCTURE_FAILURES = (
-    {
-        "scenario": "structure-failure",
-        "page_ordinal": 1,
-        "reason_code": "recorded-fixture-structure-failure",
-    },
-)
-
-WITNESS_FAILURES = (
-    {"scenario": "review", "act_key": "a2", "chair": "attestator_3", "attempt_ordinal": 1},
-    # Act-scoped, like `reread-success`.
-    {
-        "scenario": "reread-failure",
-        "act_key": "a1",
-        "chair": "attestator_2",
-        "attempt_ordinal": 2,
-    },
-)
-WITNESS_NOT_RUN = ({"scenario": "not-run-witness", "act_key": "a1", "chair": "attestator_3"},)
-WITNESS_MALFORMED = (
-    {
-        "scenario": "malformed-witness",
-        "act_key": "a1",
-        "chair": "attestator_3",
-        "reason": "fixture declares an invalid UTF-8 provider body",
-    },
-)
 _UNMATCHABLE_SHA256 = "0" * 64
-
-# A `truncated` reading still carries text and must be held, not established.
-# A `no-readable-text` reading is unresolved, not failed, and its text is forced
-# empty so no act text sits under a declared silence.
-READING_FAILURES = (
-    {"scenario": "truncated-reading", "act_key": "a1", "outcome": "truncated"},
-    {"scenario": "no-readable-text-reading", "act_key": "a1", "outcome": "no-readable-text"},
-    # The same silence beside a declared doubt, which cannot anchor to empty text:
-    # the report must become `malformed` and the act held.
-    {"scenario": "reader-doubt-unreadable", "act_key": "a1", "outcome": "no-readable-text"},
-)
-
-# Stand-in for a serving engine's stop reason, which the offline skeleton lacks.
-# The Perlector must derive `truncated` from it alone. A row with `pass_kind`
-# applies to that pass only, so a cut re-proof of a completed Pass B reading can be
-# declared; a row without it covers every pass.
-STOP_REASONS = (
-    {"scenario": "engine-truncated-reading", "act_key": "a1", "stop_reason": "length"},
-    {
-        "scenario": "audit-reproof-cutoff",
-        "act_key": "a1",
-        "stop_reason": "length",
-        "pass_kind": "audit-reproof",
-    },
-)
 
 
 def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=False, kind="act"):
@@ -450,16 +127,15 @@ def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=Fa
     }
 
 
-# What the fake Perlector answers when it reads a page whole (`reading_unit =
-# "page"`). The ids are the page feed's: A is attestator_1 (Chandra, one boxed
-# unit per declared act on page 1, one unboxed unit of page text on page 2), B
+# What the fake Perlector answers when it reads a page whole. The ids are the
+# page feed's: A is attestator_1 (Chandra, one boxed unit per declared act on
+# page 1, one unboxed unit of page text on page 2), B
 # is attestator_2 (DAI, one boxed unit per detector record), C is attestator_3
 # (Churro, one unit per line, no boxes), L are Surya's lines.
 # `happy` places every entry: page 1's by Chandra's boxes, page 2's by the
 # Surya lines over a2's continuation. `page-review` reads page 1 the same way
 # but cites no boxed id on page 2, so that entry is unplaced, DAI's record there
-# goes unread, and the page accounting holds it (rules b, c, d, f, g and i), as
-# `review` holds a2 in act mode.
+# goes unread, and the page accounting holds it (rules b, c, d, f, g and i).
 # `page-no-act` reads page 1 as `happy` and page 2's one entry, placed as in
 # `happy`, as `other`: a page the reading says holds no act, and on which the
 # record detector finds nothing below its cap, so DAI saw nothing there. `page-other`
@@ -647,10 +323,11 @@ def _unbroken(pages: dict[int, Any] | None = None) -> dict[int, Any]:
     }
 
 
-# Page-read scenarios whose reader answered one or both pages otherwise than a
-# base scenario's reader did; every other row they read is the base's. Each
-# maps its name to the base and, per page, what the answer becomes: a new
-# answer from the base's, or reply text that is not an answer at all.
+# Scenarios whose reader answers as a base scenario's reader did, except on the
+# pages named. Each maps its name to the base and, per page, what the answer
+# becomes: a new answer from the base's, or reply text that is not an answer at
+# all. The witness scenarios read `happy`'s answers, citing no Churro unit on a
+# page where Churro returned none.
 # `page-unread`: page 2's reply is not JSON, so the page is read as nothing
 # while page 1's last act still says it runs on. `page-blank`: page 2 read as
 # blank paper, every id on it set aside, with no act running onto it.
@@ -660,6 +337,17 @@ def _unbroken(pages: dict[int, Any] | None = None) -> dict[int, Any]:
 # break. `page-flags-disagree`: page 1's last act says it runs on and page 2's
 # first says it does not. `page-runs-past-end`: nothing runs across the break,
 # but page 2's act says it runs on past the run's last page.
+def _citing_no_churro_unit(answer: dict) -> dict:
+    """`answer` with every Churro (`C`) id dropped from its citations."""
+    return {
+        **answer,
+        "acts": [
+            {**entry, "cites": [cite for cite in entry["cites"] if not cite.startswith("C")]}
+            for entry in answer["acts"]
+        ],
+    }
+
+
 PAGE_ANSWER_VARIANTS = {
     "page-unread": ("happy", {2: "the reply is not JSON"}),
     "page-blank": (
@@ -699,6 +387,17 @@ PAGE_ANSWER_VARIANTS = {
             }
         ),
     ),
+    "witness-capabilities": ("happy", {}),
+    "churro-native": ("happy", {2: _citing_no_churro_unit}),
+    "churro-truncation": ("happy", {}),
+    "refused-page": ("happy", {}),
+    "refused-first-page": ("happy", {}),
+    "genuinely-empty-witness": ("happy", {1: _citing_no_churro_unit}),
+    "not-run-witness": ("happy", {1: _citing_no_churro_unit}),
+    "malformed-witness": ("happy", {1: _citing_no_churro_unit}),
+    "malformed-capabilities": ("happy", {1: _citing_no_churro_unit}),
+    "ink-free-page": ("happy", {}),
+    "ink-free-page-unwitnessed": ("happy", {}),
 }
 
 
@@ -756,6 +455,10 @@ PAGE_ANSWERS += tuple(
     for variant, (base, pages) in PAGE_ANSWER_VARIANTS.items()
     for row in PAGE_ANSWERS
     if row["scenario"] == base
+) + tuple(
+    # The ink-free page is read as blank paper: nothing on it to cite.
+    {"scenario": scenario, "page_ordinal": 3, "answer": {"acts": [], "set_aside": []}}
+    for scenario in ("ink-free-page", "ink-free-page-unwitnessed")
 )
 
 
@@ -843,30 +546,22 @@ def _churro_native_page_text(page_ordinal: int, chair: str) -> str:
     return f"{_CHURRO_NATIVE_HEADER}\n{_joined_page_text(page_ordinal, chair)}"
 
 
+# The whole-page chairs: Chandra and Churro answer each page in one response;
+# DAI (attestator_2) answers record by record (DAI_RECORD_RESPONSES).
+CHANDRA_CHAIR = "attestator_1"
+CHURRO_CHAIR = "attestator_3"
+
+# Churro's answer to every page, in its own grammar; a scenario row replaces it.
 # Only attestator_3's boundary is churro.v1; declared-response validation refuses a
 # Churro response attributed to another chair.
-_CHURRO_PAGE_CHAIRS = ("attestator_3",)
-# `page-review` and `page-no-act` carry the same pages as `happy`, so a
-# page-read run of either shows Churro in its own units on every page, as
-# `happy` does.
-_NATIVE_CHURRO_SCENARIOS = (
-    "happy",
-    "page-review",
-    "page-no-act",
-    "page-other",
-    *PAGE_ANSWER_VARIANTS,
-)
 CHURRO_PAGE_RESPONSES = tuple(
     {
-        "scenario": scenario,
         "page_ordinal": page_ordinal,
-        "chair": chair,
-        "raw_xml": churro_xml(_joined_page_text(page_ordinal, chair)),
+        "chair": CHURRO_CHAIR,
+        "raw_xml": churro_xml(_joined_page_text(page_ordinal, CHURRO_CHAIR)),
         "transport_stop_reason": "eos",
     }
-    for scenario in _NATIVE_CHURRO_SCENARIOS
     for page_ordinal in sorted(_PAGE_ACTS)
-    for chair in _CHURRO_PAGE_CHAIRS
 ) + (
     {
         "scenario": "churro-native",
@@ -901,6 +596,140 @@ CHURRO_PAGE_RESPONSES = tuple(
         "raw_xml": churro_xml(_churro_native_page_text(2, "attestator_3")),
         "transport_stop_reason": "length",
     },
+)
+
+
+def chandra_page_testimony(page_ordinal: int) -> dict[str, Any]:
+    """Chandra's declared answer to one page: its acts' text, one placeholder per act.
+
+    Each act whose proposal lies on the page is one JSON placeholder binding its
+    text to native geometry over the act, which the page feed shows as one
+    boxed unit; a page holding only a continuation carries the text alone.
+    """
+    row: dict[str, Any] = {
+        "page_ordinal": page_ordinal,
+        "chair": CHANDRA_CHAIR,
+        "payload": _joined_page_text(page_ordinal, CHANDRA_CHAIR),
+    }
+    placed = [
+        act["key"]
+        for act in ACTS
+        if act["key"] in _PAGE_ACTS[page_ordinal] and act["page_ordinal"] == page_ordinal
+    ]
+    if placed:
+        # Float boxes stay raw; only the Chandra adapter quantizes them.
+        row["raw_responses"] = [
+            chandra_raw_response_for_act(TESTIMONY[act_key][CHANDRA_CHAIR], act_key)
+            for act_key in placed
+        ]
+    return row
+
+
+# What a whole-page chair returned for one page, one row per page and chair; a
+# scenario row replaces the unscoped one. `witness-capabilities` exercises
+# `format_capabilities`: a witness that cannot say "unsure" must not be read as
+# confident, so Chandra cannot express uncertainty yet claims high confidence.
+# `malformed-capabilities` declares a capability record that is not an object.
+PAGE_TESTIMONY = tuple(
+    chandra_page_testimony(page_ordinal) for page_ordinal in sorted(_PAGE_ACTS)
+) + (
+    {
+        "scenario": "witness-capabilities",
+        **chandra_page_testimony(1),
+        "witness_reported": {"confidence": "high"},
+        "format_capabilities": {"can_express_uncertainty": False, "can_express_layout": False},
+    },
+    {
+        "scenario": "malformed-capabilities",
+        "page_ordinal": 1,
+        "chair": CHURRO_CHAIR,
+        "payload": _joined_page_text(1, CHURRO_CHAIR),
+        "format_capabilities": "provider supplied a non-object capability declaration",
+    },
+)
+
+# Each row declares one empty provider response, not an outcome; the Attestatores
+# derives `genuinely-empty` from it, and no other path reaches that outcome. The
+# ink-free page is declared per chair, so no chair is recorded as reading a page
+# it was never asked about; `ink-free-page-unwitnessed` is the same page without
+# these rows.
+WITNESS_EMPTY = (
+    {"scenario": "genuinely-empty-witness", "page_ordinal": 1, "chair": CHURRO_CHAIR},
+    {"scenario": "ink-free-page", "page_ordinal": 3, "chair": CHANDRA_CHAIR},
+    {"scenario": "ink-free-page", "page_ordinal": 3, "chair": CHURRO_CHAIR},
+)
+WITNESS_NOT_RUN = ({"scenario": "not-run-witness", "page_ordinal": 1, "chair": CHURRO_CHAIR},)
+WITNESS_MALFORMED = (
+    {
+        "scenario": "malformed-witness",
+        "page_ordinal": 1,
+        "chair": CHURRO_CHAIR,
+        "reason": "fixture declares an invalid UTF-8 provider body",
+    },
+)
+
+# Every scenario and what it departs from `happy` in; each reads `happy`'s rows
+# except where a table above names it.
+SCENARIOS = (
+    ("happy", None),
+    (
+        "witness-capabilities",
+        "Chandra reports its own confidence and format capabilities on page 1; both "
+        "are retained as testimony and grade nothing.",
+    ),
+    (
+        "page-review",
+        "Its page 2 answer cites no boxed id, so the page accounting holds that entry.",
+    ),
+    (
+        "page-no-act",
+        "Its page 2 answer names one `other` entry and no act, on a page the record "
+        "detector finds nothing on.",
+    ),
+    (
+        "page-other",
+        "Its page 1 answer reads a1 as `other`, over which the record detector finds no record.",
+    ),
+    *(
+        (variant, f"{base}, answered otherwise (PAGE_ANSWER_VARIANTS).")
+        for variant, (base, _pages) in PAGE_ANSWER_VARIANTS.items()
+        if variant.startswith("page-") or variant in _REASK_FIRST_READINGS
+    ),
+    (
+        "churro-native",
+        "Two real-format Churro page responses: one that parses, and one the provider "
+        "cut mid-element, retained unparseable.",
+    ),
+    (
+        "churro-truncation",
+        "A visibly cut, still-parseable Churro response: the transport said `length`, "
+        "the text is kept, truncated is true, and nothing completes or re-asks it.",
+    ),
+    ("refused-page", "The Door refuses page 2: no witness and no reader is shown it."),
+    ("refused-first-page", "The Door refuses page 1, the page both acts start on."),
+    (
+        "genuinely-empty-witness",
+        "Churro returns an empty body for page 1: a completed empty reading, never a "
+        "missing or failed attempt.",
+    ),
+    (
+        "ink-free-page",
+        "A third, scenario-only page of uniform paper with no declared act; every chair "
+        "reads it and returns nothing.",
+    ),
+    (
+        "ink-free-page-unwitnessed",
+        "The same page with no response declared for it: Chandra and Churro end `not-run`.",
+    ),
+    ("not-run-witness", "Churro is never asked about page 1."),
+    (
+        "malformed-witness",
+        "Churro's page 1 body could not be retained: a failed attempt that holds no other witness.",
+    ),
+    (
+        "malformed-capabilities",
+        "Churro's page 1 response declares a capability record that is not an object.",
+    ),
 )
 
 
@@ -1147,65 +976,6 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         if scenarios := page.get("scenarios"):
             lines.append("scenarios = [" + ", ".join(toml_string(item) for item in scenarios) + "]")
 
-    for act in ACTS:
-        source = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])
-        bounds = source["bounds"]
-        lines += [
-            "",
-            "[[act]]",
-            f"key = {toml_string(act['key'])}",
-            f"page_ordinal = {act['page_ordinal']}",
-            f"proposal_ordinal = {act['proposal_ordinal']}",
-            f"x = {bounds['x']}",
-            f"y = {bounds['y']}",
-            f"w = {bounds['w']}",
-            f"h = {bounds['h']}",
-            f"text = {toml_string(act['text'])}",
-        ]
-
-    for anchor in CHANDRA_ANCHORS:
-        # Each act text must occur exactly once in the stripped view, or the
-        # anchor search is ambiguous; failing here beats failing stages later.
-        stripped_view = markup_text_view(anchor["html"])["text"]
-        previous_end = -1
-        for act_key in anchor["lines"]:
-            act_text = next(row for row in ACTS if row["key"] == act_key)["text"]
-            if stripped_view.count(act_text) != 1:
-                raise ValueError(
-                    f"the chandra_anchor page view does not carry act {act_key!r} exactly "
-                    "once; the in-order anchor-line search cannot resolve it unambiguously"
-                )
-            start = stripped_view.find(act_text)
-            # Strict separation, not just order: the witness page view keeps a
-            # separator between acts, so adjacent texts would shift later offsets.
-            if start <= previous_end:
-                raise ValueError(
-                    f"the chandra_anchor page view does not separate act {act_key!r} from "
-                    "the act before it; the separator between the act texts was changed"
-                )
-            previous_end = start + len(act_text)
-        lines += [
-            "",
-            "[[chandra_anchor]]",
-            f"page_ordinal = {anchor['page_ordinal']}",
-            f"html = {toml_string(anchor['html'])}",
-        ]
-        anchor_lines = []
-        for act_key in anchor["lines"]:
-            act = next(row for row in ACTS if row["key"] == act_key)
-            bounds = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])["bounds"]
-            anchor_lines.append(
-                {
-                    "act_key": act_key,
-                    "text": act["text"],
-                    "x": bounds["x"],
-                    "y": bounds["y"],
-                    "w": bounds["w"],
-                    "h": bounds["h"],
-                }
-            )
-        lines.append("lines = " + toml_value(anchor_lines))
-
     for observation in NATIVE_OBSERVATIONS:
         lines += ["", "[[native_observation]]"]
         for key in ("scenario", "chair", "page_ordinal", "x", "y", "w", "h"):
@@ -1222,170 +992,27 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         lines += ["", "[[surya_block]]"]
         lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
 
-    for prior in PRIOR_READINGS:
+    for row in PAGE_TESTIMONY:
+        lines += ["", "[[testimony]]"]
         lines += [
-            "",
-            "[[prior_reading]]",
-            f"scenario = {toml_string(prior['scenario'])}",
-            f"act_key = {toml_string(prior['act_key'])}",
-            f"text = {toml_string(prior['text'])}",
-        ]
-
-    for reproof in AUDIT_REPROOFS:
-        lines += [
-            "",
-            "[[audit_reproof]]",
-            f"scenario = {toml_string(reproof['scenario'])}",
-            f"act_key = {toml_string(reproof['act_key'])}",
-            f"text = {toml_string(reproof['text'])}",
-        ]
-    for row in READER_ASSESSMENTS:
-        lines += [
-            "",
-            "[[reader_assessment]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"act_key = {toml_string(row['act_key'])}",
-            f"state = {toml_string(row['state'])}",
-            f"problem = {toml_string(row['problem'])}",
-        ]
-        if "pass_kind" in row:
-            lines.append(f"pass_kind = {toml_string(row['pass_kind'])}")
-    for row in READER_DOUBTS:
-        # Hand-computed spans drift silently when the source text changes; the
-        # malformed row is checked to stay out of bounds instead.
-        source_text = (
-            next(
-                reproof["text"]
-                for reproof in AUDIT_REPROOFS
-                if reproof["scenario"] == row["scenario"] and reproof["act_key"] == row["act_key"]
+            f"{key} = {toml_value(row[key])}"
+            for key in (
+                "scenario",
+                "page_ordinal",
+                "chair",
+                "payload",
+                "raw_responses",
+                "witness_reported",
+                "format_capabilities",
             )
-            if row.get("pass_kind") == "audit-reproof"
-            else next(act["text"] for act in ACTS if act["key"] == row["act_key"])
-        )
-        if row["scenario"] == "reader-doubt-malformed":
-            if row["end"] <= len(source_text):
-                raise ValueError(
-                    f"reader_doubt {row['scenario']!r} is declared malformed (out of bounds) "
-                    f"but its end {row['end']} is within the {len(source_text)}-character "
-                    "source text; it would no longer exercise the out-of-bounds refusal it "
-                    "exists to test"
-                )
-        else:
-            expected = row["text"]
-            if source_text.count(expected) != 1:
-                raise ValueError(
-                    f"reader_doubt {row['scenario']!r}/{row.get('pass_kind')!r} declares text "
-                    f"{expected!r}, which does not occur exactly once in its "
-                    f"{len(source_text)}-character source text; the span cannot be checked "
-                    "unambiguously"
-                )
-            if source_text[row["start"] : row["end"]] != expected:
-                raise ValueError(
-                    f"reader_doubt {row['scenario']!r}/{row.get('pass_kind')!r} span "
-                    f"[{row['start']}:{row['end']}] is {source_text[row['start'] : row['end']]!r}, "
-                    f"not the declared {expected!r}; the source text changed without updating "
-                    "the offsets"
-                )
-        alternatives = ", ".join(toml_string(value) for value in row["alternatives"])
-        lines += [
-            "",
-            "[[reader_doubt]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"act_key = {toml_string(row['act_key'])}",
-            f"start = {row['start']}",
-            f"end = {row['end']}",
-            f"alternatives = [{alternatives}]",
-            f"confidence = {toml_string(row['confidence'])}",
+            if key in row
         ]
-        if "pass_kind" in row:
-            lines.append(f"pass_kind = {toml_string(row['pass_kind'])}")
-    for row in READER_GAPS:
-        source_text = next(act["text"] for act in ACTS if act["key"] == row["act_key"])
-        # Slicing clamps large offsets and counts negative ones from the end,
-        # so the prefix check below cannot catch an out-of-range offset.
-        if not 0 <= row["offset"] <= len(source_text):
-            raise ValueError(
-                f"reader_gap {row['scenario']!r} offset {row['offset']} is outside its "
-                f"{len(source_text)}-character source text; the source text changed "
-                "without updating the offset"
-            )
-        if source_text[: row["offset"]] != row["before"]:
-            raise ValueError(
-                f"reader_gap {row['scenario']!r} offset {row['offset']} follows "
-                f"{source_text[: row['offset']]!r}, not the declared {row['before']!r}; the "
-                "source text changed without updating the offset"
-            )
-        lines += [
-            "",
-            "[[reader_gap]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"act_key = {toml_string(row['act_key'])}",
-            f"position = {toml_string(row['position'])}",
-            f"offset = {row['offset']}",
-        ]
-
-    # a2 continues across the page break: a region of the same act, not a new act.
-    continuation_source = act_descriptor(2, 1)
-    lines += [
-        "",
-        "[[continuation]]",
-        'act_key = "a2"',
-        "page_ordinal = 2",
-        f"x = {continuation_source['bounds']['x']}",
-        f"y = {continuation_source['bounds']['y']}",
-        f"w = {continuation_source['bounds']['w']}",
-        f"h = {continuation_source['bounds']['h']}",
-    ]
-
-    for act_key, bounds in RECOVERY_BOUNDS.items():
-        lines += [
-            "",
-            "[[recovery]]",
-            f"act_key = {toml_string(act_key)}",
-            f"x = {bounds['x']}",
-            f"y = {bounds['y']}",
-            f"w = {bounds['w']}",
-            f"h = {bounds['h']}",
-        ]
-
-    for act_key, chairs in TESTIMONY.items():
-        for chair, payload in chairs.items():
-            lines += [
-                "",
-                "[[testimony]]",
-                f"act_key = {toml_string(act_key)}",
-                f"chair = {toml_string(chair)}",
-                f"payload = {toml_value(payload)}",
-            ]
-            if chair == "attestator_1":
-                # Float boxes stay raw; only the Chandra adapter quantizes them.
-                lines.append(
-                    "raw_response = " + toml_string(chandra_raw_response_for_act(payload, act_key))
-                )
-
-    for row in SCENARIO_TESTIMONY:
-        lines += [
-            "",
-            "[[testimony]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"act_key = {toml_string(row['act_key'])}",
-            f"chair = {toml_string(row['chair'])}",
-            f"payload = {toml_value(row['payload'])}",
-        ]
-        if "witness_reported" in row:
-            lines.append(f"witness_reported = {toml_value(row['witness_reported'])}")
-        if "format_capabilities" in row:
-            lines.append(f"format_capabilities = {toml_value(row['format_capabilities'])}")
-        if "raw_response" in row:
-            lines.append(f"raw_response = {toml_string(row['raw_response'])}")
-        if "attempt_ordinal" in row:
-            lines.append(f"attempt_ordinal = {row['attempt_ordinal']}")
 
     for row in CHURRO_PAGE_RESPONSES:
         lines += [
             "",
             "[[churro_page_response]]",
-            f"scenario = {toml_string(row['scenario'])}",
+            *([f"scenario = {toml_string(row['scenario'])}"] if "scenario" in row else []),
             f"page_ordinal = {row['page_ordinal']}",
             f"chair = {toml_string(row['chair'])}",
             f"raw_xml = {toml_string(row['raw_xml'])}",
@@ -1413,306 +1040,15 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"text = {toml_string(row['text'])}",
         ]
 
+    for name, departure in SCENARIOS:
+        lines += [""]
+        if departure is not None:
+            lines += [f"# {name}: {departure}"]
+        lines += ["[[scenario]]", f"name = {toml_string(name)}"]
     lines += [
         "",
-        "# The happy scenario establishes both acts. The review scenario recovers act",
-        "# a1 once -- act identity stable, region and attempt identities changing -- and",
-        "# holds act a2, which therefore reaches no Archetypus at all.",
-        "#",
-        "# The refused-page scenario loses page 2 at the door, so act a2's declared",
-        "# continuation cannot be cut and the act is held rather than delivered on half",
-        "# its ink. The refused-first-page scenario loses page 1, the page both acts",
-        "# live on: neither act can be marked out at all, and both must still end in",
-        "# exactly one terminal category with the page loss named in the aggregate.",
-        "",
-        "[[scenario]]",
-        'name = "happy"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "witness-capabilities"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "review"',
-        'recover_acts = ["a1"]',
-        'hold_acts = ["a2"]',
-        "",
-        "# page-review is the review scenario of a page-read run (reading_unit =",
-        '# "page"): its page 2 answer cites no boxed id, so the page accounting holds',
-        "# that entry. Read act by act it declares neither a recovery nor a hold.",
-        "[[scenario]]",
-        'name = "page-review"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# page-no-act is a page-read run whose page 2 answer names one `other`",
-        "# entry and no act, on a page the record detector finds nothing on. Read act",
-        "# by act it declares neither a recovery nor a hold.",
-        "[[scenario]]",
-        'name = "page-no-act"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# page-other is a page-read run whose page 1 answer reads a1 as `other`, over",
-        "# which the record detector finds no record. Read act by act it declares",
-        "# neither a recovery nor a hold.",
-        "[[scenario]]",
-        'name = "page-other"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# Each page-read scenario below is its base scenario with the reader answering",
-        "# one or both pages otherwise (proof/build_fixture.py, PAGE_ANSWER_VARIANTS).",
-        "# Read act by act it declares neither a recovery nor a hold.",
-        *(
-            line
-            for variant, (base, _pages) in PAGE_ANSWER_VARIANTS.items()
-            for line in (
-                f"# {variant}: {base}, answered otherwise.",
-                "[[scenario]]",
-                f"name = {toml_string(variant)}",
-                "recover_acts = []",
-                "hold_acts = []",
-                "",
-            )
-        ),
-        "[[scenario]]",
-        'name = "continuation-recovery"',
-        'recover_acts = ["a2"]',
-        "hold_acts = []",
-        "",
-        "# coverage-recovery declares neither a recovery nor a hold. Its only",
-        "# departure from `happy` is one page witness's native observation of ink",
-        "# outside every sealed proposal, so any recovery request or hold this",
-        "# scenario produces has exactly one possible origin.",
-        "[[scenario]]",
-        'name = "coverage-recovery"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# churro-native declares neither a recovery nor a hold either. What it",
-        "# declares is two real-format Churro page responses -- one that parses",
-        "# and one the provider cut mid-element, retained unparseable -- so the",
-        "# full-page capture boundary runs through the stage program rather than",
-        "# through unit tests alone. The visibly cut but still parseable response",
-        "# is churro-truncation's, below.",
-        "[[scenario]]",
-        'name = "churro-native"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# churro-truncation isolates the visibly cut, still-parseable response:",
-        "# the transport said `length`, the text is kept, truncated is true, and",
-        "# nothing completes or re-asks it.",
-        "[[scenario]]",
-        'name = "churro-truncation"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "audit-change"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# reader-doubt and reader-doubt-malformed declare neither a recovery nor a",
-        "# hold; their only departure from `happy` is the reader's declared doubt",
-        "# report (READER_ASSESSMENTS / READER_DOUBTS / READER_GAPS). The hold the",
-        "# malformed scenario produces has exactly one origin: a report the",
-        "# annotation schema could not anchor to the text.",
-        "[[scenario]]",
-        'name = "reader-doubt"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "reader-doubt-malformed"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# reader-doubt-unreadable is a declared doubt colliding with an emptied",
-        "# reading: the outcome says nothing was readable, and the doubt names",
-        "# characters the published empty text does not have. It must end as a",
-        "# visible `malformed` assessment and a hold, never as an `assessed`",
-        "# state beside layers that were quietly emptied. It declares no recovery",
-        "# and no hold of its own, so the hold it produces has exactly one origin.",
-        "[[scenario]]",
-        'name = "reader-doubt-unreadable"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# audit-reproof-cutoff declares neither a recovery nor a hold, and no",
-        "# reading failure: a1's Pass-B reading completes, and the only declared",
-        "# departure from `happy` is the `length` stop word on its Pass-C re-proof",
-        "# (STOP_REASONS). Any hold this scenario produces has exactly one origin,",
-        "# the re-examination that did not finish.",
-        "[[scenario]]",
-        'name = "audit-reproof-cutoff"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "refused-page"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "refused-first-page"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "truncated-reading"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "genuinely-empty-witness"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "confirmed-blank"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "blank-with-dissent"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# engine-truncated-reading exercises the truncation detector's own",
-        "# authority over a declared engine stop-reason, rather than a directly",
-        "# declared reading_failure outcome (see STOP_REASONS below).",
-        "",
-        "[[scenario]]",
-        'name = "engine-truncated-reading"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# no-readable-text-reading exercises the sibling hazard to a truncated",
-        "# reading: an act the Perlector could not read at all, rather than one",
-        "# it read part of.",
-        "",
-        "[[scenario]]",
-        'name = "no-readable-text-reading"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "structure-failure"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# A third, scenario-only page is uniform paper with no declared act.",
-        "# The Designator must tile it, and the witnesses and Perlector must",
-        "# actually read those tiles rather than crashing on its minted act key.",
-        "",
-        "[[scenario]]",
-        'name = "ink-free-page"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# The same ink-free page with no witness response declared for the",
-        "# minted fallback act. Every configured chair must therefore end",
-        "# `not-run` -- no receipt, no regions, no reading -- and the act must",
-        "# hold rather than be sealed a proved blank on testimony nobody gave.",
-        "",
-        "[[scenario]]",
-        'name = "ink-free-page-unwitnessed"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "reread-failure"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "reread-success"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "not-run-witness"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "malformed-witness"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "structured-witness"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "[[scenario]]",
-        'name = "malformed-capabilities"',
-        "recover_acts = []",
-        "hold_acts = []",
-        "",
-        "# A reading that did not succeed. `truncated` is a failed-class Perlector",
-        "# outcome that still carries text, which is the combination that matters: the",
-        "# Recensor used to ask only whether a reading existed, and the Archetypus",
-        "# copied the text out of whichever reading was latest. Stale text from a",
-        "# reading nobody completed could therefore be established as the one text.",
-        "# This scenario drives that exact path, and asserts the act is held instead.",
-        "# no-readable-text-reading drives the sibling hazard: an unresolved, not",
-        "# failed, outcome for an act nothing could be read from at all.",
-        "",
-    ]
-    for failure in READING_FAILURES:
-        lines += [
-            "[[reading_failure]]",
-            f"scenario = {toml_string(failure['scenario'])}",
-            f"act_key = {toml_string(failure['act_key'])}",
-            f"outcome = {toml_string(failure['outcome'])}",
-            "",
-        ]
-    lines += [
-        "# The one declared, fixture-only truncation signal: a stand-in for a real",
-        "# serving engine's own stop-reason, read by",
-        "# `common/truncation.py` and authoritative for `truncated`",
-        "# when it declares `length` -- named explicitly as a fixture stand-in",
-        "# rather than a computed signal.",
-        "",
-        "# The Perlector's own direct finding of no readable text. Under",
-        "# `confirmed-blank` every configured chair also independently reports",
-        "# `genuinely-empty` (see WITNESS_EMPTY below), so the Recensor's blank",
-        "# corroboration has unanimous evidence and may seal `confirmed-blank`.",
-        "# Under `blank-with-dissent` only two of three chairs agree -- the third",
-        "# reads real text -- so the identical Perlector finding must instead be",
-        "# held for review: a single dissenting witness is exactly the",
-        "# disagreement that must never be silently resolved.",
-        "",
-        "[[reading_failure]]",
-        'scenario = "confirmed-blank"',
-        'act_key = "a1"',
-        'outcome = "no-readable-text"',
-        "",
-        "[[reading_failure]]",
-        'scenario = "blank-with-dissent"',
-        'act_key = "a1"',
-        'outcome = "no-readable-text"',
-        "",
-    ]
-    for row in STOP_REASONS:
-        lines += [
-            "[[stop_reason]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"act_key = {toml_string(row['act_key'])}",
-            f"stop_reason = {toml_string(row['stop_reason'])}",
-        ]
-        if "pass_kind" in row:
-            lines.append(f"pass_kind = {toml_string(row['pass_kind'])}")
-        lines.append("")
-    lines += [
-        "# The fake Perlector's answer to a whole-page reading, one per scenario and page,",
-        '# read only under reading_unit = "page". `answer` is the reply text exactly.',
+        "# The fake Perlector's answer to a whole-page reading, one per scenario and page.",
+        "# `answer` is the reply text exactly.",
         "",
     ]
     lines += _answer_rows("page_answer", PAGE_ANSWERS)
@@ -1742,72 +1078,21 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             ),
             "",
         ]
+    for table, rows in (
+        ("witness_empty", WITNESS_EMPTY),
+        ("witness_not_run", WITNESS_NOT_RUN),
+        ("witness_malformed", WITNESS_MALFORMED),
+    ):
+        for row in rows:
+            lines += ["", f"[[{table}]]"]
+            lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
+
     lines += [
-        "# One declared provider RESPONSE per row: an empty body from that chair on",
-        "# that act. The Attestatores derives `genuinely-empty` from the retained",
-        "# payload, so a completed empty Testimonium always means the chair was asked",
-        "# and returned nothing -- deliberately distinct from a missing or failed",
-        "# attempt, and no longer reachable without a row here. `page-fallback:3` is",
-        "# the minted act over the ink-free page; `ink-free-page-unwitnessed` is the",
-        "# same page with these three rows deliberately absent.",
         "",
         "# Per-scenario declared digests the checked-in bytes cannot match, so the",
         "# door refuses those pages through its real inspection path. The declared",
         "# digest is all zeros: unmistakably not the digest of anything here.",
     ]
-
-    for row in WITNESS_EMPTY:
-        lines += [
-            "",
-            "[[witness_empty]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"act_key = {toml_string(row['act_key'])}",
-            f"chair = {toml_string(row['chair'])}",
-        ]
-        if "raw_response" in row:
-            lines.append(f"raw_response = {toml_string(row['raw_response'])}")
-
-    for row in STRUCTURE_FAILURES:
-        lines += [
-            "",
-            "# A recorded structure-chair failure: the Designator holds the page and every",
-            "# act that needed it, with the reason named, rather than skipping either.",
-            "",
-            "[[structure_failure]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"page_ordinal = {row['page_ordinal']}",
-            f"reason_code = {toml_string(row['reason_code'])}",
-        ]
-
-    for row in WITNESS_FAILURES:
-        lines += [
-            "",
-            "[[witness_failure]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"act_key = {toml_string(row['act_key'])}",
-            f"chair = {toml_string(row['chair'])}",
-            f"attempt_ordinal = {row['attempt_ordinal']}",
-        ]
-
-    for row in WITNESS_NOT_RUN:
-        lines += [
-            "",
-            "[[witness_not_run]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"act_key = {toml_string(row['act_key'])}",
-            f"chair = {toml_string(row['chair'])}",
-        ]
-
-    for row in WITNESS_MALFORMED:
-        lines += [
-            "",
-            "[[witness_malformed]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"act_key = {toml_string(row['act_key'])}",
-            f"chair = {toml_string(row['chair'])}",
-            f"reason = {toml_string(row['reason'])}",
-        ]
-
     for refusal in PAGE_REFUSALS:
         lines += [
             "",
@@ -1830,11 +1115,6 @@ def main() -> int:
     (PROOF_ROOT / "skeleton_fixture.toml").write_text(
         build_skeleton_fixture(rendered), encoding="utf-8"
     )
-
-    # Fail here if a crop the pipeline will take is not derivable.
-    for act in ACTS:
-        source = act_descriptor(act["page_ordinal"], act["proposal_ordinal"])
-        crop_png(rendered[act["page_ordinal"]], source["bounds"])
 
     print(f"wrote {len(rendered)} pages, fixtures.toml and skeleton_fixture.toml for {FIXTURE_ID}")
     return 0

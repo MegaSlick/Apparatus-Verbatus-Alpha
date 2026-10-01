@@ -332,10 +332,10 @@ selection is the auto mode, which carries a held Recensor through to the Armariu
 - **A resume is checked against its seal before the bootstrap.** When the run already has
   a `run.json`, the protocol this launch hands the orchestrator (the named file, or the
   checkout's default) must have the `perlector-protocol` digest the run sealed, and on a
-  real run `--blind-read` and `--mechanics-qualification` must give the sealed
-  `run-policy` digest (recomputed under the orchestrator's defaults for the knobs pod_run
-  never forwards). A fixture run seals those two only inside its `config_digest`, so its
-  stages still catch that mismatch, after the bootstrap.
+  real run `--mechanics-qualification` must give the sealed `run-policy` digest
+  (recomputed under the orchestrator's defaults for the knobs pod_run never forwards). A
+  fixture run seals it only inside its `config_digest`, so its stages still catch that
+  mismatch, after the bootstrap.
 - **`--no-hold`** is for a run started by hand, outside the pod timer
   ([the hand route](#the-hand-route-a-proof-run-started-by-hand)). After the final report
   of any run past a green bootstrap, whatever its outcome, it returns instead of holding
@@ -379,8 +379,8 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
   stamped long before the deadline means the supervisor stopped while the child ran (an OOM
   kill or teardown).
 - `-timings.json` — append-only JSON lines, one entry per stage invocation (run id,
-  member, operation, act, start, finish, duration, exit code, commit). A torn final
-  line is skipped when read. It is outside the run tree because the tree is pinned
+  member, start, finish, duration, exit code, GPU use, Perlector concurrency, commit). A
+  torn final line is skipped when read. It is outside the run tree because the tree is pinned
   byte-identical across reruns and restores and a clock is not. `run.json` names only the
   commit that created the run; a resume at another commit shows here. (Binding the commit
   into the run authority would refuse every resume after a fix.)
