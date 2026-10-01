@@ -294,9 +294,9 @@ def run_with_bootstrap(
                 if exit_code == EXIT_HELD:
                     early_reason = "run held for review before hard deadline"
                     remediation = (
-                        "The run held for a person's review before its export (a held "
-                        "Attestatores or Recensor, or a held selection); the pod was closed "
-                        "to avoid idle spend."
+                        "The run held for review before its export (a held Attestatores or "
+                        "Recensor, or a held selection), which waits for a person; the pod was "
+                        "closed to avoid idle spend."
                     )
                 elif exit_code == EXIT_SELECTION_COMPLETE:
                     early_reason = "selected stages completed before hard deadline"
