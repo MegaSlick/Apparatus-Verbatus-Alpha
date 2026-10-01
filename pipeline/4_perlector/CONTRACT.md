@@ -58,8 +58,8 @@ clamped, as a `page_edge_overshoots` finding on the page Testimonium
 ## Page reading
 
 This stage reads every Exemplar
-page (`common.stage.exemplar_page_ids`), not only pages with a Designator act, once,
-and the Perlector establishes the acts on it.
+page (`common.stage.exemplar_page_ids`) once, and the Perlector establishes the acts
+on it.
 
 **Recorded, not run:** the sealed Pass-C audit policy (`config/perlector_audit.toml`,
 read by `audit.load`). Every `page-reading` carries
@@ -164,8 +164,12 @@ page render and the sealed page it names, each re-derived from the bytes on disk
   `not-run` (nothing asked; `problems` names every reason: `page-not-sealed` -- the
   Exemplar refused the page, and `feed_ref` is null since there is no feed --
   `chair-absent`, `no-witness-testimony`, `nothing-to-show`).
-- `disposition` is `read` only for `parsed` with no problem; outcome is `read` or
-  `held` accordingly. A parsed answer is read by `common/page_accounting.py`'s
+- `disposition` is `read` only for `parsed` with no problem. The record's outcome is
+  its disposition (`read` or `held`), except a `call-failed` reading, whose outcome is
+  `failed` (`page_path.reading_outcome`) so that `(perlector, failed)` in
+  `config/hard_failure.toml` counts it toward the run-level hard-failure cap; its
+  disposition stays `held` and the denominator counts the page as a `page-unread`
+  act. A parsed answer is read by `common/page_accounting.py`'s
   `validate_answer` against `feed_candidates`, the feed's ids placed by
   `placement_boxes` under the sealed `page-accounting` policy -- the one placement
   map, which the accounting measures against too. The answer grammar is
@@ -345,15 +349,8 @@ records and no `page-reading` is sent again only when no retained reply could be
 answer (`_unrecorded_replies`, `_answers_a_send`); otherwise the pass refuses by
 name. A fixture pass republishes identical bytes.
 
-`--act` is refused before anything is published: the Perlector names its own acts,
-so there is no Designator act to read alone.
-
-A later page-reading attempt (`page-read:2`, the re-ask Train 3 plans) is a new
-attempt of the same page, so every act it establishes gets new act ids: `act_id`
-binds the page-reading attempt, and the attempt has its own `page-accounting`, which
-its act records name. Attempt 1's accounting and act records stay sealed beside them.
-Whether a later attempt supersedes attempt 1 -- and how a consumer tells which
-attempt's acts are current -- is not decided here; the Train 3 design must state it.
+A second page-reading attempt is refused by the page-read denominator
+(`common/stage.py::_one`); nothing publishes one.
 
 ## Live reading
 

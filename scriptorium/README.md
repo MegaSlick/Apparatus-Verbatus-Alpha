@@ -7,7 +7,7 @@ runs happen.
 
 One directory per run. Inside it, one folder per stage, with the same seven names in
 the same order as `pipeline/`. Open a finished run and you are looking at the same
-flow chart — including every recovery loop record and receipt.
+flow chart, with every record and receipt.
 
 Stage N reads the previous folder's files and writes its own. This directory is where
 "stages talk through files on disk" physically lives.
