@@ -61,8 +61,9 @@ row is the census's and is never reviewed (`reviewed_rows`).
   bytes name a different stage or kind; that check is what makes a Testimonium or
   any other non-Perlectio artifact unable to reach this stage by being named. The
   reading is the row's `perlectio.v3`, which the review must name and input; it must
-  be `read` with no `holds` or `page_holds`, of the row's kind, and not salvage-tier
-  (`tier`, `source_tier` or `reading_tier` of `salvage` is refused). Its one region
+  be `read` with no `holds` or `page_holds`, of the row's kind, and hold exactly the
+  closed Perlectio field set (`page_path.PERLECTIO_FIELDS`), so a salvage tier or an
+  annotation layer is refused. Its one region
   is the `act-region` the reading names (and the row counted), proven from the
   Exemplar by `verify_reading_region_lineage`; the record's region is exactly what
   that returns (`region_id`, `image_path`, `image_sha256`, `verified_dimensions`,
