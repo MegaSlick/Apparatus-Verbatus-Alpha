@@ -38,7 +38,7 @@ any time to check on things and one that tidies up.
 | `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. You have to name the volume. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
 | `review` | Opens one run tree read-only, before or after export, and says which stages ran, what each act's latest reading and review say, which acts are held and why, the page and crop images behind them, and the one supported next action. `--json` prints the whole projection instead. | No. It holds no writer and no provider credential, and the operating system refuses it every write. |
-| `decide` | Appends the project lead's confirmed review decision about one held unit or page of a run: release it to export, exclude it, hold it with a finding, or ask for it to be read again. | No. It shows the review it binds to and makes you type a line back naming the decision, the subject, the run and that review's digest. The Recensor applies it when the run resumes. |
+| `decide` | Appends the project lead's confirmed review decision about one held unit or page of a run: release it to export, correct its text, exclude it, hold it with a finding, or ask for it to be read again. | No. It shows the review it binds to and makes you type a line back naming the decision, the subject, the run and that review's digest. The Recensor applies it when the run resumes. |
 | `advance` | Appends the project lead's confirmed decision to pass one exact sealed stage boundary. | No. It shows you the seal digest and makes you type a line back naming this run, this stage and that digest. The record is permanent and never retracted. |
 | `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded publication temporaries in the snapshot. |
 | `close` | Shuts the rented machine down. This build closes its fixture pod only. | A real close is what **stops** the pod cost. Always safe to run. |
@@ -120,6 +120,8 @@ pages one by one.
 ```sh
 .venv/bin/python -m operations.operator.cli decide <decision> --run-root <folder> \
   --run-id <run> (--unit <key> | --page <ordinal>) --reason "<why>" [--finding <finding>]
+.venv/bin/python -m operations.operator.cli decide edit --run-root <folder> --run-id <run> \
+  --unit <key> --text-file <file> [--note "<note>"] --reason "<why>"
 ```
 
 A unit decision names the unit by the key `review` shows (`p2:1`); a page decision names
@@ -134,15 +136,34 @@ item:
   cannot be released this way: `decide` refuses to record its release, and a release
   stored by any other means leaves it held under `review-reading-held`, with nothing
   reported as cleared.
+- **Correct it and send it to export.** `edit` a held unit with the corrected text, read
+  from `--text-file` exactly (UTF-8; one final line ending is not part of it), and an
+  optional `--note`. The confirmation line you type names the text's digest, so you
+  confirm the exact text stored. Your text is taken as the truth: once nothing else holds
+  the unit (its page's own holds still need `no-missed-act`), the Archetypus establishes
+  it as the reading, with no machine doubt layer, labelled "corrected by a person" with
+  who, when, why and your note. The model's reading stays in the run as read and goes to
+  export beside yours, labelled "model reading (original)", in every package. A
+  correction is delivered and counted like any accepted act and never by itself makes a
+  run partial. A reading with no readable text, or with doubt marks that could not be
+  read, can be corrected though it cannot be released; an unplaced reading cannot, since
+  no text gives it a region on its page. Two edits of one unit agree only when they name
+  the same text and note; otherwise the unit stays held as conflicting.
 - **Keep it out.** `exclude` a unit as not an act; the export lists it as
   `excluded-with-approval`, citing the decision.
 - **Keep it held.** `hold` a unit or page with a `--finding`, or `missed-act` on a page.
-- **Send it through the stage again.** `re-ask` a page (or a unit) asks for it to be read
-  again; `re-shoot` a page asks for a new image. The Recensor records the request in its
-  `review-decisions` record and keeps the subject held. This tool does not start the
-  re-read: the Perlector reads a page as its first reading and at most one re-ask, and
-  nothing decides which of two first readings of a page is current, so a re-read is a new
-  run of the submission, and the command says so.
+- **Send it through the stage again.** `re-ask` a page asks for it to be read again;
+  `re-shoot` a page asks for a new image. Resume the run from the Perlector
+  (`--from perlector --to armarium`): the Perlector reads the page again as its next
+  operator re-read (attempt 3, then 4, ...), bound to your decision. That reading becomes
+  the page's current one: the Recensor reviews it, the counts and the export use it, and
+  its acts are labelled "read on operator re-read". The page's earlier readings and their
+  records stay in the run tree as read, marked superseded by the re-read that names them.
+  A re-read is outside `config/recovery.toml`'s re-ask budget and is never re-asked by the
+  machine; record another `re-ask` to read it again. On a pod the re-read is paid GPU work
+  and runs through the same route (`pod_run --from perlector --to armarium`), which needs
+  the lead's permission like any pod start. A unit `re-ask` is recorded and holds the
+  unit; the Perlector reads whole pages, so re-ask its page to read it again.
 
 The command reads the review the decision binds to from the run tree: the Recensor's
 latest published review of the unit, or of every unit on the page. It refuses a unit or
@@ -151,11 +172,11 @@ Archetypus has established a reading or whose Armarium has published its export,
 decision recorded now could reach nothing. It writes one permanent record under the
 run's `receipts/sha256/`, prints what it recorded, and names the next step: resume the
 run from the Recensor (`--from recensor --to armarium`), which applies every decision
-stored.
+stored, or from the Perlector for a page `re-ask`.
 
-No decision corrects a reading's text. What is built: a reading goes to export as read,
-is kept out, or is kept held; a re-run request is recorded and holds its page or unit;
-and this tool does not start the re-read.
+What is built: a reading goes to export as read, corrected by a person beside the
+model's original, is kept out, is kept held, or is read again. Splitting and merging
+readings are not decisions: each is a `hold` finding and the unit stays held.
 
 ## `review` on a run that has not finished
 
@@ -368,8 +389,10 @@ counted as closed.
 Off unless you add `--notify`. Then it sends one line when a `run` or `export` finishes and
 one when a run is **held** for a decision, and nothing else. A run held on more than its
 sealed share of pages says in that line that it has a systemic problem, and so does the
-notice of a run or export a person's advance let past that hold. The terminal always says
-whether the message arrived.
+notice of a run or export a person's advance let past that hold. A run on the pod sends
+the same systemic line as a `decision` from `pod_run` (`operations/pod/notify_hooks.py`),
+read from the orchestrator's stop record. The terminal always says whether the message
+arrived.
 
 ## Where it keeps its own records
 

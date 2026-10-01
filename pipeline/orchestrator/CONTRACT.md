@@ -74,7 +74,10 @@ the Archetypus to refuse by name.
 
 The way on is a person's: record operator review decisions in the run, then resume it
 from the Recensor (`--from recensor --to armarium`), which applies them
-(`pipeline/5_recensor/CONTRACT.md`, "Operator review decisions"). The run continues
+(`pipeline/5_recensor/CONTRACT.md`, "Operator review decisions"), or, for a page
+`re-ask`, from the Perlector (`--from perlector --to armarium`), which reads the page
+again as an operator re-read (`pipeline/4_perlector/CONTRACT.md`, "An operator
+re-read") before the Recensor reviews it. The run continues
 past the Recensor once nothing is held, or once an `advance` record
 (`operations/operator/advance.py`) binds the Recensor's current seal
 (`common.stage.boundary_advanced`); the export then names every hold. A Recensor pass
@@ -105,7 +108,10 @@ is an explicit choice, and the run is not trapped. The alarm never goes silent:
   recomputes it (`pipeline/7_armarium/CONTRACT.md`);
 - `verbatus run` notifies the line as a `decision` through `operations/notify` when
   notifications are on, at the stop and on a held export, and `verbatus export` names it
-  in a partial export's notification.
+  in a partial export's notification;
+- the invocation's stop record (`--stop-record`, `orchestrator-stop.v1`) names the line
+  as `systemic` (null when none was printed), and `pod_run --notify` sends it from the
+  pod as the same `decision` (`operations/pod/notify_hooks.py::notify_systemic`).
 
 ## Mode is an invocation choice, never durable bytes
 

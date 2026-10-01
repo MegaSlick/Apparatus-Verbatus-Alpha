@@ -233,7 +233,8 @@ the whole Archetypus run down for every other act. Whether the comparison itself
 Unicode-normalize before checking substring containment (while continuing to *store* exact
 bytes either way) is a product decision, not made here.
 
-`text` and provenance are exact copies of the one reviewed Perlectio, and `regions` is
+`text` and provenance are exact copies of the one reviewed Perlectio (unless a person
+corrected it, below), and `regions` is
 exactly what `verify_reading_region_lineage` proves of the act-region it names;
 `dissent_ref` names that Perlectio artifact rather than making a second mutable dissent
 copy. **`dissent_ref` and `perlectio_ref` are the same value by design, not by
@@ -250,8 +251,28 @@ clean text without re-hashing the whole record. One trap for a second implemente
 quotes included — not the raw UTF-8 bytes. Computing "the sha256 of the text" the
 obvious way produces a mismatch against every record.
 
+**A person's correction.** When the unit's accepted review applies a current `edit`
+(`common/page_review.py::operator_correction`), `text` is the person's text, read from
+the stored approval itself (`common/correction.py::stored_edits`), `uncertainty` is the
+one fixed layer a correction carries (`lectio_kind: "person-corrected"`, no spans, no
+gaps, assessment `not-assessed` saying the person's text is taken as the truth), and
+`provenance` is the correction's, built by `correction_provenance`:
+
+```
+{label: "corrected by a person", note: str | null,
+ decisions: [{decision_hash, approver, timestamp, reason, approval_ref, run_id,
+              page_id, basis_digest}],
+ model_reading: {label: "model reading (original)", perlectio_ref, text_sha256,
+                 text_status, provenance}}
+```
+
+`model_reading` names the model's reading it corrects: its Perlectio, the digest of its
+text, its text status and its serving provenance. The edit's stored approval is a
+direct input. Nothing changes the model's output: the Perlectio stays in the run tree
+as read, and the Armarium shows its text beside the person's.
+
 There is no alternate text, no witness text field, and no branch that chooses among
-readings. `establish_from_accepted_page_reading` is the only public constructor: its
+readings beyond a person's correction. `establish_from_accepted_page_reading` is the only public constructor: its
 caller supplies a row and the sealed Recensor-review reference, never free-standing
 text or a reading payload. A later run cannot write a second different record under the
 same once-only identity.
