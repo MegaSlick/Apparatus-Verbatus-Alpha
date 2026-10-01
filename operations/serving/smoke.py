@@ -255,9 +255,7 @@ class NvidiaSmiUtilization:
                 return ()
             lines = [line.strip() for line in query.stdout.splitlines() if line.strip()]
             if not lines:
-                # Division below by `len(lines)` would otherwise raise
-                # `decimal.DivisionByZero`, which the `except` clause here
-                # does not catch.
+                # nvidia-smi listed no card: there is nothing to average.
                 return ()
             # Every visible card, not only the first: with more than one card
             # the process-wide figure reported is the mean of what each is

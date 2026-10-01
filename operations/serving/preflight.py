@@ -147,12 +147,12 @@ def assert_generation_config_key_coverage(
 
     Every key the vendor's own shipped file carries must be either sent
     verbatim on the wire (``sent_keys``) or named in ``deliberately_not_sent``
-    with the recorded reason it is withheld (Churro's paper-era ``0.6``
-    temperature is the one case on record).  A key in neither set is not a
-    decision anyone made -- it is a vendor value quietly falling on the floor,
-    the same shape as the JSON grammar this project no longer imposes on
-    Chandra.  A key claimed both sent and deliberately withheld is a
-    contradiction, refused the same way.
+    with the recorded reason it is withheld (DAI's ``bos_token_id`` and
+    ``pad_token_id``, which an OpenAI request has no field for, are named
+    there with their reasons).  A key in neither set is not a decision anyone
+    made -- it is a vendor value quietly falling on the floor.  A key claimed
+    both sent and deliberately withheld is a contradiction, refused the same
+    way.
     """
 
     vendor_keys = set(vendor_generation_config)
@@ -478,9 +478,7 @@ class ServingSmokeReader:
         vLLM's `--mm-processor-kwargs` -- comparing them directly always fails,
         so this checks the sound relation instead: an image whose longest edge
         is at most L has at most L*L pixels, which is conservative rather than
-        exact. `pixel_cap`'s name reads as a pixel-count cap and is not one,
-        which GLOSSARY.md's one-word-one-concept rule forbids; the fix belongs
-        with `config/pod_placement.toml`, not here.
+        exact.
         """
 
         recipe = placement.recipe

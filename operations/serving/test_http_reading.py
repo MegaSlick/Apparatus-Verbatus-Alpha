@@ -6,8 +6,8 @@ exercises the parser a live witness or reader needs — one that accepts an
 empty answer as legitimate evidence, carries the engine's stop reason and
 token usage verbatim, and never retries, normalizes, or defaults what the
 wire actually said.  This file is that coverage, plus
-``ServiceHandle.request_reading``, the one new wire primitive a reading needs
-beyond the existing readiness ``request``.
+``ServiceHandle.request_reading``, the wire primitive a reading needs beside
+the readiness ``request``.
 """
 
 from __future__ import annotations
@@ -42,17 +42,17 @@ def _response(payload: object, *, status: int = 200) -> HttpResponse:
     return HttpResponse(status, json.dumps(payload).encode("utf-8"))
 
 
-# --- parse_openai_answer: still a probe, now also records the engine's word ---
+# --- parse_openai_answer: a probe that also records the engine's word ---
 
 
-def test_parse_openai_answer_still_refuses_blank_content_for_the_probe() -> None:
+def test_parse_openai_answer_refuses_blank_content() -> None:
     response = _response({"model": "reader-api", "choices": [{"message": {"content": ""}}]})
 
     with pytest.raises(Exception, match="VLLM_PROBE_RESPONSE_INVALID"):
         parse_openai_answer(response, kind="chat-completions", expected_model_id="reader-api")
 
 
-def test_parse_openai_answer_now_records_finish_reasons_and_usage() -> None:
+def test_parse_openai_answer_records_finish_reasons_and_usage() -> None:
     response = _response(
         {
             "model": "reader-api",
@@ -297,8 +297,7 @@ def test_chat_image_bytes_all_accepts_no_images() -> None:
 
 
 def test_chat_image_bytes_all_finds_an_image_in_tuple_shaped_messages_and_content() -> None:
-    # Same defect class as assert_wire_part_order's tuple gap (F133 follow-up,
-    # item A): a tuple serializes onto the wire exactly like a list, and
+    # A tuple serializes onto the wire exactly like a list, and
     # `_all_image_url_candidates`'s own list-only walk would otherwise miss
     # it too, so `active_candidates` and `all_candidates` would undercount
     # equally and the mismatch this function exists to catch would never fire.
@@ -392,7 +391,7 @@ def test_request_reading_refuses_once_the_owned_process_has_exited(tmp_path) -> 
         handle.request_reading("chat-completions", b"{}", 5.0)
 
 
-# --- assert_wire_part_order: the request-wide walker request_body wires in (F133 follow-up) ---
+# --- assert_wire_part_order: the request-wide walker request_body wires in  ---
 
 
 @pytest.mark.parametrize(
@@ -446,8 +445,8 @@ def test_assert_wire_part_order_handles_each_content_shape(
 def test_assert_wire_part_order_catches_a_text_first_tuple_content_list() -> None:
     # A tuple serializes onto the wire as a JSON array exactly like a list, so
     # a direct caller of this walker (unlike `request_body`, which checks a
-    # `json.loads` decode -- always a plain list -- since F137) must not have
-    # that shape silently skip the check (F133 follow-up, F3).
+    # `json.loads` decode -- always a plain list) must not have that shape
+    # silently skip the check.
     payload = {
         "messages": (
             {
