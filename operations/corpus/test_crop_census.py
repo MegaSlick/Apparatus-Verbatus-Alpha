@@ -9,7 +9,13 @@ from PIL import Image
 
 from common import page_render
 from common.contracts.errors import SchemaRefusal
-from common.request_capacity import CHAT_IMAGE_TOKENS, CHAT_TURN_TOKENS, request_fits, smart_resize
+from common.request_capacity import (
+    CHAT_IMAGE_TOKENS,
+    CHAT_TURN_TOKENS,
+    RequestCapacityRefusal,
+    request_fits,
+    smart_resize,
+)
 from operations.corpus import crop_census
 from operations.corpus.crop_census import (
     admitted_crops,
@@ -22,6 +28,7 @@ from operations.corpus.crop_census import (
 )
 from operations.corpus.perlector_request_fit import (
     page_feed_for,
+    page_max_tokens,
     page_request,
     page_shape,
     perlector_row,
@@ -124,15 +131,36 @@ def test_k_is_the_most_crops_round_two_fits_and_one_more_does_not():
     row = perlector_row()
     capacity = page_request(row, feed)["capacity"]
     crop = crop_size((4000, 5500), 5000, 2500)
-    # Round two carries the round-one reply and two turns; then room for exactly two crops.
+    # Round two carries the longest round-one reply the engine allows (the page cap,
+    # since the context leaves more) and two turns; then room for exactly two crops.
     per_crop = request_fits(row, [crop], 0, 0)["need"] + CHAT_IMAGE_TOKENS
-    base = capacity["need"] + capacity["answer_budget"] + 2 * CHAT_TURN_TOKENS
+    base = capacity["need"] + page_max_tokens() + 2 * CHAT_TURN_TOKENS
     tight = replace(row, max_model_len=base + 2 * per_crop + per_crop - 1)
-    tight_capacity = page_request(tight, feed)["capacity"]
-    assert admitted_crops(tight, tight_capacity, crop, 8) == 2
-    assert admitted_crops(tight, tight_capacity, crop, 1) == 1
+    tight_request = page_request(tight, feed)
+    assert tight_request["max_tokens"] == page_max_tokens() > capacity["answer_budget"]
+    assert admitted_crops(tight, tight_request, crop, 8) == 2
+    assert admitted_crops(tight, tight_request, crop, 1) == 1
     roomy = replace(row, max_model_len=base + 3 * per_crop)
-    assert admitted_crops(roomy, page_request(roomy, feed)["capacity"], crop, 8) == 3
+    assert admitted_crops(roomy, page_request(roomy, feed), crop, 8) == 3
+
+
+def test_round_two_carries_the_round_one_max_tokens_not_the_estimated_reserve():
+    feed = page_feed_for(sealed_protocol(), page_shape(_page("big", 4000, 5500)), {})
+    row = perlector_row()
+    request = page_request(row, feed)
+    crop = crop_size((4000, 5500), 5000, 2500)
+    per_crop = request_fits(row, [crop], 0, 0)["need"] + CHAT_IMAGE_TOKENS
+    # Room for one crop after a reply carried at the reserve, none after one at max_tokens.
+    tight = replace(
+        row,
+        max_model_len=request["capacity"]["need"]
+        + request["capacity"]["answer_budget"]
+        + 2 * CHAT_TURN_TOKENS
+        + per_crop,
+    )
+    tight_request = page_request(tight, feed)
+    assert tight_request["max_tokens"] > tight_request["capacity"]["answer_budget"]
+    assert admitted_crops(tight, tight_request, crop, 8) == 0
 
 
 def test_a_page_whose_request_is_refused_is_counted_with_no_crops(monkeypatch):
@@ -141,7 +169,7 @@ def test_a_page_whose_request_is_refused_is_counted_with_no_crops(monkeypatch):
     report = census([_page("big", 4000, 5500)], OPTIONS, "0" * 64)
     (entry,) = report["pages"]
     assert entry["page_request"] == "refused" and entry["headroom"] < 0
-    assert entry["k"] == 0 and entry["qualifies"] is False
+    assert entry["k"] == 0 and entry["k_capped"] is False and entry["qualifies"] is False
     assert report["summary"]["page_request_refused"] == 1
     assert report["summary"]["k_histogram"][0] == {"k": 0, "pages": 1}
 
@@ -234,13 +262,57 @@ def test_a_manifest_line_the_census_cannot_count_is_refused(tmp_path, capsys, pa
     assert message in _refused(tmp_path, capsys, pages)
 
 
+def _record_with(**fields) -> dict:
+    page = _page("a", 900, 700, 1)
+    page["records"][0].update(fields)
+    return page
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        _record_with(bbox=[1, 2, 3]),
+        _record_with(bbox=[1, 2, 3, "4"]),
+        _record_with(bbox=[1, 2, 3, True]),
+        _record_with(text=None),
+        {**_page("a", 900, 700), "records": ["r0"]},
+    ],
+)
+def test_a_record_the_census_cannot_count_is_refused(tmp_path, capsys, page):
+    assert "four-integer bbox and a text" in _refused(tmp_path, capsys, [page])
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (b"{\n", "manifest line 1 is not JSON"),
+        (b"\n" + json.dumps(_page("a", 900, 700)).encode() + b"\n{\n", "line 3 is not JSON"),
+        (b"\xff\n", "not UTF-8"),
+    ],
+)
+def test_a_manifest_that_is_not_utf8_json_lines_is_refused(tmp_path, capsys, body, message):
+    manifest = tmp_path / "page_manifest.jsonl"
+    manifest.write_bytes(body)
+    assert main([str(manifest), "--out", str(tmp_path / "out.json")]) == 2
+    assert not (tmp_path / "out.json").exists()
+    assert message in capsys.readouterr().err
+
+
+def test_a_capacity_refusal_without_a_record_refuses_the_census(tmp_path, capsys, monkeypatch):
+    def refuse(_row, _feed):
+        raise RequestCapacityRefusal("no record")
+
+    monkeypatch.setattr(crop_census, "page_request", refuse)
+    assert "no record" in _refused(tmp_path, capsys, [_page("a", 4000, 5500)])
+
+
 def test_a_crop_the_processor_refuses_is_a_clean_refusal(tmp_path, capsys):
     assert "aspect ratio" in _refused(
         tmp_path, capsys, [_page("a", 4000, 5500)], "--crop-height", "0.0002"
     )
 
 
-def test_only_the_legible_page_render_is_counted(monkeypatch):
+def test_only_the_legible_page_render_is_counted():
     sealed = sealed_protocol()
     sealed = {**sealed, "feed": {**sealed["feed"], "page_image": "full"}}
     with pytest.raises(SchemaRefusal, match="legible"):
@@ -257,6 +329,16 @@ def test_k_never_takes_the_request_past_the_protocol_image_limit():
     sealed = {**sealed_protocol(), "max_images": 3}
     entry = census_page(perlector_row(), sealed, _page("big", 4000, 5500), OPTIONS)
     assert entry["k_cap"] == 2 and entry["k"] == 2 and entry["k_capped"] is True
+
+
+def test_a_page_request_that_uses_every_image_has_no_crops_and_no_cap_reached():
+    sealed = sealed_protocol()
+    feed = page_feed_for(sealed, page_shape(_page("big", 4000, 5500)), {})
+    used = len(page_request(perlector_row(), feed)["capacity"]["images"])
+    entry = census_page(
+        perlector_row(), {**sealed, "max_images": used}, _page("big", 4000, 5500), OPTIONS
+    )
+    assert entry["k_cap"] == 0 and entry["k"] == 0 and entry["k_capped"] is False
 
 
 def test_a_crop_gain_needs_both_sizes():

@@ -58,11 +58,12 @@ BASIS_POINTS: Final = 10_000
 QUANTILES_BP: Final = (0, 1000, 2500, 5000, 7500, 9000, 10000)
 ROUND_TWO_TURNS: Final = 2
 ROUND_TWO: Final = (
-    "the admitted page request, its answer reserve again as the round-one reply "
-    "carried in context, two more chat turns (the carried reply and the new request), "
-    "and k crops at their image tokens plus the chat template's tokens per image; "
-    "answered within the same reserve. k never takes the request past the protocol's "
-    "max_images. Wording that asks for the crops is not charged beyond the turns"
+    "the admitted page request, its max_tokens as the round-one reply carried in "
+    "context (the most the engine lets that reply run), two more chat turns (the "
+    "carried reply and the new request), and k crops at their image tokens plus the "
+    "chat template's tokens per image; answered within the page's answer reserve. k "
+    "never takes the request past the protocol's max_images. Wording that asks for the "
+    "crops is not charged beyond the turns"
 )
 ESTIMATE: Final = (
     "estimates only: gold text stands in for the witnesses, and round two has never "
@@ -130,11 +131,14 @@ def gain_bp(
     return math.isqrt(numerator * BASIS_POINTS**2 // denominator)
 
 
-def admitted_crops(row: Any, capacity: dict[str, Any], crop: tuple[int, int], cap: int) -> int:
-    """The most crops, up to `cap`, that round two (`ROUND_TWO`) fits."""
+def admitted_crops(row: Any, request: dict[str, Any], crop: tuple[int, int], cap: int) -> int:
+    """The most crops, up to `cap`, that round two (`ROUND_TWO`) fits, for any round-one
+    reply the admitted page `request` lets run."""
+    capacity = request["capacity"]
     images = [(image["width"], image["height"]) for image in capacity["images"]]
     reserve = capacity["answer_budget"]
-    carried = capacity["prompt_tokens"] + reserve + ROUND_TWO_TURNS * CHAT_TURN_TOKENS
+    reply = request["max_tokens"]
+    carried = capacity["prompt_tokens"] + reply + ROUND_TWO_TURNS * CHAT_TURN_TOKENS
     k = 0
     while k < cap:
         record = request_fits(
@@ -166,8 +170,26 @@ def _checked_pages(pages: list[Any]) -> None:
             value = page.get(side)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise SchemaRefusal(f"page {page_id!r} has no positive integer {side}")
-        if not isinstance(page.get("records"), list):
+        records = page.get("records")
+        if not isinstance(records, list):
             raise SchemaRefusal(f"page {page_id!r} has no records list")
+        for index, record in enumerate(records):
+            bbox = record.get("bbox") if isinstance(record, dict) else None
+            if not (
+                isinstance(bbox, list)
+                and len(bbox) == 4
+                and all(isinstance(v, int) and not isinstance(v, bool) for v in bbox)
+                and isinstance(record.get("text"), str)
+            ):
+                raise SchemaRefusal(
+                    f"page {page_id!r} record {index} is not an object with a four-integer "
+                    "bbox and a text"
+                )
+
+
+def _capped(k: int, cap: int) -> bool:
+    """Whether k reached a cap that let round two ask for at least one crop."""
+    return cap > 0 and k == cap
 
 
 def census_page(
@@ -215,13 +237,13 @@ def census_page(
             "headroom": refusal.capacity["headroom"],
             "k": 0,
             "k_cap": 0,
-            "k_capped": False,
+            "k_capped": _capped(0, 0),
             "reserve_clamped": False,
             "qualifies": False,
         }
     capacity = request["capacity"]
     cap = max(0, min(options["max_crops"], sealed["max_images"] - len(capacity["images"])))
-    k = admitted_crops(row, capacity, crop, cap)
+    k = admitted_crops(row, request, crop, cap)
     return {
         **entry,
         "page_request": "admitted",
@@ -229,7 +251,7 @@ def census_page(
         "headroom": capacity["headroom"],
         "k": k,
         "k_cap": cap,
-        "k_capped": k == cap,
+        "k_capped": _capped(k, cap),
         "reserve_clamped": request["answer_reserve"]["reserve_clamped"],
         "qualifies": gain >= options["min_gain_bp"] and k >= 1,
     }
@@ -318,6 +340,23 @@ def summary_text(report: dict[str, Any]) -> str:
     )
 
 
+def _manifest_pages(body: bytes) -> list[Any]:
+    """The manifest's parsed lines, refusing one that is not UTF-8 JSON."""
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SchemaRefusal(f"the manifest is not UTF-8: {error}") from error
+    pages = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            pages.append(json.loads(line))
+        except json.JSONDecodeError as error:
+            raise SchemaRefusal(f"manifest line {number} is not JSON: {error.msg}") from error
+    return pages
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("manifest", type=Path, help="a RecordGold page_manifest.jsonl")
@@ -349,9 +388,8 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as error:
         parser.error(str(error))
     body = args.manifest.read_bytes()
-    pages = [json.loads(line) for line in body.decode("utf-8").splitlines() if line.strip()]
     try:
-        report = census(pages, options, digest_bytes(body))
+        report = census(_manifest_pages(body), options, digest_bytes(body))
     except (SchemaRefusal, RequestCapacityRefusal) as refusal:
         print(f"crop census refused: {refusal}", file=sys.stderr)
         return 2
