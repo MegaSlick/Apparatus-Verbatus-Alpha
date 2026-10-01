@@ -18,7 +18,8 @@ live; a request record and a response file are written only after a fetch has
 retried, not silently treated as answered: an interrupt loses at most one
 in-flight body.
 
-Both writes are atomic creates, never overwrites: `_write_new_file` hard-links a
+Both writes are atomic creates, never overwrites: `write_new_file` (via
+`common.durability.atomic_create`) hard-links a
 completed temp file onto its destination, which raises `FileExistsError`
 atomically if the destination is already there — the one race a sequential,
 single-connection fetcher still has to guard against is its own crash-and-resume,
@@ -201,13 +202,3 @@ def write_request_record(cache_root: Path, request_key: str, record: dict[str, A
             "never re-fetch means never re-record either; the caller should have checked "
             "load_request_record first"
         )
-
-
-def already_answered(cache_root: Path, request_key: str) -> bool:
-    """Whether `request_key` has a recorded answer — the never-re-fetch gate.
-
-    Raises `CorpusRefusal` (`"unreadable-request-record"`), same as
-    `load_request_record`, if the record on disk exists but is not readable
-    JSON — this is not silently `False` on a damaged record.
-    """
-    return load_request_record(cache_root, request_key) is not None

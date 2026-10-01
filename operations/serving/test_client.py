@@ -667,11 +667,10 @@ def test_response_model_mismatch_refuses_with_the_body_retained_and_named(
 ) -> None:
     """Retention is not attribution.
 
-    A body from another model is still not this chair's evidence and still
-    never becomes a reading -- the refusal is unchanged and no `ChairResponse`
-    comes back. What changed is that the bytes exist afterwards, by their own
-    digest, so a reader can see what actually arrived instead of taking the
-    refusal's word for it.
+    A body from another model is not this chair's evidence and never becomes
+    a reading: no `ChairResponse` comes back. The bytes are retained by their
+    own digest, so a reader can see what actually arrived instead of taking
+    the refusal's word for it.
 
     And what the refusal does *not* carry: the foreign reading itself. The
     model's name is a field this check compared and says so; the text that

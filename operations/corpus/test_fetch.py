@@ -179,9 +179,7 @@ def _page(
 
 def _valid_plan(pages: list[dict[str, Any]]) -> dict[str, Any]:
     """Wrap `_page(...)` dicts into a full, self-hashed `recordgold-fetch-plan.v1`
-    — what `run_fetch` now requires, since it runs every plan through
-    `plan.validate_plan` before touching a page (rule 6: nothing enters
-    uninspected).
+    — what `run_fetch` requires: it validates every plan before touching a page.
     """
     body = {
         "schema": plan_module.SCHEMA,
@@ -743,7 +741,7 @@ def test_403_halts_the_whole_run(tmp_path, server):
     result = run_fetch(plan, _config(tmp_path), split="val", enforce_holdout=False)
 
     assert result.halted == "Http403Stop"
-    # Rule 7, nothing lost silently: the page that caused the halt is still
+    # Nothing is lost silently: the page that caused the halt is still
     # named, not just the exception class — but the run still never reached
     # the second page.
     assert len(result.entries) == 1
@@ -1426,8 +1424,8 @@ def test_main_exits_nonzero_when_the_run_halted(tmp_path, server):
             ]
         )
 
-    # The halt is visible to the caller now — but the ledger is still sealed
-    # to disk before the process dies, so rule 7 still holds.
+    # The halt is visible to the caller, and the ledger is still sealed to
+    # disk before the process dies, so nothing is lost silently.
     log = json.loads((output_dir / "fetch-log.json").read_bytes())
     assert log["halted"] == "Http403Stop"
     refusals = json.loads((output_dir / "refusals.json").read_bytes())

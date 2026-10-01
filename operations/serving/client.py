@@ -533,7 +533,7 @@ class ChairClient:
             native_intent_ref=dict(intent_ref),
         )
 
-    def _sampling_and_seed(self, request: ChairRequest) -> tuple[dict[str, int | float], int]:
+    def _sampling_and_seed(self) -> tuple[dict[str, int | float], int]:
         """This request's sealed sampling values and seed, chosen by this client's chair."""
 
         try:
@@ -565,7 +565,7 @@ class ChairClient:
             _refuse_generation_that_cannot_be_recorded_as_sent(
                 generation_declared, request.generation_declared, "generation_declared"
             )
-            sampling, actual_seed = self._sampling_and_seed(request)
+            sampling, actual_seed = self._sampling_and_seed()
             actual_generation_sent = {
                 **request.generation_sent,
                 **sampling,

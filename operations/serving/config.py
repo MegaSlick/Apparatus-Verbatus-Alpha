@@ -702,7 +702,7 @@ def _parse_profile(
 
 
 def _parse_fixture_profile(raw: Mapping[str, Any]) -> FixtureProfile:
-    """A fixture row carries its four identifying fields and a reason, nothing else.
+    """A fixture row carries its kind, recipe, chair, tier and a description, nothing else.
 
     Refusing every flag field here is the point: a row that is never launched
     may not carry a memory fraction, a context cap, or a batch size, because

@@ -124,8 +124,7 @@ def test_the_shipped_policy_names_the_pod_volume_mount_as_a_root(policy):
 
     ``operations/pod/boot_a_request.py``'s ``BOOT_A_VOLUME_MOUNT_PATH`` is the
     one concrete ``volume_mount_path`` a real launch request in this tree
-    seals -- this is the path the project lead's ruling names as accepted
-    storage for the run's duration.
+    seals; the pod volume is accepted storage for the run's duration.
     """
     assert "/workspace/private" in policy["storage_roots"]
 

@@ -134,12 +134,7 @@ def test_declared_run_entry_accepts_the_full_sealed_three_candidate_roster():
 
 
 def test_declared_run_entry_refuses_fewer_than_the_sealed_three_candidates():
-    """The refusal the test above was named for but never reached.
-
-    Its body supplied the whole roster and asserted success, so the
-    three-candidate requirement could have been deleted with the suite green and
-    a declared run could have gone ahead against two of the three sealed models.
-    """
+    """A declared run refuses a roster of fewer than the sealed three candidates."""
 
     roster = valid_roster()
     two_of_three = tuple(FakeCandidate(resolved) for resolved in roster.identities())[:2]
@@ -489,14 +484,13 @@ def test_declared_run_refuses_private_reference_evidence_not_bound_by_manifest()
 
 
 def test_a_declared_run_refuses_a_checked_reference_nobody_independently_drafted():
-    """Nothing could reach this refusal, because every fixture act had two drafts.
+    """A declared run refuses a checked reference with no independent drafts.
 
     `GroundTruth` refuses one draft outright, so the runner's own check is
     reachable only with none — which the model does allow, for a fixture. The
     rule it enforces is that two people transcribed an act independently before
     any machine reading is compared against it: the guard against one person's
-    guess becoming the established reading for a parish. It could have been
-    deleted with the whole suite still green.
+    guess becoming the established reading for a parish.
     """
 
     roster = valid_roster()
@@ -666,8 +660,7 @@ def test_the_no_self_witness_refusal_survives_a_differently_spelled_source_ref()
 
 
 def test_a_genuinely_different_model_is_still_accepted_at_that_boundary():
-    """Invariant #14: the strictness above must not have been bought by refusing
-    good input. A repository whose name merely contains the forbidden one, or
+    """The strictness above must not have been bought by refusing good input. A repository whose name merely contains the forbidden one, or
     shares its owner, is a different model and passes."""
 
     for allowed in (

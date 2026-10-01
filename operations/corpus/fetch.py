@@ -39,8 +39,8 @@ directly — there is no module-level opener to reach for.
 
 **Two kinds of failure, two exception families.** `CorpusRefusal` (this
 package's base) is a per-page outcome: `fetch_page` catches it, writes a
-"refused" log entry by name, and moves on to the next page — rule 7, nothing
-lost silently, but nothing stops the run either. `FetchHalt` and its two
+"refused" log entry by name, and moves on to the next page — nothing is lost
+silently, but nothing stops the run either. `FetchHalt` and its two
 subclasses (`Http403Stop`, `RequestCeilingReached`) are run-level: they escape
 `fetch_page` and `run_fetch` on purpose, because "stop on first 403" and "bounded
 per-run request ceiling" mean the *run*, not the page.
@@ -513,8 +513,8 @@ def _fetch_image_bytes(
     the completed fetch that actually talked to the server: on a cache hit they
     come back from that request's own recorded `request_record`, never
     re-measured "now" — a page answered from cache on this run still carries the
-    status and timestamp of the run that earned it, which is what U3's
-    `FetchedPage` (`submission.py`) needs to build an honest sidecar `iiif` block
+    status and timestamp of the run that earned it, which is what
+    `submission.FetchedPage` needs to build an honest sidecar `iiif` block
     regardless of which run fetched the bytes. `byte_count` and `response_sha256`
     are different: they describe the body actually in hand, so on a cache hit
     they are checked against the body read off disk rather than trusted from the
@@ -630,8 +630,8 @@ def fetch_page(
     """Fetch and verify one fetch-plan page end to end.
 
     Returns a log entry — `{"status": "fetched", ...}` or `{"status": "refused",
-    "reason": ..., "detail": ...}` — for every ordinary outcome (rule 7: nothing
-    lost silently, every refusal named). `FetchHalt` (403, request ceiling) is the
+    "reason": ..., "detail": ...}` — for every ordinary outcome (nothing is
+    lost silently, every refusal is named). `FetchHalt` (403, request ceiling) is the
     one thing this function does not catch: those are run-level and must stop
     `run_fetch`, not be logged as one more page's refusal.
     """
@@ -699,10 +699,10 @@ def fetch_page(
         entry.update(
             {
                 "status": "fetched",
-                # U3's `FetchedPage` (`submission.py`) needs a page's IIIF facts and
+                # `submission.FetchedPage` needs a page's IIIF facts and
                 # this module is the only place that knows which candidate URL was
                 # actually used — carried here rather than re-derived downstream so
-                # `fetched_pages_from_log` never needs the fetch plan back.
+                # `integrate.fetched_pages_from_log` never needs the fetch plan back.
                 "info_url": page["info_url"],
                 "image_url": page["image_url_candidates"][size_used],
                 "size_parameter_used": size_used,
@@ -762,7 +762,7 @@ def run_fetch(
     `enforce_holdout=False` — deliberately fetching the held split is not the
     same mistake as a `val` build accidentally including a held page).
 
-    Rule 6, nothing enters uninspected: `plan` and `holdout` are revalidated here
+    Nothing enters uninspected: `plan` and `holdout` are revalidated here
     against their own `self_hash`, not trusted merely because a caller already
     ran them through `plan.load_plan`/`holdout.load_holdout` once — a tampered
     plan (a swapped host in `image_url_candidates`, a dropped page) fails its own
@@ -808,7 +808,7 @@ _FETCH_LOG_FIELDS = frozenset(
 )
 
 # A "fetched" entry's closed shape — everything `submission.FetchedPage` needs,
-# named on the wire so `submission.fetched_pages_from_log` can build a
+# named on the wire so `integrate.fetched_pages_from_log` can build a
 # `FetchedPage` from the log alone, with no fetch plan to consult back. Every
 # field here is one `fetch_page` actually writes; a log missing one is refused
 # `malformed-record` rather than read with a `KeyError` three modules away.
@@ -861,9 +861,9 @@ def validate_fetch_log(record: Any) -> dict[str, Any]:
     """Refuse a fetch log that is not exactly `recordgold-fetch-log.v1`, closed and self-consistent.
 
     Every entry is checked against its own closed shape too, keyed by `status`:
-    rule 6 ("nothing enters uninspected") covers what a caller reads out of an
+    nothing enters uninspected, which covers what a caller reads out of an
     individual entry just as much as the log's own top-level fields, and
-    `submission.fetched_pages_from_log` reads `"fetched"` entries by field name —
+    `integrate.fetched_pages_from_log` reads `"fetched"` entries by field name —
     a log entry silently missing one must be refused here, not three modules
     downstream as a `KeyError`.
     """
