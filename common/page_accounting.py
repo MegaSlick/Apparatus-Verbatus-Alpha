@@ -1721,7 +1721,7 @@ def _detection_rule(
     kinds = {entry["n"]: entry["kind"] for entry in entries}
     findings: list[dict[str, Any]] = list(unboxed)
     acts = [entry["n"] for entry in entries if entry["kind"] == "act"]
-    if not rows and acts:
+    if not rows and not unboxed and acts:
         findings.append({"code": NO_RECORD_ON_ACT_PAGE, "acts": acts})
     inside_region: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
