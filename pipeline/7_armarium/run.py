@@ -1398,8 +1398,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     context = open_stage_context(
         args, ARMARIUM, registry_factory=registry_factory, serving_reader=SERVING_READER
     )
-    # Nothing is exported over a Recensor hold no person has passed.
-    require_recensor_passed(context.tree)
     formats = context.armarium_formats
     if formats is None:
         raise FatalAccounting("Armarium has no format projection bound to the run configuration")
@@ -1409,6 +1407,8 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     canaries = canary_ordinals(context.run)
     if not canaries <= set(census):
         raise FatalAccounting("sealed canary ordinals are absent from the Exemplar page census")
+    # Nothing is exported over a Recensor hold no person has passed.
+    require_recensor_passed(context.tree)
     return _export(context, formats, census, canaries)
 
 
