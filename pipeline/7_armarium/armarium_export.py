@@ -46,6 +46,7 @@ from operator_layer import LABEL_LINE as OPERATOR_LABEL_LINE
 from operator_layer import (
     OPERATOR_LINES,
     OPERATOR_MEMBER,
+    READING_HOLDS_FIELD,
     lines_for,
     text_bundle_rows,
     verify_rows,
@@ -351,6 +352,10 @@ class ArmariumProjection:
     # The operator layer (`operator_layer.released_row`): each delivered
     # reading a person's decision released, labelled, with who, when and why.
     operator_actions: tuple[dict[str, Any], ...] = ()
+    # Each delivered reading's own hold codes by id, empty for one that carried
+    # none; `None` exactly when the run has no review decisions, since only a
+    # decision can deliver a held reading.
+    reading_hold_codes: dict[str, list[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -559,6 +564,13 @@ def build_armarium_bundle(
     if operator_rows:
         # Every package carries the label, whatever formats it selects.
         sources_record[OPERATOR_SOURCES_FIELD] = list(operator_rows)
+    if projection.reading_hold_codes is not None:
+        # Lets a verifier require the row of a reading released on its own holds,
+        # which no page hold would otherwise show.
+        sources_record[READING_HOLDS_FIELD] = {
+            act_id: sorted(set(codes))
+            for act_id, codes in sorted(projection.reading_hold_codes.items())
+        }
     members["sources.json"] = canonical_bytes(sources_record)
 
     if "text-bundle" in formats.formats:
@@ -1526,8 +1538,10 @@ def _verify_coniector_layer(
         )
 
 
-def _operator_rows(sources: dict[str, Any], manifest: dict[str, Any]) -> list[dict[str, Any]]:
-    """The operator rows `sources.json` records, each about a reading the package delivers."""
+def _delivered_readings(
+    sources: dict[str, Any], manifest: dict[str, Any]
+) -> dict[str, tuple[str, str]]:
+    """Each reading the package delivers, act or `other`, as `{act_id: (act_key, kind)}`."""
     categories = _manifest_act_categories(manifest)
     keys = _manifest_act_keys(manifest, categories)
     delivered = {
@@ -1538,7 +1552,64 @@ def _operator_rows(sources: dict[str, Any], manifest: dict[str, Any]) -> list[di
     for act_id, row in _other_outcome_sources(sources).items():
         if row["category"] == ArmariumCategory.DELIVERED.value:
             delivered[act_id] = (row["act_key"], "other")
-    return verify_rows(sources.get(OPERATOR_SOURCES_FIELD) or [], delivered, "sources.json")
+    return delivered
+
+
+def _operator_rows(sources: dict[str, Any], manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """The operator rows `sources.json` records, each about a reading the package delivers."""
+    return verify_rows(
+        sources.get(OPERATOR_SOURCES_FIELD) or [],
+        _delivered_readings(sources, manifest),
+        "sources.json",
+    )
+
+
+def _verify_reading_holds(
+    sources: dict[str, Any], manifest: dict[str, Any], rows: list[dict[str, Any]]
+) -> None:
+    """Every delivered reading held on its own holds carries the operator row that released it.
+
+    `sources.json` names each delivered reading's own hold codes whenever the
+    run has review decisions, the only way a held reading is delivered; the
+    aggregate is recomputed from those decisions, so they cannot be dropped
+    without the aggregate showing it. A reading with codes needs a row that
+    names exactly them, so a label dropped from every format is refused even
+    when its page carries no hold.
+    """
+    codes = sources.get(READING_HOLDS_FIELD)
+    decided = _REVIEW_DECISIONS_BASIS_FIELD in sources["aggregate_basis"]
+    if codes is None:
+        if decided:
+            raise SchemaRefusal(
+                "the package records review decisions but not its delivered readings' own holds"
+            )
+        if rows:
+            raise SchemaRefusal("the package labels a release no review decision made")
+        return
+    if not decided:
+        raise SchemaRefusal("the package names readings' own holds without any review decision")
+    delivered = _delivered_readings(sources, manifest)
+    if (
+        not isinstance(codes, dict)
+        or set(codes) != set(delivered)
+        or not all(
+            isinstance(held, list)
+            and all(_is_nonempty_str(code) for code in held)
+            and held == sorted(set(held))
+            for held in codes.values()
+        )
+    ):
+        raise SchemaRefusal(
+            "sources.json does not name exactly the delivered readings' own hold codes"
+        )
+    by_id = {row["act_id"]: row for row in rows}
+    for act_id, held in sorted(codes.items()):
+        row = by_id.get(act_id)
+        if (row["reading_hold_codes"] if row is not None else []) != held:
+            raise SchemaRefusal(
+                f"{delivered[act_id][0]} is delivered over its own holds {held} but its operator "
+                "row does not name exactly them"
+            )
 
 
 def _verify_operator_layer(
@@ -1555,6 +1626,7 @@ def _verify_operator_layer(
     that sections the reading, so a label dropped from a format is refused.
     """
     recorded = _operator_rows(sources, manifest)
+    _verify_reading_holds(sources, manifest, recorded)
     shown: list[tuple[str, list[dict[str, Any]]]] = []
     if "jsonl" in formats.formats:
         rows = (
@@ -4288,7 +4360,12 @@ def _load_sources(root) -> dict[str, Any]:
         raise SchemaRefusal("the package sources citation is unreadable") from error
     if not isinstance(record, dict) or record.get("schema") != SOURCES_SCHEMA:
         raise SchemaRefusal("the package sources citation has no recognized schema")
-    optional = {"continuation_joins", "reconstructions", OPERATOR_SOURCES_FIELD}
+    optional = {
+        "continuation_joins",
+        "reconstructions",
+        OPERATOR_SOURCES_FIELD,
+        READING_HOLDS_FIELD,
+    }
     if set(record) - optional != {"schema", *_SOURCES_FIELDS}:
         raise SchemaRefusal("the package sources citation has an unrecognized field set")
     sources = {field: record[field] for field in _SOURCES_FIELDS}
@@ -4319,6 +4396,7 @@ def _load_sources(root) -> dict[str, Any]:
         isinstance(sources[OPERATOR_SOURCES_FIELD], list) and sources[OPERATOR_SOURCES_FIELD]
     ):
         raise SchemaRefusal("the package sources citation carries an empty operator layer")
+    sources[READING_HOLDS_FIELD] = record.get(READING_HOLDS_FIELD)
     return sources
 
 

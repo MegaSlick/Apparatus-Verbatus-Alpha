@@ -1396,6 +1396,11 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             page_accounting=tuple(page_accounting_rows(context, pages, real_sealed)),
             reconstructions=tuple(reconstructions),
             operator_actions=tuple(sorted(operator_actions, key=lambda row: row["act_id"])),
+            reading_hold_codes=(
+                None
+                if review_basis is None
+                else {item["act_id"]: sorted(set(item["hold_codes"])) for item in delivered}
+            ),
         ),
         formats,
         context.tree.read_bytes,

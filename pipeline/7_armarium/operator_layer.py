@@ -9,8 +9,10 @@ with no act) among them, which the export would otherwise refuse to deliver.
 
 `sources.json` carries every row (`operator_actions`), so the label travels in
 every package; `operator.jsonl` carries the same rows when the JSONL format is
-selected, and the text bundle shows each beneath its reading's section. No row
-changes a reading's text.
+selected, and the text bundle shows each beneath its reading's section. When the
+run has review decisions, `sources.json` also names every delivered reading's own
+hold codes (`reading_hold_codes`), so a reading delivered over them without its
+row is refused. No row changes a reading's text.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ from common.contracts.errors import SchemaRefusal
 
 OPERATOR_MEMBER: Final = "operator.jsonl"
 SOURCES_FIELD: Final = "operator_actions"
+# `sources.json`'s map of each delivered reading's own hold codes, by reading id.
+READING_HOLDS_FIELD: Final = "reading_hold_codes"
 ROW_SCHEMA: Final = "armarium-operator-action.v1"
 RELEASED_LABEL: Final = "released by operator"
 LABELS: Final = frozenset({RELEASED_LABEL})

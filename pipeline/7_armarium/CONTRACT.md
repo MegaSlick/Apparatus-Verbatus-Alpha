@@ -209,7 +209,13 @@ shape, so a consumer keying on it never reads an older shape out of a newer reco
   as an `operator_label:` line, then `operator_row:` and the whole row. The clean
   verifier requires each row to be about a reading the package delivers, once, and every
   format that carries the layer to show exactly the rows `sources.json` records. A run
-  with no such reading writes none of it.
+  with no such reading writes none of it. Whenever the run has review decisions (the
+  aggregate basis's `review_decisions`, from which the aggregate is recomputed),
+  `sources.json` also carries `reading_hold_codes`: every delivered reading's own hold
+  codes by id, empty for a reading that carried none. The verifier requires every
+  reading with codes to have a row whose `reading_hold_codes` are exactly them, so a
+  label dropped from every format is refused even when no page hold shows the release;
+  a package with operator rows and no review decisions is refused.
 - `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
   act identifiers or canonical-text fields; promotion requires recorded approval
   and pipeline re-entry, never an export-time act.

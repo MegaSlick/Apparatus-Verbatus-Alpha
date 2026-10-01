@@ -4460,3 +4460,126 @@ def _recipient_whole_damaged_act():
         row["bytes"] = len(members[member])
     _refresh_manifest(members, manifest)
     return _zip_bytes(members)
+
+
+_UNIT_HOLD = "duplicate-region"
+
+
+def _released_on_its_own_holds() -> ArmariumProjection:
+    """`p1:1` delivered over a unit hold of its own reading, on a page with no hold."""
+    from operator_layer import released_row
+
+    projection = _projection()
+    basis = {
+        **projection.aggregate_basis,
+        "review_decisions": {
+            "clearances": [
+                {
+                    "scope": "unit",
+                    "subject": "p1:1",
+                    "page": 1,
+                    "decision": "release",
+                    "cleared": [_UNIT_HOLD],
+                }
+            ],
+            "page_holds": [],
+        },
+    }
+    act = projection.acts[0]
+    row = released_row(
+        {"act_id": act["act_id"], "act_key": act["act_key"], "kind": "act"},
+        {"codes": [_UNIT_HOLD]},
+        [_UNIT_HOLD],
+        [
+            {
+                "decision": "release",
+                "scope": "unit",
+                "subject_id": act["act_id"],
+                "approver": "project-lead",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "reason": "one act read twice",
+                "approval_ref": {
+                    "relative_path": "5_recensor/approvals/release.json",
+                    "sha256": "d" * 64,
+                },
+                "decision_hash": "9" * 64,
+            }
+        ],
+    )
+    return replace(
+        projection,
+        aggregate_basis=basis,
+        aggregate=run_aggregate(
+            {a["act_key"]: ArmariumCategory(a["category"]) for a in projection.acts},
+            basis["coverage_records"],
+            {page["ordinal"]: page for page in projection.pages},
+            unaddressed_chairs=basis["unaddressed_chairs"],
+            act_pages=basis["act_pages"],
+            act_text_status=basis["act_text_status"],
+            review_clearances=basis["review_decisions"]["clearances"],
+        ),
+        operator_actions=(row,),
+        reading_hold_codes={act["act_id"]: [_UNIT_HOLD]},
+    )
+
+
+def _drop_operator_layer(members: dict[str, bytes], *, with_codes: bool) -> None:
+    """Remove the operator label from every place it is written, keeping the reading."""
+    sources = json.loads(members["sources.json"])
+    del sources["operator_actions"]
+    if with_codes:
+        del sources["reading_hold_codes"]
+    members["sources.json"] = canonical_bytes(sources)
+    del members["operator.jsonl"]
+    for name in [name for name in members if name.startswith("text/")]:
+        kept, skip = [], 0
+        for line in members[name].decode().split("\n"):
+            if line.startswith("operator_label: "):
+                skip = 3
+            if skip:
+                skip -= 1
+                continue
+            kept.append(line)
+        members[name] = "\n".join(kept).encode()
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["members"] = [row for row in manifest["members"] if row["path"] in members]
+    for row in manifest["members"]:
+        row["sha256"] = digest_bytes(members[row["path"]])
+        row["bytes"] = len(members[row["path"]])
+    _refresh_manifest(members, {k: v for k, v in manifest.items() if k != "self_hash"})
+
+
+def test_a_reading_released_on_its_own_holds_carries_them_and_verifies(tmp_path):
+    bundle = build_armarium_bundle(
+        _released_on_its_own_holds(), _formats(embed_pixels=False), _source_bytes
+    )
+    sources = json.loads(_members(bundle.data)["sources.json"])
+    assert sources["reading_hold_codes"] == {"act-1": [_UNIT_HOLD]}
+    assert [row["reading_hold_codes"] for row in sources["operator_actions"]] == [[_UNIT_HOLD]]
+    assert all(not row["hold_codes"] for row in sources["page_accounting"])
+    verify_export_bundle(bundle.data, tmp_path / "clean")
+
+
+@pytest.mark.parametrize(
+    "with_codes, refusal",
+    [
+        (False, "delivered over its own holds"),
+        (True, "records review decisions but not its delivered readings' own holds"),
+    ],
+    ids=["label-dropped", "label-and-codes-dropped"],
+)
+def test_a_label_dropped_everywhere_is_refused_when_no_page_is_held(tmp_path, with_codes, refusal):
+    """No page hold shows the release, so the reading's own codes must."""
+    bundle = build_armarium_bundle(
+        _released_on_its_own_holds(), _formats(embed_pixels=False), _source_bytes
+    )
+    members = _members(bundle.data)
+    _drop_operator_layer(members, with_codes=with_codes)
+    with pytest.raises(SchemaRefusal, match=refusal):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "forged")
+
+
+def test_a_held_reading_without_its_operator_row_is_refused_at_build():
+    projection = replace(_released_on_its_own_holds(), operator_actions=())
+    with pytest.raises(SchemaRefusal, match="delivered over its own holds"):
+        build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
