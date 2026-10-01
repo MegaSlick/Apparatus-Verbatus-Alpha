@@ -68,9 +68,7 @@ _FORBIDDEN_PREFERENCE_FIELDS: Final = frozenset(
         "better",
         "preferred",
         "superseded_by",
-        # The rest of the consult's §7 shape 1 vocabulary. These are binding
-        # review words, so the screen spells all of them rather than the subset
-        # that happened to appear first.
+        # Further words that name a selection.
         "winner",
         "selected",
         "chosen",

@@ -657,15 +657,10 @@ def _refuse_a_merged_page_no_consumer_reads_yet(records: dict[int, dict[str, Any
     Refused here rather than surfacing downstream as a lie about a "lost"
     ordinal that was actually sealed and cited.
 
-    The byte-identical route is now closed at the Door
-    (`pipeline/1_exemplar/door.py::require_no_duplicate_sources`), but that
-    guard groups on submitted bytes, which is one route to a merged page and
-    not the other: a triage-declared frame binds identity to its admitted
-    derivative, so two sources with different bytes and identical derivatives
-    still arrive here. This guards the sealed shape itself, on its own merits,
-    regardless of which route produced it. The refusal message below still
-    names "identical bytes" -- the shape it describes, not a precondition of
-    this check, since the derivative route reaches it too.
+    The Door refuses identical source bytes
+    (`pipeline/1_exemplar/door.py::require_no_duplicate_sources`); this guards
+    the merged shape that two sources with identical derivatives can still
+    produce.
     """
     for ordinal, record in records.items():
         if record.get("outcome") != "sealed":
@@ -1063,7 +1058,7 @@ def verify_triage_derivative(
         or derivative["parent_frame_page_index"] != parent["source_frame_index"]
         or derivative["operation_order"] != "region-crop-rotate"
     ):
-        raise ContractError("a sealed derivative page changes Unit 5's closed split semantics")
+        raise ContractError("a sealed derivative page does not match its triage split part")
     part = split["parts"][part_index]
     expected_operations = [
         {"operation": "split", "region": part.get("region")},
