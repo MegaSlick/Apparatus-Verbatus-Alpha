@@ -707,9 +707,7 @@ def test_no_missed_act_recorded_before_every_act_was_excluded_is_stale():
     }
     early = decide(derived, "page", "page-1", "no-missed-act")
     result = apply_decisions(derived, [early, decide(derived, "unit", "a1", "exclude")])
-    assert [(s["scope"], s["stale_because"]) for s in result["stale"]] == [
-        ("page", BASIS_CHANGED)
-    ]
+    assert [(s["scope"], s["stale_because"]) for s in result["stale"]] == [("page", BASIS_CHANGED)]
     assert result["units"]["o2"]["outcome"] == "held-for-review"
     assert result["units"]["o2"]["payload"]["hold_codes"] == [NO_ACT_ON_PAGE_HOLD]
     assert held_pages(result) == {1: [NO_ACT_ON_PAGE_HOLD]}
