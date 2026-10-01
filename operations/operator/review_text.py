@@ -139,13 +139,10 @@ def _uncertainty_entries(value: Any, label: str) -> list[dict[str, Any]]:
 def _uncertainty_folds(spans: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int]]:
     """Identical span entries folded into one, with how many the layer carried.
 
-    The published layer keeps an exhausted-cap projection and an identical
-    reader-reported span as two entries, since the layer records that those
-    characters were doubted twice; printing them as two doubts would say
-    something else, so they are shown once with the count beside them. Order
-    is first appearance. What a repeat MEANS is not decided here: no
-    artifact names the instrument behind any one span, so a fold is evidence
-    of a repeat and nothing else.
+    A layer that carries the same span twice records that those characters
+    were doubted twice; printing them as two doubts would say something else,
+    so they are shown once with the count beside them. Order is first
+    appearance. A fold is evidence of a repeat and nothing else.
     """
     folded: list[tuple[dict[str, Any], int]] = []
     for span in spans:

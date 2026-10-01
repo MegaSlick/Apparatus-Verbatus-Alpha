@@ -116,7 +116,7 @@ _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_
 # from wall-clock differences is wrong across a clock adjustment, and a
 # monotonic reading names no instant a reader could compare across records.
 _clock = time.monotonic
-STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v3"
+STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v4"
 
 GPU_QUERY = (
     "nvidia-smi",
@@ -349,7 +349,7 @@ def _require_absolute_caller_paths(args: argparse.Namespace) -> None:
             )
 
 
-def invoke(program: str, args: argparse.Namespace, **extra) -> int:
+def invoke(program: str, args: argparse.Namespace) -> int:
     """Run one stage as a program and return its exit code."""
     require_coherent_ingress_options(args)
     _require_absolute_caller_paths(args)
@@ -428,7 +428,6 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
             (("--perlector-concurrency", getattr(args, "perlector_concurrency", None)),),
             omit_unset=True,
         )
-    command += _argv((f"--{key.replace('_', '-')}", value) for key, value in extra.items())
 
     # Streams are inherited, not buffered: stage output is unbounded, and a
     # partial Door's private refusal report must reach the operator's terminal.
@@ -457,7 +456,6 @@ def invoke(program: str, args: argparse.Namespace, **extra) -> int:
         _record_stage_timing(
             args,
             program=program,
-            extra=extra,
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=max(0, round((ended - started) * 1000)),
@@ -506,7 +504,6 @@ def _record_stage_timing(
     args: argparse.Namespace,
     *,
     program: str,
-    extra: dict,
     started_at: str,
     finished_at: str,
     duration_ms: int,
@@ -525,7 +522,6 @@ def _record_stage_timing(
     if journal is None:
         return
     path = Path(journal)
-    subject = extra.get("act")
     entry: dict[str, object] = {
         "schema": STAGE_TIMING_JOURNAL_SCHEMA,
         "run_id": args.run_id,
@@ -533,8 +529,6 @@ def _record_stage_timing(
         # The Door and the Exemplar share `1_exemplar/`, so name the member.
         "stage": _PROGRAM_NAMES.get(program, program),
         "program": program,
-        "operation": str(extra.get("operation", "run")),
-        "subject": None if subject is None else str(subject),
         "started_at": started_at,
         "finished_at": finished_at,
         "duration_ms": duration_ms,
@@ -575,7 +569,9 @@ def _record_stage_timing(
                     not isinstance(first, dict)
                     or first.get("schema") != STAGE_TIMING_JOURNAL_SCHEMA
                 ):
-                    raise ValueError("existing timing journal is not stage-timing-journal.v3")
+                    raise ValueError(
+                        f"existing timing journal is not {STAGE_TIMING_JOURNAL_SCHEMA}"
+                    )
                 handle.seek(-1, os.SEEK_END)
                 if handle.read(1) != b"\n":
                     handle.write(b"\n")

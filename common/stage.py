@@ -205,11 +205,7 @@ ALWAYS_HELD_BOUNDARIES: Final = frozenset({ATTESTATORES, ARMARIUM})
 
 
 def _named_boundary(name: str, role: str) -> str:
-    """Refuse a selection endpoint that owns no stage completion boundary.
-
-    `recovery` is a legal driver member but has no seal, so it gets the same
-    refusal as a typo.
-    """
+    """Refuse a selection endpoint that owns no stage completion boundary."""
 
     if name not in STAGES:
         raise ContractError(

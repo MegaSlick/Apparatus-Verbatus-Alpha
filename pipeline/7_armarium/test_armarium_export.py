@@ -118,10 +118,8 @@ def _edge_page(ordinal: int = 1, *, outside: int, total: int = 10_000) -> dict:
 # with no reader behind them, so the honest state for every layer below is
 # `not-assessed`, and the block's uncertainty instrument declares itself
 # unproduced over them for that reason. The layers below that actually carry a
-# doubt use `_ASSESSED` instead: the exhausted-cap projection is the only
-# thing that mints a span without a reader (and it mints spans, never gaps,
-# always with no alternatives), so a layer holding an alternative or a gap is
-# a reader's report and its state says so.
+# doubt use `_ASSESSED` instead: only a reader's own doubt report mints a span
+# or a gap, so a layer holding one is a reader's report and its state says so.
 _ASSESSED = {"state": "assessed", "problem": None}
 _NOT_ASSESSED = {
     "state": "not-assessed",
@@ -3508,17 +3506,12 @@ def test_pass_c_is_declared_unproduced_and_measured_when_it_runs():
 def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_asked():
     """Who was asked decides this instrument's status; the sealed cap is reported beside it.
 
-    The reader's own doubt report is the measurement, not the cap alone: the
-    cap is only one of the two ways a span reaches the layer. `declared-unproduced`
-    needs both zero assessed readings and zero uncertain spans -- an exhausted
-    cap that minted uncertain spans still counts as something measured, even
-    with no assessed reading, and some assessed is a partial measurement that
-    may not be reported as a whole one.
+    The reader's own doubt report is the measurement: `declared-unproduced`
+    needs zero assessed readings, and some assessed is a partial measurement
+    that may not be reported as a whole one.
     """
     silenced = _entry(_block(_projection()), "perlector-uncertain-spans")
     assert silenced["status"] == "declared-unproduced"
-    # Still reported, because it is still why a `[]` under a nonzero cap could
-    # never have held the audit's own projected span.
     assert silenced["detail"]["sealed_audit_round_cap"] == 1
     assert silenced["detail"]["acts_assessed"] == 0
 
@@ -3547,23 +3540,6 @@ def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_aske
                 "acts_with_uncertain_spans": 0,
                 "acts_assessed": 1,
                 "acts_not_assessed": 1,
-            },
-        )
-        == "not-measured"
-    )
-    # The live configuration under a sealed cap of 0: no reader was asked, and
-    # the exhausted-cap projection minted real spans onto delivered acts anyway.
-    # Something was measured, so the block may not call the instrument
-    # unproduced.
-    assert (
-        _not_measured_status(
-            "perlector-uncertain-spans",
-            {
-                "sealed_audit_round_cap": 0,
-                "acts_delivered": 2,
-                "acts_with_uncertain_spans": 1,
-                "acts_assessed": 0,
-                "acts_not_assessed": 2,
             },
         )
         == "not-measured"
@@ -3715,10 +3691,10 @@ def test_the_export_schema_refuses_a_package_that_omits_the_block(tmp_path):
         verify_export_bundle(_resealed_without_not_measured(_projection()), tmp_path / "clean")
 
 
-def test_nonzero_audit_cap_refuses_a_basis_that_names_uncertain_spans():
+def test_a_basis_naming_uncertain_spans_no_reader_assessed_is_refused():
     basis = _test_not_measured_basis()
     basis["perlector-uncertain-spans"]["acts_with_uncertain_spans"] = 1
-    with pytest.raises(SchemaRefusal, match="nonzero sealed audit cap"):
+    with pytest.raises(SchemaRefusal, match="only a reader's own doubt report mints a span"):
         _manifest_of(replace(_projection(), not_measured_basis=basis))
 
 
@@ -4199,7 +4175,7 @@ def recipient_happy_run(tmp_path_factory):
         ("untyped-count", "non-negative integer"),
         ("not-measured-count-type", "not_measured count.*non-negative integer"),
         ("evidence-location", "canonical evidence location"),
-        ("uncertainty-cap", "more acts with uncertain spans than delivered acts"),
+        ("uncertainty-cap", "more acts with uncertain spans than assessed acts"),
         ("ink-map-row", "ink-map claim does not match"),
         ("sealed-source-reason", "sealed package source page carries a refusal reason"),
         ("member-byte-count", "manifest byte count"),
@@ -4422,8 +4398,7 @@ def _recipient_uncertainty_overflow(manifest):
     block = manifest["claims"]["not_measured"]
     entry = _entry(block, "perlector-uncertain-spans")
     detail = entry["detail"]
-    detail["sealed_audit_round_cap"] = 0
-    detail["acts_with_uncertain_spans"] = detail["acts_delivered"] + 1
+    detail["acts_with_uncertain_spans"] = detail["acts_assessed"] + 1
     entry["status"] = "measured"
     block["count"] = sum(row["status"] != "measured" for row in block["entries"])
 

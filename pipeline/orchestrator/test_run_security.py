@@ -122,7 +122,6 @@ def test_the_timing_journal_names_the_perlector_concurrency_asked_for(tmp_path):
         orchestrator._record_stage_timing(
             args,
             program=program,
-            extra={},
             started_at="2026-01-01T00:00:00Z",
             finished_at="2026-01-01T00:00:01Z",
             duration_ms=1000,

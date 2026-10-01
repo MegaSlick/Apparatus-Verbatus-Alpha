@@ -1819,7 +1819,7 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(
     )
 
     entries = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
-    assert all(entry["schema"] == "stage-timing-journal.v3" for entry in entries)
+    assert all(entry["schema"] == "stage-timing-journal.v4" for entry in entries)
     assert all(entry["run_id"] == "r" for entry in entries)
     stages = [entry["stage"] for entry in entries]
     # Every program the automatic sequence invokes, the Door and the Exemplar
@@ -1829,7 +1829,6 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(
     for entry in entries:
         assert entry["exit_code"] == 0
         assert entry["duration_ms"] >= 0
-        assert entry["operation"] == "run"
         assert entry["started_at"].endswith("Z") and entry["finished_at"].endswith("Z")
         assert entry["repository_commit"] == COMMIT
         assert entry["repository_commit_detail"] is None
