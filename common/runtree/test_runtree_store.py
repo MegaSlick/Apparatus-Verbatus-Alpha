@@ -2922,6 +2922,4 @@ def test_an_unfinished_write_in_the_receipts_directory_is_passed_over(tmp_path):
     path = tree.resolve(reference.relative_path)
     path.with_name(f".{path.name}.tmp-abc123").write_bytes(b"{")
 
-    assert [ref.to_record() for ref, _ in tree.review_decision_records()] == [
-        reference.to_record()
-    ]
+    assert [ref.to_record() for ref, _ in tree.review_decision_records()] == [reference.to_record()]

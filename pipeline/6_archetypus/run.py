@@ -65,8 +65,8 @@ from common.exemplar_boundary import verify_reading_region_lineage  # noqa: E402
 from common.page_review import (  # noqa: E402
     current_page_reviews,
     require_current_review_decisions,
-    require_recensor_passed,
     require_establishable,
+    require_recensor_passed,
     reviewed_rows,
 )
 from common.page_testimonia import (  # noqa: E402
