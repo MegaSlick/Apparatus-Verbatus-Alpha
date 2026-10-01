@@ -19,8 +19,10 @@ door → exemplar → ink map → designator → attestatores → perlector → 
 ```
 
 Every member is a stage program with its own completion boundary. No member re-asks a
-reading: the Recensor holds what it cannot accept, and the sealed recovery budget
-(`config/recovery.toml`) is not yet spent by any stage.
+reading: the Recensor holds what it cannot accept. The sealed recovery budget
+(`config/recovery.toml`) is a forward binding: every run seals it at the Door, and
+the page re-ask will spend it. No stage reads it yet, and `common/test_recovery.py`
+names that.
 
 ## The three selections
 

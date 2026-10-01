@@ -311,7 +311,8 @@ held:
   alone (`page_image = "off"`) cannot be established from the ink, so every act of
   such a run holds `no-autopsia`.
 - `dissent`: one row per shown witness, `{letter, witness_label, cited_units, ...}`
-  with `dissent_against`'s fields against that witness's cited units joined by
+  with `dissent_against`'s fields: one reading against one witness comparison text,
+  that witness's cited units joined by
   newlines in its own order -- with its own doubt markers removed
   (`common.alignment.bracket_marker_view`) when its Testimonium's
   `format_capabilities.can_express_uncertainty` is true, so a witness's own doubt is
@@ -321,8 +322,8 @@ held:
   `compared: "unknown"` and carries that budget, and `page_path.validate_page_dissent`
   refuses a record that loses a shown witness or names a budget the run never sealed.
 - `truncation` is `truncation.classify` over the region's pixels (the area of the union
-  of `region_boxes_px`, each pixel once) against the page's;
-  null for an unplaced entry. A `truncated` or `unknown` classification adds hold
+  of `region_boxes_px`, each pixel once) against the page's; the measure's
+  `smallest_page_pixels` equals its `page_pixels`; null for an unplaced entry. A `truncated` or `unknown` classification adds hold
   `reading-incomplete`; the page accounting's rule (g) records an entry with no
   classification (an unplaced one) as `truncation-not-classified`, not measured,
   which holds.

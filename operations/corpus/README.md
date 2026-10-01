@@ -264,7 +264,7 @@ distinct `source`/`volume` splits (`"Tours/geneanet"` joined with nothing, and
 reference record set, computes IoU between every pipeline act's region (the
 Perlector's act-regions) and
 every reference box, takes the assignment maximising total IoU under a
-predeclared threshold, and writes `reference-comparison.v1` recording the whole
+predeclared threshold, and writes `reference-comparison.v2` recording the whole
 matrix: matched pairs, unmatched reference acts (misses, scored), and
 unmatched pipeline acts (reported, never scored, because `completeness` already
 says they may be legitimately out of scope). Per-act CER/WER reuses the sealed

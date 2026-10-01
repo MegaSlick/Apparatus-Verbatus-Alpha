@@ -151,29 +151,8 @@ error -- a run may legitimately contain blank pages; what is
 refused is the opposite collapse, ink that is merely unread reported as ink that was
 never there.
 
-**`evidence_ref` — an intentionally unfilled upstream contract.** An accepted review is
-evidence that the Recensor accepted a reading; it is not evidence that the page was
-blank. The constructor therefore accepts `no_readable_text` only when the review carries
-a digest-checked `no_readable_text_evidence_ref` as one of its own direct inputs. The
-reverse is fatal rather than ignored: a review that retains a blank proof over a reading
-that establishes text is two upstream claims contradicting each other, and reading past
-the one this stage does not need is how the contradiction would leave no trace. The
-current Recensor publishes no such proof, and its `confirmed-blank` outcome is terminal
-at that stage, bypassing this record. Consequently the current end-to-end pipeline cannot
-yet publish a `no_readable_text` Archetypus. This is a named cross-stage gap, preferable
-to manufacturing a blank finding from empty text; the shared outcome algebra likewise
-keeps Perlector silence unresolved until a blank-proof contract exists.
-
-`evidence_ref` is checked for shape and for membership in the review's own inputs, but —
-unlike `perlectio_ref` and `recensor_ref` — it is never read, stage-checked, or
-kind-checked, because no `blank-proof` artifact kind exists yet to check it against. The
-one class checkable without that missing contract is refused: nothing from the reading's
-own evidentiary chain may stand as evidence of its own silence — neither the reading
-itself (`no_readable_text_evidence_ref == perlectio_ref`) nor any direct input of that
-reading, including the crops it read. Both are a `SchemaRefusal`. Resolving the reference
-through
-`read_artifact_reference` against a real `kind="blank-proof"` — the way `perlectio_ref`
-and `recensor_ref` are resolved — is still owed once the Recensor lane defines that kind.
+**`evidence_ref`.** No page review carries a blank proof, so a record's
+`evidence_ref` is always null.
 
 **`annotations` — carried whole, never in `text`.** A page reading records no
 annotation layer, so an established page record's `annotations` is `[]`; the shape

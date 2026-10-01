@@ -125,7 +125,11 @@ pipeline does so. The score is recorded in basis points, rounded half to even
 than three distinct pixels encloses no crop: its record is kept with
 `cut: false`, `bounds: null`, `raw_proposal: null` and `region_ref: null`,
 never dropped. Two detections that quantize to the same box and score share one
-geometry proposal and still keep a record and a crop each.
+geometry proposal and still keep a record and a crop each. A proposal's
+`observed_ordinals` index the retained `record-detector-output.v1` detections:
+`geometry_layer.yolo_obb` takes each detection's source ordinal, so the
+ordinals stay true when the caller passes only some detections. Two detections
+share one proposal only with the same box and score.
 
 **Determinism.** The in-process detector loads only weights whose SHA-256
 matches the pin, only under the exact package versions its catalogue row names,
