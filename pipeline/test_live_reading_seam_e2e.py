@@ -11,7 +11,7 @@ The chairs answer through `operations/serving/fakes.py`: a scripted
 stage's own `main`. What makes the run live is the sealed serving-recipe row
 kind: the tmp catalogue below marks the three witness chairs and the Perlector
 `kind = "vllm"` at every tier `config/pod_placement.toml` defines, and the
-Designator's chairs keep their fixture rows.
+Designator's chairs and the Coniector's reconstructor keep their fixture rows.
 
 The page chairs answer once per page and DAI once per record its detector
 found; the Perlector answers each page with the fixture's scripted `happy` page
@@ -242,10 +242,11 @@ def _toml_profile(row: dict[str, Any]) -> str:
 def write_live_catalogue(path: Path, registry) -> Path:
     """Every chair this seam can serve, live, at every tier the placement file names.
 
-    The Designator's two detectors keep their fixture rows (a fixture row answers
-    only a synthetic run): this module's subject is the reading seam. Every other
-    configured chair is live at all three tiers, which is also what
-    `verify_recipes_cover_chairs` requires of any catalogue a real run seals.
+    The Designator's two detectors and the Coniector's reconstructor keep their
+    fixture rows (a fixture row answers only a synthetic run): this module's
+    subject is the reading seam. Every other configured chair is live at all three
+    tiers, which is also what `verify_recipes_cover_chairs` requires of any
+    catalogue a real run seals.
     """
     rows: list[dict[str, Any]] = [
         {
@@ -258,6 +259,7 @@ def write_live_catalogue(path: Path, registry) -> Path:
         for chair, recipe in (
             ("designator_surya", "fake-surya-v0"),
             ("secondary_proposer", "fake-secondary-proposer-v0"),
+            ("reconstructor", "fake-reconstructor-v0"),
         )
         for tier in TIERS
     ]
