@@ -1,16 +1,15 @@
-"""Spec 10, test 2: a second write for the same act_id fails loudly, and the
-first record is byte-identical afterwards.
+"""A second write for the same act_id fails loudly, and the first record is
+byte-identical afterwards.
 
-Ruling 4b: a revised reading is a whole new pipeline run over the same
-Exemplar, never a rewrite of an existing record. This is enforced a layer down,
-in `common.runtree.store.RunTree._publish_bytes` (immutable, atomic publish; a
+A revised reading is a whole new pipeline run over the same Exemplar, never a
+rewrite of an existing record. This is enforced a layer down, in
+`common.runtree.store.RunTree._publish_bytes` (immutable, atomic publish; a
 second publish of *different* bytes under the same identity is refused before
 anything is written) — `pipeline/6_archetypus/run.py` adds nothing here except
-that it never tries to work around it. Both directions are asserted, per
-harvest invariant #14 ("a seal that stops refusing bad things in order to stop
-refusing good things is not a fix"): identical bytes reuse silently, and
-different bytes under the same act_id are refused loudly with the original left
-untouched.
+that it never tries to work around it. Both directions are asserted, because a
+seal that stops refusing bad things in order to stop refusing good things is not
+a fix: identical bytes reuse silently, and different bytes under the same act_id
+are refused loudly with the original left untouched.
 """
 
 import json
@@ -22,8 +21,6 @@ from common.contracts.stages import ARCHETYPUS
 from common.runtree.store import RunTree
 from conftest import run_orchestrator as orchestrate
 from conftest import run_stage
-
-ROOT = Path(__file__).resolve().parents[2]
 
 
 def invoke_archetypus(root: Path, run_id: str, scenario: str) -> subprocess.CompletedProcess:
@@ -45,7 +42,7 @@ def test_a_second_differing_write_for_the_same_act_is_refused_and_the_original_s
     original_bytes = path.read_bytes()
 
     # A "revised reading" written straight over the existing record — exactly
-    # the write 4b forbids: not a new run, just different bytes under the same
+    # the write that is refused: not a new run, just different bytes under the same
     # once-only identity.
     tampered = json.loads(original_bytes.decode("utf-8"))
     tampered["payload"] = dict(tampered["payload"])

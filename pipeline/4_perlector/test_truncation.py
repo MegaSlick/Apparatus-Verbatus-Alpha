@@ -1,7 +1,7 @@
 """The truncation detector's signals, classification, and the mandatory record.
 
 ARCHITECTURE: "It reads through to the end -- truncation is a failure, not an
-output." Spec_08: the detector's signals are declared, each response classified
+output." The detector's signals are declared, each response is classified
 `complete | truncated | unknown`, and `unknown` holds -- never passed as
 complete.
 """
@@ -22,13 +22,11 @@ POLICY = protocol.load(ROOT / "config" / "perlector_protocol.toml")[0][protocol.
 FLOOR = POLICY[truncation.LENGTH_FLOOR_FIELD]
 GATE = POLICY[truncation.LEGIBLE_PAGE_FIELD]
 
-# This repository's own fixture geometry (proof/synthetic_pages.py, build_fixture.py):
-# a 200x260 page, an act crop of 160x80, and the 34-character reading declared
-# for it. The unit tests that are not about scale run at this geometry, which is
-# the one the module's original tests ran at with `region_pixels=1000`.
+# The synthetic fixture's geometry (proof/synthetic_pages.py, build_fixture.py):
+# a 200x260 page and a 160x80 region. The unit tests that are not about scale
+# run at this geometry.
 FIXTURE_PAGE = 200 * 260
 FIXTURE_REGION = 160 * 80
-FIXTURE_TEXT = "SYNTHETIC ACT ONE alpha beta gamma"
 
 # A photographed 300-DPI letter leaf and a single line band cut from it:
 # 2,550x104 is one line at a 104 px pitch, doubled from the 52 px at 150 DPI
@@ -180,9 +178,8 @@ def test_classify_refuses_a_policy_whose_floor_is_not_a_positive_integer(floor):
     """Zero and negatives by name, not as an escaping `ValueError`.
 
     `is_length_suspicious` raises `ValueError` for a floor of zero, which the
-    stage boundary does not classify as a contract refusal -- so a hand-built
-    policy carrying zero used to leave this module unnamed while a wrongly
-    typed one was refused properly.
+    stage boundary does not classify as a contract refusal, so `classify`
+    refuses a zero or negative floor by name before it gets there.
     """
     with pytest.raises(ContractError, match="not a positive integer"):
         truncation.classify(
@@ -300,12 +297,8 @@ def test_holds_as_failure_refuses_an_undeclared_classification():
 
 
 def test_a_complete_line_band_from_a_photographed_leaf_is_complete():
-    """The review's own counter-example, run through the shipped instrument.
-
-    One full 300-DPI line band (2,550x104 px) carrying a realistic dense-line
-    reading under a clean engine stop is `complete`. Under the retired
-    constant it was `unknown` and held: 265,200 / 76 = 3,489 px/char > 2,000.
-    """
+    """One full 300-DPI line band (2,550x104 px) carrying a realistic dense-line
+    reading under a clean engine stop is `complete`."""
     record = classify(LINE_TEXT, region_pixels=LINE_BAND, page_pixels=LEAF_PAGE, stop_reason="stop")
     assert record["signals"]["length_suspicious"] is False
     assert record["classification"] == truncation.COMPLETE
@@ -313,8 +306,7 @@ def test_a_complete_line_band_from_a_photographed_leaf_is_complete():
 
 
 def test_a_complete_act_crop_from_a_photographed_leaf_is_complete():
-    """The review's second geometry: a 2,400x420 entry band with 380 characters
-    (2,653 px/char, held under the retired constant) is complete now."""
+    """A 2,400x420 entry band with 380 characters (2,653 px/char) is complete."""
     text = ("Jean Baptiste fils de Pierre et de Marie Anne " * 9)[:380]
     assert len(text) == 380
     record = classify(text, region_pixels=2400 * 420, page_pixels=LEAF_PAGE, stop_reason="stop")
@@ -387,8 +379,7 @@ def test_the_record_carries_the_floor_it_was_judged_under():
 
     A consumer holding this block and nothing else -- not the run's
     `config/perlector_protocol.toml` -- has every term of the predicate and can
-    say for itself whether the signal follows (independent audit of
-    2026-09-14). The Armarium's ink re-measurement row already took this
+    say for itself whether the signal follows. The Armarium's ink re-measurement row already took this
     standard for its own noise floor; this is the same one applied twice.
     """
     record = classify(
@@ -411,8 +402,7 @@ def test_a_policy_with_no_floor_at_all_is_refused_by_name():
 
     The sealed path cannot reach it -- `protocol.validate_truncation_table`
     guarantees the key -- but a hand-built policy could, and a bare `KeyError`
-    is not a refusal the stage boundary classifies (independent audit of
-    2026-09-14).
+    is not a refusal the stage boundary classifies.
     """
     with pytest.raises(ContractError, match="declares no length_floor_characters_per_page"):
         truncation.classify(

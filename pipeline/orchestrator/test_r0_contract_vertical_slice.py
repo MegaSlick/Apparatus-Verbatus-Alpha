@@ -11,8 +11,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from common.chairs.registry import ChairRegistry
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.stages import ATTESTATORES
@@ -46,32 +44,14 @@ def invoke_stage(run_root: Path, run_id: str, scenario: str, program: str):
     )
 
 
-@pytest.fixture(scope="module")
-def fixture():
-    return load_fixture(str(FIXTURE_ROOT))
-
-
-def _attestatores_artifacts(tree: RunTree) -> list[dict]:
-    manifest = tree.build_manifest(ATTESTATORES)
-    return [
-        tree.read_artifact(ATTESTATORES, entry["kind"], entry["artifact_id"])
-        for entry in manifest["artifacts"]
-    ]
-
-
 # --- Corpus-frame binding -------------------------------------------------------
 
 
 def test_shard_size_knob_is_sealed_with_a_point_of_use_recheck_entry():
-    """R0_CONTRACT_NOTE.md: "shard size <=1,000 is R0's own sealed knob in
-    config_digest with point-of-use recheck."
+    """The shard-size knob is sealed in config_digest and rechecked at its point of use.
 
-    Mirrors the existing `designator-padding` entry in
-    `run_config_bindings(...)["sealed_config_digests"]`
-    (`common/stage.py::StageContext.require_sealed_config` is the point-of-use
-    recheck mechanism already built for that entry). On the base commit
-    `sealed_config_digests` carries exactly one key, `designator-padding`; nothing
-    names a shard-size knob at all.
+    `run_config_bindings(...)["sealed_config_digests"]` names it as
+    `corpus-frame-shard`, bound to the digest of the sealed config bytes.
     """
     from common.stage import DEFAULT_CORPUS_FRAME_CONFIG_PATH, load_corpus_frame_policy
 
@@ -81,8 +61,8 @@ def test_shard_size_knob_is_sealed_with_a_point_of_use_recheck_entry():
     sealed = bindings["sealed_config_digests"]
     assert "corpus-frame-shard" in sealed, (
         f"run_config_bindings()'s sealed_config_digests is {sorted(sealed)}, which names no "
-        "'corpus-frame-shard' entry; R0's shard-size knob must be sealed into config_digest "
-        "with a point-of-use recheck, exactly as 'designator-padding' already is"
+        "'corpus-frame-shard' entry; the shard-size knob must be sealed into config_digest "
+        "with a point-of-use recheck"
     )
     _, expected_digest = load_corpus_frame_policy(DEFAULT_CORPUS_FRAME_CONFIG_PATH)
     assert sealed["corpus-frame-shard"] == expected_digest, (
@@ -130,11 +110,11 @@ def test_perlector_refuses_a_referenced_page_ordinal_outside_the_fixture(tmp_pat
 
     result = invoke_stage(root, "forged-page", "happy", "pipeline/4_perlector/run.py")
     assert result.returncode != 0
-    # The shared page contract now reconciles `page_ordinal` against the
+    # The shared page contract reconciles `page_ordinal` against the
     # presentation, so it answers this forgery before the Perlector's own
-    # subject-vs-presentation check does. The stage-local refusal is still
-    # there and still needed -- it also compares `source_page_id` against the
-    # record's subject, which the shared contract cannot see.
+    # subject-vs-presentation check does. The stage-local refusal also compares
+    # `source_page_id` against the record's subject, which the shared contract
+    # cannot see.
     assert "names a different page than the record" in result.stderr
     assert "Traceback" not in result.stderr
 
