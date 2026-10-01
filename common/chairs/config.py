@@ -12,11 +12,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from .errors import ConfigurationRefusal
+from .filesystem import apfs_key
 from .models import (
     AbsentChair,
     ChairIdentity,
     ModelsConfig,
     is_hf_revision,
+    is_plain_role,
     is_sha256,
     is_witness_role,
 )
@@ -266,12 +268,13 @@ def _parse_witness_framings(value: Any) -> dict[str, str]:
 def _refuse_case_variant_collisions(
     chairs: Mapping[str, ChairIdentity | AbsentChair],
 ) -> None:
-    """Refuse distinct spellings that alias on default case-insensitive APFS.
+    """Refuse distinct spellings that alias on default APFS.
 
     Chair roles become cache directory names, manifests become files below the
     configuration root, and local paths become snapshot directories.  Exact
-    sharing is deliberate and remains legal; two different spellings for the
-    same case-folded path are ambiguous across supported filesystems.
+    sharing is deliberate and remains legal; two different spellings that differ
+    only in case or Unicode normalization are ambiguous across supported
+    filesystems.
     """
 
     _refuse_case_variants(((role, role) for role in chairs), "chair roles")
@@ -294,12 +297,11 @@ def _refuse_case_variant_collisions(
 def _refuse_case_variants(rows: Any, label: str) -> None:
     first_by_folded: dict[str, tuple[str, str]] = {}
     for role, spelling in rows:
-        folded = spelling.casefold()
-        first = first_by_folded.setdefault(folded, (role, spelling))
+        first = first_by_folded.setdefault(apfs_key(spelling), (role, spelling))
         if first[1] != spelling:
             raise ConfigurationRefusal(
                 "models.toml",
-                f"case-variant {label} alias on a case-insensitive filesystem: "
+                f"{label} alias on default APFS (case or Unicode normalization): "
                 f"{first[0]!r} names {first[1]!r}, while {role!r} names {spelling!r}",
             )
 
@@ -323,9 +325,11 @@ def _role(value: Any) -> str:
         raise ConfigurationRefusal(
             "models.toml", f"role {value!r} is blank or has surrounding whitespace"
         )
-    if "/" in value or "\\" in value or ".." in value.split("_"):
+    if not is_plain_role(value):
         raise ConfigurationRefusal(
-            "models.toml", f"role {value!r} is not a plain configuration key"
+            "models.toml",
+            f"role {value!r} is not a plain configuration key: it holds a path "
+            "separator or starts with '.'",
         )
     return value
 

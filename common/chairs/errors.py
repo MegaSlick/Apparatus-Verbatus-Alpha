@@ -94,4 +94,4 @@ ALL_REFUSAL_TYPES = (
     ReceiptRefusal,
     ProtocolClauseRefusal,
 )
-"""The complete public taxonomy. New behaviour must use an existing refusal."""
+"""Every refusal this package raises; the no-substitution suite holds each raise site to it."""

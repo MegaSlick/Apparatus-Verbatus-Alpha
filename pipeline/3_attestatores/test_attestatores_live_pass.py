@@ -3152,13 +3152,13 @@ def _testimonium_call_world(
 @pytest.mark.parametrize("chair", ["attestator_2", "attestator_3", "attestator_1"])
 def test_a_tallied_testimonium_s_serving_call_is_held_to_its_chair_s_row_and_seed(chair):
     """The tally re-reads every Testimonium's serving call, not only its digest."""
-    from common.decoding import chair_decoding, engine_effective_sampling, recorded_sampling
+    from common.decoding import chair_decoding, engine_effective_sampling, recorded_wire_decimals
 
     policy, _digest = load_decoding_policy()
     sampling = chair_decoding(policy, chair)
-    sent = {**recorded_sampling(sampling), "max_tokens": 64, "seed": 7}
+    sent = {**recorded_wire_decimals(sampling), "max_tokens": 64, "seed": 7}
     context, call, payload = _testimonium_call_world(sent)
-    call["sampling_effective"] = recorded_sampling(engine_effective_sampling(sampling))
+    call["sampling_effective"] = recorded_wire_decimals(engine_effective_sampling(sampling))
     context.tree.read_bytes = lambda _path: json.dumps(call).encode()
     attestatores._verify_testimonium_call_sampling(context, payload, chair)
 

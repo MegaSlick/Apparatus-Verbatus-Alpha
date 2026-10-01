@@ -5,7 +5,13 @@ import pytest
 import run as perlector_run
 from run import resolve_sampling_approval
 
-from common.contracts.approval import build_approval_record
+from common.contracts.approval import (
+    MAX_APPROVAL_REASON_BYTES,
+    MAX_APPROVAL_SUBJECT_BYTES,
+    MAX_APPROVAL_SUBJECTS,
+    MAX_APPROVAL_TIMESTAMP_BYTES,
+    build_approval_record,
+)
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
 from common.runtree.store import RECEIPTS_DIR, RunTree
@@ -220,6 +226,28 @@ def test_sampling_approval_scan_refuses_an_oversized_receipt_before_parsing(tmp_
 
     with pytest.raises(ContractError, match="larger than the 8-byte"):
         _resolve(context, SUBJECTS[0])
+
+
+def test_the_largest_valid_approval_record_fits_the_sampling_read_bound():
+    """Every field at its ceiling, in characters canonical JSON escapes to six bytes."""
+    # Control characters that JSON writes as `\u00XX`; the short escapes are left out.
+    six_byte = [chr(code) for code in range(0x20) if chr(code) not in "\b\t\n\f\r"]
+    subjects = [
+        six_byte[1] * (MAX_APPROVAL_SUBJECT_BYTES - 2)
+        + six_byte[index // len(six_byte)]
+        + six_byte[index % len(six_byte)]
+        for index in range(MAX_APPROVAL_SUBJECTS)
+    ]
+    record = build_approval_record(
+        subject_ids=subjects,
+        action="other",
+        reason=six_byte[1] * MAX_APPROVAL_REASON_BYTES,
+        target_version_hash="a" * 64,
+        timestamp=six_byte[1] * MAX_APPROVAL_TIMESTAMP_BYTES,
+    )
+    size = len(canonical_bytes(record))
+    assert size > 6 * MAX_APPROVAL_SUBJECTS * MAX_APPROVAL_SUBJECT_BYTES
+    assert size <= perlector_run.MAX_SAMPLING_APPROVAL_RECEIPT_BYTES
 
 
 def test_sampling_approval_scan_compares_every_receipt_content_address(tmp_path):

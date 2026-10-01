@@ -76,6 +76,7 @@ def _qualification_fixture(
     smoke_receipts = []
     cache_receipts = []
     placements = []
+    subprocess_receipts = []
     for role, identity in sorted(models.chairs.items()):
         if not isinstance(identity, ChairIdentity):
             continue
@@ -85,8 +86,9 @@ def _qualification_fixture(
             if row["chair"] == role and row["tier"] == PROVEN_TIER
         )
         if kind in ("subprocess", "in-process"):
-            # A chair its stage runs itself: preflight verifies its weights and
-            # places it, and reads no page through it, so it has no smoke receipt.
+            # A chair its stage runs itself is never served: preflight verifies
+            # its weights and places it (and runs a subprocess chair's own
+            # runner once on the golden page), so it has no smoke receipt.
             cache_receipts.append(
                 {
                     "chair": role,
@@ -102,6 +104,19 @@ def _qualification_fixture(
                     "state": kind,
                 }
             )
+            if kind == "subprocess":
+                # Its own runner read the golden page once, in its own environment.
+                subprocess_receipts.append(
+                    {
+                        "chair": role,
+                        "environment": next(
+                            row["environment"]
+                            for row in profile_rows
+                            if row["chair"] == role and row["tier"] == PROVEN_TIER
+                        ),
+                        "versions": {"surya_ocr": "0.22.1", "torch": "2.14.0"},
+                    }
+                )
             continue
         served_model_id = next(
             row["served_model_id"]
@@ -212,6 +227,7 @@ def _qualification_fixture(
         "cache_receipts": cache_receipts,
         "placements": placements,
         "smoke_receipts": smoke_receipts,
+        "subprocess_receipts": subprocess_receipts,
     }
     wrapper = {
         "schema": "pod-bootstrap-result.v1",
@@ -281,6 +297,19 @@ def test_green_qualification_renders_marks_for_only_the_measured_tier(tmp_path: 
         sum(getattr(profile, "preflight_state", None) == "proven" for profile in parsed.profiles)
         == 5
     )
+
+
+def test_a_parsed_catalogue_keeps_one_profile_per_row_in_file_order() -> None:
+    """Qualification pairs each typed profile with its raw row by position."""
+
+    shipped = Path(__file__).resolve().parents[2] / "config" / "serving_recipes.toml"
+    raw = tomllib.loads(shipped.read_text(encoding="utf-8"))
+
+    parsed = parse_serving_recipes(raw)
+
+    assert [(p.recipe, p.chair, p.tier) for p in parsed.profiles] == [
+        (row["recipe"], row["chair"], row["tier"]) for row in raw["profiles"]
+    ]
 
 
 def test_bootstrap_witness_evidence_is_accepted_by_the_qualifier(tmp_path: Path) -> None:
@@ -409,6 +438,37 @@ def test_an_in_process_chair_must_be_placed_in_process(tmp_path: Path) -> None:
             placement["state"] = "planned"
     paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
     with pytest.raises(QualificationRefusal, match="'secondary_proposer' was not planned"):
+        _qualify(paths)
+
+
+def test_a_subprocess_chair_needs_its_runner_s_receipt(tmp_path: Path) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    preflight = wrapper["bootstrap"]["receipts"]["preflight"]
+    (receipt,) = preflight["subprocess_receipts"]
+    assert receipt["chair"] == SURYA_CHAIR
+    receipt["environment"] = "operations/serving/elsewhere"
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="does not name its row's environment"):
+        _qualify(paths)
+    preflight["subprocess_receipts"] = []
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="run as subprocesses"):
+        _qualify(paths)
+
+
+def test_a_subprocess_receipt_must_measure_the_row_s_pinned_packages(tmp_path: Path) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    (receipt,) = wrapper["bootstrap"]["receipts"]["preflight"]["subprocess_receipts"]
+    receipt["versions"]["torch"] = "2.14.0+cu130"
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    _qualify(paths)
+    receipt["versions"]["surya_ocr"] = "0.22.0"
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="ran surya-ocr '0.22.0'.*pins '0.22.1'"):
+        _qualify(paths)
+    del receipt["versions"]
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="measured no versions"):
         _qualify(paths)
 
 
@@ -557,7 +617,7 @@ def test_qualification_names_a_receipt_without_recorded_edit_distance(tmp_path: 
 
     with pytest.raises(
         QualificationRefusal,
-        match=r"missing edit distance \(receipt predates distance recording; re-run preflight\)",
+        match="smoke receipt records no page_witness_edit_distance; re-run preflight",
     ):
         _qualify(paths)
 
@@ -688,6 +748,116 @@ def test_qualification_refuses_a_normal_launch_audit(tmp_path: Path) -> None:
     paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
 
     with pytest.raises(QualificationRefusal, match="was not launched for qualification"):
+        _qualify(paths)
+
+
+def _rebind(
+    evidence_root: Path,
+    smoke: dict,
+    *,
+    receipt: dict | None = None,
+    audit: dict | None = None,
+) -> None:
+    """Rewrite one smoke receipt's serving artifacts consistently, so only the
+    field under test disagrees."""
+
+    if receipt is not None:
+        smoke["service_receipt"] = receipt
+        smoke["receipt_reference"] = _write_artifact(evidence_root, "receipts", receipt)
+    if audit is not None:
+        smoke["serving_launch_audit"] = audit
+        smoke["serving_launch_audit_reference"] = _write_artifact(
+            evidence_root, "launch-audits", audit
+        )
+    smoke["serving_evidence_reference"] = _write_artifact(
+        evidence_root,
+        "serving-evidence",
+        {
+            "schema": "serving-evidence.v1",
+            "receipt_reference": smoke["receipt_reference"],
+            "launch_audit_reference": smoke["serving_launch_audit_reference"],
+        },
+    )
+
+
+def _smoke_field(field: str, value: object):
+    def mutate(root: Path, smoke: dict) -> None:
+        del root
+        smoke[field] = value
+
+    return mutate
+
+
+def _embedded(field: str):
+    def mutate(root: Path, smoke: dict) -> None:
+        del root
+        smoke[field] = {**smoke[field], "chair": "someone-else"}
+
+    return mutate
+
+
+def _misbound(root: Path, smoke: dict) -> None:
+    smoke["serving_evidence_reference"] = _write_artifact(
+        root,
+        "serving-evidence",
+        {
+            "schema": "serving-evidence.v1",
+            "receipt_reference": smoke["receipt_reference"],
+            "launch_audit_reference": smoke["receipt_reference"],
+        },
+    )
+
+
+def _receipt_changed(root: Path, smoke: dict) -> None:
+    _rebind(root, smoke, receipt={**smoke["service_receipt"], "chair": "someone-else"})
+
+
+def _audit_changed(field: str, value: object):
+    def mutate(root: Path, smoke: dict) -> None:
+        _rebind(root, smoke, audit={**smoke["serving_launch_audit"], field: value})
+
+    return mutate
+
+
+def _audit_profile_changed(root: Path, smoke: dict) -> None:
+    audit = smoke["serving_launch_audit"]
+    _rebind(root, smoke, audit={**audit, "profile": {**audit["profile"], "tier": "other-tier"}})
+
+
+@pytest.mark.parametrize(
+    ("mutate", "refusal"),
+    [
+        (_smoke_field("served_engine", ""), "has no served engine"),
+        (_smoke_field("utilization", []), "has no utilization samples"),
+        (_smoke_field("utilization", [{"gpu_percent": "50"}]), "malformed utilization samples"),
+        (
+            _smoke_field("utilization", [{"gpu_percent": "50", "cpu_percent": ""}]),
+            "malformed utilization samples",
+        ),
+        (_smoke_field("supplied_fixture_sha256", "f" * 64), "smoked a different golden page"),
+        (_smoke_field("smoke_service_request_count", 0), "no valid smoke_service_request_count"),
+        (_smoke_field("smoke_fixture_request_count", True), "no valid smoke_fixture_request_count"),
+        (_embedded("service_receipt"), "service receipt artifact disagrees"),
+        (_embedded("serving_launch_audit"), "launch audit artifact disagrees"),
+        (_misbound, "serving evidence is misbound"),
+        (_receipt_changed, "service receipt identity changed"),
+        (_smoke_field("served_engine", "vllm 0.other"), "served-engine claim changed"),
+        (_audit_changed("schema", "serving-launch-audit.v0"), "launch audit has the wrong schema"),
+        (_audit_changed("chair", "someone-else"), "launch audit names another chair"),
+        (_audit_changed("configuration_inputs", {}), "launch used different configuration"),
+        (_audit_changed("primary_identity", {}), "launch used a different identity"),
+        (_audit_profile_changed, "launch audit names another profile"),
+    ],
+)
+def test_qualification_refuses_each_disagreeing_smoke_fact_by_name(
+    tmp_path: Path, mutate, refusal: str
+) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    smoke = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"][0]  # type: ignore[index]
+    mutate(paths["evidence"], smoke)
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match=refusal):
         _qualify(paths)
 
 

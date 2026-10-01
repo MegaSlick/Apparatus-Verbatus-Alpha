@@ -27,7 +27,12 @@ from common.contracts.errors import ContractError
 from common.sealed_config import read_sealed_toml
 
 from . import bootstrap_main
-from .bootstrap import CONFIGURATION_RECEIPT_SCHEMA, BootstrapStep, BootstrapStepFailure
+from .bootstrap import (
+    CONFIGURATION_RECEIPT_SCHEMA,
+    BootstrapReport,
+    BootstrapStep,
+    BootstrapStepFailure,
+)
 from .bootstrap_main import (
     HARD_DEADLINE_ENV,
     HOLD_SCHEMA,
@@ -613,6 +618,27 @@ def test_a_refusal_report_write_failure_is_named_not_swallowed(
     assert "--interval-seconds must be a positive finite number" in err
     assert "refusal report could not be written" in err
     assert "no space left on device" in err
+
+
+def test_an_unbuildable_factory_names_a_refusal_report_it_could_not_write(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+
+    def unbuildable(plan):  # type: ignore[no-untyped-def]
+        def broken_atomic_write(path, payload):  # type: ignore[no-untyped-def]
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(bootstrap_main, "atomic_write", broken_atomic_write)
+        raise RuntimeError("the workspace has no uv")
+
+    exit_code = main(_argv(ws), environ=_environ(clock), actions_factory=unbuildable)
+
+    assert exit_code == 2
+    err = capsys.readouterr().err
+    assert "bootstrap actions could not be built: the workspace has no uv" in err
+    assert "refusal report could not be written: no space left on device" in err
     assert not ws.report_path.exists()
 
 
@@ -1113,6 +1139,128 @@ def test_chair_cache_receipt_says_sources_were_planned(monkeypatch: pytest.Monke
     }
 
 
+def _local_chair_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A roster binding one local-repository chair, and a store snapshot of it."""
+    from common.chairs.manifests import build_manifest, write_manifest
+
+    snapshot = tmp_path / "store" / "local" / "surya2-detection"
+    (snapshot / "surya_layout2").mkdir(parents=True)
+    (snapshot / "surya_layout2" / "LICENSE").write_text("licence\n", encoding="utf-8")
+    (snapshot / "surya_layout2" / "rfdetr_layout.pth").write_bytes(b"weights\n")
+    (snapshot / "surya-bundle.json").write_text("{}\n", encoding="utf-8")
+    config = tmp_path / "repo" / "config"
+    pin = write_manifest(build_manifest(snapshot), config / "manifests" / "surya2-detection.json")
+    models = config / "models-real.toml"
+    models.write_text(
+        'witness_floor = 0\nmodel_root = "real-models"\n\n[chairs.designator_surya]\n'
+        'state = "configured"\nsource = "local-repository"\npath = "designator_surya"\n'
+        f'digest_manifest = "{pin}"\nmanifest = "manifests/surya2-detection.json"\n'
+        'serving_recipe = "unproven-real-surya"\nlicense_note = "under test"\n',
+        encoding="utf-8",
+    )
+
+    class Fetcher:
+        """The store's role fetcher, over the one prepared snapshot."""
+
+        def __init__(self, root: Path) -> None:
+            assert root == tmp_path / "store"
+            self.copies = 0
+
+        def plan(self, identity):  # type: ignore[no-untyped-def]
+            assert identity.digest_manifest == pin
+            return {"snapshot": str(snapshot)}
+
+        def fetch(self, identity, destination: Path, paths) -> None:  # type: ignore[no-untyped-def]
+            self.copies += 1
+            for relative in paths:
+                (destination / relative).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(snapshot / relative, destination / relative)
+
+    monkeypatch.setattr(bootstrap_main, "StoreRoleFetcher", Fetcher)
+    from types import SimpleNamespace
+
+    plan = SimpleNamespace(
+        models_config=models, cache_root=tmp_path / "cache", store_root=tmp_path / "store"
+    )
+    return plan, config / "real-models" / "designator_surya", snapshot
+
+
+def test_chair_cache_places_a_local_chair_s_verified_bundle_where_the_roster_binds_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+
+    receipt = bootstrap_main._build_cache(plan)
+
+    assert receipt["chairs"] == [
+        {"chair": "designator_surya", "state": "local-placed", "snapshot": str(snapshot)}
+    ]
+    assert (placed / "surya_layout2" / "rfdetr_layout.pth").read_bytes() == b"weights\n"
+    assert sorted(p.name for p in placed.parent.iterdir()) == ["designator_surya"]
+    # A second boot finds a verified copy and keeps it.
+    assert bootstrap_main._build_cache(plan)["chairs"] == [
+        {"chair": "designator_surya", "state": "local-verified", "root": str(placed)}
+    ]
+
+
+def test_chair_cache_replaces_a_placed_bundle_that_no_longer_verifies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, placed, _snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    bootstrap_main._build_cache(plan)
+    (placed / "surya_layout2" / "rfdetr_layout.pth").write_bytes(b"changed\n")
+
+    bootstrap_main._build_cache(plan)
+
+    assert (placed / "surya_layout2" / "rfdetr_layout.pth").read_bytes() == b"weights\n"
+
+
+def test_chair_cache_refuses_a_store_copy_that_does_not_match_the_roster_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from common.chairs.errors import ChairRefusal
+
+    plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    (snapshot / "surya_layout2" / "rfdetr_layout.pth").write_bytes(b"other weights\n")
+
+    with pytest.raises(ChairRefusal):
+        bootstrap_main._build_cache(plan)
+    assert not placed.exists()
+    assert not (placed.parent / ".designator_surya.placing").exists()
+
+
+def test_chair_cache_leaves_no_staging_behind_when_the_copy_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, placed, _snapshot = _local_chair_setup(tmp_path, monkeypatch)
+
+    def failing(self, identity, destination: Path, paths) -> None:  # type: ignore[no-untyped-def]
+        (destination / "partial").write_bytes(b"half a copy")
+        raise OSError("store volume went away")
+
+    monkeypatch.setattr(bootstrap_main.StoreRoleFetcher, "fetch", failing)
+    with pytest.raises(OSError, match="went away"):
+        bootstrap_main._build_cache(plan)
+    assert not placed.exists()
+    assert not (placed.parent / ".designator_surya.placing").exists()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "file"])
+def test_chair_cache_refuses_a_bound_path_that_is_not_a_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    placed.parent.mkdir(parents=True)
+    if kind == "symlink":
+        placed.symlink_to(snapshot, target_is_directory=True)
+    else:
+        placed.write_bytes(b"not a bundle")
+
+    with pytest.raises(BootstrapStepFailure, match="designator_surya is bound at .*a link or not"):
+        bootstrap_main._build_cache(plan)
+    assert placed.is_symlink() or placed.is_file()
+
+
 def test_build_actions_does_not_read_models_config_before_configuration_runs(
     tmp_path: Path,
 ) -> None:
@@ -1376,7 +1524,7 @@ def test_a_placement_value_changed_after_a_green_bootstrap_refuses_the_resume(
     first = bootstrap_main.run_bootstrap(
         plan, now=lambda: START, actions_factory=lambda _plan: _configuration_actions(plan)
     )
-    assert not isinstance(first, int) and first.green
+    assert isinstance(first, BootstrapReport) and first.green
 
     ws.placement_config.write_bytes(
         ws.placement_config.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
@@ -1386,7 +1534,9 @@ def test_a_placement_value_changed_after_a_green_bootstrap_refuses_the_resume(
         plan, now=lambda: START, actions_factory=lambda _plan: resumed_actions
     )
 
-    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
 
 
@@ -1529,7 +1679,9 @@ def test_configuration_refuses_semantic_selected_source_before_later_work(
         plan, now=lambda: START, actions_factory=lambda _plan: actions
     )
 
-    assert not isinstance(result, int) and result.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(result, BootstrapReport) and result.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert actions.calls == [BootstrapStep.REPOSITORY, BootstrapStep.CONFIGURATION]
     assert named_source in (result.detail or "")
     assert str(selected) in (result.detail or "")
@@ -1546,7 +1698,7 @@ def test_a_partial_journal_refuses_a_changed_configuration_path_before_uv(
         now=lambda: START,
         actions_factory=lambda plan: first_actions,
     )
-    assert not isinstance(first, int) and first.failure_step is BootstrapStep.UV_ENVIRONMENT
+    assert isinstance(first, BootstrapReport) and first.failure_step is BootstrapStep.UV_ENVIRONMENT
 
     alternate = ws.repository / "config" / "alternate-context.toml"
     alternate.write_bytes(original.witness_context_config.read_bytes())  # type: ignore[union-attr]
@@ -1558,7 +1710,9 @@ def test_a_partial_journal_refuses_a_changed_configuration_path_before_uv(
         actions_factory=lambda plan: resumed_actions,
     )
 
-    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
     journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     assert journal["receipts"]["configuration"]["bindings"]["witness_context_config"][
@@ -1578,7 +1732,7 @@ def test_a_green_journal_refuses_a_changed_configuration_path_before_shortcut(
         now=lambda: START,
         actions_factory=lambda plan: first_actions,
     )
-    assert not isinstance(first, int) and first.green
+    assert isinstance(first, BootstrapReport) and first.green
 
     alternate = ws.repository / "config" / "alternate-recipes.toml"
     assert original.serving_recipes_config is not None
@@ -1591,7 +1745,9 @@ def test_a_green_journal_refuses_a_changed_configuration_path_before_shortcut(
         actions_factory=lambda plan: resumed_actions,
     )
 
-    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
     assert BootstrapStep.UV_ENVIRONMENT not in resumed_actions.calls
 
@@ -1606,7 +1762,7 @@ def test_a_same_path_serving_byte_change_refuses_before_a_partial_resume(
         now=lambda: START,
         actions_factory=lambda selected: first_actions,
     )
-    assert not isinstance(first, int) and first.failure_step is BootstrapStep.UV_ENVIRONMENT
+    assert isinstance(first, BootstrapReport) and first.failure_step is BootstrapStep.UV_ENVIRONMENT
     original_receipt = json.loads(ws.journal.read_text(encoding="utf-8"))["receipts"][
         "configuration"
     ]
@@ -1624,7 +1780,9 @@ def test_a_same_path_serving_byte_change_refuses_before_a_partial_resume(
         actions_factory=lambda selected: resumed_actions,
     )
 
-    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
     journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     assert journal["receipts"]["configuration"] == original_receipt
@@ -1641,7 +1799,7 @@ def test_an_unchanged_resume_revalidates_configuration_without_rerunning_paid_st
         now=lambda: START,
         actions_factory=lambda selected: first_actions,
     )
-    assert not isinstance(first, int) and first.green
+    assert isinstance(first, BootstrapReport) and first.green
 
     resumed_actions = _configuration_actions(plan)
     resumed = bootstrap_main.run_bootstrap(
@@ -1650,7 +1808,7 @@ def test_an_unchanged_resume_revalidates_configuration_without_rerunning_paid_st
         actions_factory=lambda selected: resumed_actions,
     )
 
-    assert not isinstance(resumed, int) and resumed.green
+    assert isinstance(resumed, BootstrapReport) and resumed.green
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION, BootstrapStep.CUDA_COMPAT]
 
 
@@ -1664,7 +1822,7 @@ def test_a_completed_receipt_missing_one_binding_fails_closed(
         now=lambda: START,
         actions_factory=lambda selected: first_actions,
     )
-    assert not isinstance(first, int) and first.green
+    assert isinstance(first, BootstrapReport) and first.green
 
     journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     del journal["receipts"]["configuration"]["bindings"]["placement_config"]
@@ -1676,7 +1834,9 @@ def test_a_completed_receipt_missing_one_binding_fails_closed(
         actions_factory=lambda selected: resumed_actions,
     )
 
-    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert "lacks the required binding" in (resumed.detail or "")
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
 
@@ -1688,7 +1848,7 @@ def test_a_journal_bound_under_the_raw_byte_receipt_is_refused_by_schema(
     first = bootstrap_main.run_bootstrap(
         plan, now=lambda: START, actions_factory=lambda selected: _configuration_actions(plan)
     )
-    assert not isinstance(first, int) and first.green
+    assert isinstance(first, BootstrapReport) and first.green
 
     journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     journal["receipts"]["configuration"]["schema"] = "pod-bootstrap-configuration.v1"
@@ -1698,7 +1858,9 @@ def test_a_journal_bound_under_the_raw_byte_receipt_is_refused_by_schema(
         plan, now=lambda: START, actions_factory=lambda selected: resumed_actions
     )
 
-    assert not isinstance(resumed, int) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
     assert "predates seal method v2" in (resumed.detail or "")
     assert "lacks the required binding" not in (resumed.detail or "")
     assert f"move {ws.journal} aside" in (resumed.remediation or "")
@@ -1720,7 +1882,7 @@ def test_a_failed_configuration_may_repair_its_selection_before_first_completion
         actions_factory=lambda selected: first_actions,
     )
 
-    assert not isinstance(first, int) and first.failure_step is BootstrapStep.CONFIGURATION
+    assert isinstance(first, BootstrapReport) and first.failure_step is BootstrapStep.CONFIGURATION
     failed_journal = json.loads(ws.journal.read_text(encoding="utf-8"))
     assert failed_journal["completed"] == ["repository"]
     assert "configuration" not in failed_journal["receipts"]
@@ -1732,7 +1894,7 @@ def test_a_failed_configuration_may_repair_its_selection_before_first_completion
         actions_factory=lambda selected: repaired_actions,
     )
 
-    assert not isinstance(repaired, int) and repaired.green
+    assert isinstance(repaired, BootstrapReport) and repaired.green
     assert repaired_actions.calls[0] is BootstrapStep.CONFIGURATION
     assert BootstrapStep.UV_ENVIRONMENT in repaired_actions.calls
     repaired_journal = json.loads(ws.journal.read_text(encoding="utf-8"))
@@ -1766,9 +1928,9 @@ def _render_recipes(rows: list[dict[str, object]]) -> str:
 SURYA_CHAIR = "designator_surya"
 
 
-def _surya_environment_answers(identity, profile, weights_root, golden_page):  # type: ignore[no-untyped-def]
+def _surya_environment_answers(identity, profile, weights_root, golden_page, manifest_rows):  # type: ignore[no-untyped-def]
     """Surya's runner answering its golden-page run with the row's own pins."""
-    del identity, weights_root, golden_page
+    del identity, weights_root, golden_page, manifest_rows
     return {
         "versions": {
             "surya_ocr": profile.required_packages["surya-ocr"],
@@ -1904,10 +2066,12 @@ def test_preflight_measures_the_placement_table_the_run_seals(tmp_path: Path) ->
 
 
 def test_bootstrap_syncs_a_subprocess_environment_only_for_a_row_that_runs_in_it(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from .bootstrap_main import _subprocess_environments, build_parser, resolve_plan
 
+    # A store that already holds every bundle needs no fetcher environment.
+    monkeypatch.setattr(bootstrap_main, "pending_local_artifacts", lambda root: ())
     ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
     plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
     assert _subprocess_environments(plan) == frozenset({"operations/serving/surya"})
@@ -1920,6 +2084,105 @@ def test_bootstrap_syncs_a_subprocess_environment_only_for_a_row_that_runs_in_it
         ws.repository / "config" / "serving_recipes.toml",
     )
     assert _subprocess_environments(plan) == frozenset()
+
+
+def test_bootstrap_syncs_surya_s_environment_only_for_a_stage_that_runs_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from .bootstrap_main import _subprocess_environments, build_parser, resolve_plan
+
+    monkeypatch.setattr(bootstrap_main, "pending_local_artifacts", lambda root: ())
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+
+    # A pod for the Attestatores or the Perlector never runs the Designator's Surya.
+    witnesses = replace(plan, preflight_roles=("attestator_1", "perlector"))
+    assert _subprocess_environments(witnesses) == frozenset()
+    designator = replace(
+        plan, preflight_roles=("designator_structure", "designator_surya", "secondary_proposer")
+    )
+    assert _subprocess_environments(designator) == frozenset({"operations/serving/surya"})
+
+
+def test_bootstrap_reads_the_serving_catalogue_only_from_inside_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catalogue swapped for a link out of the checkout after the plan is
+    resolved is refused by name, as the roster is."""
+    from .bootstrap_main import _stage_environments, build_parser, resolve_plan
+
+    monkeypatch.setattr(bootstrap_main, "pending_local_artifacts", lambda root: ())
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    catalogue = ws.repository / "config" / "serving_recipes.toml"
+    outside = tmp_path / "elsewhere.toml"
+    outside.write_bytes(catalogue.read_bytes())
+    catalogue.unlink()
+    catalogue.symlink_to(outside)
+
+    with pytest.raises(ContractError, match="serving catalogue .* escapes"):
+        _stage_environments(plan)
+
+
+def test_the_disk_check_counts_each_local_bundle_chair_cache_copies(tmp_path: Path) -> None:
+    """CHAIR_CACHE copies each local-repository chair onto container-local disk,
+    so its manifest's bytes are counted where the roster binds it."""
+    from common.chairs.config import load_models_toml
+    from common.chairs.manifests import read_manifest
+
+    from .bootstrap_main import _local_bundles, build_parser, resolve_plan
+
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    models = load_models_toml(ws.models_config)
+    surya = models.chairs[SURYA_CHAIR]
+    manifest = read_manifest(
+        ws.models_config.parent / surya.manifest,
+        expected_digest=surya.digest_manifest,
+        chair=SURYA_CHAIR,
+    )
+
+    bundles = _local_bundles(plan)
+
+    target = ws.models_config.parent / models.model_root / surya.path
+    assert bundles[target] == sum(row.size for row in manifest.rows) > 0
+
+
+def test_the_bundle_fetcher_s_environment_is_synced_while_the_store_lacks_a_bundle(
+    tmp_path: Path,
+) -> None:
+    """MODEL_STORE fetches Surya's bundle whatever the roster configures, so a pod
+    whose roster does not configure Surya still syncs the environment its
+    prefetch runs in, until the store holds the bundle."""
+    from .bootstrap import SUBPROCESS_ENVIRONMENT_REQUIRED_BYTES
+    from .bootstrap_main import (
+        _bundle_fetcher,
+        _subprocess_environments,
+        build_parser,
+        resolve_plan,
+    )
+
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    roster = ws.models_config.read_text(encoding="utf-8")
+    start = roster.index("[chairs.designator_surya]")
+    end = roster.index("\n\n", start)
+    ws.models_config.write_text(
+        roster[:start]
+        + '[chairs.designator_surya]\nstate = "absent"\nreason = "not on this roster"'
+        + roster[end:],
+        encoding="utf-8",
+    )
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    assert plan.store_root is not None and not plan.store_root.exists()
+
+    assert _subprocess_environments(plan) == frozenset({_bundle_fetcher().environment})
+    assert _bundle_fetcher().environment in SUBPROCESS_ENVIRONMENT_REQUIRED_BYTES
+
+    # A store record that cannot be read is named at this step, before any sync.
+    plan.store_root.mkdir(parents=True)
+    (plan.store_root / "download_record.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(BootstrapStepFailure, match="cannot say what it still needs"):
+        _subprocess_environments(plan)
 
 
 def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
@@ -2079,9 +2342,7 @@ def test_a_page_swap_after_the_last_smoke_leaves_the_digest_naming_the_smoked_by
 
 def test_a_mid_run_page_swap_is_refused_by_name_not_reported_green(tmp_path: Path) -> None:
     """A swap between two chairs' smokes means one preflight measured two
-
-    different pages -- a shape the old single ``golden_page_sha256`` field
-    could not even represent, let alone refuse.
+    different pages, and the preflight refuses it by name.
     """
 
     from .bootstrap import BootstrapStepFailure

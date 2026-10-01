@@ -15,9 +15,8 @@ from common.background import load_background_config, resolve_background_policy
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.stages import DESIGNATOR, INK_MAP
 from common.residual_ink import (
-    edge_ink,
     edge_ink_from_runs,
-    ink_runs_from_rows,
+    ink_map_page,
     load_coverage_audit_config,
     resolve_coverage_audit_policy,
 )
@@ -84,7 +83,6 @@ def _ink_record(artifact_id: str, ordinal, outcome="mapped", evidence=None, edge
             "page_ordinal": ordinal,
             "ink_measurable": True,
             "background": dict(_BACKGROUND),
-            "ink": {},
             "edge": edge,
             "edge_findings": retained,
         },
@@ -149,7 +147,7 @@ def test_retained_dimensions_must_match_the_sealed_exemplar_pixels():
     with pytest.raises(FatalAccounting, match="does not reconcile with its retained") as refusal:
         armarium.ink_map_page_rows(_context({INK_MAP: [record]}), SEALED_ONE, {})
     assert isinstance(refusal.value.__cause__, ContractError)
-    assert "dimensions do not match the sealed Exemplar pixels" in str(refusal.value.__cause__)
+    assert "not the sealed page's 40x2" in str(refusal.value.__cause__)
 
 
 @pytest.mark.parametrize(
@@ -162,7 +160,6 @@ def test_a_measured_ink_map_payload_must_name_the_current_background_contract(de
     if defect == "base-era":
         del payload["ink_measurable"]
         del payload["background"]
-        del payload["ink"]
         del payload["edge"]
     elif defect == "wrong-seal":
         payload["background"] = {**_BACKGROUND, "config_sha256": "1" * 64}
@@ -211,22 +208,15 @@ def test_same_outcome_run_loss_is_refused_before_a_crop_can_release_it():
     coverage_config = load_coverage_audit_config(INK_MAP_CONFIG)
     background_policy = resolve_background_policy(background_config, width, height)
     coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
-    producer_finding = ink_map.artifact_finding(
-        edge_ink(
-            width,
-            height,
-            rows,
-            background_policy=background_policy,
-            coverage_policy=coverage_policy,
-        )
-    )
-    producer_runs = ink_runs_from_rows(
+    produced = ink_map_page(
         width,
         height,
         rows,
         background_policy=background_policy,
         coverage_policy=coverage_policy,
     )
+    producer_finding = ink_map.artifact_finding(produced["edge"])
+    producer_runs = produced["edge_findings"]
     assert producer_runs["rows"][0] == [[0, 80]]
     record = _ink_record(
         "producer",
@@ -333,22 +323,17 @@ def test_a_structural_component_may_contain_no_ink_at_the_audits_stricter_contra
     coverage_config = load_coverage_audit_config(INK_MAP_CONFIG)
     background_policy = resolve_background_policy(background_config, width, height)
     coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
-    producer_finding = edge_ink(
+    produced = ink_map_page(
         width,
         height,
         rows,
         background_policy=background_policy,
         coverage_policy=coverage_policy,
     )
-    producer_runs = ink_runs_from_rows(
-        width,
-        height,
-        rows,
-        background_policy=background_policy,
-        coverage_policy=coverage_policy,
-    )
-    assert producer_finding["background"]["ink_margin"] == 20
-    assert producer_finding["background"]["contrast_below_background"] == 40
+    producer_finding = produced["edge"]
+    producer_runs = produced["edge_findings"]
+    assert produced["background"]["ink_margin"] == 20
+    assert produced["background"]["contrast_below_background"] == 40
     assert producer_finding["page_spanning_components"] == [
         {"x": 0, "y": 0, "w": width, "h": height}
     ]
@@ -362,7 +347,7 @@ def test_a_structural_component_may_contain_no_ink_at_the_audits_stricter_contra
         edge=ink_map.artifact_finding(producer_finding),
     )
     record["payload"]["background"] = {
-        **producer_finding["background"],
+        **produced["background"],
         "config_sha256": INK_MAP_CONFIG_DIGEST,
     }
     assert armarium.ink_map_page_rows(

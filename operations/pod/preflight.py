@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from common.chairs.errors import CacheRevisionRefusal, DigestMismatchRefusal
-from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
+from common.chairs.models import AbsentChair, ChairIdentity, DigestManifest, ModelsConfig
 
 if TYPE_CHECKING:
     from operations.serving.config import ServingRecipes
@@ -34,16 +34,13 @@ class _RuntimeProvenance:
     """Opaque proof that a runtime in this package produced the value it sits on.
 
     `assembly_proven` is the one claim a preflight receipt makes about a paid
-    measurement, and until this existed it was derived from two ordinary
-    dataclass fields -- `GpuProfile.measured` and `SmokeResult.served_by` --
-    that any caller of `PreflightRunner.run` could set to whatever it liked.
-    Both are constructor arguments; a caller-built profile and a caller-built
-    smoke result could therefore publish "real assembly measured on <card>"
-    with no `nvidia-smi` read and no served engine anywhere in the run. A
-    fabricated *page* was already caught by `_bound_receipt`; a fabricated
-    *claim about the hardware* was not.
-
-    So the two facts now travel as an instance of this class, which is:
+    measurement. It rests on two facts, `GpuProfile.measured` and
+    `SmokeResult.served_by`, and each can be set only together with an instance
+    of this class: both are constructor arguments that a caller of
+    `PreflightRunner.run` supplies, so without the token a caller-built profile
+    and smoke result could publish "real assembly measured on <card>" with no
+    `nvidia-smi` read and no served engine. (`_bound_receipt` guards the page;
+    this guards the claim about the hardware.) The token is:
 
     * module-private, and never exported, so no public name reaches it;
     * minted in exactly two places -- `SystemGpuProbe.profile`'s successful
@@ -123,8 +120,8 @@ class GpuProfile:
     real GPU was measured on the strength of a number somebody typed.
 
     It cannot be set without `provenance`, and `provenance` cannot be minted
-    outside this module, so this flag is now a statement about where the profile
-    came from rather than about what its constructor was told.
+    outside this module, so this flag states where the profile came from, not
+    what its constructor was told.
     """
     provenance: object | None = field(default=None, repr=False, compare=False)
     """The probe's own opaque token, or `None`.  Never serialised.
@@ -261,7 +258,7 @@ class SystemGpuProbe:
                 # The one place `measured` is ever set: `nvidia-smi` answered
                 # with four parseable fields for a card this process can see.
                 # The token beside it is what makes that unforgeable from
-                # outside this module -- the flag alone was an argument.
+                # outside this module; the flag without it is refused.
                 measured=True,
                 provenance=_mint_runtime_provenance("nvidia-smi read by SystemGpuProbe"),
             )
@@ -280,7 +277,7 @@ class SystemGpuProbe:
 
     # A hung `nvidia-smi` -- a wedged driver, a card mid-reset -- would otherwise
     # block preflight forever on a pod that is already billing, and the red
-    # `GpuProfile` path below would never be reached.  `TimeoutExpired` is an
+    # `GpuProfile` path in `profile` would never be reached.  `TimeoutExpired` is an
     # `Exception`, so the handler in `profile` records it in `discovery_detail`
     # like any other discovery failure.
     _RUN_TIMEOUT_SECONDS = 30.0
@@ -673,8 +670,8 @@ class SmokeResult:
     reader that fabricates a green `SmokeResult` cannot also fabricate the claim
     that an engine produced it.  `PreflightReport.assembly_proven` reads this.
 
-    "Only" is now enforced rather than documented: it cannot be set without the
-    `provenance` token below, which is minted in that one lifecycle path.
+    It cannot be set without the `provenance` token below, which is minted in
+    that one lifecycle path.
     """
     provenance: object | None = field(default=None, repr=False, compare=False)
     """The serving runtime's own opaque token, or `None`.  Never serialised.
@@ -722,30 +719,49 @@ class ChairCacheVerifier(Protocol):
     def verify(self, identity: ChairIdentity) -> dict[str, object]:
         """Return an identity-bound verification receipt or raise a named refusal."""
 
+    def manifest(self, identity: ChairIdentity) -> DigestManifest:
+        """The chair's pinned digest manifest, the one ``verify`` checks the cache against."""
 
-SubprocessChecker = Callable[[ChairIdentity, Any, Path, Path], dict[str, object]]
+
+SubprocessChecker = Callable[
+    [ChairIdentity, Any, Path, Path, list[dict[str, object]]], dict[str, object]
+]
 """Run a subprocess chair once on the golden page; return what the run measured.
 
-Called as ``(identity, profile, verified_weights_root, golden_page)``.
+Called as ``(identity, profile, verified_weights_root, golden_page, manifest_rows)``,
+where the rows are the chair's pinned digest manifest.
 """
 
 _MEASURED_RUN_FACTS = ("surya_ocr", "torch", "python", "cpu_capability", "machine")
 
 
 def check_subprocess_environment(
-    identity: ChairIdentity, profile: Any, weights_root: Path, golden_page: Path
+    identity: ChairIdentity,
+    profile: Any,
+    weights_root: Path,
+    golden_page: Path,
+    manifest_rows: list[dict[str, object]],
 ) -> dict[str, object]:
     """Run the chair's own runner once, on the CPU, over the golden page.
 
     The run starts with the environment's version check against the row's
     pins, then loads the verified weights and reads one small page, so a broken
-    environment or bundle fails here rather than in the paid run after it.
+    environment or bundle fails here rather than in the paid run after it. The
+    weights the run names are checked against the pinned manifest rows, as the
+    stage checks them.
     """
     from common.imaging import dimensions
     from operations.serving.surya_detector import run_surya_subprocess
 
     data = golden_page.read_bytes()
-    run = run_surya_subprocess(profile, weights_root, {1: data}, {1: dimensions(data)}, identity)
+    run = run_surya_subprocess(
+        profile,
+        weights_root,
+        {1: data},
+        {1: dimensions(data)},
+        identity,
+        manifest_rows=manifest_rows,
+    )
     page = run.pages[1].document
     return {
         "versions": {key: run.run_facts[key] for key in _MEASURED_RUN_FACTS},
@@ -1110,10 +1126,9 @@ class PreflightRunner:
 
         "Set only by" is enforced by `_RuntimeProvenance`, not by convention.
         `PreflightRunner` takes both values from callers -- a caller supplies
-        the profile to `run` and the reader to the constructor -- so both fields
-        were writable by whoever wanted the claim. Each now travels with an
-        opaque token that only those two runtime paths can mint, and this method
-        checks the token rather than the flag: a caller-built
+        the profile to `run` and the reader to the constructor -- so each
+        travels with an opaque token that only those two runtime paths can
+        mint, and this method checks the token rather than the flag: a caller-built
         `GpuProfile(measured=True)` and a caller-built
         `SmokeResult(served_by=...)` are refused at construction, and no
         combination of ordinary values reaches `True` here.
@@ -1237,7 +1252,21 @@ class PreflightRunner:
             )
             return
         try:
-            measured = self.subprocess_checker(identity, profile, Path(root), self.fixture)
+            manifest_rows = self.cache_verifier.manifest(identity).to_record()
+        except Exception as error:
+            issues.append(
+                PreflightIssue(
+                    "cache-mismatch" if is_cache_mismatch(error) else "cache-verification-failed",
+                    f"chair {identity.role}'s pinned manifest could not be read: {error}",
+                    "Inspect the named cache and pinned manifest; repair the cause before retrying.",
+                    identity.role,
+                )
+            )
+            return
+        try:
+            measured = self.subprocess_checker(
+                identity, profile, Path(root), self.fixture, manifest_rows
+            )
         except Exception as error:
             issues.append(
                 PreflightIssue(

@@ -53,6 +53,16 @@ from common.exemplar_boundary import (  # noqa: E402
     is_triage_derivative_contract,
     verify_triage_derivative,
 )
+from common.imaging import (  # noqa: E402
+    DRAW_ANNOTATIONS,
+    DRAW_FORMS,
+    MIN_RENDER_DPI,
+    POINTS_PER_INCH,
+    RENDER_BACKGROUND,
+    RENDER_CODEC,
+    RENDER_COLOR_MODE,
+    raster_mode_transform,
+)
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
@@ -79,15 +89,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     sources = _submitted_sources(context.run)
     admissions = _checked_admissions(tree, context.run, sources)
 
-    sealed = 0
+    sealed = submission_sealed = 0
+    sealed_digests = context.run.get("sealed_config_digests")
+    canary_ledger = (
+        sealed_digests.get("canary-ledger") if isinstance(sealed_digests, dict) else None
+    )
     page_refs: list[dict[str, str]] = []
     census: list[dict[str, Any]] = []
     admitted_by_page: dict[str, list[tuple[int, dict, dict[str, str], dict[str, str]]]] = {}
     for ordinal, admission, admission_ref, blob_ref in admissions:
         if admission["outcome"] == "refused":
-            # The refusal is carried forward as this stage's own outcome so the
-            # page is accounted for here too. A unit that simply stopped being
-            # mentioned would be invariant #10's imbalance.
+            # The refusal is carried forward as this stage's own outcome so every
+            # submitted ordinal has a page outcome here too.
             result = context.publish(
                 kind="page",
                 subject_id=admission["subject_id"],
@@ -142,9 +155,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 )
             )
         sealed += 1
+        if canary_ledger is None or any(
+            row.get("ledger_sha256") != canary_ledger for row in submission_rows
+        ):
+            submission_sealed += 1
 
     if sealed == 0:
         raise ContractError("every admitted source failed to seal")
+    if submission_sealed == 0:
+        # Canary pages are controls sealed beside the submission, never a
+        # substitute for it.
+        raise ContractError(
+            "only canary pages were admitted; no page of the real submission can be sealed"
+        )
 
     seal_payload: dict[str, Any] = {
         "page_count": len(census),
@@ -708,14 +731,14 @@ def _verify_render_contract(
                 for value in (configured, target, minimum)
             )
             or target != max(configured, minimum)
-            or minimum != 72
+            or minimum != MIN_RENDER_DPI
             or contract["configured_target_dpi"] != configured
             or contract["dpi"] != target
             or contract["min_dpi"] != minimum
-            or contract["scale"] != {"numerator": target, "denominator": 72}
-            or contract["background"] != "white"
-            or contract["draw_annotations"] is not True
-            or contract["draw_forms"] is not True
+            or contract["scale"] != {"numerator": target, "denominator": POINTS_PER_INCH}
+            or contract["background"] != RENDER_BACKGROUND
+            or contract["draw_annotations"] is not DRAW_ANNOTATIONS
+            or contract["draw_forms"] is not DRAW_FORMS
         ):
             raise ContractError("a PDF page's render contract changes the sealed pixel recipe")
         effective = contract["effective_dpi"]
@@ -731,7 +754,7 @@ def _verify_render_contract(
                 "a PDF page's render contract does not name the whole DPI it was "
                 "actually rendered at, inside the recipe's own floor and target"
             )
-        if output["codec"] != "png" or output["color_mode"] != "RGB":
+        if output["codec"] != RENDER_CODEC or output["color_mode"] != RENDER_COLOR_MODE:
             raise ContractError("a PDF page's render contract changes its RGB pixel recipe")
     elif contract["renderer"] == "Pillow":
         if container_format == "pdf":
@@ -755,13 +778,6 @@ def _verify_render_contract(
         source_mode = contract["source_mode"]
         source_bands = contract["source_bands"]
         transform = contract["mode_transform"]
-        high_precision_tiff_modes = {
-            "I": "I",
-            "F": "F",
-            "I;16B": "I;16B",
-            "I;16L": "I;16",
-        }
-        preserved_png = {"1", "L", "LA", "RGB", "RGBA", "I;16"}
         if (
             not isinstance(source_mode, str)
             or not source_mode
@@ -770,31 +786,9 @@ def _verify_render_contract(
             or any(not isinstance(band, str) or not band for band in source_bands)
         ):
             raise ContractError("a raster page's render contract names no source pixel mode")
-        if source_mode in high_precision_tiff_modes:
-            expected_transform = "lossless-tiff-samples"
-            expected_mode = high_precision_tiff_modes[source_mode]
-            expected_codec = "tiff"
-        elif source_mode in preserved_png:
-            expected_transform = "identity"
-            expected_mode = source_mode
-            expected_codec = "png"
-        else:
-            # Premultiplied alpha is its own case, mirroring the renderer
-            # (`image_formats.py`): Pillow spells that band in lower case, so
-            # `"A" in source_bands` reads `La`/`RGBa` as carrying no alpha and
-            # expects an RGB conversion the renderer never performed (it
-            # converts `La` only to `LA` and `RGBa` only to `RGBA`), which
-            # would wrongly refuse a page this contract actually rendered
-            # correctly.
-            premultiplied = {"La": "LA", "RGBa": "RGBA"}.get(source_mode)
-            if premultiplied is not None:
-                expected_mode = premultiplied
-            elif any(band.upper() == "A" for band in source_bands):
-                expected_mode = "RGBA"
-            else:
-                expected_mode = "RGB"
-            expected_transform = f"convert-to-{expected_mode.lower()}"
-            expected_codec = "png"
+        expected_transform, expected_mode, expected_codec = raster_mode_transform(
+            source_mode, source_bands
+        )
         if (
             transform != expected_transform
             or output["codec"] != expected_codec

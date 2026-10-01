@@ -1,14 +1,14 @@
 """One page, one paper value: the background inference every stage that reads ink runs.
 
-Three stages threshold the same pixels and used to disagree about what paper
-is: the Designator infers paper from a page's own two grey-level population
-modes, while the Ink Map and Recensor took the raw histogram mode instead --
-on a photographed opening that mode is the bezel, near-zero, so their audit
-counted approximately zero ink over a page full of writing and the cross-stage
-containment pin held vacuously (an empty set is contained in anything).
+The Designator, the Ink Map and the Recensor threshold the same pixels, and all
+three take paper from this inference over the page's own two grey-level
+population modes, never from the raw histogram mode: on a photographed opening
+that mode is the bezel, near zero, and an audit thresholded below it counts no
+ink over a page full of writing, so the cross-stage containment pin would hold
+over an empty set.
 
-So the inference lives here, and all three stages get the same background, the
-same derived ink margin, and the same refusal by name. What is shared is the
+All three stages get the same background, the same derived ink margin, and the
+same refusal by name. What is shared is the
 background, not the sensitivity: each caller keeps its own margin below it
 (the Designator's derived margin, its `SECONDARY_MARGIN = 2`, the audit's
 `MINIMUM_CONTRAST_BELOW_BACKGROUND = 40`) so the three numbers stay comparable
@@ -21,6 +21,7 @@ it reads the sealed policy's own bytes and takes everything else as arguments.
 from pathlib import Path
 from typing import Any, Final, TypedDict
 
+from common.calibration import validate_provenance_block
 from common.contracts.canonical import is_plain_int, is_sha256
 from common.contracts.errors import ContractError
 from common.sealed_config import read_sealed_toml
@@ -28,11 +29,11 @@ from common.sealed_config import read_sealed_toml
 # Fraction points below a page's inferred background value, deducted from it to
 # get the level at or below which a pixel counts as ink.
 #
-# Not the margin any scan runs at: it is the *floor* under the margin each page
-# derives for itself (`_derived_ink_margin`), and the level
-# `_settle_background_evidence`'s plausibility probe is measured at, since the
-# floor is the most permissive threshold a scan can ever apply. Lives here
-# rather than in `structure.py` because all three ink-thresholding stages now
+# The floor under the margin each page derives for itself (`_derived_ink_margin`),
+# so it is the scan margin of every page whose two modes are too close to derive
+# a larger one, and the level `_settle_background_evidence`'s plausibility probe
+# is measured at, since it is the one level every page shares. Lives here
+# rather than in `structure.py` because all three ink-thresholding stages
 # reach it through this module, and because the AST pin in
 # `common/test_designator_recensor_ink_calibration.py` reads it as a source
 # literal against the sealed `max_ink_bp` measured at this level.
@@ -89,11 +90,10 @@ def _derived_ink_margin(paper: int, dark_mode: int, ink_margin_bp: int) -> int:
     photograph with a black surround and small on a flat page.
 
     Floored at `PRIMARY_MARGIN`: below a gap between the two modes that the
-    floor divides to less than the floor itself -- 60 grey levels, only at the
+    fraction divides to less than the floor itself -- 60 grey levels at the
     sealed `ink_margin_bp = 3333` -- the page has too little separation to
-    derive a margin from, and the floor holds those pages at their
-    pre-existing behaviour, keeping the change monotone (no page's threshold
-    ever rises).
+    derive a margin from and is scanned at the floor, so the derived threshold
+    is never above `paper - PRIMARY_MARGIN`.
 
     What this cannot do: a frame holding two leaves lit differently has two
     dominant paper populations, and this places the threshold for only one --
@@ -175,7 +175,8 @@ class BackgroundEvidence(TypedDict):
 
 # The two `source` values `infer_background_evidence` can return; a page that
 # reaches neither raises `BackgroundInferenceRefusal` instead. Spelled here
-# rather than translated in `run.py`, which publishes them as `background_source`.
+# rather than translated by `common.residual_ink.page_background`, which
+# publishes them as `background_source`.
 # Neither string may be renamed: existing records carry it as published.
 BACKGROUND_SOURCE_MODAL: Final = "inferred-modal"
 BACKGROUND_SOURCE_INTERIOR_MODE: Final = "inferred-interior-mode"
@@ -205,8 +206,8 @@ def _dark_distribution(
 
     Only the interior fraction decides admission; the border fraction is
     measured and published but decides nothing, since it discriminates less
-    than the interior figure does (a border bound here used to refuse many
-    real pages the interior bound did not).
+    than the interior figure does: a border bound refuses many real pages the
+    interior bound admits.
 
     This test never removes a pixel: it only decides which value is reported
     as paper. The surround stays below the ink threshold and is counted and
@@ -219,23 +220,23 @@ def _dark_distribution(
     page-boundary ground truth this pass does not have.
 
     Returns `None` when the page has no interior to compare against, or the
-    interior is itself dark; the caller then refuses as before.
+    interior is itself dark; the caller then refuses the page as majority ink.
     """
     band_x, band_y = policy["band_px_x"], policy["band_px_y"]
     if band_x <= 0 or band_y <= 0 or 2 * band_x >= width or 2 * band_y >= height:
         return None
     # `bytes.translate` maps every sample to 1 (at or below the level) or 0 in
     # C, so this second full-page pass costs a few milliseconds rather than the
-    # seconds a per-pixel Python comparison would -- the same reason the
-    # labeller stopped walking pixels one at a time.
+    # seconds a per-pixel Python comparison would.
     table = bytes(1 if value <= level else 0 for value in range(256))
     interior_dark = 0
     for y in range(band_y, height - band_y):
         row = rows[y]
         # Named here rather than left to an `AttributeError` from inside
-        # `translate`. The histogram loop above iterates any sequence of ints,
-        # so a caller handing this module a list-of-lists page gets that far and
-        # then dies with a message naming neither the scanline nor the reason.
+        # `translate`. `infer_background_evidence`'s histogram pass iterates any
+        # sequence of ints, so a caller handing this module a list-of-lists page
+        # gets that far and then dies with a message naming neither the
+        # scanline nor the reason.
         if not isinstance(row, (bytes, bytearray)):
             raise ContractError(f"scanline {y} is not grayscale bytes")
         interior_dark += row[band_x : width - band_x].translate(table).count(1)
@@ -277,24 +278,22 @@ def infer_background_evidence(
     `PRIMARY_MARGIN` -- a uniformly dark page has mode == mean and is wrong on
     both counts, so it needs this second check too.
 
-    The majority-ink test alone is also wrong for a photograph, measured on 7
-    of 7 real proxies: a black surround (18-26% of the frame) makes pure black
-    the modal pixel even though the paper itself measures in the 180-240
-    band, so every one of those pages was refused and fell back to a blind,
-    unreconciled crop. The repair, `_dark_distribution`, measures the interior
-    dark fraction and, if it is within the sealed limit, takes the modal pixel
-    at or above the page's own mean as paper instead -- without proving a
-    frame or page boundary, and still subject to `PRIMARY_MARGIN` and the
-    final ink-fraction guard below.
+    The majority-ink test alone refuses every photograph with a black surround,
+    measured on 7 of 7 real proxies: a surround of 18-26% of the frame makes
+    pure black the modal pixel even though the paper itself measures in the
+    180-240 band. `_dark_distribution` measures the interior dark fraction and,
+    if it is within the sealed limit, takes the modal pixel at or above the
+    page's own mean as paper instead -- without proving a frame or page
+    boundary, and still subject to `PRIMARY_MARGIN` and the final ink-fraction
+    guard below.
 
-    That arrangement was in turn wrong in the other direction on 6 of 127 real
-    pages (not represented in the 7-proxy calibration): a blown highlight or
-    scanner mount put the modal pixel at 255, lighter than the mean, so the
-    majority-ink question was never asked, that value was taken as paper, and
-    71-85% of the page silently counted as ink with every downstream check
-    reconciling exactly. So the inferred value, from either branch, faces one
-    more question needing no geometry: does it leave the page a *minority* of
-    ink? The bound is `max_ink_bp`, measured at `PRIMARY_MARGIN` rather than
+    A blown highlight or scanner mount can put the modal pixel at 255, lighter
+    than the mean, so the majority-ink question is never asked and that value
+    is taken as paper: measured on 6 of 127 real pages, where 71-85% of the
+    page would count as ink with every downstream check reconciling exactly.
+    So the inferred value, from either branch, faces one more question needing
+    no geometry: does it leave the page a *minority* of ink? The bound is
+    `max_ink_bp`, measured at `PRIMARY_MARGIN` rather than
     the page's own derived threshold, because the derivation would otherwise
     read the same wrong paper value and slide the threshold down with it,
     hiding exactly the failure this bound exists to catch (measured: those six
@@ -346,8 +345,8 @@ def infer_background_evidence(
         # Midpoint of the two modes, capped at this page's own ink threshold
         # so the recorded dark population stays a subset of counted ink.
         # Floored at 0 since a paper value below the margin implies a negative
-        # threshold and this level indexes a histogram; that page is refused
-        # three lines later regardless.
+        # threshold and this level indexes a histogram; such a page is refused
+        # by the `paper >= PRIMARY_MARGIN` check below regardless.
         level = min((dark_mode + paper) // 2, max(0, paper - ink_margin))
         dark_distribution = _dark_distribution(
             width,
@@ -429,9 +428,9 @@ def _settle_background_evidence(
     Measured at `PRIMARY_MARGIN`, the floor under this page's derived margin,
     rather than at the page's own derived threshold: the derivation would
     otherwise take the same wrong paper value and slide the threshold down
-    with it, hiding exactly the failure this bound exists to catch. No page is
-    *scanned* at `PRIMARY_MARGIN`; it is now only the one level every page
-    shares, which a corpus-wide bound needs and a per-page scan does not.
+    with it, hiding exactly the failure this bound exists to catch.
+    `PRIMARY_MARGIN` is the one level every page shares, which a corpus-wide
+    bound needs.
 
     A refusal here is the ordinary `BackgroundInferenceRefusal`: still cut and
     read, `ink_measurable: false`.
@@ -455,6 +454,20 @@ def _settle_background_evidence(
 #: `common/test_designator_recensor_ink_calibration.py` reads as source
 #: literals, which a per-run config value would make unenforceable statically.
 FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
+
+
+def refuse_forbidden_names(fields: dict, where: str) -> None:
+    """Refuse a sealed policy table that names a pinned margin."""
+    found = sorted(name for name in FORBIDDEN_NAMES if name in fields)
+    if found:
+        raise ContractError(
+            f"the sealed policy table {where} carries forbidden field(s) {found}; "
+            "primary_margin/secondary_margin are absolute 8-bit ink-intensity offsets pinned "
+            "as module constants in common/background.py and may never become a per-run "
+            "config value. What is sealed instead is the ink map's [background] ink_margin_bp, "
+            "the fraction of a page's own two-mode distance that derives its margin: a "
+            "population fraction, which scales with the page, and not an offset"
+        )
 
 
 def validate_ink_not_measurable_payload(payload: Any) -> dict[str, Any]:
@@ -503,22 +516,26 @@ def validate_ink_not_measurable_payload(payload: Any) -> dict[str, Any]:
     }
 
 
-def validate_measured_ink_map_payload(payload: Any, *, audit_contrast: int) -> dict[str, Any]:
+def validate_measured_ink_map_payload(
+    payload: Any, *, audit_contrast: int, ink_margin_bp: int
+) -> dict[str, Any]:
     """Validate the closed current Ink Map measurement before consuming its runs.
 
     The retained ``ink-runs.v2`` codec records audited ink after the named
     page-spanning component is removed, but its run geometry alone cannot
     establish the background predicate that selected those pixels. This
     envelope does: it names the page's complete audit background and the sealed
-    ink-map policy bytes that selected it.
+    ink-map policy bytes that selected it. `ink_margin` must be the margin the
+    sealed `ink_margin_bp` derives from the recorded paper and dark modes, since
+    the page-spanning split behind every count was cut at it.
     """
     if not isinstance(payload, dict):
         raise ContractError("the measured ink-map record has no object payload")
-    fields = {"page_ordinal", "ink_measurable", "background", "ink", "edge", "edge_findings"}
+    fields = {"page_ordinal", "ink_measurable", "background", "edge", "edge_findings"}
     if set(payload) != fields:
         raise ContractError(
             "the measured ink-map payload is not closed: expected exactly "
-            "page_ordinal, ink_measurable, background, ink, edge, and edge_findings"
+            "page_ordinal, ink_measurable, background, edge, and edge_findings"
         )
     ordinal = payload["page_ordinal"]
     if not is_plain_int(ordinal) or ordinal <= 0:
@@ -527,8 +544,8 @@ def validate_measured_ink_map_payload(payload: Any, *, audit_contrast: int) -> d
         )
     if payload["ink_measurable"] is not True:
         raise ContractError("the measured ink-map payload ink_measurable is not true")
-    if not isinstance(payload["ink"], dict) or not isinstance(payload["edge"], dict):
-        raise ContractError("the measured ink-map payload has no object ink and edge findings")
+    if not isinstance(payload["edge"], dict):
+        raise ContractError("the measured ink-map payload has no object edge finding")
     if not isinstance(payload["edge_findings"], dict):
         raise ContractError("the measured ink-map payload has no object retained edge findings")
     background = payload["background"]
@@ -556,10 +573,16 @@ def validate_measured_ink_map_payload(payload: Any, *, audit_contrast: int) -> d
             raise ContractError(f"the measured ink-map background {field} is not a plain integer")
     if not 0 <= background["background_level"] <= 255 or not 0 <= background["dark_mode"] <= 255:
         raise ContractError("the measured ink-map background levels are outside 8-bit range")
-    if not PRIMARY_MARGIN <= background["ink_margin"] <= 255:
-        raise ContractError("the measured ink-map background ink_margin is outside its domain")
     if background["dark_mode"] > background["background_level"]:
         raise ContractError("the measured ink-map background dark_mode exceeds its paper level")
+    derived_margin = _derived_ink_margin(
+        background["background_level"], background["dark_mode"], ink_margin_bp
+    )
+    if background["ink_margin"] != derived_margin:
+        raise ContractError(
+            f"the measured ink-map background ink_margin {background['ink_margin']} is not the "
+            f"{derived_margin} the sealed ink_margin_bp derives from its own paper and dark modes"
+        )
     if not isinstance(background["background_source"], str) or background[
         "background_source"
     ] not in {
@@ -587,10 +610,9 @@ def round_half_up_bp(dimension: int, bp: int) -> int:
     Pure integer arithmetic, never a float, so the amount actually applied is
     deterministic and independent of Python's float rounding rules.
 
-    This is the project's one basis-point rounding rule.
-    `pipeline/2_designator/geometry._pad_amount` was that rule until this module
-    existed and now delegates here, so a page's band and a page's padding cannot
-    come to round differently.
+    This is the project's one basis-point rounding rule;
+    `pipeline/2_designator/geometry._pad_amount` delegates here, so a page's
+    band and a page's padding cannot come to round differently.
     """
     return (dimension * bp + BASIS_POINTS // 2) // BASIS_POINTS
 
@@ -615,24 +637,12 @@ def validate_background_table(table: Any, *, where: str = "[background]") -> dic
     """The four sealed values, checked against their bounds and returned.
 
     Every reader of the policy validates it here, so all refuse the same
-    malformed value. Provenance is not checked here: the Designator's loader
-    validates it against the same schema and refuses a run whose block has lost
-    it, while the Ink Map and Recensor do not -- the one asymmetry between the
-    readers, on the field recording where a number came from rather than one
-    deciding what a page measures.
+    malformed value. Provenance is checked by the loaders, since a table built
+    in code carries none.
     """
     if not isinstance(table, dict):
         raise ContractError(f"the ink-map configuration has no {where} table")
-    forbidden = sorted(name for name in FORBIDDEN_NAMES if name in table)
-    if forbidden:
-        raise ContractError(
-            f"the ink-map configuration's {where} carries forbidden field(s) {forbidden}; "
-            "primary_margin/secondary_margin are absolute 8-bit ink-intensity offsets pinned "
-            "as Python module constants and may never become a per-run config value. What is "
-            "sealed instead is ink_margin_bp, the fraction of a page's own two-mode distance "
-            "that derives its margin: a population fraction, which scales with the page, and "
-            "not an offset"
-        )
+    refuse_forbidden_names(table, where)
     unexpected = sorted(set(table) - set(BACKGROUND_BP_FIELDS) - {"provenance"})
     if unexpected:
         raise ContractError(
@@ -700,10 +710,13 @@ def load_background_config(
     nobody able to point at a config line that said so.
     """
     config, digest = read_sealed_toml(path, "ink-map configuration", INK_MAP_TABLES)
-    return {
-        "config_sha256": digest,
-        "background": validate_background_table(config.get("background")),
-    }
+    background = validate_background_table(config.get("background"))
+    validate_provenance_block(
+        config["background"].get("provenance"),
+        where="[background.provenance]",
+        owner="the ink-map configuration",
+    )
+    return {"config_sha256": digest, "background": background}
 
 
 def resolve_background_policy(config: dict[str, Any], width: int, height: int) -> BackgroundPolicy:

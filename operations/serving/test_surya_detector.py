@@ -154,6 +154,9 @@ def _mutated(path: tuple, value=None, *, delete: bool = False) -> dict:
         (("schema",), "surya-page.v0", False, "schema"),
         (("input_ordinal",), 2, False, "input_ordinal"),
         (("image_size",), [WIDTH, HEIGHT + 1], False, "image_size"),
+        (("input_ordinal",), True, False, "input_ordinal"),
+        (("image_size",), [float(WIDTH), float(HEIGHT)], False, "image_size"),
+        (("image_size",), None, False, "image_size"),
         (("heatmap",), None, False, "unknown field"),
         (("layout", "raw"), None, True, "missing field"),
         (("text_detection", "bboxes", 0, "text"), "INK", False, "unknown field"),
@@ -265,7 +268,7 @@ def test_the_fixture_detector_answers_every_page_including_an_empty_one():
     assert first["layout"]["bboxes"][0]["bbox"] == [20.0, 20.0, 180.0, 100.0]
     assert (empty["input_ordinal"], empty["text_detection"]["bboxes"]) == (2, [])
     assert empty["layout"]["bboxes"] == []
-    assert run.run_facts == {"engine": "fixture", "declared_by": "proof/skeleton_fixture.toml"}
+    assert run.run_facts == {"engine": "fixture", "declared_by": "skeleton_fixture.toml"}
 
 
 # --- the serving row -----------------------------------------------------------
@@ -335,12 +338,13 @@ def test_a_subprocess_row_resolves_to_the_subprocess_mode_and_is_never_launched(
 
 
 def test_the_surya_chair_is_in_both_rosters_and_addressed_by_stage_two():
-    """Configured on the fixture roster, with a fixture row at every tier; absent
-    on the real roster until a fetched bundle gives it a measured manifest."""
+    """Configured on the fixture roster, with a fixture row at every tier, and on
+    the real roster, with a subprocess row at every tier pinning the release its
+    own environment locks."""
     fixture = tomllib.loads((ROOT / "config" / "models.toml").read_text(encoding="utf-8"))
     real = tomllib.loads((ROOT / "config" / "models-real.toml").read_text(encoding="utf-8"))
     assert fixture["chairs"][DESIGNATOR_SURYA_CHAIR]["state"] == "configured"
-    assert real["chairs"][DESIGNATOR_SURYA_CHAIR]["state"] == "absent"
+    assert real["chairs"][DESIGNATOR_SURYA_CHAIR]["state"] == "configured"
     fixture_rows = [
         p
         for p in load_serving_recipes(ROOT / "config" / "serving_recipes.toml").profiles
@@ -350,7 +354,13 @@ def test_the_surya_chair_is_in_both_rosters_and_addressed_by_stage_two():
         ("fixture", tier) for tier in ("generic-24gb", "generic-48gb", "generic-80gb-plus")
     }
     real_recipes = load_serving_recipes(ROOT / "config" / "serving_recipes_real.toml")
-    assert not [p for p in real_recipes.profiles if p.chair == DESIGNATOR_SURYA_CHAIR]
+    real_rows = [p for p in real_recipes.profiles if p.chair == DESIGNATOR_SURYA_CHAIR]
+    assert {(p.kind, p.tier) for p in real_rows} == {
+        ("subprocess", tier) for tier in ("generic-24gb", "generic-48gb", "generic-80gb-plus")
+    }
+    assert {tuple(sorted(p.required_packages.items())) for p in real_rows} == {
+        tuple(sorted(_row()["required_packages"].items()))
+    }
     config = load_models_toml(ROOT / "config" / "models.toml")
     assert DESIGNATOR_SURYA_CHAIR not in unaddressed_chairs(config)
 
@@ -425,6 +435,7 @@ def test_the_runner_runs_under_its_own_interpreter_with_nothing_inherited(enviro
         {1: b"page one", 2: b"page two"},
         {1: (WIDTH, HEIGHT), 2: (WIDTH, HEIGHT)},
         _identity(),
+        manifest_rows=_pinned(),
         runner=child,
     )
     (check_argv, _), (run_argv, child_env) = child.calls
@@ -461,6 +472,7 @@ def test_a_page_the_runner_wrote_nothing_for_is_refused(environment):
             {1: b"a", 2: b"b"},
             {1: (WIDTH, HEIGHT), 2: (WIDTH, HEIGHT)},
             _identity(),
+            manifest_rows=_pinned(),
             runner=child,
         )
 
@@ -476,11 +488,13 @@ def test_documents_that_disagree_about_their_run_are_refused(environment):
             {1: b"a", 2: b"b"},
             {1: (WIDTH, HEIGHT), 2: (WIDTH, HEIGHT)},
             _identity(),
+            manifest_rows=_pinned(),
             runner=child,
         )
 
 
 def _one_page(child, **kwargs):
+    kwargs.setdefault("manifest_rows", _pinned())
     return run_surya_subprocess(
         _profile(), Path("/b"), {1: b"a"}, {1: (WIDTH, HEIGHT)}, _identity(), runner=child, **kwargs
     )
@@ -511,6 +525,7 @@ def test_the_runner_s_timeout_grows_with_the_pages_it_reads(environment):
         {1: b"a", 2: b"b", 3: b"c"},
         {ordinal: (WIDTH, HEIGHT) for ordinal in (1, 2, 3)},
         _identity(),
+        manifest_rows=_pinned(),
         runner=child,
     )
     # The version check gets the startup allowance; the run adds 60 s a page.
@@ -519,13 +534,20 @@ def test_the_runner_s_timeout_grows_with_the_pages_it_reads(environment):
 
 def test_an_empty_page_set_is_refused_by_name(environment):
     with pytest.raises(SuryaOutputRefusal, match="no page to run on"):
-        run_surya_subprocess(_profile(), Path("/b"), {}, {}, _identity(), runner=FakeChild())
+        run_surya_subprocess(
+            _profile(), Path("/b"), {}, {}, _identity(), manifest_rows=_pinned(), runner=FakeChild()
+        )
     with pytest.raises(SuryaOutputRefusal, match="no page to run on"):
         fixture_surya_run([], [], {}, _identity(), None)
 
 
 def _manifest(weights):
     return [{"path": contract.BUNDLE_FILE, "sha256": "b" * 64, "size": 9}, *weights]
+
+
+def _pinned():
+    """The manifest whose weights are the ones `_run_facts` names."""
+    return _manifest(_run_facts()["weights"])
 
 
 def test_the_weights_a_run_names_must_be_the_files_the_manifest_pins(environment):
@@ -539,9 +561,18 @@ def test_the_weights_a_run_names_must_be_the_files_the_manifest_pins(environment
         _one_page(FakeChild(), manifest_rows=_manifest(extra))
 
 
-def test_run_facts_that_name_another_version_than_the_environment_are_refused(environment):
+@pytest.mark.parametrize(
+    "run",
+    [
+        {**_run_facts(), "surya_ocr": "0.22.0"},
+        {**_run_facts(), "torch": "2.14.1"},
+        {**_run_facts(), "threads": 3},
+        {"engine": "fixture", "declared_by": "skeleton_fixture.toml"},
+    ],
+)
+def test_run_facts_that_do_not_describe_the_requested_run_are_refused(environment, run):
     document = _document(1)
-    document["run"]["surya_ocr"] = "0.22.0"
+    document["run"] = run
     with pytest.raises(SuryaOutputRefusal, match="do not describe the run"):
         _one_page(FakeChild(documents={1: document}))
 
@@ -635,6 +666,86 @@ def test_the_runner_refuses_a_surya_setting_set_in_its_environment(tmp_path, mon
     assert environment["HF_HUB_OFFLINE"] == "1"
 
 
+@pytest.mark.parametrize(
+    "name", ["detector_text_threshold", "Fast_Layout_Use_Order", "detector_model_checkpoint"]
+)
+def test_the_runner_refuses_a_surya_setting_in_any_case(tmp_path, monkeypatch, name):
+    """Surya's settings read the environment ignoring case."""
+    runner = _runner_module()
+    monkeypatch.setenv(name, "0.2")
+    with pytest.raises(runner.RunRefusal, match=f"{name} is set"):
+        runner._settings_environment(tmp_path, _bundle(tmp_path), 2)
+
+
+def test_the_runner_refuses_a_setting_it_sets_given_in_another_case(tmp_path, monkeypatch):
+    runner = _runner_module()
+    monkeypatch.setenv("torch_device", "cuda")
+    with pytest.raises(runner.RunRefusal, match="torch_device is set .* own TORCH_DEVICE"):
+        runner._settings_environment(tmp_path, _bundle(tmp_path), 2)
+
+
+def _page(path: Path, mode: str) -> Path:
+    from PIL import Image
+
+    Image.new(mode, (8, 4)).save(path)
+    return path
+
+
+def test_the_runner_refuses_a_page_surya_s_loader_would_clip(tmp_path):
+    from PIL import Image
+
+    runner = _runner_module()
+    pages = [_page(tmp_path / "grey.png", "L"), _page(tmp_path / "colour.png", "RGB")]
+    runner._checked_page_modes(pages, Image)
+    deep = _page(tmp_path / "deep.png", "I;16")
+    with Image.open(deep) as image:
+        assert image.mode not in contract.PAGE_MODES
+    with pytest.raises(runner.RunRefusal, match=r"page 3 \(deep.png\) is in mode 'I;16'"):
+        runner._checked_page_modes([*pages, deep], Image)
+
+
+def test_surya_reads_pages_in_the_modes_the_project_replays_an_rgb_conversion_for():
+    from common.imaging import PNG_CROP_MODES
+
+    assert contract.PAGE_MODES == PNG_CROP_MODES
+
+
+def test_the_prefetch_refuses_a_settings_file_surya_found_before_it_downloads(
+    tmp_path, monkeypatch
+):
+    """Surya's downloader reads its host from the settings a `local.env` could set."""
+    import types
+
+    def never(*args, **kwargs):
+        raise AssertionError("nothing is downloaded")
+
+    class Settings:
+        model_config = {"env_file": "/srv/local.env"}
+        model_fields: dict = {}
+
+    fakes = {
+        "huggingface_hub": types.SimpleNamespace(snapshot_download=never),
+        "surya": types.ModuleType("surya"),
+        "surya.common": types.ModuleType("surya.common"),
+        "surya.common.s3": types.SimpleNamespace(download_directory=never),
+        "surya.settings": types.SimpleNamespace(Settings=Settings),
+    }
+    for name, module in fakes.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    sys.path.insert(0, str(SURYA_ENV))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "surya_prefetch_under_test", SURYA_ENV / "prefetch.py"
+        )
+        prefetch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(prefetch)
+    finally:
+        sys.path.remove(str(SURYA_ENV))
+    with pytest.raises(SystemExit, match="settings file at /srv/local.env"):
+        prefetch.fetch(tmp_path / "bundle")
+    assert not (tmp_path / "bundle").exists()
+
+
 def test_the_runner_refuses_a_setting_that_is_not_surya_s_default():
     runner = _runner_module()
     defaults = {name: 0.5 for name in contract.OUTPUT_SETTINGS}
@@ -687,3 +798,115 @@ def test_the_runner_keeps_what_the_layout_detector_returns_unchanged():
     seen = runner._observed(model)
     assert model.detect(["page"], threshold=0.4) == [["box"]]
     assert seen == [[["box"]]]
+
+
+# --- the weight bundle's launch-time fetch ----------------------------------------------
+
+
+def test_the_bundle_fetcher_runs_surya_s_prefetch_in_its_environment(environment, monkeypatch):
+    seen: dict = {}
+
+    def child(argv, **kwargs):
+        seen.update(argv=argv, env=kwargs["env"], timeout=kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setenv("S3_BASE_URL", "https://elsewhere.invalid")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    destination = environment / "store" / "staging" / ".surya2-detection.fetch-x" / "snapshot"
+    surya_detector.SuryaBundleFetcher("operations/serving/surya", runner=child).fetch(
+        surya_detector.BUNDLE_ARTIFACT, destination
+    )
+
+    surya = environment / "operations" / "serving" / "surya"
+    assert seen["argv"] == [
+        str(surya / ".venv" / "bin" / "python"),
+        str(surya / "prefetch.py"),
+        "--out",
+        str(destination),
+    ]
+    # The network route passes; Surya's own settings never do, and the Hub
+    # client's cache sits beside the bundle, not in it.
+    assert "S3_BASE_URL" not in seen["env"]
+    assert seen["env"]["HTTPS_PROXY"] == "http://proxy.invalid:3128"
+    assert seen["env"]["HF_HOME"] == str(destination.parent / "hf-home")
+    assert seen["timeout"] == surya_detector.PREFETCH_TIMEOUT_SECONDS
+
+
+def test_the_bundle_fetcher_names_a_failed_prefetch_and_refuses_another_artifact(environment):
+    def failing(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, "", "HTTPError: 403 Forbidden")
+
+    fetcher = surya_detector.SuryaBundleFetcher("operations/serving/surya", runner=failing)
+    with pytest.raises(SuryaRunFailure, match="prefetch failed .*403 Forbidden"):
+        fetcher.fetch(surya_detector.BUNDLE_ARTIFACT, environment / "out")
+    with pytest.raises(ServingConfigurationError, match="not 'churro-3B'"):
+        fetcher.fetch("churro-3B", environment / "out")
+
+
+def test_the_bundle_fetcher_names_the_sync_command_when_the_environment_is_missing(tmp_path):
+    fetcher = surya_detector.SuryaBundleFetcher("operations/serving/nowhere")
+    with pytest.raises(ServingConfigurationError, match="uv sync --locked --project"):
+        fetcher.check(surya_detector.BUNDLE_ARTIFACT)
+    with pytest.raises(ServingConfigurationError, match="uv sync --locked --project"):
+        fetcher.fetch(surya_detector.BUNDLE_ARTIFACT, tmp_path / "out")
+
+
+def test_the_bundle_fetcher_checks_its_environment_by_running_prefetch_s_check(environment):
+    seen: dict = {}
+
+    def child(argv, **kwargs):
+        seen.update(argv=argv, env=kwargs["env"], timeout=kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    fetcher = surya_detector.SuryaBundleFetcher("operations/serving/surya", runner=child)
+    fetcher.check(surya_detector.BUNDLE_ARTIFACT)
+
+    surya = environment / "operations" / "serving" / "surya"
+    assert seen["argv"] == [
+        str(surya / ".venv" / "bin" / "python"),
+        str(surya / "prefetch.py"),
+        "--check",
+    ]
+    assert "HF_HOME" not in seen["env"]
+    assert seen["timeout"] == surya_detector.PREFETCH_CHECK_TIMEOUT_SECONDS
+    with pytest.raises(ServingConfigurationError, match="not 'churro-3B'"):
+        fetcher.check("churro-3B")
+
+
+def test_the_bundle_fetcher_s_check_names_a_failed_prefetch_check(environment):
+    def failing(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv, 1, "", "SystemExit: Surya found a settings file at /srv/local.env"
+        )
+
+    fetcher = surya_detector.SuryaBundleFetcher("operations/serving/surya", runner=failing)
+    with pytest.raises(SuryaRunFailure, match="prefetch check failed .*settings file"):
+        fetcher.check(surya_detector.BUNDLE_ARTIFACT)
+
+
+def test_a_failed_prefetch_s_excerpt_carries_no_proxy_credential(environment):
+    def failing(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv,
+            1,
+            "",
+            "ProxyError: Unable to connect to proxy http://agent:s3cr3t@proxy.invalid:3128 "
+            "for https://huggingface.co/api",
+        )
+
+    fetcher = surya_detector.SuryaBundleFetcher("operations/serving/surya", runner=failing)
+    with pytest.raises(SuryaRunFailure) as failure:
+        fetcher.fetch(surya_detector.BUNDLE_ARTIFACT, environment / "out")
+    assert "s3cr3t" not in str(failure.value)
+    assert "agent" not in str(failure.value)
+    assert "http://<redacted>@proxy.invalid:3128" in str(failure.value)
+    assert "https://huggingface.co/api" in str(failure.value)
+
+
+def test_the_bundle_fetcher_writes_the_artifact_the_store_requires_of_it():
+    from common.chairs.model_store import REQUIRED_ARTIFACTS
+
+    (requirement,) = [item for item in REQUIRED_ARTIFACTS if item.source == "local-repository"]
+    assert requirement.artifact == surya_detector.BUNDLE_ARTIFACT
+    # The layout repository's licence, where prefetch lays that repository out.
+    assert requirement.license_file == "surya_layout2/LICENSE"

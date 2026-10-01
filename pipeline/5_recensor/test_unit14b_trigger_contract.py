@@ -103,7 +103,10 @@ def test_stage_publishes_at_most_one_observation_request_per_page(
             ),
             "testimonium_id": witness["artifact_id"],
             "observation_ordinal": 1,
-            "ink_map_ref": recensor.ink_map_by_page(context)[1]["_ink_map_ref"],
+            "ink_map_ref": recensor.ink_map_by_page(
+                context,
+                recensor.sealed_page_dimensions(context, recensor.sealed_page_images(context)),
+            )[1]["_ink_map_ref"],
         }
     )
     monkeypatch.setattr(
@@ -176,7 +179,6 @@ class _FakeTree:
                     "ink_threshold": 180,
                     "config_sha256": EXPECTED_BACKGROUND_SHA256,
                 },
-                "ink": {},
                 "edge": edge,
                 "edge_findings": evidence,
             },
@@ -192,6 +194,16 @@ class _FakeContext:
     def require_sealed_config(self, name, observed_sha256):
         if self.run["sealed_config_digests"].get(name) != observed_sha256:
             raise ContractError(f"sealed {name} digest does not match the Ink Map payload")
+
+
+def _read_ink_maps(recensor, context: _FakeContext) -> dict:
+    """`ink_map_by_page` over pages sealed at the size each retained run set declares."""
+    dimensions = {
+        ordinal: (evidence.get("width"), evidence.get("height"))
+        for ordinal, evidence in context.tree._maps.items()
+        if isinstance(evidence, dict)
+    }
+    return recensor.ink_map_by_page(context, dimensions)
 
 
 def _ink_map(width: int, height: int, ink_boxes: list[dict]) -> dict:
@@ -233,7 +245,7 @@ def test_each_forbidden_witness_trigger_cannot_request_recovery_even_with_ink(fo
         "the 5x5 stimulus no longer clears MINIMUM_INK_PIXELS; rebuild the box around the new floor"
     )
 
-    empty_maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [])}))
+    empty_maps = _read_ink_maps(recensor, _FakeContext({1: _ink_map(20, 20, [])}))
     assert (
         recensor.unclaimed_ink_observations(
             empty_maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
@@ -241,7 +253,7 @@ def test_each_forbidden_witness_trigger_cannot_request_recovery_even_with_ink(fo
         == []
     )
 
-    inked_maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
+    inked_maps = _read_ink_maps(recensor, _FakeContext({1: _ink_map(20, 20, [box])}))
     result = recensor.unclaimed_ink_observations(
         inked_maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
     )
@@ -261,7 +273,7 @@ def test_a_two_chair_disagreement_is_refused_through_the_real_gate_by_hand():
         {"kind": "unrouted-observation", "bounds": chair_1_box, "disagrees_with": 2},
         {"kind": "unrouted-observation", "bounds": chair_2_box, "disagrees_with": 1},
     ]
-    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [])}))
+    maps = _read_ink_maps(recensor, _FakeContext({1: _ink_map(20, 20, [])}))
     outside_ink_requests = recensor.unclaimed_ink_observations(
         maps, observations, 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
     )
@@ -276,7 +288,7 @@ def test_ink_below_the_minimum_pixel_floor_still_refuses():
     # floor must move this box with it, not silently invert what the test proves.
     box = {"x": 0, "y": 0, "w": MINIMUM_INK_PIXELS - 1, "h": 1}
     observation = {"kind": "unrouted-observation", "bounds": box}
-    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(MINIMUM_INK_PIXELS, 20, [box])}))
+    maps = _read_ink_maps(recensor, _FakeContext({1: _ink_map(MINIMUM_INK_PIXELS, 20, [box])}))
     assert (
         recensor.unclaimed_ink_observations(
             maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
@@ -294,7 +306,7 @@ def test_a_box_wholly_above_the_page_cannot_claim_ink_through_a_negative_slice()
     """
     recensor = load_stage("5_recensor")
     page = {"x": 0, "y": 0, "w": 40, "h": 40}
-    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(40, 40, [page])}))
+    maps = _read_ink_maps(recensor, _FakeContext({1: _ink_map(40, 40, [page])}))
     observation = {
         "kind": "unrouted-observation",
         "bounds": {"x": 0, "y": -10, "w": 40, "h": 5},
@@ -310,7 +322,7 @@ def test_a_box_wholly_above_the_page_cannot_claim_ink_through_a_negative_slice()
 def test_a_partly_out_of_page_observation_publishes_only_canonical_geometry():
     recensor = load_stage("5_recensor")
     page = {"x": 0, "y": 0, "w": 40, "h": 40}
-    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(40, 40, [page])}))
+    maps = _read_ink_maps(recensor, _FakeContext({1: _ink_map(40, 40, [page])}))
     observation = {
         "kind": "unrouted-observation",
         "bounds": {"x": -4, "y": 0, "w": 10, "h": 5},
@@ -337,7 +349,7 @@ def test_ink_already_inside_a_cut_region_is_not_an_outside_part():
     recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 10, "h": 10}  # 100 px, well past MINIMUM_INK_PIXELS
     observation = {"kind": "unrouted-observation", "bounds": box}
-    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
+    maps = _read_ink_maps(recensor, _FakeContext({1: _ink_map(20, 20, [box])}))
 
     assert recensor.unclaimed_ink_observations(
         maps, [observation], 1, {}, minimum_ink_pixels=MINIMUM_INK_PIXELS
@@ -376,7 +388,7 @@ def test_two_overlapping_cut_regions_do_not_subtract_their_shared_pixels_twice()
     recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 10, "h": 10}
     observation = {"kind": "unrouted-observation", "bounds": box}
-    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
+    maps = _read_ink_maps(recensor, _FakeContext({1: _ink_map(20, 20, [box])}))
     overlapping = {1: [{"x": 0, "y": 0, "w": 6, "h": 10}, {"x": 3, "y": 0, "w": 4, "h": 10}]}
     # Union covers x 0..7 on every row: 3 columns x 10 rows remain outside.
     assert recensor.unclaimed_ink_observations(
@@ -394,7 +406,7 @@ def test_unordered_ink_runs_are_refused_rather_than_double_counted():
     forged = _ink_map(20, 20, [])
     forged["rows"][0] = [[0, 10], [5, 10]]
     with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
-        recensor.ink_map_by_page(_FakeContext({1: forged}))
+        _read_ink_maps(recensor, _FakeContext({1: forged}))
 
 
 @pytest.mark.parametrize(
@@ -408,7 +420,7 @@ def test_invalid_ink_map_dimensions_are_refused_instead_of_read_as_empty(evidenc
     """Zero and boolean dimensions cannot turn malformed evidence into no ink."""
     recensor = load_stage("5_recensor")
     with pytest.raises(FatalAccounting, match="does not reconcile with its retained"):
-        recensor.ink_map_by_page(_FakeContext({1: evidence}))
+        _read_ink_maps(recensor, _FakeContext({1: evidence}))
 
 
 def test_an_observation_on_a_page_with_no_ink_map_entry_is_refused_by_name():
@@ -416,7 +428,7 @@ def test_an_observation_on_a_page_with_no_ink_map_entry_is_refused_by_name():
     recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 5, "h": 5}
     observation = {"kind": "unrouted-observation", "bounds": box}
-    maps = recensor.ink_map_by_page(_FakeContext({2: _ink_map(20, 20, [box])}))
+    maps = _read_ink_maps(recensor, _FakeContext({2: _ink_map(20, 20, [box])}))
     with pytest.raises(
         FatalAccounting,
         match=(
@@ -462,7 +474,7 @@ def test_a_retained_observation_with_no_readable_bounds_is_refused_not_skipped(o
     """
     recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 5, "h": 5}
-    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
+    maps = _read_ink_maps(recensor, _FakeContext({1: _ink_map(20, 20, [box])}))
     with pytest.raises(
         FatalAccounting,
         match="retained unclaimed witness observation with no .x, y, w, h. bounds",
@@ -617,7 +629,7 @@ def test_the_mask_argument_has_no_fail_open_default():
     """Omitting the cut mask restores the pre-fix over-count; it must not be optional."""
     recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 10, "h": 10}
-    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
+    maps = _read_ink_maps(recensor, _FakeContext({1: _ink_map(20, 20, [box])}))
     # Bound to the signature. A bare `TypeError` also matches one raised while
     # measuring the observation, so a later change that gave the mask a default
     # and failed in the arithmetic would keep this green and let the over-count
@@ -635,7 +647,7 @@ def test_the_noise_floor_argument_has_no_fail_open_default():
     """
     recensor = load_stage("5_recensor")
     box = {"x": 0, "y": 0, "w": 10, "h": 10}
-    maps = recensor.ink_map_by_page(_FakeContext({1: _ink_map(20, 20, [box])}))
+    maps = _read_ink_maps(recensor, _FakeContext({1: _ink_map(20, 20, [box])}))
     with pytest.raises(TypeError, match="minimum_ink_pixels"):
         recensor.unclaimed_ink_observations(maps, [{"bounds": box}], 1, {})
 

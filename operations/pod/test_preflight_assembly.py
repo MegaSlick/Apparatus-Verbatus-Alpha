@@ -434,18 +434,8 @@ def test_a_real_card_and_a_served_chair_prove_the_assembly(fixture_page: Path) -
     assert smoke["served_engine"] == "vllm 0.30.0"
 
 
-def test_the_old_constant_would_have_misreported_this_paid_measurement(
-    fixture_page: Path,
-) -> None:
-    """The counterfactual, stated as an assertion rather than a comment.
-
-    `assembly_proven = False` was unconditional, and `to_record` derived the
-    note from it.  Re-deriving both here shows the record a rented card would
-    have published under that code: `False`, and "fixture-only" about a real
-    `nvidia-smi` read and a real served engine.  This test fails against the
-    constant and passes against the derivation, which is what makes the change
-    a behaviour change rather than a rewording.
-    """
+def test_two_served_chairs_are_named_in_the_assembly_note(fixture_page: Path) -> None:
+    """Every chair that read through the engine is named, in a stable order."""
 
     report = runner(
         fixture_page,
@@ -453,11 +443,7 @@ def test_the_old_constant_would_have_misreported_this_paid_measurement(
         reader=Reader(served=True),
     ).run(measured_profile())
 
-    old_flag = False
-    old_note = FIXTURE_ONLY_ASSEMBLY_NOTE
-    assert report.assembly_proven != old_flag
-    assert report.to_record()["assembly_note"] != old_note
-    # Every chair that read through the engine is named, in a stable order.
+    assert report.assembly_proven is True
     assert report.to_record()["assembly_note"] == (
         f"real assembly measured on {MEASURED_CARD}: attestator_3 via vllm 0.30.0, "
         "designator_structure via vllm 0.30.0 smoke-read the golden page through a "
@@ -465,11 +451,11 @@ def test_the_old_constant_would_have_misreported_this_paid_measurement(
     )
 
 
-def test_the_fixture_path_keeps_the_old_flag_and_the_old_note(fixture_page: Path) -> None:
+def test_a_synthetic_unserved_run_says_fixture_only(fixture_page: Path) -> None:
     """A synthetic profile and a reader that served nothing prove nothing.
 
     Both halves are absent here, which is the operator rehearsal's own shape,
-    and the sentence it publishes is byte-for-byte the one it published before.
+    and the note it publishes is the fixture-only sentence.
     """
 
     report = runner(fixture_page, roles=("attestator_3",), reader=Reader(served=False)).run(
@@ -498,7 +484,7 @@ def test_a_served_chair_on_a_profile_nobody_measured_proves_nothing(fixture_page
 def test_a_measured_card_with_no_served_chair_says_so_rather_than_fixture_only(
     fixture_page: Path,
 ) -> None:
-    """The third case the old note could not express.
+    """A real card with no served chair is neither proven nor fixture-only.
 
     The card is real and the assembly is not proven.  Calling that "fixture-only"
     would misdescribe a measurement that was paid for, so the note names what
@@ -562,13 +548,6 @@ def test_a_smoke_adapter_cannot_write_the_runtime_owned_served_engine_field(
     assert report.smoke_receipts == ()
 
 
-def test_a_synthetic_profile_cannot_declare_itself_measured() -> None:
-    """`measured` defaults to False, so a fixture is fixture by construction."""
-
-    assert synthetic_profile().measured is False
-    assert measured_profile().measured is True
-
-
 def test_only_a_real_driver_read_sets_measured() -> None:
     """The other half of the claim, at the seam that produces it.
 
@@ -594,7 +573,7 @@ def test_served_by_must_be_a_real_name_or_nothing() -> None:
 
 
 def test_a_caller_built_profile_cannot_claim_a_measured_card(fixture_page: Path) -> None:
-    """The hole this guard closes, stated as the caller would have exploited it."""
+    """A caller-built profile cannot claim a measured card, even with a token-shaped value."""
 
     with pytest.raises(ValueError, match="cannot declare itself measured"):
         GpuProfile(

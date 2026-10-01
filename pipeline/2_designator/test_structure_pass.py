@@ -44,7 +44,7 @@ from common.contracts.serving import (
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR
-from common.decoding import chair_decoding, load_decoding_policy, recorded_sampling
+from common.decoding import chair_decoding, load_decoding_policy, recorded_wire_decimals
 from common.fixture_identity import page_identity
 from common.imaging import dimensions
 from common.imaging_ports import scale_to_fit_chandra
@@ -1533,7 +1533,7 @@ def test_an_answer_the_grammar_refuses_holds_the_page_by_its_outcome(
     assert [row["payload"]["attempt_seed"] for row in attempts] == [0, 0, 0]
     assert [row["payload"]["attempt_ordinal"] for row in attempts] == [1, 2, 3]
     assert [row["payload"]["decoding"]["sampling"] for row in attempts] == [
-        recorded_sampling(
+        recorded_wire_decimals(
             {
                 **chair_decoding(load_decoding_policy()[0], "designator_structure"),
                 **chandra_wire_parameters(ordinal),

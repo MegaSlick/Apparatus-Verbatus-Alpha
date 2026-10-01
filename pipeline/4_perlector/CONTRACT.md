@@ -1277,7 +1277,7 @@ page render and the sealed page it names, each re-derived from the bytes on disk
   `{chair: "perlector", sent, effective}`, the Perlector's sealed `chair_decoding`
   row that `ChairClient` put on the wire and the values the pinned engine samples
   under (`common.decoding.engine_effective_sampling`), in the call record's form
-  (`recorded_sampling`). The page call goes through the same `ChairClient` as an
+  (`common.decoding.recorded_wire_decimals`). The page call goes through the same `ChairClient` as an
   act reading, attempt 1, no variance arm, with the serving receipt's seed; its call
   record is held to that row and seed (`verify_retained_call_sampling`) wherever
   stage 4 binds the reading's `engine_call`: when the reading is published, when a

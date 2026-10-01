@@ -20,6 +20,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -29,8 +30,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from common.chairs.models import ChairIdentity, ServingDetails
+from common.stage import FIXTURE_DECLARATION
 
-from .config import SubprocessProfile
+from .config import SubprocessProfile, package_release
 from .errors import ServingConfigurationError, ServingError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -84,7 +86,6 @@ _SURYA_RUN_FIELDS = {
     "weights",
 }
 _FIXTURE_RUN_FIELDS = {"engine", "declared_by"}
-_FIXTURE_DECLARATION = "proof/skeleton_fixture.toml"
 
 
 class SuryaOutputRefusal(ServingConfigurationError):
@@ -229,9 +230,14 @@ def validate_page_document(
     page = _closed(document, _PAGE_FIELDS, "$")
     if page["schema"] != PAGE_SCHEMA:
         raise _refuse("$.schema", f"is {page['schema']!r}, not {PAGE_SCHEMA!r}")
-    if page["input_ordinal"] != input_ordinal:
+    if _count(page["input_ordinal"], "$.input_ordinal") != input_ordinal:
         raise _refuse("$.input_ordinal", f"is not {input_ordinal}")
-    if page["image_size"] != [width, height]:
+    image_size = page["image_size"]
+    if (
+        not isinstance(image_size, list)
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in image_size)
+        or image_size != [width, height]
+    ):
         raise _refuse("$.image_size", f"is not the sealed page's {width}x{height}")
     _check_run(page["run"])
     lines = _closed(page["text_detection"], _LINES_FIELDS, "$.text_detection")
@@ -400,7 +406,8 @@ def fixture_surya_run(
     the runner's shape and checked like the runner's, so the fixture proves the
     same reader the real detector feeds.
     """
-    run_facts = {"engine": FIXTURE_ENGINE, "declared_by": _FIXTURE_DECLARATION}
+    # The run's config_digest seals the declaration's content itself.
+    run_facts = {"engine": FIXTURE_ENGINE, "declared_by": FIXTURE_DECLARATION}
     documents = _parsed(declared_page_documents(lines, blocks, pages, run_facts), pages)
     return SuryaRun(run_facts=run_facts, serving_details=details, pages=documents)
 
@@ -458,11 +465,6 @@ def _run_child(
         raise SuryaRunFailure(f"Surya's {what} could not be started: {error}") from error
 
 
-def _release(version: str) -> str:
-    """`2.14.0+cu130` and `2.14.0` are the same release."""
-    return version.split("+", 1)[0]
-
-
 def environment_versions(
     profile: SubprocessProfile, *, runner: Runner = subprocess.run
 ) -> dict[str, str]:
@@ -485,7 +487,7 @@ def environment_versions(
     expected = {"surya_ocr": profile.required_packages["surya-ocr"]}
     expected["torch"] = profile.required_packages["torch"]
     if not isinstance(found, dict) or any(
-        _release(str(found.get(key))) != value for key, value in expected.items()
+        package_release(str(found.get(key))) != value for key, value in expected.items()
     ):
         raise ServingConfigurationError(
             f"Surya's environment reports {found}, and the serving row pins {expected}; the "
@@ -501,7 +503,7 @@ def run_surya_subprocess(
     sizes: Mapping[int, tuple[int, int]],
     identity: ChairIdentity,
     *,
-    manifest_rows: Sequence[Mapping[str, Any]] | None = None,
+    manifest_rows: Sequence[Mapping[str, Any]],
     runner: Runner = subprocess.run,
 ) -> SuryaRun:
     """Run Surya once over every page, in page order, and check what it wrote.
@@ -556,15 +558,15 @@ def surya_run(
     written: Mapping[int, bytes],
     sizes: Mapping[int, tuple[int, int]],
     *,
-    manifest_rows: Sequence[Mapping[str, Any]] | None = None,
+    manifest_rows: Sequence[Mapping[str, Any]],
 ) -> SuryaRun:
     """The run the parent records from what Surya's runner wrote, page by page.
 
     `written` maps each page ordinal to its document's bytes; `versions` is
     what the environment reported. Every document is checked against the
-    closed shape, and all must name the one run this row asked for. Given the
-    chair's digest manifest, the weights the run names must be exactly the
-    files it pins, less the bundle's own lock.
+    closed shape, and all must name the one run this row asked for. The weights
+    the run names must be exactly the files the chair's digest manifest pins,
+    less the bundle's own lock.
     """
     _require_pages(written)
     documents = _parsed(written, sizes)
@@ -578,19 +580,18 @@ def surya_run(
         or run_facts["torch"] != versions["torch"]
     ):
         raise SuryaOutputRefusal("Surya's run facts do not describe the run this row asked for")
-    if manifest_rows is not None:
-        pinned = sorted(
-            (
-                {"path": row["path"], "sha256": row["sha256"], "size": row["size"]}
-                for row in manifest_rows
-                if row["path"] != contract.BUNDLE_FILE
-            ),
-            key=lambda row: row["path"],
+    pinned = sorted(
+        (
+            {"path": row["path"], "sha256": row["sha256"], "size": row["size"]}
+            for row in manifest_rows
+            if row["path"] != contract.BUNDLE_FILE
+        ),
+        key=lambda row: row["path"],
+    )
+    if run_facts["weights"] != pinned:
+        raise SuryaOutputRefusal(
+            "the weights Surya's run names are not the files the chair's digest manifest pins"
         )
-        if run_facts["weights"] != pinned:
-            raise SuryaOutputRefusal(
-                "the weights Surya's run names are not the files the chair's digest manifest pins"
-            )
     details = ServingDetails(
         tokenizer_revision=identity.receipt_revision,
         seed=0,
@@ -611,6 +612,113 @@ def surya_run(
     return SuryaRun(run_facts=run_facts, serving_details=details, pages=documents)
 
 
+PREFETCH = "prefetch.py"
+BUNDLE_ARTIFACT = "surya2-detection"
+PREFETCH_TIMEOUT_SECONDS = 1800
+# Importing torch and Surya from a cold disk is the slow part of the check.
+PREFETCH_CHECK_TIMEOUT_SECONDS = 300
+# What the prefetch child inherits: a locale, a temporary directory and the
+# route to the network, never a variable that could set one of Surya's settings.
+_PREFETCH_ENVIRONMENT = {
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+}
+
+
+class SuryaBundleFetcher:
+    """The model store's fetcher for Surya's weight bundle: `prefetch.py`, run in
+    Surya's own environment, writes the bundle and its lock at the destination.
+
+    The Hugging Face client's own cache goes beside the destination, never into
+    it, so the bundle holds only what the lock names.
+    """
+
+    def __init__(self, environment: str, *, runner: Runner = subprocess.run) -> None:
+        self.environment = environment
+        self.runner = runner
+
+    def check(self, artifact: str) -> None:
+        """Refuse by name, before anything downloads, an artifact that is not
+        Surya's bundle, an environment that is not built, or one whose prefetch
+        cannot import what it fetches with or finds a Surya settings file."""
+        self._run(artifact, ["--check"], None, PREFETCH_CHECK_TIMEOUT_SECONDS, "prefetch check")
+
+    def fetch(self, artifact: str, destination: Path) -> None:
+        self._run(
+            artifact,
+            ["--out", str(destination)],
+            destination.parent / "hf-home",
+            PREFETCH_TIMEOUT_SECONDS,
+            "prefetch",
+        )
+
+    def _interpreter(self, artifact: str) -> Path:
+        if artifact != BUNDLE_ARTIFACT:
+            raise ServingConfigurationError(
+                f"Surya's prefetch writes {BUNDLE_ARTIFACT!r}, not {artifact!r}"
+            )
+        interpreter = REPO_ROOT / self.environment / ".venv" / "bin" / "python"
+        if not interpreter.is_file():
+            raise ServingConfigurationError(
+                f"Surya's environment has no interpreter at {interpreter}; build it with "
+                f"`uv sync --locked --project {self.environment}`"
+            )
+        return interpreter
+
+    def _run(
+        self,
+        artifact: str,
+        arguments: list[str],
+        hf_home: Path | None,
+        timeout: int,
+        what: str,
+    ) -> None:
+        interpreter = self._interpreter(artifact)
+        environment = REPO_ROOT / self.environment
+        child = {key: value for key, value in os.environ.items() if key in _PREFETCH_ENVIRONMENT}
+        if hf_home is not None:
+            child["HF_HOME"] = str(hf_home)
+        child["HF_HUB_DISABLE_TELEMETRY"] = "1"
+        argv = [str(interpreter), str(environment / PREFETCH), *arguments]
+        try:
+            result = self.runner(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=child,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise SuryaRunFailure(
+                f"Surya's {what} did not finish within {timeout} seconds"
+            ) from error
+        except OSError as error:
+            raise SuryaRunFailure(f"Surya's {what} could not be started: {error}") from error
+        if result.returncode != 0:
+            raise SuryaRunFailure(
+                f"Surya's {what} failed (exit {result.returncode}): "
+                f"{_without_url_credentials(result.stderr.strip())[-800:]}"
+            )
+
+
+# The user-information part of a URL, as a proxy URL carries a credential.
+_URL_CREDENTIALS = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
+
+
+def _without_url_credentials(text: str) -> str:
+    """The text with any URL's user information replaced, so an excerpt that
+    echoes a proxy URL carries no credential into a journal or report."""
+    return _URL_CREDENTIALS.sub(r"\g<scheme><redacted>@", text)
+
+
 class SuryaSubprocess:
     """How a stage answers a subprocess Surya row: its environment is checked
     before any paid work starts, and its runner is started when the pages are
@@ -628,7 +736,7 @@ class SuryaSubprocess:
         sizes: Mapping[int, tuple[int, int]],
         identity: ChairIdentity,
         *,
-        manifest_rows: Sequence[Mapping[str, Any]] | None = None,
+        manifest_rows: Sequence[Mapping[str, Any]],
     ) -> SuryaRun:
         return run_surya_subprocess(
             profile, bundle_root, pages, sizes, identity, manifest_rows=manifest_rows

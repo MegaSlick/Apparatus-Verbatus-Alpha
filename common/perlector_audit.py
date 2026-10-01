@@ -18,7 +18,6 @@ from __future__ import annotations
 import base64
 import inspect
 import json
-import math
 import re
 from typing import Any, Final, Mapping
 
@@ -26,15 +25,15 @@ from common.contracts import uncertainty
 from common.contracts.canonical import code_digest, digest_bytes, digest_of, is_plain_int, is_sha256
 from common.contracts.envelope import read_verified, validate_input_refs
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.serving import (
-    CHAIR_CALL_RECORD_SCHEMA,
-    WIRE_DECIMAL_FIELDS,
-    WIRE_DECIMAL_SCHEMA,
-)
+from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.contracts.stages import PERLECTOR
 from common.corpus_register import refuse_capture_preference
 from common.cross_capture_autopsia import presented_image_refs, presented_image_sha256s
-from common.decoding import refuse_retired_call_record, verify_call_sampling
+from common.decoding import (
+    decoded_wire_decimals,
+    refuse_retired_call_record,
+    verify_call_sampling,
+)
 
 SCHEMA: Final = "perlector-audit.v3"
 LEGACY_SCHEMA: Final = "perlector-audit.v2"
@@ -779,24 +778,12 @@ def decode_recorded_generation(value: Any) -> Any:
     that transcription before rebuilding the HTTP bytes; serializing the tag
     itself proves a different request and rejects every legitimate float.
     """
-    if isinstance(value, dict):
-        if set(value) == WIRE_DECIMAL_FIELDS and value.get("schema") == WIRE_DECIMAL_SCHEMA:
-            decimal = value.get("decimal")
-            if not isinstance(decimal, str):
-                raise SchemaRefusal("a retained call record has a malformed wire decimal")
-            try:
-                decoded = float(decimal)
-            except ValueError as error:
-                raise SchemaRefusal(
-                    "a retained call record has a malformed wire decimal"
-                ) from error
-            if not math.isfinite(decoded) or json.dumps(decoded) != decimal:
-                raise SchemaRefusal("a retained call record has a non-canonical wire decimal")
-            return decoded
-        return {key: decode_recorded_generation(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [decode_recorded_generation(item) for item in value]
-    return value
+    try:
+        return decoded_wire_decimals(value)
+    except ContractError as error:
+        raise SchemaRefusal(
+            f"an audit re-proof call has a malformed wire decimal: {error}"
+        ) from error
 
 
 def _rebuild_chair_request_bytes(

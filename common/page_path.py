@@ -31,7 +31,10 @@ from typing import Any, Final
 from common import dissent, page_accounting, page_answer, page_render, truncation
 from common import reading_annotations as annotations
 from common.alignment import bracket_marker_view
-from common.background import validate_measured_ink_map_payload
+from common.background import (
+    validate_ink_not_measurable_payload,
+    validate_measured_ink_map_payload,
+)
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes, digest_of, is_plain_int
 from common.contracts.envelope import read_verified
@@ -41,13 +44,14 @@ from common.contracts.identities import attempt_id, perlector_attempt_id
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.serving import reading_stop_reason
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP
-from common.decoding import chair_decoding, engine_effective_sampling, recorded_sampling
+from common.decoding import chair_decoding, engine_effective_sampling, recorded_wire_decimals
 from common.page_witness_units import DAI, READ_OUTCOME, WITNESS_LETTERS, witness_reading
 from common.request_capacity import page_request_capacity
 from common.residual_ink import (
     INK_NOT_MEASURABLE,
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
     load_coverage_audit_config,
+    reconcile_edge_finding_with_runs,
     resolve_coverage_audit_policy,
 )
 
@@ -283,8 +287,8 @@ def page_sampling(decoding_policy: Mapping[str, Any], role: str) -> dict[str, An
     values = chair_decoding(decoding_policy, role)
     return {
         "chair": role,
-        "sent": recorded_sampling(values),
-        "effective": recorded_sampling(engine_effective_sampling(values)),
+        "sent": recorded_wire_decimals(values),
+        "effective": recorded_wire_decimals(engine_effective_sampling(values)),
     }
 
 
@@ -1298,9 +1302,17 @@ def _accounting_detections(
 
 
 def _accounting_ink(
-    context, ink_entries: list[dict[str, Any]], page_id: str, ordinal: int
+    context,
+    ink_entries: list[dict[str, Any]],
+    page_id: str,
+    ordinal: int,
+    page_size: tuple[int, int],
 ) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
-    """The page's retained ink runs and resolved coverage policy, or `None` when unmeasured."""
+    """The page's retained ink runs and resolved coverage policy, or `None` when unmeasured.
+
+    The runs must span the sealed page (`page_size`) and reconcile with the Ink
+    Map's own edge finding and outcome before rule (f) counts them.
+    """
     found = []
     for entry in ink_entries:
         if entry["kind"] != "ink-map":
@@ -1318,21 +1330,35 @@ def _accounting_ink(
     [(entry, record)] = found
     reference = context.artifact_ref(INK_MAP, "ink-map", entry["artifact_id"])
     if record["outcome"] == INK_NOT_MEASURABLE:
+        refusal = validate_ink_not_measurable_payload(record["payload"])
+        context.require_sealed_config("ink-map", refusal["background_config_sha256"])
         return None, [reference]
-    measured = validate_measured_ink_map_payload(
-        record["payload"], audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND
-    )
+    if record["outcome"] not in {"mapped", "unclaimed-edge-ink"}:
+        raise ContractError(f"page {page_id}'s ink map has an unknown outcome")
     coverage = load_coverage_audit_config(context.args.ink_map_config)
     context.require_sealed_config("ink-map", coverage["config_sha256"])
+    measured = validate_measured_ink_map_payload(
+        record["payload"],
+        audit_contrast=MINIMUM_CONTRAST_BELOW_BACKGROUND,
+        ink_margin_bp=coverage["ink_margin_bp"],
+    )
     if coverage["config_sha256"] != measured["background_config_sha256"]:
         raise ContractError(
             f"page {page_id}'s ink map and the coverage policy read different sealed bytes"
         )
     runs = record["payload"]["edge_findings"]
-    return {
-        "runs": runs,
-        "coverage_policy": resolve_coverage_audit_policy(coverage, runs["width"], runs["height"]),
-    }, [reference]
+    coverage_policy = resolve_coverage_audit_policy(coverage, *page_size)
+    initial_measure = reconcile_edge_finding_with_runs(
+        record["payload"]["edge"],
+        runs,
+        coverage_policy=coverage_policy,
+        expected_dimensions=page_size,
+    )
+    if record["outcome"] != ("unclaimed-edge-ink" if initial_measure["flagged"] else "mapped"):
+        raise ContractError(
+            f"page {page_id}'s ink map outcome disagrees with its retained edge measurement"
+        )
+    return {"runs": runs, "coverage_policy": coverage_policy}, [reference]
 
 
 def accounting_inputs(
@@ -1369,7 +1395,13 @@ def accounting_inputs(
     detections, detection_refs = _accounting_detections(
         context, feed, witnesses, surya_census, designator_entries, record_detector_configured
     )
-    ink, ink_refs = _accounting_ink(context, ink_entries, feed["page_id"], feed["page_ordinal"])
+    ink, ink_refs = _accounting_ink(
+        context,
+        ink_entries,
+        feed["page_id"],
+        feed["page_ordinal"],
+        (feed["page_size"]["w"], feed["page_size"]["h"]),
+    )
     measured = {
         "feed": feed,
         "witnesses": accounting_witnesses(

@@ -127,12 +127,9 @@ caveat = "gap_tolerance_px is the loudest number in this file and must never be 
 #                            dimension separately, because the band is one strip
 #                            and must be the same thickness all the way round.
 #
-# Both replace flat pixel counts that were reasoned against a 200x260 fixture
-# page and never measured: 2000 outside-coverage pixels and a 64-pixel band. On
-# that fixture 2000 pixels is 384 basis points of the page's area and 64 pixels
-# is 32 per cent of its shorter side; on a 12.6-megapixel leaf the same two
-# constants are 1.6 basis points and 1.8 per cent. They were not thresholds that
-# happened to be wrong, they were artefacts of fixture size.
+# Both are fractions of the page rather than flat pixel counts: a flat count is
+# a different share of every page size, so a count that suits a small page means
+# something else on a large leaf.
 
 [coverage_audit]
 substantial_ink_area_bp = 4

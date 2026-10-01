@@ -222,7 +222,7 @@ def test_a_page_without_positive_integer_dimensions_is_refused():
 
 
 def _sealed_toml_without(block: str) -> str:
-    """The shipped grouping file with one provenance block dropped.
+    """The shipped ink-map file with one provenance block dropped.
 
     Built from the real file rather than hand-written, so this test cannot
     quietly stop describing the configuration the pipeline actually loads.
@@ -278,3 +278,18 @@ def test_a_provenance_block_claiming_calibration_without_samples_is_refused(tmp_
 
     with pytest.raises(ContractError, match="sample_count is zero"):
         load_coverage_audit_config(path)
+
+
+def test_the_background_loader_refuses_a_policy_whose_block_lost_its_provenance(tmp_path):
+    """The Ink Map publishes under `[background]` before the Designator reads it.
+
+    So the loader it calls asks where those numbers came from, as the
+    coverage-audit loader above does for its own blocks.
+    """
+    from common.background import load_background_config
+
+    path = tmp_path / "no-background-provenance.toml"
+    path.write_text(_sealed_toml_without("[background.provenance]"), encoding="utf-8")
+
+    with pytest.raises(ContractError, match=r"no \[background\.provenance\] table"):
+        load_background_config(path)

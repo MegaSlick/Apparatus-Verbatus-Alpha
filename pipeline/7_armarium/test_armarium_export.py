@@ -57,10 +57,8 @@ from common.contracts.stages import ARMARIUM, DESIGNATOR, EXEMPLAR, INK_MAP
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import crop_png, decode_grayscale_png, encode_grayscale_png
 from common.residual_ink import (
-    edge_ink,
-    ink_runs_from_rows,
+    ink_map_page,
     load_coverage_audit_config,
-    residual_ink,
     resolve_coverage_audit_policy,
 )
 from common.runtree.store import RunTree
@@ -655,31 +653,15 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
     coverage_config = load_coverage_audit_config(grouping_path)
     background_policy = resolve_background_policy(background_config, width, height)
     coverage_policy = resolve_coverage_audit_policy(coverage_config, width, height)
-    measured_edge = edge_ink(
+    measured = ink_map_page(
         width,
         height,
         rows,
         background_policy=background_policy,
         coverage_policy=coverage_policy,
     )
-    measured_ink = residual_ink(
-        width,
-        height,
-        rows,
-        [],
-        background_policy=background_policy,
-        coverage_policy=coverage_policy,
-    )
-    assert measured_ink["background"] == measured_edge["background"]
-    finding = ink_map.artifact_finding(measured_edge)
-    ink = ink_map.artifact_finding(measured_ink)
-    runs = ink_runs_from_rows(
-        width,
-        height,
-        rows,
-        background_policy=background_policy,
-        coverage_policy=coverage_policy,
-    )
+    finding = ink_map.artifact_finding(measured["edge"])
+    runs = measured["edge_findings"]
     assert finding["flagged"] is True
     assert finding["total_ink_pixels"] > 0
     assert finding["edge_band_pixels"] == 2
@@ -690,10 +672,9 @@ def test_generated_edge_ink_crosses_lineage_checked_crops_into_the_terminal_clai
             "page_ordinal": ordinal,
             "ink_measurable": True,
             "background": {
-                **measured_edge["background"],
+                **measured["background"],
                 "config_sha256": grouping_digest,
             },
-            "ink": ink,
             "edge": finding,
             "edge_findings": runs,
         },

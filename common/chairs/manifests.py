@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import stat
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -13,6 +12,7 @@ from typing import Any, Iterable
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 
 from .errors import DigestMismatchRefusal
+from .filesystem import read_limited_bytes
 from .models import ChairIdentity, DigestManifest, ManifestRow, VerifiedSnapshot, is_sha256
 
 # A manifest is a small control artifact, bounded like `model_store`'s shard index.
@@ -52,7 +52,11 @@ def build_manifest(snapshot_root: str | Path) -> DigestManifest:
 
 
 def write_manifest(manifest: DigestManifest, path: str | Path) -> str:
-    """Write the canonical artifact and return its configured digest pin."""
+    """Write the canonical artifact and return its configured digest pin.
+
+    It replaces an existing file, because it serves fixtures and authoring tools
+    that regenerate a pin; the model store publishes real manifests once instead.
+    """
 
     _validate_manifest(manifest, "manifest")
     destination = Path(path)
@@ -67,15 +71,16 @@ def read_manifest(path: str | Path, *, expected_digest: str, chair: str) -> Dige
     The pin names the artifact, not merely a JSON value that happens to parse to
     the same rows.  Accepting whitespace or another serialization here would let
     the file on disk differ from the artifact whose digest the configuration
-    names.  `write_manifest` is the one writer, so exact canonical bytes are a
-    reasonable and useful contract.
+    names.  Every writer emits `canonical_bytes` of the manifest record:
+    `write_manifest` for fixtures and authoring tools, and the model store's
+    publish-once promotion for real snapshots.
     """
 
     source = Path(path)
     try:
-        data = _read_limited_manifest_bytes(source, chair)
+        data = read_limited_bytes(source, MAX_MANIFEST_BYTES, chair, f"manifest {source}")
         raw = json.loads(data)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise DigestMismatchRefusal(chair, f"cannot read manifest {source}: {error}") from error
     manifest = _manifest_from_record(raw, chair)
     canonical = canonical_bytes(manifest.to_record())
@@ -93,39 +98,6 @@ def read_manifest(path: str | Path, *, expected_digest: str, chair: str) -> Dige
     return manifest
 
 
-def _read_limited_manifest_bytes(path: Path, chair: str) -> bytes:
-    """Read one manifest control artifact without allowing boundary amplification.
-
-    Mirrors `model_store._read_limited_bytes`: a regular-file check plus
-    `O_NOFOLLOW` refuses a symlink-redirected read, and reading `limit + 1`
-    bytes detects an oversized file without loading all of it. Duplicated
-    rather than imported: `model_store.py` already imports this module, so the
-    reverse import would close a cycle.
-    """
-
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
-        )
-        status = os.fstat(descriptor)
-        if not stat.S_ISREG(status.st_mode):
-            raise DigestMismatchRefusal(chair, f"manifest {path} must be a regular file")
-        with os.fdopen(descriptor, "rb") as handle:
-            descriptor = None
-            payload = handle.read(MAX_MANIFEST_BYTES + 1)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-    if len(payload) > MAX_MANIFEST_BYTES:
-        raise DigestMismatchRefusal(
-            chair,
-            f"manifest {path} exceeds the {MAX_MANIFEST_BYTES}-byte control-artifact limit",
-        )
-    return payload
-
-
 def verify_snapshot(
     identity: ChairIdentity,
     snapshot_root: str | Path,
@@ -135,18 +107,14 @@ def verify_snapshot(
 ) -> VerifiedSnapshot:
     """Verify every expected file and refuse the lexical first difference or extra."""
 
-    inspection = _inspect_snapshot(
+    _inspect_snapshot(
         identity,
         snapshot_root,
         manifest,
         ignored_paths=ignored_paths,
         allow_missing=False,
     )
-    if inspection.verified is None:  # pragma: no cover - strict mode refuses every gap
-        raise DigestMismatchRefusal(
-            identity.role, "strict snapshot verification produced an incomplete result"
-        )
-    return inspection.verified
+    return _verified(identity, snapshot_root, manifest)
 
 
 def inspect_snapshot_for_repair(
@@ -164,13 +132,16 @@ def inspect_snapshot_for_repair(
     cache verification or hashing every present file a second time.
     """
 
-    return _inspect_snapshot(
+    missing = _inspect_snapshot(
         identity,
         snapshot_root,
         manifest,
         ignored_paths=ignored_paths,
         allow_missing=True,
     )
+    if missing:
+        return SnapshotInspection(verified=None, missing=missing)
+    return SnapshotInspection(verified=_verified(identity, snapshot_root, manifest), missing=())
 
 
 def _inspect_snapshot(
@@ -180,8 +151,11 @@ def _inspect_snapshot(
     *,
     ignored_paths: Iterable[str],
     allow_missing: bool,
-) -> SnapshotInspection:
-    """Inventory and verify a snapshot once, with an explicit repair mode."""
+) -> tuple[str, ...]:
+    """Inventory and verify a snapshot once, returning the pinned paths it lacks.
+
+    Strict mode refuses the first missing file, so it only ever returns `()`.
+    """
 
     root = Path(snapshot_root)
     if not root.is_dir():
@@ -231,13 +205,16 @@ def _inspect_snapshot(
                 identity.role,
                 f"snapshot differs at {relative}: sha256 {actual_sha}, expected {row.sha256}",
             )
-    if missing:
-        return SnapshotInspection(verified=None, missing=tuple(missing))
-    return SnapshotInspection(
-        verified=VerifiedSnapshot(
-            identity=identity, root=root.resolve(), manifest_digest=manifest_digest(manifest)
-        ),
-        missing=(),
+    return tuple(missing)
+
+
+def _verified(
+    identity: ChairIdentity, snapshot_root: str | Path, manifest: DigestManifest
+) -> VerifiedSnapshot:
+    return VerifiedSnapshot(
+        identity=identity,
+        root=Path(snapshot_root).resolve(),
+        manifest_digest=manifest_digest(manifest),
     )
 
 
@@ -268,10 +245,9 @@ def _manifest_from_record(raw: Any, chair: str) -> DigestManifest:
 def file_size(path: Path, chair: str, relative: str) -> int:
     """One file's size, with a filesystem failure kept inside the taxonomy.
 
-    `errors.py` calls its list "the complete public taxonomy", and a caller that
-    catches `ChairRefusal` to record a refusal against a named chair got a bare
-    `PermissionError` instead — an error outside the taxonomy that names no chair
-    and no file. An unreadable pinned file is a snapshot that does not verify.
+    A caller catches `ChairRefusal` to record a refusal against a named chair, so
+    a bare `PermissionError` naming no chair and no file would escape it. An
+    unreadable pinned file is a snapshot that does not verify.
 
     Split from `file_digest` rather than returning both, so that a size that
     already disagrees with the pin refuses without reading the file. Model weights

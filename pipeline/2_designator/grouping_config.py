@@ -34,16 +34,12 @@ from pathlib import Path
 from typing import Any, Final
 
 from geometry import (
-    _PROVENANCE_FIELDS,
     _pad_amount,
     _validate_dimensions,
 )
 
 # Re-exported (not this stage's own): the Ink Map and Recensor also infer
 # paper value under the same sealed policy, and callers use this spelling.
-from common.background import (  # noqa: F401
-    BACKGROUND_BP_FIELDS as _BACKGROUND_BP_FIELDS,
-)
 from common.background import (
     BASIS_POINTS as _BASIS_POINTS,
 )
@@ -51,10 +47,11 @@ from common.background import (  # noqa: F401
     DEFAULT_INK_MAP_CONFIG_PATH,
     INK_MAP_TABLES,
     load_background_config,
+    refuse_forbidden_names,
     resolve_background_policy,
     validate_background_table,
 )
-from common.calibration import calibrated_claim_has_sample_evidence
+from common.calibration import validate_provenance_block
 from common.contracts.canonical import is_plain_int
 from common.contracts.errors import ContractError
 from common.residual_ink import load_coverage_audit_config
@@ -78,9 +75,6 @@ _PAGE_FRACTION_BP_FIELDS: Final = (
 # block: measured on 44 real pages, unlike the mostly-unmeasured block above it.
 _CONTINUATION_BP_FIELDS: Final = ("page_edge_reach_bp",)
 
-# See module docstring. Checked explicitly, with a message naming why, rather
-# than left to the generic "unknown field" refusal.
-_FORBIDDEN_NAMES: Final = ("primary_margin", "secondary_margin")
 
 # None of these is a page-dimension fraction. Residual presentation uses
 # the separate policy below.
@@ -104,20 +98,6 @@ _GROUPING_TOP_FIELDS: Final = _GROUPING_COUNT_FIELDS + (
 _TOP_LEVEL_TABLES: Final = ("grouping",)
 
 
-def _refuse_forbidden_names(fields: dict, where: str) -> None:
-    found = sorted(name for name in _FORBIDDEN_NAMES if name in fields)
-    if found:
-        raise ContractError(
-            f"the grouping configuration's {where} carries forbidden field(s) {found}; "
-            "primary_margin/secondary_margin are absolute 8-bit ink-intensity offsets pinned "
-            "as Python module constants in structure.py by "
-            "common/test_designator_recensor_ink_calibration.py and may never become a per-run "
-            "config value. What is sealed instead is the ink map's [background] ink_margin_bp, the "
-            "fraction of a page's own two-mode distance that derives its margin: a population "
-            "fraction, which scales with the page, and not an offset"
-        )
-
-
 def load_grouping_config(
     path: str | Path = DEFAULT_GROUPING_CONFIG_PATH,
     ink_map_path: str | Path = DEFAULT_INK_MAP_CONFIG_PATH,
@@ -136,7 +116,7 @@ def load_grouping_config(
     if not isinstance(grouping, dict):
         raise ContractError("the grouping configuration has no [grouping] table")
 
-    _refuse_forbidden_names(grouping, "[grouping] table")
+    refuse_forbidden_names(grouping, "[grouping] table")
 
     unexpected = sorted(set(grouping) - set(_GROUPING_TOP_FIELDS))
     if unexpected:
@@ -166,7 +146,9 @@ def load_grouping_config(
     )
     continuation = _load_continuation(grouping.get("continuation"))
     residual_presentation = _load_residual_presentation(grouping.get("residual_presentation"))
-    provenance = _load_provenance(grouping.get("provenance"), "[grouping.provenance]")
+    provenance = validate_provenance_block(
+        grouping.get("provenance"), where="[grouping.provenance]"
+    )
     ink_map = _load_ink_map(ink_map_path)
 
     return {
@@ -202,23 +184,33 @@ def _load_ink_map(path: str | Path) -> dict[str, Any]:
         "background": _load_background(config.get("background")),
         "coverage_audit": {
             **coverage["coverage_audit"],
-            "provenance": _load_provenance(audit.get("provenance"), "[coverage_audit.provenance]"),
+            "provenance": validate_provenance_block(
+                audit.get("provenance"),
+                where="[coverage_audit.provenance]",
+                owner="the ink-map configuration",
+            ),
             # A separate provenance block: it must not be read as covering the
             # unmeasured noise-floor pair too.
-            "noise_floor_provenance": _load_provenance(
-                audit["noise_floor"].get("provenance"), "[coverage_audit.noise_floor.provenance]"
+            "noise_floor_provenance": validate_provenance_block(
+                audit["noise_floor"].get("provenance"),
+                where="[coverage_audit.noise_floor.provenance]",
+                owner="the ink-map configuration",
             ),
         },
         "page_spanning": {
             "page_spanning_area_bp": coverage["page_spanning_area_bp"],
-            "provenance": _load_provenance(
-                config["page_spanning"].get("provenance"), "[page_spanning.provenance]"
+            "provenance": validate_provenance_block(
+                config["page_spanning"].get("provenance"),
+                where="[page_spanning.provenance]",
+                owner="the ink-map configuration",
             ),
         },
         "connectivity": {
             "gap_tolerance_px": coverage["gap_tolerance_px"],
-            "provenance": _load_provenance(
-                config["connectivity"].get("provenance"), "[connectivity.provenance]"
+            "provenance": validate_provenance_block(
+                config["connectivity"].get("provenance"),
+                where="[connectivity.provenance]",
+                owner="the ink-map configuration",
             ),
         },
     }
@@ -250,8 +242,8 @@ def _load_residual_presentation(table: Any) -> dict[str, Any]:
             "the grouping configuration's [grouping.residual_presentation] has invalid "
             f"non-negative integer field(s) {invalid}"
         )
-    values["provenance"] = _load_provenance(
-        table.get("provenance"), "[grouping.residual_presentation.provenance]"
+    values["provenance"] = validate_provenance_block(
+        table.get("provenance"), where="[grouping.residual_presentation.provenance]"
     )
     return values
 
@@ -259,7 +251,7 @@ def _load_residual_presentation(table: Any) -> dict[str, Any]:
 def _load_closed_int_table(table: Any, fields: tuple[str, ...], what: str) -> dict[str, int]:
     if not isinstance(table, dict):
         raise ContractError(f"the grouping configuration has no {what} table")
-    _refuse_forbidden_names(table, what)
+    refuse_forbidden_names(table, what)
     unexpected = sorted(set(table) - set(fields))
     if unexpected:
         raise ContractError(
@@ -279,58 +271,6 @@ def _load_closed_int_table(table: Any, fields: tuple[str, ...], what: str) -> di
     return values
 
 
-# _STRING_PROVENANCE_FIELDS is derived, not hand-copied, so a field added to
-# _PROVENANCE_FIELDS is validated by construction rather than silently skipped.
-_TYPED_PROVENANCE_FIELDS: Final = frozenset({"sample_count", "calibrated_for_this_corpus"})
-_STRING_PROVENANCE_FIELDS: Final = tuple(sorted(set(_PROVENANCE_FIELDS) - _TYPED_PROVENANCE_FIELDS))
-assert _TYPED_PROVENANCE_FIELDS | set(_STRING_PROVENANCE_FIELDS) == set(_PROVENANCE_FIELDS)
-
-
-def _load_provenance(provenance: Any, where: str) -> dict[str, Any]:
-    """Validate one declared provenance block against the closed schema.
-
-    This policy carries a separate provenance block per table (each with its
-    own sample count and calibration claim) rather than one for the whole
-    file, so a single number can't be over-read onto values it doesn't cover.
-    `where` names the table, so a refusal points at the block that is wrong.
-    """
-    if not isinstance(provenance, dict):
-        raise ContractError(
-            f"the grouping configuration has no {where} table; a policy value with no "
-            "declared source may not be shipped as a default"
-        )
-    unexpected = sorted(set(provenance) - set(_PROVENANCE_FIELDS))
-    if unexpected:
-        raise ContractError(
-            f"the grouping configuration's {where} carries unknown field(s) {unexpected}; "
-            "provenance is a closed schema so an unread field cannot be trusted"
-        )
-    missing = sorted(set(_PROVENANCE_FIELDS) - set(provenance))
-    if missing:
-        raise ContractError(f"the grouping configuration's {where} is missing field(s) {missing}")
-    for field in _STRING_PROVENANCE_FIELDS:
-        if not isinstance(provenance[field], str) or not provenance[field].strip():
-            raise ContractError(
-                f"the grouping configuration's {where} field {field!r} is not a non-empty string"
-            )
-    if not is_plain_int(provenance["sample_count"]) or provenance["sample_count"] < 0:
-        raise ContractError(
-            f"the grouping configuration's {where} sample_count is not a non-negative integer"
-        )
-    if not isinstance(provenance["calibrated_for_this_corpus"], bool):
-        raise ContractError(
-            f"the grouping configuration's {where} calibrated_for_this_corpus is not a boolean"
-        )
-    if not calibrated_claim_has_sample_evidence(
-        provenance["calibrated_for_this_corpus"], provenance["sample_count"]
-    ):
-        raise ContractError(
-            f"the grouping configuration's {where} says calibrated_for_this_corpus but "
-            "sample_count is zero"
-        )
-    return dict(provenance)
-
-
 def _load_continuation(table: Any) -> dict[str, Any]:
     """Read `[grouping.continuation]` and its own provenance.
 
@@ -342,7 +282,7 @@ def _load_continuation(table: Any) -> dict[str, Any]:
     """
     if not isinstance(table, dict):
         raise ContractError("the grouping configuration has no [grouping.continuation] table")
-    _refuse_forbidden_names(table, "[grouping.continuation]")
+    refuse_forbidden_names(table, "[grouping.continuation]")
     expected = set(_CONTINUATION_BP_FIELDS) | {"provenance"}
     unexpected = sorted(set(table) - expected)
     if unexpected:
@@ -369,8 +309,8 @@ def _load_continuation(table: Any) -> dict[str, Any]:
             f"1..{_BASIS_POINTS}; the permitted upper endpoint is a broad whole-page policy "
             "value"
         )
-    values["provenance"] = _load_provenance(
-        table.get("provenance"), "[grouping.continuation.provenance]"
+    values["provenance"] = validate_provenance_block(
+        table.get("provenance"), where="[grouping.continuation.provenance]"
     )
     return values
 
@@ -378,29 +318,15 @@ def _load_continuation(table: Any) -> dict[str, Any]:
 def _load_background(table: Any) -> dict[str, Any]:
     """Read the ink map's `[background]` and its own provenance.
 
-    Its own provenance block because these four values are measured on 127
-    real pages. The values themselves are validated by
-    `common.background.validate_background_table`, shared with every other
-    reader so all refuse the same malformed value; this function adds only the
-    forbidden-name refusal, the closed field set, and the provenance schema.
+    The values are validated by `common.background.validate_background_table`,
+    shared with every other reader so all refuse the same malformed value; this
+    function adds only the provenance schema, which a table built in code does
+    not carry.
     """
-    if not isinstance(table, dict):
-        raise ContractError("the ink-map configuration has no [background] table")
-    _refuse_forbidden_names(table, "[background]")
-    expected = set(_BACKGROUND_BP_FIELDS) | {"provenance"}
-    unexpected = sorted(set(table) - expected)
-    if unexpected:
-        raise ContractError(
-            f"the ink-map configuration's [background] carries unknown field(s) "
-            f"{unexpected}; an unread policy field cannot be applied"
-        )
-    missing = sorted(expected - set(table))
-    if missing:
-        raise ContractError(
-            f"the ink-map configuration's [background] is missing field(s) {missing}"
-        )
     values = validate_background_table(table)
-    values["provenance"] = _load_provenance(table.get("provenance"), "[background.provenance]")
+    values["provenance"] = validate_provenance_block(
+        table.get("provenance"), where="[background.provenance]", owner="the ink-map configuration"
+    )
     return values
 
 

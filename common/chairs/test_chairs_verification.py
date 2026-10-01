@@ -1,13 +1,11 @@
-"""Spec 02, test 2 — Verification.
+"""Verification: a fixture snapshot with one flipped byte fails **naming the
+file**; a complete match passes; an extra file fails; a partial cache re-fetches
+exactly the missing files. Network is mocked, so this measures the call the mock
+received, not Hugging Face's behaviour.
 
-"A fixture snapshot with one flipped byte fails **naming the file**; a complete
-match passes; an extra file fails; a partial cache re-fetches exactly the missing
-files. Network is mocked, and the spec says plainly what that means: this
-measures the call the mock received, not Hugging Face's behaviour."
-
-Two more clauses from the same section are checked here, because nothing else
-would catch them: verification covers the *whole* fetched snapshot, and "a failed
-verification leaves the previously verified snapshot untouched".
+Two more properties are checked here, because nothing else would catch them:
+verification covers the *whole* fetched snapshot, and a failed verification
+leaves the previously verified snapshot untouched.
 
 Every fetch below goes through `RecordingFetcher`, the one seam. No test in this
 file asserts anything about Hugging Face; each asserts what the registry asked
@@ -390,9 +388,8 @@ def test_a_manifest_that_cannot_be_read_at_all_is_refused_naming_the_chair(tmp_p
 
 
 def test_manifest_read_is_bounded_before_json_deserialization(tmp_path, monkeypatch):
-    """A manifest is a small control artifact, not model weight bytes -- unlike
-    `model_store.py`'s own bounded control-artifact reads, this one used to read
-    the whole file into memory before checking anything about it."""
+    """A manifest is a small control artifact, not model weight bytes, so an
+    oversized one is refused before any of it is parsed as JSON."""
     monkeypatch.setattr(manifests, "MAX_MANIFEST_BYTES", 32)
     path = tmp_path / "manifest.json"
     path.write_bytes(b"{" + b"x" * 32)
@@ -539,6 +536,7 @@ def test_the_measured_real_roster_pins_each_shipped_manifest():
         "attestator_3",
         "perlector",
         "secondary_proposer",
+        "designator_surya",
     }
     assert (
         configured["designator_structure"].digest_manifest
@@ -551,6 +549,30 @@ def test_the_measured_real_roster_pins_each_shipped_manifest():
             expected_digest=identity.digest_manifest,
             chair=role,
         ).rows
+
+
+def test_the_real_surya_chair_and_the_store_pin_one_measured_bundle():
+    """Surya's bundle has no Hub revision, so its manifest digest is the pin the
+    launch-time fetch is checked against and the roster binds; the two are one fact."""
+    from common.chairs.model_store import REQUIRED_ARTIFACTS
+
+    identity = load_models_toml(ROOT / "config" / "models-real.toml").chairs["designator_surya"]
+    (requirement,) = [item for item in REQUIRED_ARTIFACTS if item.chair == "designator_surya"]
+    assert identity.source == requirement.source == "local-repository"
+    assert identity.digest_manifest == requirement.digest_manifest
+    assert identity.manifest == f"manifests/{requirement.artifact}.json"
+    rows = read_manifest(
+        ROOT / "config" / identity.manifest,
+        expected_digest=identity.digest_manifest,
+        chair="designator_surya",
+    ).rows
+    paths = {row.path for row in rows}
+    assert {"surya-bundle.json", requirement.license_file} <= paths
+    assert {
+        "text_detection/2025_05_07/model.safetensors",
+        "surya_layout2/rfdetr_layout.pth",
+        "surya_layout2/order/order_ar.pt",
+    } <= paths
 
 
 def test_an_unmeasured_all_zero_pin_is_refused_by_name_before_anything_reads_it(tmp_path):
@@ -790,8 +812,8 @@ def test_a_validated_file_swapped_for_a_fifo_is_refused_instead_of_hanging_the_b
     still owns the per-call cache between then and the copy. Opening the name
     again without ``O_NONBLOCK`` blocks forever on a FIFO -- inside a pod boot,
     with the GPU billing, no journal step recorded and no reason printed -- so
-    the identity check below it never runs. ``_read_limited_bytes`` already pays
-    for this flag; this call did not.
+    the identity check below it never runs, so this open carries ``O_NONBLOCK``
+    as ``read_limited_bytes`` does.
 
     The refusal is asserted from a worker thread with a deadline: a regression
     here is a hang, and a hang must surface as a failed test rather than a suite

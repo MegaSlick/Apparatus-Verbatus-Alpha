@@ -1,10 +1,10 @@
-"""The eight derived identities, bound so a forged one is detectable.
+"""The derived identities, bound so a forged one is detectable.
 
 Every identity except `run_id` is a digest of exactly the facts it claims to bind,
 carried beside those facts in the artifact. That makes identity *verifiable*: a
 reader recomputes and refuses a mismatch, instead of trusting a string that arrived
-in a file. It is also what makes the architecture's first invariant — act identity
-survives recropping — a property a test can prove rather than a habit:
+in a file. It is also what makes "act identity survives recropping" a property a
+test can prove rather than a habit:
 
     act_id    binds the original class and bounds  -> a recrop cannot change it
     region_id binds the act AND the transform      -> a recrop must change it
@@ -35,7 +35,6 @@ _PREFIXES: Final = {
     "physical-page": "ppg",
     "physical-act": "pac",
     "region": "rgn",
-    "variance-experiment": "ve",
     "attempt": "att",
     "artifact": "art",
 }
@@ -43,7 +42,7 @@ _PREFIXES: Final = {
 # Typed by an operator and safe as a directory name on macOS and Linux alike.
 _RUN_ID_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
-_ID_PATTERN: Final = re.compile(r"^(pg|act|ppg|pac|rgn|ve|att|art)_[0-9a-f]{%d}$" % _DIGEST_CHARS)
+_ID_PATTERN: Final = re.compile(r"^(pg|act|ppg|pac|rgn|att|art)_[0-9a-f]{%d}$" % _DIGEST_CHARS)
 
 
 def validate_run_id(run_id: Any) -> str:
@@ -218,6 +217,8 @@ def act_bindings(page: str, act_class: str, bounds: Any) -> dict[str, Any]:
     the minting path could never have produced, instead of hashing it and
     reporting a mismatch that says nothing about why.
     """
+    if type(act_class) is not str:
+        raise IdentityRefusal(f"act class {act_class!r} is not a string")
     if act_class in READING_ACT_CLASSES:
         _identity(page, "pg", "act page")
         _reading_binding(bounds, act_class)
@@ -345,9 +346,9 @@ def physical_act_component_designation(physical_page: str, local_act_ids: list[s
 def region_bindings(act: str, transform: Any) -> dict[str, Any]:
     """A region is one act seen through one exact, reproducible transform.
 
-    The transform is recorded in full rather than summarized, so ARCHITECTURE's
-    third invariant holds: the exact image shown to a model is reproducible from
-    the Exemplar plus the recorded transforms.
+    The transform is recorded in full rather than summarized, so the exact image
+    shown to a model is reproducible from the Exemplar plus the recorded
+    transforms.
     """
     return {"act_id": act, "transform": transform}
 
@@ -375,8 +376,8 @@ PERLECTOR_READING_OPERATIONS = frozenset(
 
 
 def perlector_attempt_id(subject: str, operation: str, ordinal: int) -> str:
-    if operation not in PERLECTOR_READING_OPERATIONS:
-        raise ValueError(f"unknown Perlector reading operation {operation!r}")
+    if type(operation) is not str or operation not in PERLECTOR_READING_OPERATIONS:
+        raise IdentityRefusal(f"unknown Perlector reading operation {operation!r}")
     return attempt_id(subject, operation, ordinal)
 
 

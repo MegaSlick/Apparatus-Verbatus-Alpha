@@ -4,9 +4,9 @@
 sealed record, which is the right place for the record's rules. What it cannot
 reach is the projection step itself: `from_perlectio` renames the producer's
 `testimonium_span` to `prior_span`, and a rename is exactly the kind of thing
-that is only visible when the value is non-empty. Every record the pipeline
-builds today carries an empty layer, so the rename travels untested through
-every other suite in this repository.
+that is only visible when the value is non-empty. A pipeline record may carry
+an empty layer, and then the rename travels untested through every suite that
+builds one, so this file tests it with a non-empty value.
 """
 
 from __future__ import annotations
@@ -326,6 +326,33 @@ def test_projection_refuses_a_payload_it_cannot_canonicalize(payload, expected) 
             },
             "Maria",
             r"uncertain_spans\[0\] is malformed",
+        ),
+        # Unhashable values from JSON: a named refusal, never a TypeError out of `in`.
+        (
+            {
+                "uncertain_spans": [
+                    {"start": 0, "end": 2, "alternatives": ["Ma"], "confidence": ["low"]}
+                ],
+                "gaps": [],
+                "self_revisions": [],
+                "assessment": _ASSESSED,
+                "lectio_kind": "primed-with-prior",
+            },
+            "Maria",
+            r"uncertain_spans\[0\] is malformed",
+        ),
+        (
+            {
+                "uncertain_spans": [],
+                "gaps": [
+                    {"position": {"internal": 1}, "start": 2, "end": 2, "witness_evidence": []}
+                ],
+                "self_revisions": [],
+                "assessment": _ASSESSED,
+                "lectio_kind": "primed-with-prior",
+            },
+            "Maria",
+            r"gaps\[0\] position",
         ),
     ],
 )

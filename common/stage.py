@@ -103,7 +103,7 @@ from common.decoding import (
     chair_attempt_decoding,
     load_decoding_policy,
     perlector_page_max_tokens,
-    recorded_sampling,
+    recorded_wire_decimals,
     refuse_retired_call_record,
     structure_recovery_policy,
     variance_arm_seed,
@@ -185,7 +185,7 @@ REAL_SCENARIO: Final = "real-submission"
 # Bump whenever the real Door's output can change, so a real run cannot resume
 # under pixels from another Door.  Lives here because `common/` rechecks it and
 # may not import a stage.
-REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v5"
+REAL_DOOR_ADAPTER_REVISION: Final = "exemplar-door-v6"
 
 
 def load_triage_modes(path: str | Path) -> str:
@@ -1518,9 +1518,13 @@ def stage_parser(description: str, *, accepts_chair: bool = False) -> argparse.A
     return parser
 
 
+# The declaration file under a run's --fixture-root.
+FIXTURE_DECLARATION = "skeleton_fixture.toml"
+
+
 def load_fixture(fixture_root: str) -> dict[str, Any]:
     """Read the declared fixture as data; a missing one is a failure, not an empty run."""
-    path = Path(fixture_root) / "skeleton_fixture.toml"
+    path = Path(fixture_root) / FIXTURE_DECLARATION
     if not path.exists():
         raise ContractError(
             f"no fixture declaration at {path}. The skeleton runs on declared "
@@ -3861,7 +3865,7 @@ def structure_attempt_decoding(
     """The decoding block a structure attempt must carry: its sealed sampling values."""
     return {
         "policy": STRUCTURE_DECODING_POLICY,
-        "sampling": recorded_sampling(
+        "sampling": recorded_wire_decimals(
             chair_attempt_decoding(policy, DESIGNATOR_CHAIR, attempt_ordinal)
         ),
         "decoding_config_sha256": decoding_config_sha256,

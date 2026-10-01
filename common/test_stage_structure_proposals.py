@@ -67,7 +67,7 @@ from common.decoding import (
     chair_decoding,
     engine_effective_sampling,
     load_decoding_policy,
-    recorded_sampling,
+    recorded_wire_decimals,
     structure_recovery_policy,
 )
 from common.imaging import dimensions
@@ -416,8 +416,8 @@ class _StructureDesignator:
             self.call_record(
                 request_sha256="a" * 64,
                 image_sha256s=[image_ref["sha256"]],
-                generation_sent={"seed": attempt_seed, **recorded_sampling(sampling)},
-                sampling_effective=recorded_sampling(engine_effective_sampling(sampling)),
+                generation_sent={"seed": attempt_seed, **recorded_wire_decimals(sampling)},
+                sampling_effective=recorded_wire_decimals(engine_effective_sampling(sampling)),
                 raw_response_ref=raw_ref,
                 response_sha256=raw_ref["sha256"],
                 response_status=200,
@@ -480,7 +480,7 @@ class _StructureDesignator:
             "page_text_rule": "fixture",
             "decoding": {
                 "policy": STRUCTURE_DECODING_POLICY,
-                "sampling": recorded_sampling(sampling),
+                "sampling": recorded_wire_decimals(sampling),
                 "decoding_config_sha256": self.decoding_sha256,
             },
             "provenance": answer_provenance,

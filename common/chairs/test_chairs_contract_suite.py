@@ -1,11 +1,9 @@
-"""Spec 02, test 6 — the contract suite.
+"""The contract suite: the full protocol against two independent implementations,
+with the calling stages parameterized over both, while a deliberately
+incompatible third fails naming the protocol clause it breaks.
 
-"The full protocol against two independent implementations, with the skeleton's
-calling stages parameterized over both; a deliberately incompatible third fails
-naming the protocol clause."
-
-Two implementations are independent, in the spec's own words, "when neither
-imports the other and both are exercised by the same contract suite". Here that
+Two implementations are independent when neither imports the other and both are
+exercised by the same contract suite. Here that
 is `common.chairs.registry.ChairRegistry` — real, filesystem- and Hugging
 Face-backed — and `DeterministicChairRegistry` in this package's `conftest.py`,
 in-memory and network-free. Every test below runs once per implementation, from
@@ -13,7 +11,7 @@ one body, so a claim that holds for one and not the other cannot pass.
 
 The clause about the *stages* is discharged where the stages are:
 `pipeline/test_chair_parameterization.py` runs all nine stage programs over both
-implementations. And the claim stays the size the spec sized it — exercising an
+implementations. And the claim stays its own size — exercising an
 interface against two implementations proves those two implement that interface,
 and nothing whatever about model churn.
 """
@@ -221,12 +219,29 @@ class _WrongSnapshot:
         return build_receipt(identity, serving)
 
 
+class _RewrittenReceipt:
+    """Names the right identity, then records serving details it was not given."""
+
+    def __init__(self, identity: ChairIdentity):
+        self._identity = identity
+
+    def resolve(self, role):
+        return self._identity
+
+    def ensure(self, identity):
+        return VerifiedSnapshot(identity, __import__("pathlib").Path("."), identity.digest_manifest)
+
+    def receipt(self, identity, serving):
+        return build_receipt(identity, serving_details(seed=serving.seed + 1))
+
+
 @pytest.mark.parametrize(
     ("broken", "clause"),
     [
         (_MissingEnsure, "protocol shape"),
         (_WrongChair, "resolve clause"),
         (_WrongSnapshot, "ensure clause"),
+        (_RewrittenReceipt, "receipt clause"),
     ],
 )
 def test_a_deliberately_incompatible_third_fails_naming_the_clause_it_broke(
@@ -267,9 +282,7 @@ def test_the_deterministic_implementation_refuses_to_exist_outside_a_test_run(
     """The fake ships. `pyproject.toml` includes `common.*` wholesale, so this
     class is an ordinary importable module of any installed copy — and a fake
     answering under a configured chair's name is the one thing `common/chairs`
-    exists to refuse. Its constructor guard is what actually stops that, so the
-    guard needs a test; the packaging claim it replaced had none, which is why it
-    was wrong for as long as it was.
+    exists to refuse. Its constructor guard is what actually stops that.
     """
     config_path = write_models_toml(
         tmp_path, {CONFIGURED: hf_chair(CONFIGURED, "d" * 64)}, witness_floor=1

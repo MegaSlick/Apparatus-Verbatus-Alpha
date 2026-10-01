@@ -3,7 +3,8 @@
 One ``ink-map`` record is written for every sealed Exemplar page, including a
 page on which this measure finds no ink; proposals do not exist yet. The record
 is bounded evidence: ``unclaimed-edge-ink`` names an edge signal without holding
-anything; Unit 14 owns that explicit hold outcome.
+anything; the Armarium decides the hold by re-measuring the retained runs
+against the Designator's verified crops.
 
 This stage infers each page's paper value through
 ``common.background``, the same inference and the same sealed ``[background]``
@@ -11,9 +12,13 @@ policy (``config/ink_map.toml``) every later reader runs under, and proves the
 bytes it read against the run's own ``ink-map`` seal. The
 page's raw histogram mode is not used: on a photographed opening that mode is
 the bezel, which would map every such page as carrying approximately no ink at
-all. A page the shared inference refuses is published as ``ink-not-measurable``
--- present in the census, with its refusal named and no counts -- rather than as
-a page that measured clean.
+all. A page is published as ``ink-not-measurable`` -- present in the census,
+with its refusal named and no counts -- rather than as a page that measured
+clean, for either of two reasons: the shared inference refuses its paper, or
+the paper it infers is too dark for this audit's own contrast
+(``MINIMUM_CONTRAST_BELOW_BACKGROUND``) to leave any level to count as ink. The
+second happens on pages the Designator measures, since its own floor margin is
+smaller.
 """
 
 import sys
@@ -29,16 +34,15 @@ from common.background import (  # noqa: E402
 )
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import parse_ingress_record  # noqa: E402
+from common.contracts.canonical import is_plain_int  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.stages import EXEMPLAR, INK_MAP  # noqa: E402
 from common.exemplar_boundary import sealed_page_bytes, verify_sealed_page_pixels  # noqa: E402
-from common.imaging import grayscale_rows  # noqa: E402
+from common.imaging import UnsettledReadingPolicy, grayscale_rows  # noqa: E402
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
-    edge_ink,
-    ink_runs_from_rows,
+    ink_map_page,
     load_coverage_audit_config,
-    residual_ink,
     resolve_coverage_audit_policy,
 )
 from common.stage import (  # noqa: E402
@@ -68,7 +72,7 @@ def sealed_pages(context):
         if page["outcome"] != "sealed":
             continue
         ordinal = page.get("payload", {}).get("ordinal")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+        if not is_plain_int(ordinal):
             raise FatalAccounting(
                 "the ink map refuses the Exemplar census: a sealed page has no integer "
                 "ordinal, so it cannot be matched to one submitted source; no ink-map "
@@ -89,11 +93,6 @@ def sealed_pages(context):
             )
         seen_ordinals.add(ordinal)
         verify_sealed_page_pixels(context.tree, context.run, sources[0], page)
-        if not isinstance(page["payload"].get("image_path"), str):
-            raise FatalAccounting(
-                f"the ink map refuses sealed Exemplar page {ordinal}: it has no image path "
-                "to measure; no ink-map record was written"
-            )
         pages.append((ordinal, page, entry["relative_path"]))
     if not pages:
         raise FatalAccounting(
@@ -108,9 +107,9 @@ def measured_page_bytes(tree, ordinal: int, page: dict) -> bytes:
 
     Read one page at a time rather than accumulated with the census, because
     this stage measures EVERY sealed page of a shard and a shard runs to 1,000
-    of them (`config/corpus_frame.toml`). Holding every page's bytes at once
-    made peak memory the size of the shard's pixels; the Recensor reads inside
-    its own loop for the same reason.
+    of them (`config/corpus_frame.toml`): holding every page's bytes at once
+    would make peak memory the size of the shard's pixels. The Recensor reads
+    inside its own loop for the same reason.
     """
     return sealed_page_bytes(
         tree, page, what=f"the ink map (page {ordinal})", refusal=FatalAccounting
@@ -118,16 +117,8 @@ def measured_page_bytes(tree, ordinal: int, page: dict) -> bytes:
 
 
 def artifact_finding(finding: dict) -> dict:
-    """Make the shared measure's ratio canonical without changing its measure.
-
-    The background block is lifted out here rather than carried on both
-    findings. Both measures inferred the same page under the same policy, `main`
-    checks that they agree before publishing, and the page's record states its
-    one paper value once: two copies of a number is how two copies come to
-    disagree.
-    """
+    """Make the shared measure's ratio canonical without changing its measure."""
     recorded = dict(finding)
-    recorded.pop("background", None)
     # Defaulted rather than indexed: a measure that stops emitting the key at
     # all is a worse contract break than one emitting a string, so both cases
     # arrive here as the same named refusal below rather than one raising a
@@ -170,13 +161,18 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     for ordinal, page, page_path in sealed_pages(context):
         image_bytes = measured_page_bytes(context.tree, ordinal, page)
         try:
-            # One decode feeds all three measures below. `measured_page_bytes`
-            # proves these bytes match the digest the Exemplar sealed, not that
-            # this module's own decoder can read them; an uncaught ValueError
-            # here would escape as a bare traceback with earlier pages already
-            # published and no boundary sealed. Named and stopped instead, like
-            # every other census failure this stage refuses.
+            # `measured_page_bytes` proves these bytes match the digest the
+            # Exemplar sealed, not that the decoder can read them. Earlier pages
+            # are already published, so either refusal says the map is
+            # incomplete and names its own cause.
             width, height, rows = grayscale_rows(image_bytes)
+        except UnsettledReadingPolicy as error:
+            raise FatalAccounting(
+                f"the ink map cannot measure sealed Exemplar page {ordinal}: the pipeline has "
+                f"no settled policy for reading its pixels as grey ({error}); the bytes are "
+                "intact, no boundary was sealed, and the records already published for "
+                "earlier pages of this run are an incomplete map"
+            ) from error
         except ValueError as error:
             raise FatalAccounting(
                 f"the ink map cannot measure sealed Exemplar page {ordinal}: its own "
@@ -187,26 +183,14 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
         policy = resolve_background_policy(background_config, width, height)
         audit_policy = resolve_coverage_audit_policy(coverage_config, width, height)
         try:
-            # Empty coverage is intentional: this is the pre-proposal denominator.
-            ink_map = residual_ink(
-                width, height, rows, [], background_policy=policy, coverage_policy=audit_policy
-            )
-            edge = edge_ink(
-                width, height, rows, background_policy=policy, coverage_policy=audit_policy
-            )
-            # Retain the page's audited runs so later coverage decisions cannot
-            # re-measure it under a different pixel predicate or a different
-            # page-spanning split.
-            edge_findings = ink_runs_from_rows(
+            measured = ink_map_page(
                 width, height, rows, background_policy=policy, coverage_policy=audit_policy
             )
         except BackgroundInferenceRefusal as error:
-            # **Named, and still in the census.** The page is sealed, it is real,
-            # and the Designator will cut it; what this stage cannot do is say
-            # how much ink is on it. Publishing `mapped` with zero counts would
-            # be the exact failure this record now exists to stop -- an audit
-            # passing by construction -- and dropping the record would break the
-            # page denominator the Armarium reconciles against the census.
+            # Named, and still in the census: the Designator still cuts this
+            # page, and the Armarium reconciles its page denominator against
+            # the census. `mapped` with zero counts would be an audit passing by
+            # construction.
             context.publish(
                 kind="ink-map",
                 subject_id=page["subject_id"],
@@ -220,18 +204,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 },
             )
             continue
-        # Both measures infer the same page under the same policy, so they must
-        # return the same background block; publishing it once rather than
-        # twice, and checking that before doing so, keeps one paper value per
-        # page in the record and makes the identity a check rather than an
-        # assumption.
-        background = ink_map["background"]
-        if edge["background"] != background:
-            raise FatalAccounting(
-                f"the ink map inferred two different backgrounds for sealed page {ordinal} "
-                f"({background} against {edge['background']}); one page has one paper value "
-                "and a record that carried both would leave every count on it unreadable"
-            )
+        edge = measured["edge"]
         context.publish(
             kind="ink-map",
             subject_id=page["subject_id"],
@@ -240,14 +213,19 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             payload={
                 "page_ordinal": ordinal,
                 "ink_measurable": True,
-                # The record names the paper value it ran under,
-                # where that value came from, the contrast this audit applied
-                # below it, and the digest of the sealed policy that decided
-                # the inference.
-                "background": {**background, "config_sha256": background_config["config_sha256"]},
-                "ink": artifact_finding(ink_map),
+                # The paper value every count was taken under, where it came
+                # from, this audit's contrast below it, and the digest of the
+                # sealed policy that decided the inference.
+                "background": {
+                    **measured["background"],
+                    "config_sha256": background_config["config_sha256"],
+                },
+                # `edge.total_ink_pixels` is the page's whole audited ink: the
+                # pre-proposal denominator.
                 "edge": artifact_finding(edge),
-                "edge_findings": edge_findings,
+                # The page's audited runs, so later coverage decisions do not
+                # re-measure it under another pixel predicate or spanning split.
+                "edge_findings": measured["edge_findings"],
             },
         )
     context.seal_boundary()

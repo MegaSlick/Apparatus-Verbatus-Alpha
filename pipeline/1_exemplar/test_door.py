@@ -20,6 +20,7 @@ from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from textwrap import dedent
+from types import SimpleNamespace
 
 import door
 import pytest
@@ -98,8 +99,8 @@ def _sealed_binding_digests() -> dict[str, str]:
 
     Read exactly as the door reads them, from one read each, so a test never seals
     a name under bytes nothing parsed. Kept in one helper because the argument list
-    is the shape the fixture path's `run_config_bindings` has to match: the F-S5
-    defect was one map growing an entry the other did not.
+    is the shape the fixture path's `run_config_bindings` has to match, so one map
+    cannot grow an entry the other lacks.
     """
     return {
         "pdf_render_config_sha256": door.render_config.load_pdf_render_binding(
@@ -644,9 +645,8 @@ def test_a_directoryless_classic_tiff_keeps_its_ordinal_and_is_named_corrupt(tmp
     nothing here allows. The file beside it must be unaffected: per-file, never
     per-folder.
     """
-    import struct as _struct
 
-    corrupt_tiff = b"II*\x00" + _struct.pack("<I", 0) + b"\x00" * 4
+    corrupt_tiff = b"II*\x00" + struct.pack("<I", 0) + b"\x00" * 4
     files = {"corrupt-no-ifd.tif": corrupt_tiff, "good.png": png(4, 3)}
     sources = expand_sources(
         [
@@ -739,11 +739,8 @@ def test_every_decoder_reported_animation_frame_fans_out_once(tmp_path):
 # `tiff_lzw` and `tiff_adobe_deflate` are what real flatbed and archival scanning
 # software writes by default; `packbits` is the baseline TIFF 6.0 compression; and
 # `group4` is CCITT fax, which is what microfilm and bitonal register scans arrive
-# as. This is the gap one lane left open and named as the thing it was least sure
-# about — every page still got an ordinal there, but only an uncompressed directory
-# actually rendered, so a compressed page reached the Exemplar as a named alarm and
-# not as pixels. It is closed by using a decoder that reads these codecs rather than
-# by hand-writing four decompressors.
+# as. Every one of them must fan out to real pixels, through a decoder that reads
+# these codecs.
 TIFF_COMPRESSIONS = ["tiff_lzw", "tiff_adobe_deflate", "packbits", "group4"]
 
 
@@ -1143,8 +1140,6 @@ def test_expansion_ordinals_are_stable_by_filename_and_page_index():
 
 def test_triage_producer_recipe_is_the_third_bound_document_path(tmp_path):
     """Validated recipe bytes supply the digest that the Door later binds."""
-    from operations.triage.instrument import load_config, producer_recipe
-
     data = png(4, 3)
     source_digest = digest_bytes(data)
     row = door.triage_manifest.make_row(
@@ -1179,7 +1174,7 @@ def test_triage_producer_recipe_is_the_third_bound_document_path(tmp_path):
         ),
         encoding="utf-8",
     )
-    recipe_path.write_text(json.dumps(producer_recipe(load_config())), encoding="utf-8")
+    recipe_path.write_text(json.dumps(producer_recipe(instrument_config())), encoding="utf-8")
 
     rows, clusters, digests = door.load_triage_decisions(
         manifest_path, producer_recipe_path=recipe_path
@@ -1359,7 +1354,6 @@ def test_triage_digest_mismatch_is_a_named_door_refusal(tmp_path):
         container_page_index=0,
         triage_row=row,
         triage_part_index=0,
-        source_frame_index=0,
     )
     tree, context = open_door(tmp_path, [source])
     assert (
@@ -2204,7 +2198,7 @@ def test_real_door_binds_the_local_filename_ledger_to_every_run_page(tmp_path, m
     ]
     assert {page["payload"]["ledger_sha256"] for page in pages} == {ledger["self_hash"]}
 
-    # The Designator now demands its predecessor ink-map seal before it reads
+    # The Designator demands its predecessor ink-map seal before it reads
     # anything, so the ledger boundary this test aims at is reachable only
     # behind a sealed ink map.
     ink_map = subprocess.run(
@@ -3083,9 +3077,7 @@ def test_an_oversized_source_is_named_too_large_without_ever_being_read(tmp_path
     assert payload["declared_path"] == "enormous.tif"
 
 
-def test_a_stream_backed_pdf_is_not_refused_by_the_retired_bytes_allocation_cap(
-    tmp_path, monkeypatch
-):
+def test_a_stream_backed_pdf_is_exempt_from_the_raster_bytes_cap(tmp_path, monkeypatch):
     """The source stays a stream for both its digest and PDFium open, never bytes.
 
     The cap is monkeypatched below this tiny synthetic PDF rather than allocating a
@@ -3318,19 +3310,15 @@ def test_a_container_that_cannot_be_counted_still_occupies_exactly_one_ordinal(t
 
 
 def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypatch):
-    """F-S5 (audit finding): `_real_bindings`'s `sealed_config_digests` must name
-    `designator-padding` exactly as `run_config_bindings` (the fixture path) does,
-    not only `corpus-frame-shard`.
+    """`_real_bindings`'s `sealed_config_digests` names every point-of-use digest
+    exactly as `run_config_bindings` (the fixture path) does.
 
-    Before this audit's fix, `_real_bindings` returned
-    `sealed_config_digests = {"corpus-frame-shard": ...}` only. The padding
-    config's bytes were already folded into the overall `config_digest`, but the
-    NAMED point-of-use-recheck entry was missing -- so a real Designator run
-    reaching `context.require_sealed_config("designator-padding", ...)`
-    (`pipeline/2_designator/run.py`) over real ingress would refuse every time
-    with "this context sealed no digest for the designator-padding configuration",
-    the day R2 lands a real structure pass. The fixture and real paths must expose
-    the same `sealed_config_digests` shape.
+    Folding a config's bytes into `config_digest` is not enough: a real Designator
+    run reaching `context.require_sealed_config("designator-padding", ...)`
+    (`pipeline/2_designator/run.py`) needs the named entry, or it refuses every
+    time with "this context sealed no digest for the designator-padding
+    configuration". The fixture and real paths must expose the same
+    `sealed_config_digests` shape.
     """
 
     models = _fixture_models()
@@ -3360,19 +3348,19 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     assert sealed.get("designator-padding") == padding_digest, (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'designator-padding' entry bound to the exact digest passed in; the fixture "
-        "path's run_config_bindings() already seals this name (F-S5)"
+        "path's run_config_bindings() already seals this name"
     )
     assert sealed.get("designator-geometry") == geometry_digest, (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'designator-geometry' entry bound to the exact digest passed in; the Designator's "
         "point-of-use recheck (pipeline/2_designator/run.py) requires this name on every "
-        "run, so a real run without it refuses unconditionally (same class as F-S5)"
+        "run, so a real run without it refuses unconditionally"
     )
     assert sealed.get("designator-grouping") == grouping_digest, (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'designator-grouping' entry bound to the exact digest passed in; the structure "
         "pass resolves its thresholds from these bytes one step before the crop, so a "
-        "real run without the name refuses unconditionally (same class as F-S5)"
+        "real run without the name refuses unconditionally"
     )
     assert "corpus-frame-shard" in sealed, (
         "the pre-existing corpus-frame-shard entry must survive, not be replaced"
@@ -3382,7 +3370,7 @@ def test_real_bindings_seal_designator_padding_alongside_the_shard_knob(monkeypa
     # storage-root gate ran under the data-handling policy it loaded, and the
     # Designator recovery pass and the orchestrator's dispatch both work from the
     # recovery budget. A real run whose door sealed none of them would refuse at
-    # the point of use with "sealed no digest" -- the F-S5 shape again.
+    # the point of use with "sealed no digest".
     assert sealed.get("pdf-render") == supplied["pdf_render_config_sha256"], (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'pdf-render' entry bound to the digest of the bytes the settings were parsed "
@@ -3657,9 +3645,9 @@ def test_a_real_admission_names_the_data_handling_policy_that_governed_it(tmp_pa
     storage roots the corpus was admitted under — a real gap even though the
     gate itself works from one in-memory record.
 
-    The run now names it. Not an approval record: nothing here refuses a submission
-    for want of a sign-off, and the per-run approval requirement stays cut, not
-    reinstated. This is provenance, and it travels with the record.
+    The run names it. It is not an approval record: nothing here refuses a
+    submission for want of a sign-off. This is provenance, and it travels with the
+    record.
     """
     files = {"FS-9001.png": png(4, 3)}
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
@@ -3743,9 +3731,9 @@ def test_the_fixture_run_authority_records_every_digest_its_stages_will_ask_for(
     """The run names the policies it sealed, under the names points of use ask for.
 
     The map in `run.json` and the one `run_config_bindings` computes are the same
-    map. F-S5 was the two drifting apart on the real route; recording it makes that
-    drift a refusal at `open_context` rather than a "sealed no digest" surprise at
-    whichever stage reached the point of use first.
+    map; recording it makes any drift between them a refusal at `open_context`
+    rather than a "sealed no digest" surprise at whichever stage reached the point
+    of use first.
     """
     from common.chairs.registry import ChairRegistry
     from common.stage import load_fixture, run_config_bindings
@@ -4084,7 +4072,7 @@ def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(t
 
 
 # The insert covers the middle of the frame at its own angle; the page around it is
-# the exact complement, decomposed into four axis-aligned rectangles. Unit 5's
+# the exact complement, decomposed into four axis-aligned rectangles. The manifest
 # validator proves the partition, so these numbers are the whole geometry claim.
 _TAPED_FRAME = {"width": 64, "height": 48}
 _TAPED_INSERT = {"x": 20, "y": 12, "w": 24, "h": 16}
@@ -4131,7 +4119,7 @@ def _taped_frames():
 
 
 def _taped_confirmation(frames):
-    """A confirmation over the taped pair, traced to the real Unit 6A instrument."""
+    """A confirmation over the taped pair, traced to the real co-visibility instrument."""
     config = instrument_config()
     proxies = [instrument.build_proxies_from_bytes(item.data, config) for item in frames]
     evidence, evidence_manifest = instrument.candidate_evidence(proxies, config)
@@ -4244,7 +4232,7 @@ def test_synthetic_63_64_65_plus_66_closes_instrument_confirmation_register_and_
 
 
 def test_a_taped_insert_proposal_survives_produce_validation_and_the_door_fan_out():
-    """Unit 5's own structural case, carried end to end without a frame-level crop.
+    """The triage manifest's structural case, carried end to end without a frame-level crop.
 
     A document taped over the page at its own angle has no single gutter for
     auto-split and no global deskew that straightens both surfaces. The proposal is
@@ -4351,7 +4339,7 @@ def test_the_producer_measures_a_cluster_span_in_door_ordinals_not_in_frames():
 
 
 def test_a_submitted_frame_with_no_triage_row_is_refused_and_a_row_outside_the_shard_is_not():
-    """The Door's half of Unit 6B's coverage invariant, in both directions.
+    """The Door's half of the triage producer's coverage invariant, in both directions.
 
     The producer proves exact coverage over what it was handed; the Door proves it
     again over what was actually submitted, because the two sets are only the same
@@ -4550,7 +4538,6 @@ def _triage_decision(master: bytes, row: dict):
         0,
         triage_row=row,
         triage_part_index=0,
-        source_frame_index=0,
     )
     return door.decide(master, source, POLICY, pdf_settings=PDF_SETTINGS)
 
@@ -4703,9 +4690,9 @@ def test_an_undecodable_split_frame_keeps_every_declared_page_ordinal(tmp_path):
 def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(tmp_path):
     """Binding and point-of-use checks must resolve the same triage-modes bytes.
 
-    Both sides now resolve `DEFAULT_TRIAGE_MODES_CONFIG_PATH`, so this holds the
-    weaker remaining coupling: that the binding digest and the point-of-use check
-    still agree about the bytes, whatever that constant later names. Drift would
+    Both sides resolve `DEFAULT_TRIAGE_MODES_CONFIG_PATH`, so this holds the
+    remaining coupling: that the binding digest and the point-of-use check agree
+    about the bytes, whatever that constant names. Drift would
     otherwise compare a run against bytes that did not govern it.
     """
 
@@ -5171,3 +5158,283 @@ def test_admission_refuses_bytes_that_differ_from_sealed_membership(tmp_path):
     refusal = admissions(tree)[1]
     assert reason_code(refusal["payload"]["reason"]) is RefusalReason.DIGEST_MISMATCH
     assert "shard membership was sealed" in refusal["payload"]["reason"]
+
+
+# --- rendered pages, frame counts and expansion refusals -------------------------
+
+
+def test_a_rendered_pdf_page_is_not_held_to_the_submitted_file_limit(monkeypatch):
+    """A page the Door renders is bounded by the rendered-page limit, so a lossless
+    render larger than the submitted-file limit still admits."""
+    data = single_gray_page_pdf()
+    source = SourceEntry(1, "reel.pdf", digest_bytes(data), container_page_index=0)
+    monkeypatch.setattr(door.admission, "MAX_SOURCE_BYTES", 1)
+
+    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+
+    assert decision.outcome == "admitted"
+
+
+def test_a_triage_derivative_is_not_held_to_the_submitted_file_limit(monkeypatch):
+    master = jpeg(6, 4)
+    row = _single_part_triage_row(master, frame=(6, 4))
+    monkeypatch.setattr(door.admission, "MAX_SOURCE_BYTES", 1)
+
+    decision = _triage_decision(master, row)
+
+    assert decision.outcome == "admitted"
+
+
+def test_a_fanned_out_raster_page_is_not_held_to_the_submitted_file_limit(monkeypatch):
+    data = multipage_tiff()
+    source = SourceEntry(1, "scan.tif", digest_bytes(data), container_page_index=1)
+    monkeypatch.setattr(door.admission, "MAX_SOURCE_BYTES", 1)
+
+    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+
+    assert decision.outcome == "admitted"
+
+
+def test_a_triage_derivative_past_its_byte_bound_is_refused_in_the_rendered_page_wording(
+    monkeypatch,
+):
+    master = jpeg(6, 4)
+    row = _single_part_triage_row(master, frame=(6, 4))
+    monkeypatch.setattr(door.admission, "MAX_RENDERED_PAGE_BYTES", 1)
+
+    decision = _triage_decision(master, row)
+
+    assert decision.outcome == "refused"
+    assert reason_code(decision.reason) is RefusalReason.TOO_LARGE
+    assert "the rendered page did not itself admit" in decision.reason
+
+
+def test_a_rendered_page_past_its_byte_bound_is_too_large_not_corrupt(monkeypatch):
+    data = single_gray_page_pdf()
+    source = SourceEntry(1, "reel.pdf", digest_bytes(data), container_page_index=0)
+    monkeypatch.setattr(door.admission, "MAX_RENDERED_PAGE_BYTES", 1)
+
+    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+
+    assert decision.outcome == "refused"
+    assert reason_code(decision.reason) is RefusalReason.TOO_LARGE
+    assert "rendered-page limit" in decision.reason
+
+
+def test_a_multi_frame_raster_reaching_decide_without_a_page_index_is_not_sealed_whole():
+    data = multipage_tiff()
+    source = SourceEntry(1, "scan.tif", digest_bytes(data))
+
+    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+
+    assert decision.outcome == "refused"
+    assert reason_code(decision.reason) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "2 frames" in decision.reason
+
+
+def test_a_triage_row_on_a_multi_frame_raster_cuts_no_page_from_it():
+    master = multipage_tiff()
+    row = _single_part_triage_row(master, frame=(4, 3), colour_mode="keep")
+
+    decision = _triage_decision(master, row)
+
+    assert decision.outcome == "refused"
+    assert reason_code(decision.reason) is RefusalReason.UNSUPPORTED_VARIANT
+    assert "2 frames" in decision.reason
+
+
+def test_a_source_expansion_could_not_read_is_refused_unreadable_not_re_read(tmp_path):
+    """A read that failed during expansion never counted the source's pages, so a
+    later successful read must not seal it as one page under another reason."""
+    data = multipage_tiff()
+    calls = 0
+
+    def flaky_reader(path: str) -> bytes:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("the transfer was still settling")
+        return data
+
+    files = [{"relative_path": "scan.tif", "sha256": digest_bytes(data), "bytes": len(data)}]
+    sources = expand_sources(files, flaky_reader, POLICY)
+    assert [(source.ordinal, source.container_page_index) for source in sources] == [(1, None)]
+
+    tree, context = open_door(tmp_path, sources)
+    assert (
+        process_sources(
+            context, tree, sources, flaky_reader, policy=POLICY, pdf_settings=PDF_SETTINGS
+        )
+        == 0
+    )
+    context.finish(DOOR)
+    reason = admissions(tree)[1]["payload"]["reason"]
+    assert reason_code(reason) is RefusalReason.UNREADABLE
+    assert "the transfer was still settling" in reason
+    assert calls == 1
+
+
+def test_a_pdf_whose_pages_could_not_be_counted_is_refused_not_admitted_as_one_page(
+    tmp_path, monkeypatch
+):
+    """A page count that failed once leaves the later pages without ordinals, so a
+    later clean open must not admit page 0 and let the rest disappear."""
+    folder = tmp_path / "pdfs"
+    folder.mkdir()
+    data = two_page_pdf()
+    (folder / "reel.pdf").write_bytes(data)
+    real_count = door.pdf_render.count_pages
+    calls = 0
+
+    def flaky_count(source):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise door.pdf_render.PdfRefusal(
+                RefusalReason.UNREADABLE, "the transfer was still settling"
+            )
+        return real_count(source)
+
+    monkeypatch.setattr(door.pdf_render, "count_pages", flaky_count)
+
+    def unexpected_reader(relative_path: str) -> bytes:
+        raise AssertionError(f"streamed PDF {relative_path} was read into one bytes object")
+
+    def open_source(relative_path: str):
+        return door.inventory.open_submission_source(folder, relative_path)
+
+    files = [{"relative_path": "reel.pdf", "sha256": digest_bytes(data), "bytes": len(data)}]
+    sources = expand_sources(files, unexpected_reader, POLICY, open_source=open_source)
+    assert [source.container_page_index for source in sources] == [0]
+
+    tree, context = open_door(tmp_path, sources)
+    assert (
+        process_sources(
+            context,
+            tree,
+            sources,
+            unexpected_reader,
+            policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
+            open_source=open_source,
+        )
+        == 0
+    )
+    context.finish(DOOR)
+    reason = admissions(tree)[1]["payload"]["reason"]
+    assert reason_code(reason) is RefusalReason.UNREADABLE
+    assert "the transfer was still settling" in reason
+
+
+def test_a_source_grown_past_the_read_bound_does_not_report_a_capped_size(tmp_path, monkeypatch):
+    """A bounded read that stops at the limit knows only a lower bound on the size."""
+    data = png(4, 3)
+    monkeypatch.setattr(door, "MAX_SOURCE_BYTES", 8)
+    source = SourceEntry(1, "grown.png", digest_bytes(data), declared_size=5)
+    tree, context = open_door(tmp_path, [source])
+
+    assert (
+        process_sources(
+            context,
+            tree,
+            [source],
+            reader({"grown.png": data[:9]}),
+            policy=POLICY,
+            pdf_settings=PDF_SETTINGS,
+        )
+        == 0
+    )
+    context.finish(DOOR)
+    reason = admissions(tree)[1]["payload"]["reason"]
+    assert reason_code(reason) is RefusalReason.DIGEST_MISMATCH
+    assert "now has more than 8 bytes" in reason
+    assert "now has 9 bytes" not in reason
+
+
+def test_admitted_canaries_do_not_stand_in_for_a_wholly_refused_submission(tmp_path, monkeypatch):
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"real.png": png(4, 3)[:-4]}
+    )
+    birds = approved / "birds"
+    birds.mkdir()
+    (birds / "bird.png").write_bytes(png(3, 2))
+    bird_ledger_path = approved / "birds-ledger.json"
+    submit.submit(birds, bird_ledger_path, policy_path=policy_path)
+
+    with pytest.raises(ContractError, match="no page of the real submission") as refused:
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="canaries-only",
+            extra=("--canary-folder", str(birds), "--canary-manifest", str(bird_ledger_path)),
+        )
+    assert "1 canary page(s)" in str(refused.value)
+
+
+# --- untrusted triage document guards --------------------------------------------
+
+
+@pytest.mark.hostile_local
+def test_a_triage_document_that_is_a_fifo_is_not_read(tmp_path):
+    fifo = tmp_path / "manifest.json"
+    os.mkfifo(fifo)
+
+    with pytest.raises(ContractError, match="triage decision manifest is not a regular file"):
+        door.load_triage_decisions(fifo)
+
+
+def test_a_triage_document_changed_during_its_read_is_refused(tmp_path, monkeypatch):
+    path = tmp_path / "manifest.json"
+    path.write_text(
+        json.dumps(
+            {"schema": door.triage_manifest.MANIFEST_SCHEMA, "corpus_id": "a", "records": []}
+        ),
+        encoding="utf-8",
+    )
+    real_fstat = os.fstat
+    calls = 0
+
+    def moving_fstat(descriptor):
+        """The second look at the open file sees a newer modification time."""
+        nonlocal calls
+        calls += 1
+        status = real_fstat(descriptor)
+        if calls == 1:
+            return status
+        fields = {name: getattr(status, name) for name in dir(status) if name.startswith("st_")}
+        return SimpleNamespace(**{**fields, "st_mtime_ns": status.st_mtime_ns + 1})
+
+    monkeypatch.setattr(door.os, "fstat", moving_fstat)
+    with pytest.raises(ContractError, match="changed while it was being read"):
+        door.load_triage_decisions(path)
+
+
+def test_triage_cluster_records_that_are_not_an_object_are_refused(tmp_path, empty_triage_manifest):
+    clusters_path = tmp_path / "clusters.json"
+    clusters_path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ContractError, match="not an object keyed by cluster id"):
+        door.load_triage_decisions(empty_triage_manifest, clusters_path)
+
+
+def test_triage_clusters_without_a_manifest_are_refused_at_the_real_door(tmp_path, monkeypatch):
+    approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1.png": png(4, 3)}
+    )
+    clusters_path = approved / "clusters.json"
+    clusters_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ContractError, match="cluster records require a triage decision manifest"):
+        _run_real_door(
+            monkeypatch,
+            run_root=approved / "runs",
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id="clusters-without-manifest",
+            extra=["--triage-clusters", str(clusters_path)],
+        )
+    assert not (approved / "runs").exists()

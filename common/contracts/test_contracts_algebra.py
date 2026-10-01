@@ -1,6 +1,6 @@
 """The outcome algebra: total, closed, and unable to grow a picker.
 
-Harvest invariant #10 governs most of this file: every unit (page/act) entering
+The total partition governs most of this file: every unit (page/act) entering
 a stage is accounted for at the stage boundary as exactly one of
 completed / unresolved-with-evidence / failed; a unit in none of those sets is
 a FATAL accounting imbalance, never a warning.
@@ -85,11 +85,9 @@ def test_witness_failed_is_a_member_of_the_closed_vocabulary():
     """`failed` must be a member of the witness outcome vocabulary, mapped
     through the Recensor and Armarium aggregates.
 
-    Spec 07 requires a failed re-read to derive `current=FAILED` (attempts are
-    append-only, and "current" is the latest attempt with its honest status).
-    The vocabulary listed only read / not-run / dead / genuinely-empty, so the
-    supposedly closed algebra had no member for that case. This test is the
-    hole, welded.
+    A failed re-read derives `current=FAILED` (attempts are append-only, and
+    "current" is the latest attempt with its honest status), so a closed algebra
+    without that member would have no word for the case.
     """
     assert classify(ATTESTATORES, "failed") is OutcomeClass.FAILED
     assert terminal_category(ATTESTATORES, "failed") is None
@@ -250,9 +248,9 @@ def test_coverage_at_floor_is_not_under_witnessed():
 
 
 def test_a_genuinely_empty_reading_counts_as_a_reading():
-    """Spec 07: the old stage collapsed every absence into one indistinguishable
-    empty file. A chair that looked and found nothing has read; a chair that never
-    looked has not, and the two may never be the same number."""
+    """Absences are not one indistinguishable empty file. A chair that looked and
+    found nothing has read; a chair that never looked has not, and the two may
+    never be the same number."""
     looked = witness_coverage({"attestator_1": "genuinely-empty"}, configured_floor=1)
     never_looked = witness_coverage({"attestator_1": "not-run"}, configured_floor=1)
     assert looked["under_witnessed"] is False
@@ -290,9 +288,9 @@ def test_a_fully_delivered_well_witnessed_run_is_complete():
 
 def test_a_run_that_accounted_for_nothing_is_not_complete():
     """ "Complete" is refused unless everything reconciles. Over an
-    empty population every loop runs zero times and `reasons` stays empty, so the
-    aggregate used to fall through to a green verdict asserting that nothing had
-    gone wrong with nothing. An empty population reconciles vacuously, not actually."""
+    empty population every loop runs zero times and `reasons` would stay empty,
+    falling through to a green verdict asserting that nothing had gone wrong with
+    nothing. An empty population reconciles vacuously, not actually."""
     aggregate = run_aggregate({})
     assert aggregate["status"] == "partial"
     assert aggregate["reasons"] == [
@@ -612,7 +610,7 @@ def test_a_refused_page_with_no_recorded_reason_still_forces_partial():
 
 def test_a_page_outcome_outside_the_exemplar_vocabulary_is_fatal():
     """Unknown is never zero: a page in neither the sealed nor the refused set is
-    invariant #10's imbalance, not a page to route around."""
+    an accounting imbalance, not a page to route around."""
     with pytest.raises(FatalAccounting):
         run_aggregate(
             {"act_a": ArmariumCategory.DELIVERED},
@@ -659,8 +657,8 @@ def test_coverage_for_an_unknown_act_is_fatal():
 
 
 def test_armarium_categories_and_vocabulary_cannot_drift_apart():
-    """Meta-invariant #91 — drift checks over agreement surfaces: wherever two
-    files must agree, a test reads both from source and fails on divergence.
+    """Wherever two files must agree, a test reads both from source and fails on
+    divergence.
 
     Scope, said plainly so a pass here is not read for more than it proves: the
     subtraction removes `BOUNDARY_OUTCOMES` from the same vocabulary the loop in
@@ -676,17 +674,13 @@ def test_armarium_categories_and_vocabulary_cannot_drift_apart():
 
 
 def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class():
-    """F-G2, pinned. `under_witnessed` is decided from the attached-reading
-    count; `by_class["completed"]` is the wider ATTESTATORES COMPLETED class,
-    which also holds `excluded` and -- since R4's per-act alignment -- a page
-    witness that read its page and did not align into this act. Printing the
-    wider number put a floor-satisfying count next to an under-witnessed
-    verdict: "act act_a is under-witnessed (3 of a floor of 3)", a sentence
-    that refutes itself, which is exactly the contradiction that visible partial
-    results and honest measurement rule out.
-
-    Written on this audit: the repair landed with no named test holding it, and
-    the fixture cannot produce the divergence today.
+    """`under_witnessed` is decided from the attached-reading count;
+    `by_class["completed"]` is the wider ATTESTATORES COMPLETED class, which also
+    holds `excluded` and a page witness that read its page and did not align into
+    this act. Printing the wider number would put a floor-satisfying count next
+    to an under-witnessed verdict: "act act_a is under-witnessed (3 of a floor of
+    3)", a sentence that refutes itself, which is exactly the contradiction that
+    visible partial results and honest measurement rule out.
     """
     # Stated in full rather than through the boolean shorthand: what this test
     # needs is two chairs that attached *and* compared, and the shorthand says
@@ -717,10 +711,10 @@ def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class()
 def test_the_legacy_under_witnessed_message_prints_the_count_that_raised_the_flag():
     """On the legacy path (`attachments=None`) `under_witnessed` is decided from
     the COMPLETED class, which also holds `excluded` -- and the record still
-    carries `page_granularity_only`, so branching on that key's presence
-    rederived the message count from reading outcomes instead: {read, excluded,
-    dead} against a floor of 3 flagged at 2 and reported 1, a number no rule in
-    `witness_coverage` produced. The branch is keyed on the recorded
+    carries `page_granularity_only`, so a branch on that key's presence would
+    rederive the message count from reading outcomes instead: {read, excluded,
+    dead} against a floor of 3 flags at 2 and would report 1, a number no rule in
+    `witness_coverage` produces. The branch is keyed on the recorded
     `granularity_basis`, so the message quotes the same arithmetic that decided
     the flag.
     """
@@ -1243,13 +1237,12 @@ def test_no_anchor_line_is_located_by_a_record_that_did_not_locate_one(alignment
 def test_a_located_anchor_line_is_a_measured_placement_not_a_coincidence():
     """The positive case, so the parametrized refusals above are not vacuous.
 
-    One character is NOT enough, and the wording this test used to carry ("the
-    rule is placed something, not placed much") was the defect: `align_to_anchor`
-    keeps every matching block of size one, so a witness whose text has nothing
-    to do with the page shares a character or two with any anchor line and got a
-    positive span out of it. What has to hold is that a run of this act's own
-    anchor line was matched -- `ANCHOR_LINE_RUN_FLOOR` characters of it, or the
-    whole line where the line is shorter than that.
+    One character is NOT enough: `align_to_anchor` keeps every matching block of
+    size one, so a witness whose text has nothing to do with the page shares a
+    character or two with any anchor line and would get a positive span out of it.
+    What has to hold is that a run of this act's own anchor line was matched --
+    `ANCHOR_LINE_RUN_FLOOR` characters of it, or the whole line where the line is
+    shorter than that.
     """
     assert outcomes.anchor_line_located(_LOCATED) is True
     # Exactly at the floor, on a line long enough for the floor to bite.
@@ -1400,3 +1393,38 @@ def test_a_held_other_reading_on_a_page_of_acts_keeps_the_aggregate_partial() ->
     assert held["reasons"] == [
         outcomes.HELD_OTHER_ON_ACT_PAGE_REASON.format(ordinal=1, categories="held-for-review")
     ]
+
+
+def test_an_unhashable_attachment_basis_is_an_unnamed_basis_not_a_crash():
+    """A basis read back from JSON may be a list; it earns no native claim."""
+    coverage = witness_coverage(
+        {"s1": "read"},
+        1,
+        attachments={"s1": _fact(True, ["geometric-overlap"])},
+    )
+    assert coverage["granularity_basis"] == outcomes.INTERIM_GRANULARITY_BASIS
+
+
+@pytest.mark.parametrize(
+    "record",
+    (
+        {},
+        {"under_witnessed": False},
+        {"unresolved_chairs": 0},
+        {"under_witnessed": 0, "unresolved_chairs": 0},
+        {"under_witnessed": False, "unresolved_chairs": False},
+        {"under_witnessed": False, "unresolved_chairs": -1},
+        ["not", "a", "record"],
+    ),
+)
+def test_a_coverage_record_stripped_of_its_flags_cannot_read_as_witnessed(record):
+    """A coverage record that does not say whether the act was witnessed must not
+    let the run read as complete by saying nothing."""
+    with pytest.raises(FatalAccounting, match="witness coverage record"):
+        run_aggregate(
+            {"act_a": ArmariumCategory.DELIVERED},
+            {"act_a": record},
+            {1: {"outcome": "sealed"}},
+            act_pages={"act_a": [1]},
+            act_text_status={"act_a": "established"},
+        )
