@@ -1109,7 +1109,7 @@ def test_a_deeply_nested_acts_jsonl_row_is_refused_by_name_not_a_recursion_error
     """Every Armarium JSONL reader widens `except json.JSONDecodeError` to
     `(UnicodeDecodeError, ValueError, RecursionError)`; this pins the
     representative one (`_jsonl_act_records`) against a ~10k-deep row, the
-    same failure `common/chandra_layout.py` and `structure_answer.py` guard.
+    same failure `common/chandra_layout.py` guards.
     """
     path = tmp_path / "acts.jsonl"
     path.write_bytes(_PATHOLOGICALLY_NESTED_JSON)
