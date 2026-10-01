@@ -1,13 +1,9 @@
 """`unaddressed_chairs` must know about every role a stage actually resolves.
 
-The real roster's `secondary_proposer` is configured `absent` today, which
-already keeps it out of the unaddressed set on its own (an absence is a
-recorded decision). What only this test proves is the case that matters
-before anyone flips that roster to a real detector: a *configured*
-`secondary_proposer` must also be addressed, because `pipeline/2_designator/run.py`
-resolves it every run. Without `SECONDARY_PROPOSER_CHAIR` in `unaddressed_chairs`'
-own addressed set, enabling the real roster would turn every run `partial` the
-first time it ran, for a reason nothing in the diff that enabled it would show.
+A configured `secondary_proposer`, as the real roster has, must be addressed,
+because the Designator (`pipeline/2_designator/run.py`) resolves it every run.
+Without `SECONDARY_PROPOSER_CHAIR` in `unaddressed_chairs`' own addressed set,
+every run with that roster would turn `partial`.
 """
 
 from pathlib import Path

@@ -93,9 +93,8 @@ Surya's census states how its blocks were sequenced, recorded on the feed as
 `block_sequence`: `surya-order-head` (Surya's reading-order model placed them)
 or `raster-fallback` (Surya sorted them top to bottom, then left to right, and
 `block_sequence_reason` says why). The prompt says "raster order" rather than
-"reading order" for a fallback. The feed names it `block_sequence` because the
-dossier sweep refuses any key naming an order. Each
-line's and block's `confidence_bp` is recorded on the feed and never rendered.
+"reading order" for a fallback, and the feed names it `block_sequence` for the
+same reason: a raster fallback is not a reading order. Each line's and block's `confidence_bp` is recorded on the feed and never rendered.
 
 `serving_recipe` may be `None` (the Perlector chair is absent): the feed is
 built and sealed with `prompt: None`, as it is for a feed that shows nothing

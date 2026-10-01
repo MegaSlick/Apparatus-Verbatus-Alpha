@@ -307,11 +307,8 @@ def test_the_final_reader_uses_the_same_named_seal_set_deletion_check(tmp_path):
 def test_the_final_reader_refuses_an_armarium_seal_whose_decode_environment_is_gone(tmp_path):
     """The orchestrator's own half of the terminal decode-environment check.
 
-    ``pipeline/orchestrator/test_run_modes.py`` used to prove this end to end by
-    deleting the record and rerunning, but the seal now binds that record's bytes,
-    so the Armarium producer refuses first and the orchestrator's reader is no
-    longer reachable that way. It is still the last reader of a boundary with no
-    stage successor, so it is driven directly here instead of going unproven.
+    The orchestrator's final reader is the last reader of this boundary, so it
+    is driven directly.
     """
     tree, run, registry, bindings = _tree(tmp_path)
     context = _context(tree, run, registry, bindings, stage=ARMARIUM)

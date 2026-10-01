@@ -1,8 +1,10 @@
 """The corpus-scoped, append-only declaration register.
 
-Not a run-tree artifact: triage declares physical pages and correspondence
-mints physical acts here, and a run receives only an immutable
-content-addressed snapshot of the register bytes.
+Not a run-tree artifact: triage declares physical pages here, and a run
+receives only an immutable content-addressed snapshot of the register bytes.
+The `physical-act` and `correspondence` record kinds have no writer in this
+tree and no reader beyond replay; the register still validates them, so a
+register that carries them stays readable.
 
 Every record is immutable, so nothing that can grow lives inside one. A
 physical page's declaration is fixed; the captures known to show it are
@@ -66,9 +68,7 @@ _FORBIDDEN_PREFERENCE_FIELDS: Final = frozenset(
         "better",
         "preferred",
         "superseded_by",
-        # The rest of the consult's §7 shape 1 vocabulary. These are binding
-        # review words, so the screen spells all of them rather than the subset
-        # that happened to appear first.
+        # Further words that name a selection.
         "winner",
         "selected",
         "chosen",
@@ -378,10 +378,6 @@ class _Reading:
         # Retracted links must leave this lookup so the same link can later be
         # reasserted as a new operator act.
         self.correspondence_records: dict[str, dict[str, Any]] = {}
-        # Every act any correspondence ever named, so a proposal whose links were
-        # all withdrawn reads differently from one that never had any.
-        self.correspondence_declared: set[str] = set()
-        self.correspondence_active: dict[str, set[str]] = {}
         self.membership_head: dict[str, tuple[str, frozenset[str]]] = {}
         # Every link of every page's chain, oldest first, so a retraction of the
         # head can restore the predecessor it grew from without the register
@@ -461,59 +457,6 @@ def membership_heads(data: bytes) -> dict[str, tuple[str, frozenset[str]]]:
     reads rather than inviting each writer to reconstruct it differently.
     """
     return dict(_read(data)[1].membership_head)
-
-
-def physical_act_page(data: bytes, physical_act: str) -> str | None:
-    """The physical page one physical act was minted on, or None if undeclared.
-
-    A physical act belongs to exactly one physical page and validation enforces
-    it, so this is a lookup with one answer. It exists so a writer naming an
-    existing physical act proves it against the register rather than against the
-    page it happens to be proposing.
-    """
-    # Validated like `members_of` and `resolve_proposal` do, so a malformed
-    # identity is a named refusal rather than a `None` that reads identically to
-    # "this physical act was never declared".
-    _identity(physical_act, "pac", "physical act page lookup physical_act")
-    return _read(data)[1].physical_act_pages.get(physical_act)
-
-
-def resolve_proposal(data: bytes, act_id: str) -> dict[str, str]:
-    """Resolve an image-local proposal through declared correspondence.
-
-    Lookup, not derivation: only an appended correspondence record can
-    resolve a proposal, and an unresolved one is a named finding, never a
-    silently new physical act. A retracted correspondence is not read back,
-    and a proposal whose every correspondence was retracted is a distinct
-    finding from one that never had a correspondence, since a caller must
-    respond to them differently.
-    """
-    _identity(act_id, "act", "proposal resolution act_id")
-    reading = _read(data)[1]
-    active = reading.correspondence_active.get(act_id, set())
-    if not active:
-        code = (
-            "retracted-physical-act"
-            if act_id in reading.correspondence_declared
-            else "unresolved-physical-act"
-        )
-        return {"outcome": "finding", "code": code, "act_id": act_id}
-    if len(active) != 1:
-        return {"outcome": "finding", "code": "ambiguous-physical-act", "act_id": act_id}
-    # Exactly one, proven above rather than chosen.
-    (physical_act,) = active
-    correspondence = reading.correspondence_records[f"{act_id}->{physical_act}"]
-    # The physical page comes from the register's own declaration, never from a
-    # caller's alignment table: a physical act is minted on exactly one physical
-    # page (validation enforces it), so every match agrees and reading it here is
-    # a lookup rather than a choice between rows.
-    return {
-        "outcome": "resolved",
-        "act_id": act_id,
-        "page_id": correspondence["page_id"],
-        "physical_act_id": physical_act,
-        "physical_page_id": reading.physical_act_pages[physical_act],
-    }
 
 
 def _correspondence_identity(record: dict[str, Any]) -> str:
@@ -682,8 +625,6 @@ def _validate_record(record: Any, reading: _Reading) -> None:
                 "retraction has withdrawn it; declaring it twice records nothing new"
             )
         reading.correspondence_records[identity] = row
-        reading.correspondence_declared.add(row["act_id"])
-        reading.correspondence_active.setdefault(row["act_id"], set()).add(row["physical_act_id"])
         # Like a membership link, the record's identity carries the run that
         # appended it: reasserting a withdrawn correspondence is a new act by a
         # new run, not the resurrection of the immutable record that was
@@ -710,8 +651,7 @@ def _validate_record(record: Any, reading: _Reading) -> None:
                 "nothing is not a correction"
             )
         else:
-            withdrawn = reading.correspondence_records.pop(row["retracts"])
-            reading.correspondence_active[withdrawn["act_id"]].discard(withdrawn["physical_act_id"])
+            reading.correspondence_records.pop(row["retracts"])
         identity = f"retract:{row['retracts']}@{row['appending_run']}"
     else:
         raise SchemaRefusal(f"unknown corpus register record kind {kind!r}")

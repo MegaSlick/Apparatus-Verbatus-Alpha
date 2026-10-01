@@ -18,8 +18,8 @@ CONFIDENCE_LEVELS: Final = frozenset({"low", "medium", "high"})
 GAP_POSITIONS: Final = frozenset({"leading", "internal", "trailing", "whole-act"})
 # Teklia/DAI-CReTDHI-RecordGold-ATR's two uncertainty markers (MIT licence).
 UNCERTAINTY_TOKENS: Final = ("[UNCERTAIN]", "[CROSSED_OUT]")
-# What may follow a trailing gap: a reader that stops at its crop's edge writes the
-# mark and may still close the line or the sentence after it.
+# What may follow a trailing gap: a reader that stops where the legible text ends
+# writes the mark and may still close the line or the sentence after it.
 _TRAILING_TAIL: Final = frozenset(".,;:!?)]}»›\"'’”")
 
 

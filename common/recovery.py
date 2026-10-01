@@ -14,7 +14,7 @@ from common.sealed_config import read_sealed_toml
 DEFAULT_RECOVERY_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "recovery.toml"
 
 # The ceiling on re-asks of one page; the configuration may choose less, never more.
-RULED_ABSOLUTE_CAP: Final = 3
+REREAD_CEILING: Final = 3
 
 
 def load_recovery_policy(path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH) -> dict[str, Any]:
@@ -31,9 +31,9 @@ def load_recovery_policy(path: str | Path = DEFAULT_RECOVERY_CONFIG_PATH) -> dic
         raise ContractError(
             "the recovery configuration's page_level_reread is not a non-negative integer"
         )
-    if rereads > RULED_ABSOLUTE_CAP:
+    if rereads > REREAD_CEILING:
         raise ContractError(
-            f"the recovery configuration names page_level_reread {rereads}, above the ruled "
-            f"maximum of {RULED_ABSOLUTE_CAP}"
+            f"the recovery configuration names page_level_reread {rereads}, above the "
+            f"maximum of {REREAD_CEILING}"
         )
     return {"config_sha256": digest, "page_level_reread": rereads}

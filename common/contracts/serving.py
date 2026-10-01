@@ -7,14 +7,14 @@ somewhere neither depends on the other's package.
 
 from typing import Final
 
-# v2: the two digests are the files' seals (`common/sealed_config.py`); v1 hashed raw bytes.
+# The two digests are the files' seals (`common/sealed_config.py`).
 SERVING_CONFIG_INPUTS_SCHEMA: Final = "serving-config-inputs.v2"
 SERVING_CONFIG_INPUTS_FIELDS: Final = frozenset(
     {"schema", "serving_recipes_sha256", "pod_placement_sha256"}
 )
 
-# v3 adds `sampling_effective`: the values the pinned engine samples under for
-# the sampling fields `generation_sent` carries (`common.decoding`).
+# `sampling_effective` carries the values the pinned engine samples under for the
+# sampling fields `generation_sent` carries (`common.decoding`).
 CHAIR_CALL_RECORD_SCHEMA: Final = "chair-call-record.v3"
 CHAIR_CALL_RECORD_FIELDS: Final = frozenset(
     {
@@ -127,4 +127,3 @@ WIRE_DECIMAL_FIELDS: Final = frozenset({"schema", "decimal"})
 # or the whole transport body when no adapter saw a reading. Not interchangeable.
 RAW_RESPONSE_MODEL_OUTPUT: Final = "model-output"
 RAW_RESPONSE_TRANSPORT_BODY: Final = "transport-response-body"
-RAW_RESPONSE_KINDS: Final = frozenset({RAW_RESPONSE_MODEL_OUTPUT, RAW_RESPONSE_TRANSPORT_BODY})

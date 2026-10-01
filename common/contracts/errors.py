@@ -21,10 +21,6 @@ class SchemaRefusal(ContractError):
     """
 
 
-class ReceiptVersionMismatch(SchemaRefusal):
-    """A receipt label does not describe the coverage facts it carries."""
-
-
 class IdentityRefusal(SchemaRefusal):
     """An identity does not verify against the bindings it claims.
 
