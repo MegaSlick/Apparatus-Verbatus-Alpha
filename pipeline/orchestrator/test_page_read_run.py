@@ -1,7 +1,6 @@
-"""The orchestrator drives a page-read run from the Door through the Recensor's recovery member.
+"""The orchestrator drives a page-read run from the Door through the Recensor.
 
-A page-read run asks for no recovery, so the recovery member finds no request
-and lets the run on. The committed roster seals three page witnesses against a
+The committed roster seals three page witnesses against a
 witness floor of 3, and every unit of `happy` is accepted.
 """
 
@@ -14,7 +13,7 @@ from conftest import run_orchestrator
 
 def test_the_orchestrator_reads_pages_and_the_recensor_accepts_every_unit(tmp_path):
     root = tmp_path / "runs"
-    result = run_orchestrator(root, "r", "happy", **{"from": "door", "to": "recovery"})
+    result = run_orchestrator(root, "r", "happy", **{"from": "door", "to": "recensor"})
     assert result.returncode == 0, result.stderr
     artifacts = root / "r" / "5_recensor" / "artifacts"
     reviews = [json.loads(path.read_text()) for path in (artifacts / "review").glob("*.json")]

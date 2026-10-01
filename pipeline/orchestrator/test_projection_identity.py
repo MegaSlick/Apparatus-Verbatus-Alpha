@@ -77,7 +77,7 @@ def orchestrate(root: Path, run_id: str, scenario: str) -> subprocess.CompletedP
         cwd=ROOT,
         capture_output=True,
         text=True,
-        # Generous for the two-page fixture; a hung recovery loop should fail
+        # Generous for the two-page fixture; a hung run should fail
         # this test with captured output, not block CI until an outer watchdog.
         timeout=600,
     )

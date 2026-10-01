@@ -12,9 +12,6 @@ import time
 from pathlib import Path
 from typing import Iterator, cast
 
-import pytest
-
-from common.contracts.errors import SchemaRefusal
 from common.durability import is_temporary_name
 from common.runtree.store import RunTree
 from conftest import file_digest_snapshot as snapshot
@@ -100,12 +97,12 @@ _REFERENCE_KEYS = frozenset({"relative_path", "sha256"})
 # count stayed comfortably above zero, and the test would go on reporting a
 # volume-hosted tree movable with an unverified set of references inside it.
 #
-# Measured on `synthetic-two-page-v0`, `review` scenario: a complete run
-# resolves 313 references, and the smallest tree this helper is asked about --
-# the staged door..recensor tree the crash test starts from -- resolves 162.
+# Measured on `synthetic-two-page-v0`, `page-review` scenario: a complete run
+# resolves 490 references, and the smallest tree this helper is asked about --
+# the staged door..attestatores tree the crash test starts from -- resolves 211.
 # The floor sits below that and far above zero, so it catches a class leaving
 # the check without tracking every ordinary change in fixture size.
-MINIMUM_RESOLVED_REFERENCES = 150
+MINIMUM_RESOLVED_REFERENCES = 200
 
 
 def _references(value: object) -> Iterator[dict[str, str]]:
@@ -148,58 +145,26 @@ def _assert_every_reference_resolves(root: Path, run_id: str) -> int:
     return matched
 
 
-def _region_count(root: Path, run_id: str) -> int:
-    """Polling must count regions without re-verifying a tree being mutated.
+def _published_reading_count(root: Path, run_id: str) -> int:
+    """Count the Perlector's published records while the driver is still writing them.
 
-    `verify_inputs=False` deliberately: this is a count, not an inspection, and
-    the poll below runs it repeatedly against a tree the driver is still writing.
-    Re-verifying every input reference on every poll made each iteration cost
-    what the window itself is worth, which is how an observed event turns back
-    into a race.  The whole-tree reference check runs separately, once, after
-    the crash.
+    A listing, not an inspection: the poll below runs it repeatedly against a
+    tree being written, so it reads names only and skips the `.<target>.tmp-*`
+    publication temporaries a write leaves until its rename lands. The
+    whole-tree reference check runs separately, once, after the crash.
     """
-    manifest = RunTree(root, run_id).build_manifest("designator", verify_inputs=False)
-    return sum(entry["kind"] == "region" for entry in manifest["artifacts"])
-
-
-def _region_count_mid_write(root: Path, run_id: str, *, unchanged: int) -> int:
-    """Count regions while the driver writes, absorbing only its own renames.
-
-    The blob walk lists a directory and then stats every name it listed, and it
-    refuses any entry that vanished in between.  That refusal is correct and
-    stays: a stage manifest is built after its stage has finished writing, and
-    a file disappearing under a finished stage is a fault.  This poll is the
-    one caller that reads the tree while a live driver is still publishing into
-    it, and a publish is `.NAME.tmp-XXXX` followed by a rename -- so the poll
-    can list a temporary name whose rename lands before the stat, and be told
-    the tree changed under it.  It did, which is the condition this loop is
-    waiting on.
-
-    Only that race is absorbed, and it has to match on both counts: the refusal
-    is chained to an ENOENT -- a name that was listed and is now gone -- and the
-    vanished name is a `.<target>.tmp-<unique>` publication temporary.  An
-    ordinary evidence file disappearing mid-run is not that, and neither is a
-    malformed manifest or a digest mismatch; each is re-raised here with its own
-    reason rather than restated as "no change" until the hang guard expires.
-    The quiescent counts either side of this window refuse normally in every
-    case.
-    """
-    try:
-        return _region_count(root, run_id)
-    except SchemaRefusal as refusal:
-        cause = refusal.__cause__
-        vanished = getattr(cause, "filename", None)
-        if (
-            isinstance(cause, FileNotFoundError)
-            and isinstance(vanished, str)
-            and _is_publication_temporary_name(vanished)
-        ):
-            return unchanged
-        raise
+    artifacts = root / run_id / "4_perlector" / "artifacts"
+    if not artifacts.is_dir():
+        return 0
+    return sum(
+        not is_temporary_name(name)
+        for kind in os.listdir(artifacts)
+        for name in os.listdir(artifacts / kind)
+    )
 
 
 def _kill_and_reap(process: subprocess.Popen[bytes]) -> int:
-    """Leave no recovery process group behind, including on an assertion path."""
+    """Leave no driver process group behind, including on an assertion path."""
 
     if process.poll() is None:
         try:
@@ -211,28 +176,27 @@ def _kill_and_reap(process: subprocess.Popen[bytes]) -> int:
     return process.wait(timeout=120)
 
 
-def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
-    """SIGKILL a real recovery only after its first append.
+def _crash_mid_reading(volume: Path, scratch: Path) -> dict[str, str]:
+    """SIGKILL a real Perlector only after its first append.
 
     A local directory stands in for the offline mount; the returned snapshot is
     the durable state available to resume.
     """
 
-    staged = _run(volume, "r", "review", "--from", "door", "--to", "recensor")
-    assert staged.returncode == 3, staged.stderr
+    staged = _run(volume, "r", "page-review", "--from", "door", "--to", "attestatores")
+    assert staged.returncode == 0, staged.stderr
     before_crash = snapshot(volume)
-    region_count = _region_count(volume, "r")
 
-    # Recovery is an actual driver member.  Kill its process only after the
-    # Designator has appended the recovery crop, while the driver is still in
-    # that member; the later Perlector/Recensor writes therefore cannot occur.
+    # Kill the driver's process group only after the Perlector has published its
+    # first record, while it is still reading; the rest of its records and every
+    # later stage's therefore cannot occur.
     #
     # The driver's output goes to files rather than pipes.  Nothing drains a
     # pipe between Popen and the kill, so a driver that filled the 64 KiB pipe
     # buffer would block in `write` and never reach the append this loop is
-    # waiting for -- a stall the test would have reported as a missing crop.
-    out_path = scratch / "recovery.out"
-    err_path = scratch / "recovery.err"
+    # waiting for -- a stall the test would have reported as a missing record.
+    out_path = scratch / "reading.out"
+    err_path = scratch / "reading.err"
     with out_path.open("wb") as out_handle, err_path.open("wb") as err_handle:
         process = subprocess.Popen(
             [
@@ -241,13 +205,13 @@ def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
                 "--fixture",
                 FIXTURE,
                 "--scenario",
-                "review",
+                "page-review",
                 "--run-id",
                 "r",
                 "--run-root",
                 str(volume),
                 "--stage",
-                "recovery",
+                "perlector",
             ],
             cwd=ROOT,
             stdout=out_handle,
@@ -255,34 +219,27 @@ def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
             start_new_session=True,
         )
     # The kill window is *observed*, never timed.  This loop ends on one of two
-    # facts about the driver -- the recovery crop is on disk, or the driver has
-    # exited -- and on neither a clock nor a sleep.  A ten-second wall-clock
-    # deadline stood here and was the wrong bound: measured in this container,
-    # the append that lands 0.35s in on an idle machine lands at 6.6-9.4s under
-    # ten-times CPU oversubscription, so under a loaded parallel suite the test
-    # failed for want of a CPU rather than for a defect.  The absolute bound
-    # below is a hang guard, deliberately far larger than any load this window
-    # scales to; it is not the window.
+    # facts about the driver -- a Perlector record is on disk, or the driver has
+    # exited -- and on neither a clock nor a sleep.  The window widens with load
+    # rather than closing, so the absolute bound below is a hang guard,
+    # deliberately far larger than any load this window scales to; it is not
+    # the window.
     hang_guard = time.monotonic() + 600
     try:
-        while _region_count_mid_write(volume, "r", unchanged=region_count) == region_count:
+        while _published_reading_count(volume, "r") == 0:
             if process.poll() is not None:
                 raise AssertionError(
-                    "recovery exited before it appended a crop:\n"
+                    "the Perlector exited before it published a record:\n"
                     f"{err_path.read_text()}\n{out_path.read_text()}"
                 )
-            assert time.monotonic() < hang_guard, "the recovery driver neither appended nor exited"
-            time.sleep(0.01)
-        # The window between the Designator's append and the Perlector's first write
-        # measures 0.31s idle and 4.9-7.1s under the same ten-times load, against a
-        # poll costing at most 0.23s there: it widens with load rather than closing,
-        # which is what makes this an observation and not a race.
-        assert process.poll() is None, "recovery finished before the crash point"
+            assert time.monotonic() < hang_guard, "the driver neither appended nor exited"
+            time.sleep(0.005)
+        assert process.poll() is None, "the driver finished before the crash point"
     except BaseException:
         _kill_and_reap(process)
         raise
     # The bound guards against an unreapable child; it does not extend the
-    # recovery work window.
+    # reading work window.
     assert _kill_and_reap(process) == -signal.SIGKILL
 
     crashed = snapshot(volume)
@@ -291,28 +248,27 @@ def _crash_mid_recovery(volume: Path, scratch: Path) -> dict[str, str]:
     return crashed
 
 
-@pytest.mark.act_path
 def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewriting(
     tmp_path: Path,
 ) -> None:
     """A moved tree must resolve identically, and crash resume may only append.
 
     Every input reference in the volume-hosted tree resolves and hashes to its
-    recorded digest, a SIGKILL mid-recovery leaves a resumable tree, and the
+    recorded digest, a SIGKILL mid-reading leaves a resumable tree, and the
     resume rewrites no surviving evidence -- it finishes to the same bytes an
     uninterrupted local run produces.
     """
     local = tmp_path / "local-runs"
     volume = tmp_path / "mounted-volume" / "runs"
-    baseline = _run(local, "r", "review")
+    baseline = _run(local, "r", "page-review")
     assert baseline.returncode == 3, baseline.stderr
     uninterrupted = snapshot(local)
 
-    crashed = _crash_mid_recovery(volume, tmp_path)
+    crashed = _crash_mid_reading(volume, tmp_path)
     crashed_identities = file_identities(volume)
     planted = _plant_publication_temporary(volume)
 
-    resumed = _run(volume, "r", "review")
+    resumed = _run(volume, "r", "page-review")
     assert resumed.returncode == 3, resumed.stderr
     finished = snapshot(volume)
     finished_identities = file_identities(volume)
@@ -335,24 +291,6 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
         assert finished_identities[path] == crashed_identities[path], (
             f"resume republished surviving evidence at {path} instead of keeping it"
         )
-    # A resumed Recensor re-entry seals its own boundary: it adds one more
-    # decode-environment/stage-seal attempt pair, and the stage's derived
-    # manifest and terminal seal follow. Every other byte matches the
-    # uninterrupted run exactly; the extra pair is the honest record that a
-    # re-entry happened, not a rewrite of surviving evidence.
-    recensor_seal_prefixes = (
-        "r/5_recensor/artifacts/stage-seal/",
-        "r/5_recensor/artifacts/decode-environment/",
-    )
-
-    def _comparable(tree_snapshot):
-        published, _residue = _partition_publication_temporaries(tree_snapshot)
-        return {
-            path: digest
-            for path, digest in published.items()
-            if not path.startswith(recensor_seal_prefixes) and path != "r/5_recensor/manifest.json"
-        }
-
     # The residue is named before it is set aside, and the planted one must be in it:
     # a kill mid-write leaves a `.<target>.tmp-*` name with a fresh random suffix, so
     # two trees holding identical evidence differ by that name alone. Dropping it is
@@ -367,11 +305,9 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
     assert _partition_publication_temporaries(uninterrupted)[1] == {}, (
         "an uninterrupted run left a publication temporary behind"
     )
-    assert _comparable(finished) == _comparable(uninterrupted)
-    extra = set(finished_published) - set(uninterrupted)
-    assert extra <= {
-        path for path in finished_published if path.startswith(recensor_seal_prefixes)
-    }, f"resume added unexpected artifacts: {sorted(extra)}"
+    # The resumed Perlector starts its interrupted attempt over and republishes
+    # nothing that survived, so every published byte matches the uninterrupted run.
+    assert finished_published == uninterrupted
     matched = _assert_every_reference_resolves(volume, "r")
 
     # A volume reached through a symlink is the ordinary Mac and Linux mount
@@ -386,17 +322,16 @@ def test_volume_hosted_tree_is_movable_and_crash_resume_appends_without_rewritin
     assert _assert_every_reference_resolves(alias, "r") == matched
 
 
-@pytest.mark.act_path
-def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
+def test_a_backup_of_a_mid_reading_tree_restores_and_resumes_byte_identically(
     tmp_path: Path,
 ) -> None:
-    """A mid-recovery backup must restore and resume byte-identically.
+    """A mid-reading backup must restore and resume byte-identically.
 
     The snapshot must publish for an interrupted tree, restore the crashed bytes
     exactly, and let both the source and restored copy reach the same result.
     """
     volume = tmp_path / "mounted-volume" / "runs"
-    _crash_mid_recovery(volume, tmp_path)
+    _crash_mid_reading(volume, tmp_path)
 
     # Whether the kill lands mid-write, leaving a `.<target>.tmp-*` publication
     # temporary behind, is a matter of timing -- so whether this test exercised
@@ -444,12 +379,7 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     )
     assert f"{run}/{unmanaged.name}" in published
     # Distinct run-tree paths may share verified bytes, so copied plus reused --
-    # not copied alone -- is what must account for every published member. pr/08
-    # additionally asserted `reused == 0` ("nothing was in the object store
-    # before this backup"); measured on this branch's tree that is false --
-    # copied 81, reused 2, of 83 published members -- because this content holds
-    # two distinct paths with identical verified bytes. Keeping that assertion
-    # through the merge would have turned a correct backup into a red test.
+    # not copied alone -- is what must account for every published member.
     assert report.copied + report.reused == len(manifest["files"])
 
     restored_root = tmp_path / "restored-from-mac"
@@ -477,9 +407,9 @@ def test_a_backup_of_a_mid_recovery_tree_restores_and_resumes_byte_identically(
     (restored_root / "r" / unmanaged.name).unlink()
     source_residue_path = _plant_publication_temporary(volume)
 
-    restored_run = _run(restored_root, "r", "review")
+    restored_run = _run(restored_root, "r", "page-review")
     assert restored_run.returncode == 3, restored_run.stderr
-    source_run = _run(volume, "r", "review")
+    source_run = _run(volume, "r", "page-review")
     assert source_run.returncode == 3, source_run.stderr
     restored_published, restored_residue = _partition_publication_temporaries(
         snapshot(restored_root)

@@ -26,14 +26,12 @@ from zipfile import ZIP_STORED, BadZipFile, ZipFile
 
 import pytest
 
-from common import dissent
 from common.chairs import ChairIdentity, load_models_toml
-from common.contracts.approval import build_approval_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
 from common.contracts.envelope import build_envelope, validate_envelope, verify_input_bytes
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import act_id as derive_act_id
-from common.contracts.identities import artifact_id, attempt_id, physical_page_id
+from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import (
     ARCHETYPUS,
     ARMARIUM,
@@ -44,11 +42,9 @@ from common.contracts.stages import (
     INK_MAP,
     PERLECTOR,
     RECENSOR,
-    STAGE_DIRECTORIES,
     STAGES,
     WRITING_DIRECTORIES,
 )
-from common.corpus_register import append_records, empty_register, register_digest
 from common.credentials import looks_like_credential_env
 from common.fixture_identity import page_identity
 from common.hard_failure import load_hard_failure_policy, tally_hard_failures
@@ -73,9 +69,7 @@ from conftest import (
     is_immutable_evidence,
     load_stage,
     programs_through,
-    stage_programs,
 )
-from conftest import rebind_stage_seal_artifact as rebind_stage_seal
 from operations.operator import surface, volume_s3
 from operations.operator.custody import credential_free_environment
 from operations.submit import gate, submit
@@ -83,17 +77,6 @@ from operations.submit import gate, submit
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE = "synthetic-two-page-v0"
-# Spelled out rather than imported from `common.stage`, deliberately. This is the
-# value an operator types into `--nuda-approval-ref`, and the acceptance harness
-# pins the command a person would run. An import would follow a renamed or
-# versioned selector silently; the literal makes that rename a loud failure here,
-# which is where a change to operator-facing vocabulary should surface.
-NUDA_APPROVAL_SUBJECT = "lectio-nuda-sampling-design.v1"
-
-
-RECENSOR_RUN = load_stage("5_recensor")
-NO_PAGE_CONSERVATION = RECENSOR_RUN.NO_PAGE_CONSERVATION
-NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 
 
 # Each digest covers a whole run tree's relative-path -> file-digest inventory. A
@@ -110,16 +93,9 @@ NO_PAGE_CONTENT_COVERAGE = RECENSOR_RUN.NO_PAGE_CONTENT_COVERAGE
 #   - any value in a config file the run seals, provenance prose included: a
 #     TOML file's seal covers what it says (comments and layout move nothing),
 #     and a non-TOML sealed file's bytes;
-#   - any code change in `pipeline/4_perlector/prompts.py`, whose code digest is
-#     sealed into every prompt record;
+#   - any code change in `common/page_prompt.py`, whose code digest
+#     (`builder_sha256`) is sealed into every page feed's prompt record;
 #   - any string sealed into a record or the export manifest.
-#
-# One fact about the `review` fixture that later tests rely on: its marginal
-# witness box (page 1, x 0..10, y 200..240) sits over no ink in
-# `proof.synthetic_pages.page_bytes(1)`. A witness's box is only a pointer, so
-# the ink map must confirm ink under it before it may spend a recovery or hold
-# an act; here it cannot, so a2 goes straight to a hold without a
-# second recovery round.
 #
 # The review pins are the page-read `page-review` scenario's tree.
 HAPPY_SNAPSHOT_FILES = 153
@@ -136,36 +112,15 @@ def orchestrate(
     models_config: Path | None = None,
     serving_recipes_config: Path | None = None,
     witness_context_config: Path | None = None,
-    recovery_config: Path | None = None,
     hard_failure_config: Path | None = None,
-    nuda_per_mille: int | None = None,
-    nuda_approval_ref: str | None = None,
     submission_folder: Path | None = None,
     submission_manifest: Path | None = None,
     data_gate_policy: Path | None = None,
     placement_tier: str | None = None,
     stage_timing_journal: Path | None = None,
     repository_commit: str | None = None,
-    corpus_register: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the pipeline the way a person would, and return the whole result."""
-    if nuda_per_mille and nuda_approval_ref == NUDA_APPROVAL_SUBJECT:
-        bindings = run_config_bindings(
-            load_models_toml(ROOT / "config" / "models.toml"),
-            load_fixture(str(ROOT / "proof")),
-            scenario,
-            nuda_per_mille=nuda_per_mille,
-            nuda_approval_ref=nuda_approval_ref,
-        )
-        RunTree(run_root, run_id).write_approval_record(
-            build_approval_record(
-                subject_ids=[NUDA_APPROVAL_SUBJECT],
-                action="other",
-                reason="test-only Lectio nuda sampling design",
-                target_version_hash=bindings["config_digest"],
-                timestamp="2026-08-21T00:00:00Z",
-            )
-        )
     command = [
         sys.executable,
         str(ORCHESTRATOR),
@@ -184,14 +139,8 @@ def orchestrate(
         command.extend(("--serving-recipes-config", str(serving_recipes_config)))
     if witness_context_config is not None:
         command.extend(("--witness-context-config", str(witness_context_config)))
-    if recovery_config is not None:
-        command.extend(("--recovery-config", str(recovery_config)))
     if hard_failure_config is not None:
         command.extend(("--hard-failure-config", str(hard_failure_config)))
-    if nuda_per_mille is not None:
-        command.extend(("--nuda-per-mille", str(nuda_per_mille)))
-    if nuda_approval_ref is not None:
-        command.extend(("--nuda-approval-ref", nuda_approval_ref))
     if submission_folder is not None:
         command.extend(("--submission-folder", str(submission_folder)))
     if submission_manifest is not None:
@@ -204,8 +153,6 @@ def orchestrate(
         command.extend(("--stage-timing-journal", str(stage_timing_journal)))
     if repository_commit is not None:
         command.extend(("--repository-commit", repository_commit))
-    if corpus_register is not None:
-        command.extend(("--corpus-register", str(corpus_register)))
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -495,11 +442,8 @@ def test_real_ingress_changes_only_the_doors_argv(monkeypatch, tmp_path):
         )
     )
 
-    # STAGE_PROGRAMS, not SEQUENCE: work/staged-run-modes gave the sequence a
-    # ("recovery", None) member, which is a driver step rather than a stage
-    # program and has no argv to compare. STAGE_PROGRAMS is the invocable subset
-    # in the same order, so the Door is still first and the slice below still
-    # means "every stage after the Door".
+    # STAGE_PROGRAMS is every invocable stage program in sequence order, so the
+    # Door is first and the slice below means "every stage after the Door".
     for program in orchestrator.STAGE_PROGRAMS.values():
         orchestrator.invoke(program, fixture_args)
     fixture_commands = observed[:]
@@ -822,22 +766,6 @@ def invoke_stage(
     for key, value in extra.items():
         command.extend((f"--{key.replace('_', '-')}", str(value)))
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-
-
-@pytest.mark.parametrize(
-    "program",
-    [program for name, program in stage_programs().items() if name != ATTESTATORES],
-)
-def test_only_attestatores_accepts_the_shared_chair_argument(tmp_path, program):
-    """A stage must never report success while ignoring an operator's chair."""
-    root = tmp_path / "runs"
-
-    result = invoke_stage(root, "r", "happy", program, chair="attestator_1")
-
-    assert result.returncode == EXIT_FATAL
-    assert "ContractError" in result.stderr
-    assert "--chair is implemented only by the Attestatores" in result.stderr
-    assert not root.exists()
 
 
 def _run_through_designator(root: Path, run_id: str = "r", scenario: str = "happy") -> None:
@@ -1699,104 +1627,21 @@ def happy_run(tmp_path_factory):
     return root, RunTree(root, "r")
 
 
-@pytest.fixture(scope="module")
-def continuation_recovery_run(tmp_path_factory):
-    """Recrop a cross-page act without re-entering the Attestatores."""
-    root = tmp_path_factory.mktemp("continuation-recovery")
-    result = orchestrate(root, "r", "continuation-recovery")
-    assert result.returncode == 0, result.stderr
-    return root, RunTree(root, "r")
-
-
-@pytest.fixture(scope="module")
-def review_run(tmp_path_factory):
-    root = tmp_path_factory.mktemp("review")
-    result = orchestrate(root, "r", "review")
-    # Exit 3 is "accounted, holdable" — the run reached honest terminal states and
-    # one act is held. A zero here would be the vacuous green this project exists
-    # to notice.
-    assert result.returncode == 3, result.stderr
-    return root, RunTree(root, "r")
-
-
 # --- 1. The happy path runs offline, and every reference resolves --------------
 
 
-@pytest.mark.act_path
-def test_the_happy_path_runs_and_establishes_both_acts(happy_run):
+def test_the_happy_path_delivers_every_reading_and_is_partial_only_for_its_reconstruction(
+    happy_run,
+):
     _, tree = happy_run
     export = export_of(tree)
-    assert export["aggregate"]["status"] == "complete"
-    assert export["aggregate"]["reasons"] == []
-    assert len(export["delivered"]) == 2
+    assert sorted(item["act_key"] for item in export["delivered"]) == ["p1:1", "p1:2", "p2:1"]
+    assert {item["category"] for item in export["delivered"]} == {"delivered"}
     assert export["non_delivered"] == []
-    assert {item["category"] for item in export["delivered"]} == {"delivered"}
-
-
-@pytest.mark.act_path
-def test_the_continuation_pages_coverage_is_delivered_as_unmeasured_by_name(happy_run):
-    """Unit 12's F2 rule, on the principal fixture.
-
-    Both acts are marked out on page 1; a2 continues onto page 2, and both page
-    witnesses transcribe page 2's whole text. No attachment there can ever be
-    `aligned` — the Perlector declares every continuation row
-    `continuation-page-no-act-anchor` because the act anchor is derived from the
-    act's own primary page — so the span union page 2's text was diffed against
-    is empty by declaration, not by measurement.
-
-    Until this ruling the Recensor called that `shortfall: True` on a page no
-    act's review read, and the export said DELIVERED over 34 transcribed
-    non-whitespace characters nothing accounted for. Now the observation is kept
-    and the verdict is withheld: `shortfall: None`, the reason naming the cause,
-    the chairs, the page and the count, restated on the act that spans the page
-    in its review, in the manifest entry, and in the export. The
-    happy path still establishes both acts — this is a visible partial, not a
-    hold — and the Perlector gap that would make the measurement real is filed.
-    """
-    _, tree = happy_run
-    export = export_of(tree)
-    assert export["aggregate"]["status"] == "complete"
-    assert export["aggregate"]["reasons"] == []
-
-    review_records = artifacts(tree, RECENSOR, "review")
-    reviews_by_key = {record["payload"]["act_key"]: record for record in review_records}
-    # Counted before anything is read out of it: a second review for one act is
-    # an accounting failure, and a lookup keyed by `act_key` would silently keep
-    # whichever of the two the manifest happened to list last.
-    assert len(reviews_by_key) == len(review_records)
-    # And the whole key set: an extra review under a third key would hide behind
-    # a count that only catches a repeated one.
-    assert set(reviews_by_key) == {"a1", "a2"}
-    assert reviews_by_key["a1"]["payload"]["testimony_content_coverage_continuation"] == []
-    rows = reviews_by_key["a2"]["payload"]["testimony_content_coverage_continuation"]
-    assert [row["page_ordinal"] for row in rows] == [2]
-    row = rows[0]
-    assert row["shortfall"] is None
-    assert sorted(row["by_chair"]) == ["attestator_1", "attestator_3"]
-    for chair, measured in sorted(row["by_chair"].items()):
-        assert measured["attached_spans"] == [], chair
-        assert measured["uncovered_non_whitespace"]["count"] == 34, chair
-        assert f"chair {chair!r} saw 34 uncovered non-whitespace" in row["reason"], chair
-    assert "continuation-page-no-act-anchor" in row["reason"]
-    assert "page 2's testimony content coverage is unmeasured" in row["reason"]
-    # Unmeasured is not a hold and not a route input: a2 is delivered.
-    assert reviews_by_key["a2"]["outcome"] == "accepted"
-
-    entry_payloads = [
-        tree.read_artifact(ARMARIUM, "manifest-entry", entry["artifact_id"])["payload"]
-        for entry in tree.build_manifest(ARMARIUM)["artifacts"]
-        if entry["kind"] == "manifest-entry"
-    ]
-    entries = {payload["act_key"]: payload for payload in entry_payloads}
-    delivered = {item["act_key"]: item for item in export["delivered"]}
-    # The same count, for the same reason, on both restatements.
-    assert len(entries) == len(entry_payloads)
-    assert len(delivered) == len(export["delivered"])
-    assert set(entries) == set(delivered) == {"a1", "a2"}
-    for restatement in (entries, delivered):
-        assert restatement["a1"]["testimony_content_coverage_continuation"] == []
-        assert restatement["a2"]["testimony_content_coverage_continuation"] == rows
-    assert {item["category"] for item in export["delivered"]} == {"delivered"}
+    assert export["other_readings"] == []
+    assert export["aggregate"]["status"] == "partial"
+    [reason] = export["aggregate"]["reasons"]
+    assert reason.startswith("continuation join join-1-2-0 (reconstructed)")
 
 
 def test_every_input_reference_in_the_run_resolves_and_matches_its_digest(happy_run):
@@ -1822,8 +1667,7 @@ def test_every_input_reference_in_the_run_resolves_and_matches_its_digest(happy_
     assert checked >= 20, f"only {checked} references checked; the run looks too thin"
 
 
-@pytest.mark.act_path
-def test_every_expected_act_has_exactly_one_terminal_category(happy_run):
+def test_every_counted_reading_has_exactly_one_terminal_category(happy_run):
     _, tree = happy_run
     export = export_of(tree)
     entries = [
@@ -1831,13 +1675,16 @@ def test_every_expected_act_has_exactly_one_terminal_category(happy_run):
         for entry in tree.build_manifest(ARMARIUM)["artifacts"]
         if entry["kind"] == "manifest-entry"
     ]
-    assert len(entries) == export["expected_acts"] == 2
-    assert len({entry["subject_id"] for entry in entries}) == 2
+    assert len(entries) == export["expected_acts"] == 3
+    assert len({entry["subject_id"] for entry in entries}) == 3
+    categorised = export["delivered"] + export["non_delivered"] + export["other_readings"]
+    assert sorted(item["act_id"] for item in categorised) == sorted(
+        entry["subject_id"] for entry in entries
+    )
 
 
-@pytest.mark.act_path
 def test_the_final_export_keeps_each_original_filename_and_digest_link(happy_run):
-    """Every exported crop names its original source file/frame, not just the pages list."""
+    """Every delivered reading names its original source file and the exact ink it was cut from."""
     _, tree = happy_run
     export = export_of(tree)
     source_by_ordinal = {row["ordinal"]: row for row in tree.read_run()["source_manifest"]}
@@ -1848,354 +1695,37 @@ def test_the_final_export_keeps_each_original_filename_and_digest_link(happy_run
         assert page["declared_path"] == source["relative_path"]
         assert page["declared_sha256"] == source["sha256"]
         assert page["page_id"]
+    assert len(export["delivered"]) == 3
     for delivered in export["delivered"]:
-        assert delivered["source_regions"]
         perlectio = tree.read_artifact_reference(
             delivered["perlectio_ref"],
             stage=PERLECTOR,
             kind="perlectio",
             subject_id=delivered["act_id"],
         )
+        assert perlectio["payload"]["text"] == delivered["text"]
         assert delivered["dissent_ref"] == delivered["perlectio_ref"]
-        assert len(delivered["witnesses"]) == 3
         assert {witness["chair"] for witness in delivered["witnesses"]} == {
             "attestator_1",
             "attestator_2",
             "attestator_3",
         }
-        assert all("reported" not in witness for witness in delivered["witnesses"])
-        assert perlectio["artifact_id"] == delivered["perlectio_ref"]["relative_path"].split("/")[
-            -1
-        ].removesuffix(".json")
         for witness in delivered["witnesses"]:
             testimony = tree.read_artifact_reference(
-                witness["testimonium_ref"],
-                stage=ATTESTATORES,
-                kind="testimonium",
-                subject_id=delivered["act_id"],
+                witness["testimonium_ref"], stage=ATTESTATORES, kind="page-testimonium"
             )
             assert testimony["payload"]["chair"] == witness["chair"]
+            assert testimony["payload"]["page_ordinal"] == delivered["page_ordinal"]
             assert testimony["payload"]["provenance"] == witness["provenance"]
-        for region in delivered["source_regions"]:
-            source = source_by_ordinal[region["source_page_ordinal"]]
-            page = pages_by_ordinal[region["source_page_ordinal"]]
-            assert region["source_page_id"] == page["page_id"]
-            assert region["declared_path"] == source["relative_path"]
-            assert region["declared_sha256"] == source["sha256"]
-            assert region["structure_provenance"]["chair"] == "designator_structure"
-
-
-@pytest.mark.act_path
-def test_a_genuinely_empty_testimonium_counts_as_a_witnessed_read(tmp_path):
-    root = tmp_path / "runs"
-    result = orchestrate(root, "r", "genuinely-empty-witness")
-    assert result.returncode == 0, result.stderr
-    tree = RunTree(root, "r")
-    empty = next(
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
-        and entry["outcome"] == "genuinely-empty"
-        and entry["subject_id"]
-    )
-    assert empty["payload"]["chair"] == "attestator_3"
-    assert empty["payload"]["content_health"] == {
-        "native_type": "string",
-        "encoding": "utf-8-json-native",
-        "recordable": True,
-        "empty": True,
-        "blank": True,
-        "truncated": False,
-        "characters": 0,
-        "truncation_basis": "trusted-response-boundary",
-    }
-    assert empty["payload"]["payload"] == ""
-    assert empty["payload"]["witness_reported"] is None
-    reading = next(
-        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
-        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
-        if entry["kind"] == "perlectio" and entry["subject_id"] == empty["subject_id"]
-    )
-    # Restored on the phase-2 review. These five assertions were deleted by the
-    # R6 pin re-measurement, whose message named only the two digests; they still
-    # pass, and under the wave's raw-span contract the zero-length `witness_span`
-    # for a genuinely-empty page witness is exactly what keeps this chair's blank
-    # from reading as lost page coverage.
-    attachment_record = next(
-        tree.read_artifact(ATTESTATORES, "act-attachment", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "act-attachment" and entry["subject_id"] == empty["subject_id"]
-    )
-    empty_attachment = next(
-        row
-        for row in attachment_record["payload"]["attachments"]
-        if row["chair"] == empty["payload"]["chair"]
-    )
-    assert empty_attachment["attached"] is True
-    assert empty_attachment["span"] == {"start": 0, "end": 0}
-
-    empty_dissent = next(
-        row for row in reading["payload"]["dissent"] if row["chair"] == empty["payload"]["chair"]
-    )
-    assert empty_dissent["compared"] is True
-    assert empty_dissent["departed"] is True
-    assert empty_dissent["departures"] == [
-        {
-            "reading_span": {"start": 0, "end": len(reading["payload"]["text"])},
-            "testimonium_span": {"start": 0, "end": 0},
-        }
-    ]
-
-    review = next(
-        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review" and entry["subject_id"] == empty["subject_id"]
-    )
-    assert review["payload"]["coverage"]["by_outcome"] == {
-        "genuinely-empty": 1,
-        "read": 2,
-    }
-    assert review["payload"]["coverage"]["under_witnessed"] is False
-    assert all(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
-    assert export_of(tree)["aggregate"]["status"] == "complete"
-
-
-def _fallback_testimonia(tree: RunTree) -> list[dict]:
-    """Every act-scoped Testimonium for the minted page-3 fallback act.
-
-    Every attempt, not a latest-per-chair collapse: both scenarios that use
-    this write exactly one attempt per chair, and the callers assert the
-    count. A reread scenario would need the collapse before reusing this.
-    """
-    records = []
-    for artifact in tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if artifact["kind"] != "testimonium":
-            continue
-        record = tree.read_artifact(ATTESTATORES, "testimonium", artifact["artifact_id"])
-        if record["payload"]["act_key"] == "page-fallback:3":
-            records.append(record)
-    return records
-
-
-@pytest.mark.act_path
-def test_an_ink_free_page_fallback_is_read_but_not_retroactively_witness_covered(tmp_path):
-    """A recovery crop outside every observed box remains visibly under-witnessed."""
-    root = tmp_path / "runs"
-    result = orchestrate(root, "r", "ink-free-page")
-    assert result.returncode == 3, result.stderr
-    tree = RunTree(root, "r")
-
-    testimonia = _fallback_testimonia(tree)
-    assert len(testimonia) == 3
-    assert all(record["outcome"] == "genuinely-empty" for record in testimonia)
-    assert all(record["payload"]["regions"] for record in testimonia)
-    # And each one rests on a declared response to this exact request rather
-    # than on the act's identity: `proof/skeleton_fixture.toml` declares an
-    # empty witness response per chair for `page-fallback:3` under this
-    # scenario, and `ink-free-page-unwitnessed` below is the same page with
-    # those three declarations removed.
-    assert all(record["payload"]["provenance"]["receipt_ref"] is not None for record in testimonia)
-    assert all(record["payload"]["payload"] == "" for record in testimonia)
-
-    reading = next(
-        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
-        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
-        if entry["kind"] == "perlectio"
-        and tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])["payload"]["act_key"]
-        == "page-fallback:3"
-    )
-    assert reading["outcome"] == "no-readable-text"
-    assert reading["payload"]["text"] == ""
-    assert all(not region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
-
-
-@pytest.mark.act_path
-def test_an_undeclared_fallback_witness_holds_the_act_instead_of_reporting_it_blank(tmp_path):
-    """Sol-S1's red demonstration, kept runnable.
-
-    `ink-free-page-unwitnessed` is the identical ink-free page with no witness
-    response declared for the minted fallback act. Before the fix the act's
-    identity alone produced `genuinely-empty` for every configured chair, with
-    the proposal regions attached, the attempt marked attempted, a serving
-    receipt minted and trusted-boundary health recorded — and the Recensor then
-    sealed `confirmed-blank`, stating that three chairs had actually and
-    independently read the page. The conclusion was true of that white page; the
-    evidence was not, and the same shape over a page with ink is the worst
-    kind of failure, arriving as a green run.
-
-    So: no response, no reading. Every chair is `not-run`, nothing claims a
-    receipt or a region it was never shown, no page witness reports a reading,
-    and the act ends held with the shortfall named rather than sealed blank.
-    """
-    root = tmp_path / "runs"
-    result = orchestrate(root, "r", "ink-free-page-unwitnessed")
-    # Exit 3 is "accounted, holdable": the run reached honest terminal states
-    # for every act and one of them is held. A zero here would be the vacuous
-    # green the finding was about.
-    assert result.returncode == 3, result.stderr
-    tree = RunTree(root, "r")
-
-    testimonia = _fallback_testimonia(tree)
-    assert len(testimonia) == 3
-    assert all(record["outcome"] == "not-run" for record in testimonia)
-    assert all(record["payload"]["regions"] == [] for record in testimonia)
-    assert all(record["payload"]["provenance"]["receipt_ref"] is None for record in testimonia)
-    assert all(record["payload"]["payload"] is None for record in testimonia)
-    # Not "measured empty": emptiness is unknown, because nothing was asked.
-    assert all(record["payload"]["content_health"]["empty"] is None for record in testimonia)
-    assert all("reported" not in record["payload"] for record in testimonia)
-
-    page_records = [
-        tree.read_artifact(ATTESTATORES, "page-testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "page-testimonium"
-    ]
-    page_three = [row for row in page_records if row["payload"]["page_ordinal"] == 3]
-    assert len(page_three) == 2, "both declared page witnesses must still be accounted for"
-    # No underlying request reached either configured page chair. `failed` is
-    # receipt-bearing attempted failure; preserving the same word here would
-    # force consumers to guess from another field whether it means attempted.
-    assert all(row["outcome"] == "not-run" for row in page_three)
-    assert all(row["payload"]["presented"] == {} for row in page_three)
-    assert all(row["payload"]["provenance"]["receipt_ref"] is None for row in page_three)
-
-    reading = next(
-        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
-        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
-        if entry["kind"] == "perlectio"
-        and tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])["payload"]["act_key"]
-        == "page-fallback:3"
-    )
-    # The Perlector still reads the ink itself — its own autopsia is unaffected
-    # by the witnesses being absent, and that is exactly why the witnesses may
-    # not be invented to agree with it.
-    assert reading["outcome"] == "no-readable-text"
-    assert not any(region["witness_covered"] for region in reading["payload"]["basis"]["regions"])
-
-    review = next(
-        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review" and entry["subject_id"] == reading["subject_id"]
-    )
-    assert review["outcome"] == "held-for-review"
-    assert review["payload"]["coverage"]["by_outcome"] == {"not-run": 3}
-    assert review["payload"]["coverage"]["unresolved_chairs"] == 3
-    assert "blank_evidence" not in review["payload"]
-    assert "independently" not in review["payload"]["reason"]
-
-    export = export_of(tree)
-    entry = next(row for row in export["non_delivered"] if row["act_key"] == "page-fallback:3")
-    assert entry["category"] == "held-for-review"
-    assert entry["under_witnessed"] is True
-    assert export["aggregate"]["status"] == "partial"
-    assert not any(
-        tree.read_artifact(RECENSOR, row["kind"], row["artifact_id"])["outcome"]
-        == "confirmed-blank"
-        for row in tree.build_manifest(RECENSOR)["artifacts"]
-    )
-
-
-def _register_re_shoot_of(tmp_path: Path, page_ordinal: int) -> Path:
-    """A corpus register confirming one fixture page's capture as one of two of a leaf."""
-    capture = next(
-        page
-        for page in load_fixture(str(ROOT / "proof"))["page"]
-        if page["ordinal"] == page_ordinal
-    )
-    physical_page = physical_page_id("synthetic-corpus", "volume-1", f"leaf-{page_ordinal}")
-    register = tmp_path / "register.json"
-    append_records(
-        register,
-        [
-            {
-                "kind": "physical-page",
-                "corpus_id": "synthetic-corpus",
-                "volume_id": "volume-1",
-                "designation": f"leaf-{page_ordinal}",
-                "physical_page_id": physical_page,
-                "appending_run": "triage",
-            },
-            {
-                "kind": "membership",
-                "physical_page_id": physical_page,
-                "members": sorted([capture["sha256"], "f" * 64]),
-                "predecessor": None,
-                "appending_run": "triage",
-            },
-        ],
-        expected_digest=register_digest(empty_register()),
-    )
-    return register
-
-
-def _cross_capture_held(tree: RunTree, act_key: str) -> dict:
-    """Assert `act_key` is held by name through the Perlector, Recensor and export."""
-    readings = [
-        record
-        for record in (
-            tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
-            for entry in tree.build_manifest(PERLECTOR)["artifacts"]
-            if entry["kind"] == "perlectio"
-        )
-        if record["payload"]["act_key"] == act_key
-    ]
-    assert [record["outcome"] for record in readings] == ["not-run"]
-    assert readings[0]["payload"]["hold"] == {
-        "code": "cross-capture-read-not-built",
-        "partition_finding": "capture-page-alignment-unresolved",
-    }
-    reviews = [
-        tree.read_artifact(RECENSOR, entry["kind"], entry["artifact_id"])
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] in {"review", "recovery-request"}
-        and entry["subject_id"] == readings[0]["subject_id"]
-    ]
-    assert [review["outcome"] for review in reviews] == ["held-for-review"]
-    assert "cross-capture-read-not-built" in reviews[0]["payload"]["reason"]
-    entry = next(row for row in export_of(tree)["non_delivered"] if row["act_key"] == act_key)
-    assert entry["category"] == "held-for-review"
-    assert "cross-capture-read-not-built" in entry["reason"]
-    return entry
-
-
-@pytest.mark.act_path
-def test_a_confirmed_re_shoot_holds_its_own_act_and_the_rest_of_the_run_is_exported(tmp_path):
-    """One confirmed re-shoot once refused the whole run before any act was read.
-
-    The register confirms page 3's capture as one of two captures of a physical
-    page. No cross-capture read exists, so the act on that capture is held by
-    name; page 1's acts are still read, established and exported.
-    """
-    root = tmp_path / "runs"
-    result = orchestrate(
-        root, "r", "ink-free-page", corpus_register=_register_re_shoot_of(tmp_path, 3)
-    )
-    assert result.returncode == 3, result.stderr
-    tree = RunTree(root, "r")
-    _cross_capture_held(tree, "page-fallback:3")
-    export = export_of(tree)
-    assert sorted(item["act_key"] for item in export["delivered"]) == ["a1", "a2"]
-    assert [row["act_key"] for row in export["non_delivered"]] == ["page-fallback:3"]
-    assert export["aggregate"]["status"] == "partial"
-
-
-@pytest.mark.act_path
-def test_a_held_act_on_a_re_shoot_page_is_never_sent_to_recovery(tmp_path):
-    """A recovery request for a held act made the rerun Perlector repeat its hold and
-    the Recensor's attempt count then halted the whole run.
-
-    `continuation-recovery` declares a recrop for a2; no shared fixture page carries
-    real ink outside its cuts, and both origins reach the same request gate.
-    """
-    root = tmp_path / "runs"
-    result = orchestrate(
-        root, "r", "continuation-recovery", corpus_register=_register_re_shoot_of(tmp_path, 1)
-    )
-    assert result.returncode == 3, result.stderr
-    tree = RunTree(root, "r")
-    for act_key in ("a1", "a2"):
-        _cross_capture_held(tree, act_key)
-    assert export_of(tree)["delivered"] == []
+        [region] = delivered["source_regions"]
+        source = source_by_ordinal[region["source_page_ordinal"]]
+        page = pages_by_ordinal[region["source_page_ordinal"]]
+        assert region["source_page_ordinal"] == delivered["page_ordinal"]
+        assert region["source_page_id"] == page["page_id"]
+        assert region["declared_path"] == source["relative_path"]
+        assert region["declared_sha256"] == source["sha256"]
+        assert region["region_id"].startswith("rgn_")
+        assert digest_bytes(tree.read_bytes(region["image_path"])) == region["image_sha256"]
 
 
 def _designator_context_for(root: Path, run_id: str, scenario: str):
@@ -2296,9 +1826,8 @@ def _patch_conservation_with_extra_residual(
     for the first consumer that does.
 
     That rule is spelled out below rather than imported from
-    `pipeline/2_designator/run.py::_residual_ink_fraction_bp`, deliberately and
-    on this file's own precedent (`NUDA_APPROVAL_SUBJECT` above). Importing the
-    Designator here would put `pipeline/2_designator` on `sys.path` and bind its
+    `pipeline/2_designator/run.py::_residual_ink_fraction_bp`, deliberately.
+    Importing the Designator here would put `pipeline/2_designator` on `sys.path` and bind its
     sibling module names -- `geometry`, `structure`, `grouping`,
     `conservation` -- into `sys.modules` for every test in the session, which is
     what "nothing here imports a stage" is for. The cost is named rather than
@@ -2560,262 +2089,6 @@ def test_a_conservation_residual_the_seal_never_minted_is_refused(tmp_path):
     assert "accounts for no held act for" in result.stderr
 
 
-@pytest.mark.act_path
-def test_recensor_refuses_duplicate_witness_attempt_ordinals_instead_of_selecting_one(tmp_path):
-    root = tmp_path / "runs"
-    for program in programs_through("perlector"):
-        result = invoke_stage(root, "r", "happy", program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-    tree = RunTree(root, "r")
-    original = next(
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium" and entry["outcome"] == "read"
-    )
-    act_id = original["subject_id"]
-    chair = original["payload"]["chair"]
-    forged = json.loads(json.dumps(original))
-    forged_attempt = attempt_id(act_id, f"read:{chair}", 2)
-    forged["attempt_id"] = forged_attempt
-    forged["artifact_id"] = artifact_id(ATTESTATORES, "testimonium", act_id, forged_attempt)
-    # A new artifact identity with the old semantic ordinal is an ambiguity, not
-    # an attempt 2 that the Recensor is allowed to choose among.
-    forged["self_hash"] = self_hash(forged)
-    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", forged["artifact_id"]))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(canonical_bytes(forged))
-    before = snapshot(root)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/5_recensor/run.py")
-    assert result.returncode == 2
-    assert "duplicate attempt ordinal" in result.stderr
-    assert snapshot(root) == before
-
-
-@pytest.mark.act_path
-def test_designator_refuses_a_commandless_recovery_recrop(tmp_path):
-    root = tmp_path / "runs"
-    # This must be a real outstanding request.  An empty tree would fail later
-    # for lack of any Recensor record even if the CLI guard disappeared, making
-    # the test a check of an error spelling rather than a check that the request
-    # argument is required to authorize a crop.
-    run_through_recensor(root, "r", "review", allow_held=True)
-    tree = RunTree(root, "r")
-    act_id = next(
-        tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])["subject_id"]
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "recovery-request"
-    )
-    before = snapshot(root)
-
-    result = invoke_stage(
-        root,
-        "r",
-        "review",
-        "pipeline/2_designator/run.py",
-        operation="recover",
-        act=act_id,
-    )
-    assert result.returncode == 2
-    assert "exact Recensor recovery request" in result.stderr
-    assert snapshot(root) == before
-
-
-@pytest.mark.act_path
-def test_designator_refuses_a_standalone_next_recovery_request(tmp_path):
-    """Only the latest Recensor review can authorize its exact request.
-
-    First make the legitimate first recrop and reread, then add a syntactically
-    sound second request.  It has the right act, next ordinal, policy, and new
-    Perlectio input, but no current review names it.  Before the cross-stage
-    check, direct invocation of the crop author accepted this unreviewed request.
-    """
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r", "review", allow_held=True)
-    tree = RunTree(root, "r")
-    original = next(
-        tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "recovery-request"
-    )
-    act_id = original["subject_id"]
-    assert (
-        invoke_stage(
-            root,
-            "r",
-            "review",
-            "pipeline/2_designator/run.py",
-            operation="recover",
-            act=act_id,
-            recovery_request=original["artifact_id"],
-        ).returncode
-        == 0
-    )
-    assert (
-        invoke_stage(
-            root,
-            "r",
-            "review",
-            "pipeline/4_perlector/run.py",
-            act=act_id,
-        ).returncode
-        == 0
-    )
-
-    latest_reading = max(
-        (
-            tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
-            for entry in tree.build_manifest(PERLECTOR)["artifacts"]
-            if entry["kind"] == "perlectio" and entry["subject_id"] == act_id
-        ),
-        key=lambda record: record["payload"]["attempt_ordinal"],
-    )
-    reading_path = tree.artifact_path(PERLECTOR, "perlectio", latest_reading["artifact_id"])
-    reading_ref = {
-        "relative_path": reading_path,
-        "sha256": digest_bytes(tree.read_bytes(reading_path)),
-    }
-    forged = json.loads(json.dumps(original))
-    forged_attempt = attempt_id(act_id, "recover", 2)
-    forged["attempt_id"] = forged_attempt
-    forged["artifact_id"] = artifact_id(RECENSOR, "recovery-request", act_id, forged_attempt)
-    forged["inputs"] = [reading_ref]
-    forged["payload"]["attempt_ordinal"] = 2
-    forged["payload"]["budget_used"] = 1
-    forged["payload"]["perlectio_ref"] = reading_ref
-    forged["self_hash"] = self_hash(forged)
-    forged_path = tree.resolve(
-        tree.artifact_path(RECENSOR, "recovery-request", forged["artifact_id"])
-    )
-    forged_path.parent.mkdir(parents=True, exist_ok=True)
-    forged_path.write_bytes(canonical_bytes(forged))
-    before = snapshot(root)
-
-    result = invoke_stage(
-        root,
-        "r",
-        "review",
-        "pipeline/2_designator/run.py",
-        operation="recover",
-        act=act_id,
-        recovery_request=forged["artifact_id"],
-    )
-    assert result.returncode == 2
-    assert "not the exact current Recensor request" in result.stderr
-    assert snapshot(root) == before
-
-
-@pytest.mark.act_path
-def test_designator_refuses_a_current_recovery_review_with_a_different_policy(tmp_path):
-    """The review's policy is evidence, not a decorative copy of the request's."""
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r", "review", allow_held=True)
-    tree = RunTree(root, "r")
-    request = next(
-        tree.read_artifact(RECENSOR, "recovery-request", entry["artifact_id"])
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "recovery-request"
-    )
-    review_entry = next(
-        entry
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review"
-        and entry["outcome"] == "recovery-requested"
-        # Unit 10C retains a second request for the page witness's unclaimed
-        # native observation. Mutate the exact review the selected request
-        # binds rather than relying on manifest order to choose one.
-        and entry["subject_id"] == request["subject_id"]
-    )
-    review_path = tree.resolve(review_entry["relative_path"])
-    review = json.loads(review_path.read_text(encoding="utf-8"))
-    review["payload"]["recovery_policy"] = {"not": "the run-bound policy"}
-    review["self_hash"] = self_hash(review)
-    review_path.write_bytes(canonical_bytes(review))
-    before = snapshot(root)
-
-    result = invoke_stage(
-        root,
-        "r",
-        "review",
-        "pipeline/2_designator/run.py",
-        operation="recover",
-        act=request["subject_id"],
-        recovery_request=request["artifact_id"],
-    )
-    assert result.returncode == 2
-    assert "run-bound policy" in result.stderr
-    assert snapshot(root) == before
-
-
-@pytest.mark.act_path
-def test_armarium_refuses_an_archetypus_record_orphaned_beside_a_held_act(tmp_path):
-    """The mirror of "an accepted act must have an Archetypus": a held/refused act
-    must NOT have one. pipeline/6_archetypus/run.py's own guard already refuses to
-    establish a held act, so a record here can only exist by writing straight to
-    the tree — exactly the class of forgery this checks, the same way every other
-    tamper test in this file writes an artifact no stage would ever produce and
-    proves the next real stage still refuses it."""
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "refused-page").returncode == 3
-    tree = RunTree(root, "r")
-
-    review = next(
-        record
-        for record in artifacts(tree, RECENSOR, "review")
-        if record["payload"]["act_key"] == "a2"
-    )
-    act_id = review["subject_id"]
-    assert review["outcome"] == "held-for-review"
-
-    run = tree.read_run()
-    payload = {
-        "act_id": act_id,
-        "act_key": "a2",
-        "page_id": "pg_0000000000000000",
-        "text": "FORGED TEXT NO STAGE WROTE",
-        "status": "established",
-        "regions": [],
-        "provenance": {},
-        "dissent_ref": "art_0000000000000000",
-        "recensor_ref": review["artifact_id"],
-    }
-    payload["self_hash"] = self_hash(payload)
-    envelope = build_envelope(
-        run_id="r",
-        artifact_id=artifact_id(ARCHETYPUS, "archetypus", act_id),
-        subject_id=act_id,
-        stage=ARCHETYPUS,
-        kind="archetypus",
-        outcome="established",
-        config_digest=run["config_digest"],
-        adapter_revision=run["adapter_recipes"][ARCHETYPUS],
-        inputs=[],
-        payload=payload,
-    )
-    path = tree.resolve(tree.artifact_path(ARCHETYPUS, "archetypus", envelope["artifact_id"]))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(canonical_bytes(envelope))
-    rebind_stage_seal(tree, ARCHETYPUS)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline/7_armarium/run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "refused-page",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 2
-    assert "may not also be established" in result.stderr
-
-
 def test_the_seal_carries_an_outcome_and_a_derived_continuation_for_every_act(happy_run):
     """The seal entry is the handoff contract: every entry names its Designator
     outcome, and `has_continuation` reports the regions actually cut, never the
@@ -2830,158 +2103,6 @@ def test_the_seal_carries_an_outcome_and_a_derived_continuation_for_every_act(ha
     assert by_key["a2"]["outcome"] == "proposed"
     assert by_key["a1"]["has_continuation"] is False
     assert by_key["a2"]["has_continuation"] is True
-
-
-@pytest.mark.act_path
-def test_a_continuation_has_page_scoped_testimony_and_audit_on_its_far_page(happy_run):
-    """Page two retains and audits the pixels a2 contributes there, and nothing picks."""
-    _, tree = happy_run
-    a2 = next(
-        act
-        for act in tree.read_artifact(
-            DESIGNATOR,
-            "proposal-seal",
-            artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
-        )["payload"]["expected_acts"]
-        if act["act_key"] == "a2"
-    )
-    continuation = [
-        record
-        for record in artifacts(tree, ATTESTATORES, "page-testimonium")
-        if record["payload"].get("page_ordinal") == 2
-    ]
-    assert {record["payload"]["chair"] for record in continuation} == {
-        "attestator_1",
-        "attestator_3",
-    }
-    assert {record["payload"]["page_role"] for record in continuation} == {"continuation"}
-    attachment = next(
-        record
-        for record in artifacts(tree, ATTESTATORES, "act-attachment")
-        if record["subject_id"] == a2["act_id"]
-    )
-    assert {
-        row["page_ordinal"] for row in attachment["payload"]["attachments"] if row["page_witness"]
-    } == {1, 2}
-    draft = next(
-        record
-        for record in artifacts(tree, PERLECTOR, "audit-draft")
-        if record["subject_id"] == a2["act_id"]
-    )
-    # The pair is pinned, not just the sorted set. `page_identity` derives the
-    # id from the page's bytes, so two byte-identical fixture pages would
-    # collapse to one element and this assertion would still pass -- with a2's
-    # audit denominator quietly down to one page, and page two, which is where
-    # the continuation evidence this test is named for lives, never audited.
-    fixture = load_fixture(str(ROOT / "proof"))
-    both_pages = sorted({page_identity(fixture, 1), page_identity(fixture, 2)})
-    assert len(both_pages) == 2, "the fixture's two pages share one identity"
-    assert draft["payload"]["page_ids"] == both_pages
-
-
-@pytest.mark.act_path
-def test_a_continuation_counts_page_witness_chairs_not_page_pairs(happy_run):
-    """The dossier roster count cannot grow when the same chairs span two pages."""
-    _, tree = happy_run
-    reading = next(
-        record
-        for record in artifacts(tree, PERLECTOR, "perlectio")
-        if record["payload"]["act_key"] == "a2"
-    )
-
-    attachment = reading["payload"]["dossier"]["act_attachment"]
-    assert attachment["page_witness_count"] == 2
-    assert len(attachment["comparison_views"]) == 2
-
-
-@pytest.mark.act_path
-def test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence(
-    continuation_recovery_run,
-):
-    """A primary-page recrop must retain the continuation page at attempt two."""
-    _, tree = continuation_recovery_run
-    a2 = next(
-        act
-        for act in tree.read_artifact(
-            DESIGNATOR,
-            "proposal-seal",
-            artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None),
-        )["payload"]["expected_acts"]
-        if act["act_key"] == "a2"
-    )
-    regions = [
-        record
-        for record in artifacts(tree, DESIGNATOR, "region")
-        if record["subject_id"] == a2["act_id"]
-    ]
-    origins = sorted(
-        (region["payload"]["origin"], region["payload"]["transform"]["source_page_ordinal"])
-        for region in regions
-    )
-    # This distinguishes a real primary-page recrop from a vacuous second pass.
-    assert origins == [("proposal", 1), ("proposal", 2), ("recovery", 1)]
-
-    readings = {
-        record["payload"]["attempt_ordinal"]: record
-        for record in artifacts(tree, PERLECTOR, "perlectio")
-        if record["subject_id"] == a2["act_id"]
-    }
-    assert sorted(readings) == [1, 2], "the recovery round must add exactly one attempt"
-    for ordinal, reading in readings.items():
-        pages = {basis["source_page_ordinal"] for basis in reading["payload"]["basis"]["regions"]}
-        assert pages == {1, 2}, f"attempt {ordinal} lost the continuation page"
-
-    drafts = {
-        record["payload"]["attempt_ordinal"]: record["payload"]["page_ids"]
-        for record in artifacts(tree, PERLECTOR, "audit-draft")
-        if record["subject_id"] == a2["act_id"]
-    }
-    fixture = load_fixture(str(ROOT / "proof"))
-    both_pages = sorted({page_identity(fixture, 1), page_identity(fixture, 2)})
-    # The sibling site's pin, for the same reason: the set collapses to one
-    # element if the fixture's two pages ever become byte-identical, and both
-    # attempts would then reconcile against a one-page denominator while still
-    # comparing equal to each other.
-    assert len(both_pages) == 2, "the fixture's two pages share one identity"
-    assert drafts == {1: both_pages, 2: both_pages}
-
-    attachment = next(
-        record
-        for record in artifacts(tree, ATTESTATORES, "act-attachment")
-        if record["subject_id"] == a2["act_id"]
-    )
-    # Recovery does not re-enter Attestatores, so attempt two must reconcile to
-    # this pre-recrop attachment denominator.
-    assert {
-        row["page_ordinal"] for row in attachment["payload"]["attachments"] if row["page_witness"]
-    } == {1, 2}
-
-
-@pytest.mark.act_path
-def test_a_continuation_act_is_flagged_once_per_witness_not_once_per_page(happy_run):
-    """Act-local flags measure witness disagreements, not contributing pages."""
-    _, tree = happy_run
-    drafts = {
-        entry["subject_id"]: tree.read_artifact(PERLECTOR, "audit-draft", entry["artifact_id"])[
-            "payload"
-        ]
-        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
-        if entry["kind"] == "audit-draft"
-    }
-    seal = tree.read_artifact(
-        DESIGNATOR, "proposal-seal", artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
-    )["payload"]
-    by_key = {entry["act_key"]: entry["act_id"] for entry in seal["expected_acts"]}
-    single_page, continuation = drafts[by_key["a1"]], drafts[by_key["a2"]]
-    assert len(single_page["page_ids"]) == 1 and len(continuation["page_ids"]) == 2
-    for draft in (single_page, continuation):
-        flags = draft["flags"]
-        assert [flag["class"] for flag in flags] == ["testimony-diff", "testimony-diff"]
-        # Distinct spans prove the two rows are witnesses, not page duplicates.
-        assert len({(flag["location"]["start"], flag["location"]["end"]) for flag in flags}) == 2
-        assert len(draft["flags"]) == len(
-            {(flag["class"], flag["location"]["start"], flag["location"]["end"]) for flag in flags}
-        )
 
 
 def test_the_run_used_no_network_and_no_model(happy_run):
@@ -3026,710 +2147,6 @@ def test_the_config_digest_still_binds_the_scenario_as_well_as_the_chairs(happy_
     altered = json.loads(json.dumps(fixture))
     altered["act"][0]["text"] = "SOMETHING ELSE ENTIRELY"
     assert run_config_bindings(config, altered, "happy")["config_digest"] != happy
-
-
-@pytest.mark.act_path
-def test_an_explicit_absent_witness_is_a_visible_dead_and_counts_against_floor(
-    tmp_path, absent_third_chair_config
-):
-    """Exercise absence through real stage programs, not only the config parser."""
-    models_config = absent_third_chair_config
-
-    root = tmp_path / "runs"
-    result = orchestrate(root, "r", "happy", models_config=models_config)
-    assert result.returncode == 3, result.stderr
-    tree = RunTree(root, "r")
-    testimonia = [
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
-    ]
-    absent_records = [
-        record for record in testimonia if record["payload"]["chair"] == "attestator_3"
-    ]
-    assert len(absent_records) == 2
-    assert all(record["outcome"] == "dead" for record in absent_records)
-    for record in absent_records:
-        provenance = record["payload"]["provenance"]
-        assert provenance["chair_state"] == "absent"
-        assert provenance["receipt_ref"] is None
-        assert record["inputs"] == []
-        assert record["payload"]["regions"] == []
-        assert provenance["absence"] == {
-            "role": "attestator_3",
-            "state": "absent",
-            "reason": "fixture test removes this witness without replacing it",
-        }
-    export = export_of(tree)
-    assert export["aggregate"]["status"] == "partial"
-    assert all(item["under_witnessed"] is True for item in export["non_delivered"])
-    assert all(
-        item["witness_coverage"]["by_outcome"] == {"read": 2, "dead": 1}
-        for item in export["non_delivered"]
-    )
-    assert all(
-        item["witness_coverage"]["by_class"] == {"completed": 2, "unresolved": 0, "failed": 1}
-        for item in export["non_delivered"]
-    )
-    assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]
-
-
-@pytest.mark.act_path
-def test_an_absent_witness_on_a_held_act_is_also_dead_not_not_run(
-    tmp_path, absent_third_chair_config
-):
-    """A dead witness is dead independent of the act's own state.
-
-    "Held" here is the Designator's own outcome — `refused-page` holds a2 because
-    its continuation page never sealed — not the Recensor's later
-    `held-for-review` category. Before spec 07's repair every chair on a held act
-    was recorded `not-run` whether it was configured or explicitly absent, which
-    is the collapse this guards against: holding the act does not turn an
-    unreachable witness into a merely unasked one, and a live chair on the same
-    act must stay `not-run` rather than being swept into the same word.
-    """
-    models_config = absent_third_chair_config
-    root = tmp_path / "runs"
-    result = orchestrate(root, "r", "refused-page", models_config=models_config)
-    assert result.returncode == 3, result.stderr
-    tree = RunTree(root, "r")
-    testimonia = [
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium"
-    ]
-    held = [record for record in testimonia if record["payload"]["act_key"] == "a2"]
-    by_chair = {record["payload"]["chair"]: record for record in held}
-    assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
-    assert by_chair["attestator_3"]["outcome"] == "dead"
-    assert "chair is explicitly absent" in by_chair["attestator_3"]["payload"]["reason"]
-    assert by_chair["attestator_1"]["outcome"] == "not-run"
-    assert by_chair["attestator_2"]["outcome"] == "not-run"
-
-
-@pytest.mark.act_path
-def test_a_structured_testimonium_is_retained_and_carried_as_an_incomparable_witness(tmp_path):
-    """A structured witness ends the run honestly rather than crashing.
-
-    Spec 07 requires `payload` to be the witness's native output, verbatim, never
-    coerced into a shared body schema — so a witness whose real output is an object
-    lands here as an object. The Perlector's dossier now reads that retained
-    `payload` layer natively (`reported_basis` names the derivation), and
-    `dissent_against` records the chair as `compared: "unknown"` with the fact
-    named rather than raising: a structured report is visible, not silently
-    dropped and not a crash. The act still lands under-witnessed and the run
-    still ends `partial` rather than a falsely `complete` export.
-
-    **Said exactly, because the mechanism matters more than the exit code.**
-    What holds the floor down *in this scenario* is `attached: False`: the page
-    join legitimately omits a structured act (its `unjoined_act_attempts` row
-    says so by name), the chair's page capture therefore observes no box over
-    a1's proposal, and the attachment is geometrically unattached. The
-    `comparable` boolean is the SECOND, independent guard, for the case this
-    fixture does not produce — a chair whose native geometry does overlap the
-    act while its retained testimony is structured. That case is driven over real
-    records in `pipeline/5_recensor/test_comparability_floor.py`, and the
-    arithmetic in `common/contracts/test_contracts_algebra.py`; claiming this
-    scenario exercises it would report an instrument that did not run.
-    """
-    root = tmp_path / "runs"
-    result = orchestrate(root, "r", "structured-witness")
-
-    assert result.returncode == 3, result.stderr
-    assert "act a1 is held-for-review" in result.stdout
-    assert "act a1 is under-witnessed (2 of a floor of 3)" in result.stdout
-
-    tree = RunTree(root, "r")
-    structured = next(
-        record
-        for record in artifacts(tree, ATTESTATORES, "testimonium")
-        if record["payload"]["chair"] == "attestator_1" and record["payload"]["act_key"] == "a1"
-    )
-    assert structured["outcome"] == "read"
-    assert structured["payload"]["payload"] == {
-        "tokens": ["μ", "beta"],
-        "layout": {"line": 4},
-        "uncertain": True,
-    }
-    assert "reported" not in structured["payload"], (
-        "no field of a structured payload may be promoted to stand in for the whole"
-    )
-
-    perlectio = next(
-        record
-        for record in artifacts(tree, PERLECTOR, "perlectio")
-        if record["subject_id"] == structured["subject_id"]
-    )
-    unknown_row = next(
-        row for row in perlectio["payload"]["dissent"] if row["chair"] == "attestator_1"
-    )
-    assert unknown_row == {
-        "chair": "attestator_1",
-        "compared": "unknown",
-        "reason": "no comparable text for this act: retained derived testimony is not text",
-    }
-
-    attachment = next(
-        record
-        for record in artifacts(tree, ATTESTATORES, "act-attachment")
-        if record["subject_id"] == structured["subject_id"]
-    )
-    rows = [row for row in attachment["payload"]["attachments"] if row["chair"] == "attestator_1"]
-    assert rows and all(row["attached"] is False and row["comparable"] is False for row in rows), (
-        rows
-    )
-
-
-@pytest.mark.act_path
-def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(tmp_path):
-    """A damaged independent count cannot hide behind an old complete export."""
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    tally_path = tree.resolve(tree.manifest_path(ATTESTATORES))
-    tally_path.write_bytes(b"{")
-    before = snapshot(root)
-
-    result = orchestrate(root, "r", "happy")
-
-    assert result.returncode == 3
-    assert "UNKNOWN" in result.stderr
-    assert "run r: held; its reason is on stderr above" in result.stdout
-    assert snapshot(root) == before
-
-
-@pytest.mark.act_path
-def test_a_perlectio_retains_digest_checked_testimonia_it_used(tmp_path):
-    """Changing a witness record after reading must stop the next real consumer."""
-    root = tmp_path / "runs"
-    for program in programs_through("perlector"):
-        result = invoke_stage(root, "r", "happy", program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-
-    tree = RunTree(root, "r")
-    testimony = next(
-        tree.read_artifact(ATTESTATORES, "testimonium", entry["artifact_id"])
-        for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
-        if entry["kind"] == "testimonium" and entry["outcome"] == "read"
-    )
-    path = tree.resolve(tree.artifact_path(ATTESTATORES, "testimonium", testimony["artifact_id"]))
-    changed = json.loads(path.read_text(encoding="utf-8"))
-    changed["payload"]["payload"] = "changed after Perlectio"
-    changed["self_hash"] = self_hash(changed)
-    path.write_bytes(canonical_bytes(changed))
-    before = snapshot(root)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/5_recensor/run.py")
-    assert result.returncode == 2
-    assert "changed under a sealed reference" in result.stderr
-    assert snapshot(root) == before
-
-
-@pytest.mark.act_path
-def test_recensor_refuses_a_completed_perlectio_without_an_object_region_basis(tmp_path):
-    """A resealed malformed payload is an accounting refusal, never a traceback."""
-    root = tmp_path / "runs"
-    for program in programs_through("perlector"):
-        result = invoke_stage(root, "r", "happy", program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-    tree = RunTree(root, "r")
-    entry = next(
-        entry
-        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
-        if entry["kind"] == "perlectio" and entry["outcome"] == "read"
-    )
-    path = tree.resolve(entry["relative_path"])
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["payload"]["basis"] = []
-    record["self_hash"] = self_hash(record)
-    path.write_bytes(canonical_bytes(record))
-    rebind_stage_seal(tree, PERLECTOR)
-    before = snapshot(root)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/5_recensor/run.py")
-    assert result.returncode == 2
-    assert "Traceback" not in result.stderr
-    assert "no object basis" in result.stderr
-    assert snapshot(root) == before
-
-
-@pytest.mark.act_path
-def test_archetypus_refuses_a_newer_unreviewed_perlectio(tmp_path):
-    """A newer reading must be reviewed, never silently ignored or substituted."""
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r")
-    tree = RunTree(root, "r")
-    # Choose a1 explicitly: it has an accepted review in the happy trace.
-    review = next(
-        tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review" and entry["outcome"] == "accepted"
-    )
-    act_id = review["subject_id"]
-    original = tree.read_artifact(
-        PERLECTOR,
-        "perlectio",
-        review["payload"]["perlectio_ref"]["relative_path"].split("/")[-1].removesuffix(".json"),
-    )
-    forged = json.loads(json.dumps(original))
-    forged_attempt = attempt_id(act_id, "perlegere", 2)
-    forged["attempt_id"] = forged_attempt
-    forged["artifact_id"] = artifact_id(PERLECTOR, "perlectio", act_id, forged_attempt)
-    forged["payload"]["attempt_ordinal"] = 2
-    forged["payload"]["text"] = "UNREVIEWED REPLACEMENT"
-    forged["self_hash"] = self_hash(forged)
-    forged_path = tree.resolve(tree.artifact_path(PERLECTOR, "perlectio", forged["artifact_id"]))
-    forged_path.parent.mkdir(parents=True, exist_ok=True)
-    forged_path.write_bytes(canonical_bytes(forged))
-
-    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 2
-    assert "newer Perlectio" in result.stderr
-
-
-@pytest.mark.act_path
-def test_archetypus_refuses_to_call_an_accepted_empty_reading_blank_without_proof(tmp_path):
-    """An accepted reading is not itself evidence that the page was blank.
-
-    Blank pages are ordinary, and distinguished from unread ink.
-    The outcome algebra therefore leaves silence unresolved until the Recensor
-    retains a blank proof.  Acceptance alone must not manufacture that proof.
-    """
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r")
-    tree = RunTree(root, "r")
-    review_entry = next(
-        entry
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review" and entry["outcome"] == "accepted"
-    )
-    review_path = tree.resolve(review_entry["relative_path"])
-    review = json.loads(review_path.read_text(encoding="utf-8"))
-    old_ref = review["payload"]["perlectio_ref"]
-    reading_path = tree.resolve(old_ref["relative_path"])
-    reading = json.loads(reading_path.read_text(encoding="utf-8"))
-    reading["payload"]["text"] = ""
-    # R8: the canonical uncertainty layer anchors to the text; a forged blank
-    # reading must stay schema-consistent or the uncertainty refusal fires
-    # before the boundary this test exercises (host fix at R8 integration).
-    reading["payload"]["self_revision"] = []
-    reading["payload"]["uncertain_spans"] = []
-    reading["payload"]["gaps"] = []
-    reading["self_hash"] = self_hash(reading)
-    reading_path.write_bytes(canonical_bytes(reading))
-    new_ref = {
-        "relative_path": old_ref["relative_path"],
-        "sha256": digest_bytes(reading_path.read_bytes()),
-    }
-    review["inputs"] = [
-        new_ref if reference == old_ref else reference for reference in review["inputs"]
-    ]
-    review["payload"]["perlectio_ref"] = new_ref
-    review["self_hash"] = self_hash(review)
-    review_path.write_bytes(canonical_bytes(review))
-    rebind_stage_seal(tree, PERLECTOR)
-    rebind_stage_seal(tree, RECENSOR)
-    act_id = review["subject_id"]
-
-    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 2
-    assert "requires its evidence reference" in result.stderr
-    assert not tree.has_artifact(
-        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
-    )
-
-
-def _forge_blank_proof(tree: RunTree, act_id: str) -> dict[str, str]:
-    """A standalone artifact standing in for a real Recensor blank proof.
-
-    Deliberately a *distinct* artifact rather than a reference already in the
-    review's inputs: reusing `perlectio_ref` or a region blob would coincidentally
-    satisfy the Armarium's input reconciliation even if this stage's own inputs
-    were wrong, which is the gap the caller below exists to close.
-    """
-    run = tree.read_run()
-    payload = {"note": "a hypothetical blank-proof artifact"}
-    payload["self_hash"] = self_hash(payload)
-    envelope = build_envelope(
-        run_id=tree.run_id,
-        artifact_id=artifact_id(RECENSOR, "blank-proof", act_id),
-        subject_id=act_id,
-        stage=RECENSOR,
-        kind="blank-proof",
-        outcome="accepted",
-        config_digest=run["config_digest"],
-        adapter_revision=run["adapter_recipes"][RECENSOR],
-        inputs=[],
-        payload=payload,
-    )
-    relative = tree.artifact_path(RECENSOR, "blank-proof", envelope["artifact_id"])
-    path = tree.resolve(relative)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(canonical_bytes(envelope))
-    return {"relative_path": relative, "sha256": digest_bytes(path.read_bytes())}
-
-
-@pytest.mark.act_path
-def test_archetypus_establishes_no_readable_text_once_the_review_retains_real_blank_proof(
-    tmp_path,
-):
-    """The success path `_no_readable_text_evidence` exists for, exercised for real.
-
-    No producer in this build writes `no_readable_text_evidence_ref` today
-    (CONTRACT.md's named cross-stage gap), so this forges a blank proof onto an
-    accepted review's own inputs the same way the sibling refusal test above
-    forges an empty reading -- standing in for whatever real blank-proof
-    artifact a future Recensor contract produces.
-
-    The point is twofold: prove the constructor's success path actually writes
-    the record spec 10 describes, not only that its refusal paths fire; and
-    prove the record it writes remains exportable through the (now
-    damage-honest since the T0 export repair) Armarium -- an Archetypus record that cannot survive
-    its own consumer is not established, whatever its own schema says.
-    """
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r")
-    tree = RunTree(root, "r")
-    review_entry = next(
-        entry
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review" and entry["outcome"] == "accepted"
-    )
-    review_path = tree.resolve(review_entry["relative_path"])
-    review = json.loads(review_path.read_text(encoding="utf-8"))
-    old_ref = review["payload"]["perlectio_ref"]
-    reading_path = tree.resolve(old_ref["relative_path"])
-    reading = json.loads(reading_path.read_text(encoding="utf-8"))
-    reading["payload"]["text"] = ""
-    # R8: the canonical uncertainty layer anchors to the text; a forged blank
-    # reading must stay schema-consistent or the uncertainty refusal fires
-    # before the boundary this test exercises (host fix at R8 integration).
-    reading["payload"]["self_revision"] = []
-    reading["payload"]["uncertain_spans"] = []
-    reading["payload"]["gaps"] = []
-    reading["self_hash"] = self_hash(reading)
-    reading_path.write_bytes(canonical_bytes(reading))
-    new_ref = {
-        "relative_path": old_ref["relative_path"],
-        "sha256": digest_bytes(reading_path.read_bytes()),
-    }
-
-    act_id = review["subject_id"]
-    evidence_ref = _forge_blank_proof(tree, act_id)
-
-    review["inputs"] = [
-        new_ref if reference == old_ref else reference for reference in review["inputs"]
-    ] + [evidence_ref]
-    review["payload"]["perlectio_ref"] = new_ref
-    review["payload"]["no_readable_text_evidence_ref"] = evidence_ref
-    review["self_hash"] = self_hash(review)
-    review_path.write_bytes(canonical_bytes(review))
-    rebind_stage_seal(tree, PERLECTOR)
-    rebind_stage_seal(tree, RECENSOR)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 0, result.stderr
-    record = tree.read_artifact(
-        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
-    )["payload"]
-    assert record["text"] == ""
-    assert record["text_status"] == "no_readable_text"
-    assert record["status"] == "established"
-    assert record["evidence_ref"] == evidence_ref
-
-    export_result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
-    # EXIT_HELD, not 0, since the export became honest about damage: an act
-    # delivered with a record that establishes no readable text is a delivered act
-    # the run cannot call complete, and the aggregate names it. Surviving the
-    # consumer is what this test is about, and the row below is still there.
-    assert export_result.returncode == EXIT_HELD, export_result.stderr
-    # Surviving the consumer means being *in* its export, not merely not
-    # crashing it: a delivered set that silently dropped the blank act would
-    # exit 0 too. The export row carries the record's established empty text;
-    # the evidence reference lives on the record itself, asserted above.
-    export = export_of(tree)
-    blank = next(item for item in export["delivered"] if item["act_id"] == act_id)
-    assert blank["text"] == ""
-
-
-@pytest.mark.act_path
-def test_archetypus_refuses_a_blank_proof_that_is_the_reading_itself(tmp_path):
-    """A reading is never evidence of its own silence.
-
-    Unlike `perlectio_ref` and `recensor_ref`, `evidence_ref` is never read,
-    stage-checked or kind-checked -- no `blank-proof` artifact kind exists yet
-    to check it against (CONTRACT.md's named gap). Without this refusal, naming
-    the accepted (now-emptied) Perlectio itself as `no_readable_text_evidence_ref`
-    passes: the reading whose silence is in question stands in as proof of it,
-    defeating CONTRACT.md's whole argument for the field ("An accepted review is
-    evidence that the Recensor accepted a reading; it is not evidence that the
-    page was blank").
-    """
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r")
-    tree = RunTree(root, "r")
-    review_entry = next(
-        entry
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review" and entry["outcome"] == "accepted"
-    )
-    review_path = tree.resolve(review_entry["relative_path"])
-    review = json.loads(review_path.read_text(encoding="utf-8"))
-    old_ref = review["payload"]["perlectio_ref"]
-    reading_path = tree.resolve(old_ref["relative_path"])
-    reading = json.loads(reading_path.read_text(encoding="utf-8"))
-    reading["payload"]["text"] = ""
-    # R8: the canonical uncertainty layer anchors to the text; a forged blank
-    # reading must stay schema-consistent or the uncertainty refusal fires
-    # before the boundary this test exercises (host fix at R8 integration).
-    reading["payload"]["self_revision"] = []
-    reading["payload"]["uncertain_spans"] = []
-    reading["payload"]["gaps"] = []
-    reading["self_hash"] = self_hash(reading)
-    reading_path.write_bytes(canonical_bytes(reading))
-    new_ref = {
-        "relative_path": old_ref["relative_path"],
-        "sha256": digest_bytes(reading_path.read_bytes()),
-    }
-
-    review["inputs"] = [
-        new_ref if reference == old_ref else reference for reference in review["inputs"]
-    ]
-    review["payload"]["perlectio_ref"] = new_ref
-    review["payload"]["no_readable_text_evidence_ref"] = new_ref
-    review["self_hash"] = self_hash(review)
-    review_path.write_bytes(canonical_bytes(review))
-    rebind_stage_seal(tree, PERLECTOR)
-    rebind_stage_seal(tree, RECENSOR)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 2, result.stderr
-    assert "Traceback" not in result.stderr
-    assert "never evidence of its own silence" in result.stderr
-    # A refused act leaves no record behind for a downstream stage to treat as
-    # output; the refusal and a published Archetypus cannot coexist.
-    assert not tree.has_artifact(
-        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
-    )
-
-
-@pytest.mark.act_path
-def test_archetypus_refuses_a_blank_proof_that_is_the_readings_own_crop(tmp_path):
-    """The same circularity as the reading-itself case, one step further out.
-
-    An accepted review's inputs are the reading plus every crop that reading
-    read, so a reference to the very image the reading failed to read passes
-    the direct-input check. Without this refusal it would seal as proof the
-    page was blank — the ink whose reading is in question standing as evidence
-    of its own silence.
-    """
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r")
-    tree = RunTree(root, "r")
-    review_entry = next(
-        entry
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review" and entry["outcome"] == "accepted"
-    )
-    review_path = tree.resolve(review_entry["relative_path"])
-    review = json.loads(review_path.read_text(encoding="utf-8"))
-    old_ref = review["payload"]["perlectio_ref"]
-    reading_path = tree.resolve(old_ref["relative_path"])
-    reading = json.loads(reading_path.read_text(encoding="utf-8"))
-    # A crop the reading read: an input of the reading that the review also
-    # lists directly (the review's inputs are the reading plus its crops).
-    crop_ref = next(
-        (reference for reference in reading["inputs"] if reference in review["inputs"]),
-        None,
-    )
-    assert crop_ref is not None, (
-        "this test needs a crop the reading read that the review also lists directly; "
-        "the review's inputs are the reading plus its crops"
-    )
-    reading["payload"]["text"] = ""
-    # R8: the canonical uncertainty layer anchors to the text; a forged blank
-    # reading must stay schema-consistent or the uncertainty refusal fires
-    # before the boundary this test exercises (host fix at R8 integration).
-    reading["payload"]["self_revision"] = []
-    reading["payload"]["uncertain_spans"] = []
-    reading["payload"]["gaps"] = []
-    reading["self_hash"] = self_hash(reading)
-    reading_path.write_bytes(canonical_bytes(reading))
-    new_ref = {
-        "relative_path": old_ref["relative_path"],
-        "sha256": digest_bytes(reading_path.read_bytes()),
-    }
-
-    review["inputs"] = [
-        new_ref if reference == old_ref else reference for reference in review["inputs"]
-    ]
-    review["payload"]["perlectio_ref"] = new_ref
-    review["payload"]["no_readable_text_evidence_ref"] = crop_ref
-    review["self_hash"] = self_hash(review)
-    review_path.write_bytes(canonical_bytes(review))
-    rebind_stage_seal(tree, PERLECTOR)
-    rebind_stage_seal(tree, RECENSOR)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 2, result.stderr
-    assert "Traceback" not in result.stderr
-    assert "input of the accepted Perlectio itself" in result.stderr
-    assert not tree.has_artifact(
-        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
-    )
-
-
-@pytest.mark.act_path
-def test_archetypus_refuses_a_blank_proof_over_a_reading_that_has_text(tmp_path):
-    """Two upstream claims that contradict each other are never quietly one claim.
-
-    A review carrying a blank proof says this act held no readable ink; the
-    reading it accepted says otherwise, in characters. Consulting the evidence
-    reference only where the stage's own derivation has already reached
-    `no_readable_text` reads past the Recensor's finding everywhere else, so the
-    contradiction resolves in favour of whichever claim the derivation reaches
-    first and leaves no trace of the other.
-    """
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r")
-    tree = RunTree(root, "r")
-    review_entry = next(
-        entry
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review" and entry["outcome"] == "accepted"
-    )
-    review_path = tree.resolve(review_entry["relative_path"])
-    review = json.loads(review_path.read_text(encoding="utf-8"))
-    act_id = review["subject_id"]
-    reading = json.loads(
-        tree.resolve(review["payload"]["perlectio_ref"]["relative_path"]).read_text(
-            encoding="utf-8"
-        )
-    )
-    assert reading["payload"]["text"].strip(), "this act must carry real text for the conflict"
-
-    evidence_ref = _forge_blank_proof(tree, act_id)
-    review["inputs"] = review["inputs"] + [evidence_ref]
-    review["payload"]["no_readable_text_evidence_ref"] = evidence_ref
-    review["self_hash"] = self_hash(review)
-    review_path.write_bytes(canonical_bytes(review))
-    rebind_stage_seal(tree, RECENSOR)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 2, result.stderr
-    assert "Traceback" not in result.stderr
-    assert "reconciliation failure" in result.stderr
-    assert not tree.has_artifact(
-        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", act_id)
-    )
-
-
-@pytest.mark.act_path
-def test_archetypus_refuses_a_crop_the_run_tree_cannot_read(tmp_path):
-    """A named crop that is not there is an accounting failure, not a traceback.
-
-    The reference is built by hashing the bytes on disk, so a reading naming a
-    crop this tree does not hold arrives as `OSError` — outside the family
-    `run_stage` classifies. Unnamed, it takes every other act's record with it
-    under exit 1, which the orchestrator does not recognise as a stage outcome.
-    """
-    root = tmp_path / "runs"
-    run_through_recensor(root, "r")
-    tree = RunTree(root, "r")
-    review_entry = next(
-        entry
-        for entry in tree.build_manifest(RECENSOR)["artifacts"]
-        if entry["kind"] == "review" and entry["outcome"] == "accepted"
-    )
-    review_path = tree.resolve(review_entry["relative_path"])
-    review = json.loads(review_path.read_text(encoding="utf-8"))
-    old_ref = review["payload"]["perlectio_ref"]
-    reading_path = tree.resolve(old_ref["relative_path"])
-    reading = json.loads(reading_path.read_text(encoding="utf-8"))
-    # The envelope's own `inputs` still name the real crops, so the reading
-    # verifies; only the basis this stage reads its regions from is repointed.
-    for region in reading["payload"]["basis"]["regions"]:
-        region["image_path"] = tree.blob_path(DESIGNATOR, "0" * 64)
-    reading["self_hash"] = self_hash(reading)
-    reading_path.write_bytes(canonical_bytes(reading))
-    new_ref = {
-        "relative_path": old_ref["relative_path"],
-        "sha256": digest_bytes(reading_path.read_bytes()),
-    }
-    review["inputs"] = [
-        new_ref if reference == old_ref else reference for reference in review["inputs"]
-    ]
-    review["payload"]["perlectio_ref"] = new_ref
-    review["self_hash"] = self_hash(review)
-    review_path.write_bytes(canonical_bytes(review))
-    rebind_stage_seal(tree, PERLECTOR)
-    rebind_stage_seal(tree, RECENSOR)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/6_archetypus/run.py")
-    assert result.returncode == 2, result.stderr
-    assert "Traceback" not in result.stderr
-    assert "which this run tree cannot read" in result.stderr
-    # The classified refusal must not leave a record behind either.
-    assert not tree.has_artifact(
-        ARCHETYPUS, "archetypus", artifact_id(ARCHETYPUS, "archetypus", review["subject_id"])
-    )
-
-
-@pytest.mark.act_path
-def test_armarium_refuses_a_newer_perlectio_than_the_established_one(tmp_path):
-    """A completed Archetypus cannot hide a reading appended after its review."""
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    original = next(
-        tree.read_artifact(PERLECTOR, "perlectio", entry["artifact_id"])
-        for entry in tree.build_manifest(PERLECTOR)["artifacts"]
-        if entry["kind"] == "perlectio"
-    )
-    act_id = original["subject_id"]
-    forged = json.loads(json.dumps(original))
-    forged_attempt = attempt_id(act_id, "perlegere", 2)
-    forged["attempt_id"] = forged_attempt
-    forged["artifact_id"] = artifact_id(PERLECTOR, "perlectio", act_id, forged_attempt)
-    forged["payload"]["attempt_ordinal"] = 2
-    forged["payload"]["text"] = "UNREVIEWED EXPORT REPLACEMENT"
-    forged["self_hash"] = self_hash(forged)
-    forged_path = tree.resolve(tree.artifact_path(PERLECTOR, "perlectio", forged["artifact_id"]))
-    forged_path.parent.mkdir(parents=True, exist_ok=True)
-    forged_path.write_bytes(canonical_bytes(forged))
-    rebind_stage_seal(tree, PERLECTOR)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
-    assert result.returncode == 2
-    assert "newer Perlectio" in result.stderr
-
-
-@pytest.mark.act_path
-def test_armarium_refuses_two_established_records_instead_of_selecting_one(tmp_path):
-    root = tmp_path / "runs"
-    assert orchestrate(root, "r", "happy").returncode == 0
-    tree = RunTree(root, "r")
-    original = next(
-        tree.read_artifact(ARCHETYPUS, "archetypus", entry["artifact_id"])
-        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
-        if entry["kind"] == "archetypus"
-    )
-    act_id = original["subject_id"]
-    forged = json.loads(json.dumps(original))
-    forged_attempt = attempt_id(act_id, "establish", 2)
-    forged["attempt_id"] = forged_attempt
-    forged["artifact_id"] = artifact_id(ARCHETYPUS, "archetypus", act_id, forged_attempt)
-    forged["self_hash"] = self_hash(forged)
-    path = tree.resolve(tree.artifact_path(ARCHETYPUS, "archetypus", forged["artifact_id"]))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(canonical_bytes(forged))
-    rebind_stage_seal(tree, ARCHETYPUS)
-    before = snapshot(root)
-
-    result = invoke_stage(root, "r", "happy", "pipeline/7_armarium/run.py")
-    assert result.returncode == 2
-    assert "carries 2 Archetypus records" in result.stderr
-    assert snapshot(root) == before
 
 
 # --- the commit and the clock the tree could not carry (F098) ------------------
@@ -3903,30 +2320,6 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
 
 
-@pytest.mark.act_path
-def test_repeating_the_identical_command_with_nuda_enabled_leaves_every_byte_unchanged(tmp_path):
-    """The rerun invariant must also hold when deterministic sampling is active."""
-    root = tmp_path / "runs"
-    assert (
-        orchestrate(
-            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref=NUDA_APPROVAL_SUBJECT
-        ).returncode
-        == 0
-    )
-    before = snapshot(root)
-    assert any("lectio-nuda" in path for path in before), "the run must actually have sampled nuda"
-
-    assert (
-        orchestrate(
-            root, "r", "happy", nuda_per_mille=1000, nuda_approval_ref=NUDA_APPROVAL_SUBJECT
-        ).returncode
-        == 0
-    )
-    after = snapshot(root)
-
-    assert after == before
-
-
 def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
     """The page-read review scenario holds an entry, so it is the one that could
     most easily append on every run."""
@@ -4012,7 +2405,7 @@ def test_an_interrupted_run_resumes_without_rewriting_what_survived(tmp_path):
 
 
 def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(tmp_path):
-    """Resume must preserve held work, recovery rounds, and incident-based tallying."""
+    """Resume must preserve held work and incident-based tallying."""
     policy = load_hard_failure_policy(ROOT / "config" / "hard_failure.toml")
 
     reference_root = tmp_path / "reference"
@@ -4026,9 +2419,9 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
     # `len(survivors) < len(reference)` premise below would be false, and the
     # case it would test is the rerun invariant, which section 2 already covers.
     # Everything before it is included, and the ones after the Perlector matter
-    # most: the recovery round and the held-act tally both live there.
-    # The expected exit is part of the case, not a constant. The `review`
-    # scenario holds an act, and the Recensor is what decides that, so a range
+    # most: the held-reading tally lives there.
+    # The expected exit is part of the case, not a constant. The `page-review`
+    # scenario holds a reading, and the Recensor is what decides that, so a range
     # ending before it completes cleanly at 0 while one ending at or after it
     # reports the hold at 3 -- the same status the whole run ends on. Asserting a
     # flat 0 would have made every later boundary unreachable and is what kept
@@ -4041,7 +2434,6 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
         (ATTESTATORES, 0),
         ("perlector", 0),
         ("recensor", 3),
-        ("recovery", 3),
         ("archetypus", 3),
     ):
         root = tmp_path / f"stopped-at-{stop_at}"
@@ -4091,7 +2483,7 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
         assert tally_hard_failures(RunTree(root, "r"), policy) == reference_tally
 
 
-# --- 5. The review scenario preserves the whole history ------------------------
+# --- 5. Witness evidence cannot change under the reading that used it ---------
 
 
 def artifacts(tree: RunTree, stage: str, kind: str) -> list[dict]:
@@ -4102,413 +2494,128 @@ def artifacts(tree: RunTree, stage: str, kind: str) -> list[dict]:
     ]
 
 
-@pytest.mark.act_path
-def test_the_recovered_act_keeps_one_identity_across_two_regions(review_run):
-    """ARCHITECTURE invariant 1, driven end to end rather than unit-tested: act
-    identity survives recropping, and the region identity does not."""
-    _, tree = review_run
-    regions = [
+def _through_perlector(root: Path, scenario: str = "happy") -> RunTree:
+    for program in programs_through("perlector"):
+        result = invoke_stage(root, "r", scenario, program)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+    return RunTree(root, "r")
+
+
+def _read_page_testimonium(tree: RunTree, chair: str | None = None) -> dict:
+    return next(
         record
-        for record in artifacts(tree, DESIGNATOR, "region")
-        if record["payload"]["act_key"] == "a1"
-    ]
-    assert len(regions) == 2
-    assert len({record["subject_id"] for record in regions}) == 1
-    assert len({record["payload"]["region_id"] for record in regions}) == 2
-    assert {record["payload"]["origin"] for record in regions} == {"proposal", "recovery"}
-
-
-def _pixels(bounds: dict) -> set[tuple[int, int]]:
-    """Every page pixel one rectangle covers, enumerated rather than reasoned.
-
-    Deliberately the slow, obvious construction: this is the independent check
-    on the Designator's own coverage arithmetic, and a second clever
-    implementation of it would agree with the first about the same mistake.
-    """
-    return {
-        (x, y)
-        for x in range(bounds["x"], bounds["x"] + bounds["w"])
-        for y in range(bounds["y"], bounds["y"] + bounds["h"])
-    }
-
-
-@pytest.mark.act_path
-def test_the_recovery_recrop_actually_widened_the_crop_it_was_asked_for(review_run):
-    """Recovery exists for **completeness and coverage**, never quality.
-
-    This scenario is the walking skeleton's single proof that bounded recovery
-    works, so what it spends the `fallback_recrop` budget on has to be a crop
-    that recovers something. It did not: the fixture declared act a1's recovery
-    rectangle as 16,16,168,88 while the proposal had already cut the padded
-    12,15,188,99 -- `[16,184) x [16,104)` strictly inside `[12,200) x [15,114)`.
-    Every pixel the recrop "recovered" was a pixel the act already had, and the
-    only guard on the path compared transform identity, which a subset passes.
-
-    Measured over the run's own published regions, not over the fixture
-    declaration, so a padding change that swallowed the recovery rectangle would
-    fail here rather than quietly restore the defect.
-    """
-    _, tree = review_run
-    regions = [
-        record
-        for record in artifacts(tree, DESIGNATOR, "region")
-        if record["payload"]["act_key"] == "a1"
-    ]
-    by_origin = {record["payload"]["origin"]: record for record in regions}
-    assert sorted(by_origin) == ["proposal", "recovery"]
-
-    proposal = by_origin["proposal"]["payload"]["transform"]
-    recovery = by_origin["recovery"]["payload"]["transform"]
-    # Pixel sets only mean anything within one page's coordinate space.
-    assert proposal["source_page_id"] == recovery["source_page_id"]
-    assert proposal["source_page_ordinal"] == recovery["source_page_ordinal"] == 1
-
-    already_cut = _pixels(proposal["bounds"])
-    recropped = _pixels(recovery["bounds"])
-    assert recropped - already_cut, (
-        "a recovery that recovers no page pixel is a spent budget and a coverage "
-        "caveat about nothing"
+        for record in artifacts(tree, ATTESTATORES, "page-testimonium")
+        if record["outcome"] == "read" and chair in (None, record["payload"]["chair"])
     )
-    # ARCHITECTURE calls the operation a "fallback or **expanded** recrop". An
-    # expansion adds coverage without trading any away: a rectangle that gained
-    # a left margin by giving up the right edge would satisfy the guard while
-    # dropping ink the proposal had already captured.
-    assert not already_cut - recropped, "an expanded recrop must not drop coverage it had"
-    assert len(recropped - already_cut) == 200 * 114 - 188 * 99 == 4188
 
-    # And it takes nothing from the neighbouring act: every page pixel stays cut
-    # under exactly one act identity. a2's *capture* rectangle begins at y=114,
-    # six rows above its declared structural top edge, so "clear of a2" has to
-    # be read against the rectangle that was actually cut.
-    neighbour = next(
-        record
-        for record in artifacts(tree, DESIGNATOR, "region")
-        if record["payload"]["act_key"] == "a2"
-        and record["payload"]["transform"]["source_page_ordinal"] == 1
+
+def _publish_page_testimonium(tree: RunTree, record: dict) -> None:
+    record["self_hash"] = self_hash(
+        {key: value for key, value in record.items() if key != "self_hash"}
     )
-    assert not recropped & _pixels(neighbour["payload"]["transform"]["bounds"])
+    path = tree.resolve(tree.artifact_path(ATTESTATORES, "page-testimonium", record["artifact_id"]))
+    path.write_bytes(canonical_bytes(record))
 
 
-@pytest.mark.act_path
-def test_the_witness_uncovered_caveat_names_the_region_carrying_the_new_pixels(review_run):
-    """The second-order half of the same finding.
+def test_a_page_reading_retains_digest_checked_page_testimonia_it_used(tmp_path):
+    """Changing a page witness after the reading must stop the next real consumer."""
+    root = tmp_path / "runs"
+    tree = _through_perlector(root)
+    changed = _read_page_testimonium(tree)
+    changed["payload"]["payload"] = "changed after the page was read"
+    _publish_page_testimonium(tree, changed)
+    before = snapshot(root)
 
-    `witness_covered: false` means "ink a recovery uncovered was never shown to a
-    witness" (`pipeline/2_designator/run.py::cut_minted_region`). While the
-    recovery crop was a strict subset of the proposal crop it uncovered nothing,
-    so the export carried that caveat over pixels every witness had already
-    seen. Binding the flag to the geometry is what makes the caveat mean
-    something; `test_recovery_ink_is_recorded_as_witness_uncovered` asserts the
-    flag itself.
-    """
-    _, tree = review_run
-    regions = [
-        record
-        for record in artifacts(tree, DESIGNATOR, "region")
-        if record["payload"]["act_key"] == "a1"
-    ]
-    by_origin = {record["payload"]["origin"]: record for record in regions}
-    new_pixels = _pixels(by_origin["recovery"]["payload"]["transform"]["bounds"]) - _pixels(
-        by_origin["proposal"]["payload"]["transform"]["bounds"]
+    result = invoke_stage(root, "r", "happy", "pipeline/5_recensor/run.py")
+    assert result.returncode == 2
+    assert "changed under a sealed reference" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_the_recensor_refuses_a_page_testimonium_ordinal_its_identity_does_not_bind(tmp_path):
+    """A new artifact identity over the old ordinal is an ambiguity, never an attempt 2
+    the Recensor may choose between."""
+    root = tmp_path / "runs"
+    tree = _through_perlector(root)
+    original = _read_page_testimonium(tree)
+    page_id, chair = original["subject_id"], original["payload"]["chair"]
+    forged = json.loads(json.dumps(original))
+    forged["attempt_id"] = attempt_id(page_id, f"read:{chair}", 2)
+    forged["artifact_id"] = artifact_id(
+        ATTESTATORES, "page-testimonium", page_id, forged["attempt_id"]
     )
-    assert new_pixels
+    _publish_page_testimonium(tree, forged)
+    before = snapshot(root)
 
-    latest = max(
-        (
-            record
-            for record in artifacts(tree, PERLECTOR, "perlectio")
-            if record["payload"]["act_key"] == "a1"
-        ),
-        key=lambda record: record["payload"]["attempt_ordinal"],
+    result = invoke_stage(root, "r", "happy", "pipeline/5_recensor/run.py")
+    assert result.returncode == 2
+    assert "claims attempt ordinal 1 in its payload" in result.stderr
+    assert snapshot(root) == before
+
+
+def test_the_recensor_refuses_a_page_testimonium_from_a_chair_the_run_never_sealed(tmp_path):
+    """Two real witnesses and a stranger must never read as three against the floor."""
+    root = tmp_path / "runs"
+    tree = _through_perlector(root)
+    forged = json.loads(json.dumps(_read_page_testimonium(tree, "attestator_1")))
+    forged["payload"]["chair"] = "attestator_9"
+    forged["attempt_id"] = attempt_id(forged["subject_id"], "read:attestator_9", 1)
+    forged["artifact_id"] = artifact_id(
+        ATTESTATORES, "page-testimonium", forged["subject_id"], forged["attempt_id"]
     )
-    uncovered = {
-        region["region_id"]
-        for region in latest["payload"]["basis"]["regions"]
-        if not region["witness_covered"]
-    }
-    assert uncovered == {by_origin["recovery"]["payload"]["region_id"]}
+    _publish_page_testimonium(tree, forged)
+
+    result = invoke_stage(root, "r", "happy", "pipeline/5_recensor/run.py")
+    assert result.returncode != 0, "an unsealed chair was accepted into the coverage count"
+    assert "['attestator_9'], which this run did not seal as page witnesses" in result.stderr
+    assert not (root / "r" / "5_recensor").exists()
 
 
-@pytest.mark.act_path
-def test_the_recovery_request_and_both_reading_attempts_survive(review_run):
-    """a2 requests no recovery of its own.
+def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(tmp_path):
+    """A damaged independent count cannot hide behind an old complete export."""
+    root = tmp_path / "runs"
+    assert orchestrate(root, "r", "page-unbroken").returncode == 0
+    tree = RunTree(root, "r")
+    tree.resolve(tree.manifest_path(ATTESTATORES)).write_bytes(b"{")
+    before = snapshot(root)
 
-    a2 (which `hold_acts` sends straight to a hold) sits beside a marginal
-    witness box with no ink behind it, which may not fund a recovery (see the
-    note above the digest pins). Only a1's scenario-declared request is a real,
-    retained coverage decision here.
-    """
-    _, tree = review_run
-    requests = artifacts(tree, RECENSOR, "recovery-request")
-    assert len(requests) == 1
-    assert {request["payload"]["act_key"] for request in requests} == {"a1"}
+    result = orchestrate(root, "r", "page-unbroken")
 
-    readings = [
-        record
-        for record in artifacts(tree, PERLECTOR, "perlectio")
-        if record["payload"]["act_key"] == "a1"
-    ]
-    assert sorted(record["payload"]["attempt_ordinal"] for record in readings) == [1, 2]
+    assert result.returncode == 3
+    assert "UNKNOWN" in result.stderr
+    assert "run r: held; its reason is on stderr above" in result.stdout
+    assert snapshot(root) == before
 
 
-@pytest.mark.act_path
-def test_both_recensor_outcomes_for_the_recovered_act_survive(review_run):
-    """Nothing is lost inside a recovery loop: the request and the acceptance are
-    both still there, in order."""
-    _, tree = review_run
-    reviews = [
-        record
-        for record in artifacts(tree, RECENSOR, "review")
-        if record["payload"]["act_key"] == "a1"
-    ]
-    assert len(reviews) == 2
-    by_ordinal = {record["payload"]["attempt_ordinal"]: record["outcome"] for record in reviews}
-    assert by_ordinal == {1: "recovery-requested", 2: "accepted"}
-
-
-@pytest.mark.act_path
-def test_recovery_ink_is_recorded_as_witness_uncovered(review_run):
-    """The recrop uncovered ink no witness ever saw. Saying so is the difference
-    between a gap in the record and a gap nobody can see."""
-    _, tree = review_run
-    latest = max(
-        (
-            record
-            for record in artifacts(tree, PERLECTOR, "perlectio")
-            if record["payload"]["act_key"] == "a1"
-        ),
-        key=lambda record: record["payload"]["attempt_ordinal"],
-    )
-    coverage = [basis["witness_covered"] for basis in latest["payload"]["basis"]["regions"]]
-    assert coverage == [True, False]
-
-    # D-15: spec 08 test 1 asks for "a recovery dossier marks witness-uncovered
-    # ink" -- the dossier is what a reader is actually shown, not `basis`, and
-    # nothing asserted this surface before. Both derive from the same
-    # `witnessed_region_ids` set, so they must agree per region.
-    dossier_coverage = {
-        region["region_id"]: region["witness_covered"]
-        for region in latest["payload"]["dossier"]["regions"]
-    }
-    basis_coverage = {
-        region["region_id"]: region["witness_covered"]
-        for region in latest["payload"]["basis"]["regions"]
-    }
-    assert dossier_coverage == basis_coverage
-    assert sorted(dossier_coverage.values()) == [False, True]
-
-
-@pytest.mark.act_path
-def test_the_cross_page_act_is_witnessed_on_both_sides_of_the_break(review_run):
-    """A continuation is part of the original proposal, not a later attempt.
-
-    The geometric coverage bit says whether a witness observation contains a
-    particular region; it is not permission to omit a continuation region from
-    the Perlector's image basis.  Both sides must remain there even where a2 is
-    never recovered at all -- exactly the case `review` exercises, since its
-    marginal witness box has no ink under it (see the note above the digest
-    pins). The stronger claim
-    -- that a genuine recovery recrop keeps the far side of a real continuation
-    in the evidence -- is proven end to end by
-    `test_a_recrop_of_a_continuation_act_keeps_its_far_page_in_the_evidence`
-    against `continuation_recovery_run`, which declares a2 for recovery.
-    """
-    _, tree = review_run
-    readings = [
-        record
-        for record in artifacts(tree, PERLECTOR, "perlectio")
-        if record["payload"]["act_key"] == "a2"
-    ]
-    assert sorted(record["payload"]["attempt_ordinal"] for record in readings) == [1]
-    reading = readings[0]
-    regions = reading["payload"]["basis"]["regions"]
-    proposal_regions = {
-        record["payload"]["region_id"]
-        for record in artifacts(tree, DESIGNATOR, "region")
-        if record["payload"]["act_key"] == "a2" and record["payload"]["origin"] == "proposal"
-    }
-    assert len(proposal_regions) == 2
-    assert proposal_regions <= {region["region_id"] for region in regions}
-    assert {
-        region["source_page_ordinal"]
-        for region in regions
-        if region["region_id"] in proposal_regions
-    } == {1, 2}
-
-
-@pytest.mark.act_path
-def test_recovery_stayed_inside_its_budget(review_run):
-    """One request, not two -- see
-    `test_the_recovery_request_and_both_reading_attempts_survive`."""
-    _, tree = review_run
-    requests = artifacts(tree, RECENSOR, "recovery-request")
-    # pr/12's page-wide grant leaves review with one request, not two. The
-    # allowance it carries is still the configured one: `fallback_recrop +
-    # page_level_reread`, 1 + 1 in config/recovery.toml, separately bounded by
-    # `absolute_cap = 3`. The exact value, not merely "within the cap": `<= 3`
-    # is also satisfied by a budget that silently collapsed to 0 or 1, so it
-    # could not fail for the regression it names.
-    assert len(requests) == 1
-    allowed = [request["payload"]["budget_allowed"] for request in requests]
-    assert allowed == [2], "the configured recovery budget is one recrop plus one reread"
-    assert all(
-        value <= request["payload"]["recovery_policy"]["absolute_cap"]
-        for value, request in zip(allowed, requests, strict=True)
-    ), "the absolute cap is a ruling (config/recovery.toml absolute_cap)"
-
-
-# --- 6. The held act cannot look complete --------------------------------------
-
-
-@pytest.mark.act_path
-def test_the_held_act_has_no_archetypus_at_all(review_run):
-    """The absence is the evidence. An export that showed a held act as delivered
-    would have to invent a record that does not exist."""
-    _, tree = review_run
-    established = artifacts(tree, ARCHETYPUS, "archetypus")
-    assert len(established) == 1
-    assert established[0]["payload"]["act_key"] == "a1"
-
-
-@pytest.mark.act_path
-def test_the_held_act_appears_in_the_review_output_and_forces_partial(review_run):
-    _, tree = review_run
-    export = export_of(tree)
-    assert export["aggregate"]["status"] == "partial"
-    assert len(export["non_delivered"]) == 1
-    assert export["non_delivered"][0]["act_key"] == "a2"
-    assert export["non_delivered"][0]["category"] == "held-for-review"
-    assert len(export["delivered"]) == 1
-    assert "act a2 is held-for-review" in export["aggregate"]["reasons"]
-
-
-@pytest.mark.act_path
-def test_no_delivered_entry_carries_a_witness_reading_as_its_text(review_run):
-    """A witness's reading is never itself an output. The established text
-    must not equal any witness's reported words *by accident of the fixture*
-    either, so the fixture deliberately makes two chairs disagree."""
-    _, tree = review_run
-    export = export_of(tree)
-    testimony = {
-        record["payload"]["payload"]
-        for record in artifacts(tree, ATTESTATORES, "testimonium")
-        if record["outcome"] == "read" and record["payload"]["act_key"] == "a1"
-    }
-    delivered = export["delivered"][0]["text"]
-    disagreeing = [reported for reported in testimony if reported != delivered]
-    assert len(disagreeing) == 2, "the fixture must keep dissent exercisable"
-
-
-@pytest.mark.act_path
-def test_the_failed_chair_is_visible_in_the_export(review_run):
-    """`failed` is a real member of the closed witness vocabulary, driven end to
-    end: it reaches the export as a named shortfall rather than as a silence."""
-    _, tree = review_run
-    export = export_of(tree)
-    held = export["non_delivered"][0]
-    assert held["under_witnessed"] is True
-    assert held["witness_coverage"]["by_outcome"]["failed"] == 1
-    assert held["witness_coverage"]["by_class"] == {"completed": 2, "unresolved": 0, "failed": 1}
-    assert any("under-witnessed" in reason for reason in export["aggregate"]["reasons"])
-
-
-@pytest.mark.act_path
-def test_the_capability_scenario_compares_its_declared_chair_through_a_derived_view(
-    tmp_path, happy_run
+def test_an_explicitly_absent_witness_counts_against_the_floor_on_every_page(
+    tmp_path, absent_third_chair_config
 ):
-    """Capability handling stays live without blinding the reference instrument.
+    """Absence through the real stage programs, not only the config parser.
 
-    `common/dissent.py::is_comparable` refuses to diff a witness
-    whose format can express uncertainty, because such a format may embed
-    alternative-reading markup inline and diffing the markup would count as
-    disagreement. It cannot touch the reading — dissent is read-only and computed
-    after the fact — so it is not a picker. What it was, until U12, is a hole in
-    the instrument ARCHITECTURE names for catching a reader that "learned to
-    agree with witnesses rather than to read ink": the declaration alone put a
-    chair permanently outside the comparison.
-
-    Spec 07's fixture declares that capability on chair 2 of act a1 in the
-    dedicated `witness-capabilities` scenario, and chair 2 is act-scoped. It is
-    now compared — not because the exemption was deleted, but because
-    `pipeline/4_perlector/run.py::dissent_testimonia` derives it a
-    `comparison_reported` from its own retained bytes
-    (`common/alignment.py::bracket_marker_view`), and the exemption lifts for a
-    chair that has a safe view. The counterfactual below is what says those are
-    different things: the RETAINED record, which carries no derived view, is
-    still refused by `is_comparable`. Every chair in this scenario is now
-    compared, exactly as in the reference happy run where none declares the
-    capability.
+    The run still seals the whole roster; the absent chair testifies to no page,
+    so every page is read by two witnesses against a floor of three and nothing
+    is delivered as fully witnessed.
     """
     root = tmp_path / "runs"
-    result = orchestrate(root, "r", "witness-capabilities")
-    assert result.returncode == 0, result.stderr
+    result = orchestrate(root, "r", "happy", models_config=absent_third_chair_config)
+    assert result.returncode == 3, result.stderr
     tree = RunTree(root, "r")
-    reading = next(
-        record
-        for record in artifacts(tree, PERLECTOR, "perlectio")
-        if record["payload"]["act_key"] == "a1"
-    )
-    by_chair = {row["chair"]: row for row in reading["payload"]["dissent"]}
-    assert set(by_chair) == {"attestator_1", "attestator_2", "attestator_3"}
-    assert by_chair["attestator_2"]["compared"] is True
-    assert "reason" not in by_chair["attestator_2"]
-    assert {chair: row["compared"] for chair, row in by_chair.items()} == {
-        "attestator_1": True,
-        "attestator_2": True,
-        "attestator_3": True,
-    }
-
-    testimonium = next(
-        record
-        for record in artifacts(tree, ATTESTATORES, "testimonium")
-        if record["payload"]["act_key"] == "a1" and record["payload"]["chair"] == "attestator_2"
-    )
-    assert testimonium["payload"]["format_capabilities"]["can_express_uncertainty"] is True
-    # The counterfactual, on this run's own retained evidence: the exemption is
-    # still there and still bites. The retained Testimonium carries the verbatim
-    # report and no derived view, and on that record
-    # `is_comparable` is False — so what lifted it above is the view
-    # `dissent_testimonia` builds, not a relaxed rule.
-    assert "comparison_reported" not in testimonium["payload"]
-    assert dissent.is_comparable(testimonium) is False
-    # The capability decides the comparison route and nothing else: the outcome,
-    # the class, and the coverage count are what they would be without it.
-    assert testimonium["outcome"] == "read"
-    entry = next(row for row in export_of(tree)["delivered"] if row["act_key"] == "a1")
-    assert entry["witness_coverage"]["by_class"] == {
-        "completed": 3,
-        "unresolved": 0,
-        "failed": 0,
-    }
-
-    _, happy_tree = happy_run
-    happy_reading = next(
-        record
-        for record in artifacts(happy_tree, PERLECTOR, "perlectio")
-        if record["payload"]["act_key"] == "a1"
-    )
-    happy_dissent = happy_reading["payload"]["dissent"]
-    assert {row["chair"] for row in happy_dissent} == {
-        "attestator_1",
-        "attestator_2",
-        "attestator_3",
-    }
-    assert {row["chair"] for row in happy_dissent if row["compared"] == "unknown"} == set()
-
-
-@pytest.mark.act_path
-def test_a_delivered_act_still_links_back_to_the_exact_ink(review_run):
-    _, tree = review_run
-    delivered = export_of(tree)["delivered"][0]
-    source_by_ordinal = {row["ordinal"]: row for row in tree.read_run()["source_manifest"]}
-    assert len(delivered["source_regions"]) == 2
-    for region in delivered["source_regions"]:
-        assert region["image_sha256"]
-        assert region["region_id"].startswith("rgn_")
-        assert tree.read_bytes(region["image_path"])
-        source = source_by_ordinal[region["source_page_ordinal"]]
-        assert region["declared_path"] == source["relative_path"]
-        assert region["declared_sha256"] == source["sha256"]
+    assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]
+    page_testimonia = artifacts(tree, ATTESTATORES, "page-testimonium")
+    assert sorted(
+        (record["payload"]["page_ordinal"], record["payload"]["chair"])
+        for record in page_testimonia
+    ) == [(1, "attestator_1"), (1, "attestator_2"), (2, "attestator_1"), (2, "attestator_2")]
+    export = export_of(tree)
+    assert export["delivered"] == []
+    assert export["aggregate"]["status"] == "partial"
+    assert len(export["non_delivered"]) == 2
+    for item in export["non_delivered"]:
+        coverage = item["witness_coverage"]
+        assert (coverage["configured"], coverage["floor"]) == (2, 3)
+        assert coverage["by_outcome"] == {"read": 2}
+        assert coverage["under_witnessed"] is True
+        assert "under-witnessed" in item["reason"]
 
 
 # --- 7. Every contract handoff refuses corruption ------------------------------
@@ -4861,68 +2968,79 @@ def test_a_stage_invoked_before_its_producer_refuses_rather_than_inventing(tmp_p
     assert "IncompatibleReuse" in result.stderr or "ContractError" in result.stderr
 
 
-# --- 8. A refused page cannot vanish, and no act rides out over one -------------
+# --- 8. A refused page cannot vanish -------------------------------------------
 #
-# The defect all four reviewers filed first: the Designator skipped any act whose
-# page was not sealed, wrote nothing for it anywhere, and sealed a shorter
-# expected-act list — so the one conservation check in the pipeline reconciled
-# perfectly against a record of the loss's absence. A run that lost a whole page
-# reported `status: complete, reasons: []`.
-
-
-@pytest.fixture(scope="module")
-def refused_page_run(tmp_path_factory):
-    """Page 2 is refused at the door, so a2's continuation cannot be cut."""
-    root = tmp_path_factory.mktemp("refused_page")
-    result = orchestrate(root, "r", "refused-page")
-    assert result.returncode == 3, result.stderr
-    return root, RunTree(root, "r")
-
-
-@pytest.mark.act_path
-def test_the_orchestrator_relays_the_doors_private_refusal_report(tmp_path):
-    """A successful Door can still have a named refusal report for an operator."""
-    result = orchestrate(tmp_path / "runs", "r", "refused-page")
-
-    assert result.returncode == 3, result.stderr
-    assert "1 door refusal(s); private refusal report:" in result.stderr
+# A run that lost a whole page once reported `status: complete, reasons: []`.
+# `refused-first-page` declares page 1 with a digest it does not have.
 
 
 @pytest.fixture(scope="module")
 def refused_first_page_run(tmp_path_factory):
-    """Page 1 — the page both acts live on — is refused at the door."""
+    """Page 1 is refused at the door; page 2 is sealed and has no witness."""
     root = tmp_path_factory.mktemp("refused_first_page")
     result = orchestrate(root, "r", "refused-first-page")
     assert result.returncode == 3, result.stderr
-    return root, RunTree(root, "r")
+    return root, RunTree(root, "r"), result
 
 
-def proposal_seal(tree: RunTree) -> dict:
-    return tree.read_artifact(
-        DESIGNATOR, "proposal-seal", artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal", None)
-    )["payload"]
+def test_the_orchestrator_relays_the_doors_private_refusal_report(refused_first_page_run):
+    """A successful Door can still have a named refusal report for an operator."""
+    _, tree, result = refused_first_page_run
+    assert "1 door refusal(s); private refusal report:" in result.stderr
+    [report] = artifacts(tree, DOOR, "refusal-report")
+    assert report["artifact_id"] in result.stderr
 
 
-@pytest.mark.act_path
-def test_the_door_really_refused_page_two_through_its_own_inspection(refused_page_run):
-    _, tree = refused_page_run
+def test_the_door_really_refused_page_one_through_its_own_inspection(refused_first_page_run):
+    _, tree, _ = refused_first_page_run
     refusals = [
         record for record in artifacts(tree, EXEMPLAR, "page") if record["outcome"] == "refused"
     ]
     assert len(refusals) == 1
-    assert refusals[0]["payload"]["ordinal"] == 2
+    assert refusals[0]["payload"]["ordinal"] == 1
     assert "digest" in refusals[0]["payload"]["reason"]
 
 
-@pytest.mark.act_path
-def test_the_page_loss_is_named_and_the_run_is_partial(refused_page_run):
-    _, tree = refused_page_run
+def test_the_page_loss_is_named_and_the_run_is_partial(refused_first_page_run):
+    _, tree, _ = refused_first_page_run
     export = export_of(tree)
     assert export["aggregate"]["status"] == "partial"
     assert any(
-        reason.startswith("page 2 was refused:") for reason in export["aggregate"]["reasons"]
+        reason.startswith("page 1 was refused:") for reason in export["aggregate"]["reasons"]
     )
     assert export["aggregate"]["by_page_outcome"] == {"sealed": 1, "refused": 1}
+    [page] = [page for page in export["pages"] if page["ordinal"] == 1]
+    assert page["outcome"] == "refused" and page["reason"].startswith("digest-mismatch")
+
+
+def test_nothing_is_read_or_delivered_from_a_lost_page(refused_first_page_run):
+    """The lost page is named where its reading would be, and no reading pretends
+    to have seen it; the surviving page is held, never delivered on no witness."""
+    _, tree, _ = refused_first_page_run
+    readings = {
+        record["payload"]["page_ordinal"]: record
+        for record in artifacts(tree, PERLECTOR, "page-reading")
+    }
+    assert sorted(readings) == [1, 2]
+    lost = readings[1]
+    assert lost["outcome"] == "held"
+    assert [problem["code"] for problem in lost["payload"]["problems"]] == ["page-not-sealed"]
+    assert lost["payload"]["answer"] is None
+    assert artifacts(tree, PERLECTOR, "perlectio") == []
+    assert artifacts(tree, ARCHETYPUS, "archetypus") == []
+
+    export = export_of(tree)
+    assert export["delivered"] == []
+    assert [(item["act_key"], item["category"]) for item in export["non_delivered"]] == [
+        ("p2:unread", "held-for-review")
+    ]
+    assert export["expected_acts"] == 1
+    entries = [
+        entry
+        for entry in tree.build_manifest(ARMARIUM)["artifacts"]
+        if entry["kind"] == "manifest-entry"
+    ]
+    assert len(entries) == 1, "every counted unit still has exactly one category"
 
 
 def test_no_fixture_page_holds_for_edge_ink_now_that_the_band_is_a_fraction(tmp_path):
@@ -4963,378 +3081,7 @@ def test_no_fixture_page_holds_for_edge_ink_now_that_the_band_is_a_fraction(tmp_
     )
 
 
-@pytest.mark.act_path
-def test_the_act_with_the_lost_continuation_is_held_not_delivered(refused_page_run):
-    """`has_continuation` is derived from the regions actually cut, so it may not
-    claim a continuation nothing holds — and the act whose far side is on the
-    lost page is held rather than delivered as a complete reading of half its ink."""
-    _, tree = refused_page_run
-    seal = proposal_seal(tree)
-    by_key = {entry["act_key"]: entry for entry in seal["expected_acts"]}
-    assert set(by_key) == {"a1", "a2"}, "the seal must still name every declared act"
-    assert by_key["a1"]["outcome"] == "proposed"
-    assert by_key["a2"]["outcome"] == "held"
-    assert by_key["a2"]["has_continuation"] is False
-
-    export = export_of(tree)
-    assert [item["act_key"] for item in export["delivered"]] == ["a1"]
-    assert [item["act_key"] for item in export["non_delivered"]] == ["a2"]
-    assert export["non_delivered"][0]["category"] == "held-for-review"
-
-
-@pytest.mark.act_path
-def test_the_hold_is_a_real_artifact_naming_the_lost_page(refused_page_run):
-    _, tree = refused_page_run
-    holds = artifacts(tree, DESIGNATOR, "hold")
-    assert len(holds) == 1
-    assert holds[0]["outcome"] == "held"
-    assert holds[0]["payload"]["act_key"] == "a2"
-    assert "page 2" in holds[0]["payload"]["reason"]
-    assert holds[0]["inputs"], "the hold must reference the refusal it rests on"
-
-
-@pytest.mark.act_path
-def test_no_witness_and_no_reading_pretends_to_have_seen_the_held_act(refused_page_run):
-    """The held act is not silently skipped: every configured chair records an
-    explicit not-run, and the Perlector acknowledges the act without reading it —
-    a reading of the near side alone would be a truncation delivered as an output."""
-    _, tree = refused_page_run
-    testimonia = [
-        record
-        for record in artifacts(tree, ATTESTATORES, "testimonium")
-        if record["payload"]["act_key"] == "a2"
-    ]
-    assert len(testimonia) == 3
-    assert {record["outcome"] for record in testimonia} == {"not-run"}
-
-    readings = [
-        record
-        for record in artifacts(tree, PERLECTOR, "perlectio")
-        if record["payload"]["act_key"] == "a2"
-    ]
-    assert len(readings) == 1
-    assert readings[0]["outcome"] == "not-run"
-    assert "text" not in readings[0]["payload"]
-
-    established = artifacts(tree, ARCHETYPUS, "archetypus")
-    assert [record["payload"]["act_key"] for record in established] == ["a1"]
-
-
-@pytest.mark.act_path
-def test_losing_the_first_page_holds_every_act_and_delivers_nothing(refused_first_page_run):
-    """An act whose own page was never sealed appears in the seal, held, with a
-    hold artifact each, and the run is partial with the page loss named.
-
-    Page 2 (a2's continuation page) is sealed but, in this scenario, never has a
-    region cut on it at all -- a2 is held entirely on page 1's loss before its
-    continuation is ever attempted. Page 2's own real ink therefore reconciles
-    as 100% residual, and conservation mints that residual its own held act
-    (`residual:2:0`) rather than leaving it inert inside the conservation
-    artifact alone -- a third, independent account of the same underlying loss,
-    which is why three holds and three review items are expected rather than two.
-    """
-    _, tree = refused_first_page_run
-    seal = proposal_seal(tree)
-    assert len(seal["expected_acts"]) == 3
-    assert {entry["act_key"]: entry["outcome"] for entry in seal["expected_acts"]} == {
-        "a1": "held",
-        "a2": "held",
-        "residual:2:0": "held",
-    }
-    reviews_by_key = {
-        record["payload"]["act_key"]: record for record in artifacts(tree, RECENSOR, "review")
-    }
-    for act_key in ("a1", "a2"):
-        assert reviews_by_key[act_key]["payload"]["geometry_coverage"] == NO_PAGE_CONSERVATION
-        assert (
-            reviews_by_key[act_key]["payload"]["testimony_content_coverage"]
-            == NO_PAGE_CONTENT_COVERAGE
-        )
-    assert artifacts(tree, DESIGNATOR, "region") == [], (
-        "no region may be cut for an act that cannot be fully marked out — an "
-        "orphan continuation crop would be evidence of an act nothing accounts for"
-    )
-    assert len(artifacts(tree, DESIGNATOR, "hold")) == 3
-
-    export = export_of(tree)
-    assert export["aggregate"]["status"] == "partial"
-    assert any(
-        reason.startswith("page 1 was refused:") for reason in export["aggregate"]["reasons"]
-    )
-    assert export["delivered"] == []
-    assert [item["category"] for item in export["non_delivered"]] == [
-        "held-for-review",
-        "held-for-review",
-        "held-for-review",
-    ]
-    entries = [
-        entry
-        for entry in tree.build_manifest(ARMARIUM)["artifacts"]
-        if entry["kind"] == "manifest-entry"
-    ]
-    assert len(entries) == 3, "conservation: every expected act still has exactly one category"
-
-
-@pytest.mark.act_path
-def test_the_recensor_refuses_a_continuation_claim_with_one_region(tmp_path):
-    """Defence in depth for half two: if the seal claims a continuation and the
-    tree holds only one proposal region — drift, tampering, or a future bug —
-    the Recensor holds the act rather than accepting a half reading."""
-    root = tmp_path / "runs"
-    for program in programs_through("designator"):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / program),
-                "--run-root",
-                str(root),
-                "--run-id",
-                "r",
-                "--scenario",
-                "happy",
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-
-    tree = RunTree(root, "r")
-    continuations = [
-        entry
-        for entry in tree.build_manifest(DESIGNATOR)["artifacts"]
-        if entry["kind"] == "region"
-        and tree.read_artifact(DESIGNATOR, "region", entry["artifact_id"])["payload"]["transform"][
-            "source_page_ordinal"
-        ]
-        == 2
-    ]
-    assert len(continuations) == 1
-    continuation = continuations[0]
-    seal_path = tree.resolve(
-        tree.artifact_path(
-            DESIGNATOR,
-            "proposal-seal",
-            artifact_id(DESIGNATOR, "proposal-seal", "proposal-seal"),
-        )
-    )
-    seal = json.loads(seal_path.read_text(encoding="utf-8"))
-    # Model an internally resealed bad producer, not a bare deleted file: all
-    # direct references are coherent, but the proposal still asserts that a2
-    # continues while only its near-side region remains.  This reaches
-    # Recensor's own defence rather than the earlier store-integrity guard.
-    seal["inputs"] = [
-        reference
-        for reference in seal["inputs"]
-        if reference["relative_path"] != continuation["relative_path"]
-    ]
-    for act in seal["payload"]["expected_acts"]:
-        if act["act_id"] == continuation["subject_id"]:
-            act["evidence"] = [
-                reference
-                for reference in act["evidence"]
-                if reference["relative_path"] != continuation["relative_path"]
-            ]
-    seal["payload"]["self_hash"] = self_hash(seal["payload"])
-    seal["self_hash"] = self_hash(seal)
-    seal_path.write_bytes(canonical_bytes(seal))
-    tree.resolve(continuations[0]["relative_path"]).unlink()
-    tree.write_manifest(DESIGNATOR)
-    rebind_stage_seal(tree, DESIGNATOR)
-
-    for name, program in (
-        ("attestatores", "pipeline/3_attestatores/run.py"),
-        ("perlector", "pipeline/4_perlector/run.py"),
-    ):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / program),
-                "--run-root",
-                str(root),
-                "--run-id",
-                "r",
-                "--scenario",
-                "happy",
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, f"{name}: {result.stderr}"
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline" / "5_recensor" / "run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "happy",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 3, result.stderr
-
-    reviews = [
-        record
-        for record in artifacts(tree, RECENSOR, "review")
-        if record["payload"]["act_key"] == "a2"
-    ]
-    assert len(reviews) == 1
-    assert reviews[0]["outcome"] == "held-for-review"
-    assert "continuation" in reviews[0]["payload"]["reason"]
-
-
-# --- A reading that did not succeed ---------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def truncated_reading_run(tmp_path_factory):
-    """Act a1's reading is `truncated`: a failed-class Perlector outcome that still
-    carries the text it managed. That combination is the dangerous one — the
-    Recensor used to ask only whether a reading *existed*, and the Archetypus
-    copied the text out of whichever reading was latest."""
-    root = tmp_path_factory.mktemp("truncated_reading")
-    result = orchestrate(root, "r", "truncated-reading")
-    assert result.returncode == 3, result.stderr
-    return root, RunTree(root, "r")
-
-
-@pytest.mark.act_path
-def test_a_reading_that_did_not_succeed_is_held_and_says_why(truncated_reading_run):
-    """Accuracy is judged against the ink, and nothing here allows a loss hidden
-    behind a successful status. Text nobody successfully read is neither, so it is
-    held — visibly, with the outcome that caused it named in the reason."""
-    _, tree = truncated_reading_run
-    reviews = [
-        record
-        for record in artifacts(tree, RECENSOR, "review")
-        if record["payload"]["act_key"] == "a1"
-    ]
-    assert len(reviews) == 1
-    assert reviews[0]["outcome"] == "held-for-review"
-    assert "truncated" in reviews[0]["payload"]["reason"]
-    assert artifacts(tree, RECENSOR, "recovery-request") == []
-
-
-@pytest.mark.act_path
-def test_the_truncated_reading_never_becomes_established_text(truncated_reading_run):
-    """The whole point: the reading exists and carries text, and none of it reaches
-    the one place that turns a reading into the established text."""
-    _, tree = truncated_reading_run
-    readings = [
-        record
-        for record in artifacts(tree, PERLECTOR, "perlectio")
-        if record["payload"]["act_key"] == "a1"
-    ]
-    assert len(readings) == 1
-    assert readings[0]["outcome"] == "truncated"
-    assert readings[0]["payload"]["text"], "the reading must really carry text to be a hazard"
-
-    established = [
-        record
-        for record in artifacts(tree, ARCHETYPUS, "archetypus")
-        if record["payload"]["act_key"] == "a1"
-    ]
-    assert established == [], "a failed reading may not be established"
-
-    export = export_of(tree)
-    assert [item["act_key"] for item in export["non_delivered"]] == ["a1"]
-    assert export["aggregate"]["status"] == "partial"
-
-
-@pytest.mark.act_path
-def test_the_act_whose_reading_succeeded_is_still_delivered(truncated_reading_run):
-    """Invariant #14 — the refusal must not have bought its strictness by refusing
-    good readings too. a2 read cleanly in the same run and is established."""
-    _, tree = truncated_reading_run
-    export = export_of(tree)
-    assert [item["act_key"] for item in export["delivered"]] == ["a2"]
-    established = [
-        record
-        for record in artifacts(tree, ARCHETYPUS, "archetypus")
-        if record["payload"]["act_key"] == "a2"
-    ]
-    assert len(established) == 1
-    assert established[0]["outcome"] == "established"
-
-
-@pytest.mark.act_path
-def test_the_recensor_refuses_a_testimonium_from_a_chair_the_run_never_sealed(tmp_path):
-    """The mirror of the vanished-chair hole, and the one that counts toward the floor.
-
-    `chair_outcomes` reports every role it finds a testimonium for, and
-    `witness_coverage` counts completed-class outcomes without asking where they
-    came from. So a testimonium under a role `run.json` never named raised the
-    completed count: two real witnesses and one stranger read as three, and
-    `under_witnessed` came back False on a run that was genuinely short a witness.
-    """
-    root = tmp_path / "runs"
-    for program in programs_through("perlector"):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / program),
-                "--run-root",
-                str(root),
-                "--run-id",
-                "r",
-                "--scenario",
-                "happy",
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, f"{program}: {result.stderr}"
-
-    # Forge one: an existing testimonium re-published under a chair name the run
-    # was never sealed with. Written straight into the tree, because no stage
-    # would produce it — that is the point of checking rather than trusting.
-    tree = RunTree(root, "r")
-    entry = next(
-        record
-        for record in artifacts(tree, ATTESTATORES, "testimonium")
-        if record["payload"]["chair"] == "attestator_1"
-    )
-    forged = json.loads(json.dumps(entry))
-    forged["payload"]["chair"] = "attestator_9"
-    forged["attempt_id"] = attempt_id(forged["subject_id"], "read:attestator_9", 1)
-    forged["artifact_id"] = artifact_id(
-        ATTESTATORES,
-        "testimonium",
-        forged["subject_id"],
-        forged["attempt_id"],
-    )
-    forged["self_hash"] = self_hash(forged)
-    path = tree.resolve(
-        f"{STAGE_DIRECTORIES[ATTESTATORES]}/artifacts/testimonium/{forged['artifact_id']}.json"
-    )
-    path.write_text(json.dumps(forged), encoding="utf-8")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "pipeline" / "5_recensor" / "run.py"),
-            "--run-root",
-            str(root),
-            "--run-id",
-            "r",
-            "--scenario",
-            "happy",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode != 0, "an unsealed chair was accepted into the coverage count"
-    assert "attestator_9" in result.stderr
-    assert "not sealed with" in result.stderr
+# --- The export boundary rechecks each sealed page -------------------------------
 
 
 def test_armarium_rechecks_the_filename_a_page_was_sealed_under(tmp_path):
