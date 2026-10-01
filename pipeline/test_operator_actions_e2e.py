@@ -241,3 +241,42 @@ def _repacked(members: dict) -> bytes:
     members[armarium_export.EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
     return armarium_export._zip_bytes(members)
 
+
+def test_the_decide_command_records_an_override_the_recensor_applies(
+    reading_held, tmp_path, monkeypatch
+):
+    """`verbatus decide` binds each release to the review the person read, as the stage does."""
+    from operations.operator import cli
+
+    tree = _copy(reading_held, tmp_path)
+    monkeypatch.setattr(cli, "_typed_decide_confirmation", lambda phrase: phrase)
+    for words in (
+        ("release", "--unit", "p1:1"),
+        ("release", "--unit", "p1:2"),
+        ("no-missed-act", "--page", "1"),
+    ):
+        assert (
+            cli.main(
+                [
+                    "--workspace",
+                    str(tmp_path),
+                    "--state-dir",
+                    str(tmp_path / "state"),
+                    "decide",
+                    "--run-root",
+                    str(tree.root),
+                    "--run-id",
+                    RUN_ID,
+                    *words,
+                    "--reason",
+                    "the duplicated region is one act read twice",
+                ]
+            )
+            == 0
+        )
+
+    assert _recense(tree) == EXIT_COMPLETE
+    assert len(_decisions(tree.root)["applied"]) == 3
+    _after_recensor(tree)
+    bundle = _bundle(tree.root, tmp_path / "clean")
+    assert {key: bundle["acts"][key]["canonical_clean_text"] for key in TEXTS} == TEXTS

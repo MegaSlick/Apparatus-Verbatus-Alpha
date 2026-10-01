@@ -249,12 +249,60 @@ def current_basis(derived: Mapping[str, Any], decisions: Sequence[Any] = ()) -> 
     units_in = derived.get("units") if isinstance(derived, Mapping) else None
     if type(run_id) is not str or not run_id or not isinstance(units_in, list):
         raise FatalAccounting("a derived review names no run and no list of units")
+    return _basis(run_id, [(unit["act_id"], _unit_basis(unit)) for unit in units_in], decisions)
+
+
+def published_basis(
+    run_id: str, published: Sequence[Mapping[str, Any]], decisions: Sequence[Any] = ()
+) -> dict[str, Any]:
+    """`current_basis` read back from the reviews a Recensor pass published.
+
+    Each of `published` is a derived unit whose `payload` is the published
+    review's, `attempt_ordinal` removed. A review no decision concerns is the
+    machine's own, so it is its basis; one a decision concerns keeps the
+    machine's basis, outcome and scoped codes in its `operator_review` block.
+    So a person can bind a decision to the review they read, without running
+    the stage, and the Recensor's next pass finds it current while nothing it
+    looked at changes.
+    """
+    if type(run_id) is not str or not run_id:
+        raise FatalAccounting("published reviews name no run")
+    entries = []
+    for unit in published:
+        payload = unit["payload"] if isinstance(unit, Mapping) else None
+        block = payload.get(REVIEW_FIELD) if isinstance(payload, Mapping) else None
+        if block is None:
+            entries.append((unit["act_id"], _unit_basis(unit)))
+            continue
+        entries.append(
+            (
+                unit["act_id"],
+                {
+                    "page_id": unit["page_id"],
+                    "page_ordinal": payload["page_ordinal"],
+                    "act_key": payload["act_key"],
+                    "unit_class": payload["unit_class"],
+                    "outcome": block["machine_outcome"],
+                    "basis_digest": block["basis_digest"],
+                    "kind": payload.get("kind"),
+                    "page_holds": sorted(set(unit["page_holds"])),
+                    "unit_codes": list(block["scopes"]["unit"]),
+                    "page_codes": list(block["scopes"]["page"]),
+                },
+            )
+        )
+    return _basis(run_id, entries, decisions)
+
+
+def _basis(
+    run_id: str, entries: Sequence[tuple[str, dict[str, Any]]], decisions: Sequence[Any]
+) -> dict[str, Any]:
+    """The basis over each unit's entry: its pages, their exclusions and digests."""
     units: dict[str, dict[str, Any]] = {}
-    for unit in units_in:
-        entry = _unit_basis(unit)
-        if unit["act_id"] in units:
-            raise FatalAccounting(f"a derived review names unit {unit['act_id']!r} twice")
-        units[unit["act_id"]] = entry
+    for act_id, entry in entries:
+        if act_id in units:
+            raise FatalAccounting(f"a derived review names unit {act_id!r} twice")
+        units[act_id] = entry
     pages: dict[str, dict[str, Any]] = {}
     for act_id in sorted(units):
         entry = units[act_id]

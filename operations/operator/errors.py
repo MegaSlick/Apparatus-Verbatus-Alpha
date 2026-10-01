@@ -62,6 +62,7 @@ class ErrorCode(StrEnum):
     CONSOLE_TREE_UNREADABLE = "console-tree-unreadable"
     CONSOLE_PROJECTION_UNREADABLE = "console-projection-unreadable"
     ADVANCE_REFUSED = "advance-refused"
+    DECISION_REFUSED = "decision-refused"
     BACKUP_FAILED = "backup-failed"
     CLEAR_LEFTOVERS_STOPPED = "clear-leftovers-stopped"
     FETCH_RUN_FAILED = "fetch-run-failed"
@@ -347,6 +348,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The requested stage boundary could not be advanced.",
         "No later stage was started. A worker failure after append may have left an immutable advance record even though no checked result returned.",
         "Open review and inspect advance_records before retrying, then address the named seal or worker problem; never assume a retry is record-free.",
+    ),
+    ErrorCode.DECISION_REFUSED: ErrorCopy(
+        "The review decision was not recorded.",
+        "Nothing was written to the run tree, and no stage was started.",
+        "Read the named reason, open `verbatus review` on the run to see its current holds, and record the decision again against what it shows.",
     ),
     ErrorCode.BACKUP_FAILED: ErrorCopy(
         "The Mac backup did not finish with a verified snapshot.",

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Final, Sequence
 
 from common.checkout import missing_checkout_resources
+from common.contracts.approval import FINDINGS, REVIEW_DECISIONS
 from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
 from operations.pod.launch import launch_evidence_keys, launch_evidence_prefixes, launch_run_id
@@ -716,6 +717,32 @@ def build_parser() -> PlainParser:
     )
     advance.add_argument("--from-stage", help="first stage of the inclusive semi-mode range")
     advance.add_argument("--to-stage", help="last stage of the inclusive semi-mode range")
+    decide = verbs.add_parser(
+        "decide",
+        help=(
+            "record the project lead's confirmed review decision about one held unit or page; "
+            "the Recensor applies it when the run resumes from it"
+        ),
+    )
+    decide.add_argument(
+        "--run-root", type=Path, required=True, help="folder containing the run tree"
+    )
+    decide.add_argument("--run-id", required=True, help="the run whose review is decided")
+    decide.add_argument(
+        "decision",
+        choices=sorted({word for words in REVIEW_DECISIONS.values() for word in words}),
+        help=(
+            "release (send a held unit to export, overriding its reading's own holds), "
+            "exclude (not an act), hold (with --finding), re-ask (send it through the "
+            "Perlector again); for a page: no-missed-act (release its page holds), missed-act, "
+            "re-ask, re-shoot, hold"
+        ),
+    )
+    subject = decide.add_mutually_exclusive_group(required=True)
+    subject.add_argument("--unit", help="the unit's key, as review shows it (for example p1:2)")
+    subject.add_argument("--page", type=int, help="the page's ordinal, for a page decision")
+    decide.add_argument("--finding", choices=FINDINGS, help="what a hold names")
+    decide.add_argument("--reason", required=True, help="why the project lead decided this")
     backup = verbs.add_parser(
         "backup",
         help="copy one run tree to a local Mac directory by digest, without a provider credential",
@@ -920,6 +947,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 mode=args.mode,
                 from_stage=args.from_stage,
                 to_stage=args.to_stage,
+            )
+        elif args.verb == "decide":
+            _decide_with_confirmation(
+                args.run_root,
+                args.run_id,
+                args.decision,
+                unit=args.unit,
+                page=args.page,
+                finding=args.finding,
+                reason=args.reason,
             )
         elif args.verb == "backup":
             _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace, surface)
@@ -1439,6 +1476,54 @@ def _advance_with_confirmation(
         )
 
 
+def _decide_with_confirmation(
+    run_root: Path,
+    run_id: str,
+    decision: str,
+    *,
+    unit: str | None,
+    page: int | None,
+    finding: str | None,
+    reason: str,
+) -> None:
+    """Bind one review decision to the run's latest review, confirm it, then record it."""
+
+    from common.contracts.errors import ApprovalRefusal, ContractError
+    from common.runtree.store import RunTree
+
+    from . import decide as decide_module
+
+    tree = _bound_run_tree(RunTree, run_root, run_id)
+    try:
+        prepared = decide_module.prepare_decision(
+            tree, decision=decision, unit=unit, page=page, finding=finding, reason=reason
+        )
+    except (ContractError, OSError) as error:
+        raise OperatorError(ErrorCode.DECISION_REFUSED, detail=str(error)) from error
+    _print(
+        f"Current review of {prepared.subject}: held by {', '.join(prepared.held_codes) or 'nothing'}."
+    )
+    _print(f"Review basis digest: {prepared.basis_digest}")
+    phrase = (
+        f"decide {decision} of {prepared.subject} in {run_id} at {prepared.basis_digest} "
+        f"for reason {json.dumps(reason, ensure_ascii=True)}"
+    )
+    if _typed_decide_confirmation(phrase) != phrase:
+        raise OperatorError(
+            ErrorCode.DECISION_REFUSED,
+            detail=(
+                "the typed confirmation did not exactly name this decision, subject, run, "
+                "review basis and recorded reason"
+            ),
+        )
+    try:
+        reference = decide_module.record_decision(tree, prepared)
+    except (ApprovalRefusal, ContractError, OSError) as error:
+        raise OperatorError(ErrorCode.DECISION_REFUSED, detail=str(error)) from error
+    for line in decide_module.report(prepared, reference):
+        _print(line)
+
+
 def load_request(path: str | Path) -> PodCreateRequest:
     """Read the strict request shape without showing a JSON/parser traceback."""
 
@@ -1819,6 +1904,16 @@ def _typed_paid_confirmation() -> str | None:
 def _typed_close_confirmation(phrase: str) -> str | None:
     try:
         return input(f"Type this line exactly, with no quotation marks:\n{phrase}\n> ")
+    except EOFError:
+        return None
+
+
+def _typed_decide_confirmation(phrase: str) -> str | None:
+    try:
+        return input(
+            "This appends the project lead's review decision; it does not edit evidence or start "
+            f"a stage.\nType this line exactly, with no quotation marks:\n{phrase}\n> "
+        )
     except EOFError:
         return None
 
