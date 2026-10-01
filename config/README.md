@@ -217,8 +217,8 @@ policy a stage needs the *values* of is carried already parsed rather than reope
 `common/page_reask.py::reask_budget`, by the Perlector and the denominator), `formats.toml` as
 `StageContext.armarium_formats`.
 
-Sealed names today: `designator-geometry`,
-`ink-map`, `page-accounting`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
+Sealed names today: `designator-geometry`, `alignment`,
+`ink-map`, `page-accounting`, `reconstruction`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
 `pdf-render`, `recovery`, `hard-failure` and `triage-modes` on every run (Unit 6's
 pre-door producer/door seam must call `require_triage_modes` before using its
 vocabulary). Real ingress adds `data-handling`, `serving-recipes`, `pod-placement`,
