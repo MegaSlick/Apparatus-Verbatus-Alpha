@@ -15,7 +15,6 @@ import pytest
 
 from common.background import (
     PRIMARY_MARGIN,
-    SECONDARY_MARGIN,
     BackgroundInferenceRefusal,
     BackgroundPolicy,
     _derived_ink_margin,
@@ -432,11 +431,12 @@ def _both_labellers_agree(pixels, gap_tolerance_px: int) -> list:
 
 
 @pytest.mark.parametrize("gap_tolerance_px", [0, 1, 2, 3, 5, 8])
-@pytest.mark.parametrize("margin", [PRIMARY_MARGIN, SECONDARY_MARGIN])
+@pytest.mark.parametrize("margin", [PRIMARY_MARGIN, 2])
 def test_the_row_run_labeller_matches_the_reference_on_every_fixture_page(margin, gap_tolerance_px):
-    """Every walking-skeleton fixture page, at both declared sensitivities:
-    their Designator evidence is pinned byte-for-byte downstream, so a moved
-    component here would move the acceptance pins too.
+    """Every walking-skeleton fixture page, at the floor margin and at two
+    levels below paper, where nearly every mark is ink: their ink evidence is
+    pinned byte-for-byte downstream, so a moved component here would move the
+    acceptance pins too.
     """
     from common.imaging import grayscale_rows
     from proof.synthetic_pages import ALL_PAGES, render_page
