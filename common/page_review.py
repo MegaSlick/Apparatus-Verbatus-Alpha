@@ -38,7 +38,6 @@ from common.stage import (
     boundary_advanced,
     exemplar_page_ids,
     latest_attempt,
-    run_sealed_config_digests,
     stage_manifest,
 )
 
@@ -744,15 +743,15 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
     return sorted(links, key=lambda link: (link["from_page_ordinal"], link["to_page_ordinal"]))
 
 
-def held_share(tree, review_config_path) -> dict[str, Any] | None:
+def held_share(tree, sealed: Mapping[str, str], review_config_path) -> dict[str, Any] | None:
     """The run's held share after the Recensor, measured against its sealed review policy.
 
     `{held_pages, pages, max_held_page_share, systemic}` (`held_pages_after_review`
     and `common.review_policy.systemic`), or None for a run that sealed no review
-    policy, where the share was not checked. The policy at `review_config_path`
-    is refused unless its bytes are the ones the run sealed.
+    policy, where the share was not checked. `sealed` is the run's sealed
+    configuration digests; the policy at `review_config_path` is refused unless
+    its bytes are the ones the run sealed.
     """
-    sealed = run_sealed_config_digests(tree.read_run())
     if REVIEW_CONFIG_NAME not in sealed:
         return None
     policy = load_review_policy(review_config_path)

@@ -1050,7 +1050,8 @@ def report_systemic_share(args) -> None:
     notification carries. A run that sealed no review policy says the share
     was not checked.
     """
-    share = held_share(_run_tree(args), args.review_config)
+    tree = _run_tree(args)
+    share = held_share(tree, run_sealed_config_digests(tree.read_run()), args.review_config)
     if share is None:
         print(
             f"run {args.run_id}: this run sealed no review policy, so whether its held share "

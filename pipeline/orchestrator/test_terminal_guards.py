@@ -106,6 +106,7 @@ class _RecordingContext:
             perlector_protocol_config=config / "perlector_protocol.toml",
             alignment_config=config / "alignment.toml",
             reconstruction_config=config / "reconstruction.toml",
+            review_config=config / "review.toml",
         )
         self.perlector_audit_config_path = config / "perlector_audit.toml"
         # Read for the sealed reading unit, which decides the act or page export.
@@ -125,6 +126,7 @@ class _RecordingContext:
             ],
             "alignment": read_sealed_toml(self.args.alignment_config, "config")[1],
             "reconstruction": load_reconstruction_policy(self.args.reconstruction_config).sha256,
+            "review": read_sealed_toml(self.args.review_config, "config")[1],
         }
         # The Coniector plans no call over this synthetic run; the export proves its one plan.
         self.coniector_plan = {

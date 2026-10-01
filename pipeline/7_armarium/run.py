@@ -1188,7 +1188,7 @@ def systemic_review_basis(context) -> dict | None:
     alarm measured it (`common.page_review.held_share`), so the export names
     it as a reason. None too for a run that sealed no review policy.
     """
-    share = held_share(context.tree, context.args.review_config)
+    share = held_share(context.tree, context.sealed_config_digests, context.args.review_config)
     if share is None or not share["systemic"]:
         return None
     return {key: share[key] for key in ("held_pages", "pages", "max_held_page_share")}
