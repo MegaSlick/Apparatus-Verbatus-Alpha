@@ -2,6 +2,8 @@
 
 runpodctl, nvidia-smi and curl are stand-ins, and the container's CPU accounting is a
 fake cgroup directory, so nothing here reaches RunPod or depends on the test machine's load.
+`date +%s` and `sleep` are stand-ins too: the scripts run on a clock file that each sleep
+advances, so a test waits on what the guard did rather than on seconds passing.
 """
 
 from __future__ import annotations
@@ -11,7 +13,6 @@ import os
 import shutil
 import signal
 import subprocess
-import threading
 import time
 from pathlib import Path
 
@@ -29,6 +30,10 @@ def pod(tmp_path):
     calls = tmp_path / "calls.txt"
     curl_calls = tmp_path / "curl-calls.txt"
     curl_configs = tmp_path / "curl-configs.txt"
+    clock = tmp_path / "clock"
+    clock.write_text(f"{int(time.time())}\n")
+    ticks = tmp_path / "ticks"
+    real_sleep = shutil.which("sleep")
     stubs = {
         "runpodctl": (
             f'printf "%s\\n" "$*" >> "{calls}"\n'
@@ -53,6 +58,25 @@ def pod(tmp_path):
             "done\n"
             "exit 0\n"
         ),
+        "date": f'case "$*" in "+%s" | "-u +%s") exec cat "{clock}" ;; esac\nexec {shutil.which("date")} "$@"\n',
+        # A whole-second sleep is one tick: it advances the clock by FAKE_SLEEP_ADVANCE per
+        # second (default 1; 0 leaves the clock to the test), then runs the test's FAKE_TICK script with the tick number,
+        # which is how a test does work "during" that second. Once a runpodctl call has been
+        # made the scripts freeze in their next sleep and mark it, so a test that waits for
+        # that mark reads all they did up to the first delete; FAKE_SLEEP_HALT=no lets them
+        # carry on.
+        "sleep": (
+            f'case "$1" in "" | *[!0-9]*) exec {real_sleep} "$@" ;; esac\n'
+            f'if [ "${{FAKE_SLEEP_HALT:-yes}}" = yes ] && [ -s "{calls}" ]; then touch "{tmp_path}/halted"; exec {real_sleep} 3600; fi\n'
+            f'echo >> "{ticks}"\n'
+            'if [ "${FAKE_SLEEP_ADVANCE:-1}" != 0 ]; then\n'
+            f'  now=$(cat "{clock}")\n'
+            f'  echo $((now + $1 * ${{FAKE_SLEEP_ADVANCE:-1}})) > "{clock}.$$"\n'
+            f'  mv "{clock}.$$" "{clock}"\n'
+            "fi\n"
+            f'[ -z "${{FAKE_TICK:-}}" ] || sh "$FAKE_TICK" "$(wc -l < "{ticks}")"\n'
+            f"exec {real_sleep} 0.01\n"
+        ),
     }
     for name, body in stubs.items():
         stub = bin_dir / name
@@ -74,12 +98,29 @@ def pod(tmp_path):
     return env, calls, state
 
 
+def clock_of(env):
+    return int((Path(env["POD_GUARD_DIR"]).parent / "clock").read_text())
+
+
+def on_each_tick(env, tmp_path, script):
+    """Runs the shell `script` now with $1 = 0, then at every tick with the tick number."""
+    hook = tmp_path / "tick.sh"
+    hook.write_text(script)
+    subprocess.run(["sh", str(hook), "0"], check=True)
+    env["FAKE_TICK"] = str(hook)
+
+
+def halted(env) -> bool:
+    """Whether the scripts made a runpodctl call and froze in the sleep after it."""
+    return (Path(env["POD_GUARD_DIR"]).parent / "halted").exists()
+
+
 def run_until(argv, env, done, limit=20):
     """Runs a guard or start command until `done()` holds or the limit passes, then stops it."""
     process = subprocess.Popen(argv, env=env, start_new_session=True)
     deadline = time.monotonic() + limit
     while time.monotonic() < deadline and not done():
-        time.sleep(0.2)
+        time.sleep(0.02)
     alive = process.poll() is None
     os.killpg(process.pid, signal.SIGKILL)
     process.wait()
@@ -97,7 +138,7 @@ def log_of(state):
 
 def test_a_pod_doing_no_work_is_deleted(pod):
     env, calls, state = pod
-    run_until(["sh", str(GUARD), "5", "30"], env, lambda: "pod delete testpod" in lines(calls))
+    run_guard(env, "5")
     assert "pod delete testpod" in lines(calls)
     assert "no GPU, CPU or network work" in log_of(state)
 
@@ -105,7 +146,7 @@ def test_a_pod_doing_no_work_is_deleted(pod):
 def test_a_busy_gpu_keeps_the_pod_until_its_time_is_up(pod):
     env, calls, state = pod
     env["FAKE_GPU_UTIL"] = "80"
-    run_until(["sh", str(GUARD), "0.001", "30"], env, lambda: "pod delete testpod" in lines(calls))
+    run_guard(env, "0.001")
     assert "approved time is up" in log_of(state)
     assert "no GPU, CPU or network work" not in log_of(state)
 
@@ -113,7 +154,7 @@ def test_a_busy_gpu_keeps_the_pod_until_its_time_is_up(pod):
 def test_a_gpu_that_cannot_report_counts_as_busy(pod):
     env, calls, state = pod
     env["FAKE_GPU_UTIL"] = "[N/A]"
-    run_until(["sh", str(GUARD), "0.001", "30"], env, lambda: "pod delete testpod" in lines(calls))
+    run_guard(env, "0.001")
     assert "approved time is up" in log_of(state)
 
 
@@ -121,7 +162,7 @@ def test_a_failed_gpu_query_counts_as_busy(pod):
     env, calls, state = pod
     stub = Path(env["PATH"].split(":")[0]) / "nvidia-smi"
     stub.write_text("#!/bin/sh\nexit 1\n")
-    run_until(["sh", str(GUARD), "0.001", "30"], env, lambda: "pod delete testpod" in lines(calls))
+    run_guard(env, "0.001")
     assert "approved time is up" in log_of(state)
 
 
@@ -133,133 +174,83 @@ def test_the_start_command_refuses_a_malformed_hours_value(pod):
     assert result.returncode == 2
 
 
+def run_guard(env, hours):
+    run_until(["sh", str(GUARD), hours, "30"], env, lambda: halted(env))
+    # The fake sleep marks a halt only after a recorded runpodctl call.
+    assert halted(env), "the guard never made its runpodctl delete call"
+
+
 def test_container_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     env, calls, state = pod
     cgroup = tmp_path / "cgroup"
     cgroup.mkdir()
-    stat = cgroup / "cpu.stat"
-    stop = threading.Event()
-
-    def burn():
-        used = 0
-        while not stop.is_set():
-            used += 2_000_000
-            staged = cgroup / "cpu.stat.new"
-            staged.write_text(f"usage_usec {used}\nuser_usec {used}\n")
-            staged.replace(stat)
-            time.sleep(0.5)
-
-    writer = threading.Thread(target=burn)
-    writer.start()
-    try:
-        run_until(
-            ["sh", str(GUARD), "0.002", "30"], env, lambda: "pod delete testpod" in lines(calls)
-        )
-    finally:
-        stop.set()
-        writer.join()
+    # Two CPU seconds per tick.
+    on_each_tick(
+        env,
+        tmp_path,
+        "used=$(($1 * 2000000))\n"
+        f'printf "usage_usec %s\\nuser_usec %s\\n" "$used" "$used" > "{cgroup}/cpu.stat.new"\n'
+        f'mv "{cgroup}/cpu.stat.new" "{cgroup}/cpu.stat"\n',
+    )
+    run_guard(env, "0.002")
     assert "approved time is up" in log_of(state)
     assert "no GPU, CPU or network work" not in log_of(state)
+
+
+def netdev_on_each_tick(env, tmp_path, lo, device):
+    """Rewrites a fake /proc/net/dev at every tick with loopback line `lo` and `device`.
+
+    Both are shell strings in which $n is the tick number.
+    """
+    netdev = tmp_path / "netdev"
+    staged = tmp_path / "netdev.new"
+    on_each_tick(
+        env,
+        tmp_path,
+        "n=$1\n"
+        f"printf '%s\\n' 'Inter-|   Receive' ' face |bytes packets' \"{lo}\" \"{device}\" > \"{staged}\"\n"
+        f'mv "{staged}" "{netdev}"\n',
+    )
 
 
 def test_network_download_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     env, calls, state = pod
-    netdev = tmp_path / "netdev"
-    stop = threading.Event()
-
-    def download():
-        # Past 2^31, where an awk that clamps %d would read every sample alike.
-        received = 3_000_000_000
-        while not stop.is_set():
-            received += 5_000_000
-            staged = tmp_path / "netdev.new"
-            staged.write_text(
-                "Inter-|   Receive\n face |bytes packets\n"
-                f"    lo: 999 1 0 0 0 0 0 0 999 1 0 0 0 0 0 0\n"
-                f"  eth0: {received} 10 0 0 0 0 0 0 100 1 0 0 0 0 0 0\n"
-            )
-            staged.replace(netdev)
-            time.sleep(0.5)
-
-    writer = threading.Thread(target=download)
-    writer.start()
-    try:
-        run_until(
-            ["sh", str(GUARD), "0.002", "30"], env, lambda: "pod delete testpod" in lines(calls)
-        )
-    finally:
-        stop.set()
-        writer.join()
+    # Past 2^31, where an awk that clamps %d would read every sample alike.
+    netdev_on_each_tick(
+        env,
+        tmp_path,
+        "    lo: 999 1 0 0 0 0 0 0 999 1 0 0 0 0 0 0",
+        "  eth0: $((3000000000 + n * 5000000)) 10 0 0 0 0 0 0 100 1 0 0 0 0 0 0",
+    )
+    run_guard(env, "0.002")
     assert "approved time is up" in log_of(state)
     assert "no GPU, CPU or network work" not in log_of(state)
 
 
-def netdev_writer(netdev, staging, line, stop):
-    """Rewrites a fake /proc/net/dev every half second with `line(n)` as its only device."""
-
-    def write():
-        n = 0
-        while not stop.is_set():
-            n += 1
-            staging.write_text(
-                "Inter-|   Receive\n face |bytes packets\n"
-                "    lo: 999 1 0 0 0 0 0 0 999 1 0 0 0 0 0 0\n" + line(n)
-            )
-            staging.replace(netdev)
-            time.sleep(0.5)
-
-    return threading.Thread(target=write)
-
-
 def test_a_download_on_a_long_interface_name_keeps_the_pod(pod, tmp_path):
     env, calls, state = pod
-    stop = threading.Event()
     # The kernel pads names to six characters, so a longer one runs into the colon.
-    writer = netdev_writer(
-        tmp_path / "netdev",
-        tmp_path / "netdev.new",
-        lambda n: (
-            f"enp0s31f6:{n * 5_000_000:8d}       10    0    0    0     0          0         0      100 1 0 0 0 0 0 0\n"
-        ),
-        stop,
+    netdev_on_each_tick(
+        env,
+        tmp_path,
+        "    lo: 999 1 0 0 0 0 0 0 999 1 0 0 0 0 0 0",
+        "enp0s31f6:$(printf %8d $((n * 5000000)))       10    0    0    0     0          0"
+        "         0      100 1 0 0 0 0 0 0",
     )
-    writer.start()
-    try:
-        run_until(
-            ["sh", str(GUARD), "0.002", "30"], env, lambda: "pod delete testpod" in lines(calls)
-        )
-    finally:
-        stop.set()
-        writer.join()
+    run_guard(env, "0.002")
     assert "approved time is up" in log_of(state)
     assert "no GPU, CPU or network work" not in log_of(state)
 
 
 def test_loopback_traffic_is_not_work(pod, tmp_path):
     env, calls, state = pod
-    netdev = tmp_path / "netdev"
-    stop = threading.Event()
-
-    def loopback():
-        sent = 0
-        while not stop.is_set():
-            sent += 50_000_000
-            staged = tmp_path / "netdev.new"
-            staged.write_text(
-                "Inter-|   Receive\n face |bytes packets\n"
-                f"    lo: {sent} 1 0 0 0 0 0 0 {sent} 1 0 0 0 0 0 0\n"
-                "  eth0: 100 10 0 0 0 0 0 0 100 1 0 0 0 0 0 0\n"
-            )
-            staged.replace(netdev)
-            time.sleep(0.5)
-
-    writer = threading.Thread(target=loopback)
-    writer.start()
-    try:
-        run_until(["sh", str(GUARD), "5", "30"], env, lambda: "pod delete testpod" in lines(calls))
-    finally:
-        stop.set()
-        writer.join()
+    netdev_on_each_tick(
+        env,
+        tmp_path,
+        "    lo: $((n * 50000000)) 1 0 0 0 0 0 0 $((n * 50000000)) 1 0 0 0 0 0 0",
+        "  eth0: 100 10 0 0 0 0 0 0 100 1 0 0 0 0 0 0",
+    )
+    run_guard(env, "5")
     assert "no GPU, CPU or network work" in log_of(state)
 
 
@@ -267,28 +258,14 @@ def test_cgroup_v1_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     env, calls, state = pod
     usage = tmp_path / "cgroup" / "cpuacct" / "cpuacct.usage"
     usage.parent.mkdir(parents=True)
-    stop = threading.Event()
-
-    def burn():
-        # 3e12 ns is 3e9 usec, past 2^31, where an awk that clamps %d would read
-        # every sample alike.
-        used_ns = 3_000_000_000_000
-        while not stop.is_set():
-            used_ns += 2_000_000_000
-            staged = usage.with_name("cpuacct.usage.new")
-            staged.write_text(f"{used_ns}\n")
-            staged.replace(usage)
-            time.sleep(0.5)
-
-    writer = threading.Thread(target=burn)
-    writer.start()
-    try:
-        run_until(
-            ["sh", str(GUARD), "0.002", "30"], env, lambda: "pod delete testpod" in lines(calls)
-        )
-    finally:
-        stop.set()
-        writer.join()
+    # 3e12 ns is 3e9 usec, past 2^31, where an awk that clamps %d would read every
+    # sample alike. Two CPU seconds per tick.
+    on_each_tick(
+        env,
+        tmp_path,
+        f'echo $((3000000000000 + $1 * 2000000000)) > "{usage}.new"\nmv "{usage}.new" "{usage}"\n',
+    )
+    run_guard(env, "0.002")
     assert "approved time is up" in log_of(state)
     assert "no GPU, CPU or network work" not in log_of(state)
 
@@ -304,22 +281,11 @@ def wait_for(condition, what, limit=30):
 def test_a_deadline_rewritten_while_running_ignores_garbage_and_honours_an_extension(pod):
     env, calls, state = pod
     env["FAKE_GPU_UTIL"] = "80"
-    # The guard's clock is a file the test sets, so each step waits on what the guard did
-    # rather than on how fast it runs; every date +%s call is counted as a tick happening.
+    # Here the test alone moves the guard's clock: its sleeps count ticks but add no time.
+    env["FAKE_SLEEP_ADVANCE"] = "0"
     clock = state.parent / "clock"
-    ticks = state.parent / "clock-reads"
-    start = int(time.time())
-    clock.write_text(f"{start}\n")
-    fake_date = Path(env["PATH"].split(":")[0]) / "date"
-    fake_date.write_text(
-        "#!/bin/sh\n"
-        'if [ "$*" = "+%s" ]; then\n'
-        f'  echo >> "{ticks}"\n'
-        f'  exec cat "{clock}"\n'
-        "fi\n"
-        f'exec {shutil.which("date")} "$@"\n'
-    )
-    fake_date.chmod(0o755)
+    ticks = state.parent / "ticks"
+    start = clock_of(env)
     deadline = state / "deadline-testpod"
     staging = state / "deadline-testpod.new"
 
@@ -342,7 +308,7 @@ def test_a_deadline_rewritten_while_running_ignores_garbage_and_honours_an_exten
         wait_for(lambda: len(lines(ticks)) >= seen + 3, "ticks past the first deadline")
         assert "pod delete testpod" not in lines(calls)
         rewrite(start + 60)
-        wait_for(lambda: "pod delete testpod" in lines(calls), "the delete")
+        wait_for(lambda: halted(env), "the delete")
     finally:
         os.killpg(process.pid, signal.SIGKILL)
         process.wait()
@@ -379,7 +345,7 @@ def test_a_topic_file_sends_one_notification_when_the_guard_deletes(pod, tmp_pat
     state.mkdir()
     (state / "ntfy_topic").write_text("guard-test-topic\n")
     curl_calls = tmp_path / "curl-calls.txt"
-    run_until(["sh", str(GUARD), "5", "30"], env, lambda: bool(lines(curl_calls)))
+    run_guard(env, "5")
     [notification] = lines(curl_calls)
     assert "-H Title: Pod guard" in notification
     assert "Pod testpod: its guard requested deletion (no GPU, CPU or network work" in notification
@@ -399,26 +365,23 @@ def test_a_released_run_s_outcome_is_in_the_delete_notice(pod, tmp_path):
     state.mkdir()
     (state / "ntfy_topic").write_text("guard-test-topic\n")
     deadline = state / "deadline-testpod"
-    deadline.write_text(f"{int(time.time()) + 3600}\n")
+    deadline.write_text(f"{clock_of(env) + 3600}\n")
     curl_calls = tmp_path / "curl-calls.txt"
-
-    def release():
-        # Written while the guard runs, as pod_run does; one left from before it armed is cleared.
-        limit = time.monotonic() + 10
-        while not (state / "heartbeat-testpod").exists() and time.monotonic() < limit:
-            time.sleep(0.1)
-        # Read as text, never run: anything outside a plain name is dropped.
-        (state / "released-testpod").write_text("run proof-1 ended complete $(id)`id`\n")
-        staging = state / "deadline-testpod.new"
-        staging.write_text(f"{int(time.time())}\n")
-        staging.replace(deadline)
-
-    writer = threading.Thread(target=release)
-    writer.start()
-    try:
-        run_until(["sh", str(GUARD), "5", "30"], env, lambda: bool(lines(curl_calls)))
-    finally:
-        writer.join()
+    released = state / "released-testpod"
+    staging = state / "deadline-testpod.new"
+    # Written once while the guard runs (from its first tick on, after it armed), as pod_run
+    # does; one left from before it armed is cleared. Read as text, never run: anything
+    # outside a plain name is dropped. The new deadline is the guard's clock at that tick.
+    on_each_tick(
+        env,
+        tmp_path,
+        f'[ "$1" -ge 1 ] && [ ! -e "{tmp_path}/released-once" ] || exit 0\n'
+        f'touch "{tmp_path}/released-once"\n'
+        f"printf '%s\\n' 'run proof-1 ended complete $(id)`id`' > \"{released}\"\n"
+        f'cat "{tmp_path}/clock" > "{staging}"\n'
+        f'mv "{staging}" "{deadline}"\n',
+    )
+    run_until(["sh", str(GUARD), "5", "30"], env, lambda: bool(lines(curl_calls)))
     [notification] = lines(curl_calls)
     assert (
         "its guard requested deletion (approved time is up; pod_run reported: "
@@ -434,7 +397,7 @@ def test_without_a_release_the_notice_names_only_the_guard_s_reason(pod, tmp_pat
     env, calls, state = pod
     state.mkdir()
     (state / "ntfy_topic").write_text("guard-test-topic\n")
-    (state / "deadline-testpod").write_text(f"{int(time.time())}\n")
+    (state / "deadline-testpod").write_text(f"{clock_of(env)}\n")
     if left_over:
         (state / "released-testpod").write_text("run old-run ended complete\n")
     curl_calls = tmp_path / "curl-calls.txt"
@@ -466,32 +429,19 @@ def test_the_guard_touches_its_heartbeat_every_tick(pod):
 def test_a_deadline_more_than_a_week_out_is_ignored(pod):
     env, calls, state = pod
     state.mkdir()
-    (state / "deadline-testpod").write_text(f"{int(time.time()) * 1000}\n")
+    (state / "deadline-testpod").write_text(f"{clock_of(env) * 1000}\n")
     env["FAKE_GPU_UTIL"] = "80"
-    run_until(["sh", str(GUARD), "0.001", "30"], env, lambda: "pod delete testpod" in lines(calls))
+    run_guard(env, "0.001")
     assert "approved time is up" in log_of(state)
 
 
-def test_a_keepalive_touched_while_idle_holds_off_the_idle_delete(pod):
+def test_a_keepalive_touched_while_idle_holds_off_the_idle_delete(pod, tmp_path):
     env, calls, state = pod
     state.mkdir()
     keepalive = state / "keepalive-testpod"
-    stop = threading.Event()
-
-    def touch():
-        while not stop.is_set():
-            keepalive.touch()
-            time.sleep(0.5)
-
-    toucher = threading.Thread(target=touch)
-    toucher.start()
-    try:
-        run_until(
-            ["sh", str(GUARD), "0.002", "30"], env, lambda: "pod delete testpod" in lines(calls)
-        )
-    finally:
-        stop.set()
-        toucher.join()
+    clock = tmp_path / "clock"
+    on_each_tick(env, tmp_path, f'touch -d "@$(cat "{clock}")" "{keepalive}"\n')
+    run_guard(env, "0.002")
     assert "approved time is up" in log_of(state)
     assert "no GPU, CPU or network work" not in log_of(state)
 
@@ -499,25 +449,29 @@ def test_a_keepalive_touched_while_idle_holds_off_the_idle_delete(pod):
 def test_the_idle_limit_runs_from_the_last_keepalive_touch(pod):
     env, calls, state = pod
     state.mkdir()
-    (state / "keepalive-testpod").touch()
-    started = time.monotonic()
-    run_until(["sh", str(GUARD), "5", "30"], env, lambda: "pod delete testpod" in lines(calls))
+    started = clock_of(env)
+    keepalive = state / "keepalive-testpod"
+    keepalive.touch()
+    os.utime(keepalive, (started, started))
+    run_guard(env, "5")
     assert "no GPU, CPU or network work" in log_of(state)
-    # One idle limit (2 s) after the touch, not a further idle limit after the touch expires.
-    assert time.monotonic() - started < 10
+    # One idle limit (2 s) after the touch: not the one tick an untouched idle pod lasts,
+    # and not a further idle limit after the touch expires. The clock stops at the delete.
+    assert clock_of(env) - started == 2
 
 
 def test_a_garbled_deadline_file_is_replaced_not_trusted(pod):
     env, calls, state = pod
     state.mkdir()
     (state / "deadline-testpod").write_text("2026-09-29\n")
-    run_until(["sh", str(GUARD), "5", "30"], env, lambda: "pod delete testpod" in lines(calls))
+    run_guard(env, "5")
     assert (state / "deadline-testpod").read_text().strip().isdigit()
     assert "pod delete testpod" in lines(calls)
 
 
 def test_a_delete_that_reports_success_is_repeated_and_then_stopped(pod):
     env, calls, _ = pod
+    env["FAKE_SLEEP_HALT"] = "no"
     run_until(["sh", str(GUARD), "5", "30"], env, lambda: "pod stop testpod" in lines(calls))
     assert lines(calls).count("pod delete testpod") >= 3
     assert "pod stop testpod" in lines(calls)
@@ -526,7 +480,7 @@ def test_a_delete_that_reports_success_is_repeated_and_then_stopped(pod):
 def test_the_older_runpodctl_form_is_tried_when_the_newer_one_fails(pod):
     env, calls, _ = pod
     env["FAKE_RUNPODCTL_FAIL"] = "pod delete"
-    run_until(["sh", str(GUARD), "5", "30"], env, lambda: "remove pod testpod" in lines(calls))
+    run_guard(env, "5")
     assert lines(calls)[:2] == ["pod delete testpod", "remove pod testpod"]
 
 
@@ -554,7 +508,7 @@ def start_command(env, hours):
 def test_the_start_command_arms_the_guard_and_keeps_the_container_up(pod):
     env, calls, state = pod
     argv, env = start_command(env, "5")
-    alive = run_until(argv, env, lambda: "pod delete testpod" in lines(calls))
+    alive = run_until(argv, env, lambda: halted(env))
     assert "armed for pod testpod" in log_of(state)
     assert "no GPU, CPU or network work" in log_of(state)
     assert alive
@@ -564,7 +518,7 @@ def test_the_backstop_deletes_the_pod_when_the_guard_cannot_be_fetched(pod):
     env, calls, state = pod
     env["FAKE_CURL_FAIL"] = "yes"
     argv, env = start_command(env, "0.0003")
-    run_until(argv, env, lambda: "pod delete testpod" in lines(calls))
+    run_until(argv, env, lambda: halted(env))
     assert "pod delete testpod" in lines(calls)
     assert log_of(state) == ""
 
@@ -573,9 +527,13 @@ def test_the_backstop_honours_an_extended_deadline(pod):
     env, calls, state = pod
     env["FAKE_CURL_FAIL"] = "yes"
     state.mkdir()
-    (state / "deadline-testpod").write_text(f"{int(time.time()) + 3600}\n")
+    started = clock_of(env)
+    (state / "deadline-testpod").write_text(f"{started + 3600}\n")
     argv, env = start_command(env, "0.0003")
-    run_until(argv, env, lambda: False, limit=5)
+    # Without the extension the backstop deletes two seconds in (one second of window, one
+    # of grace); run it well past that.
+    run_until(argv, env, lambda: clock_of(env) >= started + 10)
+    assert clock_of(env) >= started + 10
     assert lines(calls) == []
 
 

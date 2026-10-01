@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -54,6 +55,21 @@ def drive(root: Path, run_id: str, scenario: str, *selection: str) -> subprocess
         capture_output=True,
         text=True,
     )
+
+
+@pytest.fixture(scope="module")
+def automatic_once(tmp_path_factory) -> Path:
+    """`--all` over page-unbroken, run once per module; tests take `automatic`, a copy of it."""
+    root = tmp_path_factory.mktemp("automatic") / "runs"
+    result = drive(root, "r", "page-unbroken", "--all")
+    assert result.returncode == 0, result.stdout + result.stderr
+    return root
+
+
+@pytest.fixture
+def automatic(automatic_once, tmp_path) -> Path:
+    """This test's own copy of the `--all` run, free to change."""
+    return shutil.copytree(automatic_once, tmp_path / "automatic", symlinks=True)
 
 
 def test_store_root_reaches_a_stage_registry(tmp_path, monkeypatch) -> None:
@@ -138,11 +154,9 @@ def test_canary_ingress_requires_a_real_submission_and_a_pair():
         orchestrator.require_coherent_ingress_options(args)
 
 
-def test_all_and_manual_stages_write_the_identical_happy_run_tree(tmp_path):
-    automatic = tmp_path / "automatic"
+def test_all_and_manual_stages_write_the_identical_happy_run_tree(automatic, tmp_path):
     manual = tmp_path / "manual"
 
-    assert drive(automatic, "r", "page-unbroken", "--all").returncode == 0
     for stage in SEQUENCE:
         result = drive(manual, "r", "page-unbroken", "--stage", stage)
         assert result.returncode == 0, result.stdout + result.stderr
@@ -150,11 +164,9 @@ def test_all_and_manual_stages_write_the_identical_happy_run_tree(tmp_path):
     assert snapshot(manual) == snapshot(automatic)
 
 
-def test_all_and_a_split_semi_range_write_the_identical_happy_run_tree(tmp_path):
-    automatic = tmp_path / "automatic"
+def test_all_and_a_split_semi_range_write_the_identical_happy_run_tree(automatic, tmp_path):
     split = tmp_path / "split"
 
-    assert drive(automatic, "r", "page-unbroken", "--all").returncode == 0
     first = drive(split, "r", "page-unbroken", "--from", "door", "--to", "recensor")
     assert first.returncode == 0, first.stdout + first.stderr
     second = drive(split, "r", "page-unbroken", "--from", "archetypus", "--to", "armarium")
@@ -261,7 +273,7 @@ def test_a_held_armarium_reports_its_terminal_reasons_under_every_mode(tmp_path)
     assert "act p2:1 is held-for-review" in semi_result.stdout
 
 
-def test_a_damaged_armarium_decode_environment_stops_the_run_at_its_producer(tmp_path):
+def test_a_damaged_armarium_decode_environment_stops_the_run_at_its_producer(automatic, tmp_path):
     """A deleted terminal ``decode-environment`` refuses, and nothing is exported.
 
     The seal binds that record's bytes as ``decode_environment_sha256`` and reads
@@ -269,8 +281,7 @@ def test_a_damaged_armarium_decode_environment_stops_the_run_at_its_producer(tmp
     ``common/test_stage_seal.py`` separately drives ``verify_final_seal`` against
     exactly this damage, on the layer that still owns the check.
     """
-    root = tmp_path / "runs"
-    assert drive(root, "r", "page-unbroken", "--all").returncode == 0
+    root = automatic
     record = next((root / "r" / "7_armarium" / "artifacts" / "decode-environment").iterdir())
     kept = record.read_bytes()
     record.unlink()

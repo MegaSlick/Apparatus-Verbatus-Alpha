@@ -36,31 +36,13 @@ _EMPTY_VIEW = ReviewProjection("reviewed", (), (), (), (), None, ())
 
 ROOT = Path(__file__).resolve().parents[2]
 _EXPORT_REF = {"relative_path": "7_armarium/artifacts/export/art_test.json", "sha256": "e" * 64}
-ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 
 
-def _make_run(tmp_path: Path, *, scenario: str = "page-unbroken") -> tuple[Path, str]:
-    run_root = tmp_path / "runs"
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(ORCHESTRATOR),
-            "--fixture",
-            "synthetic-two-page-v0",
-            "--scenario",
-            scenario,
-            "--run-id",
-            "reviewed",
-            "--run-root",
-            str(run_root),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert completed.returncode == (3 if scenario == "page-review" else 0), completed.stderr
-    return run_root, "reviewed"
+def _make_run(
+    orchestrated_run, tmp_path: Path, *, scenario: str = "page-unbroken"
+) -> tuple[Path, str]:
+    expected_exit = 3 if scenario == "page-review" else 0
+    return orchestrated_run(tmp_path / "runs", "reviewed", scenario, expected_exit), "reviewed"
 
 
 def _boundary_digest(run_root: Path, run_id: str, stage: str = "armarium") -> str:
@@ -82,8 +64,10 @@ def _worker_identity_arguments(tree: RunTree) -> list[str]:
     ]
 
 
-def test_read_surface_walks_stage_records_seals_census_pages_and_crops(tmp_path: Path):
-    run_root, run_id = _make_run(tmp_path)
+def test_read_surface_walks_stage_records_seals_census_pages_and_crops(
+    orchestrated_run, tmp_path: Path
+):
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
 
     projected = review.ReadOnlyRun(run_root, run_id).projection()
 
@@ -150,8 +134,10 @@ def test_read_surface_walks_stage_records_seals_census_pages_and_crops(tmp_path:
     assert projected.review_items == ()
 
 
-def test_held_armarium_review_rows_keep_their_bundle_and_export_record_trace(tmp_path: Path):
-    run_root, run_id = _make_run(tmp_path, scenario="page-review")
+def test_held_armarium_review_rows_keep_their_bundle_and_export_record_trace(
+    orchestrated_run, tmp_path: Path
+):
+    run_root, run_id = _make_run(orchestrated_run, tmp_path, scenario="page-review")
 
     projected = review.ReadOnlyRun(run_root, run_id).projection()
 
@@ -165,10 +151,10 @@ def test_held_armarium_review_rows_keep_their_bundle_and_export_record_trace(tmp
 
 
 def test_review_child_receives_no_write_right_even_when_the_parent_reads_every_record(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    orchestrated_run, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Review must never mint the write path that advance receives."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     seen: dict[str, object] = {}
 
     class Backend:
@@ -232,7 +218,9 @@ def test_external_trigger_refuses_an_unsealed_boundary_before_creating_its_write
     assert not (tree.root / "receipts").exists()
 
 
-def test_the_advance_refuses_a_wrong_digest_over_a_boundary_that_still_verifies(tmp_path):
+def test_the_advance_refuses_a_wrong_digest_over_a_boundary_that_still_verifies(
+    orchestrated_run, tmp_path
+):
     """Isolate the digest comparison from the seal verification beside it.
 
     `test_advance_modes.py`'s reseal test accepts either refusal message,
@@ -242,7 +230,7 @@ def test_the_advance_refuses_a_wrong_digest_over_a_boundary_that_still_verifies(
     still verifies; only the supplied digest is wrong, so this refusal can come
     from nothing else.
     """
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
     current = _boundary_digest(run_root, run_id)
@@ -266,8 +254,10 @@ def test_the_advance_refuses_a_wrong_digest_over_a_boundary_that_still_verifies(
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
-def test_the_record_writer_refuses_a_missing_digest_before_any_record_is_written(tmp_path):
-    run_root, run_id = _make_run(tmp_path)
+def test_the_record_writer_refuses_a_missing_digest_before_any_record_is_written(
+    orchestrated_run, tmp_path
+):
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
 
@@ -277,7 +267,9 @@ def test_the_record_writer_refuses_a_missing_digest_before_any_record_is_written
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
-def test_the_external_trigger_refuses_an_advance_that_names_no_reviewed_digest(tmp_path):
+def test_the_external_trigger_refuses_an_advance_that_names_no_reviewed_digest(
+    orchestrated_run, tmp_path
+):
     """Both sides of the worker boundary refuse, and the outer one has no default.
 
     `expected_digest` is keyword-only with no default, so the ordinary way to
@@ -287,7 +279,7 @@ def test_the_external_trigger_refuses_an_advance_that_names_no_reviewed_digest(t
     to be current, which is the substitution the typed confirmation exists to
     prevent.
     """
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
 
@@ -307,8 +299,10 @@ def test_the_external_trigger_refuses_an_advance_that_names_no_reviewed_digest(t
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
-def test_an_explicitly_blank_advance_timestamp_is_refused_not_replaced_with_now(tmp_path):
-    run_root, run_id = _make_run(tmp_path)
+def test_an_explicitly_blank_advance_timestamp_is_refused_not_replaced_with_now(
+    orchestrated_run, tmp_path
+):
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
 
@@ -325,8 +319,10 @@ def test_an_explicitly_blank_advance_timestamp_is_refused_not_replaced_with_now(
 
 
 @requires_host_boundary
-def test_advance_worker_is_external_and_binds_the_current_seal_digest(tmp_path: Path, monkeypatch):
-    run_root, run_id = _make_run(tmp_path)
+def test_advance_worker_is_external_and_binds_the_current_seal_digest(
+    orchestrated_run, tmp_path: Path, monkeypatch
+):
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
     _, observed_digest = advance.sealed_boundary(tree, "armarium")
@@ -412,9 +408,11 @@ def _without_seatbelt_denied_imports(
     )
 
 
-def test_the_confined_worker_and_verifier_complete_without_seatbelt_denied_imports(tmp_path):
+def test_the_confined_worker_and_verifier_complete_without_seatbelt_denied_imports(
+    orchestrated_run, tmp_path
+):
     """Both advance and seal verification avoid Seatbelt-denied imports."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
     request = json.dumps(
@@ -512,8 +510,10 @@ def test_receipt_setup_refuses_case_variant_collisions_before_default_apfs_can_m
     assert os.listdir(run) == ["Receipts"]
 
 
-def test_the_advance_worker_refuses_a_substituted_run_tree_identity(tmp_path, monkeypatch):
-    run_root, run_id = _make_run(tmp_path)
+def test_the_advance_worker_refuses_a_substituted_run_tree_identity(
+    orchestrated_run, tmp_path, monkeypatch
+):
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
     monkeypatch.setattr(
@@ -539,10 +539,10 @@ def test_the_advance_worker_refuses_a_substituted_run_tree_identity(tmp_path, mo
 
 
 def test_a_boundary_that_stopped_verifying_is_refused_before_the_worker_is_launched(
-    tmp_path, monkeypatch
+    orchestrated_run, tmp_path, monkeypatch
 ):
     """Invalid evidence must refuse in the parent before writable worker launch."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     reviewed_digest = _boundary_digest(run_root, run_id, "attestatores")
     receipts_before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
@@ -783,7 +783,9 @@ def test_the_console_classifies_every_way_its_input_pipe_can_fail(monkeypatch, c
         assert type(failure).__name__ in printed, failure
 
 
-def test_an_unreadable_stage_seal_is_a_named_refusal_not_an_unexpected_error(tmp_path, monkeypatch):
+def test_an_unreadable_stage_seal_is_a_named_refusal_not_an_unexpected_error(
+    orchestrated_run, tmp_path, monkeypatch
+):
     """A seal this console cannot read is a refusal it can name, not a crash.
 
     Caught only for `ApprovalRefusal`, a seal artefact that could not be read
@@ -798,7 +800,7 @@ def test_an_unreadable_stage_seal_is_a_named_refusal_not_an_unexpected_error(tmp
     proved nothing about the path it names.
     """
 
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
 
     def _unreadable(*_arguments, **_keywords):
         raise OSError(errno.EIO, "Input/output error")
@@ -853,9 +855,11 @@ def test_console_rejects_actual_process_arguments(monkeypatch):
         console.main()
 
 
-def test_landlock_probe_absent_refuses_loudly_before_any_subprocess_runs(tmp_path, monkeypatch):
+def test_landlock_probe_absent_refuses_loudly_before_any_subprocess_runs(
+    orchestrated_run, tmp_path, monkeypatch
+):
     """No ``setpriv`` on ``PATH`` (macOS today) must refuse, not proceed unenforced."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     missing = custody.NoConfinement("linux-without-setpriv")
     _use_backend(monkeypatch, missing)
 
@@ -900,9 +904,11 @@ def _use_backend(monkeypatch, backend):
     monkeypatch.setattr(custody, "confinement", lambda *a, **k: backend)
 
 
-def test_a_launcher_that_never_established_its_boundary_is_a_custody_refusal(tmp_path, monkeypatch):
+def test_a_launcher_that_never_established_its_boundary_is_a_custody_refusal(
+    orchestrated_run, tmp_path, monkeypatch
+):
     """A confinement launcher that exits without exec'ing must not be misread."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     _use_backend(
         monkeypatch,
         _StubConfinement(lambda command: [sys.executable, "-c", "import sys; sys.exit(127)"]),
@@ -925,7 +931,7 @@ def test_a_launcher_that_never_established_its_boundary_is_a_custody_refusal(tmp
 
 
 def test_a_backend_that_does_not_actually_deny_writes_refuses_before_the_console_opens(
-    tmp_path, monkeypatch
+    orchestrated_run, tmp_path, monkeypatch
 ):
     """The boundary is proven on this host, never inferred from an exit code.
 
@@ -937,7 +943,7 @@ def test_a_backend_that_does_not_actually_deny_writes_refuses_before_the_console
     one real write first, so an unenforced boundary is a refusal rather than
     a console that looks identical to a confined one.
     """
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     _use_backend(monkeypatch, _StubConfinement(lambda command: command))
 
     with pytest.raises(OperatorError) as review_error:
@@ -1390,8 +1396,10 @@ def test_require_no_provider_credentials_refuses_on_the_same_marker_shapes():
     assert excinfo.value.code == ErrorCode.CONSOLE_CUSTODY_REFUSED
 
 
-def test_review_marks_invalid_and_advance_refuses_when_a_sealed_inventory_lost_evidence(tmp_path):
-    run_root, run_id = _make_run(tmp_path)
+def test_review_marks_invalid_and_advance_refuses_when_a_sealed_inventory_lost_evidence(
+    orchestrated_run, tmp_path
+):
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     reviewed_digest = _boundary_digest(run_root, run_id, "attestatores")
     receipts_before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
@@ -1668,8 +1676,8 @@ def test_review_pages_across_boundaries_without_loss(tmp_path: Path, monkeypatch
     assert seen == list(range(1, 6))
 
 
-def test_projection_selects_a_later_review_page(tmp_path: Path, monkeypatch):
-    run_root, run_id = _make_run(tmp_path, scenario="page-review")
+def test_projection_selects_a_later_review_page(orchestrated_run, tmp_path: Path, monkeypatch):
+    run_root, run_id = _make_run(orchestrated_run, tmp_path, scenario="page-review")
     monkeypatch.setattr(review, "REVIEW_PAGE_SIZE", 2)
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
@@ -2033,9 +2041,11 @@ def test_review_refuses_a_bundle_member_whose_declared_size_is_false(tmp_path: P
 
 
 @requires_host_boundary
-def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(tmp_path):
+def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(
+    orchestrated_run, tmp_path
+):
     """Digest binding must be proven against a boundary that actually changed."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     reference = advance.trigger_advance(
         run_root,
@@ -2066,7 +2076,9 @@ def test_verify_advance_detects_a_boundary_that_changed_after_it_was_advanced(tm
 
 
 @requires_host_boundary
-def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visible(tmp_path):
+def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visible(
+    orchestrated_run, tmp_path
+):
     """Append-only means the second advance is a new record, not a silent overwrite.
 
     Both must actually reach a human: the review projection is the one
@@ -2074,7 +2086,7 @@ def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visibl
     appear there is a silent loss, even though the
     bytes are safely on disk.
     """
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     digest = _boundary_digest(run_root, run_id)
     first = advance.trigger_advance(
         run_root,
@@ -2103,8 +2115,10 @@ def test_two_advance_records_for_one_boundary_are_both_persisted_and_both_visibl
 
 
 @requires_host_boundary
-def test_review_refuses_an_advance_record_copied_under_a_false_content_address(tmp_path):
-    run_root, run_id = _make_run(tmp_path)
+def test_review_refuses_an_advance_record_copied_under_a_false_content_address(
+    orchestrated_run, tmp_path
+):
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     reference = advance.trigger_advance(
         run_root,
@@ -2125,10 +2139,10 @@ def test_review_refuses_an_advance_record_copied_under_a_false_content_address(t
 
 
 @requires_host_boundary
-def test_review_refuses_an_in_tree_symlink_at_a_receipt_address(tmp_path):
+def test_review_refuses_an_in_tree_symlink_at_a_receipt_address(orchestrated_run, tmp_path):
     """An immutable receipt is a regular file, not an alias to equivalent bytes."""
 
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     reference = advance.trigger_advance(
         run_root,
@@ -2152,9 +2166,9 @@ def test_review_refuses_an_in_tree_symlink_at_a_receipt_address(tmp_path):
 
 
 def test_operator_advance_requires_exact_confirmation_of_the_observed_digest(
-    tmp_path, monkeypatch, capsys
+    orchestrated_run, tmp_path, monkeypatch, capsys
 ):
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: "not that boundary")
@@ -2175,9 +2189,9 @@ def test_operator_advance_requires_exact_confirmation_of_the_observed_digest(
 
 @requires_host_boundary
 def test_confirmed_operator_advance_runs_the_external_worker_and_reports_its_record(
-    tmp_path, monkeypatch, capsys
+    orchestrated_run, tmp_path, monkeypatch, capsys
 ):
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
 
     cli._advance_with_confirmation(
@@ -2195,7 +2209,7 @@ def test_confirmed_operator_advance_runs_the_external_worker_and_reports_its_rec
 
 
 def test_the_workers_whole_diagnostic_reaches_the_note_and_the_refusal_detail(
-    tmp_path, monkeypatch, capsys
+    orchestrated_run, tmp_path, monkeypatch, capsys
 ) -> None:
     """Neither channel may shorten or rewrite the one copy of the diagnostic.
 
@@ -2215,7 +2229,7 @@ def test_the_workers_whole_diagnostic_reaches_the_note_and_the_refusal_detail(
     )
     assert len(noisy) > 2000, "the fixture must exceed the sanitizer's default bound"
 
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     expected_digest = _boundary_digest(run_root, run_id)
 
@@ -2270,7 +2284,7 @@ def test_the_workers_whole_diagnostic_reaches_the_note_and_the_refusal_detail(
 
 
 def test_a_broken_stderr_cannot_turn_a_recorded_advance_into_a_refusal(
-    tmp_path, monkeypatch
+    orchestrated_run, tmp_path, monkeypatch
 ) -> None:
     """The note is a courtesy; the advance it describes is already permanent.
 
@@ -2280,7 +2294,7 @@ def test_a_broken_stderr_cannot_turn_a_recorded_advance_into_a_refusal(
     the worker's own report had, one process further out.
     """
 
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     expected_digest = _boundary_digest(run_root, run_id)
 
@@ -2316,11 +2330,11 @@ def test_a_broken_stderr_cannot_turn_a_recorded_advance_into_a_refusal(
 
 
 def test_a_verification_failure_keeps_the_workers_own_diagnostic_beside_it(
-    tmp_path, monkeypatch
+    orchestrated_run, tmp_path, monkeypatch
 ) -> None:
     """The refusal path must not be the place the worker's words get dropped."""
 
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     expected_digest = _boundary_digest(run_root, run_id)
 
     def _unreadable_report(*_args, **_kwargs):
@@ -2347,11 +2361,11 @@ def test_a_verification_failure_keeps_the_workers_own_diagnostic_beside_it(
 
 
 def test_a_written_record_the_worker_could_not_report_is_not_called_a_refused_advance(
-    tmp_path, monkeypatch
+    orchestrated_run, tmp_path, monkeypatch
 ) -> None:
     """Exit `WORKER_REPORT_FAILED_EXIT` names the one state a bare nonzero hid."""
 
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     expected_digest = _boundary_digest(run_root, run_id)
 
     def _wrote_but_could_not_report(*_args, **_kwargs):
@@ -2382,7 +2396,7 @@ def test_a_written_record_the_worker_could_not_report_is_not_called_a_refused_ad
 
 
 def test_the_worker_reports_a_written_record_it_cannot_deliver_with_its_own_status(
-    tmp_path, monkeypatch, capsys
+    orchestrated_run, tmp_path, monkeypatch, capsys
 ) -> None:
     """The parent's classification is only worth having if the worker emits it.
 
@@ -2391,7 +2405,7 @@ def test_the_worker_reports_a_written_record_it_cannot_deliver_with_its_own_stat
     alone; only stdout is made to fail.
     """
 
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     expected_digest = _boundary_digest(run_root, run_id)
     receipts = tree.root / "receipts" / "sha256"
@@ -2433,8 +2447,10 @@ def test_the_worker_reports_a_written_record_it_cannot_deliver_with_its_own_stat
     assert {path.name for path in receipts.glob("*.json")} - before
 
 
-def test_a_post_worker_security_refusal_keeps_its_exact_reason(tmp_path, monkeypatch):
-    run_root, run_id = _make_run(tmp_path)
+def test_a_post_worker_security_refusal_keeps_its_exact_reason(
+    orchestrated_run, tmp_path, monkeypatch
+):
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     expected_digest = _boundary_digest(run_root, run_id)
 
@@ -2485,9 +2501,9 @@ def test_a_post_worker_security_refusal_keeps_its_exact_reason(tmp_path, monkeyp
 
 @requires_host_boundary
 def test_advance_verb_is_the_confirmed_operator_path_to_the_external_worker(
-    tmp_path, monkeypatch, capsys
+    orchestrated_run, tmp_path, monkeypatch, capsys
 ):
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
 
     result = cli.main(
@@ -2514,8 +2530,10 @@ def test_advance_verb_is_the_confirmed_operator_path_to_the_external_worker(
     ]
 
 
-def test_confirmed_digest_changed_before_worker_launch_is_refused_without_a_record(tmp_path):
-    run_root, run_id = _make_run(tmp_path)
+def test_confirmed_digest_changed_before_worker_launch_is_refused_without_a_record(
+    orchestrated_run, tmp_path
+):
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     seal, reviewed_digest = advance.sealed_boundary(tree, "armarium")
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
@@ -2545,11 +2563,11 @@ def test_confirmed_digest_changed_before_worker_launch_is_refused_without_a_reco
 
 @requires_host_boundary
 def test_boundary_changed_during_worker_append_is_retained_but_not_reported_as_success(
-    tmp_path, monkeypatch
+    orchestrated_run, tmp_path, monkeypatch
 ):
     """A newly stale immutable record is a refusal with a recovery location."""
 
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     reviewed_digest = _boundary_digest(run_root, run_id)
     original_run_confined = advance.run_confined
@@ -2593,9 +2611,11 @@ def test_boundary_changed_during_worker_append_is_retained_but_not_reported_as_s
 # --- The trigger: a hostile run tree can lie to a person, never to evidence. -----------
 
 
-def test_a_path_traversal_image_reference_in_the_run_tree_is_refused_not_read(tmp_path):
+def test_a_path_traversal_image_reference_in_the_run_tree_is_refused_not_read(
+    orchestrated_run, tmp_path
+):
     """A poisoned Armarium export cannot make the console read outside the run tree."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     export_id = artifact_id(ARMARIUM, "export", "export", None)
     record = tree.read_artifact(ARMARIUM, "export", export_id)
@@ -2738,7 +2758,9 @@ def test_the_advance_module_names_no_approval_action_but_advance():
         assert other not in source
 
 
-def test_an_advance_request_cannot_ask_the_worker_for_any_other_approval(tmp_path, monkeypatch):
+def test_an_advance_request_cannot_ask_the_worker_for_any_other_approval(
+    orchestrated_run, tmp_path, monkeypatch
+):
     """Enforced, not conventioned: the request channel carries no action at all.
 
     The renderer's one influence over the write is the stdin request. This
@@ -2748,7 +2770,7 @@ def test_an_advance_request_cannot_ask_the_worker_for_any_other_approval(tmp_pat
     approver are stamped by the code that owns the write, and the subject is
     derived from the stage through `advance_subject`'s closed stage list.
     """
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     _seal, expected_digest = advance.sealed_boundary(tree, "armarium")
     monkeypatch.setattr(
@@ -2792,9 +2814,9 @@ def test_an_advance_request_cannot_ask_the_worker_for_any_other_approval(tmp_pat
     assert record["subject_ids"] == ["stage-boundary:armarium"]
 
 
-def test_an_advance_naming_a_stage_that_is_not_one_writes_nothing(tmp_path):
+def test_an_advance_naming_a_stage_that_is_not_one_writes_nothing(orchestrated_run, tmp_path):
     """The subject is derived from a closed stage list, never from the request."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
 
@@ -2804,7 +2826,9 @@ def test_an_advance_naming_a_stage_that_is_not_one_writes_nothing(tmp_path):
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
-def test_a_symlink_inside_the_run_tree_pointing_outside_it_is_refused_not_followed(tmp_path):
+def test_a_symlink_inside_the_run_tree_pointing_outside_it_is_refused_not_followed(
+    orchestrated_run, tmp_path
+):
     """Containment is a property of the console's reader, not only of manifest walks.
 
     Unit 0B's containment covers the manifest walk. The console reads by three
@@ -2813,7 +2837,7 @@ def test_a_symlink_inside_the_run_tree_pointing_outside_it_is_refused_not_follow
     stored reference is an ordinary-looking relative path and the escape lives
     on disk.
     """
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     export_id = artifact_id(ARMARIUM, "export", "export", None)
     record = tree.read_artifact(ARMARIUM, "export", export_id)
@@ -2836,7 +2860,7 @@ def test_a_symlink_inside_the_run_tree_pointing_outside_it_is_refused_not_follow
     assert excinfo.value.code == ErrorCode.CONSOLE_TREE_UNREADABLE
 
 
-def test_a_symlinked_receipts_directory_is_refused_not_walked(tmp_path: Path):
+def test_a_symlinked_receipts_directory_is_refused_not_walked(orchestrated_run, tmp_path: Path):
     """The receipt walk is not a manifest walk, so it must assert its own containment.
 
     `receipts/sha256` sits outside `_inventory_directory`'s protection (a receipt
@@ -2847,7 +2871,7 @@ def test_a_symlinked_receipts_directory_is_refused_not_walked(tmp_path: Path):
     whatever its own hash is and satisfy that check trivially. A fabricated
     "advance" record would then read as a real approval decision.
     """
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     # Inside the run tree: `RunTree.resolve` then accepts the target, so the
     # explicit symlink refusal is the only thing that can reject it.
@@ -2869,7 +2893,7 @@ def test_a_symlinked_receipts_directory_is_refused_not_walked(tmp_path: Path):
 
 @requires_host_boundary
 def test_a_relative_run_root_cannot_split_the_permitted_path_from_the_written_tree(
-    tmp_path, monkeypatch
+    orchestrated_run, tmp_path, monkeypatch
 ):
     """One string, two resolutions, two different trees — and a boundary guarding neither.
 
@@ -2880,7 +2904,7 @@ def test_a_relative_run_root_cannot_split_the_permitted_path_from_the_written_tr
     allowance granted over a directory nobody wrote to. Resolving once, in the
     parent, is what keeps them the same tree.
     """
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     # The launcher's own working directory and the workspace it hands the child
     # are independent: `verbatus --workspace ...` is run from wherever the
     # operator happens to be. Here they differ, which is the only condition the
@@ -2904,7 +2928,9 @@ def test_a_relative_run_root_cannot_split_the_permitted_path_from_the_written_tr
 
 
 @requires_host_boundary
-def test_an_advance_whose_boundary_later_changed_is_named_stale_where_a_person_reads(tmp_path):
+def test_an_advance_whose_boundary_later_changed_is_named_stale_where_a_person_reads(
+    orchestrated_run, tmp_path
+):
     """`verify_advance` refuses a moved boundary; the surface has to say so too.
 
     Nothing on the read path called `verify_advance`, so the console displayed
@@ -2913,7 +2939,7 @@ def test_an_advance_whose_boundary_later_changed_is_named_stale_where_a_person_r
     record is still shown — reporting it, not hiding it, is what keeps this
     a reader rather than a picker.
     """
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     advance.trigger_advance(
         run_root,
@@ -2994,9 +3020,11 @@ def _second_armarium_seal(tree: RunTree) -> str:
     return second["artifact_id"]
 
 
-def test_a_resealed_boundary_shows_every_seal_and_names_exactly_one_as_current(tmp_path: Path):
+def test_a_resealed_boundary_shows_every_seal_and_names_exactly_one_as_current(
+    orchestrated_run, tmp_path: Path
+):
     """`current` is a label; superseded seals must remain visible evidence."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     superseded = review.ReadOnlyRun(run_root, run_id).projection()
     before = next(row for row in superseded.boundaries if row["stage"] == ARMARIUM)
@@ -3030,9 +3058,11 @@ def test_a_resealed_boundary_shows_every_seal_and_names_exactly_one_as_current(t
 
 
 @requires_host_boundary
-def test_a_boundary_that_moved_under_two_advances_names_each_one_separately(tmp_path: Path):
+def test_a_boundary_that_moved_under_two_advances_names_each_one_separately(
+    orchestrated_run, tmp_path: Path
+):
     """Each advance keeps its own verdict; a stale one remains visible."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     early = advance.trigger_advance(
         run_root,
@@ -3071,10 +3101,10 @@ def test_a_boundary_that_moved_under_two_advances_names_each_one_separately(tmp_
     ids=["page-image", "act-crop", "review-bundle", "stage-record"],
 )
 def test_tampered_evidence_is_refused_naming_the_file_whose_bytes_moved(
-    tmp_path: Path, evidence: str
+    orchestrated_run, tmp_path: Path, evidence: str
 ):
     """The rendered refusal must name the file; its `__cause__` is not shown."""
-    run_root, run_id = _make_run(tmp_path, scenario="page-review")
+    run_root, run_id = _make_run(orchestrated_run, tmp_path, scenario="page-review")
     tree = RunTree(run_root, run_id)
     projected = review.ReadOnlyRun(run_root, run_id).projection()
     if evidence == "page":
@@ -3108,9 +3138,11 @@ def test_tampered_evidence_is_refused_naming_the_file_whose_bytes_moved(
     assert relative in raised.value.render(), "and it must survive the render a person reads"
 
 
-def test_opening_a_run_for_review_changes_no_path_bytes_size_or_mtime(tmp_path: Path):
+def test_opening_a_run_for_review_changes_no_path_bytes_size_or_mtime(
+    orchestrated_run, tmp_path: Path
+):
     """The unconfined parent projection must preserve the entire run tree."""
-    run_root, run_id = _make_run(tmp_path, scenario="page-review")
+    run_root, run_id = _make_run(orchestrated_run, tmp_path, scenario="page-review")
     root = run_root / run_id
 
     def census() -> dict[str, object]:
@@ -3135,9 +3167,11 @@ def test_opening_a_run_for_review_changes_no_path_bytes_size_or_mtime(tmp_path: 
     assert after == before, "reviewing a run rewrote evidence it was only meant to read"
 
 
-def test_a_stage_record_changed_after_inventory_is_not_paired_with_the_old_digest(tmp_path: Path):
+def test_a_stage_record_changed_after_inventory_is_not_paired_with_the_old_digest(
+    orchestrated_run, tmp_path: Path
+):
     """The displayed body and address must describe the same filesystem read."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     manifest_row = next(
         row
@@ -3155,10 +3189,11 @@ def test_a_stage_record_changed_after_inventory_is_not_paired_with_the_old_diges
 
 
 def test_export_rows_are_derived_from_the_stage_record_snapshot_not_a_later_reread(
+    orchestrated_run,
     tmp_path: Path,
 ):
     """One projection must not describe two versions of the Armarium export."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     manifest_row = next(
         row
@@ -3181,10 +3216,10 @@ def test_export_rows_are_derived_from_the_stage_record_snapshot_not_a_later_rere
 
 @pytest.mark.parametrize("evidence", ["page", "crop", "bundle"])
 def test_export_references_refuse_a_digest_that_disagrees_with_the_named_bytes(
-    tmp_path: Path, evidence: str
+    orchestrated_run, tmp_path: Path, evidence: str
 ):
     """Review may not replace a contradictory recorded digest with a fresh one."""
-    run_root, run_id = _make_run(tmp_path, scenario="page-review")
+    run_root, run_id = _make_run(orchestrated_run, tmp_path, scenario="page-review")
     tree = RunTree(run_root, run_id)
     export_id = artifact_id(ARMARIUM, "export", "export", None)
     record = tree.read_artifact(ARMARIUM, "export", export_id)
@@ -3213,9 +3248,11 @@ def test_export_references_refuse_a_digest_that_disagrees_with_the_named_bytes(
     assert "digest" in raised.value.detail
 
 
-def test_review_refuses_a_compressed_bundle_member_before_decompressing_it(tmp_path: Path):
+def test_review_refuses_a_compressed_bundle_member_before_decompressing_it(
+    orchestrated_run, tmp_path: Path
+):
     """The review bundle is only ever written stored (`build_armarium_bundle`)."""
-    run_root, run_id = _make_run(tmp_path, scenario="page-review")
+    run_root, run_id = _make_run(orchestrated_run, tmp_path, scenario="page-review")
     tree = RunTree(run_root, run_id)
     export_id = artifact_id(ARMARIUM, "export", "export", None)
     record = tree.read_artifact(ARMARIUM, "export", export_id)
@@ -3247,9 +3284,11 @@ def test_review_refuses_a_compressed_bundle_member_before_decompressing_it(tmp_p
 @pytest.mark.parametrize(
     "missing", ["pages", "delivered", "non_delivered", "other_readings", "bundle-reference"]
 )
-def test_review_refuses_a_missing_required_armarium_projection_field(tmp_path: Path, missing: str):
+def test_review_refuses_a_missing_required_armarium_projection_field(
+    orchestrated_run, tmp_path: Path, missing: str
+):
     """Absent export evidence is not an empty successful review projection."""
-    run_root, run_id = _make_run(tmp_path)
+    run_root, run_id = _make_run(orchestrated_run, tmp_path)
     tree = RunTree(run_root, run_id)
     export_id = artifact_id(ARMARIUM, "export", "export", None)
     record = tree.read_artifact(ARMARIUM, "export", export_id)

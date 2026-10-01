@@ -290,10 +290,12 @@ def test_a_comparison_under_the_pair_bound_stops_on_its_exact_step_count():
     same pair is compared with exactly the steps it needs and is `unknown` with
     one fewer, on any machine and under any load, and the row records the
     budget it ran out of."""
-    reading = "alpha beta gamma " * 400
-    reported = "alpha beta gamna " * 400
-    assert len(reading) * len(reported) < dissent.MAX_COMPARISON_CHARACTER_PAIRS
+    reading = "alpha beta gamma " * 100
+    reported = "alpha beta gamna " * 100
+    pairs = len(reading) * len(reported)
+    assert pairs < dissent.MAX_COMPARISON_CHARACTER_PAIRS
     needed = _steps_to_compare(reading, reported)
+    assert needed > 5 * pairs, "this pair must need matcher work far past its pair count"
 
     row = dissent.dissent_against(reading, reported, max_comparison_steps=needed)
     assert row["compared"] is True

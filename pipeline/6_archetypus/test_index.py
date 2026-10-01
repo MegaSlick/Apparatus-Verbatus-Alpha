@@ -33,7 +33,6 @@ from common.runtree.store import RunTree
 from common.sealed_config import require_sealed_config
 from common.stage import load_fixture, run_sealed_config_digests
 from conftest import load_stage, page_context, run_stage
-from conftest import run_orchestrator as orchestrate
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -77,7 +76,7 @@ def _index(tree: RunTree) -> dict:
 
 
 @pytest.fixture(scope="module")
-def established_run(tmp_path_factory):
+def established_run(orchestrated_run, tmp_path_factory):
     """One complete run, shared by every test below that only reads it.
 
     `build_index` and `validate_index` write nothing, so orchestrating once is
@@ -86,7 +85,7 @@ def established_run(tmp_path_factory):
     still take their own run, because they change what the next reader sees.
     """
     root = tmp_path_factory.mktemp("established") / "runs"
-    assert orchestrate(root, "r", "page-unbroken").returncode == 0
+    orchestrated_run(root, "r", "page-unbroken")
     return page_context(root, "r", "page-unbroken", {}, ARCHETYPUS)
 
 
@@ -118,9 +117,9 @@ def test_every_index_row_carries_its_records_status_and_text_hash(established_ru
         assert row["act_key"] == record["act_key"]
 
 
-def test_the_held_act_never_appears_in_the_index(tmp_path):
+def test_the_held_act_never_appears_in_the_index(orchestrated_run, tmp_path):
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "page-review").returncode == 3
+    orchestrated_run(root, "r", "page-review", 3)
     tree = RunTree(root, "r")
     index = _index(tree)
 
@@ -139,9 +138,9 @@ def test_the_index_self_hash_verifies(established_run):
     assert verify_self_hash(_index(established_run.tree))
 
 
-def test_deleting_and_rerunning_rebuilds_the_index_identically(tmp_path):
+def test_deleting_and_rerunning_rebuilds_the_index_identically(orchestrated_run, tmp_path):
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "page-unbroken").returncode == 0
+    orchestrated_run(root, "r", "page-unbroken")
     tree = RunTree(root, "r")
     path = tree.resolve(tree.index_path(ARCHETYPUS))
     original = path.read_bytes()
@@ -227,9 +226,11 @@ def test_the_index_the_stage_actually_wrote_passes_its_own_consumer_check(establ
     ) == archetypus.build_index(established_run)
 
 
-def test_a_duplicate_record_on_disk_is_fatal_before_an_index_can_paper_over_it(tmp_path):
+def test_a_duplicate_record_on_disk_is_fatal_before_an_index_can_paper_over_it(
+    orchestrated_run, tmp_path
+):
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "page-unbroken").returncode == 0
+    orchestrated_run(root, "r", "page-unbroken")
     tree = RunTree(root, "r")
 
     original_entry = next(
@@ -253,7 +254,9 @@ def test_a_duplicate_record_on_disk_is_fatal_before_an_index_can_paper_over_it(t
         archetypus.build_index(_Context(tree))
 
 
-def test_a_record_whose_payload_names_a_different_act_than_its_envelope_is_fatal(tmp_path):
+def test_a_record_whose_payload_names_a_different_act_than_its_envelope_is_fatal(
+    orchestrated_run, tmp_path
+):
     """The row's identity comes from the envelope; the text comes from the payload.
 
     A record resealed so the two disagree would put one act's established text
@@ -261,7 +264,7 @@ def test_a_record_whose_payload_names_a_different_act_than_its_envelope_is_fatal
     one place a wrong answer would look perfectly well formed.
     """
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "page-unbroken").returncode == 0
+    orchestrated_run(root, "r", "page-unbroken")
     tree = RunTree(root, "r")
 
     entry = next(
