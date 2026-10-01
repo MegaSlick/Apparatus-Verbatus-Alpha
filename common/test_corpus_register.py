@@ -18,7 +18,6 @@ from common.corpus_register import (
     members_of,
     read_snapshot,
     register_digest,
-    resolve_proposal,
     validate_register_bytes,
     verify_snapshot_is_current,
 )
@@ -171,30 +170,8 @@ def test_preference_field_is_refused_at_the_register_boundary():
         validate_register_bytes(canonical_bytes(value))
 
 
-def test_declared_correspondence_resolves_two_capture_proposals_to_one_physical_act():
-    value = json.loads(_register(members=["a" * 64, "b" * 64]))
-    first = _record(_register(members=["a" * 64]), "correspondence")
-    second_page = page_id({"kind": "source", "sha256": "d" * 64}, {"operation": "whole"})
-    second_bounds = {"x": 11, "y": 21, "w": 31, "h": 41}
-    second_act = act_id(second_page, "proposal", second_bounds)
-    second = _correspondence(second_page, second_act, second_bounds)
-    value["records"].append(second)
-    snapshot = canonical_bytes(value)
-    assert (
-        resolve_proposal(snapshot, first["act_id"])["physical_act_id"] == first["physical_act_id"]
-    )
-    assert (
-        resolve_proposal(snapshot, second["act_id"])["physical_act_id"] == first["physical_act_id"]
-    )
-    assert resolve_proposal(snapshot, "act_0000000000000000") == {
-        "outcome": "finding",
-        "code": "unresolved-physical-act",
-        "act_id": "act_0000000000000000",
-    }
-
-
-def test_a_hard_reshoot_unions_two_captures_shared_act_into_one_physical_act():
-    """Two captures of one act resolve by declaration, never by hash coincidence.
+def test_a_hard_reshoot_declares_two_captures_shared_act_against_one_physical_act():
+    """Two captures of one act are joined by declaration, never by hash coincidence.
 
     Capture A shows acts {1,2,3,4} of physical page P. Capture B is a re-shoot
     of the same opening: it shows only act 4 of P (at different bounds -- a
@@ -204,9 +181,8 @@ def test_a_hard_reshoot_unions_two_captures_shared_act_into_one_physical_act():
     4 into one physical act is exactly the declared correspondence this
     register exists to carry -- never a hash coincidence.
 
-    The shared act's two image-local proposals resolve to one physical act, the
-    facing page's act stays under its own physical page, and neither collides
-    with the other's identity.
+    The register accepts both captures' correspondences to the one physical act,
+    and each physical page's membership is the union of the captures showing it.
     """
     source_a = "a" * 64
     source_b = "b" * 64
@@ -262,26 +238,12 @@ def test_a_hard_reshoot_unions_two_captures_shared_act_into_one_physical_act():
         }
     )
 
-    # The shared act, seen from either capture, resolves to the one physical
-    # act P minted once -- this is "P's act set is the union" made concrete:
-    # a consumer merging by physical_act_id sees one entry, not two.
-    assert resolve_proposal(register, acts_a[3])["physical_act_id"] == physical_p4
-    assert resolve_proposal(register, act_4b)["physical_act_id"] == physical_p4
+    validate_register_bytes(register)
 
     # Both captures show P; only capture B shows Q. Membership says so without
     # ranking either, and P's list is the union rather than a chosen one.
     assert members_of(register, physical_p) == sorted([source_a, source_b])
     assert members_of(register, physical_q) == [source_b]
-
-    # `resolve_proposal` is a lookup, not an inference: acts 1-3 (single-
-    # capture, page P) and Q's act (single-capture, the facing page) have no
-    # declared correspondence, so asking it about them names a finding rather
-    # than guessing one. Unit 18 declares this shape; deciding *whether* a
-    # single-capture act needs resolving at all -- so it is never asked in the
-    # first place, and "single-capture" never reads as "unresolved" -- is the
-    # caller-side policy the physical-act partition builder owns.
-    for solo_act in (*acts_a[:3], act_q1):
-        assert resolve_proposal(register, solo_act)["outcome"] == "finding"
 
 
 # --- Retraction is the correction mechanism, and it has to reach the reader ------
@@ -304,35 +266,6 @@ def test_a_retraction_names_what_it_retracts_and_never_deletes_it():
     )
     validated = validate_register_bytes(register)
     assert correspondence in validated["records"], "the retracted record is still present"
-
-
-def test_a_retracted_correspondence_stops_resolving_and_says_which_finding_it_is():
-    """The declaration is retained as evidence and
-    stops answering. A retraction the reader ignored would leave the register's
-    only correction mechanism inert -- the wrong physical act would keep
-    resolving, with `outcome: resolved`, and nothing anywhere would be a
-    finding."""
-    correspondence = _record(_register(members=["a" * 64]), "correspondence")
-    identity = f"{correspondence['act_id']}->{correspondence['physical_act_id']}"
-    before = _register(members=["a" * 64])
-    assert resolve_proposal(before, correspondence["act_id"])["outcome"] == "resolved"
-
-    after = _register(
-        members=["a" * 64],
-        extra=[
-            {
-                "kind": "retraction",
-                "retracts": identity,
-                "reason": "declared against the wrong capture",
-                "appending_run": "triage-2",
-            }
-        ],
-    )
-    assert resolve_proposal(after, correspondence["act_id"]) == {
-        "outcome": "finding",
-        "code": "retracted-physical-act",
-        "act_id": correspondence["act_id"],
-    }
 
 
 def test_a_retraction_naming_no_earlier_record_is_refused():
@@ -549,10 +482,8 @@ def test_a_retraction_may_only_name_a_correspondence_or_a_membership_head():
         validate_register_bytes(value)
 
 
-def test_register_lookups_refuse_malformed_identity_tokens():
+def test_a_membership_lookup_refuses_a_malformed_identity_token():
     register = _register(members=["a" * 64])
-    with pytest.raises(SchemaRefusal, match="well-formed act_ identity"):
-        resolve_proposal(register, "not-an-act")
     with pytest.raises(SchemaRefusal, match="well-formed ppg_ identity"):
         members_of(register, "ppg_not-a-digest")
 
@@ -1062,17 +993,10 @@ def test_a_retracted_correspondence_is_reasserted_by_a_new_run_not_resurrected()
         "reason": "a person confirmed two frames as one page and was wrong",
         "appending_run": "triage-2",
     }
-    withdrawn = _register(members=["a" * 64], extra=[withdrawal])
-    assert resolve_proposal(withdrawn, act) == {
-        "outcome": "finding",
-        "code": "retracted-physical-act",
-        "act_id": act,
-    }
+    validate_register_bytes(_register(members=["a" * 64], extra=[withdrawal]))
     reasserted = {**declaration, "appending_run": "triage-3"}
     restored = _register(members=["a" * 64], extra=[withdrawal, reasserted])
-    resolution = resolve_proposal(restored, act)
-    assert resolution["outcome"] == "resolved"
-    assert resolution["physical_act_id"] == ACT
+    validate_register_bytes(restored)
     assert json.loads(restored)["records"][-3:] == [declaration, withdrawal, reasserted]
     with pytest.raises(SchemaRefusal, match="a retraction that corrects nothing"):
         validate_register_bytes(
@@ -1098,7 +1022,7 @@ def test_a_reasserted_correspondence_is_retractable_again(tmp_path):
     }
     again = {**withdrawal, "reason": "wrong a second time", "appending_run": "triage-4"}
     register = _register(members=["a" * 64], extra=[withdrawal, reasserted, again])
-    assert resolve_proposal(register, act)["code"] == "retracted-physical-act"
+    validate_register_bytes(register)
     assert len(json.loads(register)["records"]) == 7
 
 
