@@ -2038,11 +2038,11 @@ def reading_acts(context) -> list[dict[str, Any]]:
     """Every unit a page-read run counts, in page order, each proven from its records.
 
     One row per entry of a read page's answer (class `reading`, or
-    `reading-unplaced` when it cites no boxed id), one `page-unread` row for a
-    sealed page whose reading is not a parsed, valid answer, one `page-blank`
-    row for a read page whose answer names nothing, and one `page-refused` row,
-    not counted, for a page the Exemplar refused; every submitted page has at
-    least one row. Fields are `READING_ACT_FIELDS`; see `common/README.md`,
+    `reading-unplaced` when it cites no placing id, by
+    `page_accounting.placement_boxes`), one `page-unread` row for a sealed page
+    whose reading is not a parsed, valid answer, one `page-blank` row for a read
+    page whose answer names nothing, and one `page-refused` row, not counted,
+    for a page the Exemplar refused; every submitted page has at least one row. Fields are `READING_ACT_FIELDS`; see `common/README.md`,
     "Page-read denominator". A caller needing `page_readings` too takes
     `reading_denominator`, which verifies the run once.
     """

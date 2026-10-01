@@ -1608,7 +1608,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
                 raise SchemaRefusal(
                     f"{subject} has a flagged ink-map page with no re-measurement to resolve it. "
                     "The page's terminal hold cannot be derived from an absent measurement. "
-                    "Rebuild the export from the retained Ink Map and Designator evidence."
+                    "Rebuild the export from the retained Ink Map and Perlector act-region evidence."
                 )
             if any(
                 not is_plain_int(remeasured[field])

@@ -67,9 +67,9 @@ from operations.spike_perlector.scoring import score_response
 from . import CorpusRefusal
 from .reference import validate_reference_page
 
-SCHEMA = "reference-comparison.v1"
+SCHEMA = "reference-comparison.v2"
 
-# One decision, in one place: a proposal/reference pair whose IoU falls below
+# One decision, in one place: a pipeline-act/reference pair whose IoU falls below
 # this is not an eligible match at all, never merely a low-scoring one.
 # Standard object-detection convention (0.5); nothing in this corpus's measured
 # geometry argues for a different predeclared value, and a threshold that moves
@@ -648,7 +648,7 @@ def compare_page(
     profile: NormalizationProfile = GRAPHEMIC_V1,
     excluded_region_counts: dict[str, dict[str, int]] | None = None,
 ) -> dict[str, Any]:
-    """Build one `reference-comparison.v1` for a single page.
+    """Build one `reference-comparison.v2` for a single page.
 
     `pipeline_acts` is exactly `load_pipeline_reading_acts`'s output shape --
     `{"act_id", "bounds", "page_sha256"}` -- so a run tree's own loader output can
@@ -813,7 +813,7 @@ def _closed_list(value: Any, fields: frozenset[str], what: str) -> list[dict[str
 
 
 def validate_comparison(comparison: Any) -> dict[str, Any]:
-    """Refuse a comparison record that is not exactly `reference-comparison.v1`."""
+    """Refuse a comparison record that is not exactly `reference-comparison.v2`."""
     comparison = _closed(comparison, _TOP_FIELDS, "reference comparison")
     if comparison["schema"] != SCHEMA:
         raise Refusal(f"wrong-schema: expected {SCHEMA!r}, got {comparison['schema']!r}")

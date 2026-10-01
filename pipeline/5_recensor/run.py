@@ -144,10 +144,10 @@ def page_coverage_findings(context, *, regions: dict[int, list[dict]]) -> dict[i
 
     `regions` maps a sealed page ordinal to the bounds counted as covering its
     ink: every reading region cut on it, and every sealed page, one with no
-    region included. The input is the page image itself, never the proposal
-    set, a witness or a reading.
-    The paper value is the Designator's shared inference under the sealed background
-    policy, never the page's own histogram mode, which on a photographed opening is the
+    region included. The input is the page image itself, never a witness or a
+    reading.
+    The paper value is `common.background`'s shared inference under the sealed
+    `ink-map` background policy, never the page's own histogram mode, which on a photographed opening is the
     bezel and hides all residual ink. A page whose paper the inference refuses gets a
     finding carrying the refusal and no counts.
     """
@@ -155,7 +155,7 @@ def page_coverage_findings(context, *, regions: dict[int, list[dict]]) -> dict[i
         return {}
     background_config = load_background_config(context.args.ink_map_config)
     context.require_sealed_config("ink-map", background_config["config_sha256"])
-    # Set aside the page-spanning component already accounted for by Designator.
+    # The page-spanning component is set aside under the sealed `ink-map` coverage policy.
     coverage_config = load_coverage_audit_config(context.args.ink_map_config)
     context.require_sealed_config("ink-map", coverage_config["config_sha256"])
     pages = sealed_page_images(context)
