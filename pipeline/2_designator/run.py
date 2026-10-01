@@ -434,14 +434,16 @@ def _publish_detector_records(
             receipt_ref=secondary["receipt_ref"],
             response_ref=raw_ref,
             detections=[
-                {"obb": quantized[index], "score_bp": half_even_bp(detections[index]["score"])}
+                {
+                    "ordinal": index,
+                    "obb": quantized[index],
+                    "score_bp": half_even_bp(detections[index]["score"]),
+                }
                 for index in cuttable
             ],
         )
         by_ordinal = {
-            cuttable[position]: proposal
-            for proposal in proposals
-            for position in proposal["observed_ordinals"]
+            index: proposal for proposal in proposals for index in proposal["observed_ordinals"]
         }
         subjects = []
         for index, detection in enumerate(detections):
