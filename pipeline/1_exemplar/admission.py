@@ -49,7 +49,6 @@ ADMIT_OR_FAN_OUT: Final = "admit-or-fan-out"
 # A format that is always a container of pages: PDF alone.
 RENDER_PAGES: Final = "render-pages"
 ALWAYS_A_CONTAINER: Final = frozenset({"pdf"})
-ACTIONS: Final = frozenset({ADMIT_OR_FAN_OUT, RENDER_PAGES})
 SNIFFABLE_FORMATS: Final = image_formats.SNIFFABLE_FORMATS
 
 
