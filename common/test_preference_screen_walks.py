@@ -46,12 +46,10 @@ FAMILY_DEPTH = 200_000
 
 # Every runtime screen standing over the rule that no step may pick among
 # witnesses, as (file, function). Each
-# walks a payload it does not control -- caller JSON, witness output, or a
-# dossier carrying testimonia verbatim -- looking for a field that would name a
-# preference among witnesses.
+# walks a payload it does not control -- caller JSON or witness output --
+# looking for a field that would name a preference among witnesses.
 PREFERENCE_SCREENS = (
-    # The reference implementation. Iterative from the start; the others were
-    # converted to match it or delegate to it.
+    # The reference implementation; the others match it or delegate to it.
     ("common/corpus_register.py", "refuse_capture_preference"),
     ("operations/operator/triage.py", "_refuse_preference_named"),
 )
@@ -101,15 +99,12 @@ def test_a_preference_screen_never_walks_the_interpreter_stack(relative_path, na
 
 def test_the_reference_screen_walks_a_pathological_payload_to_the_bottom():
     """The static guard above proves no screen calls itself. It cannot prove one
-    reaches the bottom, so the implementation the others delegate to or were
-    written to match is exercised at depth here.
+    reaches the bottom, so the implementation the others delegate to or match is
+    exercised at depth here.
 
-    This pin was missing. `common/test_corpus_register.py` does carry a
-    1,000,000-level case, and it reads like this one, but it is a pin on the
-    *JSON parser*: `validate_register_bytes` refusing a register file whose
-    brackets defeat `json.loads` before any walk begins. The walk itself --
-    `refuse_capture_preference`, called on already-parsed values from other
-    modules -- was only ever exercised on shallow fixtures.
+    `common/test_corpus_register.py`'s 1,000,000-level case pins the JSON
+    parser, which refuses before any walk begins; this one drives
+    `refuse_capture_preference` itself on an already-parsed value.
     """
     nested: object = {"leaf": 1}
     for _ in range(PATHOLOGICAL_DEPTH):
@@ -222,9 +217,8 @@ def test_every_preference_screen_walks_a_pathological_payload_to_the_bottom(
     quietly giving up. Neither may raise `RecursionError`, which is why the clean
     half is run bare -- a `RecursionError` there fails the test as itself.
 
-    Only the reference screen was exercised at depth before. The others were
-    covered by the static guard alone, which cannot tell an explicit worklist
-    that walks everything from one that stops early.
+    The static guard alone cannot tell an explicit worklist that walks
+    everything from one that stops early.
     """
     clean = _deep({"leaf": 1})
     screen(clean)
@@ -245,24 +239,13 @@ def test_every_preference_screen_names_a_payload_that_contains_itself(
 ):
     """Depth is not the only way a worklist walk fails to answer.
 
-    Converting these screens from recursion removed the interpreter stack from
-    the walk, and with it the accident that used to stop a self-referential
-    payload: the recursive form ended a cycle by exhausting itself and raising
-    `RecursionError`, which at least returned. A worklist has nothing to
-    exhaust, so a value that is its own ancestor is appended forever and the
-    caller hangs -- strictly less than the crash the conversion replaced, and
-    from a guard whose entire job is to refuse by name.
-
-    Only `assert_no_order_bearing_field` tracked the containers it had open.
-    The round that converted the others recorded that as a live property rather
-    than fixing it, on the argument that every remaining screen is fed values
-    parsed from JSON bytes and JSON cannot be cyclic. That argument does not
-    hold: `native_witness` and `perlector_audit` are called with in-memory
-    structures the caller assembled, and each screen runs before any shape
-    check closes what it walks. So every screen carries the same enter/exit
-    bookkeeping now, and each is tested here through the same entry point the
-    depth case uses -- under a wall-clock guard, because the failure this
-    closes is a hang and a test that hangs is worse than no test.
+    A worklist has no stack to exhaust, so without bookkeeping a value that is
+    its own ancestor is appended forever and the caller hangs. The screens are
+    called with in-memory structures assembled by callers (for example
+    `native_witness` through `refuse_capture_preference`), so cycles are
+    possible, and each screen runs before any shape check closes what it walks.
+    Each is tested here through the same entry point the depth case uses, under
+    a wall-clock guard, because the failure is a hang.
     """
     looped: dict = {"nested": []}
     looped["nested"].append(looped)
@@ -311,16 +294,10 @@ def test_a_value_shared_between_siblings_is_not_a_cycle(
 def test_a_forbidden_field_wrapped_in_a_tuple_is_not_hidden_from_any_screen(
     label, screen, forbidden, refusal, match, cycle_refusal, cycle_match
 ):
-    """A tuple is not a leaf just because these walks used to treat it as one (F085).
-
-    Every screen in the family descended only into `dict` and `list`, so a
-    forbidden field buried inside a `tuple` reached the bottom of the walk
-    unexamined -- and `common.contracts.canonical.canonical_bytes` serializes a
-    tuple exactly like a list, so the hidden field still reached a sealed
-    artifact looking like an ordinary array member. Reproduced directly before
-    this test existed: every screen here passed a payload no different in kind
-    from what it already refuses, only because the offending value sat one
-    tuple below where the walk was willing to look.
+    """A forbidden field inside a tuple is refused, because
+    `common.contracts.canonical.canonical_bytes` serializes a tuple exactly like
+    a list, so a field hidden there would reach a sealed artifact as an ordinary
+    array member.
     """
     with pytest.raises(refusal, match=re.escape(match)):
         screen({"nested": (dict(forbidden),)})

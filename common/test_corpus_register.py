@@ -333,10 +333,7 @@ def test_a_late_found_capture_is_appended_and_leaves_the_declaration_untouched()
     validated = validate_register_bytes(register)
     assert first in validated["records"], "the superseded link is retained, not rewritten"
     assert members_of(register, PAGE) == sorted(["a" * 64, "b" * 64])
-    # The record the docstring is actually about, read back out of the validated
-    # register. `_declaration()["physical_page_id"] == PAGE` used to stand here,
-    # which compares the helper's own default with the constant it puts there and
-    # holds however the register treats the declaration.
+    # The record the docstring is about, read back out of the validated register.
     assert declaration in validated["records"], "the declaration is retained unedited"
     assert [row for row in validated["records"] if row["kind"] == "physical-page"] == [
         declaration
