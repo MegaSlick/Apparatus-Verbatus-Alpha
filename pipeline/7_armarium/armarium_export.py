@@ -1463,24 +1463,32 @@ def _verify_coniector_layer(
         records = _text_bundle_records(root)
         literals = {act_id: (record.literal,) for act_id, record in records.items()}
         keys = {act_id: record.heading_key for act_id, record in records.items()}
-        rows: list[dict[str, Any]] = []
+        by_act_ids: dict[tuple[str, ...], dict[str, Any]] = {}
         sectioned: dict[str, set[str]] = {}
-        placed: dict[str, list[dict[str, Any]]] = {}
+        placed: dict[str, Counter[tuple[str, ...]]] = {}
         for folder in sorted(
             {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
         ):
             lines = _package_lines(root / _text_member_path(folder), "text bundle")
             sectioned[folder], placements = text_bundle_placements(lines)
-            placed[folder] = [verify_row(row, literals, keys) for _place, row in placements]
-            rows += [row for row in placed[folder] if row not in rows]
-        for row in rows:
+            placed[folder] = Counter()
+            for _place, shown_row in placements:
+                row = verify_row(shown_row, literals, keys)
+                act_ids = tuple(row["act_ids"])
+                if by_act_ids.setdefault(act_ids, row) != row:
+                    raise SchemaRefusal(
+                        f"the text bundle shows {row['act_keys']}'s reconstruction "
+                        "differently in two places"
+                    )
+                placed[folder][act_ids] += 1
+        for act_ids, row in by_act_ids.items():
             for folder, acts in sectioned.items():
-                if anchor_act(row) in acts and placed[folder].count(row) != 1:
+                if anchor_act(row) in acts and placed[folder][act_ids] != 1:
                     raise SchemaRefusal(
                         f"the text bundle does not show {row['act_keys']}'s reconstruction "
                         "exactly once in every folder that shows the act"
                     )
-        shown.append(rows)
+        shown.append(list(by_act_ids.values()))
     recorded = sorted(tuple(act_ids) for act_ids in sources.get("reconstructions") or [])
     for rows in shown:
         if len({tuple(row["act_ids"]) for row in rows}) != len(rows):

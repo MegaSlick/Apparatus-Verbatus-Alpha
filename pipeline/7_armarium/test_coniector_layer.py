@@ -308,3 +308,60 @@ def test_a_join_on_consecutive_pages_is_its_own_section_and_verifies(joined, tmp
     )
     with pytest.raises(SchemaRefusal, match="join section is not its row's"):
         verify_export_bundle(_repacked(members), tmp_path / "forged")
+
+
+def _verify_two_folders(monkeypatch, tmp_path, shown_by_folder: dict[str, list[dict]]) -> None:
+    """Run the text-bundle reconstruction check over two folders that section `act_a`."""
+    import armarium_export
+    from common.armarium_formats import ArmariumFormats
+
+    monkeypatch.setattr(armarium_export, "_text_bundle_records", lambda _root: {})
+    monkeypatch.setattr(armarium_export, "_package_lines", lambda path, _label: [str(path)])
+    monkeypatch.setattr(
+        armarium_export,
+        "text_bundle_placements",
+        lambda lines: (
+            {"act_a"},
+            [
+                ("act:act_a", row)
+                for folder, rows in shown_by_folder.items()
+                if f"/{folder}/" in lines[0]
+                for row in rows
+            ],
+        ),
+    )
+    monkeypatch.setattr(armarium_export, "verify_row", lambda row, _literals, _keys: row)
+    monkeypatch.setattr(armarium_export, "_verify_retained_references", lambda _row: None)
+    sources = {
+        "pages": [{"declared_path": f"{folder}/folio.png"} for folder in shown_by_folder],
+        "reconstructions": [["act_a"]],
+    }
+    armarium_export._verify_coniector_layer(
+        tmp_path, ArmariumFormats(("text-bundle",), False), sources, set()
+    )
+
+
+def _shown(text: str) -> dict:
+    return {"act_ids": ["act_a"], "act_keys": ["p1:1"], "reconstruction_text": text}
+
+
+def test_the_text_bundle_check_accepts_one_row_shown_alike_in_every_folder(
+    monkeypatch, tmp_path
+):
+    _verify_two_folders(monkeypatch, tmp_path, {"a": [_shown("one")], "b": [_shown("one")]})
+
+
+@pytest.mark.parametrize(
+    "shown_by_folder, refusal",
+    [
+        ({"a": [_shown("one")], "b": [_shown("two")]}, "differently in two places"),
+        ({"a": [_shown("one")], "b": []}, "exactly once in every folder"),
+        ({"a": [_shown("one"), _shown("one")], "b": [_shown("one")]}, "exactly once"),
+    ],
+    ids=["shown-differently", "missing-from-a-folder", "shown-twice-in-a-folder"],
+)
+def test_the_text_bundle_check_refuses_a_row_not_shown_once_alike_in_every_folder(
+    monkeypatch, tmp_path, shown_by_folder, refusal
+):
+    with pytest.raises(SchemaRefusal, match=refusal):
+        _verify_two_folders(monkeypatch, tmp_path, shown_by_folder)
