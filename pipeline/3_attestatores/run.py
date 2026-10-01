@@ -1518,7 +1518,7 @@ def preflight_appendable_ordinals(
 ]:
     """Check history and collisions before adding an attempt.
 
-    One attachment names one ordinal; downstream refuses an ordinal moved without recrop.
+    One attachment names one ordinal; downstream refuses an ordinal that moved.
     Resume reuses a sealed pair at this ordinal because a live chair cannot
     reproduce its bytes; a completed fixture pass re-resolves and compares.
     The live resolver leaves pairs pending so no model runs before the first write.
@@ -4746,7 +4746,7 @@ def _serve_detector_page(
         source = presentation_for_region(region)
         what = f"the {resolved.witness_adapter} request for record {region['subject_id']}"
         try:
-            built = live_witness.act_chair_request(
+            built = live_witness.record_chair_request(
                 context, adapter, source, profile=client.handle.profile
             )
         except RequestCapacityRefusal as error:
@@ -6219,7 +6219,7 @@ def _finish_pass(context, acts, recorded, isolated_crop_failure):
 
 
 def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
-    parser = stage_parser(DESCRIPTION, accepts_chair=True)
+    parser = stage_parser(DESCRIPTION)
     parser.add_argument(
         "--attempt-ordinal",
         type=_positive_ordinal,
@@ -6227,24 +6227,16 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
         help="append this ordinal for every act/chair, or repeat the current one byte-identically",
     )
     args = parser.parse_args()
-    if args.operation == "reread":
-        # Every witness reads whole pages, so no act-scoped attempt exists to repeat.
-        raise ContractError(
-            f"chair {args.chair!r} is page-scoped in this run: it reports one reading per "
-            "page and its act-level view is derived from that page reading, so there is no "
-            f"act-scoped attempt for act {args.act!r} to repeat. No operation exists to re-ask "
-            "a page witness"
-        )
     if args.operation not in OPERATIONS:
         raise ContractError(
             f"the Attestatores has no {args.operation!r} operation; it implements "
             f"{sorted(OPERATIONS)}. An unknown operation would otherwise run a whole pass "
             "and report success"
         )
-    if args.act or args.chair:
+    if args.act:
         raise ContractError(
-            "--act and --chair name one act or chair, and a whole pass reads every configured "
-            "chair on every expected act; it cannot narrow to it"
+            "--act names one act, and a whole pass reads every configured chair on every "
+            "page; it cannot narrow to it"
         )
     context = open_stage_context(args, ATTESTATORES, registry_factory=registry_factory)
     real = real_ingress(context)

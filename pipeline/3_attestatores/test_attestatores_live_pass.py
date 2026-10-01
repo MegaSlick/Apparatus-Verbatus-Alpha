@@ -514,7 +514,7 @@ def refusing_factory(context, identity, tier):
 
 def open_live_context(live_run: SimpleNamespace, run_root: Path):
     """A real `StageContext` over the live run, for the seams `main` composes."""
-    parser = attestatores.stage_parser("live pass under test", accepts_chair=True)
+    parser = attestatores.stage_parser("live pass under test")
     parser.add_argument("--attempt-ordinal", type=int, default=None)
     args = parser.parse_args(
         [

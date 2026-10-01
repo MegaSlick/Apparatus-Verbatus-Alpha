@@ -20,32 +20,25 @@ from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity
 from common.imaging import encode_grayscale_png
 from common.request_capacity import (
-    MEASURED_ACT_ANSWER_TOKENS,
     MEASURED_DENSE_PAGE_ANSWER_TOKENS,
     MEASURED_PROMPT_TOKENS,
+    MEASURED_RECORD_ANSWER_TOKENS,
     PERLECTOR_BOUND_SAFETY_MARGIN,
     PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS,
     PERLECTOR_MEASURED_TOKENIZER,
-    PERLECTOR_PROMPT_FLOOR_TOKENS,
-    PERLECTOR_PROMPT_OVERHEAD_TOKENS,
-    PERLECTOR_PROMPT_TEMPLATE_DIGEST,
-    PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS,
-    PERLECTOR_REPRESENTATIVE_PROMPT_CHARACTERS,
     PROMPT_TOKENS_ADMITTING_BASES,
-    PROMPT_TOKENS_MEASURED_BOUND,
     PROMPT_TOKENS_MEASURED_CONSTANT,
     PROMPT_TOKENS_MEASURED_FLOOR,
-    PROMPT_TOKENS_MEASURED_RATE,
+    PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
     SCHEMA,
     RequestCapacityRefusal,
     RowImageGeometry,
     _image_record,
-    act_answer_budget,
+    _rate_bound_tokens,
     dense_page_answer_budget,
     image_sizes,
-    perlector_prompt_bound,
-    perlector_prompt_tokens,
     prompt_digest,
+    record_answer_budget,
     refuse_unless_it_fits,
     request_fits,
     row_image_geometry,
@@ -160,9 +153,9 @@ def test_the_fixture_pages_cost_the_same_two_orders_of_magnitude_less_at_every_t
         ((1291, 1826), "generic-24gb", QWEN25_VL, 2280),
         ((1291, 1826), "generic-48gb", QWEN25_VL, 2990),
         ((1291, 1826), "generic-80gb-plus", QWEN25_VL, 2990),
-        # A Perlector act's region crop: full page width, one sixth of its
-        # height.  Its cost is the same at 24 GB and 80 GB -- the crop is small
-        # enough that no tier's max_pixels binds on it.
+        # A region crop: full page width, one sixth of its height.  Its cost
+        # is the same at 24 GB and 80 GB -- the crop is small enough that no
+        # tier's max_pixels binds on it.
         ((2480, 584), "generic-24gb", QWEN3_VL, 1404),
         ((2480, 584), "generic-80gb-plus", QWEN3_VL, 1404),
     ],
@@ -348,20 +341,15 @@ def test_an_unnamed_prompt_token_basis_is_refused():
     assert "basis" in str(refusal.value)
 
 
-@pytest.mark.parametrize(
-    "basis",
-    [PROMPT_TOKENS_MEASURED_FLOOR, PROMPT_TOKENS_MEASURED_RATE],
-    ids=["floor", "rate"],
-)
-def test_a_request_is_never_admitted_on_a_lower_bound(basis):
-    """The finding this closes: a floor was deciding admission.
+def test_a_request_is_never_admitted_on_a_lower_bound():
+    """A floor may be recorded but never decides admission.
 
     A lower bound says only what a prompt costs *at least*, so a check that
     admits on one admits exactly the requests it should have refused -- and the
-    engine answers those with HTTP 400 before it generates. Both floor bases are
-    still nameable on a record; neither may be the number a request got through
-    on.
+    engine answers those with HTTP 400 before it generates.
     """
+
+    basis = PROMPT_TOKENS_MEASURED_FLOOR
 
     with pytest.raises(RequestCapacityRefusal) as refusal:
         request_fits(_row(max_model_len=16384), [A4_300DPI], 441, 1631, prompt_tokens_basis=basis)
@@ -437,21 +425,6 @@ def test_prompt_digest_is_order_sensitive():
     assert prompt_digest("a", "b") != prompt_digest("b", "a")
 
 
-def test_the_perlector_prompt_never_counts_below_its_measured_floor():
-    tokens, basis = perlector_prompt_tokens("one two three")
-    assert tokens == PERLECTOR_PROMPT_FLOOR_TOKENS
-    assert basis == PROMPT_TOKENS_MEASURED_FLOOR
-
-
-def test_a_large_perlector_dossier_counts_by_the_measured_rate_and_says_so():
-    words = 1000
-    tokens, basis = perlector_prompt_tokens(" ".join(["mot"] * words))
-    # 120 tokens per 73 words, measured on this chair's own tokenizer over
-    # 18th-century French register prose; ceiling division, exact integers.
-    assert tokens == -(-words * 120 // 73) == 1644
-    assert basis == PROMPT_TOKENS_MEASURED_RATE
-
-
 @pytest.mark.parametrize(
     "chair, expected",
     [
@@ -484,154 +457,76 @@ def test_a_chair_with_no_measured_answer_budget_is_refused():
     assert "no measured dense-page answer budget" in str(refusal.value)
 
 
-@pytest.mark.parametrize("chair, expected", [("attestator_2", 230), ("perlector", 216)])
-def test_the_measured_single_act_answer_budgets(chair, expected):
-    """The two act-scoped chairs reserve one act's answer, not a page's."""
+def test_the_measured_record_answer_budget():
+    """DAI reads a page one detector record at a time and reserves one record's answer."""
 
-    assert act_answer_budget(chair) == expected
-    assert MEASURED_ACT_ANSWER_TOKENS[chair] == expected
+    assert record_answer_budget("attestator_2") == 230
+    assert dict(MEASURED_RECORD_ANSWER_TOKENS) == {"attestator_2": 230}
 
 
-@pytest.mark.parametrize("chair", ["designator_structure", "attestator_1", "attestator_3"])
-def test_a_page_scoped_chair_has_no_single_act_budget_to_reserve(chair):
-    """The page chairs are never asked for one act, so nothing measured one."""
+@pytest.mark.parametrize(
+    "chair", ["designator_structure", "attestator_1", "attestator_3", "perlector"]
+)
+def test_a_whole_page_chair_has_no_record_budget_to_reserve(chair):
+    """The whole-page chairs are never asked for one record, so nothing measured one."""
 
     with pytest.raises(RequestCapacityRefusal) as refusal:
-        act_answer_budget(chair)
-    assert "no measured single-act answer budget" in str(refusal.value)
+        record_answer_budget(chair)
+    assert "no measured one-record answer budget" in str(refusal.value)
 
 
-def test_dais_ordinary_act_stays_admissible_at_the_smallest_row():
+def test_dais_ordinary_record_stays_admissible_at_the_smallest_row():
     """The one chair measured sound at 24 GB must not be refused into silence.
 
-    Reserving a whole page's answer for a request that asked for one act would
-    put 702 + 84 + 1,426 against a 2,048-token row and refuse a call that
-    measurably works. A refused act is a missed act.
+    Reserving a whole page's answer for a request that asked for one record
+    would put 702 + 84 + 1,426 against a 2,048-token row and refuse a call that
+    measurably works.
     """
 
     row = _row(chair="attestator_2", max_model_len=2048, max_pixels=TIER_MAX_PIXELS["generic-24gb"])
-    ordinary = request_fits(row, [(1500, 353)], 84, act_answer_budget("attestator_2"))
+    ordinary = request_fits(row, [(1500, 353)], 84, record_answer_budget("attestator_2"))
     assert ordinary["need"] == 702 + 84 + 230 == 1016
     assert ordinary["fits"] is True
-    # And the page-fallback act at the same row is still refused, on its image
+    # And a page-sized record at the same row is still refused, on its image
     # cost alone, with the same smaller budget reserved.
-    fallback = request_fits(row, [(1291, 1826)], 84, act_answer_budget("attestator_2"))
-    assert fallback["image_prompt_tokens"] == 2280
-    assert fallback["fits"] is False
+    page_sized = request_fits(row, [(1291, 1826)], 84, record_answer_budget("attestator_2"))
+    assert page_sized["image_prompt_tokens"] == 2280
+    assert page_sized["fits"] is False
 
 
-# --- the Perlector's upper bound, which is what admission rests on ------------
+# --- the measured rate the Perlector page prompt's fixed wording is charged at --
 
 
-def test_the_bound_is_the_measured_overhead_plus_the_sealed_rate_with_its_margin():
-    """The arithmetic, spelled out against a text of a known length.
-
-    1,000 characters at the sealed 4,127 tokens per 10,000 characters and the
-    stated 105/100 margin is `ceil(1000 * 4127 * 105 / 1_000_000) = 434`, over
-    the measured chat-template overhead of `52 + 2 * 32 = 116`: 550.
+def test_the_rate_bound_is_the_sealed_rate_with_its_margin_rounded_up():
+    """1,000 characters at the sealed 4,127 tokens per 10,000 characters and the
+    stated 105/100 margin is `ceil(1000 * 4127 * 105 / 1_000_000) = 434`.
     """
 
-    tokens, basis = perlector_prompt_bound(
-        "x" * 1000, template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST
-    )
-    assert (tokens, basis) == (550, PROMPT_TOKENS_MEASURED_BOUND)
-    assert PERLECTOR_PROMPT_OVERHEAD_TOKENS == 116
+    assert _rate_bound_tokens(1000) == 434
     assert PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS == 4127
     assert PERLECTOR_BOUND_SAFETY_MARGIN == (105, 100)
-    # The empty prompt costs the overhead and nothing else, and the ceiling is
-    # a ceiling: one character over is one more token, never a rounding down.
-    assert perlector_prompt_bound("", template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST)[0] == 116
-    assert perlector_prompt_bound("x", template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST)[0] == 117
+    # Nothing costs nothing, and the ceiling is a ceiling: one character is a token.
+    assert _rate_bound_tokens(0) == 0
+    assert _rate_bound_tokens(1) == 1
 
 
-def test_the_sealed_bound_is_above_the_maximum_ratio_that_was_measured():
+def test_the_sealed_rate_is_above_the_maximum_ratio_that_was_measured():
     """The margin is over the *maximum* observed ratio, not over a mean.
 
-    The measurement's densest case -- five testimonia reporting nothing at all,
-    where the dossier is scaffolding and little else -- rendered 1,345
-    characters for 611 tokens, of which 56 were the chat template's own
-    overhead at that case's two images: 555 tokens of body, a ratio of 0.41264.
-    The sealed rate is 0.4127, and the bound over that case is 699 against its
-    measured 611 -- the margin and the overhead charged at the protocol's
-    32-image ceiling both sitting above it.
+    The measurement's densest case rendered 1,345 characters for 555 tokens of
+    body, a ratio of 0.41264; the sealed rate is 0.4127.
     """
 
     assert PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS / 10_000 >= 555 / 1345
-    tokens, _ = perlector_prompt_bound("x" * 1345, template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST)
-    assert tokens == 699
-    assert tokens > 611
+    assert _rate_bound_tokens(1345) > 555
 
 
-def test_the_representative_dossiers_sealed_bound_is_the_arithmetic_over_its_own_length():
-    """The pair the shipped-row check spends, re-derived rather than retyped.
-
-    `TOKEN_COST_REPORT.md` section 5's representative dossier renders 2,438
-    characters (2,269 before the doubt marks, where the measurement reproduced
-    its recorded 790 text tokens). The bound over it is 1,173, and that is what
-    `operations/serving/test_serving_catalogue_capacity.py` weighs the shipped
-    Perlector rows against.
-    """
-
-    tokens, _ = perlector_prompt_bound(
-        "x" * PERLECTOR_REPRESENTATIVE_PROMPT_CHARACTERS,
-        template_digest=PERLECTOR_PROMPT_TEMPLATE_DIGEST,
-    )
-    assert tokens == PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS == 1173
-    # And it is above the floor measured over the same dossier, which is the
-    # whole point of measuring it.
-    assert tokens > PERLECTOR_PROMPT_FLOOR_TOKENS
-
-
-def test_a_looping_prior_draft_is_never_undercounted_and_a_cap_bounds_it():
-    """A 44,000-character `[[?]]` loop is 29,127 tokens to the engine (the run's own call record).
-
-    At the ratio it would be charged about 19,000; as a capped span it is charged
-    its bytes uncapped (above the engine's count) and at most the reply cap when
-    it was generated under one.  Ordinary text around it stays at the ratio.
-    """
-
-    digest = PERLECTOR_PROMPT_TEMPLATE_DIGEST
-    loop = "[[?]]\n" * 7243
-    scaffold = "testimonia: abcdefghi " * 100
-    text = scaffold + loop
-    at_ratio, _ = perlector_prompt_bound(text, template_digest=digest)
-    uncapped, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, None)])
-    capped, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, 4096)])
-    rest, _ = perlector_prompt_bound(scaffold, template_digest=digest)
-    assert at_ratio < 29_127 + PERLECTOR_PROMPT_OVERHEAD_TOKENS  # the old under-count
-    assert uncapped >= 29_127 + PERLECTOR_PROMPT_OVERHEAD_TOKENS
-    assert capped == rest + 4096
-    over, _ = perlector_prompt_bound(text, template_digest=digest, capped_spans=[(loop, 10**6)])
-    assert over == uncapped
-    with pytest.raises(RequestCapacityRefusal):
-        perlector_prompt_bound(text, template_digest=digest, capped_spans=[("absent", 5)])
-
-
-def test_an_edited_prompt_template_expires_the_measured_bound():
-    """The seal, in the shape `sealed_prompt_tokens` uses for a fixed prompt.
-
-    A dossier-built prompt has no fixed text to digest, so what is digested is
-    the builder that renders it. An edited builder renders other bytes, and a
-    rate measured over the old ones no longer describes them.
-    """
-
-    with pytest.raises(RequestCapacityRefusal) as refusal:
-        perlector_prompt_bound("a rendered prompt", template_digest="a" * 64)
-    message = str(refusal.value)
-    assert "prompt template changed after it was measured" in message
-    assert PERLECTOR_PROMPT_TEMPLATE_DIGEST in message
-    assert PERLECTOR_MEASURED_TOKENIZER[1] in message
-
-
-def test_the_floor_is_still_computed_and_is_still_a_floor():
-    """It no longer admits anything; it is still measured and still recorded."""
-
-    tokens, basis = perlector_prompt_tokens("one two three")
-    assert (tokens, basis) == (PERLECTOR_PROMPT_FLOOR_TOKENS, PROMPT_TOKENS_MEASURED_FLOOR)
+def test_only_a_count_or_an_upper_bound_admits():
+    assert PROMPT_TOKENS_ADMITTING_BASES == {
+        PROMPT_TOKENS_MEASURED_CONSTANT,
+        PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
+    }
     assert PROMPT_TOKENS_MEASURED_FLOOR not in PROMPT_TOKENS_ADMITTING_BASES
-    assert PROMPT_TOKENS_MEASURED_RATE not in PROMPT_TOKENS_ADMITTING_BASES
-    assert PROMPT_TOKENS_MEASURED_BOUND in PROMPT_TOKENS_ADMITTING_BASES
-    assert PROMPT_TOKENS_MEASURED_CONSTANT in PROMPT_TOKENS_ADMITTING_BASES
 
 
 # ===================== what the measurements are bound to ====================
@@ -649,9 +544,8 @@ def test_every_measured_prompt_names_the_tokenizer_the_real_roster_pins():
     a tokenizer that model no longer has.
 
     The Perlector is checked with the rest. It has no fixed prompt to digest,
-    so the pinned revision and its prompt builder's own digest are what expire
-    its measurements -- its floor, its tokens-per-word rate, and the
-    tokens-per-character bound admission rests on.
+    so the pinned revision and its page builder's own digest are what expire
+    the tokens-per-character rate its page prompt is charged at.
     """
 
     roster = load_models_toml(ROOT / "config" / "models-real.toml").chairs

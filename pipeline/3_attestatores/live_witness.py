@@ -5,9 +5,9 @@ This module owns exactly the seam between an already-issued
 facts `run.py::resolve_attempt` derives from a retained recordable response.
 It never wires a pass, never schedules a chair, and never imports ``run.py``.
 
-``act_chair_request``/``page_chair_request`` take a ready-made
-``presentation`` (the exact shape ``run.py``'s ``presentation_for_region``/
-``presentation_for_page`` build) rather than computing it themselves, to keep
+``record_chair_request`` (one DAI detector record) and ``page_chair_request``
+(one whole page) take a ready-made ``presentation`` (the exact shape
+``run.py``'s ``presentation_for_region``/``presentation_for_page`` build) rather than computing it themselves, to keep
 one source of truth for how a presentation is built and avoid a circular
 import.
 
@@ -82,8 +82,8 @@ from common.imaging import dimensions
 from common.native_witness import native_parse_refusal
 from common.request_capacity import (
     DECLARED_ANSWER_BOUND_TOKENS,
-    act_answer_budget,
     dense_page_answer_budget,
+    record_answer_budget,
     refuse_unless_it_fits,
     sealed_prompt_tokens,
     sendable_max_tokens,
@@ -122,12 +122,12 @@ class LiveAttempt:
 
 
 @dataclass(frozen=True, slots=True)
-class ActChairRequest:
+class RecordChairRequest:
     """One DAI request, plus the exact presented crop and prompt it came from.
 
     Carried forward so `live_attempt_from_response` can build DAI's closed
     model view once the response comes back without running `adapter.present`
-    -- a real crop and resize -- a second time for the same act.
+    -- a real crop and resize -- a second time for the same record.
     """
 
     request: ChairRequest
@@ -230,8 +230,9 @@ def request_capacity_or_refuse(
     resize. The prompt cost is the measured constant for this chair, bound to
     a digest of the exact text (no tokenizer is available offline here). The
     answer budget is that chair's own measured response at the scope it was
-    asked at: Chandra reserves a dense page's answer, DAI one record's answer,
-    since reserving a page's would refuse ordinary record crops.
+    asked at (``"page"`` or ``"record"``): Chandra reserves a dense page's
+    answer, DAI one record's answer, since reserving a page's would refuse
+    ordinary record crops.
     Churro is the exception: its whole vendor answer bound is reserved, so a
     row that cannot hold it refuses the page rather than letting the engine
     stop the answer short of what the vendor's own pipeline allows.
@@ -248,7 +249,12 @@ def request_capacity_or_refuse(
             f"request cannot be checked against a serving row; the named adapters are "
             f"{sorted(_ADAPTER_CHAIRS)}"
         )
-    budget = dense_page_answer_budget if scope == "page" else act_answer_budget
+    budgets = {"page": dense_page_answer_budget, "record": record_answer_budget}
+    if scope not in budgets:
+        raise SchemaRefusal(
+            f"a witness request was checked at scope {scope!r}; the scopes are {sorted(budgets)}"
+        )
+    budget = budgets[scope]
     answer = DECLARED_ANSWER_BOUND_TOKENS[chair] if adapter_name == "churro.v1" else budget(chair)
     return refuse_unless_it_fits(
         profile,
@@ -259,9 +265,9 @@ def request_capacity_or_refuse(
     )
 
 
-def act_chair_request(
+def record_chair_request(
     context: Any, adapter: Any, presentation: Mapping[str, Any], *, profile: Any
-) -> ActChairRequest:
+) -> RecordChairRequest:
     """Build one DAI reading request from one detector record crop's presentation.
 
     ``presentation`` is exactly what `run.py::presentation_for_region` returns
@@ -278,7 +284,7 @@ def act_chair_request(
         "dai.v1",
         prompt,
         [image_bytes],
-        scope="act",
+        scope="record",
         what=f"the dai.v1 request for region {presentation.get('region_ref')!r}",
     )
     messages = (
@@ -297,7 +303,7 @@ def act_chair_request(
         generation_sent=generation_sent,
         capacity=capacity,
     )
-    return ActChairRequest(
+    return RecordChairRequest(
         request=request,
         presented=presented,
         prompt=prompt,
@@ -494,7 +500,7 @@ def _unrecordable_health(reason: str) -> dict[str, Any]:
 def _unconfirmed_blank_reason(kind: str, transport_stop_reason: str, cut_off: bool | None) -> str:
     """Why an empty response is held rather than confirmed as ``genuinely-empty``.
 
-    ``kind`` names what was read (``"page"`` or ``"act"``); ``cut_off`` is
+    ``kind`` names what was read (``"page"`` or ``"record"``); ``cut_off`` is
     ``True`` for a recognized cut-off word and ``None`` for an unreported or
     unrecognized one -- both land here rather than becoming a confirmed blank.
     """
@@ -542,7 +548,7 @@ def dai_model_view(
     generation_declared: Mapping[str, Any],
     generation_accounting: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build DAI's closed model view (`feeding.dai_model_view`) for this act.
+    """Build DAI's closed model view (`feeding.dai_model_view`) for this record.
 
     ``source_image_ref`` is the Designator's own region crop; ``model_image_ref``
     is DAI's further crop-and-resize output. The no-resize case is satisfied by
@@ -591,7 +597,7 @@ def _live_attempt_from_capture(
     parse_failure_reason: Callable[[Mapping[str, Any]], str],
     observation_payload: Any = None,
 ) -> LiveAttempt:
-    """Turn one adapter's retained capture into a `LiveAttempt`, act or page alike.
+    """Turn one adapter's retained capture into a `LiveAttempt`, record or page alike.
 
     Shared by `live_attempt_from_response` and `captured_page_attempt`: both
     mirror `resolve_attempt`'s three-way split -- ``read``/``genuinely-empty``
@@ -690,7 +696,7 @@ def live_attempt_from_response(
     ``dai.v1`` is the only adapter read one crop at a time; refuses any other
     name rather than guessing at a view shape it does not know.
     ``presentation``/``presented``/``prompt`` are exactly what
-    `act_chair_request` computed for this same record, reused here so DAI's real
+    `record_chair_request` computed for this same record, reused here so DAI's real
     crop and resize runs once per record, not twice.
     """
 
@@ -726,7 +732,7 @@ def live_attempt_from_response(
         adapter,
         capture,
         response,
-        kind="act",
+        kind="record",
         completed=completed,
         cut_off=cut_off,
         transport_stop_reason=transport_stop_reason,

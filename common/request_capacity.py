@@ -15,13 +15,10 @@ defaulted.
 
 No tokenizer runs here (no ``torch`` wheel for this host), so fixed prompts
 carry a measured constant sealed to a digest of the prompt text, and editing
-the prompt invalidates it.  The Perlector's act prompt is built at run time, so
-it is admitted on a measured upper bound (:func:`perlector_prompt_bound`); its
-measured floor is recorded beside it but never admits, because admitting on a
-lower bound admits exactly the requests that overflow.  A Perlector page request
+the prompt invalidates it.  The Perlector's page prompt is built at run time and
 is not fully measured: it is admitted on an upper bound for the text witnesses
 and detectors reported (one token per UTF-8 byte) plus the builder's own fixed
-wording at the act prompt's measured rate, carried to it
+wording at a measured tokens-per-character rate, carried to it
 (:data:`PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED`).
 
 Whether vLLM's own prompt assembly agrees with these counts token for token has
@@ -176,19 +173,6 @@ def row_image_geometry(profile: Any) -> RowImageGeometry:
     return RowImageGeometry(**values)
 
 
-def image_token_costs(row: Any, images: Sequence[tuple[int, int]]) -> list[int]:
-    """What each image costs this sealed row, in the order it was given.
-
-    For a caller that must compare image costs before choosing an
-    ``answer_budget`` (the Perlector's act crop against a whole page).
-    """
-
-    geometry = row_image_geometry(row)
-    return [
-        _image_record(width, height, geometry)["image_prompt_tokens"] for width, height in images
-    ]
-
-
 def _image_record(width: int, height: int, geometry: RowImageGeometry) -> dict[str, int]:
     """One embedded image's size, the size the chair sees, and its prompt-token cost."""
     factor, resized_height, resized_width = _resize(
@@ -259,13 +243,10 @@ CAPACITY_RECORD_FIELDS: Final = frozenset(
 # must say.
 PROMPT_TOKENS_MEASURED_CONSTANT: Final = "measured-constant-for-this-prompt-version"
 PROMPT_TOKENS_MEASURED_FLOOR: Final = "measured-floor-for-this-prompt-shape"
-PROMPT_TOKENS_MEASURED_RATE: Final = "measured-tokens-per-word-extrapolation"
-# The only basis a dossier-built act prompt may be admitted on.
-PROMPT_TOKENS_MEASURED_BOUND: Final = "measured-upper-bound-for-this-prompt-shape"
 # The page prompt's charge (`perlector_page_prompt_bound`): every string a witness
 # or detector wrote at one token per UTF-8 byte, an upper bound for a byte-level
-# BPE tokenizer; the builder's own fixed wording at the act prompt's measured
-# rate carried to it, never measured on the page builder itself.
+# BPE tokenizer; the builder's own fixed wording at a measured rate carried to
+# it, never measured on the page builder itself.
 PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED: Final = (
     "reported-text-per-byte-fixed-text-at-carried-act-rate"
 )
@@ -273,8 +254,6 @@ PROMPT_TOKENS_BASES: Final = frozenset(
     {
         PROMPT_TOKENS_MEASURED_CONSTANT,
         PROMPT_TOKENS_MEASURED_FLOOR,
-        PROMPT_TOKENS_MEASURED_RATE,
-        PROMPT_TOKENS_MEASURED_BOUND,
         PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
     }
 )
@@ -283,7 +262,6 @@ PROMPT_TOKENS_BASES: Final = frozenset(
 PROMPT_TOKENS_ADMITTING_BASES: Final = frozenset(
     {
         PROMPT_TOKENS_MEASURED_CONSTANT,
-        PROMPT_TOKENS_MEASURED_BOUND,
         PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
     }
 )
@@ -304,8 +282,7 @@ def request_fits(
     ``images`` are ``(width, height)`` in the pixels actually embedded.
     ``prompt_tokens`` decides admission, so its basis must be in
     :data:`PROMPT_TOKENS_ADMITTING_BASES`.  ``prompt_tokens_floor`` is recorded
-    only, never compared with the bound: a prompt shorter than the
-    representative dossier can record a floor above its own bound.
+    only, never compared with the admitted count.
 
     A request that does not fit returns ``fits: False`` with a reason; this
     raises only when the row cannot state what the check needs.
@@ -510,38 +487,13 @@ MEASURED_PROMPT_TOKENS: Final[Mapping[str, tuple[SealedPromptTokens, ...]]] = Ma
     }
 )
 
-# The Perlector's floor: a representative three-testimonia dossier, and its
-# tokenizer's rate over register French (120 tokens for 73 words), kept as the
-# measured integer pair so the arithmetic is exact.
-PERLECTOR_PROMPT_FLOOR_TOKENS: Final = 790
-PERLECTOR_TOKENS_PER_WORD: Final = (120, 73)
-
-# --- and the upper bound admission actually rests on ---------------------------
-#
-# Tokens per character over 168 prompts rendered through `build_prompt` with the
-# pinned tokenizer and chat template (1/3/5 testimonia, 0-1,200 words each, with
-# and without prior draft, reproofs and a second view).  The ratio falls as the
-# dossier grows, so the sealed value is the maximum, 0.4126394, rounded up.  The
-# doubt-mark instruction lowered the maximum to 0.3940 on the same grid, so the
-# sealed value still bounds it.
+# The rate the page prompt's fixed wording is charged at: tokens per character
+# over 168 Perlector prompts rendered with the pinned tokenizer and chat template
+# (1/3/5 testimonia, 0-1,200 words each).  The ratio falls as the prompt grows, so
+# the sealed value is the maximum, 0.4126394, rounded up.
 PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS: Final = 4127
 # Kept apart from the ratio so measurement and margin stay visible.
 PERLECTOR_BOUND_SAFETY_MARGIN: Final = (105, 100)
-# Chat-template cost: 52 per turn plus 2 per image, charged at the protocol's
-# `max_images` ceiling so it bounds any request; a test reconciles the 32 with
-# `config/perlector_protocol.toml`.
-PERLECTOR_PROMPT_OVERHEAD_TOKENS: Final = 52 + 2 * 32
-PERLECTOR_MAX_IMAGES_THE_OVERHEAD_COVERS: Final = 32
-# `prompts.py`'s module digest (`builder_sha256`): editing the builder expires
-# the measured ratio.  The neighbouring-acts block is outside the ratio: the live
-# reader charges it one token per UTF-8 byte (`capped_spans`).
-PERLECTOR_PROMPT_TEMPLATE_DIGEST: Final = (
-    "987a416780e8275c4ab92bb81a2c39bdc60d83b846446280b4ed4f980326258a"
-)
-# The representative dossier's size and bound, for weighing the shipped rows
-# against what is admitted on; a test re-derives the bound from the size.
-PERLECTOR_REPRESENTATIVE_PROMPT_CHARACTERS: Final = 2438
-PERLECTOR_REPRESENTATIVE_PROMPT_BOUND_TOKENS: Final = 1173
 # Reconciled with `config/models-real.toml`: with no fixed prompt to digest, the
 # pinned revision is what expires the Perlector's measurements.
 PERLECTOR_MEASURED_TOKENIZER: Final = (
@@ -575,77 +527,12 @@ def sealed_prompt_tokens(chair: str, *texts: str) -> int:
     )
 
 
-def perlector_prompt_tokens(text: str) -> tuple[int, str]:
-    """``(tokens, basis)`` for one rendered Perlector prompt: a floor, not a count.
-
-    The larger of the measured floor and the per-word rate.  Both are lower
-    bounds (richer dossiers and JSON scaffolding cost more), so this can prove
-    a request does not fit but never that it does.
-    """
-
-    words = len(text.split())
-    numerator, denominator = PERLECTOR_TOKENS_PER_WORD
-    by_rate = -(-words * numerator // denominator)
-    if by_rate > PERLECTOR_PROMPT_FLOOR_TOKENS:
-        return by_rate, PROMPT_TOKENS_MEASURED_RATE
-    return PERLECTOR_PROMPT_FLOOR_TOKENS, PROMPT_TOKENS_MEASURED_FLOOR
-
-
 def _text_bytes(text: str) -> int:
     return len(unicodedata.normalize("NFC", text).encode("utf-8"))
 
 
-def perlector_prompt_bound(
-    text: str, *, template_digest: str, capped_spans: Sequence[tuple[str, int | None]] = ()
-) -> tuple[int, str]:
-    """``(tokens, basis)`` for one rendered Perlector prompt: the upper bound.
-
-    Per character, not per word: JSON scaffolding has few words for its tokens,
-    so the per-word rate spreads five-fold across dossiers where the
-    per-character rate spreads 1.6-fold.  ``template_digest`` is ``prompts.py``'s
-    module digest, checked because the ratio describes only that builder's bytes.
-
-    The ratio is measured over well-formed prose and dossiers.  A model reply
-    that has degenerated into a loop tokenizes far worse (0.62 tokens per
-    character for a ``[[?]]`` loop on the 2026-09-27 run, against 0.43 here), so
-    ``capped_spans`` names the pieces of ``text`` that are such a reply (the fed
-    prior draft): each is charged ``min(bytes, cap)`` -- one token per UTF-8
-    byte, which a byte-level BPE tokenizer cannot exceed, and no more than the
-    reply cap it was generated under, when there is one.  Everything else stays
-    at the measured ratio: an under-count there is answered by the engine with
-    HTTP 400, a visible failed act, while a pessimistic bound would refuse
-    honest dense pages that fit.
-    """
-
-    if template_digest != PERLECTOR_PROMPT_TEMPLATE_DIGEST:
-        raise RequestCapacityRefusal(
-            f"the Perlector prompt builder digests to {template_digest}, but the measured "
-            f"tokens-per-character bound this chair is admitted on was taken over "
-            f"{PERLECTOR_PROMPT_TEMPLATE_DIGEST} with "
-            f"{PERLECTOR_MEASURED_TOKENIZER[0]} at {PERLECTOR_MEASURED_TOKENIZER[1]}; the "
-            "prompt template changed after it was measured, and a request is never admitted "
-            "against the token cost of text nobody renders any more. Re-measure the rate and "
-            "update common/request_capacity.py"
-        )
-    spans = 0
-    for span, ceiling in capped_spans:
-        if span not in text:
-            raise RequestCapacityRefusal(
-                "a capped span was named that is not in the rendered prompt, so its token "
-                "charge cannot stand in for text that was never counted"
-            )
-        text = text.replace(span, "", 1)
-        spans += (
-            _text_bytes(span)
-            if ceiling is None
-            else min(_text_bytes(span), _positive(ceiling, "a capped span's ceiling"))
-        )
-    body = spans + _rate_bound_tokens(len(text))
-    return PERLECTOR_PROMPT_OVERHEAD_TOKENS + body, PROMPT_TOKENS_MEASURED_BOUND
-
-
 def _rate_bound_tokens(characters: int) -> int:
-    """The act prompt's measured tokens-per-character bound, margin included, rounded up."""
+    """The measured tokens-per-character bound, margin included, rounded up."""
     margin_numerator, margin_denominator = PERLECTOR_BOUND_SAFETY_MARGIN
     return -(
         -characters
@@ -669,8 +556,8 @@ def _rate_bound_tokens(characters: int) -> int:
 # whatever a witness wrote (a runaway loop, digits, rare scripts). The rest is
 # the builder's own fixed wording, ids and numbers: every whitespace-separated
 # run of it holding an ASCII digit is charged per byte too, and the remaining
-# prose at the act prompt's measured rate (`PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS`
-# with its margin), carried to it (`PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED`).
+# prose at the measured rate (`PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS` with its
+# margin), carried to it (`PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED`).
 # The carried rate is sealed against the page builder's own digest, so editing
 # the builder expires it.
 PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST: Final = (
@@ -859,8 +746,8 @@ def page_request_capacity(
 
 # What a dense page's answer costs, per chair, in the chair's own response
 # grammar: the same 800-word `FRENCH_ACT` body for every row, so the rows stay
-# comparable.  DAI and the Perlector use their page-fallback act, the demanding
-# case.  A row holds only for its chair's current response grammar, and nothing
+# comparable.  DAI and the Perlector answer it as one record or act covering
+# the whole page, the demanding case.  A row holds only for its chair's current response grammar, and nothing
 # checks that.
 #
 # Chandra's two rows (1645) are measured with apostrophes escaped as `&#x27;`
@@ -878,13 +765,12 @@ MEASURED_DENSE_PAGE_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 )
 
 
-# One ordinary act's answer, for the act-scoped chairs.  Reserving a page's
-# answer here would refuse calls that fit and cost acts; a
-# page-fallback act is still caught by its whole-page image cost.
-MEASURED_ACT_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
+# One detector record's answer, for DAI, which reads a page one record at a time.
+# Reserving a page's answer here would refuse record crops that fit; a page-sized
+# record is still caught by its whole-page image cost.
+MEASURED_RECORD_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
     {
         "attestator_2": 230,
-        "perlector": 216,
     }
 )
 
@@ -966,10 +852,10 @@ def dense_page_answer_budget(chair: str) -> int:
     return _answer_budget(chair, MEASURED_DENSE_PAGE_ANSWER_TOKENS, "dense-page")
 
 
-def act_answer_budget(chair: str) -> int:
-    """The measured single-act answer budget for one chair, or a named refusal."""
+def record_answer_budget(chair: str) -> int:
+    """The measured one-record answer budget for one chair, or a named refusal."""
 
-    return _answer_budget(chair, MEASURED_ACT_ANSWER_TOKENS, "single-act")
+    return _answer_budget(chair, MEASURED_RECORD_ANSWER_TOKENS, "one-record")
 
 
 def _answer_budget(chair: str, table: Mapping[str, int], what: str) -> int:

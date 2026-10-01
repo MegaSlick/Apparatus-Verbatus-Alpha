@@ -262,7 +262,7 @@ chair is asked may not move a fixture byte.
 
 **Geometry converts once, the Designator's way.** A block's `bbox_1000` is
 quantized low-edges-floor / far-edges-ceil in normalized space and converted to
-sealed-page pixels by `common.structure_answer.to_page_bounds`, the same
+sealed-page pixels by `common.chandra_layout.to_page_bounds`, the same
 conversion the Designator's structure pass applies to its own Chandra call, so
 the two Chandra readings of one page share one page-pixel mapping. The
 denominator is the *sealed page*, not the resized view the chair was shown,
@@ -1233,11 +1233,8 @@ permits only an exact byte-identical repeat of an ordinal that pair already hold
 or its next contiguous one — so the same command twice is a resume rather than a
 second reading. `current + 2` is refused: a gap means an attempt that existed is
 no longer here. `--act` and `--chair` are refused rather than ignored: a whole
-pass cannot narrow to one act or one chair. No operation re-asks one witness
-about one act — every witness is page-scoped, so there is no act-scoped attempt
-to repeat — and `--operation reread` is refused by name saying so. Any other
-operation this stage does not implement is refused too: it would otherwise run a
-whole pass and exit 0.
+pass cannot narrow to one act or one chair. The only operation is `initial`;
+any other is refused, because it would otherwise run a whole pass and exit 0.
 
 ## The one attempt model
 
