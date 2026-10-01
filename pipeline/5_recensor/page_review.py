@@ -70,6 +70,7 @@ from common.page_review import (
     REVIEWED_PAGE_REVIEW_FIELDS,
     act_entries_by_page,
     current_review_decisions,
+    operator_correction,
     override_refusal,
     page_breaks,
     require_establishable,
@@ -680,6 +681,8 @@ def decide_reviews(
         "carried": result["carried"],
         "unkept": result["unkept"],
         "clearances": _effective_clearances(result["clearances"], reheld),
+        # A correction kept held did not take effect.
+        "corrections": [row for row in result["corrections"] if row["subject_id"] not in reheld],
         "page_holds": [
             {"page_ordinal": ordinal, "hold_codes": codes}
             for ordinal, codes in sorted(held_pages(result).items())
@@ -697,7 +700,8 @@ def _not_establishable(act: dict, payload: dict) -> str | None:
     """
     if act["perlectio_ref"] is None:
         return None
-    if act["hold_codes"] and (refusal := override_refusal(act)) is not None:
+    edit = operator_correction(act, {"outcome": ACCEPTED, "payload": payload}) is not None
+    if (act["hold_codes"] or edit) and (refusal := override_refusal(act, edit=edit)) is not None:
         return refusal
     try:
         require_establishable(act, {"outcome": ACCEPTED, "payload": payload})

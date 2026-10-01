@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any, Final
 
+from common.contracts.approval import EDIT_DECISION
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.stages import RECENSOR
 from common.page_path import (
@@ -27,7 +28,7 @@ from common.page_path import (
     READING_CLASS,
     UNPLACED,
 )
-from common.review_decisions import EXCLUDED, REVIEW_FIELD, decisions_digest
+from common.review_decisions import CORRECTION_FIELD, EXCLUDED, REVIEW_FIELD, decisions_digest
 from common.review_policy import SEALED_CONFIG_NAME as REVIEW_CONFIG_NAME
 from common.review_policy import load_review_policy, systemic
 from common.sealed_config import require_sealed_config
@@ -53,6 +54,7 @@ RELEASABLE_HOLDS: Final = frozenset({PAGE_BLANK_HOLD, NO_ACT_ON_PAGE_HOLD})
 RELEASABLE_READING_HOLDS: Final = frozenset({NO_ACT_ON_PAGE_HOLD})
 # The reading holds no operator decision overrides, each with why: an override
 # exports the model's reading as read, and the export cannot carry these.
+# `EDIT_CARRIES` are the ones a person's edit lifts (`override_refusal`).
 NOT_OVERRIDABLE: Final = {
     UNPLACED: "the reading has no region on its page, so the export cannot cite where it is",
     DOUBT_MARKS_MALFORMED: (
@@ -63,6 +65,12 @@ NOT_OVERRIDABLE: Final = {
         "it has no readable text, and an empty reading is exported only as a proved blank"
     ),
 }
+# An edit delivers the person's text, which carries no machine doubt layer, so
+# neither a model reading with no text nor one whose doubt marks could not be read
+# stops the export carrying it: the model's reading is shown beside it as it is,
+# with its own recorded assessment. An unplaced reading still has no region to
+# cite, whoever wrote its text.
+EDIT_CARRIES: Final = frozenset({DOUBT_MARKS_MALFORMED, ENTRY_NO_READABLE_TEXT})
 # A page review's payload, as the Recensor builds it; `publish_review` adds
 # `attempt_ordinal`.
 PAGE_REVIEW_FIELDS: Final = frozenset(
@@ -109,6 +117,7 @@ REVIEW_DECISIONS_FIELDS: Final = frozenset(
         "carried",
         "unkept",
         "clearances",
+        "corrections",
         "page_holds",
         "requests",
     }
@@ -248,21 +257,69 @@ def _require_review_of_row(review: Mapping[str, Any], row: Mapping[str, Any]) ->
         )
 
 
-def override_refusal(row: Mapping[str, Any]) -> str | None:
+def override_refusal(row: Mapping[str, Any], *, edit: bool = False) -> str | None:
     """Why no operator decision can send this held reading to export, or None when one can.
 
     An override exports the model's reading as read, so the reading must be
     one the export can carry: placed on its page, with a doubt report it can
-    anchor and text to deliver.
+    anchor and text to deliver. With `edit`, the person's text is delivered
+    instead, so only the codes outside `EDIT_CARRIES` refuse it.
     """
     if row["perlectio_ref"] is None or row["class"] != READING_CLASS:
         return (
             f"{row['act_key']} is a {row['class']} row, which has no region on its page to export"
         )
-    blocked = sorted(set(row["hold_codes"]) & set(NOT_OVERRIDABLE))
+    blocked = sorted(
+        set(row["hold_codes"]) & set(NOT_OVERRIDABLE) - (EDIT_CARRIES if edit else set())
+    )
     if blocked:
         return "; ".join(f"{code}: {NOT_OVERRIDABLE[code]}" for code in blocked)
     return None
+
+
+def operator_correction(
+    row: Mapping[str, Any],
+    review: Mapping[str, Any],
+    applied: Collection[str] | None = None,
+) -> list[dict[str, Any]] | None:
+    """The current edits that correct this unit's reading, or None when none does.
+
+    An edit corrects the reading of an accepted review whose `operator_review`
+    block names it as a current `edit` of this unit at the review's basis;
+    `applied` as in `operator_override`, so an edit the Recensor's current
+    `review-decisions` record did not apply corrects nothing. Several current
+    edits of one unit name the same text and note, or the Recensor would have
+    held it as conflicting (`common.review_decisions`). Returned in hash order.
+    """
+    payload = _payload(review)
+    block = payload.get(REVIEW_FIELD)
+    if review.get("outcome") != "accepted" or not isinstance(block, Mapping):
+        return None
+    try:
+        decisions, basis = list(block["decisions"]), block["basis_digest"]
+    except (KeyError, TypeError) as error:
+        raise FatalAccounting(
+            f"the operator review of {row['act_key']} has no decisions to rest on"
+        ) from error
+    edits = sorted(
+        (
+            dict(summary)
+            for summary in decisions
+            if isinstance(summary, Mapping)
+            and summary.get("scope") == "unit"
+            and summary.get("subject_id") == row["act_id"]
+            and summary.get("decision") == EDIT_DECISION
+            and summary.get("state") == "current"
+            and summary.get("basis_digest") == basis
+            and (applied is None or summary.get("decision_hash") in applied)
+        ),
+        key=lambda summary: summary["decision_hash"],
+    )
+    if len({summary.get(CORRECTION_FIELD) for summary in edits}) > 1:
+        raise FatalAccounting(
+            f"the operator review of {row['act_key']} applies edits that say different things"
+        )
+    return edits or None
 
 
 def operator_override(
@@ -275,14 +332,16 @@ def operator_override(
     A row's own hold codes (its Perlectio's `holds` and `page_holds`, and a
     page with no act) are overridden when its accepted review's
     `operator_review` block shows every one of them cleared: a unit-scope code
-    by a current `release` of this unit at the review's basis, a page-scope one
-    by a current `no-missed-act` of its page at the page basis. `applied` is
-    the decision hashes the Recensor's current `review-decisions` record
-    applied; a stage after the Recensor passes it, so a decision that record
-    did not apply overrides nothing. Returns `{"codes", "decisions"}`: the
-    codes overridden and the decision summaries that did it. Refused when the
-    block claims an override no current decision makes, or of a reading that
-    `override_refusal` says no decision may send to export.
+    by a current `release` of this unit at the review's basis (or, for a
+    reading a person corrected, by the current `edit` of it,
+    `operator_correction`), a page-scope one by a current `no-missed-act` of
+    its page at the page basis. `applied` is the decision hashes the
+    Recensor's current `review-decisions` record applied; a stage after the
+    Recensor passes it, so a decision that record did not apply overrides
+    nothing. Returns `{"codes", "decisions"}`: the codes overridden and the
+    decision summaries that did it. Refused when the block claims an override
+    no current decision makes, or of a reading that `override_refusal` says no
+    decision may send to export.
     """
     payload = _payload(review)
     block = payload.get(REVIEW_FIELD)
@@ -297,11 +356,13 @@ def operator_override(
         raise FatalAccounting(f"{what} has no operator review block to rest on") from error
     if not set(codes) <= cleared["unit"] | cleared["page"]:
         return None
-    if (refusal := override_refusal(row)) is not None:
+    edit = operator_correction(row, review, applied) is not None
+    if (refusal := override_refusal(row, edit=edit)) is not None:
         raise FatalAccounting(f"{what} is refused: {refusal}")
     needed = []
     if set(codes) & cleared["unit"]:
-        needed.append(("unit", row["act_id"], "release", block["basis_digest"]))
+        unit_decision = EDIT_DECISION if edit else "release"
+        needed.append(("unit", row["act_id"], unit_decision, block["basis_digest"]))
     if set(codes) & cleared["page"]:
         needed.append(("page", row["page_id"], "no-missed-act", block["page_basis_digest"]))
     found = []
