@@ -185,3 +185,18 @@ def test_a_render_failure_writes_no_prepared_page(tmp_path: Path, capsys, monkey
     _refused(argv, capsys, "synthetic render failure")
     assert not list(dirs["prepared"].iterdir())
     assert not list(dirs["output"].iterdir())
+
+
+def test_two_page_ids_naming_one_source_are_refused(tmp_path: Path, capsys):
+    dirs = _layout(tmp_path, {"one": (40, 20)})
+    argv = _args(dirs, ["one:0", "./one:180"], "--project-dir", str(dirs["base"]))
+    _refused(argv, capsys, "names a source another --page already names")
+    assert not (dirs["base"] / PROJECT_NAME).exists()
+
+
+def test_an_existing_project_is_a_named_refusal_not_a_traceback(tmp_path: Path, capsys):
+    dirs = _layout(tmp_path, {"one": (40, 20)})
+    argv = _args(dirs, ["one:0"], "--project-dir", str(dirs["base"]))
+    assert pilot.main(argv) == 0
+    capsys.readouterr()
+    _refused(argv, capsys, "could not write")

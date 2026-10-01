@@ -47,6 +47,13 @@ def main(argv: list[str] | None = None) -> int:
         help="existing empty sibling folder for deterministic split PNGs",
     )
     args = parser.parse_args(argv)
+
+    def write(path: Path, data: bytes) -> None:
+        try:
+            atomic_create(path, data)
+        except OSError as error:
+            parser.error(f"could not write {path}: {error}")
+
     if not args.output_dir.is_dir():
         parser.error("--output-dir must already exist")
     if len({identifier for identifier, _rotation in args.page}) != len(args.page):
@@ -82,6 +89,10 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, producer.ProducerRefusal) as error:
             parser.error(f"could not read the submitted master {source}: {error}")
         source_path = str(source.resolve())
+        if source_path in frames:
+            parser.error(
+                f"page identifier {identifier!r} names a source another --page already names"
+            )
         frames[source_path] = producer.SubmittedFrame(relative, data)
         prescribed.append(PrescribedSpread(relative, width, height))
         orientations[source_path] = degrees
@@ -107,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             PrescribedSpread(str(relative_prefix / source.source_path), source.width, source.height)
             for source in prescribed
         ]
-        atomic_create(project, prescribed_midpoint_project(project_sources))
+        write(project, prescribed_midpoint_project(project_sources))
         print(project)
         return 0
     translated = transcribe_imported_geometry(
@@ -151,10 +162,10 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 )
         for output_name, pixels in rendered:
-            atomic_create(args.prepared_source_dir / output_name, pixels)
+            write(args.prepared_source_dir / output_name, pixels)
         translated.binding["materialized_pages"] = materialized
-    atomic_create(binding_output, canonical_bytes(translated.binding))
-    atomic_create(manifest_output, canonical_bytes(admitted.manifest))
+    write(binding_output, canonical_bytes(translated.binding))
+    write(manifest_output, canonical_bytes(admitted.manifest))
     print(manifest_output)
     return 0
 

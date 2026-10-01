@@ -483,7 +483,7 @@ def build_proxies_from_bytes(data: bytes, config: InstrumentConfig) -> ProxySet:
             _require_image_bounds(image)
             image.load()
             return build_proxies(image, source_frame_sha256=digest_bytes(data), config=config)
-    except Image.DecompressionBombError as error:
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
         raise InstrumentRefusal(
             "triage proxy source exceeds the decoder pixel safety bound"
         ) from error
