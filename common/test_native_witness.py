@@ -1217,14 +1217,7 @@ def test_the_retired_output_envelope_still_reads_and_says_that_it_is_retired():
 
 
 def test_a_well_formed_body_rooted_elsewhere_is_an_unrecognized_shape_not_a_failure():
-    """The parser ran, read the whole response, and could name no shape it knows.
-
-    This is the state Unit 12 coupled to a parser name that no longer exists.
-    `validate_churro_xml` -- the door it replaced -- refused the vendor's own
-    grammar outright, because it admitted a bare `<output>` element and nothing
-    else, so a real `HistoricalDocument` answer would have landed as
-    unparseable bytes.
-    """
+    """The parser ran, read the whole response, and could name no shape it knows."""
     result = parse_churro_response(b"<transcription>x</transcription>")
     assert result["state"] == "unrecognized-shape"
     assert "transcription" in result["reason"]

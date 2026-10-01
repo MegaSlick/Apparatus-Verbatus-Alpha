@@ -60,9 +60,8 @@ def test_a_captured_page_reading_parses_and_keeps_its_raw_bytes(native_run):
     assert payload["payload"].startswith(HEADER)
     raw = native_run.read_bytes(capture["raw_response_ref"]["relative_path"])
     assert raw == f"<output>{payload['payload']}</output>".encode()
-    # The declared body is the retired framing's envelope, kept as retained
-    # history until U16 re-declares these rows; the vendor grammar reads it and
-    # says on the record that it arrived in a shape nobody asked for.
+    # The fixture's declared rows carry this envelope; the vendor grammar reads
+    # it and says on the record that it arrived in a shape nobody asked for.
     assert capture["findings"] == [{"kind": "retired-output-envelope"}]
     assert capture["raw_response_ref"] in record["inputs"]
     assert payload["content_health"]["recordable"] is True

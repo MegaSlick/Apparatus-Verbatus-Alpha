@@ -108,8 +108,8 @@ CHANDRA_BODY = CHANDRA_PAGE_ONE
 CHANDRA_UNRECOGNIZED_BODY = "A real Chandra markdown body, with no layout block in it."
 # Churro's retired `<output>` envelope. The chair is no longer asked for it and
 # the vendor grammar reads it as retained history, with a finding that says so;
-# most of this module still scripts it because it is the shape this fixture's
-# declared rows carry until U16 re-declares them.
+# most of this module scripts it because the fixture's declared rows carry this
+# envelope.
 CHURRO_PAGE_ONE = (
     "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
 )
@@ -972,14 +972,13 @@ def test_capacity_refusal_attempt_declares_the_refused_chairs_own_format_capabil
     error = RequestCapacityRefusal("too many image tokens for this row")
     receipt_ref = {"relative_path": "receipts/x", "sha256": "a" * 64}
 
-    # No adapter in hand: the old blanket default, unchanged.
+    # No adapter in hand: the blanket default.
     bare = attestatores.capacity_refusal_attempt(
         error, receipt_ref=receipt_ref, what="the test request"
     )
     assert bare.format_capabilities == attestatores.DEFAULT_FORMAT_CAPABILITIES
 
-    # An adapter that declares no attribute at all: today's real adapters,
-    # still the blanket default.
+    # An adapter that declares none falls back to the blanket default.
     undeclared = attestatores.capacity_refusal_attempt(
         error, receipt_ref=receipt_ref, what="the test request", adapter=SimpleNamespace()
     )
@@ -1342,12 +1341,10 @@ def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name
 ):
     """A named surprise, not a parse failure and not a silent reading.
 
-    The retired `validate_churro_xml` admitted a bare `<output>` element and
-    nothing else, so the vendor's own grammar would have been filed as
-    unparseable XML. What reaches `unrecognized-shape` now is what the phrase
-    means: the parser ran, read the whole response, and could name no shape it
-    knows -- and the outcome says which root element arrived, so the surprise is
-    named rather than merely counted. The bytes were retained before it ran.
+    What reaches `unrecognized-shape` is what the phrase means: the parser ran,
+    read the whole response, and could name no shape it knows -- and the outcome
+    says which root element arrived, so the surprise is named rather than merely
+    counted. The bytes were retained before it ran.
     """
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
