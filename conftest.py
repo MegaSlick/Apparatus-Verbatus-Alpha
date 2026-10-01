@@ -424,6 +424,19 @@ def page_protocol_config(directory: Path) -> Path:
     return path
 
 
+def reask_recovery_config(directory: Path, page_level_reread: int) -> Path:
+    """The committed recovery policy with its page re-ask budget set, written under `directory`."""
+    text = (ROOT / "config" / "recovery.toml").read_text(encoding="utf-8")
+    assert "\npage_level_reread = 1\n" in text
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "recovery.toml"
+    path.write_text(
+        text.replace("\npage_level_reread = 1\n", f"\npage_level_reread = {page_level_reread}\n"),
+        "utf-8",
+    )
+    return path
+
+
 def floor_models_config(directory: Path, floor: int) -> Path:
     """The live model config with its witness floor set to `floor`, written under `directory`."""
     shutil.copytree(ROOT / "config" / "model-fixtures", directory / "model-fixtures")
@@ -511,10 +524,13 @@ def build_page_tree(
 
     The options, which every later stage of the run takes too, name the page
     protocol and the page-read roster (`page_models_config`) with witness floor
-    `floor`; `options` adds others (for example `witness_context="blinded"`).
+    `floor`, and a recovery policy with the page re-ask off, so each page stands
+    on its first reading; `options` adds others (for example
+    `witness_context="blinded"`).
     """
     options = {
         "perlector_protocol_config": page_protocol_config(base / "config"),
+        "recovery_config": reask_recovery_config(base / "config", 0),
         **page_roster_options(base / "models", floor),
         **options,
     }

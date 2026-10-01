@@ -22,6 +22,7 @@ from common.request_capacity import (
     page_request_capacity,
     perlector_page_prompt_bound,
     perlector_prompt_bound,
+    reask_answer_measure,
 )
 
 ROW = SimpleNamespace(
@@ -215,3 +216,28 @@ def test_a_digit_run_is_charged_its_utf8_bytes_not_its_characters():
         len("vingt-2ème".encode()),
         len(" baptême"),
     )
+
+
+def test_a_re_ask_reserves_its_answer_on_its_named_units_text_or_the_whole_cap_with_none():
+    # The most text one witness gave for the named units, one entry per named id at most.
+    named = reask_answer_measure(
+        [("A", "x" * 300), ("B", "y" * 200), ("A", "z" * 100)], 3, named_lines=0
+    )
+    assert named == {"longest_witness_characters": 400, "act_entries": 3, "surya_lines": 0}
+    # Only lines or records named: nothing measures the ink, so the whole cap is reserved.
+    lines_only = reask_answer_measure([], 3, named_lines=3)
+    assert lines_only == {"longest_witness_characters": 0, "act_entries": 3, "surya_lines": 3}
+    # A row with room for the named units' reserve but not the whole cap: the first
+    # re-ask is admitted on its own reserve, the second refused whole, never trimmed.
+    row = SimpleNamespace(**{**vars(ROW), "max_model_len": 8192})
+    admitted = _admit(row, text="x" * 4000, measure=named)
+    assert admitted["capacity"]["fits"] is True
+    assert admitted["answer_reserve"]["tokens"] == admitted["capacity"]["answer_budget"] == 440
+    with pytest.raises(RequestCapacityRefusal, match="held whole") as refusal:
+        _admit(row, text="x" * 4000, measure=lines_only)
+    assert refusal.value.capacity["fits"] is False
+    assert refusal.value.capacity["answer_budget"] == 12288
+    with pytest.raises(RequestCapacityRefusal, match="named_ids"):
+        reask_answer_measure([], -1, named_lines=0)
+    with pytest.raises(RequestCapacityRefusal, match="named_lines"):
+        reask_answer_measure([], 1, named_lines=-1)

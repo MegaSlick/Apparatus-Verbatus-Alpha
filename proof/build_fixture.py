@@ -611,6 +611,51 @@ PAGE_ANSWER_VARIANTS = {
         ),
     ),
 }
+
+
+def _first_act_only(answer: dict) -> dict:
+    """Page 1 read as a1 alone: a2's units, record and lines left unaccounted for."""
+    return {"acts": [{**answer["acts"][0], "continues_to_next_page": False}], "set_aside": []}
+
+
+def _no_continuation_in(answer: dict) -> dict:
+    return _with_entry(answer, 1, continues_from_previous_page=False)
+
+
+# Page-read scenarios whose first reading of page 1 leaves ids unaccounted for,
+# so the page is re-asked once (`common/page_reask.py`); each re-ask's answer is
+# in PAGE_REASK_ANSWERS. The reads of a2 and a1 below leave Churro's unboxed
+# line unaccounted for, which no re-ask may name.
+# `reask-recovers`, `reask-sets-aside`, `reask-malformed`, `reask-cut-off` and
+# `reask-off`: page 1 read as a1 alone, with nothing running onto page 2.
+# `reask-duplicate`: page 1's a2 read but placed by Churro's unboxed line
+# alone, so its boxed units, record and lines are unaccounted for.
+# `reask-cited-forgot`: a2 read and placed without citing B2, DAI's witness
+# unit over it; B2 lies inside a2's region, so the page holds and asks nothing.
+# `reask-continuation`: page 1 read as a2 alone, still running onto page 2.
+# `blank-then-recovered`: page 1 read as blank, with nothing set aside.
+_REASK_FIRST_READINGS = {
+    **{
+        name: {1: _first_act_only, 2: _no_continuation_in}
+        for name in (
+            "reask-recovers",
+            "reask-sets-aside",
+            "reask-malformed",
+            "reask-cut-off",
+            "reask-off",
+        )
+    },
+    "reask-duplicate": {1: lambda answer: _with_entry(answer, 2, cites=["C2"])},
+    "reask-cited-forgot": {1: lambda answer: _with_entry(answer, 2, cites=["A2", "C2"])},
+    "reask-continuation": {
+        1: lambda answer: {"acts": [{**answer["acts"][1], "n": 1}], "set_aside": []}
+    },
+    "blank-then-recovered": {
+        1: lambda _answer: {"acts": [], "set_aside": []},
+        2: _no_continuation_in,
+    },
+}
+PAGE_ANSWER_VARIANTS |= {name: ("happy", pages) for name, pages in _REASK_FIRST_READINGS.items()}
 PAGE_ANSWERS += tuple(
     {
         **row,
@@ -622,6 +667,65 @@ PAGE_ANSWERS += tuple(
     for variant, (base, pages) in PAGE_ANSWER_VARIANTS.items()
     for row in PAGE_ANSWERS
     if row["scenario"] == base
+)
+
+
+# What the fake Perlector answers when a page is re-asked about the ids its first
+# reading left unaccounted for, one per re-asked scenario and page; `answer` is
+# the reply text exactly, and `stop_reason` its finish (`stop` unless given).
+# Page 1's a1 is over A1, B1 and lines L1-L4, a2 over A2, B2 and L5-L9; page 2's
+# a2 over B1 and L1-L3. `reask-duplicate` and `page-review` read again the a2
+# their first reading already read; `reask-off` has no answer, being read with
+# the re-ask off.
+_RECOVERED_A1 = _page_entry(
+    1,
+    "a1",
+    ["A1", "B1", "L1", "L2", "L3", "L4"],
+    text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]",
+)
+_RECOVERED_A2 = _page_entry(1, "a2", ["A2", "B2", "L5", "L6", "L7", "L8", "L9"])
+_PAGE_TWO_A2_AGAIN = {"acts": [_page_entry(1, "a2", ["B1", "L1", "L2", "L3"])], "set_aside": []}
+PAGE_REASK_ANSWERS = (
+    {
+        "scenario": "reask-recovers",
+        "page_ordinal": 1,
+        "answer": {"acts": [_RECOVERED_A2], "set_aside": []},
+    },
+    {
+        "scenario": "reask-sets-aside",
+        "page_ordinal": 1,
+        "answer": {
+            "acts": [],
+            "set_aside": [
+                {"id": identifier, "reason": "no entry here"}
+                for identifier in ("A2", "B2", "L5", "L6", "L7", "L8", "L9")
+            ],
+        },
+    },
+    {"scenario": "reask-malformed", "page_ordinal": 1, "answer": "the re-ask reply is not JSON"},
+    {
+        "scenario": "reask-cut-off",
+        "page_ordinal": 1,
+        "answer": {"acts": [_RECOVERED_A2], "set_aside": []},
+        "stop_reason": "length",
+    },
+    {
+        "scenario": "reask-duplicate",
+        "page_ordinal": 1,
+        "answer": {"acts": [_RECOVERED_A2], "set_aside": []},
+    },
+    {
+        "scenario": "reask-continuation",
+        "page_ordinal": 1,
+        "answer": {"acts": [_RECOVERED_A1], "set_aside": []},
+    },
+    {
+        "scenario": "blank-then-recovered",
+        "page_ordinal": 1,
+        "answer": {"acts": [_RECOVERED_A1, {**_RECOVERED_A2, "n": 2}], "set_aside": []},
+    },
+    {"scenario": "page-review", "page_ordinal": 2, "answer": _PAGE_TWO_A2_AGAIN},
+    {"scenario": "page-review-other", "page_ordinal": 2, "answer": _PAGE_TWO_A2_AGAIN},
 )
 
 
@@ -870,6 +974,27 @@ def toml_value(value) -> str:
         fields = ", ".join(f"{key} = {toml_value(item)}" for key, item in sorted(value.items()))
         return "{ " + fields + " }"
     raise ValueError(f"fixture cannot render TOML value {value!r}")
+
+
+def _answer_rows(table: str, rows) -> list[str]:
+    """The fixture lines of fake Perlector answers: one `[[table]]` row per scenario and page."""
+    lines = []
+    for row in rows:
+        lines += [
+            f"[[{table}]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"page_ordinal = {row['page_ordinal']}",
+            "answer = "
+            + toml_string(
+                row["answer"]
+                if isinstance(row["answer"], str)
+                else json.dumps(row["answer"], separators=(",", ":"))
+            ),
+        ]
+        if "stop_reason" in row:
+            lines.append(f"stop_reason = {toml_string(row['stop_reason'])}")
+        lines.append("")
+    return lines
 
 
 def build_ingress_manifest(rendered: dict[int, bytes]) -> str:
@@ -1501,19 +1626,13 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         '# read only under reading_unit = "page". `answer` is the reply text exactly.',
         "",
     ]
-    for row in PAGE_ANSWERS:
-        lines += [
-            "[[page_answer]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"page_ordinal = {row['page_ordinal']}",
-            "answer = "
-            + toml_string(
-                row["answer"]
-                if isinstance(row["answer"], str)
-                else json.dumps(row["answer"], separators=(",", ":"))
-            ),
-            "",
-        ]
+    lines += _answer_rows("page_answer", PAGE_ANSWERS)
+    lines += [
+        "# The fake Perlector's answer to a page's one re-ask, one per re-asked scenario",
+        "# and page, read only with the re-ask on. `answer` is the reply text exactly.",
+        "",
+    ]
+    lines += _answer_rows("page_reask_answer", PAGE_REASK_ANSWERS)
     lines += [
         "# One declared provider RESPONSE per row: an empty body from that chair on",
         "# that act. The Attestatores derives `genuinely-empty` from the retained",

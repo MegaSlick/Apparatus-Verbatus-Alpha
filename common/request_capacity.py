@@ -674,7 +674,7 @@ def _rate_bound_tokens(characters: int) -> int:
 # The carried rate is sealed against the page builder's own digest, so editing
 # the builder expires it.
 PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST: Final = (
-    "4133f3538842f1a4c45b620d3a2863a5cf592c9fa7bb51f99292ed635ef17db1"
+    "e8e3e2232ae481228b541bc02225b74027f9ff8c5a6475b0f8b329ebc31b7e74"
 )
 # Chat-template cost: 52 for the one turn plus 2 per image, charged at the most a
 # page request sends -- the page render and its overlay (`[feed] page_overlay`).
@@ -867,6 +867,30 @@ def page_request_capacity(
         )
     room = record["max_model_len"] - record["image_prompt_tokens"] - record["prompt_tokens"]
     return {"capacity": record, "answer_reserve": answer_reserve, "max_tokens": min(cap, room)}
+
+
+def reask_answer_measure(
+    named_units: Sequence[tuple[str, str]], named_ids: int, *, named_lines: int
+) -> dict[str, int]:
+    """What a page re-ask's answer is reserved on, as ``page_request_capacity`` takes it.
+
+    ``named_units`` are ``(witness letter, text)`` of each witness unit the
+    re-ask names, ``named_ids`` how many distinct ids it names and
+    ``named_lines`` how many of them are Surya lines. Its answer transcribes
+    only the ink at those ids, so its text is measured by the most text one
+    witness gave for them, its entries are at most one per named id, and each
+    named line adds one cite of its own, as on the first request. With no
+    named witness text (only lines or records named) nothing measures the
+    ink, and the reserve is the whole page cap.
+    """
+    by_witness: dict[str, int] = {}
+    for letter, text in named_units:
+        by_witness[letter] = by_witness.get(letter, 0) + len(text)
+    return {
+        "longest_witness_characters": max(by_witness.values(), default=0),
+        "act_entries": _nonnegative(named_ids, "named_ids"),
+        "surya_lines": _nonnegative(named_lines, "named_lines"),
+    }
 
 
 # What a dense page's answer costs, per chair, in the chair's own response
