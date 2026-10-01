@@ -459,33 +459,6 @@ def test_a_newline_becomes_a_separator_and_the_length_notice_names_two_lengths()
     assert cut.count("x") == 300
 
 
-def test_a_crop_line_says_which_attempt_it_was():
-    text = "\n".join(
-        review_text.render(
-            {
-                "run_id": "r",
-                "acts": [
-                    {
-                        "act_id": "a1",
-                        "act_key": "a1",
-                        "category": "held-for-review",
-                        "crops": [
-                            {
-                                "region_id": "r1",
-                                "ordinal": 1,
-                                "attempt_ordinal": 2,
-                                "image_path": "2_designator/blobs/sha256/aa/bb",
-                                "image_sha256": "aabb",
-                            }
-                        ],
-                    }
-                ],
-            }
-        )
-    )
-    assert "(attempt 2)" in text
-
-
 def test_an_empty_queue_row_is_named_by_its_line_number():
     text = "\n".join(
         review_text.render(

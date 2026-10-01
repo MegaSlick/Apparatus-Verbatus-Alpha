@@ -471,16 +471,9 @@ def render(projection: dict[str, Any]) -> list[str]:
             lines.append(f"    witnesses: {witnessed}")
         crops = _nested_rows(act, "crops", "acts[].crops")
         for crop in crops:
-            origin = f" ({inert(crop.get('origin'))})" if crop.get("origin") else ""
-            attempt = (
-                f" (attempt {inert(crop.get('attempt_ordinal'))})"
-                if crop.get("attempt_ordinal") is not None
-                else ""
-            )
             lines.append(
-                f"    crop {inert(crop.get('region_id'))} on page {inert(crop.get('ordinal'))}"
-                f"{origin}{attempt}: {inert(crop.get('image_path'))} sha256 "
-                f"{_digest(crop.get('image_sha256'))}"
+                f"    crop {inert(crop.get('region_id'))} on page {inert(crop.get('ordinal'))}: "
+                f"{inert(crop.get('image_path'))} sha256 {_digest(crop.get('image_sha256'))}"
             )
         if not crops:
             lines.append(f"    crops: {_one_line(act.get('crops_note') or 'none recorded', 300)}")
