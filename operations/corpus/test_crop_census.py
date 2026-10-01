@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 
 from common import page_render
+from common.contracts.errors import SchemaRefusal
 from common.request_capacity import CHAT_IMAGE_TOKENS, CHAT_TURN_TOKENS, request_fits, smart_resize
 from operations.corpus import crop_census
 from operations.corpus.crop_census import (
@@ -97,15 +98,17 @@ def test_a_crop_the_processor_shrinks_gains_only_what_the_chair_sees():
         _page("huge", 8000, 10000),
         {**OPTIONS, "crop_width_bp": 10000, "crop_height_bp": 10000},
     )
-    assert whole["page_gain_bp"] > 30000
-    # A whole-page crop is shrunk to the same cap as the render, so it gains nothing.
-    assert whole["gain_bp"] < 10500 and whole["qualifies"] is False
+    assert whole["page_gain_bp"] == 39062
+    # A whole-page crop is shrunk to the same size as the render, so it gains nothing.
+    assert whole["crop_seen"] == whole["seen"] == [2048, 2560]
+    assert whole["gain_bp"] == 10000 and whole["qualifies"] is False
 
 
 def test_a_page_below_the_processor_minimum_is_enlarged_and_gains_nothing():
     entry = census_page(perlector_row(), sealed_protocol(), _page("tiny", 200, 250, 0), OPTIONS)
     assert entry["seen"][0] * entry["seen"][1] >= 65536
-    assert entry["page_gain_bp"] < 10000 and entry["gain_bp"] < 10000
+    # Enlargement adds no detail, so neither the page nor its crop gains anything.
+    assert entry["page_gain_bp"] == 10000 and entry["gain_bp"] == 10000
     assert entry["qualifies"] is False
 
 
@@ -121,9 +124,9 @@ def test_k_is_the_most_crops_round_two_fits_and_one_more_does_not():
     row = perlector_row()
     capacity = page_request(row, feed)["capacity"]
     crop = crop_size((4000, 5500), 5000, 2500)
-    # Round two carries the round-one reply and a turn; then room for exactly two crops.
+    # Round two carries the round-one reply and two turns; then room for exactly two crops.
     per_crop = request_fits(row, [crop], 0, 0)["need"] + CHAT_IMAGE_TOKENS
-    base = capacity["need"] + capacity["answer_budget"] + CHAT_TURN_TOKENS
+    base = capacity["need"] + capacity["answer_budget"] + 2 * CHAT_TURN_TOKENS
     tight = replace(row, max_model_len=base + 2 * per_crop + per_crop - 1)
     tight_capacity = page_request(tight, feed)["capacity"]
     assert admitted_crops(tight, tight_capacity, crop, 8) == 2
@@ -144,17 +147,10 @@ def test_a_page_whose_request_is_refused_is_counted_with_no_crops(monkeypatch):
 
 
 def test_quantiles_are_nearest_rank():
-    assert quantiles([]) == {str(q): None for q in crop_census.QUANTILES_BP}
+    assert quantiles([]) == [{"q": q, "value": None} for q in crop_census.QUANTILES_BP]
     values = list(range(10, 110, 10))
-    assert quantiles(values) == {
-        "0": 10,
-        "1000": 10,
-        "2500": 30,
-        "5000": 50,
-        "7500": 80,
-        "9000": 90,
-        "10000": 100,
-    }
+    assert [cell["value"] for cell in quantiles(values)] == [10, 10, 30, 50, 80, 90, 100]
+    assert [cell["q"] for cell in quantiles(values)] == list(crop_census.QUANTILES_BP)
 
 
 def test_the_report_is_deterministic_and_summarised(tmp_path, capsys):
@@ -167,7 +163,10 @@ def test_the_report_is_deterministic_and_summarised(tmp_path, capsys):
     assert main([str(manifest), "--out", str(second)]) == 0
     assert first.read_bytes() == second.read_bytes()
     report = json.loads(first.read_bytes())
-    assert first.read_text("utf-8") == json.dumps(report, sort_keys=True, indent=2) + "\n"
+    assert (
+        first.read_text("utf-8")
+        == json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+    )
     assert [entry["page_id"] for entry in report["pages"]] == ["pg-a", "pg-b", "pg-c"]
     summary = report["summary"]
     assert summary["pages"] == 3 and summary["qualifying"] == 1
@@ -179,6 +178,7 @@ def test_the_report_is_deterministic_and_summarised(tmp_path, capsys):
     assert set(inputs["config_sha256"]) == set(crop_census.CONFIGS)
     assert "qualifying (gain >= 1.50, k >= 1): 1 (33.33%)" in printed
     assert "k histogram: 0: 0" in printed
+    assert crop_census.ESTIMATE in printed
     # The printed summary carries counts only: no page id, no gold text.
     assert "baptême" not in printed
     assert "pg-" not in printed
@@ -190,7 +190,7 @@ def test_an_empty_manifest_reports_no_pages(tmp_path, capsys):
     assert main([str(manifest), "--out", str(tmp_path / "out.json")]) == 0
     report = json.loads((tmp_path / "out.json").read_bytes())
     assert report["pages"] == [] and report["summary"]["qualifying_bp"] == 0
-    assert set(report["summary"]["gain_bp_quantiles"].values()) == {None}
+    assert {cell["value"] for cell in report["summary"]["gain_bp_quantiles"]} == {None}
     assert "0 pages" in capsys.readouterr().out
 
 
@@ -211,3 +211,54 @@ def test_out_of_range_inputs_are_refused(tmp_path, arguments):
     with pytest.raises(SystemExit) as stopped:
         main([str(manifest), "--out", str(tmp_path / "out.json"), *arguments])
     assert stopped.value.code == 2
+
+
+def _refused(tmp_path, capsys, pages, *arguments) -> str:
+    manifest = tmp_path / "page_manifest.jsonl"
+    manifest.write_text("".join(json.dumps(page) + "\n" for page in pages), encoding="utf-8")
+    assert main([str(manifest), "--out", str(tmp_path / "out.json"), *arguments]) == 2
+    assert not (tmp_path / "out.json").exists()
+    return capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("pages", "message"),
+    [
+        ([{**_page("a", 900, 700), "page_id": None}], "no page_id"),
+        ([_page("a", 900, 700), _page("a", 1800, 2400)], "appears twice"),
+        ([{**_page("a", 900, 700), "width": "900"}], "positive integer width"),
+        ([[1, 2]], "not an object"),
+    ],
+)
+def test_a_manifest_line_the_census_cannot_count_is_refused(tmp_path, capsys, pages, message):
+    assert message in _refused(tmp_path, capsys, pages)
+
+
+def test_a_crop_the_processor_refuses_is_a_clean_refusal(tmp_path, capsys):
+    assert "aspect ratio" in _refused(
+        tmp_path, capsys, [_page("a", 4000, 5500)], "--crop-height", "0.0002"
+    )
+
+
+def test_only_the_legible_page_render_is_counted(monkeypatch):
+    sealed = sealed_protocol()
+    sealed = {**sealed, "feed": {**sealed["feed"], "page_image": "full"}}
+    with pytest.raises(SchemaRefusal, match="legible"):
+        census_page(perlector_row(), sealed, _page("a", 4000, 5500), OPTIONS)
+
+
+def test_a_render_rule_that_drifts_from_the_page_request_is_refused(monkeypatch):
+    monkeypatch.setattr(crop_census, "render_size", lambda size, edge: (size[0] - 1, size[1]))
+    with pytest.raises(SchemaRefusal, match="page render"):
+        census_page(perlector_row(), sealed_protocol(), _page("a", 4000, 5500), OPTIONS)
+
+
+def test_k_never_takes_the_request_past_the_protocol_image_limit():
+    sealed = {**sealed_protocol(), "max_images": 3}
+    entry = census_page(perlector_row(), sealed, _page("big", 4000, 5500), OPTIONS)
+    assert entry["k_cap"] == 2 and entry["k"] == 2 and entry["k_capped"] is True
+
+
+def test_a_crop_gain_needs_both_sizes():
+    with pytest.raises(ValueError):
+        gain_bp((4000, 5500), (1856, 2560), (2000, 687))

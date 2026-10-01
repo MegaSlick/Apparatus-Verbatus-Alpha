@@ -389,7 +389,8 @@ Per page it records:
   `max_pixels`, `patch_size` and `merge_size`; the token count is the
   processor's `image_grid_thw.prod() // merge_size**2`);
 - `page_gain_bp`: how many times finer, linearly, native pixels are than those
-  seen, `sqrt(native area / seen area)`, in basis points;
+  seen, `sqrt(native area / seen area)`, in basis points; a page the processor
+  enlarges gains 1, since enlargement adds no detail;
 - `crop_native`, `crop_seen` and `gain_bp`: one crop's native size, the size the
   processor resizes it to, and the gain the chair actually gets from it —
   `page_gain_bp` scaled by the crop's own seen-over-native factor, never above
@@ -398,14 +399,25 @@ Per page it records:
   row's 65,536-token context, built as `perlector_request_fit.py` builds it (the
   sealed feed, the page's gold text standing in for three witnesses, Surya lines
   estimated from it);
-- `k` and `k_capped`: the most crops, up to `--max-crops`, that round two fits,
-  and whether the cap stopped it. Round two is the page request as admitted,
-  plus its answer reserve again for the round-one reply carried in context, one
-  more chat turn (`CHAT_TURN_TOKENS`) and k crops, each charged its image tokens
-  (`request_fits`) and `CHAT_IMAGE_TOKENS`, answered within the same reserve.
-  Wording that asks for the crops is not charged beyond that turn;
+- `k`, `k_cap` and `k_capped`: the most crops round two fits, the cap it was
+  counted up to (`--max-crops`, or fewer if more would take the request past the
+  protocol's `max_images`), and whether k reached that cap. Round two is the
+  page request as admitted, plus its answer reserve again for the round-one
+  reply carried in context, two more chat turns (`CHAT_TURN_TOKENS` each, for
+  the carried reply and the new request) and k crops, each charged its image
+  tokens (`request_fits`) and `CHAT_IMAGE_TOKENS`, answered within the same
+  reserve. Wording that asks for the crops is not charged beyond those turns;
+- `reserve_clamped`: whether the page's answer reserve was clamped to the page
+  cap, in which case a real round-one reply could run longer than the reserve
+  carried and k is optimistic;
 - `qualifies`: `gain_bp` at least `--min-gain` and k at least 1. A page whose
   request is refused at 65,536 tokens has k 0 and does not qualify.
+
+The census counts only the legible page render (`[feed] page_image =
+"legible"`) and refuses any other setting. It refuses a manifest line without a
+unique `page_id`, positive integer `width` and `height`, or a `records` list,
+and a crop the processor refuses on aspect ratio; a refusal exits 2 and writes
+no report.
 
 | Argument | Default | Meaning |
 |---|---|---|
@@ -415,9 +427,13 @@ Per page it records:
 | `--max-crops` | 8 | the most crops round two may ask for |
 
 The default crop is half the page wide and an eighth tall, a few lines of an
-act; k falls as the crop's area grows, so the census is worth running at more
+act; k falls as the crop's area grows until the crop reaches the processor's
+`max_pixels`, where its cost levels off, so the census is worth running at more
 than one crop size. The report is sorted-key JSON with no timestamps, carrying
 its inputs (the manifest's digest, the digests of the three configs it reads and
 of the page-prompt builder), every page and a summary: the share of pages
-qualifying, gain quantiles (nearest rank), a histogram of k and how many pages
-reached the cap. The printed summary carries counts only.
+qualifying, gain quantiles (nearest rank, as `{q, value}` pairs), a histogram
+of k, how many pages reached their cap and how many reserves were clamped. The
+printed summary carries counts only, and says they are estimates: gold text
+stands in for the witnesses and round two has never been measured against the
+engine.
