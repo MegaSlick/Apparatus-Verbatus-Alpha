@@ -57,7 +57,7 @@ def _bounded(detail: str) -> str:
 def send(event: str, message: str, *, runner: Runner = run) -> NotifyOutcome:
     if event not in EVENTS:
         return NotifyOutcome(False, False, f"{event!r} is not an event this client sends")
-    if "\n" in message or "\x00" in message or not message.strip():
+    if any(character in message for character in "\n\r\x00") or not message.strip():
         return NotifyOutcome(False, False, "the message was not one non-empty line")
     try:
         return _read(runner(["sh", str(NOTIFY_SCRIPT), event, message]))

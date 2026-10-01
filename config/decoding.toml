@@ -1,5 +1,5 @@
 # Its values are sealed into every run's decoding provenance.
-schema = "decoding.v6"
+schema = "decoding.v7"
 
 [perlector_generation]
 # The output cap of one whole-page reading, which answers every act on the page
@@ -12,6 +12,13 @@ schema = "decoding.v6"
 # leaves and is recorded on each call record.
 page_max_tokens = 12288
 
+[reconstructor_generation]
+# The output cap of one Coniector answer: every act of a page with its findings
+# and at most a few short departures each, far above an honest answer, so a
+# runaway reply stops as a visible cut-off and leaves the page's
+# reconstructions not made. The value sent is cut to the context the prompt
+# leaves (`common/request_capacity.py`, `reconstruction_answer_bound`).
+answer_max_tokens = 8192
 [chandra_native_inference]
 # Exact upstream inference recipe admitted only for Attestator 1's Chandra
 # page-reading route. This is not an ambient retry or sampling switch.
@@ -93,3 +100,16 @@ repetition_penalty = 1.0
 source = "https://huggingface.co/Qwen/Qwen3.8-27B/raw/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/README.md"
 revision = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
 verification = "read by the project lead"
+
+[chair_decoding.reconstructor]
+# The same model asked text only, in non-thinking mode, as its model card
+# recommends; the card gives one non-thinking row for text and image input alike.
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+min_p = 0.0
+presence_penalty = 1.5
+repetition_penalty = 1.0
+source = "https://huggingface.co/Qwen/Qwen3.8-27B/raw/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/README.md"
+revision = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
+verification = "read from the pinned model card by the Coniector session (Claude); equal to the Perlector row the project lead read"

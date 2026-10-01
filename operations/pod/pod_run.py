@@ -82,6 +82,22 @@ only here.
 
 ``--mechanics-qualification`` permits unproven rows for that run.
 
+**``--no-hold`` is for a run started by hand, outside the pod timer.**  After
+the final report of any run past a green bootstrap, it returns instead of
+holding and moves this pod's guard deadline to now, so the guard deletes the
+pod within about a minute rather than after its idle window.  It first leaves
+the run id and outcome in ``released-<pod id>`` beside the deadline, which the
+guard's delete notice carries.  The pod id is the container's own, read from
+its first process when that is readable, and a shell exporting a different
+one is refused before the bootstrap.  It is refused under a launch token: the
+pod timer reads an early exit as ``completed-early``.
+
+**A resume is checked against its seal before the bootstrap.**  When the run
+tree already has its ``run.json``, the Perlector protocol this launch names
+(or the default) and, on a real run, the run policy
+(``--mechanics-qualification``) are compared with the digests the run sealed,
+so a resume the stages would refuse is refused before a card is paid for.
+
 **The data gate is checked before the bootstrap spends anything.**  The
 orchestrator's Door refuses a submission folder outside the policy's approved
 storage roots (``config/data_handling_policy.json``; README.md says which
@@ -98,6 +114,7 @@ refuse it after a paid bootstrap.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
@@ -107,7 +124,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Mapping, MutableMapping, Sequence
+from typing import Callable, Mapping, MutableMapping, Sequence, TypeGuard
 
 from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity, is_witness_role
@@ -115,11 +132,18 @@ from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import SEAL_PREDECESSORS
 from common.runtree.store import RunTree
+from common.sealed_config import read_sealed_toml
+from common.stage import (
+    DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
+    real_run_policy_digest,
+    run_sealed_config_digests,
+    validate_witness_context_bindings,
+    verify_predecessor_seal,
+)
 from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
 from common.stage import EXIT_FATAL as ORCHESTRATOR_FATAL
 from common.stage import EXIT_HELD as ORCHESTRATOR_HELD
 from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
-from common.stage import verify_predecessor_seal
 from operations.serving.config import ServingConfigInputs
 from operations.serving.errors import ServingConfigurationError
 from operations.submit import gate
@@ -139,6 +163,7 @@ from .bootstrap_main import (
 )
 from .durable import atomic_write, canonical_json
 from .models import run_report_paths, utc_now
+from .provider_runpod import POD_ID_ENVIRONMENT
 from .run_exits import (
     EXIT_BOOTSTRAP_RED,
     EXIT_COMPLETE,
@@ -154,6 +179,21 @@ RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
 RUN_LIVENESS_SCHEMA = "pod-run-liveness.v1"
 DEFAULT_RUNS_DIRECTORY = "runs"
+# The pod guard's state directory on the volume (`pod_start_command.sh`); its
+# deadline file is keyed by the pod id the provider sets in the environment.
+POD_GUARD_DIRECTORY = ".pod_guard"
+# The container's first process, where the provider sets the pod id. A login
+# shell need not inherit it, and a value exported there by hand can be another
+# pod's: every pod's guard keeps its deadline on the same shared volume.
+PID1_ENVIRON = Path("/proc/1/environ")
+# The guard touches heartbeat-<pod id> once a tick (`pod_guard.sh`, one minute
+# by default). Older than this, nothing is known to be watching the deadline.
+GUARD_HEARTBEAT_STALE_SECONDS = 300
+# The run-policy knobs pod_run never forwards, so the orchestrator's own argv
+# defaults govern them; a resume's run-policy digest is recomputed under them.
+ORCHESTRATOR_RUN_POLICY_DEFAULTS: Mapping[str, object] = {"witness_context": "named"}
+PERLECTOR_PROTOCOL_WHAT = "Perlector protocol configuration"
+PERLECTOR_PROTOCOL_MODULE = Path(__file__).resolve().parents[2] / "pipeline/4_perlector/protocol.py"
 
 # The transcript's two bounds. The head is written to the volume as it arrives,
 # so a process killed mid-run still leaves the beginning of the run durable; the
@@ -243,6 +283,8 @@ class RunPlan:
     interval_seconds: float
     dry_run: bool
     mechanics_qualification: bool = False
+    perlector_protocol_config: Path | None = None
+    no_hold: bool = False
     stage: str | None = None
     from_stage: str | None = None
     to_stage: str | None = None
@@ -388,6 +430,8 @@ class RunPlan:
         command += ["--store-root", str(store_root)]
         if self.mechanics_qualification:
             command.append("--mechanics-qualification")
+        if self.perlector_protocol_config is not None:
+            command += ["--perlector-protocol-config", str(self.perlector_protocol_config)]
         if self.stage is not None:
             command += ["--stage", self.stage]
         if self.from_stage is not None and self.to_stage is not None:
@@ -427,6 +471,11 @@ class RunPlan:
             "interval_seconds": self.interval_seconds,
             "dry_run": self.dry_run,
             "mechanics_qualification": self.mechanics_qualification,
+            # None: the orchestrator's own default protocol.
+            "perlector_protocol_config": str(self.perlector_protocol_config)
+            if self.perlector_protocol_config
+            else None,
+            "no_hold": self.no_hold,
             "selection": self.selection_record(),
             "triage_decision_manifest": str(self.triage_decision_manifest)
             if self.triage_decision_manifest
@@ -438,6 +487,15 @@ class RunPlan:
             "corpus_register": str(self.corpus_register) if self.corpus_register else None,
             "bootstrap": self.bootstrap.to_record(),
         }
+
+    @property
+    def perlector_protocol_path(self) -> Path:
+        """The protocol the orchestrator will seal: the named one, or its default in the checkout."""
+
+        if self.perlector_protocol_config is not None:
+            return self.perlector_protocol_config
+        default = DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH
+        return self.repository / default.relative_to(default.parents[1])
 
     def selected_stages(self) -> tuple[str, ...]:
         if self.stage is not None:
@@ -502,6 +560,75 @@ def _require_selection_predecessor(plan: RunPlan) -> None:
         ) from error
 
 
+def _require_sealed_run_inputs(plan: RunPlan) -> None:
+    """Refuse a resume whose protocol or run policy differs from what the run sealed.
+
+    The orchestrator's stages refuse the same thing, but only after a paid
+    bootstrap. Compared here, for a run tree that already has its authority:
+    the ``perlector-protocol`` digest against the file this launch would hand
+    the orchestrator (read by the same seal reader the run binding uses), and,
+    on a real run, the ``run-policy`` digest recomputed from
+    ``--mechanics-qualification``, the witness-context declaration and the
+    orchestrator defaults pod_run leaves in place. A fixture run seals those
+    knobs only inside its ``config_digest``, which this cannot recompute; its
+    stages still refuse a mismatch.
+    """
+
+    try:
+        tree = RunTree(plan.run_root, plan.run_id)
+        if not tree.resolve("run.json").exists():
+            return
+        sealed = run_sealed_config_digests(tree.read_run())
+        protocol = plan.perlector_protocol_path
+        observed = read_sealed_toml(protocol, PERLECTOR_PROTOCOL_WHAT)[1]
+        mismatches: list[str] = []
+        if sealed.get("perlector-protocol") != observed:
+            mismatches.append(
+                f"its Perlector protocol (sealed {sealed.get('perlector-protocol')}, and "
+                f"{protocol} reads {observed}); name the protocol file the run started with in "
+                "--perlector-protocol-config, or leave it out if the run used the default"
+            )
+        if "run-policy" in sealed:
+            policy = _recomputed_run_policy(plan)
+            if sealed["run-policy"] != policy:
+                mismatches.append(
+                    "its run policy (sealed "
+                    f"{sealed['run-policy']}, this launch {policy}); pass the "
+                    "--mechanics-qualification the run started with, against the same "
+                    "--witness-context-config"
+                )
+    except (ContractError, OSError) as error:
+        # `read_run` already turns an unreadable or non-JSON run.json into a
+        # ContractError; an OSError from the tree around it must not escape
+        # either, or the refusal would be a traceback with no report.
+        raise RunRefusal(
+            f"run {plan.run_id!r} already exists and its sealed inputs could not be checked "
+            f"against this launch: {error}",
+            report_path=plan.report_path,
+        ) from error
+    if mismatches:
+        raise RunRefusal(
+            f"run {plan.run_id!r} was sealed under different inputs than this launch names: "
+            + "; and ".join(mismatches)
+            + ". Nothing was fetched and no run was started",
+            report_path=plan.report_path,
+        )
+
+
+def _recomputed_run_policy(plan: RunPlan) -> str:
+    defaults = ORCHESTRATOR_RUN_POLICY_DEFAULTS
+    declaration = validate_witness_context_bindings(
+        load_models_toml(plan.models_config),
+        witness_context_config_path=plan.witness_context_config,
+        **defaults,  # type: ignore[arg-type]
+    )
+    return real_run_policy_digest(
+        witness_context_declaration_sha256=declaration,
+        mechanics_qualification=plan.mechanics_qualification,
+        **defaults,  # type: ignore[arg-type]
+    )
+
+
 def _receipt_chairs(receipt: object, field: str, *, state: str | None = None) -> set[str]:
     """The chairs one PREFLIGHT receipt list names, optionally in one placement state."""
     rows = receipt.get(field) if isinstance(receipt, dict) else None
@@ -537,6 +664,17 @@ def _run_report_path(path: Path, bootstrap: Plan, launch_token: str | None) -> P
     return report_path
 
 
+def _perlector_protocol():
+    """The Perlector's protocol loader, by path: its stage folder is not a package."""
+    name = "verbatus_perlector_protocol"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, PERLECTOR_PROTOCOL_MODULE)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
 def build_parser() -> bootstrap_main.RefusingParser:
     parser = bootstrap_main.RefusingParser()
     parser.add_argument("--report-path", type=Path, required=True)
@@ -564,6 +702,18 @@ def build_parser() -> bootstrap_main.RefusingParser:
         "--mechanics-qualification",
         action="store_true",
         help="run real mechanics with unproven profiles; does not mark them proven",
+    )
+    parser.add_argument(
+        "--perlector-protocol-config",
+        type=Path,
+        help="the Perlector protocol the orchestrator seals, inside the repository; "
+        "omitted, the orchestrator's default",
+    )
+    parser.add_argument(
+        "--no-hold",
+        action="store_true",
+        help="for a run started by hand: after the final report, return and move the pod "
+        "guard's deadline to now instead of holding",
     )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--stage", choices=SEQUENCE_NAMES)
@@ -683,6 +833,31 @@ def resolve_run_plan(
             f"--data-gate-policy {data_gate_policy} is not a file in the checked-out repository",
             report_path=report_path,
         )
+    perlector_protocol_config = None
+    if args.perlector_protocol_config is not None:
+        perlector_protocol_config = _require_contained(
+            args.perlector_protocol_config,
+            repository,
+            "--perlector-protocol-config",
+            base_label="the checked-out repository",
+            report_path=report_path,
+        )
+        if not perlector_protocol_config.is_file():
+            raise RunRefusal(
+                f"--perlector-protocol-config {perlector_protocol_config} is not a file in the "
+                "checked-out repository",
+                report_path=report_path,
+            )
+        # Read as the Perlector reads it, closed schema included, so a protocol
+        # the run would refuse is refused here, before the bootstrap is paid for.
+        try:
+            _perlector_protocol().load(perlector_protocol_config)
+        except ContractError as error:
+            raise RunRefusal(
+                f"--perlector-protocol-config {perlector_protocol_config} is not a protocol the "
+                f"orchestrator can seal: {error}",
+                report_path=report_path,
+            ) from error
     if not isinstance(args.fixture, str) or not args.fixture.strip():
         raise RunRefusal("--fixture must be a non-blank fixture name", report_path=report_path)
     interval = bootstrap_main._positive_interval(args.interval_seconds, report_path=report_path)
@@ -714,6 +889,8 @@ def resolve_run_plan(
         interval_seconds=interval,
         dry_run=args.dry_run or bootstrap.dry_run,
         mechanics_qualification=args.mechanics_qualification,
+        perlector_protocol_config=perlector_protocol_config,
+        no_hold=args.no_hold,
         stage=stage,
         from_stage=from_stage,
         to_stage=to_stage,
@@ -964,6 +1141,145 @@ def _records_at_close(
     return audit, missing
 
 
+def container_pod_id() -> str | None:
+    """The pod id the provider set on the container's first process, when it can be read."""
+
+    try:
+        entries = PID1_ENVIRON.read_bytes().split(b"\0")
+    except OSError:
+        return None
+    name = POD_ID_ENVIRONMENT.encode("ascii") + b"="
+    for entry in entries:
+        if entry.startswith(name):
+            return entry[len(name) :].decode("ascii", "replace") or None
+    return None
+
+
+def _is_pod_id(value: str | None) -> TypeGuard[str]:
+    # ASCII only: str.isalnum accepts other scripts' letters and digits, which
+    # are no provider pod id and would only name an odd file on the volume.
+    return value is not None and value.isascii() and value.isalnum()
+
+
+def _guard_heartbeat_age(volume: Path, pod_id: str, instant: float) -> int | None:
+    """Seconds since this pod's guard last touched its heartbeat, or None when it never did."""
+
+    try:
+        beat = (volume / POD_GUARD_DIRECTORY / f"heartbeat-{pod_id}").stat().st_mtime
+    except OSError:
+        return None
+    return max(0, int(instant - beat))
+
+
+def _require_live_guard_for_release(
+    volume: Path,
+    first_process_pod_id: str | None,
+    shell_pod_id: str | None,
+    *,
+    report_path: Path,
+    now: Callable[[], datetime],
+) -> None:
+    """Refuse a --no-hold whose release could not be shown to reach this pod's own live guard.
+
+    Only the container's first process names this pod: a shell's id can be
+    exported by hand and name another live pod on the shared volume, whose
+    guard would then delete it mid-stage. Without that id the guard never
+    armed here, so there is nothing to release. A fresh heartbeat under the
+    id proves, before anything is paid for, that a guard is watching it.
+    """
+
+    if first_process_pod_id is None:
+        raise RunRefusal(
+            f"--no-hold needs this pod's id from its first process ({PID1_ENVIRON} names no "
+            f"{POD_ID_ENVIRONMENT}), and a shell's own value is never trusted for it: without "
+            "that id no guard armed for this pod, so there is nothing to release. Run without "
+            "--no-hold; the guard's idle deletion still applies",
+            report_path=report_path,
+        )
+    if not _is_pod_id(first_process_pod_id):
+        raise RunRefusal(
+            f"--no-hold: the first process's {POD_ID_ENVIRONMENT} {first_process_pod_id!r} "
+            "is not a pod id",
+            report_path=report_path,
+        )
+    if shell_pod_id not in (None, first_process_pod_id):
+        raise RunRefusal(
+            f"--no-hold would move the guard deadline of pod {first_process_pod_id!r}, the "
+            f"container's own (its first process's {POD_ID_ENVIRONMENT}), but this shell exports "
+            f"{shell_pod_id!r}; the volume holds every pod's deadline, so one of the two is "
+            f"wrong. Unset or correct {POD_ID_ENVIRONMENT} in this shell",
+            report_path=report_path,
+        )
+    age = _guard_heartbeat_age(volume, first_process_pod_id, now().timestamp())
+    if age is None or age > GUARD_HEARTBEAT_STALE_SECONDS:
+        seen = "never" if age is None else f"{age} s ago"
+        raise RunRefusal(
+            f"--no-hold needs a live guard for pod {first_process_pod_id!r}, but its heartbeat "
+            f"was last touched {seen} (fresh means within {GUARD_HEARTBEAT_STALE_SECONDS} s). "
+            "Run without --no-hold, or check the guard first (operations/pod/README.md)",
+            report_path=report_path,
+        )
+
+
+def release_pod_guard(
+    volume: Path, pod_id: str | None, *, run_id: str, state: str, now: Callable[[], datetime]
+) -> dict[str, object]:
+    """Move the pod guard's deadline to now, so the guard deletes this pod on its next tick.
+
+    Uses the guard's own deadline file, the one it and the start command's
+    backstop both read; nothing here reaches the provider. First it leaves
+    ``released-<pod id>`` beside it, naming the run and how it ended, which
+    the guard adds to its delete notice: without it, a phone ping after a
+    finished run reads exactly like one after a window that ran out mid-run.
+    ``guard_alive`` says whether this pod's guard touched its heartbeat
+    recently; ``released`` alone only says the deadline was written. Never
+    raises: a failed release leaves the guard's idle window, which still
+    deletes the pod.
+    """
+
+    if not _is_pod_id(pod_id):
+        return {"released": False, "detail": f"{POD_ID_ENVIRONMENT} is unset or not a pod id"}
+    guard = volume / POD_GUARD_DIRECTORY
+    path = guard / f"deadline-{pod_id}"
+    record: dict[str, object] = {"path": str(path)}
+    # The guard writes this file when it arms; without it no guard is watching
+    # this pod, and a new file would be read only by the start command's backstop.
+    try:
+        current = int(path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError) as error:
+        return {
+            **record,
+            "released": False,
+            "detail": f"no readable guard deadline for this pod ({type(error).__name__}); "
+            "delete the pod by hand",
+        }
+    instant = now().timestamp()
+    stamp = int(instant)
+    try:
+        atomic_write(guard / f"released-{pod_id}", f"run {run_id} ended {state}\n".encode("ascii"))
+    except OSError as error:
+        # The notice is the ping's wording, not the delete: the deadline still moves.
+        record["notice_failure"] = str(error)
+    heartbeat_age = _guard_heartbeat_age(volume, pod_id, instant)
+    record["guard_heartbeat_age_seconds"] = heartbeat_age
+    record["guard_alive"] = (
+        heartbeat_age is not None and heartbeat_age <= GUARD_HEARTBEAT_STALE_SECONDS
+    )
+    if not record["guard_alive"]:
+        record["detail"] = (
+            "this pod's guard has not touched its heartbeat in the last "
+            f"{GUARD_HEARTBEAT_STALE_SECONDS} s, so nothing is known to act on the deadline; "
+            "delete the pod by hand and confirm it is gone"
+        )
+    if current <= stamp:
+        return {**record, "released": True, "deadline": current}
+    try:
+        atomic_write(path, f"{stamp}\n".encode("ascii"))
+    except OSError as error:
+        return {**record, "released": False, "detail": f"deadline write failed: {error}"}
+    return {**record, "released": True, "deadline": stamp}
+
+
 def _refuse(refusal: PlanRefusal, *, now: Callable[[], datetime]) -> int:
     print(f"pod_run refused: {refusal}", file=sys.stderr)
     failure = _write_refusal(refusal.report_path, str(refusal), now=now)
@@ -1197,6 +1513,9 @@ def main(
     # The token is read before `prepare` scrubs the environment: its own name
     # is credential-shaped and would be gone afterwards.
     launch_token = environment.get("VERBATUS_LAUNCH_TOKEN") or None
+    shell_pod_id = environment.get(POD_ID_ENVIRONMENT) or None
+    # Only the container's first process names this pod (see PID1_ENVIRON).
+    pod_id = container_pod_id()
     try:
         bootstrap_plan, hard_deadline = bootstrap_main.prepare(bootstrap_argv, environment, now=now)
     except PlanRefusal as refusal:
@@ -1209,6 +1528,20 @@ def main(
         )
         args = build_parser().parse_flags(run_argv, run_report)
         plan = resolve_run_plan(args, bootstrap_plan, launch_token)
+        if plan.no_hold and launch_token:
+            raise RunRefusal(
+                "--no-hold is for a run started by hand; under a launch token the pod timer "
+                "reads its early exit as completed-early",
+                report_path=plan.report_path,
+            )
+        if plan.no_hold:
+            _require_live_guard_for_release(
+                bootstrap_plan.volume_mount_path,
+                pod_id,
+                shell_pod_id,
+                report_path=plan.report_path,
+                now=now,
+            )
         if plan.stage is not None or plan.from_stage is not None:
             bootstrap_plan = replace(
                 bootstrap_plan, preflight_roles=tuple(sorted(plan.required_chairs()))
@@ -1216,6 +1549,7 @@ def main(
         plan = replace(plan, bootstrap=bootstrap_plan)
         approved_roots, skipped_roots = require_approved_submission_folder(plan)
         _require_selection_predecessor(plan)
+        _require_sealed_run_inputs(plan)
     except PlanRefusal as refusal:
         return _refuse(refusal, now=now)
 
@@ -1396,8 +1730,14 @@ def main(
         else:
             failure_detail = absence if failure_detail is None else f"{failure_detail}. {absence}"
     state = _STATE_FOR_EXIT[exit_code]
-    holding = exit_code in _HOLD_AFTER_EXITS and not plan.ends_before_armarium
-    if holding:
+    holding = exit_code in _HOLD_AFTER_EXITS and not plan.ends_before_armarium and not plan.no_hold
+    if plan.no_hold:
+        hold_detail = (
+            f"the run ended {state}; --no-hold returns now and asks the pod guard to delete "
+            "the pod (guard_release says whether it could). Every record is on the volume, "
+            "which outlives the pod"
+        )
+    elif holding:
         hold_detail = (
             f"the run ended {state}; holding toward the hard deadline so the pod timer does "
             "not read this as completed-early. The pod guard deletes an idle pod, which ends "
@@ -1433,6 +1773,14 @@ def main(
         "finished_at": _stamp(now()),
     }
     _write_run_report(plan, final)
+    if plan.no_hold:
+        # After the final report, so a prompt delete cannot cost the run's record.
+        release = release_pod_guard(
+            plan.bootstrap.volume_mount_path, pod_id, run_id=plan.run_id, state=state, now=now
+        )
+        _write_run_report(plan, {**final, "guard_release": release})
+        print(f"pod_run {plan.run_id}: {state} (exit {exit_code}); guard release: {release}")
+        return exit_code
     if not holding:
         print(
             f"pod_run {plan.run_id}: {state} (exit {exit_code}); returning now so the pod "

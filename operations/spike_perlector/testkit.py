@@ -51,10 +51,8 @@ def identity(
     return ResolvedIdentity(
         candidate_key=key,
         public_slot=slot,
-        # `is None`, not `or`: an explicitly supplied empty `source_ref` is
-        # exactly what a test probing the source-comparison rules wants, and
-        # `or` would silently replace it with a well-formed synthetic one, so
-        # the test would prove nothing about the empty case.
+        # `is None`, not `or`: an explicitly empty `source_ref` is a case the
+        # source-comparison tests probe, so it must reach the identity as given.
         source_ref=f"synthetic/{key}" if source_ref is None else source_ref,
         revision=f"revision-{key}",
         artifact_digest=digest(f"artifact-{key}"),
@@ -119,10 +117,8 @@ def evaluation_act(
             ),
             gaps=gaps,
         ),
-        # `is None`, not truthiness: an explicitly supplied empty tuple means a
-        # caller wants an act with no witnesses, and `or` silently handed it the
-        # default witness instead — so a test written to prove behaviour with no
-        # Testimonia was proving it with one.
+        # `is None`, not truthiness: an explicitly empty tuple asks for an act
+        # with no witnesses and must not be replaced by the default witness.
         testimonia=testimonia
         if testimonia is not None
         else (

@@ -167,11 +167,6 @@ def _derive_adjudication(
 
     opcodes = _opcodes(first.text, second.text)
     spans = _spans_from_opcodes(opcodes)
-    if len(set(spans)) != len(spans):
-        raise AdjudicationRefusal(
-            "two disagreements share one span, so a resolution could not be attributed "
-            "to either; this pair of drafts cannot be adjudicated span-by-span"
-        )
     supplied = dict(resolutions)
     if set(supplied) != set(spans):
         missing = sorted(set(spans) - set(supplied))

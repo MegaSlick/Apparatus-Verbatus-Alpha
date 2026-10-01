@@ -8,12 +8,22 @@ and the Perlector establishes the acts itself (`common/page_feed.py`,
     page-feed       (subject page_id)  what the reading is shown, every id it may cite
     reader-sent     (subject page_id)  live only, before the call leaves
     page-reading    (subject page_id)  the answer as given: parsed, or held whole
-    page-accounting (subject page_id)  rules a-i over the reading (`common/page_accounting.py`)
+    page-accounting (subject page_id)  rules a-j over the reading (`common/page_accounting.py`)
     act-region      (subject act_id)   one per entry of a parsed, valid answer
     perlectio       (subject act_id)   `perlectio.v3`, one per entry
 
 Every feed is built and published before any page is read, so a live pass
 counts exactly the pages it will send before its chair starts.
+
+The pass runs in two phases. The first reads every page once, as above. A
+page whose first accounting finds ids the reading left unaccounted for is
+re-asked once, about those ids only (`common/page_reask.py`, bounded by the
+sealed `[budget] page_level_reread`): its act records wait, and the second
+phase sends every planned re-ask in its own window, under its own deadline
+check, and publishes for each page the re-ask's `page-reading` (attempt 2),
+the accounting of both readings together, and then the act records of both.
+The first reading and its accounting are never changed; the re-ask only adds
+entries, each of which says it was read on re-ask.
 
 The accounting is measured before any act record is published, so every act
 record names it (`page_accounting_ref`) and carries the page's hold codes
@@ -31,27 +41,29 @@ The sealed Pass-C audit policy is recorded on every `page-reading` as not run.
 
 What the records derive rather than state -- an answer's problems, each
 entry's plan, the accounting's inputs -- is `common/page_path.py`, the one
-derivation the page-read denominator recomputes them with. The record shapes
-are in CONTRACT.md, "Page reading".
+derivation the page-read denominator recomputes them with, and the re-ask's
+plan is `common/page_reask.py`'s. The record shapes are in CONTRACT.md, "Page
+reading".
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Callable, Final
 
-from live_reader import EngineSignalRefusal, send_page_request
 from throughput import planned_seconds_per_page
 
 import operations.serving.errors as serving_errors
 from common import (
     page_accounting,
     page_path,
+    page_reask,
 )
 from common.chairs.models import AbsentChair, ChairIdentity
-from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import (
     artifact_id,
     region_id,
@@ -63,18 +75,20 @@ from common.page_path import (
     ACT_REGION_KIND,
     ACT_REGION_SCHEMA,
     CALL_FAILED,
+    FIRST_READING,
     HELD,
     NOT_RUN,
     PAGE_ACCOUNTING_KIND,
     PAGE_FEED_KIND,
     PAGE_NOT_SEALED,
-    PAGE_READ_ORDINAL,
     PAGE_READING_KIND,
     PAGE_READING_SCHEMA,
     PARSED,
     PERLECTIO_KIND,
     READ,
+    REASK_READING,
     REFUSED_CAPACITY,
+    RETIRED_PAGE_READING_SCHEMAS,
 )
 from common.page_testimonia import (
     current_page_testimonia,
@@ -88,11 +102,13 @@ from common.stage import (
     stage_manifest,
 )
 from operations.serving.assembly import bound_serving_recipes
+from operations.serving.chat_request import EngineSignalRefusal, send_page_request
 from operations.serving.errors import ChairResponseRefusal
 from operations.serving.http import EndpointUnavailable
 
-# The `reader-sent` pass a page's call is recorded under.
+# The `reader-sent` pass a page's call is recorded under, and its re-ask's.
 PAGE_READING_PASS: Final = "page-reading"
+PAGE_REASK_PASS: Final = "page-reask"
 
 _PAGE_LOCAL_CALL_FAILURES: Final = (
     EngineSignalRefusal,
@@ -135,24 +151,52 @@ def page_key(page_ordinal: int) -> str:
 
 
 @dataclass
-class _Page:
-    """One page's sealed inputs and its request, resolved on the main thread."""
+class _Request:
+    """One reading of a page -- its first, or its re-ask -- as it is asked, or was."""
 
-    page_id: str
     ordinal: int
-    page_record: dict[str, Any]
-    feed: dict[str, Any] | None = None
-    feed_ref: dict[str, str] | None = None
+    pass_name: str
     text: str | None = None
     image_sha256s: list[str] | None = None
     capacity: dict[str, Any] | None = None
     refusal: RequestCapacityRefusal | None = None
     adopted: dict[str, Any] | None = None
     fixture_row: dict[str, Any] | None = None
+    # The ids a re-ask may cite, and its `reask` record; `None` on a first reading.
+    named: list[str] | None = None
+    reask: dict[str, Any] | None = None
+    # What the reading names beyond the feed and the page: a re-ask's trigger records.
+    inputs: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class _Page:
+    """One page's sealed inputs and its requests, resolved on the main thread."""
+
+    page_id: str
+    ordinal: int
+    page_record: dict[str, Any]
+    first: _Request = field(default_factory=lambda: _Request(FIRST_READING, PAGE_READING_PASS))
+    reask: _Request | None = None
+    feed: dict[str, Any] | None = None
+    feed_ref: dict[str, str] | None = None
     # Every reason the page is not asked; empty for a page that is.
     not_run: list[dict[str, str]] = field(default_factory=list)
     page_size: tuple[int, int] | None = None
     witnesses: list[dict[str, Any]] = field(default_factory=list)
+    # The first reading, its entry plans and accounting, once published or adopted.
+    reading: dict[str, Any] | None = None
+    plans: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class _Sealed:
+    """The page records this stage already holds for one page, by reading."""
+
+    readings: set[str] = field(default_factory=set)
+    accountings: set[str] = field(default_factory=set)
+    # The reading ordinal (1, or 2 for an entry the re-ask read) of each act record.
+    act_readings: set[int] = field(default_factory=set)
 
 
 @dataclass
@@ -166,6 +210,9 @@ class _PagePass:
     testimonia: dict[str, list[dict[str, Any]]]
     surya: dict[str, dict[str, Any]] | None
     accounting_policy: Any
+    reask_budget: int
+    # What each page already holds, read before the pass publishes anything.
+    sealed: dict[str, _Sealed] = field(default_factory=dict)
     row: Any = None
 
     @property
@@ -193,8 +240,33 @@ def _sealed(context, kind: str, subject: str, attempt: str | None) -> dict[str, 
     return context.tree.read_artifact(PERLECTOR, kind, identifier)
 
 
-def _existing_reading(context, page_id: str) -> dict[str, Any] | None:
-    return _sealed(context, PAGE_READING_KIND, page_id, page_path.page_reading_attempt(page_id))
+def _existing_reading(context, page_id: str, ordinal: int) -> dict[str, Any] | None:
+    return _sealed(
+        context, PAGE_READING_KIND, page_id, page_path.page_reading_attempt(page_id, ordinal)
+    )
+
+
+def _sealed_pages(context) -> dict[str, _Sealed]:
+    """Every page's page-reading and page-accounting attempts and act records, by page."""
+    found: dict[str, _Sealed] = {}
+    # Only attempts and pages are read here, from the records the manifest listed, so
+    # a record whose input is gone is still seen; each record's inputs are checked
+    # where it is used.
+    for entry in context.tree.build_manifest(PERLECTOR, verify_inputs=False)["artifacts"]:
+        kind = entry["kind"]
+        if kind not in (PAGE_READING_KIND, PAGE_ACCOUNTING_KIND, ACT_REGION_KIND, PERLECTIO_KIND):
+            continue
+        record = json.loads(context.tree.read_bytes(entry["relative_path"]))
+        if kind == PAGE_READING_KIND:
+            found.setdefault(entry["subject_id"], _Sealed()).readings.add(record["attempt_id"])
+        elif kind == PAGE_ACCOUNTING_KIND:
+            found.setdefault(entry["subject_id"], _Sealed()).accountings.add(record["attempt_id"])
+        else:
+            payload = record["payload"]
+            found.setdefault(payload.get("page_id"), _Sealed()).act_readings.add(
+                payload.get("reading_attempt", FIRST_READING)
+            )
+    return found
 
 
 def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
@@ -240,32 +312,38 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
     page.not_run = page_path.not_run_problems(
         feed, chair_present=state.chair_present, no_testimony=no_testimony
     )
-    page.adopted = _existing_reading(context, page_id)
-    if page.not_run or page.adopted is not None:
+    request = page.first
+    request.adopted = _existing_reading(context, page_id, FIRST_READING)
+    if page.not_run or request.adopted is not None:
         return page
-    page.text = page_path.request_text(run.chair.serving_recipe, feed)
-    page.image_sha256s = page_path.request_image_sha256s(feed)
+    request.text = page_path.request_text(run.chair.serving_recipe, feed)
+    request.image_sha256s = page_path.request_image_sha256s(feed)
     if not state.live:
-        page.fixture_row = page_path.fixture_page_answer(context, ordinal)
+        request.fixture_row = page_path.fixture_page_answer(context, ordinal)
         return page
-    try:
-        page.capacity = page_path.request_capacity(
-            _serving_row(state),
-            run.chair.serving_recipe,
-            feed,
-            page.text,
-            run.page_max_tokens,
-        )
-    except RequestCapacityRefusal as refusal:
-        if refusal.capacity is None:
-            raise
-        page.refusal = refusal
+    _admit(
+        state,
+        request,
+        lambda row: page_path.request_capacity(
+            row, run.chair.serving_recipe, feed, request.text, run.page_max_tokens
+        ),
+    )
     return page
 
 
-def _sends(state: _PagePass, page: _Page) -> bool:
-    """Whether this pass sends the page's call: live, asked, not refused, not already read."""
-    return state.live and not page.not_run and page.adopted is None and page.refusal is None
+def _admit(state: _PagePass, request: _Request, measure: Callable[[Any], dict[str, Any]]) -> None:
+    """Admit a live request against the sealed serving row, or record the row's refusal."""
+    try:
+        request.capacity = measure(_serving_row(state))
+    except RequestCapacityRefusal as refusal:
+        if refusal.capacity is None:
+            raise
+        request.refusal = refusal
+
+
+def _sends(state: _PagePass, page: _Page, request: _Request) -> bool:
+    """Whether this pass sends the request: live, asked, not refused, not already read."""
+    return state.live and not page.not_run and request.adopted is None and request.refusal is None
 
 
 def _serving_row(state: _PagePass):
@@ -290,14 +368,14 @@ def _refuse_past_page_deadline(state: _PagePass, seconds_needed: int, what: str)
     )
 
 
-def _page_job(state: _PagePass, page: _Page):
-    """One prepared page's call, if it is sent, and its in-order finish."""
+def _job(state: _PagePass, page: _Page, request: _Request, finish: Callable[[Any], Any]):
+    """One request's call, if it is sent, and its in-order finish."""
     run, hooks = state.run, state.hooks
-    finish = partial(_finish, state, page)
-    if not _sends(state, page):
+    if not _sends(state, page, request):
         return None, finish
+    what = "reading" if request.ordinal == FIRST_READING else "re-asking"
     _refuse_past_page_deadline(
-        state, planned_seconds_per_page(run.page_max_tokens), f"reading page {page.ordinal}"
+        state, planned_seconds_per_page(run.page_max_tokens), f"{what} page {page.ordinal}"
     )
     images = page_path.request_images(page.feed, state.context.tree.read_bytes)
     if run.service.client is None:
@@ -306,22 +384,22 @@ def _page_job(state: _PagePass, page: _Page):
         run,
         page.page_id,
         page_key(page.ordinal),
-        PAGE_READ_ORDINAL,
-        PAGE_READING_PASS,
-        page.image_sha256s,
+        request.ordinal,
+        request.pass_name,
+        request.image_sha256s,
     )
-    return partial(_call, run, page, images), finish
+    return partial(_call, run, page, request, images), finish
 
 
-def _call(run, page: _Page, images: list[bytes]) -> dict[str, Any] | Exception:
-    """The page's one call, safe on a worker thread: it publishes nothing."""
+def _call(run, page: _Page, request: _Request, images: list[bytes]) -> dict[str, Any] | Exception:
+    """The request's one call, safe on a worker thread: it publishes nothing."""
     try:
         return send_page_request(
             run.service.client,
             images=images,
-            text=page.text,
-            capacity=page.capacity["capacity"],
-            max_tokens=page.capacity["max_tokens"],
+            text=request.text,
+            capacity=request.capacity["capacity"],
+            max_tokens=request.capacity["max_tokens"],
             what=f"page {page.page_id}",
         )
     except _PAGE_LOCAL_CALL_FAILURES as error:
@@ -329,13 +407,15 @@ def _call(run, page: _Page, images: list[bytes]) -> dict[str, Any] | Exception:
 
 
 def _finish(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | None) -> None:
-    """Publish the page's reading, then its accounting, then its act records."""
-    if page.adopted is not None:
-        reading = page.adopted
-        _check_adopted(state, page, reading)
-    else:
-        reading = _publish_reading(state, page, result)
+    """Publish the page's first reading and its accounting, and plan its re-ask.
+
+    A page with no re-ask publishes its act records now; a planned page's
+    wait for its re-ask, so that every act record names the page's final
+    accounting.
+    """
+    reading = _reading(state, page, page.first, result)
     if page.feed is None:
+        _refuse_stray_attempts(state, page, planned=False)
         return
     payload = reading["payload"]
     plans = (
@@ -351,42 +431,203 @@ def _finish(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | 
         else []
     )
     accounting = publish_page_accounting(state, page, reading, plans)
-    publish_act_records(state, page, reading, plans, accounting)
+    named = page_reask.reask_plan(
+        payload,
+        accounting["payload"],
+        page.feed,
+        budget=state.reask_budget,
+        policy=state.accounting_policy,
+    )
+    _refuse_stray_attempts(state, page, planned=bool(named))
+    if not named:
+        if state.reask_budget and not state.live:
+            page_path.fixture_reask_answer(state.context, page.ordinal, planned=False)
+        publish_act_records(state, page, reading, plans, accounting)
+        return
+    page.reading, page.plans = reading, plans
+    page.reask = _prepare_reask(state, page, reading, accounting, named)
 
 
-def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
+def _refuse_stray_attempts(state: _PagePass, page: _Page, *, planned: bool) -> None:
+    """Refuse a page record the plan does not account for, by name.
+
+    A page holds its first reading and, only when its plan re-asks it, one
+    re-ask. A page the plan never re-asks may hold no attempt-2 reading,
+    accounting or act record, and no page any attempt past the re-ask. A
+    planned page with no re-ask reading yet may hold neither the re-ask's
+    accounting nor any act record: those are published only after the
+    re-ask, naming its accounting.
+    """
+    sealed = state.sealed.get(page.page_id, _Sealed())
+    first = page_path.page_reading_attempt(page.page_id, FIRST_READING)
+    second = page_path.page_reading_attempt(page.page_id, REASK_READING)
+    for what, attempts in (("reading", sealed.readings), ("accounting", sealed.accountings)):
+        if attempts - {first, second}:
+            raise FatalAccounting(
+                f"page {page.page_id} carries a page {what} attempt past its one re-ask "
+                f"({sorted(attempts - {first, second})}); a page is read once and re-asked at "
+                "most once, so it is not counted. Read this page in a new run"
+            )
+    if not planned:
+        stray = [
+            what
+            for what, found in (
+                ("reading", second in sealed.readings),
+                ("accounting", second in sealed.accountings),
+                ("act records", REASK_READING in sealed.act_readings),
+            )
+            if found
+        ]
+        if stray:
+            raise FatalAccounting(
+                f"page {page.page_id} carries a re-ask's {', '.join(stray)} (page-read:2), but "
+                "its first reading and accounting plan none under the sealed "
+                "page_level_reread; it is not counted. Read this page in a new run"
+            )
+    elif second not in sealed.readings and (second in sealed.accountings or sealed.act_readings):
+        raise FatalAccounting(
+            f"page {page.page_id} is planned for a re-ask, yet its re-ask accounting or act "
+            "records were published without its re-ask reading; its act records would name an "
+            "accounting that is not the page's last. Read this page in a new run"
+        )
+
+
+def _prepare_reask(
+    state: _PagePass,
+    page: _Page,
+    reading: dict[str, Any],
+    accounting: dict[str, Any],
+    named: list[dict[str, Any]],
+) -> _Request:
+    """Resolve one planned page's re-ask: what it shows, its request and its admission."""
+    run, context = state.run, state.context
+    reading_ref = context.artifact_ref(PERLECTOR, PAGE_READING_KIND, reading["artifact_id"])
+    accounting_ref = context.artifact_ref(
+        PERLECTOR, PAGE_ACCOUNTING_KIND, accounting["artifact_id"]
+    )
+    shown = page_reask.render_reask(reading["payload"]["answer"], named)
+    request = _Request(
+        REASK_READING,
+        PAGE_REASK_PASS,
+        named=page_reask.named_ids(named),
+        reask=page_path.reask_record(
+            reading_ref=reading_ref,
+            accounting_ref=accounting_ref,
+            shown=shown,
+            budget=state.reask_budget,
+            serving_recipe=run.chair.serving_recipe,
+            feed=page.feed,
+        ),
+        inputs=[reading_ref, accounting_ref],
+    )
+    request.adopted = _existing_reading(context, page.page_id, REASK_READING)
+    if request.adopted is not None:
+        return request
+    request.text = page_path.reask_request_text(run.chair.serving_recipe, page.feed, shown)
+    request.image_sha256s = page_path.request_image_sha256s(page.feed)
+    if not state.live:
+        request.fixture_row = page_path.fixture_reask_answer(context, page.ordinal, planned=True)
+        return request
+    _admit(
+        state,
+        request,
+        lambda row: page_path.reask_request_capacity(
+            row, run.chair.serving_recipe, page.feed, shown, request.text, run.page_max_tokens
+        ),
+    )
+    return request
+
+
+def _finish_reask(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | None) -> None:
+    """Publish the re-ask's reading, the accounting of both readings, then every act record."""
+    request = page.reask
+    second = _reading(state, page, request, result)
+    payload = second["payload"]
+    plans = (
+        page_path.entry_plans(
+            payload["answer"],
+            page.feed,
+            page_id=page.page_id,
+            stop_reason=payload["stop_reason"],
+            truncation_policy=state.run.protocol_config["truncation"],
+            accounting_policy=state.accounting_policy,
+            attempt=REASK_READING,
+            named=request.named,
+            first_count=len(page.plans),
+        )
+        if payload["disposition"] == READ
+        else []
+    )
+    accounting = publish_page_accounting(
+        state,
+        page,
+        page.reading,
+        page.plans,
+        reask={
+            "reading": payload,
+            "reading_ref": state.context.artifact_ref(
+                PERLECTOR, PAGE_READING_KIND, second["artifact_id"]
+            ),
+            "plans": plans,
+            "named": request.named,
+        },
+    )
+    # A re-ask the accounting does not count adds no act, and the page stands on
+    # its first reading; one it counts adds exactly the entries it measured.
+    recovered = page_path.reask_act_plans(
+        accounting["payload"], page.plans, plans, f"page {page.page_id}"
+    )[len(page.plans) :]
+    publish_act_records(state, page, page.reading, page.plans, accounting)
+    publish_act_records(state, page, second, recovered, accounting)
+
+
+def _reading(state: _PagePass, page: _Page, request: _Request, result) -> dict[str, Any]:
+    """The request's `page-reading`: the one already sealed, checked, or the one published now."""
+    if request.adopted is not None:
+        _check_adopted(state, page, request, request.adopted)
+        return request.adopted
+    return _publish_reading(state, page, request, result)
+
+
+def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -> dict[str, Any]:
     run, hooks, context = state.run, state.hooks, state.context
-    attempted = not page.not_run and page.refusal is None
+    not_run = page.not_run if request.ordinal == FIRST_READING else []
+    attempted = not not_run and request.refusal is None
     engine_call = capacity = failure = answer = None
     finish_reason = stop_reason = None
     inputs: list[dict[str, str] | None] = [
         page.feed_ref,
         context.artifact_ref(EXEMPLAR, "page", page.page_record["artifact_id"]),
+        *request.inputs,
     ]
     receipt_ref = None
-    if page.not_run:
-        parse_state, problems = NOT_RUN, [dict(problem) for problem in page.not_run]
-    elif page.refusal is not None:
+    if not_run:
+        parse_state, problems = NOT_RUN, [dict(problem) for problem in not_run]
+    elif request.refusal is not None:
         parse_state = REFUSED_CAPACITY
-        capacity = {"capacity": page.refusal.capacity, "answer_reserve": None, "max_tokens": None}
-        problems = [{"code": REFUSED_CAPACITY, "detail": str(page.refusal)}]
+        capacity = {
+            "capacity": request.refusal.capacity,
+            "answer_reserve": None,
+            "max_tokens": None,
+        }
+        problems = [{"code": REFUSED_CAPACITY, "detail": str(request.refusal)}]
     elif not state.live:
-        row = page.fixture_row
+        row = request.fixture_row
         finish_reason = stop_reason = row.get("stop_reason", "stop")
         parse_state, answer, problems = page_path.read_reply(
-            row["answer"], stop_reason, page.feed, state.accounting_policy
+            row["answer"], stop_reason, page.feed, state.accounting_policy, request.named
         )
     else:
         receipt_ref = run.receipt_ref
-        capacity = page.capacity
+        capacity = request.capacity
         inputs += [
             context.artifact_ref(PERLECTOR, hooks.sent_kind, marker["artifact_id"])
             for marker in hooks.sent_records(
-                context, page.page_id, page_key(page.ordinal), PAGE_READ_ORDINAL, PAGE_READING_PASS
+                context, page.page_id, page_key(page.ordinal), request.ordinal, request.pass_name
             )
         ]
         if isinstance(result, Exception):
-            failure = hooks.failure_record(result, phase=PAGE_READING_PASS)
+            failure = hooks.failure_record(result, phase=request.pass_name)
             if failure is None:
                 raise result
             parse_state = CALL_FAILED
@@ -401,16 +642,17 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
             finish_reason, stop_reason = result["finish_reason"], result["stop_reason"]
             inputs += hooks.engine_call_inputs(context, engine_call)
             parse_state, answer, problems = page_path.read_reply(
-                result["content"], stop_reason, page.feed, state.accounting_policy
+                result["content"], stop_reason, page.feed, state.accounting_policy, request.named
             )
     disposition = READ if parse_state == PARSED and not problems else HELD
     payload = {
         "schema": PAGE_READING_SCHEMA,
         "page_id": page.page_id,
         "page_ordinal": page.ordinal,
+        "attempt_ordinal": request.ordinal,
         "feed_ref": page.feed_ref,
         "request_digest": (
-            page_path.request_digest(page.text, page.image_sha256s) if attempted else None
+            page_path.request_digest(request.text, request.image_sha256s) if attempted else None
         ),
         "engine_call": engine_call,
         "sampling": page_path.page_sampling(run.decoding_policy, run.chair.role)
@@ -424,12 +666,13 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
         "problems": problems,
         "failure": failure,
         "disposition": disposition,
+        "reask": request.reask,
         "audit": state.audit,
         "provenance": hooks.provenance_for(
             context, run.chair, attempted=attempted, receipt_ref=receipt_ref
         ),
     }
-    attempt = page_path.page_reading_attempt(page.page_id)
+    attempt = page_path.page_reading_attempt(page.page_id, request.ordinal)
     context.publish(
         kind=PAGE_READING_KIND,
         subject_id=page.page_id,
@@ -443,19 +686,39 @@ def _publish_reading(state: _PagePass, page: _Page, result) -> dict[str, Any]:
     )
 
 
-def _check_adopted(state: _PagePass, page: _Page, record: dict[str, Any]) -> None:
-    """Refuse a retained page reading this run could not have made from this page's feed."""
+def _check_adopted(
+    state: _PagePass, page: _Page, request: _Request, record: dict[str, Any]
+) -> None:
+    """Refuse a retained page reading this run could not have made from this page's feed.
+
+    A re-ask is adopted only when it names exactly the re-ask this page's
+    first reading plans now -- its trigger records, named ids, prior
+    entries, budget and prompt -- and is refused by name otherwise.
+    """
     payload = record["payload"]
+    schema = payload.get("schema") if isinstance(payload, dict) else None
+    if schema in RETIRED_PAGE_READING_SCHEMAS:
+        raise ContractError(
+            f"page {page.page_id}'s retained page reading is {schema}, a retired shape; it is "
+            "not adopted and the page is not asked again. Read this page in a new run"
+        )
     if (
-        not isinstance(payload, dict)
-        or payload.get("schema") != PAGE_READING_SCHEMA
+        schema != PAGE_READING_SCHEMA
         or payload.get("feed_ref") != page.feed_ref
+        or payload.get("attempt_ordinal") != request.ordinal
         or payload.get("disposition") not in (READ, HELD)
     ):
         raise ContractError(
             f"page {page.page_id}'s retained page reading was made from another feed or "
             "configuration than this page has now; it is not adopted and the page is not "
             "asked again. Read this page in a new run"
+        )
+    if payload.get("reask") != request.reask:
+        raise FatalAccounting(
+            f"page {page.page_id}'s retained page reading names another re-ask (its trigger "
+            "records, named ids, prior entries, budget or prompt) than its first reading "
+            "plans now; it is not adopted and the page is not asked again. Read this page in "
+            "a new run"
         )
     if payload.get("engine_call") is not None:
         # The retained call record is held to the sealed row it was sent under.
@@ -502,8 +765,12 @@ def publish_act_records(
 ) -> None:
     """One `act-region` and one `perlectio` per planned entry, each naming the accounting.
 
-    Every record carries `page_accounting_ref` and the page's hold codes as
-    `page_holds`, and is held when those or its own holds are non-empty. A
+    Every record carries `page_accounting_ref` -- the page's last accounting,
+    the re-ask's on a re-asked page -- and the page's hold codes as
+    `page_holds`, and is held when those or its own holds are non-empty.
+    Each record's `n` is the number the accounting names the entry by; an
+    entry the re-ask read carries `reading_attempt: 2` and `reading_n`, its
+    number in the re-ask's answer, on both records. A
     `perlectio` already sealed for the entry is adopted when every field but
     its dissent is the expected one and its dissent is a valid page dissent under
     the run's sealed budget, so a resumed pass aligns nothing again.
@@ -523,7 +790,6 @@ def publish_act_records(
         "sha256": page.page_record["payload"]["source_sha256"],
     }
     engine_inputs = state.hooks.engine_call_inputs(context, payload["engine_call"])
-    attempt = page_path.page_reading_attempt(page.page_id)
     for plan in plans:
         act, union, act_id = plan["act"], plan["union_box_px"], plan["act_id"]
         crop = (
@@ -536,13 +802,15 @@ def publish_act_records(
             "schema": ACT_REGION_SCHEMA,
             "page_id": page.page_id,
             "page_ordinal": page.ordinal,
-            "n": act["n"],
+            "n": plan["n"],
             "kind": act["kind"],
             "label": act.get("label"),
             "cites": list(act["cites"]),
             "cited_ids": list(plan["cited_ids"]),
             "act_class": plan["act_class"],
-            "page_reading_attempt": attempt,
+            "page_reading_attempt": page_path.page_reading_attempt(
+                page.page_id, plan["reading_attempt"]
+            ),
             "region_boxes_px": list(plan["region_boxes_px"]),
             "union_box_px": union,
             "region_id": region_id(act_id, crop["transform"]) if crop else None,
@@ -555,6 +823,7 @@ def publish_act_records(
             "feed_ref": page.feed_ref,
             "holds": region_holds,
             "page_holds": list(page_holds),
+            **page_path.recovered_fields(plan),
         }
         region_inputs = [reading_ref, accounting_ref, page.feed_ref, page_ref]
         if crop:
@@ -628,13 +897,23 @@ def publish_act_records(
 
 
 def publish_page_accounting(
-    state: _PagePass, page: _Page, reading: dict[str, Any], plans: list[dict[str, Any]]
+    state: _PagePass,
+    page: _Page,
+    reading: dict[str, Any],
+    plans: list[dict[str, Any]],
+    reask: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The page's `page-accounting`: rules a-i over its reading, witnesses and detections.
+    """The page's `page-accounting`: rules a-j over its reading, witnesses and detections.
 
-    Published before any act record, which names it. A resumed pass adopts the
-    one already sealed for the page when it was measured from exactly these
-    inputs under this policy, and refuses by name when any input differs.
+    `reading` and `plans` are the page's first reading; with `reask`
+    (`{reading, reading_ref, plans, named}`, its re-ask's) the accounting is
+    the re-ask's, measuring both readings together, bound to the re-ask's
+    attempt. Published before any act record, which names it. A resumed pass
+    adopts the one already sealed for the reading when it was measured from
+    exactly these inputs under this policy, and refuses by name when any
+    input differs; a re-ask's is measured again and adopted only when it is
+    exactly what the two readings give, since it restates the first
+    reading's entries.
     """
     context = state.context
     reading_ref = context.artifact_ref(PERLECTOR, PAGE_READING_KIND, reading["artifact_id"])
@@ -653,9 +932,11 @@ def publish_page_accounting(
             context.registry.resolve(SECONDARY_PROPOSER_CHAIR), ChairIdentity
         ),
         fixture_placeholders=not state.hooks.real_ingress(context),
+        reask=reask,
     )
-    # Bound to the reading's attempt: a later reading of the page is accounted apart.
-    attempt = page_path.page_reading_attempt(page.page_id)
+    # Bound to the reading's attempt: each reading of a page is accounted apart.
+    ordinal = FIRST_READING if reask is None else REASK_READING
+    attempt = page_path.page_reading_attempt(page.page_id, ordinal)
     sealed = _sealed(context, PAGE_ACCOUNTING_KIND, page.page_id, attempt)
     if sealed is not None:
         payload = sealed["payload"]
@@ -664,13 +945,21 @@ def publish_page_accounting(
             or not isinstance(payload, dict)
             or payload.get("schema") != page_accounting.SCHEMA
             or payload.get("feed_ref") != page.feed_ref
-            or payload.get("page_reading_ref") != reading_ref
+            or payload.get("page_reading_ref") != measured["page_reading_ref"]
             or payload.get("policy_sha256") != state.accounting_policy.sha256
         ):
             raise ContractError(
                 f"page {page.page_id}'s retained page accounting was measured from other inputs "
                 "or under another policy than this page has now; it is not adopted. Read this "
                 "page in a new run"
+            )
+        if reask is not None and payload != page_accounting.page_accounting(
+            **measured, policy=state.accounting_policy
+        ):
+            raise FatalAccounting(
+                f"page {page.page_id}'s retained re-ask accounting is not what its two readings "
+                "give (its entries, findings or holds differ); it is not adopted. Read this page "
+                "in a new run"
             )
         return sealed
     accounting = page_accounting.page_accounting(**measured, policy=state.accounting_policy)
@@ -690,20 +979,22 @@ def publish_page_accounting(
 # --- the pass ---------------------------------------------------------------------
 
 
-def _pages_left(state: _PagePass, prepared: list[_Page]) -> int:
-    """Count the pages this live pass will send, refusing any it cannot resume.
+def _left_to_send(state: _PagePass, prepared: list[_Page], select) -> int:
+    """Count the requests this live pass will send, refusing any it cannot resume.
 
-    Only a page it sends is counted: not one already read, not one it does not
-    ask, and not one over the row's capacity. A page with sends and no reading
-    is sent again only when no retained reply could be its answer.
+    `select` gives a page's request of this phase, or `None`. Only a request
+    it sends is counted: not one already read, not one it does not ask, and
+    not one over the row's capacity. A request with sends and no reading is
+    sent again only when no retained reply could be its answer.
     """
     context, hooks = state.context, state.hooks
     left, unrecorded, replies = 0, [], None
     for page in prepared:
-        if not _sends(state, page):
+        request = select(page)
+        if request is None or not _sends(state, page, request):
             continue
         markers = hooks.sent_records(
-            context, page.page_id, page_key(page.ordinal), PAGE_READ_ORDINAL, PAGE_READING_PASS
+            context, page.page_id, page_key(page.ordinal), request.ordinal, request.pass_name
         )
         if markers:
             replies = hooks.unrecorded_replies(context) if replies is None else replies
@@ -721,8 +1012,24 @@ def _pages_left(state: _PagePass, prepared: list[_Page]) -> int:
     return left
 
 
+def _refuse_past_phase_deadline(state: _PagePass, left: int, what: str) -> None:
+    """The deadline check before a phase's window: its sends, and the chair's start if due."""
+    startup = _serving_row(state).startup_timeout_seconds if state.run.service.client is None else 0
+    _refuse_past_page_deadline(
+        state,
+        startup + left * planned_seconds_per_page(state.run.page_max_tokens),
+        f"starting the Perlector ({startup}s) and {what} {left} pages",
+    )
+
+
 def read_the_pages(run, hooks: StageHooks) -> None:
-    """Read every sealed Exemplar page once and publish its records, in page order."""
+    """Read every sealed Exemplar page once, then re-ask the planned ones.
+
+    Each phase publishes its pages in page order, so a re-asked page's
+    attempt-2 records follow every page's first reading. Nothing reads the
+    records in the order written: each names its inputs, and every reader
+    orders by page.
+    """
     context = run.context
     pages = exemplar_page_ids(context)
     if not pages:
@@ -739,16 +1046,28 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         accounting_policy=page_accounting.require_page_accounting_policy(
             context, context.page_accounting_config_path
         ),
+        reask_budget=page_reask.reask_budget(context.recovery_policy),
+        sealed=_sealed_pages(context),
     )
     prepared = [_prepare(state, ordinal, page_id) for ordinal, page_id in pages.items()]
     if state.live and state.chair_present:
-        left = _pages_left(state, prepared)
+        left = _left_to_send(state, prepared, lambda page: page.first)
         if left:
-            startup = _serving_row(state).startup_timeout_seconds
-            _refuse_past_page_deadline(
-                state,
-                startup + left * planned_seconds_per_page(run.page_max_tokens),
-                f"starting the Perlector ({startup}s) and reading {left} pages",
-            )
+            _refuse_past_phase_deadline(state, left, "reading")
     print(f"perlector: reading {len(pages)} pages whole", file=sys.stderr)
-    hooks.in_order_window(run.concurrency, (_page_job(state, page) for page in prepared))
+    hooks.in_order_window(
+        run.concurrency,
+        (_job(state, page, page.first, partial(_finish, state, page)) for page in prepared),
+    )
+    planned = [page for page in prepared if page.reask is not None]
+    if not planned:
+        return
+    if state.live:
+        left = _left_to_send(state, planned, lambda page: page.reask)
+        if left:
+            _refuse_past_phase_deadline(state, left, "re-asking")
+    print(f"perlector: re-asking {len(planned)} pages", file=sys.stderr)
+    hooks.in_order_window(
+        run.concurrency,
+        (_job(state, page, page.reask, partial(_finish_reask, state, page)) for page in planned),
+    )

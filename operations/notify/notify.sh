@@ -74,8 +74,7 @@ suppress_window_s=900
 # The stamp is evidence of delivery: trust only a regular file holding a past epoch
 # second. Unlike the config, it is also written, so a symlink would redirect the write
 # out of private/. It records a clock reading only; the topic never enters it.
-# `find -mmin` once accepted directories, FIFOs, symlinks and future dates. Every
-# refusal sends the ping: a duplicate is cheaper than a start nobody hears about.
+# Every refusal sends the ping: a duplicate is cheaper than a start nobody hears about.
 stamp_is_plain_file() {
   if [ -L "$stamp" ]; then
     echo "notify: the start stamp is a symlink; not trusting it" >&2
@@ -167,7 +166,7 @@ then
   if [ "$event" = start ]; then
     record_start_delivery
   fi
-  # Silence must never read as delivered (a stalled session once resent pings).
+  # Report success explicitly, so silence is never read as either outcome.
   # stderr only: stdout is the bridges'. A closed stderr must not fail a delivered post.
   echo "notify: delivered ($event)" >&2 || true
   exit 0

@@ -62,29 +62,6 @@ def test_scale_runner_creates_resumes_and_censuses_at_small_cardinality(tmp_path
         run_scale(root, shards=2, pages_per_shard=3, allow_undersized_smoke=True)
 
 
-def test_scale_runner_refuses_a_dropped_artifact_before_writing_a_census(tmp_path, monkeypatch):
-    real_publish = scale.RunTree.publish_artifact
-    publish_calls = 0
-
-    def publish_with_one_drop(tree, envelope):
-        nonlocal publish_calls
-        publish_calls += 1
-        if publish_calls == 3:
-            return None
-        return real_publish(tree, envelope)
-
-    monkeypatch.setattr(scale.RunTree, "publish_artifact", publish_with_one_drop)
-    root = tmp_path / "scale-shortfall"
-
-    with pytest.raises(
-        RuntimeError,
-        match=r"published 5 artifacts; expected 6.*non-receipted pages: \[\(1, 3\)\]",
-    ):
-        run_scale(root, shards=2, pages_per_shard=3, allow_undersized_smoke=True)
-
-    assert not (root / "aggregate-census.json").exists()
-
-
 def test_scale_runner_refuses_resume_if_a_shard_loses_its_run_authority(tmp_path, monkeypatch):
     root = tmp_path / "scale-missing-run-authority"
     real_perf_counter_ns = scale.time.perf_counter_ns

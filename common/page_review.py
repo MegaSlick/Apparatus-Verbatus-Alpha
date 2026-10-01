@@ -16,6 +16,7 @@ from typing import Any, Final
 
 from common.contracts.errors import FatalAccounting
 from common.contracts.stages import RECENSOR
+from common.page_path import FIRST_READING
 from common.stage import (
     COUNTED_READING_CLASSES,
     NO_ACT_ON_PAGE_HOLD,
@@ -256,10 +257,20 @@ def review_notes(review: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def act_entries_by_page(acts: Sequence[Mapping[str, Any]]) -> dict[int, list[Mapping[str, Any]]]:
-    """Each page's `act` entries: the only entries a page break can join."""
+    """Each page's first-reading `act` entries: the only entries a page break can join.
+
+    A page's edges are its first reading's. An entry the re-ask recovered
+    (`reading_attempt` 2) was asked about ids alone, with no continuation
+    flag allowed, so its place in page order is not established: it never
+    moves a page's act edge and is never a side of a page break.
+    """
     entries: dict[int, list[Mapping[str, Any]]] = {}
     for act in acts:
-        if act["n"] is not None and act["kind"] == "act":
+        if (
+            act["n"] is not None
+            and act["kind"] == "act"
+            and act["reading_attempt"] == FIRST_READING
+        ):
             entries.setdefault(act["page_ordinal"], []).append(act)
     return entries
 
@@ -269,8 +280,8 @@ def page_breaks(
 ) -> list[tuple[str, dict[str, Any]]]:
     """Every page break an answer flags, as `(subject, payload)`, in page order.
 
-    The last `act` entry of page p and the first of page p+1 are the break's
-    two sides; either side's flag records the break, `agreed` only when both
+    The last first-reading `act` entry of page p and the first of page p+1
+    (`act_entries_by_page`) are the break's two sides; either side's flag records the break, `agreed` only when both
     say so, and a break whose sides disagree is still recorded. A side with no
     `act` entry (a page not read, blank, of `other` entries only, or outside
     the run) is null. The link holds no unit and joins nothing.
@@ -348,6 +359,11 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
             row = counted.get(act_id) if isinstance(act_id, str) else None
             if row is None or row["act_key"] != act_key:
                 raise FatalAccounting(f"{what} names a reading this run does not count")
+            if row["reading_attempt"] != FIRST_READING:
+                raise FatalAccounting(
+                    f"{what} names {act_key}, an entry the re-ask recovered; a page's edges "
+                    "are its first reading's, and a recovered entry is never a side of a break"
+                )
             if row["page_ordinal"] != payload[f"{side}_page_ordinal"]:
                 raise FatalAccounting(
                     f"{what} names {act_key}, which is not on its side of the page break"

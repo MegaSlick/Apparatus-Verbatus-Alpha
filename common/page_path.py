@@ -8,7 +8,8 @@ derived rather than given is derived here, once:
 
 - `answer_problems`: what holds a parsed answer whole against its feed;
 - `entry_plans`: each entry's identity, region, text, doubt marks, truncation
-  and holds;
+  and holds, for a page's first reading and for its re-ask
+  (`common/page_reask.py`), whose answer may cite only the ids it names;
 - `accounting_inputs`: every input the page accounting
   (`common/page_accounting.py`) measures the reading against -- the feed,
   every sealed witness of the page shown or hidden, the Designator's Surya and
@@ -65,6 +66,8 @@ PAGE_ACCOUNTING_KIND: Final = "page-accounting"
 ACT_REGION_KIND: Final = "act-region"
 PERLECTIO_KIND: Final = "perlectio"
 PAGE_READING_SCHEMA: Final = "perlector-page-reading.v2"
+# A page reading of a retired shape is refused by its name, never read as the current one.
+RETIRED_PAGE_READING_SCHEMAS: Final = frozenset({"perlector-page-reading.v1"})
 ACT_REGION_SCHEMA: Final = "perlector-act-region.v2"
 PERLECTIO_SCHEMA: Final = "perlectio.v3"
 # Every field a sealed Perlectio holds: what `expected_perlectio` names, and the
@@ -101,9 +104,11 @@ PAGE_PATH_KINDS: Final = frozenset(
     {PAGE_FEED_KIND, PAGE_READING_KIND, PAGE_ACCOUNTING_KIND, ACT_REGION_KIND}
 )
 
-# The attempt a page reading is: one reading per page; a second is later work.
+# The attempts a page reading is: the first reading, and at most one re-ask.
 PAGE_READ_OPERATION: Final = "page-read"
-PAGE_READ_ORDINAL: Final = 1
+FIRST_READING: Final = 1
+REASK_READING: Final = 2
+READING_ORDINALS: Final = (FIRST_READING, REASK_READING)
 ACT_REGION_OPERATION: Final = "reading-region"
 PERLECTIO_OPERATION: Final = "perlegere"
 
@@ -118,7 +123,9 @@ READ: Final = "read"
 HELD: Final = "held"
 # A page whose call failed is held for review like any unread page, and its
 # record's outcome is the Perlector's `failed`, so the run-level hard-failure
-# cap (`config/hard_failure.toml`, `(perlector, failed)`) counts it.
+# cap (`config/hard_failure.toml`, `(perlector, failed)`) counts it. A failed
+# re-ask call is `failed` too and counted the same, but its page stands on its
+# first reading, held under `reask-unread` rather than as `page-unread`.
 FAILED: Final = "failed"
 
 
@@ -165,8 +172,11 @@ SURYA_READING_ORDERS: Final = (SURYA_ORDER_HEAD, SURYA_RASTER_FALLBACK)
 PAGE_TESTIMONIUM_KIND: Final = "page-testimonium"
 
 
-def page_reading_attempt(page_id: str) -> str:
-    return attempt_id(page_id, PAGE_READ_OPERATION, PAGE_READ_ORDINAL)
+def page_reading_attempt(page_id: str, ordinal: int) -> str:
+    """The attempt of a page's first reading (1) or its re-ask (2)."""
+    if ordinal not in READING_ORDINALS:
+        raise ContractError(f"a page reading is attempt 1 or its re-ask, 2, never {ordinal!r}")
+    return attempt_id(page_id, PAGE_READ_OPERATION, ordinal)
 
 
 def region_attempt(act_id: str) -> str:
@@ -241,16 +251,20 @@ def not_run_problems(
     return problems
 
 
-def fixture_page_answer(context, ordinal: int) -> dict[str, Any]:
-    """The synthetic fixture's one declared answer to page `ordinal` under this scenario."""
-    rows = [
+def _fixture_rows(context, table: str, ordinal: int) -> list[dict[str, Any]]:
+    """The synthetic fixture's `[[table]]` rows for page `ordinal` under this scenario."""
+    return [
         row
-        for row in context.fixture.get("page_answer", [])
+        for row in context.fixture.get(table, [])
         if row.get("scenario") == context.scenario and row.get("page_ordinal") == ordinal
     ]
+
+
+def _one_fixture_answer(rows: list[dict[str, Any]], what: str, context, ordinal: int) -> dict:
+    """The one fixture answer row `rows` must be: an answer string, stopped or cut."""
     if len(rows) != 1:
         raise ContractError(
-            f"the fixture declares {len(rows)} page answers for scenario {context.scenario!r}, "
+            f"the fixture declares {len(rows)} {what}s for scenario {context.scenario!r}, "
             f"page {ordinal}; a page read offline needs exactly one"
         )
     row = rows[0]
@@ -259,10 +273,38 @@ def fixture_page_answer(context, ordinal: int) -> dict[str, Any]:
         "length",
     ):
         raise ContractError(
-            f"the fixture's page answer for {context.scenario!r}, page {ordinal} is not an "
+            f"the fixture's {what} for {context.scenario!r}, page {ordinal} is not an "
             "answer string with a stop reason of stop or length"
         )
     return row
+
+
+def fixture_page_answer(context, ordinal: int) -> dict[str, Any]:
+    """The synthetic fixture's one declared answer to page `ordinal` under this scenario."""
+    return _one_fixture_answer(
+        _fixture_rows(context, "page_answer", ordinal), "page answer", context, ordinal
+    )
+
+
+def fixture_reask_answer(context, ordinal: int, *, planned: bool) -> dict[str, Any] | None:
+    """The synthetic fixture's one declared re-ask answer to page `ordinal`, when it is planned.
+
+    A page the plan re-asks needs exactly one `[[page_reask_answer]]` row
+    under the scenario; a row for a page the plan does not re-ask is refused
+    by name, since its answer would never be asked for. Read only with the
+    re-ask on: with `page_level_reread = 0` no page is planned and the rows
+    are not read, so one fixture serves both budgets.
+    """
+    rows = _fixture_rows(context, "page_reask_answer", ordinal)
+    if not planned:
+        if rows:
+            raise ContractError(
+                f"the fixture declares a page re-ask answer for scenario {context.scenario!r}, "
+                f"page {ordinal}, but the page's first reading plans no re-ask; the answer "
+                "would never be asked for"
+            )
+        return None
+    return _one_fixture_answer(rows, "page re-ask answer", context, ordinal)
 
 
 # --- the request -----------------------------------------------------------------
@@ -328,6 +370,80 @@ def request_capacity(
     )
 
 
+def reask_request_text(
+    serving_recipe: Any, feed: Mapping[str, Any], reask: Mapping[str, Any]
+) -> str:
+    """The re-ask's text: `page_prompt.page_reask_prompt` over the feed and `render_reask`'s data."""
+    from common import page_prompt
+
+    return page_prompt.page_reask_prompt(serving_recipe, feed, reask)
+
+
+def reask_record(
+    *,
+    reading_ref: dict[str, str],
+    accounting_ref: dict[str, str],
+    shown: Mapping[str, Any],
+    budget: int,
+    serving_recipe: Any,
+    feed: Mapping[str, Any],
+) -> dict[str, Any]:
+    """The `reask` a page's re-ask reading records: why it was asked, what it showed, how.
+
+    `reading_ref` and `accounting_ref` are the first reading and its
+    accounting the plan was made from; `shown` is `page_reask.render_reask`'s
+    (`prior_entries` and `named`); `budget` the sealed page_level_reread; and
+    `prompt` the re-ask's prompt evidence (`page_prompt.reask_prompt_evidence`).
+    Stage 4 adopts a sealed re-ask only when it records exactly this.
+    """
+    from common import page_prompt
+
+    return {
+        "trigger_reading_ref": dict(reading_ref),
+        "trigger_accounting_ref": dict(accounting_ref),
+        "named": [dict(item) for item in shown["named"]],
+        "prior_entries": [dict(item) for item in shown["prior_entries"]],
+        "budget": budget,
+        "prompt": page_prompt.reask_prompt_evidence(serving_recipe, feed, shown),
+    }
+
+
+def reask_request_capacity(
+    row: Any,
+    serving_recipe: Any,
+    feed: Mapping[str, Any],
+    reask: Mapping[str, Any],
+    text: str,
+    page_max_tokens: int,
+) -> dict[str, Any]:
+    """The re-ask admitted against the page's sealed row, or `RequestCapacityRefusal`.
+
+    The same images as the first request; the answer reserved on the named
+    witness units' text (`request_capacity.reask_answer_measure`).
+    """
+    from common import page_feed, page_prompt
+    from common.request_capacity import reask_answer_measure
+
+    named = {item["id"] for item in reask["named"]}
+    units = [
+        (witness["letter"], unit["text"])
+        for witness in feed["witnesses"]
+        for unit in witness["units"]
+        if unit["id"] in named
+    ]
+    surya = feed["surya"]
+    lines = set() if surya is None else {line["id"] for line in surya["lines"]}
+    return page_request_capacity(
+        row,
+        image_sizes=page_feed.request_image_sizes(feed),
+        prompt_text=text,
+        prompt_parts=page_prompt.reask_prompt_parts(serving_recipe, feed, reask),
+        template_digest=page_prompt.BUILDER_SHA256,
+        answer_measure=reask_answer_measure(units, len(named), named_lines=len(named & lines)),
+        page_max_tokens=page_max_tokens,
+    )
+
+
 def page_sampling(decoding_policy: Mapping[str, Any], role: str) -> dict[str, Any]:
     """The sealed Perlector row a live page call sends, and what the engine samples under.
 
@@ -381,8 +497,12 @@ def read_reply(
     stop_reason: str | None,
     feed: Mapping[str, Any],
     accounting_policy: page_accounting.PageAccountingPolicy,
+    named: list[str] | None = None,
 ) -> tuple[str, Any, list[dict[str, Any]]]:
-    """`(parse_state, answer, problems)` for a reply the engine finished or was cut on."""
+    """`(parse_state, answer, problems)` for a reply the engine finished or was cut on.
+
+    `named` is `None` for a first reading, and a re-ask's named ids for its reply.
+    """
     if stop_reason == "length":
         return (
             CUT_OFF,
@@ -396,7 +516,7 @@ def read_reply(
         )
     state, answer, problems = page_answer.parse_page_answer(content)
     if state == PARSED:
-        problems = answer_problems(answer, feed, stop_reason, accounting_policy)
+        problems = answer_problems(answer, feed, stop_reason, accounting_policy, named)
     return state, answer, problems
 
 
@@ -407,20 +527,34 @@ def read_reply(
 # the sealed page-accounting policy.
 
 
+def _validated(
+    answer: Any,
+    feed: Mapping[str, Any],
+    accounting_policy: page_accounting.PageAccountingPolicy,
+    named: list[str] | None,
+) -> dict[str, Any]:
+    """The answer read against every feed id, or a re-ask's against the ids it names."""
+    candidates = page_accounting.feed_candidates(feed, accounting_policy)
+    if named is None:
+        return page_accounting.validate_answer(answer, candidates)
+    return page_accounting.validate_reask_answer(answer, candidates, named)
+
+
 def answer_problems(
     answer: Any,
     feed: Mapping[str, Any],
     stop_reason: str | None,
     accounting_policy: page_accounting.PageAccountingPolicy,
+    named: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Everything that holds a parsed answer whole, from the answer, its feed and the finish.
 
-    The answer's own id problems against the feed, and `no-stop-reason` when
-    the engine gave no finish reason. A reply cut at the output cap is not a
-    parsed answer (`cut-off`) and is never given here.
+    The answer's own id problems against the feed -- for a re-ask, against
+    the ids it names, with any continuation flag set a problem too -- and
+    `no-stop-reason` when the engine gave no finish reason. A reply cut at
+    the output cap is not a parsed answer (`cut-off`) and is never given here.
     """
-    candidates = page_accounting.feed_candidates(feed, accounting_policy)
-    problems = page_accounting.validate_answer(answer, candidates)["problems"]
+    problems = list(_validated(answer, feed, accounting_policy, named)["problems"])
     if stop_reason is None:
         problems.append(
             {
@@ -436,10 +570,10 @@ def answer_entries(
     answer: dict[str, Any],
     feed: Mapping[str, Any],
     accounting_policy: page_accounting.PageAccountingPolicy,
+    named: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Each entry of a valid answer: the entry, its expanded ids, region and region holds."""
-    candidates = page_accounting.feed_candidates(feed, accounting_policy)
-    validated = page_accounting.validate_answer(answer, candidates)
+    validated = _validated(answer, feed, accounting_policy, named)
     shared = {
         n
         for finding in page_accounting.duplicate_regions(validated["entries"], accounting_policy)
@@ -471,8 +605,19 @@ def entry_plans(
     stop_reason: str | None,
     truncation_policy: Mapping[str, Any],
     accounting_policy: page_accounting.PageAccountingPolicy,
+    attempt: int = FIRST_READING,
+    named: list[str] | None = None,
+    first_count: int = 0,
 ) -> list[dict[str, Any]]:
     """Each entry of a read answer as it is published, from the answer, feed and sealed policies.
+
+    `attempt` is the reading's ordinal: a re-ask's entries (`attempt = 2`,
+    `named` its named ids) are read against the ids it names and bound to
+    its own attempt, so they never take a first-reading entry's identity.
+    Each plan's `n` is the number the page accounting names the entry by and
+    `reading_n` its number in its own answer: equal on a first reading, and
+    for a re-ask `n = first_count + reading_n`, `first_count` being the first
+    reading's entries (`page_accounting._combined`).
 
     Per entry: its act id and class, its region's boxes and their union box,
     its text and doubt layers (`reading_annotations.read_doubt_marks`), its
@@ -484,10 +629,14 @@ def entry_plans(
     here, before any act record exists.
     """
     page_pixels = feed["page_size"]["w"] * feed["page_size"]["h"]
-    attempt = page_reading_attempt(page_id)
+    if (attempt == REASK_READING) != (named is not None):
+        raise ContractError("a re-ask's entries are planned with its named ids, and only its")
+    if first_count and attempt != REASK_READING:
+        raise ContractError("only a re-ask's entries are numbered on after a first reading's")
+    reading_attempt = page_reading_attempt(page_id, attempt)
     autopsia = feed["page_render"] is not None
     plans = []
-    for entry in answer_entries(answer, feed, accounting_policy):
+    for entry in answer_entries(answer, feed, accounting_policy, named):
         act, union = entry["act"], entry["union_box_px"]
         act_class = READING_CLASS if union is not None else UNPLACED_CLASS
         region_holds = list(entry["holds"])
@@ -518,8 +667,11 @@ def entry_plans(
                 "act_id": derive_act_id(
                     page_id,
                     act_class,
-                    {"page_reading": attempt, "n": act["n"], "union_box_px": union},
+                    {"page_reading": reading_attempt, "n": act["n"], "union_box_px": union},
                 ),
+                "reading_attempt": attempt,
+                "n": first_count + act["n"],
+                "reading_n": act["n"],
                 "act_class": act_class,
                 "cited_ids": list(entry["cited_ids"]),
                 "region_boxes_px": list(entry["region_boxes_px"]),
@@ -531,6 +683,37 @@ def entry_plans(
                 "truncation": record,
                 "autopsia": autopsia,
             }
+        )
+    return plans
+
+
+def reask_act_plans(
+    accounting: Mapping[str, Any],
+    first_plans: list[dict[str, Any]],
+    reask_plans: list[dict[str, Any]],
+    what: str,
+) -> list[dict[str, Any]]:
+    """The plans a re-asked page publishes act records for, in the accounting's order.
+
+    `accounting` is the page's combined `page-accounting` payload, and
+    `first_plans` and `reask_plans` its two readings' `entry_plans`. The
+    first reading's entries always, and the re-ask's only when the
+    accounting counts it (`page_accounting.reask_stood`); refused
+    (`FatalAccounting`) unless they are exactly the entries the accounting
+    counts, by reading, number in that reading and number on the page, so
+    no act record is published for an entry nothing measured and none the
+    accounting measured is left without one.
+    """
+    plans = first_plans + (reask_plans if page_accounting.reask_stood(accounting) else [])
+    counted = [
+        (entry["reading_attempt"], entry["reading_n"], entry["n"])
+        for entry in accounting["entries"]
+    ]
+    if counted != [(plan["reading_attempt"], plan["reading_n"], plan["n"]) for plan in plans]:
+        raise FatalAccounting(
+            f"{what}'s re-ask accounting counts other entries than its readings give act "
+            "records for; an act nothing measured, or a measured entry with no act, is never "
+            "counted"
         )
     return plans
 
@@ -892,7 +1075,7 @@ def expected_perlectio(
         "page_reading_ref": refs["page_reading_ref"],
         "page_accounting_ref": refs["page_accounting_ref"],
         "feed_ref": refs["feed_ref"],
-        "n": act["n"],
+        "n": plan["n"],
         "kind": act["kind"],
         "label": act.get("label"),
         "text": plan["text"],
@@ -907,7 +1090,20 @@ def expected_perlectio(
         "page_holds": list(page_holds),
         "engine_call": reading["engine_call"],
         "provenance": reading["provenance"],
+        **recovered_fields(plan),
     }
+
+
+def recovered_fields(plan: Mapping[str, Any]) -> dict[str, int]:
+    """What an entry the re-ask recovered adds to its act-region and Perlectio, else nothing.
+
+    `reading_attempt: 2` and `reading_n`, its number in the re-ask's answer,
+    so a recovered entry is always told from a first reading's; its `n` is
+    the page accounting's.
+    """
+    if plan["reading_attempt"] != REASK_READING:
+        return {}
+    return {"reading_attempt": REASK_READING, "reading_n": plan["reading_n"]}
 
 
 # --- the page accounting's inputs -----------------------------------------------
@@ -1418,8 +1614,15 @@ def accounting_inputs(
     ink_entries: list[dict[str, Any]],
     record_detector_configured: bool,
     fixture_placeholders: bool,
+    reask: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """What the page accounting measures one page reading against, and the records it came from.
+
+    With `reask` -- `{reading, reading_ref, plans, named}`, the page's re-ask
+    `page-reading` payload and reference, its `entry_plans` (empty unless it
+    was read) and its named ids -- it is what the re-ask's accounting
+    measures: `reading` and `plans` stay the first reading's, and the
+    accounting names the re-ask's reading and inputs both.
 
     `reading` is the `page-reading` payload; `witnesses` is `[{witness_label,
     adapter, testimonium, testimonium_ref}]`, one per chair of the sealed
@@ -1466,12 +1669,28 @@ def accounting_inputs(
         },
         "ink": ink,
         "feed_ref": feed_ref,
-        "page_reading_ref": reading_ref,
+        "page_reading_ref": reading_ref if reask is None else reask["reading_ref"],
+        "reask": None
+        if reask is None
+        else {
+            "reading": {
+                "parse_state": reask["reading"]["parse_state"],
+                "finish_reason": reask["reading"]["finish_reason"],
+                "answer": reask["reading"]["answer"],
+            },
+            "named": list(reask["named"]),
+            "entry_truncation": {
+                plan["act"]["n"]: plan["truncation"]["classification"]
+                for plan in reask["plans"]
+                if plan["truncation"] is not None
+            },
+        },
     }
     inputs = distinct_refs(
         [
             feed_ref,
             reading_ref,
+            *([] if reask is None else [reask["reading_ref"]]),
             *(witness["testimonium_ref"] for witness in witnesses),
             *detection_refs,
             *ink_refs,

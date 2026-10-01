@@ -24,6 +24,7 @@ from PIL import Image
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import physical_page_id
+from common.contracts.stages import TRIAGE_MODES
 from common.corpus_register import (
     EMPTY_REGISTER_DIGEST,
     append_records,
@@ -106,7 +107,7 @@ def routes_to_review(row: Mapping[str, Any], path: str | Path) -> bool:
         confidence = row["confidence"]
     except KeyError as error:
         raise ProducerRefusal("producer review routing row has no mode or confidence") from error
-    if mode not in {"manual", "semi", "auto"}:
+    if mode not in TRIAGE_MODES:
         raise ProducerRefusal("producer review routing row has an undeclared triage mode")
     if (
         not isinstance(confidence, int)
@@ -118,9 +119,9 @@ def routes_to_review(row: Mapping[str, Any], path: str | Path) -> bool:
         policy = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ProducerRefusal("producer triage modes configuration could not be read") from error
-    if not isinstance(policy, dict) or set(policy) != {"manual", "semi", "auto"}:
+    if not isinstance(policy, dict) or set(policy) != set(TRIAGE_MODES):
         raise ProducerRefusal("producer triage modes configuration has the wrong closed schema")
-    for declared_mode in ("manual", "semi", "auto"):
+    for declared_mode in TRIAGE_MODES:
         declared = policy[declared_mode]
         if not isinstance(declared, dict) or set(declared) != {"review_at_or_below_confidence"}:
             raise ProducerRefusal("producer triage modes configuration has the wrong closed schema")
@@ -234,7 +235,6 @@ def _whole_frame_row(
 
 def _verify_transcribed_row(
     row: Mapping[str, Any],
-    frame: SubmittedFrame,
     digest: str,
     triage_mode: str,
     *,
@@ -421,11 +421,6 @@ def _evidenced_pairs(
         raise ProducerRefusal(
             "manual refusal evidence-not-instrumented: candidate accounting silently omits "
             "a pair from the global-prefilter denominator"
-        )
-    if costs["global_prefilter_passes"] > all_pair_count:
-        raise ProducerRefusal(
-            "manual refusal evidence-not-instrumented: candidate accounting reports more "
-            "global-prefilter passes than examined pairs"
         )
     refused_values = evidence_manifest.get("dimension_refused_pairs")
     if not isinstance(refused_values, list):
@@ -683,7 +678,7 @@ def produce(
 ) -> ProducedTriage:
     """Produce exact-coverage rows and apply only an explicit confirmation."""
     _plain_string(corpus_id, "producer corpus_id")
-    if mode not in {"manual", "semi", "auto"}:
+    if mode not in TRIAGE_MODES:
         raise ProducerRefusal("producer triage mode is not declared")
     if (
         not isinstance(max_pages_per_shard, int)
@@ -755,9 +750,7 @@ def produce(
         width, height, source_mode = _decode_dimensions_and_mode(frame.data, frame.path)
         supplied = transcribed_rows_by_path.get(frame.path)
         row = (
-            _verify_transcribed_row(
-                supplied, frame, digest, mode, decoded=(width, height, source_mode)
-            )
+            _verify_transcribed_row(supplied, digest, mode, decoded=(width, height, source_mode))
             if supplied is not None
             else _whole_frame_row(
                 corpus_id=corpus_id,
@@ -864,7 +857,7 @@ def load_confirmation(path: str | Path) -> dict[str, Any]:
     try:
         raw = _read_direct_regular_bytes(Path(path), _MAX_CONFIRMATION_BYTES)
         value = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as error:
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as error:
         raise ProducerRefusal("confirmation file could not be read") from error
     try:
         canonical = canonical_bytes(value)
@@ -915,8 +908,6 @@ def append_confirmation_to_register(
         evidence_manifest=evidence_manifest,
         evidence_records=evidence_records,
     )
-    if not confirmed:
-        raise ProducerRefusal("confirmation has no designation; nothing was written")
     try:
         current_bytes = read_register_path(register_path)
     except FileNotFoundError:

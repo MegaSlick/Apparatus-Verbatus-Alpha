@@ -18,6 +18,7 @@ from common.decoding import (
     engine_effective_sampling,
     load_decoding_policy,
     perlector_page_max_tokens,
+    reconstructor_max_tokens,
     recorded_wire_decimals,
     refuse_retired_call_record,
     verify_call_sampling,
@@ -50,6 +51,15 @@ MAKERS_SAMPLING = {
     },
     # Qwen/Qwen3.8-27B model card @ 1d4bf0f, non-thinking mode.
     "perlector": {
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+        "repetition_penalty": 1.0,
+    },
+    # The same card and mode, asked text only.
+    "reconstructor": {
         "temperature": 0.7,
         "top_p": 0.8,
         "top_k": 20,
@@ -126,17 +136,21 @@ def test_shipped_decoding_policy_declares_its_sections():
         "schema",
         "chair_decoding",
         "perlector_generation",
+        "reconstructor_generation",
         "chandra_native_inference",
     }
-    assert policy["schema"] == "decoding.v6"
+    assert policy["schema"] == "decoding.v7"
     assert policy["perlector_generation"] == {"page_max_tokens": 12288}
     assert perlector_page_max_tokens(policy) == 12288
+    assert policy["reconstructor_generation"] == {"answer_max_tokens": 8192}
+    assert reconstructor_max_tokens(policy) == 8192
     assert policy["chandra_native_inference"] == recipe_record()
     assert len(digest) == 64
 
 
 @pytest.mark.parametrize(
-    "schema", ["decoding.v1", "decoding.v2", "decoding.v3", "decoding.v4", "decoding.v5"]
+    "schema",
+    ["decoding.v1", "decoding.v2", "decoding.v3", "decoding.v4", "decoding.v5", "decoding.v6"],
 )
 def test_legacy_decoding_schema_is_refused_by_name(tmp_path: Path, schema: str):
     path = tmp_path / "decoding.toml"

@@ -35,6 +35,7 @@ from common.contracts.stages import (
     ARCHETYPUS,
     ARMARIUM,
     ATTESTATORES,
+    CONIECTOR,
     DESIGNATOR,
     DOOR,
     EXEMPLAR,
@@ -93,11 +94,14 @@ FIXTURE = "synthetic-two-page-v0"
 #     (`builder_sha256`) is sealed into every page feed's prompt record;
 #   - any string sealed into a record or the export manifest.
 #
-# The review pins are the page-read `page-review` scenario's tree.
-HAPPY_SNAPSHOT_FILES = 131
-REVIEW_SNAPSHOT_FILES = 129
-HAPPY_RUN_TREE_DIGEST = "473c3fee90a2f73e714caf7ce9a7cbc52dae0d749d14db8d045a727c4f2953d4"
-REVIEW_RUN_TREE_DIGEST = "8fc47731b674e7ec3263cbed9c5ed202adb0f59811a5cbc6c1b66a9eb325da27"
+# The review pins are the page-read `page-review` scenario's tree, whose page 2
+# the committed re-ask budget asks once more. Both trees carry the Coniector's
+# records, since the committed reconstruction config runs it: a call per page,
+# a reconstruction per act, and the reconstructor's receipt.
+HAPPY_SNAPSHOT_FILES = 141
+REVIEW_SNAPSHOT_FILES = 147
+HAPPY_RUN_TREE_DIGEST = "9cf4ff1aae37bf4b362f779c7abce23a537cad7176f5bd91446e67b0c71997bf"
+REVIEW_RUN_TREE_DIGEST = "b0607fc3e76f97b779a002b912a774b7a8eaa606ab382025865d7cb65e3e4e4a"
 
 
 def orchestrate(
@@ -287,6 +291,7 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         designator_geometry_config=ROOT / "config" / "designator_geometry.toml",
         alignment_config=ROOT / "config" / "alignment.toml",
         page_accounting_config=ROOT / "config" / "page_accounting.toml",
+        reconstruction_config=ROOT / "config" / "reconstruction.toml",
         ink_map_config=ROOT / "config" / "ink_map.toml",
         # `config/armarium_formats.toml` until now, which is a file that has
         # never existed: the Armarium's formats policy is `config/formats.toml`
@@ -872,7 +877,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v10"
+                or manifest.get("schema") != "armarium-export-manifest.v11"
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -1457,7 +1462,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v10",
+        "schema": "armarium-export-manifest.v11",
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())
@@ -1598,7 +1603,7 @@ def export_of(tree: RunTree) -> dict:
 def happy_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("happy")
     result = orchestrate(root, "r", "happy")
-    # Partial by design: the act across the page break is a labelled reconstruction.
+    # Partial by design: an act may cross the page break, and code never joins it.
     assert result.returncode == 3, result.stderr
     return root, RunTree(root, "r")
 
@@ -1617,7 +1622,8 @@ def test_the_happy_path_delivers_every_reading_and_is_partial_only_for_its_recon
     assert export["other_readings"] == []
     assert export["aggregate"]["status"] == "partial"
     [reason] = export["aggregate"]["reasons"]
-    assert reason.startswith("continuation join join-1-2-0 (reconstructed)")
+    assert reason.startswith("continuation join join-1-2-0 (not-reconstructed)")
+    assert "(no-code-join)" in reason
 
 
 def test_every_input_reference_in_the_run_resolves_and_matches_its_digest(happy_run):
@@ -1716,7 +1722,7 @@ def test_the_run_used_no_network_and_no_model(happy_run):
     assert run["witness_chairs"] == list(config.witness_chairs)
     assert run["adapter_recipes"] == dict(config.adapter_recipes)
     recipes = run["adapter_recipes"]
-    assert len(recipes) == 9
+    assert len(recipes) == 10
     assert recipes[INK_MAP] == "deterministic-residual-ink-v1"
     assert all(
         revision.startswith("fake-") for stage, revision in recipes.items() if stage != INK_MAP
@@ -2226,6 +2232,7 @@ HANDOFF_ARTIFACTS = (
     (DESIGNATOR, ATTESTATORES, "detector-region"),
     (ATTESTATORES, PERLECTOR, "page-testimonium"),
     (PERLECTOR, RECENSOR, "perlectio"),
+    (PERLECTOR, CONIECTOR, "perlectio"),
     (RECENSOR, ARCHETYPUS, "review"),
     (ARCHETYPUS, ARMARIUM, "archetypus"),
 )
@@ -2241,6 +2248,7 @@ SEAL_ARTIFACTS = (
     (PERLECTOR, RECENSOR),
     (RECENSOR, ARCHETYPUS),
     (ARCHETYPUS, ARMARIUM),
+    (CONIECTOR, ARMARIUM),
     (ARMARIUM, "orchestrator"),
 )
 
@@ -2252,6 +2260,7 @@ CONSUMER_PROGRAMS = {
     PERLECTOR: "pipeline/4_perlector/run.py",
     RECENSOR: "pipeline/5_recensor/run.py",
     ARCHETYPUS: "pipeline/6_archetypus/run.py",
+    CONIECTOR: "pipeline/4b_coniector/run.py",
     ARMARIUM: "pipeline/7_armarium/run.py",
 }
 
@@ -2321,6 +2330,44 @@ def test_each_stage_seal_corruption_stops_its_named_consumer(
         return
 
     result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[consumer])
+
+    assert result.returncode != 0
+    assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr
+    assert snapshot(root) == before
+
+
+def _further_seal_readers() -> list[tuple[str, str]]:
+    from common.contracts.stages import seal_readers
+
+    return [
+        (producer, reader)
+        for producer in STAGES
+        for reader in seal_readers(producer)
+        if (producer, reader) not in SEAL_ARTIFACTS
+    ]
+
+
+def test_the_perlector_seal_has_a_further_reader_in_the_coniector():
+    """The battery below is parametrized over this list, so an empty list would skip it."""
+    assert (PERLECTOR, CONIECTOR) in _further_seal_readers()
+
+
+@pytest.mark.full
+@pytest.mark.parametrize("producer,reader", _further_seal_readers())
+def test_every_further_reader_of_a_seal_refuses_it_corrupted(happy_run, tmp_path, producer, reader):
+    """A seal read by more than one stage (the Perlector's, by the Recensor and the
+    Coniector) is refused by each reader, not only the one the battery above names."""
+    source_root, _ = happy_run
+    root = tmp_path / "runs"
+    shutil.copytree(source_root, root)
+    tree = RunTree(root, "r")
+    path = _stage_seal_path(tree, producer)
+    record = json.loads(path.read_bytes())
+    record["schema"] = "skeleton.v99"
+    path.write_bytes(canonical_bytes(record))
+    before = snapshot(root)
+
+    result = invoke_stage(root, "r", "happy", CONSUMER_PROGRAMS[reader])
 
     assert result.returncode != 0
     assert "skeleton.v99" in result.stderr or "SchemaRefusal" in result.stderr
@@ -2530,14 +2577,14 @@ def test_every_handoff_in_the_contract_is_covered_by_this_table():
 
     assert {(producer, consumer) for producer, consumer, _ in HANDOFF_ARTIFACTS} == set(HANDOFFS)
     assert {consumer for _, consumer, _ in HANDOFF_ARTIFACTS} == set(CONSUMER_PROGRAMS)
-    assert len(HANDOFF_ARTIFACTS) == 8
+    assert len(HANDOFF_ARTIFACTS) == 9
 
 
 def test_every_stage_has_one_seal_battery_row():
     from common.contracts.stages import STAGES
 
     assert {producer for producer, _ in SEAL_ARTIFACTS} == set(STAGES)
-    assert len(SEAL_ARTIFACTS) == 9
+    assert len(SEAL_ARTIFACTS) == 10
 
 
 def test_the_run_authority_is_never_rewritten_by_any_stage(happy_run):

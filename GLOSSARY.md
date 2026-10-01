@@ -21,10 +21,11 @@ than a poorly read one.
 
 **page** — one image from the source.
 
-**crop** — the image region marked out for one act.
+**crop** — an image region cut from a sealed page and shown or kept: one detected
+record's crop for a record reader, or an act's reading region.
 
-**witness** — a model that reads an act and reports what it saw. Its report is
-evidence, not an answer.
+**witness** — a model that reads a page, or each record on it, and reports what it
+saw. Its report is evidence, not an answer.
 
 **chair** — a numbered role in the pipeline that one model fills. The binding lives in a
 model roster under `config/`: `models.toml` holds small local stand-ins and
@@ -38,6 +39,19 @@ and records anything it refuses.
 
 **held** — set aside for human review rather than silently dropped or passed as done.
 
+**failed page** — a page whose reading could not be made: the page did not load or the
+reader's call failed. It is held and counts toward the run's failure cap; it is never
+counted as an empty page.
+
+**blank page** — a page confirmed to hold no text: the reader found none, the ink map
+shows no ink left unread, no line was detected, and every witness that read it found no
+text. A page the reader reads as having no text is held until all of that is confirmed;
+ink with no reading is never passed as blank.
+
+**re-ask** — one further, bounded question to the reader about a page whose first reading
+left named ink unread. It is additive and separately recorded; acts it recovers are
+labelled "read on re-ask". The bound is sealed per run.
+
 **run tree** — the directory one run writes, with one folder per stage.
 
 **pod** — a rented cloud machine with a GPU, billed by the hour while it exists.
@@ -47,33 +61,44 @@ and records anything it refuses.
 | Term | Plain meaning here |
 |---|---|
 | **Exemplar** | The sealed, immutable source page. (In manuscript practice, the original a scribe copies from.) |
-| **Ink map** | Measures where ink lies on each sealed page, without any model, so the Recensor can check that every inked region ended up in an act. |
-| **Designator** | Finds the acts on a page and marks their bounds. It may use textual cues, but never establishes the text. |
+| **Ink map** | Measures where ink lies on each sealed page, without any model, so the Recensor can check that every inked region ended up in a reading region. |
+| **Designator** | Publishes each page's detected lines, blocks and records, the evidence the reading is checked against. It marks out no act and establishes no text. |
 | **Attestator** | One witness model. Plural **Attestatores**. |
-| **Perlector** | The reader: reads the ink itself and establishes the text, using witness testimony as clues. |
-| **Recensor** | Checks that the page is completely covered and drives bounded recovery. It establishes no text. (Textual critics use *recensio* for weighing witnesses; here the word means the completeness review.) |
+| **Perlector** | The reader: reads each whole page itself, names the acts on it and establishes their text, using witness testimony as clues. |
+| **Coniector** | Proposes a labelled, unconfirmed reconstruction of an act from the text around it: the Perlector's transcriptions, never the image. Establishes nothing. (In textual criticism, a conjecture is a reading no witness carries.) |
+| **Recensor** | Checks that the page is completely covered and holds what is not. It establishes no text. (Textual critics use *recensio* for weighing witnesses; here the word means the completeness review.) |
 | **Archetypus** | The established reading, the pipeline's output: a machine reading, not truth. (Borrowed loosely from the ancestor text all witnesses descend from.) |
 | **Armarium** | Where the output is written. (The cupboard where finished books were kept.) |
 
 ## What the stages produce
 
-**Testimonium** (plural *Testimonia*) — an unverified witness report on an act,
+**Testimonium** (plural *Testimonia*) — an unverified witness report on a page,
 of uncertain quality, always kept and never final; it names its model and revision.
 
-**Lectio** — one reading pass by the Perlector, either shown witness testimony
-(primed) or not.
+**page reading** — the Perlector's one whole-page answer for a sealed page. A page whose
+reading cannot stand is held as unread.
 
-**Lectio nuda** — a sampled unprimed baseline, separate from the Pass-A draft
-(*lectio-prior*), which runs only under `--blind-read fed` or `saved` (under `saved`
-it is kept as a training witness and never shown to the establishing reading); both
-see the same inputs and measure sampling variance.
+**reading region** — the boxes an act's citations cover on its page; their union is the
+act's region.
+
+**Lectio nuda** — an unprimed reading with no witness shown: an experiment in
+`operations/spike_perlector/`, not a pipeline pass.
 
 **Perlectio** — what the Perlector returns: the reading, what it was based on, and where
 it departed from every witness (its dissent).
 
-**Reconstruction** — a labelled, unconfirmed export layer that joins two delivered
-literal page readings at a page break (head, one newline, tail, nothing else changed);
-it is not an act and not a reading, and never counts toward the act total.
+**Diplomatic** — the Perlector's transcription of exactly what the ink on one page
+shows, read with the witnesses as clues and never corrected from context; the
+established reading.
+
+**Reconstruction** — a labelled, unconfirmed layer under a diplomatic, made after the
+reading by the Coniector or a person from the text around the act: the diplomatic with
+its departures applied, and, on a run whose pages are declared consecutive, an act's
+pieces joined across a page break. Not an act and not a reading; never established,
+never counted.
+
+**departure** — one change a reconstruction makes to the diplomatic, recorded with its
+span, both readings and, optionally, a reason; not dissent.
 
 ## The distinction that matters
 

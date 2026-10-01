@@ -41,10 +41,10 @@ MAX_CLUSTER_RECORDS: Final = 1_000
 MAX_CLUSTER_MEMBERS: Final = 4_096
 # A single frame's parts must remain in one content-aware shard, and the shared
 # corpus-frame policy refuses any configured shard limit above 1,000 — so any
-# bound at or below that keeps every ingestible frame provable. The 64-part cap
-# bounds the quadratic pairwise-disjointness proof; a real frame with more parts
-# is a triage-policy question, not a bigger loop. The Exemplar boundary bounds the
-# same split with the shared cap.
+# bound at or below that keeps every ingestible frame provable. The 64-part
+# value caps the quadratic pairwise-disjointness proof; a real frame with more
+# parts needs a triage-policy change, not a bigger loop. The Exemplar boundary
+# bounds the same split with the shared cap.
 MAX_SPLIT_PARTS: Final = MAX_TRIAGE_SPLIT_PARTS
 
 _RECTANGLE_FIELDS: Final = {"space", "x", "y", "w", "h"}
@@ -117,14 +117,8 @@ def _row_digest(row: Mapping[str, Any]) -> str:
     payload = {key: value for key, value in row.items() if key != "manifest_row_sha256"}
     try:
         return digest_bytes(canonical_bytes(payload))
-    except (TypeError, ValueError, RecursionError) as error:
-        # `canonical_bytes` refuses unsupported values with TypeError, circular
-        # containers with ValueError, and cycles found by its own pre-walk with
-        # RecursionError. A lone Unicode surrogate — which JSON accepts and UTF-8
-        # has no form for — arrives as TypeError too, because `canonical_bytes`
-        # converts it there. Each becomes a SchemaRefusal here, since a bare
-        # built-in exception would escape every `except SchemaRefusal` in the
-        # pipeline.
+    except TypeError as error:
+        # `canonical_bytes` refuses every unrepresentable value with TypeError.
         raise SchemaRefusal(f"triage row cannot be canonically serialized: {error}") from error
 
 

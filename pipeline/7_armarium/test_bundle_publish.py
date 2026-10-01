@@ -78,6 +78,19 @@ def happy_run(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
+def unreconstructed_run(tmp_path_factory):
+    """The same run with the Coniector switched off, so no reconstruction rides on a reading."""
+    root = tmp_path_factory.mktemp("bundle-publish-unreconstructed")
+    config = root / "reconstruction.toml"
+    text = (ROOT / "config" / "reconstruction.toml").read_text(encoding="utf-8")
+    assert text.count('mode = "on"') == 1
+    config.write_text(text.replace('mode = "on"', 'mode = "off"'), encoding="utf-8")
+    result = _orchestrate(root / "runs", "r", "page-unbroken", reconstruction_config=config)
+    assert result.returncode == 0, result.stderr
+    return root / "runs"
+
+
+@pytest.fixture(scope="module")
 def review_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("bundle-publish-review")
     result = _orchestrate(root, "r", "page-review")
@@ -124,7 +137,7 @@ def test_publication_reports_which_checks_the_clean_pass_actually_made(tmp_path,
 
 
 def test_a_bundle_whose_formats_disagree_about_one_reading_is_never_published(
-    tmp_path, happy_run, monkeypatch
+    tmp_path, unreconstructed_run, monkeypatch
 ):
     """One reading per act at the gate the product leaves by, not only at the one it was built by.
 
@@ -132,14 +145,16 @@ def test_a_bundle_whose_formats_disagree_about_one_reading_is_never_published(
     self-hash agrees -- and its manifest claims `identity_verified_across` all three
     literal formats. Only the cross-format comparison catches it, and until this the
     publish path did not make that comparison at all. Driven in-process because the
-    substitution has to happen between the sealed read and the clean verification.
+    substitution has to happen between the sealed read and the clean verification,
+    over a run without reconstructions, whose own check of the literal they sit
+    beneath would otherwise refuse the drift first.
     """
     import bundle as bundle_module
     from armarium_export import EXPORT_MANIFEST_NAME as MANIFEST
 
     from common.contracts.canonical import canonical_bytes, self_hash
 
-    tree = RunTree(happy_run, "r")
+    tree = RunTree(unreconstructed_run, "r")
     tree.read_run()
     real_sealed_bundle = bundle_module.sealed_bundle
 

@@ -275,17 +275,12 @@ def _validate_metric_fields(record: dict[str, Any], *, baseline: bool) -> None:
         )
     if (record["mean_cost_usd"] is None) != (record["cost_observed_cells"] == 0):
         raise PublicSafetyRefusal("public cost mean nullness does not match its observation count")
-    # Malformed cells are excluded from the denominator, exactly as
-    # `runner.require_publishable` excludes them: a `malformed` response is a
-    # predeclared state with no measurable response to time. Staying in step
-    # with the runner keeps this check and `require_publishable` agreeing.
-    measurable_cells = record["cell_count"] - record["malformed_cells"]
     if not baseline and (
-        record["elapsed_observed_cells"] != measurable_cells
-        or record["cost_observed_cells"] != measurable_cells
+        record["elapsed_observed_cells"] != record["cell_count"]
+        or record["cost_observed_cells"] != record["cell_count"]
     ):
         raise PublicSafetyRefusal(
-            "public candidate row does not measure wall time and cost for every measurable act"
+            "public candidate row does not measure wall time and cost for every act"
         )
     index = record["source_index"] if baseline else record["subject_index"]
     _require_nonnegative_int(index, "source_index" if baseline else "subject_index")

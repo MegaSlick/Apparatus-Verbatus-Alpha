@@ -216,6 +216,7 @@ def test_models_config_owns_the_live_chairs_floor_and_recipes(skeleton, models_c
         "perlector",
         "recensor",
         "archetypus",
+        "coniector",
         "armarium",
     }
 
@@ -368,6 +369,15 @@ def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
         "page-no-act-unbroken",
         "page-flags-disagree",
         "page-runs-past-end",
+        "reask-recovers",
+        "reask-sets-aside",
+        "reask-malformed",
+        "reask-cut-off",
+        "reask-off",
+        "reask-duplicate",
+        "reask-cited-forgot",
+        "reask-continuation",
+        "blank-then-recovered",
         "churro-native",
         "churro-truncation",
         "refused-page",

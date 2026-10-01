@@ -32,8 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from armarium_export import (  # noqa: E402
     ARMARIUM_ARCHIVE_NAME,
+    FIRST_READING_LABEL,
     NOT_MEASURED_BASIS_SCHEMA,
     NOT_MEASURED_INSTRUMENTS,
+    READ_ON_REASK_LABEL,
     ArmariumProjection,
     act_key_sort_key,
     build_armarium_bundle,
@@ -41,6 +43,7 @@ from armarium_export import (  # noqa: E402
     edge_hold_pages_from_rows,
     unpaired_continuations,
 )
+from coniector_layer import export_rows  # noqa: E402
 
 from common import page_path  # noqa: E402
 from common.background import (  # noqa: E402
@@ -91,6 +94,7 @@ from common.page_testimonia import (  # noqa: E402
     declared_page_witness_chairs,
     shown_page_witnesses,
 )
+from common.reconstruction_records import verified_reconstructions  # noqa: E402
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
     MINIMUM_CONTRAST_BELOW_BACKGROUND,
@@ -103,7 +107,9 @@ from common.sealed_config import read_sealed_toml
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
+    PAGE_BLANK_CLASS,
     PAGE_REFUSED_CLASS,
+    PAGE_UNREAD_CLASS,
     canary_ordinals,
     open_stage_context,
     reading_denominator,
@@ -882,10 +888,11 @@ def page_continuation_joins(
     """Each Recensor continuation link as a join row over the delivered literals.
 
     Every flagged page break is a join, so each keeps the run partial with its
-    reason: an agreed link with both sides delivered is reconstructed; a side
-    with no `act` entry names no act (`side-names-no-act`); a link whose two
-    readings' flags disagree reconstructs nothing (`flags-disagree`). Each
-    link is one `page_review.continuation_links` proved to join `act` edges.
+    reason: an agreed link with both sides delivered is `no-code-join`
+    (recorded, never joined by code); a side with no `act` entry names no act
+    (`side-names-no-act`); a link whose two readings' flags disagree is
+    `flags-disagree`. Each link is one `page_review.continuation_links` proved
+    to join `act` edges.
     """
     delivered_texts = {
         act["act_id"]: act["canonical_clean_text"]
@@ -910,6 +917,21 @@ def page_continuation_joins(
             )
         )
     return tuple(joins)
+
+
+def coniector_rows(coniector: dict, projected_acts: list[dict]) -> list[dict]:
+    """The Coniector's verified reconstructions beneath the acts this run delivers."""
+    delivered = {
+        act["act_id"]: act["canonical_clean_text"]
+        for act in projected_acts
+        if act["category"] == ArmariumCategory.DELIVERED.value
+    }
+    return export_rows(
+        [*coniector["acts"].values(), *coniector["joins"]],
+        coniector["diplomatic_raw"],
+        delivered,
+        coniector["refs"],
+    )
 
 
 def page_accounting_rows(context, pages: dict[int, dict], real: set[int]) -> list[dict]:
@@ -1015,12 +1037,35 @@ def page_not_measured_basis(context, pages: dict[int, dict], projected_acts: lis
     return basis
 
 
+# The reading a counted entry came from, by the attempt its verified denominator
+# row names: its page's first reading or its re-ask.
+_ACT_READING_LABELS: Final = {
+    page_path.FIRST_READING: FIRST_READING_LABEL,
+    page_path.REASK_READING: READ_ON_REASK_LABEL,
+}
+
+
+def _act_reading(row: dict) -> str | None:
+    """A counted row's reading label; `None` only for a page row that stands for no entry."""
+    if row["class"] in (PAGE_UNREAD_CLASS, PAGE_BLANK_CLASS):
+        if row["reading_attempt"] is not None:
+            raise FatalAccounting(f"{row['act_key']} stands for no entry yet names a reading")
+        return None
+    if row["reading_attempt"] not in _ACT_READING_LABELS:
+        raise FatalAccounting(
+            f"{row['act_key']} is an entry whose reading attempt "
+            f"{row['reading_attempt']!r} is neither its page's first reading nor its re-ask"
+        )
+    return _ACT_READING_LABELS[row["reading_attempt"]]
+
+
 def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> int:
     """Export the run: acts, the other layer, page rows, and the page accounting."""
     submission_id, fixture_id, run_identity = export_run_identity(context)
     real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
     denominator = reading_denominator(context)
     pages, rows = denominator["pages"], denominator["acts"]
+    coniector = verified_reconstructions(context, rows)
     # A refused page is the census's to report, with the Door's reason; it is
     # never reviewed and never counted.
     for row in rows:
@@ -1149,7 +1194,13 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                 raised = [flag for flag in CONTINUATION_FLAGS if row[flag] is True]
                 if raised:
                     continuation_flags[row["act_key"]] = raised
-            projected_acts.append(projected)
+            projected_acts.append(
+                {
+                    **projected,
+                    "page_ordinal": row["page_ordinal"],
+                    "reading": _act_reading(row),
+                }
+            )
         context.publish(
             kind="manifest-entry",
             subject_id=row["act_id"],
@@ -1162,6 +1213,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
     )
     ink_map_pages = [row for row in all_ink_map_pages if row["ordinal"] not in canaries]
     joins = page_continuation_joins(links, projected_acts, formats.formats)
+    reconstructions = coniector_rows(coniector, projected_acts)
     unaddressed = list(unaddressed_chairs(context.registry.config))
     other_categories_by_page: dict[int, list[str]] = {}
     for other in projected_others:
@@ -1228,6 +1280,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             continuation_joins=joins,
             other_readings=tuple(projected_others),
             page_accounting=tuple(page_accounting_rows(context, pages, real_sealed)),
+            reconstructions=tuple(reconstructions),
         ),
         formats,
         context.tree.read_bytes,

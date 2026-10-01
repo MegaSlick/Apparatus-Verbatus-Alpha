@@ -97,6 +97,21 @@ def _contains_canary_identity(value: Any, act_ids: set[str], ordinals: set[int])
     for key, item in value.items():
         if (key == "act_id" or key.endswith("_act_id")) and item in act_ids:
             return True
+        if (
+            (key == "act_ids" or key.endswith("_act_ids"))
+            and isinstance(item, list)
+            and any(act_id in act_ids for act_id in item)
+        ):
+            return True
+        # The sources record lists each shown reconstruction by its act ids.
+        if (
+            key == "reconstructions"
+            and isinstance(item, list)
+            and any(
+                isinstance(row, list) and any(act_id in act_ids for act_id in row) for row in item
+            )
+        ):
+            return True
         if (key == "ordinal" or ("page" in key and key.endswith("_ordinal"))) and item in ordinals:
             return True
         if (key == "ordinals" or ("page" in key and key.endswith("_ordinals"))) and any(
@@ -125,7 +140,7 @@ def _canary_in_bundle(data: bytes, act_ids: set[str], ordinals: set[int]) -> boo
             "acts.jsonl",
             "other.jsonl",
             "review-items.jsonl",
-            "reconstructions.jsonl",
+            "coniector.jsonl",
         } & names:
             with archive.open(name) as member:
                 if any(
@@ -266,7 +281,10 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                     )
 
         # The reader is checked page by page: every entry it read on a canary
-        # page, joined in order, against that page's reference text.
+        # page, joined in order, against that page's reference text. A page
+        # read whole holds every entry on a page with any hold, and a held
+        # entry still carries its reading, so it counts as read.
+        read_outcomes = {"read", "held"}
         try:
             readings = _canary_readings(tree, ordinals)
         except FatalAccounting:
@@ -285,7 +303,7 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 continue
             texts = [row.get("payload", {}).get("text") for row in rows]
             if (
-                any(row.get("outcome") != "read" for row in rows)
+                any(row.get("outcome") not in read_outcomes for row in rows)
                 or not all(isinstance(text, str) and text.strip() for text in texts)
                 or _repeated("\n".join(texts))
             ):

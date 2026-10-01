@@ -1,7 +1,7 @@
 """The text part of one whole-page Perlector request, rendered from its page feed.
 
 The request is the page image (when the feed shows one) as the first content
-item, as `live_reader.py` sends a page render, then the page overlay when the
+item, as `operations/serving/chat_request.py` sends a page render, then the page overlay when the
 feed draws one (`page_overlay.py`), then this text: the feed's
 witness units, Surya's lines and blocks, and last the instruction, so the
 instruction is never the reader's first framing.
@@ -40,6 +40,16 @@ newlines as one JSON string.
     parts = prompt_parts(serving_recipe, feed)   # the same text, reported pieces marked
     evidence = page_prompt_evidence(serving_recipe, feed)
     # {serving_recipe, builder_sha256, rendered_sha256, instruction_sha256}
+
+A page's one re-ask (`common/page_reask.py`) is rendered here too, with its
+own builder per recipe: the same rendered feed, then the first reading's
+entries by number, kind, label and cites -- never their text -- then the ids
+it is asked about with their boxes, grouped by what the accounting found, and
+last its own instruction.
+
+    text = page_reask_prompt(serving_recipe, feed, reask)
+    parts = reask_prompt_parts(serving_recipe, feed, reask)
+    evidence = reask_prompt_evidence(serving_recipe, feed, reask)
 """
 
 from __future__ import annotations
@@ -406,6 +416,159 @@ def page_prompt_evidence(serving_recipe: str, feed: dict[str, Any]) -> dict[str,
     """
     builder, instruction = _builder_for(serving_recipe)
     rendered = _rendered(builder(feed))
+    return {
+        "serving_recipe": serving_recipe,
+        "builder_sha256": BUILDER_SHA256,
+        "rendered_sha256": digest_bytes(rendered.encode("utf-8")),
+        "instruction_sha256": None
+        if instruction is None
+        else digest_bytes(instruction(feed).encode("utf-8")),
+    }
+
+
+# --- the re-ask ---------------------------------------------------------------------
+
+# How the re-ask introduces each finding it names, in the order shown.
+_REASK_FINDINGS: Final = (
+    ("unaccounted-witness-unit", "witness units no entry above cites or sets aside"),
+    ("unread-line", "detected lines outside every entry above"),
+    ("record-not-read", "detector records outside every entry above"),
+)
+
+
+def _reask_parts(reask: dict[str, Any]) -> list[list[_Part]]:
+    """The first reading's entries without their text, then the named ids by finding."""
+    lines = [_fixed("entries already read on this page, which stand as they are:")]
+    for entry in reask["prior_entries"]:
+        lines.append(
+            [
+                (f"entry {entry['n']} ({entry['kind']})", False),
+                *_label(entry["label"]),
+                (" cites ", False),
+                (_text(", ".join(entry["cites"])), True),
+            ]
+        )
+    if not reask["prior_entries"]:
+        lines.append(_fixed("(none)"))
+    for code, heading in _REASK_FINDINGS:
+        named = [item for item in reask["named"] if item["code"] == code]
+        if named:
+            lines.append(_fixed(f"{heading}:"))
+            lines.extend([(item["id"], False), _box(item["box_1000"])] for item in named)
+    return lines
+
+
+def page_reask_instruction(feed: dict[str, Any]) -> str:
+    """What the re-ask asks: read the ink at the named ids, adding to the entries above.
+
+    It stands on its own, since the re-ask is a request of its own: what an
+    entry is, what to give for it and how to cite, as the page's instruction
+    says them, limited to the ids the re-ask names.
+    """
+    image = _shown(feed)["image"]
+    parts = ["The ids just above were not accounted for by the entries already read. "]
+    if image:
+        parts.append(
+            "Read the ink at these ids in the page image. The witness units and detections "
+            "above are clues to help you find and read the ink; any of them may be wrong, and "
+            "none of them is an answer. "
+        )
+    else:
+        parts.append(
+            "No page image is shown: read what was reported at these ids. Any report may be "
+            "wrong or incomplete. "
+        )
+    parts.append(
+        "An act is one register entry, such as a baptism, a marriage or a burial: give it "
+        'kind "act". Any other text, such as a heading, a page number or a marginal note '
+        'that is not an entry, is an entry of kind "other". For each entry you find at these '
+        "ids give: n, numbered 1, 2, 3 and so on; kind; label, if you wish, a few words "
+        "naming the entry, at most 80 characters; cites, the ids just above that "
+        + ("its ink covers" if image else "it is read from")
+        + ", where a range of witness units such as A2-A5 stands for every unit of that "
+        "witness from the first to the last, and each detected line is cited by its own id, "
+        "never by a range; and "
+        + (
+            "text, the entry transcribed from the ink. "
+            if image
+            else "text, the entry as the witnesses report it. "
+        )
+        + "Cite only the ids just above, and set continues_from_previous_page and "
+        "continues_to_next_page to false. Set aside an id where you find no entry, with the "
+        "reason the "
+        + ("ink shows" if image else "reports show")
+        + ". Do not repeat or change the entries already read. "
+    )
+    if image:
+        parts += [TRANSCRIBE_SENTENCE, DOUBT_SENTENCE]
+    else:
+        parts.append(
+            "Give each text as the witnesses report it: do not modernize spelling, expand "
+            "abbreviations, or correct it. Where the witnesses disagree about a reading, or "
+            "none of them reports it, write [[?]] in its place. "
+        )
+    parts.append(
+        "Answer with one JSON object and nothing else, with no code fence, in this form: "
+        + ANSWER_FORM
+    )
+    return "".join(parts)
+
+
+_ReaskBuild = Callable[[dict[str, Any], dict[str, Any]], list[list[_Part]]]
+
+
+def _fake_perlector_reask_v0(feed: dict[str, Any], reask: dict[str, Any]) -> list[list[_Part]]:
+    """The fixture recipe's re-ask template: the shown inputs and the re-ask's data."""
+    return [*_feed_parts(feed), *_reask_parts(reask)]
+
+
+def _unproven_real_perlector_reask_v0(
+    feed: dict[str, Any], reask: dict[str, Any]
+) -> list[list[_Part]]:
+    """`unproven-real-perlector`'s re-ask template: the same, then the re-ask's instruction."""
+    return [*_feed_parts(feed), *_reask_parts(reask), _fixed(page_reask_instruction(feed))]
+
+
+_REASK_BUILDERS: Final[dict[str, tuple[_ReaskBuild, _Render | None]]] = {
+    "fake-perlector-v0": (_fake_perlector_reask_v0, None),
+    "unproven-real-perlector": (_unproven_real_perlector_reask_v0, page_reask_instruction),
+}
+
+
+def _reask_builder_for(serving_recipe: str) -> tuple[_ReaskBuild, _Render | None]:
+    entry = _REASK_BUILDERS.get(serving_recipe)
+    if entry is None:
+        raise ValueError(
+            f"no declared page re-ask builder is registered for serving recipe "
+            f"{serving_recipe!r}; a chair with no registered builder is never silently served "
+            "a default template"
+        )
+    return entry
+
+
+def page_reask_prompt(serving_recipe: str, feed: dict[str, Any], reask: dict[str, Any]) -> str:
+    """The text part of one page re-ask, byte-exact; `reask` is `page_reask.render_reask`'s."""
+    return _rendered(_reask_builder_for(serving_recipe)[0](feed, reask))
+
+
+def reask_prompt_parts(
+    serving_recipe: str, feed: dict[str, Any], reask: dict[str, Any]
+) -> list[tuple[str, bool]]:
+    """The re-ask prompt in its pieces, `(text, reported)`, as `prompt_parts` gives a page's."""
+    parts: list[tuple[str, bool]] = []
+    for index, line in enumerate(_reask_builder_for(serving_recipe)[0](feed, reask)):
+        if index:
+            parts.append(("\n", False))
+        parts.extend(part for part in line if part[0])
+    return parts
+
+
+def reask_prompt_evidence(
+    serving_recipe: str, feed: dict[str, Any], reask: dict[str, Any]
+) -> dict[str, str | None]:
+    """The record of the prompt a page re-ask is produced through, as `page_prompt_evidence`."""
+    builder, instruction = _reask_builder_for(serving_recipe)
+    rendered = _rendered(builder(feed, reask))
     return {
         "serving_recipe": serving_recipe,
         "builder_sha256": BUILDER_SHA256,

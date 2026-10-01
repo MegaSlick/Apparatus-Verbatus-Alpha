@@ -96,6 +96,7 @@ def test_read_surface_walks_stage_records_seals_census_pages_and_crops(tmp_path:
         "perlector",
         "recensor",
         "archetypus",
+        "coniector",
         "armarium",
     }
     assert all(row["sealed"] and len(row["seal_digest"]) == 64 for row in projected.boundaries)

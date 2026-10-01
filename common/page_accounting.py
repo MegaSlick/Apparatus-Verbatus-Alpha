@@ -22,6 +22,12 @@ area reads the union of that list, so an entry citing lines of two columns does
 not claim the ink between them, and a Surya block, which may hold the whole page
 or several acts, lends its area to no entry.
 
+A page may be asked once more about the ids its first reading left
+unaccounted for (`common/page_reask.py`). That second reading's accounting
+measures both readings together: the first reading's entries exactly as they
+were, then the re-ask's, numbered on after them. Rule (j) says what became of
+the re-ask; nothing of the first reading is changed, dropped or out-counted.
+
 Every box in and out is the repository's `bounds` `{x, y, w, h}` in sealed-page
 pixels, as the feed records `box_px`; the geometry below reads corners from it.
 """
@@ -69,6 +75,9 @@ DETECTION_RANGE: Final = "detection-range"
 CITED_AND_SET_ASIDE: Final = "cited-and-set-aside"
 SET_ASIDE_TWICE: Final = "set-aside-twice"
 SET_ASIDE_WITHOUT_REASON: Final = "set-aside-without-reason"
+# A re-ask's entry that says it continues across a page break: a re-ask reads
+# ids inside the page, so it holds the re-ask whole.
+REASK_CONTINUATION: Final = "reask-continuation"
 
 # Finding codes. Every code in `HOLD_CODES` holds the page; the others are recorded only.
 PAGE_ANSWER_INCOMPLETE: Final = "page-answer-incomplete"
@@ -106,6 +115,18 @@ RECORD_NOT_MEASURED: Final = "detector-record-not-measured"
 RECORD_DETECTOR_CAPPED: Final = "record-detector-capped"
 NO_RECORD_DETECTOR: Final = "no-record-detector"
 NO_PARSED_ANSWER: Final = "no-parsed-answer"
+# Rule (j), what became of a page's re-ask: a named id it set aside, a re-ask
+# that is not a parsed, valid answer finished on `stop`, an entry of it citing
+# no placing id or giving no text, an entry whose text one first-reading entry
+# already holds, and a duplicate check the work budget ran out on.
+REASK_SET_ASIDE: Final = "reask-set-aside"
+REASK_UNREAD: Final = "reask-unread"
+REASK_UNPLACED: Final = "reask-unplaced"
+REASK_DUPLICATE: Final = "reask-duplicate"
+# A re-ask entry that gives no text: a named id it cites is accounted for by
+# nothing read, so the page holds.
+REASK_NO_TEXT: Final = "reask-no-text"
+REASK_DUPLICATE_NOT_MEASURED: Final = "reask-duplicate-not-measured"
 HOLD_CODES: Final = frozenset(
     {
         PAGE_ANSWER_INCOMPLETE,
@@ -132,6 +153,12 @@ HOLD_CODES: Final = frozenset(
         RECORDS_NOT_MEASURED,
         RECORD_NOT_MEASURED,
         RECORD_DETECTOR_CAPPED,
+        REASK_SET_ASIDE,
+        REASK_UNREAD,
+        REASK_UNPLACED,
+        REASK_DUPLICATE,
+        REASK_NO_TEXT,
+        REASK_DUPLICATE_NOT_MEASURED,
     }
 )
 # Findings that say a rule could not be measured: the rule is `not-measured`, and the
@@ -146,6 +173,7 @@ NOT_MEASURED_CODES: Final = frozenset(
         RECORD_DETECTOR_CAPPED,
         NO_PARSED_ANSWER,
         TRUNCATION_NOT_CLASSIFIED,
+        REASK_DUPLICATE_NOT_MEASURED,
     }
 )
 _PROBLEM_RULE: Final = {UNKNOWN_ID: "b"}
@@ -154,11 +182,14 @@ PASS: Final = "pass"
 HOLD: Final = "hold"
 NOT_MEASURED: Final = "not-measured"
 NOT_APPLICABLE: Final = "not-applicable"
-RULES: Final = ("a", "b", "c", "d", "e", "f", "g", "h", "i")
+RULES: Final = ("a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
 
 PARSED: Final = "parsed"
 FAILED_PARSE_STATES: Final = frozenset({"cut-off", "call-failed", "refused-capacity", "not-run"})
 PARSE_STATES: Final = FAILED_PARSE_STATES | {PARSED, "malformed"}
+# What an accounting's entries are: one reading's, or a first reading's and its re-ask's.
+ANSWER_BASIS_FIRST: Final = "attempt-1"
+ANSWER_BASIS_COMBINED: Final = "combined"
 RECORD_DETECTOR_CONFIGURED: Final = "configured"
 RECORD_DETECTOR_ABSENT: Final = "absent"
 
@@ -295,6 +326,28 @@ def require_page_accounting_policy(
     return policy
 
 
+# --- the finish and the re-ask ------------------------------------------------------
+
+
+def finished_on_stop(reading: Mapping[str, Any]) -> bool:
+    """Whether a reading ran to its own end: its `finish_reason` is `stop`.
+
+    The one test of a finish that rule (a), the re-ask's standing (rule (j))
+    and the re-ask plan (`common/page_reask.py`) all read.
+    """
+    return reading["finish_reason"] == "stop"
+
+
+def reask_stood(accounting: Mapping[str, Any]) -> bool:
+    """Whether a page accounting counts its page's re-ask among the entries it measures.
+
+    Only a combined accounting can; it does unless rule (j) holds `reask-unread`.
+    """
+    return accounting["answer_basis"] == ANSWER_BASIS_COMBINED and all(
+        finding["code"] != REASK_UNREAD for finding in accounting["rules"]["j"]["findings"]
+    )
+
+
 # --- candidates and the answer's ids -------------------------------------------------
 
 
@@ -319,6 +372,21 @@ def _corners(box: Box) -> tuple[int, int, int, int]:
 
 def _from_corners(x0: int, y0: int, x1: int, y1: int) -> Box:
     return {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
+
+
+def feed_items(feed: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
+    """Every citable item of a page feed, `(kind, item)`, in feed order.
+
+    `kind` is `unit` for a witness unit and `surya` for a Surya line or block;
+    each item carries its `id`, `box_px` and `box_1000` as the feed holds them.
+    """
+    items: list[tuple[str, Mapping[str, Any]]] = [
+        ("unit", unit) for witness in feed["witnesses"] for unit in witness["units"]
+    ]
+    surya = feed["surya"]
+    if surya is not None:
+        items += [("surya", item) for item in surya["lines"] + surya["blocks"]]
+    return items
 
 
 def placement_boxes(feed: Mapping[str, Any], policy: PageAccountingPolicy) -> dict[str, Box | None]:
@@ -386,11 +454,7 @@ def feed_candidates(feed: Mapping[str, Any], policy: PageAccountingPolicy) -> di
     a range citation reads every id between its ends.
     """
     seen: set[str] = set()
-    identifiers = [unit["id"] for witness in feed["witnesses"] for unit in witness["units"]]
-    surya = feed["surya"]
-    if surya is not None:
-        identifiers += [item["id"] for item in surya["lines"] + surya["blocks"]]
-    for identifier in identifiers:
+    for identifier in (item["id"] for _kind, item in feed_items(feed)):
         if not isinstance(identifier, str) or not _ID.fullmatch(identifier):
             raise ContractError(f"feed id {identifier!r} is not a letter and a number")
         if identifier in seen:
@@ -589,6 +653,85 @@ def validate_answer(answer: Any, candidates: Mapping[str, Box | None]) -> dict[s
     return {"entries": entries, "set_aside": set_aside, "problems": problems}
 
 
+def named_candidates(
+    candidates: Mapping[str, Box | None], named: Sequence[str]
+) -> dict[str, Box | None]:
+    """The candidates a re-ask may cite: the ids it was asked about, each with a placing box."""
+    if not named or len(set(named)) != len(named):
+        raise ContractError("a re-ask names no id, or one id twice")
+    for identifier in named:
+        if candidates.get(identifier) is None:
+            raise ContractError(f"a re-ask names {identifier!r}, which the feed does not place")
+    return {identifier: candidates[identifier] for identifier in named}
+
+
+def validate_reask_answer(
+    answer: Any, candidates: Mapping[str, Box | None], named: Sequence[str]
+) -> dict[str, Any]:
+    """`validate_answer` for a re-ask: only the named ids are known, and nothing continues.
+
+    Citing or setting aside any other id is `unknown-id`, and an entry with a
+    continuation flag set is `reask-continuation`; either holds the re-ask whole.
+    """
+    validated = validate_answer(answer, named_candidates(candidates, named))
+    problems = list(validated["problems"])
+    for entry in validated["entries"]:
+        for flag in ("continues_from_previous_page", "continues_to_next_page"):
+            if entry[flag] is True:
+                problems.append({"code": REASK_CONTINUATION, "n": entry["n"], "flag": flag})
+    return {**validated, "problems": problems}
+
+
+def _combined(
+    first: dict[str, Any], reask: Mapping[str, Any], candidates: Mapping[str, Box | None]
+) -> dict[str, Any]:
+    """The first reading's valid entries, then the re-ask's, and whether the re-ask stands.
+
+    The first reading's entries are kept exactly; a re-ask that is a parsed,
+    valid answer finished on `stop` adds its entries numbered on from the
+    first's (`n = k + j`, `reading_n = j`) and its set-asides. An id both read
+    and set aside across the two, or one set aside twice, holds the re-ask
+    whole, as it would within one answer.
+    """
+    reading, named = reask["reading"], reask["named"]
+    parsed = reading["parse_state"] == PARSED and reading.get("answer") is not None
+    validated = (
+        validate_reask_answer(reading["answer"], candidates, named)
+        if parsed
+        else {"entries": [], "set_aside": {}, "problems": []}
+    )
+    problems = list(validated["problems"])
+    cited_first = {i for entry in first["entries"] for i in entry["cited_ids"]}
+    cited_second = {i for entry in validated["entries"] for i in entry["cited_ids"]}
+    problems += [
+        {"code": CITED_AND_SET_ASIDE, "id": identifier}
+        for identifier in sorted(
+            (cited_first & set(validated["set_aside"])) | (cited_second & set(first["set_aside"])),
+            key=id_key,
+        )
+    ]
+    problems += [
+        {"code": SET_ASIDE_TWICE, "id": identifier}
+        for identifier in sorted(set(first["set_aside"]) & set(validated["set_aside"]), key=id_key)
+    ]
+    stands = parsed and finished_on_stop(reading) and not problems
+    k = len(first["entries"])
+    added = (
+        [
+            {**entry, "n": k + entry["n"], "reading_attempt": 2, "reading_n": entry["n"]}
+            for entry in sorted(validated["entries"], key=lambda entry: entry["n"])
+        ]
+        if stands
+        else []
+    )
+    return {
+        "stands": stands,
+        "problems": problems,
+        "entries": added,
+        "set_aside": dict(validated["set_aside"]) if stands else {},
+    }
+
+
 # --- the sealed detections -----------------------------------------------------------
 
 
@@ -641,7 +784,7 @@ def _census(
                 )
             seen.add(identifier)
         census.append({"id": identifier, "box_px": box, "ref": item["ref"]})
-    missing = sorted(set(shown_ids) - seen, key=_id_key)
+    missing = sorted(set(shown_ids) - seen, key=id_key)
     if missing:
         raise ContractError(f"the feed shows {missing} that the sealed {where} do not hold")
     return sorted(census, key=_ref_key)
@@ -745,7 +888,7 @@ def _read_witnesses(
         expected = [f"{letter}{number}" for number in range(1, len(units) + 1)]
         if sorted((unit["id"] for unit in units), key=str) != sorted(expected):
             raise ContractError(f"sealed witness {letter} unit ids are not {letter}1..n once each")
-        units.sort(key=lambda unit: _id_key(unit["id"]))
+        units.sort(key=lambda unit: id_key(unit["id"]))
         if witness["blank"] is True and units:
             raise ContractError(f"sealed witness {letter} reports a blank page and gives units")
         sealed[letter] = {**witness, "units": units}
@@ -755,7 +898,7 @@ def _read_witnesses(
         match = sealed.get(letter)
         shown_units = sorted(
             ((u["id"], u.get("box_px"), u["text"]) for u in witness["units"]),
-            key=lambda unit: _id_key(unit[0]),
+            key=lambda unit: id_key(unit[0]),
         )
         if (
             match is None
@@ -1255,7 +1398,8 @@ def _rule(findings: list[dict[str, Any]]) -> dict[str, Any]:
     return {"status": status, "findings": findings}
 
 
-def _id_key(identifier: str) -> tuple[str, int]:
+def id_key(identifier: str) -> tuple[str, int]:
+    """A feed id's sort key: its letter, then its number."""
     return identifier[0], int(identifier[1:])
 
 
@@ -1277,8 +1421,9 @@ def page_accounting(
     policy: PageAccountingPolicy,
     feed_ref: Any,
     page_reading_ref: Any,
+    reask: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The `page-accounting.v2` payload for one page reading.
+    """The `page-accounting.v2` payload for one page reading, or for a reading and its re-ask.
 
     - `feed`: the `page-feed` payload (`page_id`, `page_ordinal`,
       `switches.witness_units`, `witnesses[]` with `letter`, `outcome` and
@@ -1315,6 +1460,17 @@ def page_accounting(
       `truncation-not-classified` (not measured, which holds).
     - `ink`: `{"runs": <ink-runs.v2 evidence> | None, "coverage_policy":
       <CoverageAuditPolicy resolved for this page>}`, or `None`.
+    - `reask`: `None` for a first reading's accounting, whose rule (j) is
+      `not-applicable`. For its re-ask's, `{"reading": {parse_state,
+      finish_reason, answer}, "named": [id, ...], "entry_truncation": {j:
+      classification}}`: `reading` is then the first reading, which must be
+      a parsed answer, and `page_reading_ref` the re-ask's. The first
+      reading is read against every candidate, the re-ask against the named
+      ids only (`validate_reask_answer`). The entries measured are the first
+      reading's, exactly, then the re-ask's numbered on after them when it
+      stands (`_combined`); rule (a) reads the first reading alone, rules
+      (b) to (i) the entries together, rule (g) each entry's truncation under
+      its own reading, and rule (j) the re-ask.
 
     A missing input is never a pass: without a Surya census rule (d), without
     ink runs rule (f), and without detector records from a configured detector,
@@ -1332,7 +1488,7 @@ def page_accounting(
     shown = [witness for witness in sealed if witness["letter"] in shown_letters]
     units = sorted(
         (unit for witness in sealed for unit in witness["units"]),
-        key=lambda unit: _id_key(unit["id"]),
+        key=lambda unit: id_key(unit["id"]),
     )
     shown_units = [unit for unit in units if unit["id"][0] in shown_letters]
     unit_boxes = {unit["id"]: unit["box_px"] for unit in units}
@@ -1347,10 +1503,17 @@ def page_accounting(
     entries = sorted(validated["entries"], key=lambda entry: entry["n"])
     set_aside = validated["set_aside"]
     problems = validated["problems"]
+    combined = None
+    if reask is not None:
+        if not answered:
+            raise ContractError("a re-ask is accounted only over a first reading that parsed")
+        combined = _combined({**validated, "entries": entries}, reask, candidates)
+        entries = entries + combined["entries"]
+        set_aside = {**set_aside, **combined["set_aside"]}
 
     # (a) the answer is complete: finished on `stop`, parsed and valid.
     incomplete = []
-    if finish_reason != "stop":
+    if not finished_on_stop(reading):
         incomplete.append({"code": "finish-reason", "finish_reason": finish_reason})
     if parse_state != PARSED:
         incomplete.append({"code": "parse-state", "parse_state": parse_state})
@@ -1368,7 +1531,11 @@ def page_accounting(
             {"code": READING_INCOMPLETE, "parse_state": parse_state, "finish_reason": finish_reason}
         )
     for entry in entries:
-        classification = entry_truncation.get(entry["n"])
+        classification = (
+            reask["entry_truncation"].get(entry["reading_n"])
+            if entry.get("reading_attempt") == 2
+            else entry_truncation.get(entry["n"])
+        )
         if classification is None:
             incomplete_reading.append({"code": TRUNCATION_NOT_CLASSIFIED, "n": entry["n"]})
         elif classification != TRUNCATION_COMPLETE:
@@ -1417,8 +1584,18 @@ def page_accounting(
         for rule in ("b", "c", "d", "e", "f", "h", "i"):
             rules[rule] = _rule(list(no_answer))
         rules["g"] = _rule(incomplete_reading)
+        rules["j"] = _reask_rule(None, [], [], policy)
         return _record(
-            feed, rules, unit_rows, line_rows, record_rows, policy, feed_ref, page_reading_ref
+            feed,
+            rules,
+            unit_rows,
+            line_rows,
+            record_rows,
+            policy,
+            feed_ref,
+            page_reading_ref,
+            entries,
+            reask,
         )
 
     # (b) every cited id exists, and every entry cites a boxed id.
@@ -1489,8 +1666,18 @@ def page_accounting(
         ]
     )
     rules["i"] = _detection_rule(record_rows, detector, capped, entries, unboxed_records)
+    rules["j"] = _reask_rule(combined, entries, units, policy, reask)
     return _record(
-        feed, rules, unit_rows, line_rows, record_rows, policy, feed_ref, page_reading_ref
+        feed,
+        rules,
+        unit_rows,
+        line_rows,
+        record_rows,
+        policy,
+        feed_ref,
+        page_reading_ref,
+        entries,
+        reask,
     )
 
 
@@ -1769,6 +1956,180 @@ def _ink_rule(ink: Mapping[str, Any] | None, regions: list[Box]) -> dict[str, An
     return {"status": PASS, "findings": [], "measurement": counts}
 
 
+def _reask_rule(
+    combined: Mapping[str, Any] | None,
+    entries: list[dict[str, Any]],
+    units: list[dict[str, Any]],
+    policy: PageAccountingPolicy,
+    reask: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """(j) What became of the page's re-ask; not applicable to a first reading's accounting.
+
+    A re-ask that is not a parsed, valid answer finished on `stop` is
+    `reask-unread`, and the page stands on its first reading alone. One that
+    stands holds each named id it set aside (`reask-set-aside`), each entry of
+    it citing no placing id (`reask-unplaced`) or giving no text beyond
+    `[[?]]` (`reask-no-text`), and each entry whose text a first-reading
+    entry already holds (`reask-duplicate`, `_reask_duplicates`). So a named
+    id's hold clears only through a placed entry that gives text and passes
+    every rule.
+    """
+    if combined is None or reask is None:
+        return {"status": NOT_APPLICABLE, "findings": []}
+    if not combined["stands"]:
+        reading = reask["reading"]
+        return _rule(
+            [
+                {
+                    "code": REASK_UNREAD,
+                    "parse_state": reading["parse_state"],
+                    "finish_reason": reading["finish_reason"],
+                    "problems": [problem["code"] for problem in combined["problems"]],
+                }
+            ]
+        )
+    findings: list[dict[str, Any]] = [
+        {"code": REASK_SET_ASIDE, "id": identifier, "reason": combined["set_aside"][identifier]}
+        for identifier in sorted(combined["set_aside"], key=id_key)
+    ]
+    added = [entry for entry in entries if entry.get("reading_attempt") == 2]
+    findings += [
+        {"code": REASK_UNPLACED, "n": entry["n"], "reading_n": entry["reading_n"]}
+        for entry in added
+        if not entry["region_boxes_px"]
+    ]
+    findings += [
+        {"code": REASK_NO_TEXT, "n": entry["n"], "reading_n": entry["reading_n"]}
+        for entry in added
+        if not normalized_text(entry["text"])
+    ]
+    first = [entry for entry in entries if entry.get("reading_attempt") != 2]
+    findings += _reask_duplicates(first, added, units, policy)
+    return _rule(findings)
+
+
+@dataclass(frozen=True)
+class _PageFormula:
+    """The page's witness units and first-reading entries, indexed to tell formula from names."""
+
+    by_letter: dict[str, list[_NearPieces]]
+    exact: set[str]
+    readings: list[_NearPieces]
+
+    @classmethod
+    def of(cls, units: list[dict[str, Any]], readings: Mapping[int, str], k: int) -> _PageFormula:
+        by_letter: dict[str, list[_NearPieces]] = {}
+        exact: set[str] = set()
+        for unit in units:
+            text = normalized_text(unit["text"])
+            by_letter.setdefault(unit["id"][0], []).append(_NearPieces(text, k))
+            exact |= _pieces(text, k)
+        return cls(by_letter, exact, [_NearPieces(reading, k) for reading in readings.values()])
+
+
+def _entry_distinctive_pieces(text: str, formula: _PageFormula, k: int) -> dict[str, int]:
+    """A re-ask entry's distinctive pieces with their first offset, as rule (e) keeps a unit's.
+
+    A piece is the register's formula when two units of one witness hold it
+    within one edit -- the witness wrote it in two records -- or two
+    first-reading entries do; any other piece is kept when a witness unit
+    on the page holds it exactly, so a piece of the entry's own invention
+    never counts. What is left are the names and dates that tell one record
+    from another.
+
+    It differs from rule (e)'s `_distinctive_pieces` because the text is a
+    reading, not a witness unit. Rule (e) drops a piece another unit of the
+    unit's own witness holds, since that witness wrote it twice; an entry
+    belongs to no witness, so one unit holding its piece is the corroboration
+    and only two units of one witness make it formula. And rule (e) takes
+    corroboration from a reading within one edit, which here would let the
+    first-reading entry under test corroborate the duplicate it is tested for,
+    so only the witnesses corroborate.
+    """
+    kept: dict[str, int] = {}
+    for offset in range(len(text) - k + 1):
+        piece = text[offset : offset + k]
+        if piece in kept or piece not in formula.exact:
+            continue
+        if sum(index.near(piece) for index in formula.readings) >= 2 or any(
+            sum(index.near(piece) for index in indexes) >= 2
+            for indexes in formula.by_letter.values()
+        ):
+            continue
+        kept[piece] = offset
+    return kept
+
+
+def _reask_duplicates(
+    first: list[dict[str, Any]],
+    added: list[dict[str, Any]],
+    units: list[dict[str, Any]],
+    policy: PageAccountingPolicy,
+) -> list[dict[str, Any]]:
+    """Each re-ask entry whose text one first-reading entry already holds, by rule (e)'s test.
+
+    The re-ask entry stands as a unit and each first-reading entry as a
+    reading: it is inside that entry when rule (e) would find a witness unit
+    with its text read there -- no unread run or share past the sealed
+    bounds, some of it matched, and its distinctive pieces held (or, with
+    too few, its text within the short-unit distance). Its distinctive pieces
+    are `_entry_distinctive_pieces`', so the register's formula never makes
+    two entries one. A re-ask may copy a first reading's entry it was never
+    shown the text of only by reading the same ink, so each such entry is
+    held for a human to look at.
+    """
+    if not added or not first:
+        return []
+    budget = _WorkBudget(policy.max_alignment_steps)
+    readings = {entry["n"]: normalized_text(entry["text"], unreadable=True) for entry in first}
+    formula = _PageFormula.of(units, readings, policy.piece_characters)
+    findings: list[dict[str, Any]] = []
+    for entry in added:
+        text = normalized_text(entry["text"])
+        if not text:
+            continue
+        distinctive = _entry_distinctive_pieces(text, formula, policy.piece_characters)
+        for n, reading in sorted(readings.items()):
+            try:
+                coverage = _text_coverage(text, reading, policy, budget)
+            except _NotMeasured as error:
+                findings.append(
+                    {
+                        "code": REASK_DUPLICATE_NOT_MEASURED,
+                        "n": entry["n"],
+                        "reading_n": entry["reading_n"],
+                        "reason": error.reason,
+                    }
+                )
+                break
+            if (
+                coverage.unread_run > policy.max_unread_characters
+                or coverage.unread_share_bp > policy.max_unread_share_bp
+                or coverage.matched_characters == 0
+            ):
+                continue
+            if len(distinctive) < policy.min_pieces:
+                held = (
+                    _short_unit_distance_bp(text, reading, coverage, policy)
+                    <= policy.max_short_unit_distance_bp
+                )
+            else:
+                held = (
+                    _distinctive_share(text, reading, distinctive, coverage, policy)
+                    >= policy.min_distinctive_share_bp
+                )
+            if held:
+                findings.append(
+                    {
+                        "code": REASK_DUPLICATE,
+                        "n": entry["n"],
+                        "reading_n": entry["reading_n"],
+                        "attempt_1_n": n,
+                    }
+                )
+    return findings
+
+
 def _record(
     feed: Mapping[str, Any],
     rules: dict[str, dict[str, Any]],
@@ -1778,6 +2139,8 @@ def _record(
     policy: PageAccountingPolicy,
     feed_ref: Any,
     page_reading_ref: Any,
+    entries: list[dict[str, Any]],
+    reask: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     holds = sorted(
         {
@@ -1793,6 +2156,20 @@ def _record(
         "page_ordinal": feed["page_ordinal"],
         "page_reading_ref": page_reading_ref,
         "feed_ref": feed_ref,
+        "answer_basis": ANSWER_BASIS_FIRST if reask is None else ANSWER_BASIS_COMBINED,
+        # Each measured entry by the number the rules name it by, and the
+        # reading and number it has there.
+        "entries": [
+            {
+                "n": entry["n"],
+                "reading_attempt": entry.get("reading_attempt", 1),
+                "reading_n": entry.get("reading_n", entry["n"]),
+                "kind": entry["kind"],
+                "cited_ids": sorted(entry["cited_ids"], key=id_key),
+                "union_box_px": entry["union_box_px"],
+            }
+            for entry in entries
+        ],
         "rules": {name: rules[name] for name in RULES},
         "units": unit_rows,
         "lines": line_rows,

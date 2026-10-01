@@ -1,3 +1,4 @@
+import re
 import time
 from collections.abc import Mapping
 from copy import deepcopy
@@ -111,12 +112,9 @@ def test_every_field_round_trips_and_a_derivative_links_to_the_row():
     ],
 )
 def test_required_provenance_and_closed_values_are_refused(field, value, match):
-    """Pinned to the reason, as the geometry-convention cases below already are.
-
-    Each case mutates a row `make_row` already sealed, so `manifest_row_sha256` no
-    longer binds the payload and `validate_row` has a second reason to refuse it;
-    the specific match is what shows the named guard itself refused the row. The
-    confidence and mode fields decide which frames go to human review."""
+    """Pinned to the reason: each mutated row also fails its sealed digest, so an
+    unpinned refusal would pass with the named guard deleted. Confidence and mode
+    decide which frames go to human review."""
     values = row()
     values[field] = value
     with pytest.raises(ContractError, match=match):
@@ -614,9 +612,9 @@ def test_contract_counts_are_bounded_before_their_work_can_amplify():
         make_part({"x": index, "y": 0, "w": 1, "h": 1}, {"x": 0, "y": 0, "w": 1, "h": 1}, 0)
         for index in range(MAX_SPLIT_PARTS + 1)
     ]
-    # "before its row is serialized" specifically: `make_row` guards the count
-    # before it derives the digest and `_validate_split` guards it again afterwards;
-    # the early guard is the one that keeps quadratic work off untrusted input.
+    # `make_row` guards the count before it derives the digest and `_validate_split`
+    # guards it again afterwards; pinning the early guard's own words proves it is the
+    # one that keeps the quadratic work off untrusted input.
     with pytest.raises(
         SchemaRefusal, match=f"{MAX_SPLIT_PARTS}-part limit before its row is serialized"
     ):
@@ -645,3 +643,61 @@ def test_the_mode_triple_is_the_shared_vocabulary_not_a_private_one():
     assert TRIAGE_MODES == ("manual", "semi", "auto")
     for mode in TRIAGE_MODES:
         assert validate_manifest(manifest([row(mode=mode)]))
+
+
+def _sealed(**changes):
+    """A row whose digest binds the edited payload, so only the edited guard refuses."""
+    values = {key: value for key, value in row().items() if key != "manifest_row_sha256"}
+    values.update(changes)
+    return make_row(**values)
+
+
+def _part_with(**changes):
+    part = deepcopy(WHOLE_FRAME[0])
+    for key, value in changes.items():
+        part[key] = value
+    return part
+
+
+@pytest.mark.parametrize(
+    ("changes", "tail"),
+    [
+        ({"source_frame_sha256": "A" * 64}, "source_frame_sha256 is not a lowercase sha256"),
+        ({"corpus_id": "  "}, "corpus_id must be a non-blank string"),
+        ({"frame": {"width": 10, "height": 0}}, "frame must be positive integer width and height"),
+        ({"frame": {"width": 10}}, "frame must be positive integer width and height"),
+        ({"split": {"parts": []}}, "non-empty closed operation_order/parts record"),
+        (
+            {"split": make_split([_part_with(rotation={"rotation_millidegrees": 0})])},
+            "closed rotation_millidegrees/direction/origin/canvas record",
+        ),
+        (
+            {
+                "split": make_split(
+                    [
+                        _part_with(
+                            rotation=dict(WHOLE_FRAME[0]["rotation"], rotation_millidegrees=180_001)
+                        )
+                    ]
+                )
+            },
+            "must be an integer in [-180000, 180000] millidegrees",
+        ),
+        ({"re_shoot_cluster_id": " "}, "re_shoot_cluster_id must be null or a non-blank string"),
+    ],
+)
+def test_each_row_guard_refuses_with_its_own_reason(changes, tail):
+    with pytest.raises(SchemaRefusal, match=re.escape(tail) + "$"):
+        _sealed(**changes)
+
+
+def test_a_manifest_refuses_two_rows_for_one_submitted_frame():
+    with pytest.raises(SchemaRefusal, match="more than one row for a submitted frame$"):
+        validate_manifest(manifest([row(), row(confidence=3)]))
+
+
+@pytest.mark.parametrize("split_count", [0, True, "1"])
+def test_a_cluster_split_count_must_be_a_positive_integer(split_count):
+    record = cluster([DIGEST_A, DIGEST_B], split_count=split_count)
+    with pytest.raises(SchemaRefusal, match="split_count must be a positive integer$"):
+        validate_manifest(manifest([]), {"opening-35": record})

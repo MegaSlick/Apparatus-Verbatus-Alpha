@@ -23,7 +23,9 @@ from operations.corpus.test_evaluate import (
 )
 from operations.corpus.witness_evaluate import (
     CHAIRS,
+    evaluate_feed_page,
     evaluate_page,
+    evaluate_page_feed_run,
     evaluate_run,
     main,
     page_health_counts,
@@ -235,6 +237,8 @@ def test_cli_scores_all_three_chairs_from_current_sealed_page_testimonia_without
                 str(pages_path),
                 "--page-id",
                 reference["designation"],
+                "--basis",
+                "page-testimonium",
                 "--output",
                 str(output),
             ]
@@ -392,3 +396,239 @@ def test_report_is_immutable_once_created(tmp_path: Path):
     with pytest.raises(CorpusRefusal, match="^output-exists:"):
         write_report(report, output, run_root=tmp_path / "run")
     assert output.read_bytes() == before
+
+
+# --- page path -------------------------------------------------------------------------
+
+
+def _synthetic_reference() -> dict:
+    texts = {"r1": "Le premier mai baptisé Jean", "r2": "Le deux mai inhumé Marie"}
+    regions = {"r1": (0, 0, 100, 50), "r2": (0, 60, 100, 50)}
+    return build_reference_page(
+        page={"sha256": "a" * 64, "width": 200, "height": 200},
+        source="synthetic",
+        volume="v",
+        designation="p1",
+        split="val",
+        records=[
+            {
+                "record_id": key,
+                "region": dict(zip("xywh", regions[key], strict=True)),
+                "split": "val",
+                "text": text,
+                "text_sha256": digest_bytes(text.encode("utf-8")),
+            }
+            for key, text in texts.items()
+        ],
+    )
+
+
+def _unit(text: str, box: tuple[int, int, int, int] | None) -> dict:
+    return {
+        "id": "A1",
+        "ordinal": 1,
+        "box_px": None if box is None else dict(zip("xywh", box, strict=True)),
+        "label": None,
+        "text": text,
+    }
+
+
+def _feed(*witnesses: dict) -> dict:
+    return {
+        "page_id": "page-1",
+        "page_ordinal": 1,
+        "reading_unit": "page",
+        "witness_testimony": "present",
+        "witnesses": list(witnesses),
+    }
+
+
+def _witness(label: str, units: list[dict], *, outcome: str = "read", truncated=False) -> dict:
+    return {
+        "witness_label": label,
+        "chair": None,
+        "outcome": outcome,
+        "answer_health": {"truncated": truncated, "repetition": []},
+        "units": units,
+    }
+
+
+def _rows(report: dict) -> dict[tuple[str, str], dict]:
+    return {(row["chair"], row["record_id"]): row for row in report["rows"]}
+
+
+def test_a_page_witness_is_scored_from_the_units_lying_on_each_record():
+    feed = _feed(
+        _witness(
+            "w-lines",
+            [
+                _unit("Le premier mai", (0, 0, 100, 20)),
+                _unit("baptisé Jean", (0, 25, 100, 20)),
+                _unit("Le deux mai inhumé Marie", (0, 60, 100, 50)),
+                _unit("Table des baptêmes", (120, 0, 80, 20)),
+            ],
+        )
+    )
+
+    report = evaluate_feed_page(reference_page=_synthetic_reference(), feed=feed)
+
+    rows = _rows(report)
+    assert rows[("w-lines", "r1")]["status"] == "complete"
+    assert rows[("w-lines", "r1")]["cer"] == 0  # two lines, joined, read the record
+    assert rows[("w-lines", "r2")]["cer"] == 0
+    assert report["units"]["w-lines"] == {
+        "units": 4,
+        "boxed": 4,
+        "on_a_record": 3,
+        "on_no_record": 1,
+    }
+    assert verify_self_hash(report)
+
+
+def test_a_record_no_unit_lies_on_is_a_whole_deletion_never_dropped():
+    feed = _feed(_witness("w", [_unit("Le premier mai baptisé Jean", (0, 0, 100, 50))]))
+
+    report = evaluate_feed_page(reference_page=_synthetic_reference(), feed=feed)
+
+    missed = _rows(report)[("w", "r2")]
+    assert missed["status"] == "missing"
+    assert missed["reason"] == "no-unit-on-record"
+    assert missed["cer"] == missed["cer_units"] > 0
+    assert report["totals"]["w"]["references"] == 2
+
+
+def test_a_unit_straddling_two_records_belongs_to_the_one_holding_most_of_it():
+    # 30 rows on r1 (0..50), 20 on r2 (60..110): r1 holds most of it.
+    feed = _feed(_witness("w", [_unit("Le premier mai baptisé Jean", (0, 20, 100, 60))]))
+    report = evaluate_feed_page(reference_page=_synthetic_reference(), feed=feed)
+    assert _rows(report)[("w", "r1")]["status"] == "complete"
+    assert _rows(report)[("w", "r2")]["status"] == "missing"
+
+    # Most of it on neither record: r2 holds 50 of its 140 rows, so it lies on none.
+    feed = _feed(_witness("w", [_unit("Le premier mai", (0, 40, 100, 140))]))
+    report = evaluate_feed_page(reference_page=_synthetic_reference(), feed=feed)
+    assert report["units"]["w"]["on_no_record"] == 1
+
+
+def test_unread_unboxed_and_truncated_page_witnesses_stay_in_the_denominator():
+    feed = _feed(
+        _witness("a-unread", [], outcome="failed"),
+        _witness("b-flat", [_unit("Le premier mai baptisé Jean", None)]),
+        _witness(
+            "c-cut",
+            [_unit("Le premier mai baptisé Jean", (0, 0, 100, 50))],
+            truncated=True,
+        ),
+        _witness(
+            "d-unknown",
+            [_unit("Le premier mai baptisé Jean", (0, 0, 100, 50))],
+            truncated=None,
+        ),
+    )
+
+    rows = _rows(evaluate_feed_page(reference_page=_synthetic_reference(), feed=feed))
+
+    assert rows[("a-unread", "r1")]["reason"] == "witness-failed"
+    assert rows[("b-flat", "r1")]["reason"] == "witness-units-unboxed"
+    assert rows[("b-flat", "r1")]["status"] == "unavailable"
+    assert rows[("c-cut", "r1")]["status"] == "truncated"
+    assert rows[("d-unknown", "r1")]["status"] == "complete"
+    assert rows[("d-unknown", "r1")]["reason"] == "truncation-unknown"
+    assert len(rows) == 8
+
+
+def test_cli_scores_the_page_feed_witnesses_of_a_page_read_run(sealed_run: RunTree, tmp_path: Path):
+    reference = _fixture_reference_for_page_one(sealed_run)
+    ledger_path, pages_path = _write_inputs(tmp_path, sealed_run, reference)
+    output = tmp_path / "external" / "witness-page-report.json"
+    before = _inventory(sealed_run)
+
+    assert (
+        main(
+            [
+                "--run-root",
+                str(sealed_run.root.parent),
+                "--run-id",
+                sealed_run.run_id,
+                "--ledger",
+                str(ledger_path),
+                "--reference-pages",
+                str(pages_path),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    report = json.loads(output.read_bytes())
+    assert verify_self_hash(report)
+    assert before == _inventory(sealed_run)
+    assert report["schema"] == "recordgold-witness-evaluation.page.v1"
+    assert report["basis"] == "page-feed"
+    assert report["reference_pages_outside_run"] == []
+    assert report["reference_records"] == len(reference["acts"])
+    [page] = report["pages"]
+    assert page["source_page_ordinal"] == 1
+    assert report["witnesses"]
+    for name in report["witnesses"]:
+        assert report["totals"][name]["references"] == len(reference["acts"])
+    # Deterministic: the same inputs give the same bytes.
+    again = evaluate_page_feed_run(
+        tree=sealed_run, ledger_path=ledger_path, reference_pages_path=pages_path
+    )
+    assert canonical_bytes(again) == output.read_bytes()
+
+
+def test_a_ledger_page_the_run_did_not_seal_is_counted_not_scored(
+    sealed_run: RunTree, tmp_path: Path
+):
+    reference = _fixture_reference_for_page_one(sealed_run)
+    elsewhere = build_reference_page(
+        page={"sha256": "b" * 64, "width": reference["page"]["width"], "height": 900},
+        source="fixture",
+        volume="synthetic-two-page-v0",
+        designation="page-elsewhere",
+        split="val",
+        records=[
+            {
+                "record_id": "elsewhere-1",
+                "region": {"x": 0, "y": 0, "w": 10, "h": 10},
+                "split": "val",
+                "text": "ailleurs",
+                "text_sha256": digest_bytes(b"ailleurs"),
+            }
+        ],
+    )
+    ledger_path = tmp_path / "ledger.json"
+    pages_path = tmp_path / "reference-pages.jsonl"
+    ledger_path.write_bytes(canonical_bytes(_ledger_for(reference, elsewhere)))
+    # The proof subset's reference pages beside the whole set's ledger.
+    pages_path.write_bytes(canonical_bytes(reference) + b"\n")
+
+    report = evaluate_page_feed_run(
+        tree=sealed_run, ledger_path=ledger_path, reference_pages_path=pages_path
+    )
+
+    assert report["reference_pages_outside_run"] == ["page-elsewhere"]
+    assert report["reference_records"] == len(reference["acts"])
+    with pytest.raises(CorpusRefusal, match="^reference-page-not-in-run:"):
+        evaluate_page_feed_run(
+            tree=sealed_run,
+            ledger_path=ledger_path,
+            reference_pages_path=pages_path,
+            page_ids=["page-elsewhere"],
+        )
+
+
+def test_a_witness_the_feed_does_not_show_is_charged_on_that_page():
+    feed = _feed(_witness("w", [_unit("Le premier mai baptisé Jean", (0, 0, 100, 50))]))
+    feed["witnesses"] = []
+    feed["witness_testimony"] = "none"
+
+    report = evaluate_feed_page(reference_page=_synthetic_reference(), feed=feed, roster=["w"])
+
+    rows = _rows(report)
+    assert {row["reason"] for row in rows.values()} == {"witness-not-in-feed"}
+    assert report["totals"]["w"]["references"] == 2
+    assert report["units"]["w"]["units"] == 0
