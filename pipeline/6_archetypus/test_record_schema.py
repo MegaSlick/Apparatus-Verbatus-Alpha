@@ -16,7 +16,6 @@ import pytest
 
 from common.contracts.canonical import digest_of, self_hash, verify_self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
-from common.contracts.uncertainty import from_perlectio
 from conftest import load_stage
 
 archetypus = load_stage("6_archetypus")
@@ -384,20 +383,6 @@ def test_record_validation_refuses_an_open_self_revision_bound():
     }
     with pytest.raises(SchemaRefusal, match="reading_span has no exact offset range"):
         archetypus.validate_record(seal_record(uncertainty=_uncertainty(self_revisions=[revision])))
-
-
-def test_from_perlectio_refuses_a_non_object_self_revision_by_name():
-    """A resealed producer value is a schema refusal, never an AttributeError."""
-    with pytest.raises(SchemaRefusal, match=r"self_revision\[0\].*closed source schema"):
-        from_perlectio(
-            {
-                "text": "Maria",
-                "lectio_kind": "primed-with-prior",
-                "uncertain_spans": [],
-                "gaps": [],
-                "self_revision": [None],
-            }
-        )
 
 
 def test_record_validation_refuses_an_annotation_short_of_its_validated_form():

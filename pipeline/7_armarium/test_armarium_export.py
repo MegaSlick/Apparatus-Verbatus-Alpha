@@ -47,7 +47,8 @@ from common.armarium_formats import ArmariumFormats
 from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal, SchemaRefusal
-from common.contracts.outcomes import ArmariumCategory, run_aggregate
+from common.contracts.outcomes import ArmariumCategory
+from common.contracts.outcomes import run_aggregate as _run_aggregate
 from common.contracts.stages import ARMARIUM
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import encode_grayscale_png
@@ -128,34 +129,41 @@ _NOT_ASSESSED = {
 }
 
 
+def run_aggregate(*args, **kwargs):
+    """The run aggregate of a run whose Perlector read whole pages, as the export derives it."""
+    kwargs.setdefault("page_read", True)
+    kwargs.setdefault("other_categories_by_page", {})
+    return _run_aggregate(*args, **kwargs)
+
+
+_POLICY_SHA256 = "e" * 64
+
+
+def _page_accounting(*ordinals: int) -> tuple[dict, ...]:
+    """One text-free page-accounting row per real sealed page."""
+    return tuple(
+        {
+            "ordinal": ordinal,
+            "page_id": f"pg-{ordinal}",
+            "rules": {"a": "pass"},
+            "hold_codes": [],
+            "policy_sha256": _POLICY_SHA256,
+            "accounting_ref": {
+                "relative_path": f"4_perlector/artifacts/page-accounting/pg-{ordinal}.json",
+                "sha256": "f" * 64,
+            },
+        }
+        for ordinal in ordinals
+    )
+
+
 def _test_not_measured_basis(**overrides):
     """A minimal, valid not-measured basis for a hand-built projection.
 
-    These hand-built projections are the builder's image-local shape, whose
-    instrument set `run.py` no longer derives (its page export's basis is
-    `page_not_measured_basis`, proven in `test_page_export.py`); they declare
-    the shape, and a test about the block's content overrides the one
-    sub-record it is about.
+    A test about the block's content overrides the one sub-record it is about.
     """
     basis = {
         "schema": NOT_MEASURED_BASIS_SCHEMA,
-        "page-testimony-content-coverage": {
-            "acts_total": 2,
-            "acts_unmeasured": [],
-            "reasons": [],
-        },
-        "page-ink-conservation": {
-            "pages_sealed": 1,
-            "pages_not_reconciled": [],
-            "reasons": [],
-        },
-        "act-visibility-survey": {
-            "acts_total": 2,
-            "acts_with_capture_presentation": 0,
-            "capture_rows": 0,
-            "rows_with_named_absence": 0,
-            "absence_codes": [],
-        },
         "perlector-uncertain-spans": {
             "sealed_audit_round_cap": 1,
             "acts_delivered": 1,
@@ -189,6 +197,17 @@ def _test_not_measured_basis(**overrides):
                 },
             ]
         },
+        "page-accounting-thresholds": {
+            "policy_sha256": _POLICY_SHA256,
+            "thresholds": [{"name": "band_slack", "value": 4}],
+            "calibrated_for_this_corpus": False,
+            "sample_count": None,
+        },
+        "perlector-pass-c": {
+            "pages_read": 1,
+            "pages_audit_not_run": 1,
+            "sealed_audit_round_cap": 1,
+        },
     }
     basis.update(overrides)
     return basis
@@ -197,9 +216,8 @@ def _test_not_measured_basis(**overrides):
 def _basis_for_acts(acts, *, sealed_pages=1):
     """Keep hand-built projection caveats aligned with their act and page rows."""
     basis = _test_not_measured_basis()
-    basis["page-testimony-content-coverage"]["acts_total"] = len(acts)
-    basis["act-visibility-survey"]["acts_total"] = len(acts)
-    basis["page-ink-conservation"]["pages_sealed"] = sealed_pages
+    basis["perlector-pass-c"]["pages_read"] = sealed_pages
+    basis["perlector-pass-c"]["pages_audit_not_run"] = sealed_pages
     delivered = [act for act in acts if act["category"] == ArmariumCategory.DELIVERED.value]
     spans = sum(
         isinstance(act.get("uncertainty"), dict) and bool(act["uncertainty"].get("uncertain_spans"))
@@ -244,17 +262,12 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
             "bounds": {"x": 0, "y": 0, "w": 1, "h": 1},
         },
     }
-    return ArmariumProjection(
+    projection = ArmariumProjection(
         not_measured_basis=_test_not_measured_basis(),
         fixture_id="armarium-export-test-v1",
         scenario="happy",
         config_digest="a" * 64,
-        aggregate={
-            "status": "partial",
-            "reasons": ["act two is held-for-review"],
-            "by_category": {"delivered": 1, "held-for-review": 1},
-            "by_page_outcome": {"sealed": 1},
-        },
+        aggregate={},
         acts=(
             {
                 "act_id": "act-1",
@@ -337,9 +350,24 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
             "unaddressed_chairs": [],
             "act_pages": {"one": [1], "two": [1]},
             "act_text_status": {"one": "established"},
+            "continuation_flags": {},
+            "page_witness_chairs": ["attestator_1"],
         },
         salvage_items=tuple(salvage_items),
         ink_map_pages=(_mapped_page(),),
+        page_accounting=_page_accounting(1),
+    )
+    basis = projection.aggregate_basis
+    return replace(
+        projection,
+        aggregate=run_aggregate(
+            {act["act_key"]: ArmariumCategory(act["category"]) for act in projection.acts},
+            basis["coverage_records"],
+            {page["ordinal"]: page for page in projection.pages},
+            unaddressed_chairs=basis["unaddressed_chairs"],
+            act_pages=basis["act_pages"],
+            act_text_status=basis["act_text_status"],
+        ),
     )
 
 
@@ -412,53 +440,54 @@ def _salvage_item(content: str) -> dict:
     }
 
 
-def test_act_key_sort_key_is_reading_order_past_ten_pages_and_ten_blocks():
-    """`proposal:<page>:<block>` sorts as a string by default, so once a
-    page passes ten blocks -- or a run passes ten pages -- lexicographic order
-    reads block 10 before block 2 and page 10 before page 2. `act_key_sort_key`
-    must restore (page, block) order for every key this pattern describes, and
-    leave a key it does not describe (a minted `logical:<id>` row) exactly the
-    order its own string already gave it.
+def test_act_key_sort_key_is_reading_order_past_ten_pages_and_ten_readings():
+    """`p<page>:<n>` sorts as a string by default, so once a page passes ten
+    readings -- or a run passes ten pages -- lexicographic order reads reading 10
+    before reading 2 and page 10 before page 2. `act_key_sort_key` must restore
+    (page, reading) order, put a page's row with no reading after its numbered
+    readings, and leave a key it does not describe after every page, in the
+    order its own string gives.
     """
-    ten_pages = [f"proposal:{page}:0" for page in range(1, 11)]
-    twelve_blocks = [f"proposal:1:{block}" for block in range(0, 12)]
-    keys = ten_pages + twelve_blocks[1:]
-    reading_order = sorted(keys, key=lambda key: tuple(int(part) for part in key.split(":")[1:]))
+    ten_pages = [f"p{page}:1" for page in range(1, 11)]
+    twelve_readings = [f"p1:{n}" for n in range(1, 13)]
+    keys = ten_pages + twelve_readings[1:]
+    reading_order = sorted(keys, key=lambda key: tuple(int(part) for part in key[1:].split(":")))
     assert sorted(keys, key=act_key_sort_key) == reading_order
     # The fixture this test pins is exactly the shape a plain string sort gets
     # wrong -- if it agreed with the lexicographic sort the fixture would prove
     # nothing about the fix.
     assert sorted(keys) != reading_order
 
-    mixed = ["logical:z", "proposal:2:0", "proposal:10:0", "logical:a"]
+    mixed = ["fixture:z", "p10:1", "p2:blank", "p2:1", "fixture:a"]
     assert sorted(mixed, key=act_key_sort_key) == [
-        "proposal:2:0",
-        "proposal:10:0",
-        "logical:a",
-        "logical:z",
+        "p2:1",
+        "p2:blank",
+        "p10:1",
+        "fixture:a",
+        "fixture:z",
     ]
 
 
-def test_act_json_records_are_emitted_in_reading_order_past_ten_blocks():
+def test_act_json_records_are_emitted_in_reading_order_past_ten_readings():
     """The production call site (`_act_json_records`, used for the JSONL and
     review-item projections) must order by the parsed key, not the raw string.
     """
     acts = tuple(
         {
-            "act_id": f"act-{block}",
-            "act_key": f"proposal:1:{block}",
+            "act_id": f"act-{n}",
+            "act_key": f"p1:{n}",
             "category": "delivered",
             CANONICAL_TEXT_FIELD: "x",
         }
-        for block in (0, 2, 10, 11, 1)
+        for n in (1, 3, 11, 12, 2)
     )
     records = _act_json_records(acts)
     assert [record["act_key"] for record in records] == [
-        "proposal:1:0",
-        "proposal:1:1",
-        "proposal:1:2",
-        "proposal:1:10",
-        "proposal:1:11",
+        "p1:1",
+        "p1:2",
+        "p1:3",
+        "p1:11",
+        "p1:12",
     ]
 
 
@@ -539,8 +568,9 @@ def test_a_required_claim_moves_the_manifest_schema_identity(tmp_path):
     """An older identity may not describe a newer closed claim set.
 
     ``claims.ink_map`` took the manifest from v2 to v3, ``claims.not_measured``
-    took it from v3 to v5, and the required Ink Map unmeasurable-page census
-    takes it from v5 to v7. Each has the same reason: a required claim a stale
+    took it from v3 to v5, the required Ink Map unmeasurable-page census took
+    it from v5 to v7, and the page path's claims took it to v9 and v10. Each
+    has the same reason: a required claim a stale
     reader has no field for would be presented as a bundle that does not carry
     it. Old and new closed shapes need different identities rather than two
     incompatible meanings of one.
@@ -551,13 +581,16 @@ def test_a_required_claim_moves_the_manifest_schema_identity(tmp_path):
         ).data
     )
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    assert manifest["schema"] == "armarium-export-manifest.v7"
+    assert manifest["schema"] == "armarium-export-manifest.v10"
 
     for stale in (
         "armarium-export-manifest.v2",
         "armarium-export-manifest.v3",
         "armarium-export-manifest.v5",
         "armarium-export-manifest.v6",
+        "armarium-export-manifest.v7",
+        "armarium-export-manifest.v8",
+        "armarium-export-manifest.v9",
     ):
         manifest["schema"] = stale
         _refresh_manifest(members, manifest)
@@ -2039,6 +2072,7 @@ def test_source_root_and_a_named_source_root_folder_cannot_collide(tmp_path):
             not_measured_basis=_basis_for_acts(held, sealed_pages=2),
             pages=pages,
             ink_map_pages=ink_map_pages,
+            page_accounting=_page_accounting(1, 2),
             source_manifest=source_manifest,
             aggregate={
                 "status": "partial",
@@ -2462,7 +2496,7 @@ def test_the_terminal_ledger_partitions_sources_pages_and_acts_totally(tmp_path)
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     ledger = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])["claims"]["terminal_ledger"]
 
-    assert ledger["by_unit_type"] == {"source": 1, "page": 1, "act": 2}
+    assert ledger["by_unit_type"] == {"source": 1, "page": 1, "act": 2, "other": 0}
     assert ledger["unit_count"] == 4 == sum(ledger["by_category"].values())
     assert {unit["unit_id"] for unit in ledger["units"]} == {
         "source:1",
@@ -2491,21 +2525,25 @@ def test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_a
     call is. Neither category is ever *inferred*: both are inherited only when every
     act cut from the page already carries it.
     """
-    assert _page_ledger_category(1, ["confirmed-blank"]) == (
+    assert _page_ledger_category(1, ["confirmed-blank"], other_categories=[]) == (
         ArmariumCategory.CONFIRMED_BLANK.value,
         None,
     )
-    assert _page_ledger_category(2, ["confirmed-blank", "confirmed-blank"]) == (
+    assert _page_ledger_category(
+        2, ["confirmed-blank", "confirmed-blank"], other_categories=[]
+    ) == (
         ArmariumCategory.CONFIRMED_BLANK.value,
         None,
     )
-    assert _page_ledger_category(3, ["excluded-with-approval"]) == (
+    assert _page_ledger_category(3, ["excluded-with-approval"], other_categories=[]) == (
         ArmariumCategory.EXCLUDED_WITH_APPROVAL.value,
         None,
     )
     # A mix with no delivered act present is neither category on its own -- held
     # for a human, exactly like any other non-unanimous, non-delivered mix.
-    category, reason = _page_ledger_category(4, ["confirmed-blank", "excluded-with-approval"])
+    category, reason = _page_ledger_category(
+        4, ["confirmed-blank", "excluded-with-approval"], other_categories=[]
+    )
     assert category == ArmariumCategory.HELD_FOR_REVIEW.value
     assert "delivered no act" in reason
 
@@ -2579,8 +2617,8 @@ def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles
 
 
 def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
-    """A door refusal and a sealed page nobody marked out are the two units the
-    act-only partition could not see at all. Neither may be inferred blank."""
+    """A door refusal and a sealed page no reading accounts for are the two units
+    an act-only partition could not see at all. Neither may be inferred blank."""
     base = _projection()
     pages = (
         *base.pages,
@@ -2609,6 +2647,7 @@ def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
         # One ink-map row per *sealed* page: page 2 was refused and never
         # reached the map at all.
         ink_map_pages=(_mapped_page(1), _mapped_page(3)),
+        page_accounting=_page_accounting(1, 3),
         source_manifest=tuple(
             {
                 "ordinal": page["ordinal"],
@@ -2636,8 +2675,8 @@ def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
     assert "page:2" not in units, "a refused source sealed no page to account for"
     assert units["page:3"]["category"] == "held-for-review"
     assert units["source:3"]["category"] == "held-for-review"
-    assert "blank page is proved" in units["page:3"]["reason"]
-    assert ledger["by_unit_type"] == {"source": 3, "page": 2, "act": 2}
+    assert "counts no reading of it" in units["page:3"]["reason"]
+    assert ledger["by_unit_type"] == {"source": 3, "page": 2, "act": 2, "other": 0}
     assert sum(ledger["by_category"].values()) == ledger["unit_count"] == 7
 
 
@@ -2925,7 +2964,7 @@ def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_r
 
     manifest = verify_export_bundle(bundle.data, clean)
 
-    assert manifest["schema"] == "armarium-export-manifest.v7"
+    assert manifest["schema"] == "armarium-export-manifest.v10"
     assert outside.read_bytes() == b"bytes outside the extraction root"
     assert linked.stat().st_ino != shared_inode
 
@@ -3284,6 +3323,8 @@ def test_a_package_whose_basis_alone_calls_a_damaged_act_whole_is_refused(tmp_pa
         sources["pages"],
         sources["aggregate_basis"]["act_pages"],
         manifest["aggregate"],
+        (),
+        sources["other_outcomes"],
     )
     manifest["claims"]["terminal_ledger"] = ledger
     manifest["claims"]["status"] = ledger["status"]
@@ -3397,189 +3438,6 @@ def test_the_text_bundle_refuses_two_established_text_statuses_for_one_literal(t
         verify_projection_identity(_zip_bytes(members), tmp_path)
 
 
-def test_the_clean_machine_check_refuses_a_member_key_shared_across_logical_acts():
-    """The verifier's twin of the producer's key screen, at the unit seam.
-
-    Ids are the counted unit, so a rebuilt package repeating one
-    `member_act_keys` entry under two logical acts -- every id still unique --
-    balances the row arithmetic while asserting that two logical acts descend
-    from one proposal row. The clean-machine recompute must refuse it exactly
-    as the producer does.
-    """
-    import armarium_export as _module  # noqa: PLC0415
-
-    logical_denominator = "physical-act-partition logical acts"
-    memberships = {
-        "pac_aaaaaaaaaaaaaaaa": {
-            "member_local_act_ids": ["act_1111111111111111"],
-            "member_act_keys": ["shared-key"],
-            "member_source_page_ordinals": [1],
-        },
-        "pac_bbbbbbbbbbbbbbbb": {
-            "member_local_act_ids": ["act_2222222222222222"],
-            "member_act_keys": ["shared-key"],
-            "member_source_page_ordinals": [2],
-        },
-    }
-    manifest = {
-        "claims": {
-            "act_partition": {
-                "denominator": logical_denominator,
-                "local_proposal_rows": 2,
-                "logical_membership": memberships,
-            }
-        }
-    }
-    categories = {
-        "pac_aaaaaaaaaaaaaaaa": "delivered",
-        "pac_bbbbbbbbbbbbbbbb": "delivered",
-    }
-    act_keys = {
-        "pac_aaaaaaaaaaaaaaaa": "logical:pac_aaaaaaaaaaaaaaaa",
-        "pac_bbbbbbbbbbbbbbbb": "logical:pac_bbbbbbbbbbbbbbbb",
-    }
-    sources = {
-        "logical_accounting": {"local_proposal_rows": 2, "memberships": memberships},
-        "aggregate_basis": {
-            "act_pages": {
-                "logical:pac_aaaaaaaaaaaaaaaa": [1],
-                "logical:pac_bbbbbbbbbbbbbbbb": [2],
-            }
-        },
-    }
-    with pytest.raises(SchemaRefusal, match="repeats a member"):
-        _module._verify_logical_partition_claim(manifest, categories, act_keys, sources)
-
-    # One proposal row exported twice under two identities -- a member key that
-    # also names an exported act row -- balances the arithmetic and must still
-    # refuse.
-    disguised = {
-        "pac_aaaaaaaaaaaaaaaa": {
-            "member_local_act_ids": ["act_1111111111111111"],
-            "member_act_keys": ["logical:pac_bbbbbbbbbbbbbbbb"],
-            "member_source_page_ordinals": [1],
-        }
-    }
-    manifest_disguised = {
-        "claims": {
-            "act_partition": {
-                "denominator": logical_denominator,
-                "local_proposal_rows": 2,
-                "logical_membership": disguised,
-            }
-        }
-    }
-    sources_disguised = {
-        "logical_accounting": {"local_proposal_rows": 2, "memberships": disguised},
-        "aggregate_basis": {"act_pages": {"logical:pac_aaaaaaaaaaaaaaaa": [1]}},
-    }
-    with pytest.raises(SchemaRefusal, match="repeats a member"):
-        _module._verify_logical_partition_claim(
-            manifest_disguised, categories, act_keys, sources_disguised
-        )
-
-    # And a member page ordinal missing from the act's own attribution is a
-    # dropped page, not an accepted package.
-    unattributed = {
-        "pac_aaaaaaaaaaaaaaaa": {
-            "member_local_act_ids": ["act_1111111111111111", "act_3333333333333333"],
-            "member_act_keys": ["key-one", "key-two"],
-            "member_source_page_ordinals": [1, 7],
-        }
-    }
-    manifest_unattributed = {
-        "claims": {
-            "act_partition": {
-                "denominator": logical_denominator,
-                "local_proposal_rows": 3,
-                "logical_membership": unattributed,
-            }
-        }
-    }
-    sources_unattributed = {
-        "logical_accounting": {"local_proposal_rows": 3, "memberships": unattributed},
-        "aggregate_basis": {"act_pages": {"logical:pac_aaaaaaaaaaaaaaaa": [1]}},
-    }
-    with pytest.raises(SchemaRefusal, match="page attribution does not carry"):
-        _module._verify_logical_partition_claim(
-            manifest_unattributed, categories, act_keys, sources_unattributed
-        )
-
-
-def _logical_conservation_projection(attribution) -> ArmariumProjection:
-    """One logical act row, with `act_pages` set to whatever is under test."""
-    entry = {
-        "act_id": "pac_aaaaaaaaaaaaaaaa",
-        "act_key": "logical:pac_aaaaaaaaaaaaaaaa",
-        "category": "delivered",
-        "canonical_clean_text": "one text",
-        "source_regions": [],
-        "reason": None,
-        "logical_membership": {
-            "member_local_act_ids": ["act_1111111111111111"],
-            "member_act_keys": ["member-key"],
-            "member_source_page_ordinals": [1],
-            "physical_page_components": [
-                {
-                    "physical_page_id": "ppg_0123456789abcdef",
-                    "required_capture_sha256s": ["a" * 64],
-                }
-            ],
-        },
-    }
-    return ArmariumProjection(
-        not_measured_basis=_test_not_measured_basis(),
-        fixture_id="armarium-logical-attribution-v1",
-        scenario="adversarial",
-        config_digest="a" * 64,
-        aggregate={},
-        acts=(entry,),
-        pages=(),
-        source_manifest=(),
-        expected_acts=1,
-        witness_chairs=(),
-        witness_floor=0,
-        aggregate_basis={"act_pages": {entry["act_key"]: attribution}},
-        local_proposal_rows=1,
-    )
-
-
-def test_a_malformed_page_attribution_refuses_before_the_page_accounting_reads_it():
-    """`_validate_logical_act_conservation` runs before the basis is validated.
-
-    `_aggregate_from_basis` is what proves `act_pages` is well formed, and it
-    runs afterwards (`_validate_projection` calls the conservation check first).
-    So this check reads a caller's assertion nothing has shaped yet: a number
-    raises `TypeError` out of `set(...)` and ends the export with no named
-    refusal at all, and a string dedupes into its own characters and reports a
-    member page missing that was never missing -- a guard failing for a reason
-    other than the one it names.
-    """
-    import armarium_export as _module  # noqa: PLC0415
-
-    for attribution in (1, "1", ["1"], [True], [1, None]):
-        with pytest.raises(SchemaRefusal, match="not a list of page ordinals"):
-            _module._validate_logical_act_conservation(
-                _logical_conservation_projection(attribution),
-                {"pac_aaaaaaaaaaaaaaaa"},
-                {"logical:pac_aaaaaaaaaaaaaaaa"},
-            )
-
-    # The well-formed attribution still passes, and a genuinely missing page is
-    # still reported as the missing page it is, not as a malformed attribution.
-    _module._validate_logical_act_conservation(
-        _logical_conservation_projection([1]),
-        {"pac_aaaaaaaaaaaaaaaa"},
-        {"logical:pac_aaaaaaaaaaaaaaaa"},
-    )
-    with pytest.raises(SchemaRefusal, match="page attribution does not name"):
-        _module._validate_logical_act_conservation(
-            _logical_conservation_projection([7]),
-            {"pac_aaaaaaaaaaaaaaaa"},
-            {"logical:pac_aaaaaaaaaaaaaaaa"},
-        )
-
-
 # --- `claims.not_measured`: what this run did not measure ---------------------
 #
 # `DELIVERED` and `aggregate.status == "complete"` are reachable over five
@@ -3603,21 +3461,12 @@ def _entry(block: dict, instrument: str) -> dict:
     return next(row for row in block["entries"] if row["instrument"] == instrument)
 
 
-@pytest.mark.parametrize(
-    ("instrument", "field", "value", "match"),
-    [
-        ("page-testimony-content-coverage", "acts_total", 3, "testimony-content denominator"),
-        ("act-visibility-survey", "acts_total", 1, "visibility-survey denominator"),
-        ("page-ink-conservation", "pages_sealed", 2, "conservation denominator"),
-    ],
-)
-def test_projection_refuses_not_measured_sibling_denominators_that_do_not_match_its_population(
-    instrument, field, value, match
-):
+def test_projection_refuses_a_pass_c_denominator_that_does_not_match_its_sealed_pages():
     projection = _projection()
     basis = _basis_for_acts(projection.acts)
-    basis[instrument][field] = value
-    with pytest.raises(SchemaRefusal, match=match):
+    basis["perlector-pass-c"]["pages_read"] = 2
+    basis["perlector-pass-c"]["pages_audit_not_run"] = 2
+    with pytest.raises(SchemaRefusal, match="Pass C basis does not count exactly"):
         build_armarium_bundle(
             replace(projection, not_measured_basis=basis),
             _formats(embed_pixels=False),
@@ -3635,9 +3484,9 @@ def test_the_export_names_every_instrument_of_this_build_exactly_once_in_order()
         # Where a reader goes to check the row against the evidence.
         assert row["recorded_in"].strip()
     assert (
-        _entry(block, "page-testimony-content-coverage")["recorded_in"]
-        == "each act's Recensor review, fields `testimony_content_coverage` and "
-        "`testimony_content_coverage_continuation`, in the retained run"
+        _entry(block, "perlector-pass-c")["recorded_in"]
+        == "each page's `page-reading` record, field `audit`, and the sealed Perlector audit "
+        "policy's `round_cap`, in the retained run"
     )
 
 
@@ -3645,113 +3494,31 @@ def test_the_count_is_the_number_of_instruments_that_did_not_measure():
     block = _block(_projection())
 
     assert block["count"] == sum(1 for row in block["entries"] if row["status"] != "measured")
-    assert block["count"] == 3
+    assert block["count"] == 4
 
 
-def test_an_unmeasured_testimony_coverage_row_reaches_the_block_by_name():
-    """The counterfactual: change the record, and the block changes with it."""
-    clean = _entry(_block(_projection()), "page-testimony-content-coverage")
-    assert clean["status"] == "measured"
-
-    projection = replace(
-        _projection(),
-        not_measured_basis=_test_not_measured_basis(
-            **{
-                "page-testimony-content-coverage": {
-                    "acts_total": 2,
-                    "acts_unmeasured": ["two"],
-                    "reasons": ["no page witness supplied comparable page text for this page"],
-                }
-            }
-        ),
-    )
-
-    changed = _entry(_block(projection), "page-testimony-content-coverage")
-    assert changed["status"] == "not-measured"
-    assert changed["detail"]["acts_unmeasured"] == ["two"]
-
-
-def test_a_page_whose_ink_was_never_reconciled_reaches_the_block_by_ordinal():
-    clean = _entry(_block(_projection()), "page-ink-conservation")
-    assert clean["status"] == "measured"
-
-    projection = replace(
-        _projection(),
-        not_measured_basis=_test_not_measured_basis(
-            **{
-                "page-ink-conservation": {
-                    "pages_sealed": 1,
-                    "pages_not_reconciled": [1],
-                    "reasons": ["the page's background could not be inferred"],
-                }
-            }
-        ),
-    )
-
-    changed = _entry(_block(projection), "page-ink-conservation")
-    assert changed["status"] == "not-measured"
-    assert changed["detail"]["pages_not_reconciled"] == [1]
-
-
-def test_the_visibility_survey_is_declared_unproduced_and_measured_when_it_runs():
+def test_pass_c_is_declared_unproduced_and_measured_when_it_runs():
     """`declared-unproduced` is the contract's word, not a softer `not-measured`.
 
-    No stage publishes the Designator occlusion records the survey reads, so
-    every capture row on every current run carries a named absence code. A row
-    that carried a measured visibility state instead is a different status, and
+    No page-path stage audits a page reading, so every page on a current run
+    records `not-run`. A run whose pages were audited is a different status, and
     the block must be able to say so rather than always reporting absence.
     """
-    absent = _entry(_block(_projection()), "act-visibility-survey")
+
+    def status(pages_audit_not_run: int, pages_read: int = 2) -> str:
+        detail = {
+            "pages_read": pages_read,
+            "pages_audit_not_run": pages_audit_not_run,
+            "sealed_audit_round_cap": 1,
+        }
+        return _not_measured_status("perlector-pass-c", detail)
+
+    absent = _entry(_block(_projection()), "perlector-pass-c")
     assert absent["status"] == "declared-unproduced"
-    assert absent["detail"]["capture_rows"] == 0
-
-    all_absent = replace(
-        _projection(),
-        not_measured_basis=_test_not_measured_basis(
-            **{
-                "act-visibility-survey": {
-                    "acts_total": 2,
-                    "acts_with_capture_presentation": 1,
-                    "capture_rows": 2,
-                    "rows_with_named_absence": 2,
-                    "absence_codes": ["act-visibility-survey-absent"],
-                }
-            }
-        ),
-    )
-    assert _entry(_block(all_absent), "act-visibility-survey")["status"] == "declared-unproduced"
-
-    surveyed = replace(
-        _projection(),
-        not_measured_basis=_test_not_measured_basis(
-            **{
-                "act-visibility-survey": {
-                    "acts_total": 2,
-                    "acts_with_capture_presentation": 1,
-                    "capture_rows": 2,
-                    "rows_with_named_absence": 0,
-                    "absence_codes": [],
-                }
-            }
-        ),
-    )
-    assert _entry(_block(surveyed), "act-visibility-survey")["status"] == "measured"
-
-    partial = replace(
-        _projection(),
-        not_measured_basis=_test_not_measured_basis(
-            **{
-                "act-visibility-survey": {
-                    "acts_total": 2,
-                    "acts_with_capture_presentation": 1,
-                    "capture_rows": 2,
-                    "rows_with_named_absence": 1,
-                    "absence_codes": ["cross-capture-registration-absent"],
-                }
-            }
-        ),
-    )
-    assert _entry(_block(partial), "act-visibility-survey")["status"] == "not-measured"
+    assert absent["detail"]["pages_audit_not_run"] == 1
+    assert status(2) == "declared-unproduced"
+    assert status(0) == "measured"
+    assert status(1) == "not-measured"
 
 
 def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_asked():
@@ -3900,7 +3667,7 @@ def test_a_projection_with_no_not_measured_basis_is_refused():
 
 def test_a_basis_missing_one_instrument_is_refused_before_a_product_byte_is_written():
     broken = _test_not_measured_basis()
-    del broken["page-ink-conservation"]
+    del broken["perlector-pass-c"]
 
     with pytest.raises(SchemaRefusal, match="not-measured basis has an unrecognized field set"):
         build_armarium_bundle(
@@ -3926,9 +3693,9 @@ def test_a_geometry_basis_cannot_turn_a_string_or_empty_row_set_into_measurement
 
 def test_a_projection_not_measured_basis_refuses_bool_as_an_integer_count():
     broken = _test_not_measured_basis()
-    broken["page-testimony-content-coverage"]["acts_total"] = False
+    broken["perlector-pass-c"]["pages_read"] = False
 
-    with pytest.raises(SchemaRefusal, match="acts_total.*non-negative integer"):
+    with pytest.raises(SchemaRefusal, match="pages_read.*non-negative integer"):
         _manifest_of(replace(_projection(), not_measured_basis=broken))
 
 
@@ -3936,14 +3703,14 @@ def test_a_projection_not_measured_basis_refuses_bool_as_an_integer_count():
     ("instrument", "mutate"),
     [
         pytest.param(
-            "page-testimony-content-coverage",
-            lambda detail: detail.update(acts_total=0, acts_unmeasured=["two"]),
-            id="more-unmeasured-acts-than-total",
+            "perlector-pass-c",
+            lambda detail: detail.update(pages_read=0, pages_audit_not_run=1),
+            id="more-unaudited-pages-than-pages-read",
         ),
         pytest.param(
-            "act-visibility-survey",
-            lambda detail: detail.update(capture_rows=0, rows_with_named_absence=1),
-            id="more-absent-rows-than-capture-rows",
+            "perlector-uncertain-spans",
+            lambda detail: detail.update(sealed_audit_round_cap=0, acts_with_uncertain_spans=2),
+            id="more-acts-with-spans-than-delivered",
         ),
     ],
 )
@@ -4138,6 +3905,7 @@ def _joined(
             for page in all_pages
         ),
         ink_map_pages=tuple(_mapped_page(page["ordinal"]) for page in all_pages),
+        page_accounting=_page_accounting(*(page["ordinal"] for page in all_pages)),
         expected_acts=len(acts),
         aggregate=aggregate,
         aggregate_basis=basis,
@@ -4433,7 +4201,7 @@ def recipient_happy_run(tmp_path_factory):
             "--fixture",
             "synthetic-two-page-v0",
             "--scenario",
-            "happy",
+            "page-unbroken",
             "--run-id",
             "r",
             "--run-root",
@@ -4472,9 +4240,6 @@ def recipient_happy_run(tmp_path_factory):
         ("not-measured-status", "status.*disagrees with its detail"),
         ("geometry-configurations", "canonical order"),
         ("geometry-zero-samples", "sample_count is zero"),
-        ("testimony-denominator", "testimony-content denominator"),
-        ("visibility-denominator", "visibility-survey denominator"),
-        ("conservation-denominator", "conservation denominator"),
         ("untyped-count", "non-negative integer"),
         ("not-measured-count-type", "not_measured count.*non-negative integer"),
         ("evidence-location", "canonical evidence location"),
@@ -4522,29 +4287,20 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
         "manifest-salvage-promotion": lambda m: m["claims"]["salvage"].update(
             promotion="automatic"
         ),
-        "not-measured-status": lambda m: _entry(
-            m["claims"]["not_measured"], "page-testimony-content-coverage"
-        )["detail"].update(acts_unmeasured=["two"], reasons=["not measured"]),
+        "not-measured-status": lambda m: _entry(m["claims"]["not_measured"], "perlector-pass-c")[
+            "detail"
+        ].update(pages_audit_not_run=0),
         "geometry-configurations": lambda m: _entry(
             m["claims"]["not_measured"], "designator-geometry-calibration"
         )["detail"]["configurations"].clear(),
         "geometry-zero-samples": lambda m: _entry(
             m["claims"]["not_measured"], "designator-geometry-calibration"
         )["detail"]["configurations"][2].update(calibrated_for_this_corpus=True),
-        "testimony-denominator": lambda m: _entry(
-            m["claims"]["not_measured"], "page-testimony-content-coverage"
-        )["detail"].update(acts_total=3),
-        "visibility-denominator": lambda m: _entry(
-            m["claims"]["not_measured"], "act-visibility-survey"
-        )["detail"].update(acts_total=1),
-        "conservation-denominator": lambda m: _entry(
-            m["claims"]["not_measured"], "page-ink-conservation"
-        )["detail"].update(pages_sealed=2),
-        "untyped-count": lambda m: _entry(m["claims"]["not_measured"], "page-ink-conservation")[
+        "untyped-count": lambda m: _entry(m["claims"]["not_measured"], "perlector-pass-c")[
             "detail"
-        ].update(pages_sealed="1"),
+        ].update(pages_read="1"),
         "evidence-location": lambda m: _entry(
-            m["claims"]["not_measured"], "page-testimony-content-coverage"
+            m["claims"]["not_measured"], "perlector-pass-c"
         ).update(recorded_in="somewhere else"),
         "uncertainty-cap": lambda m: _recipient_uncertainty_overflow(m),
         "not-measured-count-type": lambda m: _recipient_boolean_count(m),
@@ -4650,10 +4406,8 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
             elif case == "publish-retained-manifest":
 
                 def mutate(_members, manifest):
-                    row = _entry(
-                        manifest["claims"]["not_measured"], "page-testimony-content-coverage"
-                    )
-                    row["detail"]["reasons"] = ["a changed package-only disclosure"]
+                    row = _entry(manifest["claims"]["not_measured"], "perlector-pass-c")
+                    row["detail"]["sealed_audit_round_cap"] += 1
             elif case == "publish-submission":
 
                 def mutate(_members, manifest):
@@ -4759,6 +4513,9 @@ def _recipient_boolean_count(manifest):
         if row["sample_count"] == 0:
             row["sample_count"] = 1
     geometry["status"] = "measured"
+    thresholds = _entry(block, "page-accounting-thresholds")
+    thresholds["detail"].update(calibrated_for_this_corpus=True, sample_count=1)
+    thresholds["status"] = "measured"
     assert sum(row["status"] != "measured" for row in block["entries"]) == 1
     block["count"] = True
 
@@ -4801,6 +4558,8 @@ def _recipient_whole_damaged_act():
         sources["pages"],
         sources["aggregate_basis"]["act_pages"],
         manifest["aggregate"],
+        (),
+        sources["other_outcomes"],
     )
     manifest["claims"]["terminal_ledger"] = ledger
     manifest["claims"]["status"] = ledger["status"]
