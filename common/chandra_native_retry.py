@@ -9,7 +9,7 @@ may derive the vendor's retry trigger from the result of that attempt.
 from __future__ import annotations
 
 import json
-from typing import Any, Final, Mapping, NoReturn
+from typing import Any, Final, NoReturn
 
 from common.contracts.envelope import digest_ref
 from common.contracts.errors import SchemaRefusal
@@ -257,27 +257,6 @@ def validate_trace(value: Any) -> dict[str, Any]:
     if count == CHANDRA_MAX_ATTEMPTS and final_error and exhausted is None:
         raise SchemaRefusal("a Chandra native retry trace hides its final inference error")
     return value
-
-
-def named_trace_summary(trace: Mapping[str, Any]) -> dict[str, Any]:
-    """The bounded facts a named dossier may carry without earlier text."""
-
-    checked = validate_trace(dict(trace))
-    return {
-        "recipe": checked["recipe"],
-        "physical_request_count": checked["physical_request_count"],
-        "returned_attempt_ordinal": checked["returned_attempt_ordinal"],
-        "exhausted_condition": checked["exhausted_condition"],
-        "attempts": [
-            {
-                "attempt_ordinal": row["attempt_ordinal"],
-                "parameters": row["parameters"],
-                "trigger": row["trigger"],
-                "error": row["error"],
-            }
-            for row in checked["attempts"]
-        ],
-    }
 
 
 def refuse_orphan_intent() -> NoReturn:

@@ -23,7 +23,6 @@ from common.native_witness import (
     RESIZING_ADAPTER_CROP_OPERATIONS,
     churro_fit_target,
     derive_churro_capture,
-    detect_churro_repetition,
     detect_repetition,
     parse_churro_response,
     validate_capture_text_view,
@@ -2100,11 +2099,6 @@ def test_every_parse_state_this_contract_names_stays_recordable(parse):
 
 
 # ------------------- the chair-neutral tail-cycle scan --------------------
-
-
-def test_the_repetition_scan_kept_its_old_name_as_an_alias_of_the_same_function():
-    """One function, two names, so the two cannot drift into two thresholds."""
-    assert detect_churro_repetition is detect_repetition
 
 
 def test_the_repetition_scan_reads_text_and_bytes_to_the_same_finding():

@@ -127,4 +127,3 @@ WIRE_DECIMAL_FIELDS: Final = frozenset({"schema", "decimal"})
 # or the whole transport body when no adapter saw a reading. Not interchangeable.
 RAW_RESPONSE_MODEL_OUTPUT: Final = "model-output"
 RAW_RESPONSE_TRANSPORT_BODY: Final = "transport-response-body"
-RAW_RESPONSE_KINDS: Final = frozenset({RAW_RESPONSE_MODEL_OUTPUT, RAW_RESPONSE_TRANSPORT_BODY})

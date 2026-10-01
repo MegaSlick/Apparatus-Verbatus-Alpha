@@ -1108,10 +1108,6 @@ def detect_repetition(raw: bytes | bytearray | str) -> dict[str, Any] | None:
     return None
 
 
-#: The scan's former name; only a test still imports it.
-detect_churro_repetition = detect_repetition
-
-
 def derive_churro_capture(
     raw: bytes,
     transport_stop_reason: str,
