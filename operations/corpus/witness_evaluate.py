@@ -706,7 +706,10 @@ def _witness_name(witness: Mapping[str, Any]) -> str:
 
 
 def evaluate_feed_page(
-    *, reference_page: dict[str, Any], feed: Mapping[str, Any]
+    *,
+    reference_page: dict[str, Any],
+    feed: Mapping[str, Any],
+    roster: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Score every reference record for every witness row of one page feed.
 
@@ -714,8 +717,10 @@ def evaluate_feed_page(
     (`_unit_record`), joined in the witness's own order. A record no unit lies
     on is an empty hypothesis (`no-unit-on-record`); a witness that did not
     read, or whose units carry no box, gives every record an empty hypothesis
-    by name. Every row is kept, so the denominator is every record on the page
-    for every witness the feed showed.
+    by name. A witness in `roster` (those shown on any page of the run) that
+    this feed does not show -- a page fed with no testimony, say -- gives every
+    record an empty hypothesis too (`witness-not-in-feed`). Every row is kept,
+    so the denominator is every record on the page for every witness.
     """
     reference_page = validate_reference_page(reference_page)
     acts = sorted(reference_page["acts"], key=lambda act: act["record_id"])
@@ -765,7 +770,20 @@ def evaluate_feed_page(
                     reason=reason,
                 )
             )
-    names = tuple(units)
+    for name in sorted(set(roster) - set(units)):
+        units[name] = {"units": 0, "boxed": 0, "on_a_record": 0, "on_no_record": 0}
+        for act in acts:
+            rows.append(
+                _score_row(
+                    act,
+                    pipeline_act_id=None,
+                    chair=name,
+                    status=OutputStatus.MISSING,
+                    text=None,
+                    reason="witness-not-in-feed",
+                )
+            )
+    names = tuple(sorted(units))
     body = {
         "schema": PAGE_SCHEMA,
         "reference_page_self_hash": reference_page["self_hash"],
@@ -844,7 +862,7 @@ def evaluate_page_feed_run(
         ordinal_by_sha[digest] = ordinal
     feeds = page_feeds(read_only)
 
-    reports = []
+    scored: list[tuple[dict[str, Any], dict[str, Any]]] = []
     outside = []
     reference_records = 0
     for page_id in sorted(requested):
@@ -868,8 +886,14 @@ def evaluate_page_feed_run(
             raise Refusal(
                 f"malformed-record: sealed page {page_id!r} (ordinal {ordinal}) has no page feed"
             )
-        reports.append(evaluate_feed_page(reference_page=page, feed=feeds[ordinal]))
+        scored.append((page, feeds[ordinal]))
         reference_records += len(page["acts"])
+    shown = sorted(
+        {_witness_name(w) for feed in feeds.values() for w in feed.get("witnesses") or []}
+    )
+    reports = [
+        evaluate_feed_page(reference_page=page, feed=feed, roster=shown) for page, feed in scored
+    ]
     names = tuple(sorted({row["chair"] for report in reports for row in report["rows"]}))
     rows = [row for report in reports for row in report["rows"]]
     totals = _totals(rows, names)

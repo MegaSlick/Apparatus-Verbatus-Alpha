@@ -785,3 +785,48 @@ def test_reask_records_are_read_by_schema_and_kept_apart(monkeypatch):
     }
     with pytest.raises(Refusal, match="reading attempt 3"):
         load_page_records(_Tree(third, {}))
+
+
+def test_the_command_scores_a_selection_and_never_overwrites_or_writes_into_the_tree(tmp_path):
+    from common.contracts.canonical import canonical_bytes, self_hash
+    from common.runtree.store import RunTree
+
+    from .exactly_once import main
+    from .test_evaluate import _fixture_reference_for_page_one, _ledger_for, _orchestrate
+
+    completed = _orchestrate(tmp_path / "runs", "page-unbroken")
+    assert completed.returncode == 0, completed.stderr
+    tree = RunTree(tmp_path / "runs", "r")
+    reference = _fixture_reference_for_page_one(tree)
+    ledger = _ledger_for(reference)
+    (tmp_path / "ledger.json").write_bytes(canonical_bytes(ledger))
+    (tmp_path / "gold.jsonl").write_text(
+        "".join(
+            json.dumps({"record_id": act["record_id"], "text": act["text"]}) + "\n"
+            for act in reference["acts"]
+        )
+    )
+    selection = {
+        "ledger_self_hash": ledger["self_hash"],
+        "pages": [{"page_sha256": reference["page"]["sha256"]}, {"page_sha256": "b" * 64}],
+    }
+    selection["self_hash"] = self_hash(selection)
+    (tmp_path / "selection.json").write_bytes(canonical_bytes(selection))
+    args = ["--run-root", str(tmp_path / "runs"), "--run-id", "r"]
+    args += ["--gold", str(tmp_path / "gold.jsonl"), "--ledger", str(tmp_path / "ledger.json")]
+    out = tmp_path / "exactly-once.json"
+
+    main([*args, "--selection", str(tmp_path / "selection.json"), "--out", str(out)])
+
+    written = json.loads(out.read_text())
+    assert written["scope"]["basis"] == "selection"
+    assert written["scope"]["sealed_pages"] == 2
+    assert written["ledger_self_hash"] == ledger["self_hash"]
+    with pytest.raises(Refusal, match="^output-exists:"):
+        main([*args, "--out", str(out)])
+    with pytest.raises(Refusal, match="^output-in-run-tree:"):
+        main([*args, "--out", str(tree.root / "exactly-once.json")])
+    selection["ledger_self_hash"] = "c" * 64
+    (tmp_path / "selection.json").write_bytes(canonical_bytes(selection))
+    with pytest.raises(Refusal, match="^malformed-record:"):
+        main([*args, "--selection", str(tmp_path / "selection.json"), "--out", str(tmp_path / "x")])

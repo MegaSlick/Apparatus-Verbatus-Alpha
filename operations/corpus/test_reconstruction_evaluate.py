@@ -55,6 +55,7 @@ def test_a_faithful_reconstruction_departs_from_nothing():
     report = _report(_reconstruction())
 
     assert report["reconstructions"] == {
+        "measured": True,
         "total": 1,
         "acts_joined": 2,
         "departing": 0,
@@ -191,3 +192,16 @@ def test_cli_writes_the_report_outside_the_run_tree(happy_run: RunTree, tmp_path
         main([*args, "--out", str(out)])
     with pytest.raises(CorpusRefusal, match="^output-in-run-tree:"):
         main([*args, "--out", str(happy_run.root / "reconstruction.json")])
+
+
+def test_reconstructions_not_packaged_as_jsonl_are_counted_as_not_measured():
+    report = reconstruction_report(
+        joins=[_join()],
+        reconstructions=None,
+        delivered_texts={"act_h": HEAD_TEXT, "act_t": TAIL_TEXT},
+        references_by_act={},
+    )
+
+    assert report["joins"]["by_status"] == {"reconstructed": 1}
+    assert report["reconstructions"]["measured"] is False
+    assert report["reconstructions"]["total"] == 0

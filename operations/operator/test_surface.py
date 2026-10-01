@@ -7273,3 +7273,18 @@ def test_export_does_not_take_a_fetch_that_stopped_before_the_tree_was_verified(
         surface.export(run_id="half-fetched")
 
     assert missing.value.code is ErrorCode.EXPORT_MISSING
+
+
+def test_export_does_not_take_a_fetch_that_verified_a_stage_by_envelope_only(
+    tmp_path: Path,
+) -> None:
+    volume, reader = _volume_run(tmp_path, "envelope-only")
+    (volume / "runs" / "envelope-only" / "2_designator" / "manifest.json").unlink()
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
+    receipt = surface.fetch_run(run_id="envelope-only", into=tmp_path / "local", reader=reader)
+    assert surface.receipts.read(receipt)["payload"]["state"] == "verified-partial"
+
+    with pytest.raises(OperatorError) as missing:
+        surface.export(run_id="envelope-only")
+
+    assert missing.value.code is ErrorCode.EXPORT_MISSING

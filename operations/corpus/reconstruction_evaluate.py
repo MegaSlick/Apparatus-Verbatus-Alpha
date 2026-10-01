@@ -70,8 +70,11 @@ class Refusal(CorpusRefusal):
 
 def bundle_reconstructions(
     tree: ReadOnlyRunTree, export_payload: Mapping[str, Any]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """The continuation joins and reconstructions of the sealed export bundle."""
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
+    """The continuation joins and reconstructions of the sealed export bundle.
+
+    The reconstructions are `None` when the bundle carries no `reconstructions.jsonl`.
+    """
     bundle = export_payload.get("bundle")
     if not isinstance(bundle, dict) or not isinstance(bundle.get("reference"), dict):
         raise Refusal("malformed-record: the export names no bundle")
@@ -81,6 +84,7 @@ def bundle_reconstructions(
     with ZipFile(io.BytesIO(data)) as archive:
         names = set(archive.namelist())
         joins = json.loads(archive.read("sources.json")).get("continuation_joins") or []
+        # The Armarium writes the file only when JSONL was a selected format.
         rows = (
             [
                 json.loads(line)
@@ -88,7 +92,7 @@ def bundle_reconstructions(
                 if line.strip()
             ]
             if "reconstructions.jsonl" in names
-            else []
+            else None
         )
     return joins, rows
 
@@ -96,7 +100,7 @@ def bundle_reconstructions(
 def reconstruction_report(
     *,
     joins: Sequence[Mapping[str, Any]],
-    reconstructions: Sequence[Mapping[str, Any]],
+    reconstructions: Sequence[Mapping[str, Any]] | None,
     delivered_texts: Mapping[str, str],
     references_by_act: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
@@ -105,12 +109,17 @@ def reconstruction_report(
     `delivered_texts` is `{act_id: text}` of the export's delivered acts, each
     already bound to the Archetypus record that established it;
     `references_by_act` is `{act_id: reference act}` for every act the IoU
-    assignment paired with a reference record.
+    assignment paired with a reference record. `reconstructions` is `None`
+    when the export packaged none as JSONL: the joins are still counted and
+    `measured` says the reconstructions could not be.
     """
     reconstructed_joins = {join["join_id"] for join in joins if join.get("status") == RECONSTRUCTED}
-    if {row["join_id"] for row in reconstructions} != reconstructed_joins or len(
-        reconstructions
-    ) != len(reconstructed_joins):
+    measured = reconstructions is not None or not reconstructed_joins
+    reconstructions = reconstructions or []
+    if measured and (
+        {row["join_id"] for row in reconstructions} != reconstructed_joins
+        or len(reconstructions) != len(reconstructed_joins)
+    ):
         raise Refusal(
             "malformed-record: the reconstructions are not exactly the joins marked reconstructed"
         )
@@ -187,6 +196,7 @@ def reconstruction_report(
             "not_reconstructed_by_reason": dict(sorted(by_reason.items())),
         },
         "reconstructions": {
+            "measured": measured,
             "total": len(rows),
             "acts_joined": len(departures_by_act),
             "departing": sum(1 for row in rows if row["departures"]),
@@ -262,7 +272,7 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
     return [
         f"joins {joins['total']}: {joins['by_status']}; not reconstructed "
         f"{joins['not_reconstructed_by_reason']}",
-        f"reconstructions {made['total']} over {made['acts_joined']} act(s); departing "
+        f"reconstructions measured {made['measured']}: {made['total']} over {made['acts_joined']} act(s); departing "
         f"{made['departing']} ({made['departures']} character(s))",
         f"against reference: {reference['by_sides']}; cer {reference['cer']}; "
         f"wer {reference['wer']}",
@@ -285,8 +295,10 @@ def main(argv: list[str] | None = None) -> int:
         raise Refusal(f"output-exists: {args.out}")
     for line in summary_lines(report):
         print(line)
-    # Any departure means the export changed a delivered text it only joins.
-    return 0 if report["reconstructions"]["departing"] == 0 else 1
+    # Any departure means the export changed a delivered text it only joins, and
+    # reconstructions the bundle did not package as JSONL were not measured.
+    made = report["reconstructions"]
+    return 0 if made["measured"] and made["departing"] == 0 else 1
 
 
 if __name__ == "__main__":

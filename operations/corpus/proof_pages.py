@@ -44,6 +44,7 @@ PROOF_PAGES_REFUSAL_REASONS = frozenset(
         "output-not-empty",
         "output-not-private",
         "page-not-admitted",
+        "reference-missing",
         "source-inside-repository",
     }
 )
@@ -124,8 +125,9 @@ def pick(
     chosen = choose(sorted(pages), page_shas=page_shas, count=count, seed=seed)
     copies = []
     for sha in chosen:
-        image = (source / pages[sha]["page_image"]).resolve()
-        if not image.is_relative_to(source) or image.is_symlink() or not image.is_file():
+        listed = source / pages[sha]["page_image"]
+        image = listed.resolve()
+        if listed.is_symlink() or not image.is_relative_to(source) or not image.is_file():
             raise Refusal(f"page-not-admitted: page {sha} has no regular image in the set")
         if digest_bytes(image.read_bytes()) != sha:
             raise Refusal(f"digest-mismatch: {image.name} does not hash to {sha}")
@@ -144,6 +146,8 @@ def pick(
         (page for page in ledger["reference_pages"] if page["page"]["sha256"] in set(chosen)),
         key=lambda page: page["page"]["sha256"],
     )
+    if [page["page"]["sha256"] for page in references] != chosen:
+        raise Refusal("reference-missing: a chosen page has no reference page in the ledger")
     (output / "reference-pages.jsonl").write_bytes(
         b"".join(canonical_bytes(page) + b"\n" for page in references)
     )

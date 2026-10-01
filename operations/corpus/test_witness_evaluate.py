@@ -757,3 +757,16 @@ def test_a_ledger_page_the_run_did_not_seal_is_counted_not_scored(
             reference_pages_path=pages_path,
             page_ids=["page-elsewhere"],
         )
+
+
+def test_a_witness_the_feed_does_not_show_is_charged_on_that_page():
+    feed = _feed(_witness("w", [_unit("Le premier mai baptisé Jean", (0, 0, 100, 50))]))
+    feed["witnesses"] = []
+    feed["witness_testimony"] = "none"
+
+    report = evaluate_feed_page(reference_page=_synthetic_reference(), feed=feed, roster=["w"])
+
+    rows = _rows(report)
+    assert {row["reason"] for row in rows.values()} == {"witness-not-in-feed"}
+    assert report["totals"]["w"]["references"] == 2
+    assert report["units"]["w"]["units"] == 0

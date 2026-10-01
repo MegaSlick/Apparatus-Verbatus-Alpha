@@ -168,7 +168,12 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   sealed final accounting -- the re-ask's on a re-asked page -- over every act region the
   page holds; `reask` reports the same records on the first reading alone (its regions
   and accounting) beside it: pages re-asked, acts recovered on the re-ask, exactly-once
-  before and after, overall and on the re-asked pages.
+  before and after, overall and on the re-asked pages. Parse states, the `length` finish
+  rate and the 65,536-token fit describe each page's first reading; the re-ask's parse
+  states are under `reask`, and prompt tokens compare every call. With `--selection`
+  (`proof_pages`' `selection.json`, checked against the ledger) the pages in scope are
+  the ones chosen for the run, so a chosen page the run did not seal is lost; `scope.basis`
+  says which. The report is a new file outside the run tree.
 
   ```sh
   .venv/bin/python -m operations.corpus.exactly_once --run-root runs --run-id <run> \
@@ -181,7 +186,9 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   record id), its units on a record are joined in the witness's order and scored with the
   sealed scorer, and a record no unit lies on is an empty hypothesis. A witness that did
   not read, or whose units carry no box, gives every record an empty hypothesis by name,
-  so the denominator is every record on every page for every witness shown;
+  and so does a witness shown on another page of the run that this page's feed does not
+  show (`witness-not-in-feed`), so the denominator is every record on every page for
+  every witness;
   `scoreable_cer_*` is the rate over the records a unit lay on. With no `--page-id` it
   scores every admitted page the run sealed and lists the rest under
   `reference_pages_outside_run`. A run read act by act, or `--basis act-attachment`,
@@ -195,7 +202,8 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   nothing, so the exit status is 1 when any departs); and, only where reference truth has
   both the head and the tail act (paired by IoU as `evaluate.py` pairs them), CER and WER
   of the reconstruction against those two records joined the same way. One side or none
-  is counted by side and not scored. Counts and identifiers only, never text.
+  is counted by side and not scored. An export that packaged no `reconstructions.jsonl`
+  (JSONL not selected) still has its joins counted, with `measured: false` and exit 1. Counts and identifiers only, never text.
 - `proof_pages.py` — the proof-page picker. From an admitted set's ledger it takes a
   declared list (`--page-sha`, repeated) or a seeded draw (`--count N --seed TEXT`: the N
   admitted pages first by `sha256(seed:page_sha256)`), copies each image, checked against
@@ -231,7 +239,7 @@ verbatus export --run-id $RUN
 .venv/bin/python -m operations.corpus.exactly_once --run-root runs --run-id $RUN \
   --gold /path/to/recordgold_evaluation_val_v1/gold.jsonl \
   --ledger private/corpora/recordgold/admission/val/ledger.json \
-  --out $P/reports/exactly-once.json
+  --selection $P/selection.json --out $P/reports/exactly-once.json
 .venv/bin/python -m operations.corpus.evaluate --run-root runs --run-id $RUN \
   --reference-pages $P/reference-pages.jsonl \
   --reference-ledger private/corpora/recordgold/admission/val/ledger.json \
@@ -244,7 +252,8 @@ verbatus export --run-id $RUN
 ```
 
 `fetch-run` runs the canary check itself when `private/canary/` exists, and `export`
-takes the run `fetch-run` brought home verified. `exactly_once` exits 1 when its gate
+takes the run `fetch-run` brought home verified (not a fetch that stopped, or one that
+verified a stage by envelope only). `exactly_once` exits 1 when its gate
 fails and `reconstruction_evaluate` when a reconstruction departs from its literals;
 the others write their record or refuse by name. Every report is written outside the
 run tree, carries counts and identifiers rather than reference text, and gives the same
@@ -291,8 +300,12 @@ run-level set — a request-ceiling or 403-stop refusal never reaches a fetch-lo
 entry, so it cannot share the per-page set), `integrate.INTEGRATE_REFUSAL_REASONS`,
 `submission.SUBMISSION_REFUSAL_REASONS`, `sidecar.SIDECAR_REFUSAL_REASONS`,
 `reference.REFERENCE_REFUSAL_REASONS`, `compare.COMPARE_REFUSAL_REASONS`,
-`local_admission.LOCAL_ADMISSION_REFUSAL_REASONS`, and
-`evaluate.EVALUATION_REFUSAL_REASONS`.
+`local_admission.LOCAL_ADMISSION_REFUSAL_REASONS`,
+`evaluate.EVALUATION_REFUSAL_REASONS`,
+`exactly_once.EXACTLY_ONCE_REFUSAL_REASONS`,
+`witness_evaluate.WITNESS_EVALUATION_REFUSAL_REASONS`,
+`reconstruction_evaluate.RECONSTRUCTION_EVALUATION_REFUSAL_REASONS`, and
+`proof_pages.PROOF_PAGES_REFUSAL_REASONS`.
 Every refusal in this package is a `CorpusRefusal` whose message leads with its
 reason token, dispatched by `str(error).split(":", 1)[0]` (`__init__.py`).
 

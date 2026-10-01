@@ -2237,9 +2237,10 @@ class OperatorSurface:
     def _export_sources(self) -> list[tuple[Path, dict[str, Any]]]:
         """Every run `export` can name, oldest first, as `{run_id, run_root}` records.
 
-        A run receipt is one; so is a fetch-run receipt whose tree was verified
-        on arrival, with the folder it was fetched into as its run root. A
-        fetch that stopped before the tree was verified (`partial`) is not.
+        A run receipt is one; so is a fetch-run receipt whose whole tree was
+        verified against its stage manifests on arrival, with the folder it was
+        fetched into as its run root. A fetch that stopped (`partial`) or left a
+        stage verified by envelope only (`unmanifested_stages`) is not.
         """
 
         descriptor = self._load_descriptor()
@@ -2252,7 +2253,10 @@ class OperatorSurface:
                 record = self._read_receipt(path)
                 payload = record["payload"]
                 if action == "fetch-run":
-                    if payload.get("state") == "partial":
+                    if (
+                        payload.get("state") == "partial"
+                        or payload.get("unmanifested_stages") != []
+                    ):
                         continue
                     payload = {"run_id": payload.get("run_id"), "run_root": payload.get("into")}
                 sources.append((record["recorded_at"], path, payload))

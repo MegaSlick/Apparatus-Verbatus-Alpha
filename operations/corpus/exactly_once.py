@@ -60,7 +60,7 @@ from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
-from common.contracts.canonical import digest_bytes, is_sha256
+from common.contracts.canonical import digest_bytes, is_sha256, verify_self_hash
 from common.contracts.stages import PERLECTOR
 from common.page_accounting import (
     DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
@@ -77,6 +77,7 @@ from common.runtree.store import RunTree
 from common.stage import run_sealed_config_digests
 
 from . import CorpusRefusal
+from .cache import write_new_file
 from .compare import ReadOnlyRunTree, load_exemplar_page_shas
 
 SCHEMA: Final = "exactly-once-report.v2"
@@ -102,7 +103,14 @@ READING_ATTEMPTS: Final = (FIRST_READING, REASK_READING)
 ANSWER_BASES: Final = {"attempt-1": FIRST_READING, "combined": REASK_READING}
 
 EXACTLY_ONCE_REFUSAL_REASONS: Final = frozenset(
-    {"malformed-record", "not-page-read", "policy-mismatch", "missing-file"}
+    {
+        "malformed-record",
+        "missing-file",
+        "not-page-read",
+        "output-exists",
+        "output-in-run-tree",
+        "policy-mismatch",
+    }
 )
 
 
@@ -592,7 +600,8 @@ def exactly_once_report(
     sealed; `sealed_page_sha256s` the digests of the pages the Exemplar sealed:
     only gold on those pages is scored, and the rest of the ledger is counted
     under `scope`, so a run over a subset of the ledger is judged on its own
-    pages. `seconds_per_page` is `{page_id: seconds}` from outside the tree,
+    pages. A caller may pass the pages chosen for the run instead, so a chosen
+    page the run did not seal is lost. `seconds_per_page` is `{page_id: seconds}` from outside the tree,
     which records no durations. A policy other than the one the run sealed, or
     a page accounting sealed under another, is refused, so "inside" means one
     thing throughout -- including on pages that have no accounting.
@@ -814,6 +823,19 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
+def selected_page_sha256s(path: Path, ledger_self_hash: str) -> set[str]:
+    """The page digests a `proof_pages` selection chose from this ledger."""
+    if not path.is_file():
+        raise Refusal(f"missing-file: {path} is not a file")
+    selection = json.loads(path.read_bytes())
+    if not verify_self_hash(selection) or selection.get("ledger_self_hash") != ledger_self_hash:
+        raise Refusal(
+            "malformed-record: the selection does not hash to itself or was drawn from another "
+            "ledger"
+        )
+    return {page["page_sha256"] for page in selection["pages"]}
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -824,7 +846,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", required=True, help="a sealed run read by page")
     parser.add_argument("--gold", type=Path, required=True, help="the set's gold.jsonl")
     parser.add_argument("--ledger", type=Path, required=True, help="its local admission ledger")
-    parser.add_argument("--out", type=Path, required=True, help="where the JSON report goes")
+    parser.add_argument("--out", type=Path, required=True, help="a new file outside the run tree")
+    parser.add_argument(
+        "--selection",
+        type=Path,
+        help=(
+            "proof_pages' selection.json: score the pages chosen for the run, so a chosen page "
+            "the run did not seal is lost rather than left out"
+        ),
+    )
     parser.add_argument(
         "--seconds-per-page", type=Path, help="optional JSON {page_id: seconds} from the pod log"
     )
@@ -833,12 +863,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    run_tree = RunTree(args.run_root, args.run_id)
+    if args.out.resolve().is_relative_to(run_tree.root.resolve()):
+        raise Refusal("output-in-run-tree: the report must be written outside the run tree")
     policy = load_page_accounting_policy(args.page_accounting_config)
     ledger = load_local_admission_ledger(args.ledger)
     gold = gold_records(_read_jsonl(args.gold), ledger["rows"])
-    tree = ReadOnlyRunTree(RunTree(args.run_root, args.run_id))
+    tree = ReadOnlyRunTree(run_tree)
     pages = load_page_records(tree)
-    sealed_shas = set(load_exemplar_page_shas(tree).values())
+    scope = (
+        selected_page_sha256s(args.selection, ledger["self_hash"])
+        if args.selection
+        else set(load_exemplar_page_shas(tree).values())
+    )
     seconds = (
         json.loads(args.seconds_per_page.read_text(encoding="utf-8"))
         if args.seconds_per_page
@@ -849,11 +886,14 @@ def main(argv: list[str] | None = None) -> int:
         gold,
         policy=policy,
         sealed_policy_sha256=sealed_policy_sha256(tree),
-        sealed_page_sha256s=sealed_shas,
+        sealed_page_sha256s=scope,
         seconds_per_page=seconds,
     )
     report["ledger_self_hash"] = ledger["self_hash"]
-    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    report["scope"]["basis"] = "selection" if args.selection else "sealed"
+    body = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if not write_new_file(args.out, body):
+        raise Refusal(f"output-exists: {args.out}")
     for line in summary_lines(report):
         print(line)
     return 0 if report["gate"]["passed"] else 1
