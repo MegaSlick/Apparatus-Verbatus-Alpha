@@ -72,6 +72,14 @@ def test_build_holdout_only_counts_the_test_split():
     ]
 
 
+def test_build_holdout_refuses_an_unparseable_test_row_under_its_own_reason():
+    rotated = TEST_ONLY_PAGE_URL.replace("/full/0/", "/full/90/")
+    with pytest.raises(CorpusRefusal, match=r"^malformed-record: test row 's1'") as caught:
+        build_holdout([_row("s1", "test", rotated)], SNAPSHOT_HASH)
+    assert caught.value.reason == "malformed-record"
+    assert "unsupported-rotation-parameter" in str(caught.value)
+
+
 def test_build_holdout_groups_multiple_test_records_on_one_page():
     rows = [_row("s1", "test", TEST_ONLY_PAGE_URL), _row("s2", "test", TEST_ONLY_PAGE_URL)]
     holdout = build_holdout(rows, SNAPSHOT_HASH)
