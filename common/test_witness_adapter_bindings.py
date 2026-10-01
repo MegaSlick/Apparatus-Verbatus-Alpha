@@ -145,7 +145,7 @@ def test_a_missing_chair_table_is_refused_before_adapter_binding():
         parse_models_config({"witness_floor": 0})
 
 
-@pytest.mark.parametrize("scope", ("crop", "Page"))
+@pytest.mark.parametrize("scope", ("crop", "Page", "act"))
 def test_bad_witness_scope_is_refused_by_the_closed_models_schema(scope):
     raw = {
         "witness_floor": 1,
@@ -167,17 +167,16 @@ def test_bad_witness_scope_is_refused_by_the_closed_models_schema(scope):
     with pytest.raises(ContractError, match="invalid witness_scope") as caught:
         parse_models_config(raw)
     message = str(caught.value)
-    assert "cannot determine whether it runs once per page or once per act" in message
-    assert "Set witness_scope to exactly 'page' or 'act'" in message
+    assert "Every witness reads whole pages" in message
+    assert "Set witness_scope to exactly 'page'" in message
 
 
 def test_an_adapter_without_any_scope_is_refused_like_a_wrong_one():
     """Omission is the likeliest mistake, and it must not read as a default.
 
     `witness_scope` is optional in the closed schema because a non-witness chair
-    carries neither field. Once `witness_adapter` names a boundary, a missing
-    scope leaves the adapter unable to say whether it runs per page or per act,
-    and guessing either would silently change how much ink a chair is shown.
+    carries neither field. Once `witness_adapter` names a boundary, its scope
+    is stated, never defaulted.
     """
     raw = {
         "witness_floor": 1,
@@ -187,7 +186,7 @@ def test_an_adapter_without_any_scope_is_refused_like_a_wrong_one():
     with pytest.raises(ContractError, match="invalid witness_scope") as caught:
         parse_models_config(raw)
 
-    assert "Set witness_scope to exactly 'page' or 'act'" in str(caught.value)
+    assert "Set witness_scope to exactly 'page'" in str(caught.value)
 
 
 def test_the_live_roster_pins_one_adapter_per_chair():
@@ -218,12 +217,11 @@ def test_the_live_roster_pins_one_adapter_per_chair():
     }
 
 
-def test_two_chairs_may_share_one_adapter_at_different_scopes():
+def test_two_chairs_may_share_one_adapter():
     """The adapter belongs to each occupant; it is not a unique or ranked seat.
 
     Collapsing adapter names only decides whether a registry declaration is in
-    use. Scope remains on each identity, so sharing a native boundary cannot
-    collapse the page/act distinction or select one chair over the other.
+    use, so sharing a native boundary cannot select one chair over the other.
 
     The roster above happens to assign one adapter per chair, so asserting that
     roster is not a test of this rule: it would pass unchanged if the validator
@@ -232,7 +230,7 @@ def test_two_chairs_may_share_one_adapter_at_different_scopes():
     models = _models()
     chairs = dict(models.chairs)
     chairs["attestator_2"] = replace(
-        chairs["attestator_2"], witness_adapter="chandra.v1", witness_scope="act"
+        chairs["attestator_2"], witness_adapter="chandra.v1", witness_scope="page"
     )
     shared = replace(models, chairs=chairs)
 
@@ -241,7 +239,7 @@ def test_two_chairs_may_share_one_adapter_at_different_scopes():
     assert shared.chairs["attestator_1"].witness_adapter == "chandra.v1"
     assert shared.chairs["attestator_1"].witness_scope == "page"
     assert shared.chairs["attestator_2"].witness_adapter == "chandra.v1"
-    assert shared.chairs["attestator_2"].witness_scope == "act"
+    assert shared.chairs["attestator_2"].witness_scope == "page"
 
 
 @pytest.mark.parametrize(
@@ -249,7 +247,7 @@ def test_two_chairs_may_share_one_adapter_at_different_scopes():
     (
         {"witness_adapter": "churro.v1", "witness_scope": "page"},
         {"witness_adapter": "churro.v1"},
-        {"witness_scope": "act"},
+        {"witness_scope": "page"},
     ),
 )
 def test_a_non_witness_chair_may_not_declare_a_witness_boundary(rows):
@@ -391,11 +389,12 @@ def test_receipt_reader_validates_witness_fields_inside_a_nested_identity(role, 
         validate_receipt(record)
 
 
-def test_witness_scope_is_inside_the_sealed_config_digest():
+def test_witness_scope_is_inside_the_sealed_config_digest(monkeypatch):
     """Changing invocation granularity must make the old run seal incompatible."""
+    monkeypatch.setattr(witness_adapters, "WITNESS_SCOPES", frozenset({"page", "region"}))
     fixture = load_fixture(str(ROOT / "proof"))
     sealed = run_config_bindings(_models(), fixture, "happy")["config_digest"]
-    flipped = run_config_bindings(_with_witness(witness_scope="act"), fixture, "happy")[
+    flipped = run_config_bindings(_with_witness(witness_scope="region"), fixture, "happy")[
         "config_digest"
     ]
     assert _models().chairs["attestator_1"].witness_scope == "page"

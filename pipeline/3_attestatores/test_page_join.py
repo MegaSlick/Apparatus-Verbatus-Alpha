@@ -45,7 +45,7 @@ def _identity(role: str, scope: str) -> ChairIdentity:
 
 
 def _scope_context(chairs=None, *, scopes=None, **fields):
-    scopes = scopes or {"attestator_1": "page", "attestator_3": "act"}
+    scopes = scopes or {"attestator_1": "page", "attestator_3": "page"}
     configured = {role: _identity(role, scope) for role, scope in scopes.items()}
     return SimpleNamespace(
         witness_chairs=list(scopes) if chairs is None else chairs,

@@ -676,7 +676,7 @@ def test_a_declared_response_no_page_chair_could_be_asked_for_is_refused():
                 1,
                 {
                     "attestator_1": _chair("attestator_1"),
-                    "attestator_2": _chair("attestator_2", scope="act"),
+                    "attestator_2": _chair("attestator_2"),
                 },
             ),
             page_chairs,

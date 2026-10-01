@@ -7,7 +7,7 @@ scripted endpoint speaking the reading contract.
 The builders under "the structure chair's answers" script what the
 Designator's `designator_structure` chair returns (acts in page pixels, a
 grammar-refused body, or an engine cut-off mid-block) once, here, rather than
-in each suite: they invert `common.structure_answer.to_page_bounds`, and a
+in each suite: they invert `common.chandra_layout.to_page_bounds`, and a
 second copy of that inversion could drift from the converter it inverts.
 They speak Chandra's layout HTML, the format that chair is actually asked
 for.
@@ -22,7 +22,7 @@ from html import escape
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from common import chandra_layout, structure_answer
+from common import chandra_layout
 from common.chairs.errors import ServingRecipeRefusal
 from common.chairs.models import ChairIdentity, ServingDetails, VerifiedSnapshot
 from common.chairs.receipts import build_receipt
@@ -265,7 +265,7 @@ class FakeEndpoint:
 #
 # SPEC_D §5. A test that hand-writes the structure chair's wire answer has to
 # spell the normalized geometry itself, and the only way to know which box
-# lands on a given page rectangle is to invert `structure_answer.to_page_bounds`
+# lands on a given page rectangle is to invert `chandra_layout.to_page_bounds`
 # — so every suite that scripts the chair would carry its own copy of that
 # inversion, and each copy could drift from the converter it is inverting. The
 # builders below do it once, and prove it each time by running the answer they
@@ -277,7 +277,7 @@ def structure_box_1000(bounds: Mapping[str, int], page_w: int, page_h: int) -> l
     """The normalized `box_1000` whose page-pixel conversion is exactly ``bounds``.
 
     Found by search over the 0–1000 grid and checked through
-    :func:`common.structure_answer.to_page_bounds` itself, never by a second
+    :func:`common.chandra_layout.to_page_bounds` itself, never by a second
     closed-form formula: a builder that re-derived the arithmetic could agree
     with a converter that had changed underneath it, which is precisely the
     coordinate-space confusion the normalized contract exists to prevent.
@@ -306,7 +306,7 @@ def structure_box_1000(bounds: Mapping[str, int], page_w: int, page_h: int) -> l
         _far(page_w, bounds["x"] + bounds["w"] - 1),
         _far(page_h, bounds["y"] + bounds["h"] - 1),
     ]
-    converted = structure_answer.to_page_bounds(box, page_w, page_h)
+    converted = chandra_layout.to_page_bounds(box, page_w, page_h)
     if converted != dict(bounds):
         raise ValueError(f"box {box} converts to {converted}, not to {dict(bounds)}")
     return box
@@ -538,7 +538,7 @@ def scripted_prompt_too_long(
 
 
 def scripted_input_too_long(*, max_model_len: int, input_tokens: int) -> ScriptedAnswer:
-    """The refusal vLLM 0.27.1 gave a real Perlector act whose prompt overran the row.
+    """The refusal vLLM 0.27.1 gave a real Perlector request whose prompt overran the row.
 
     Observed on the 2026-09-27 run (a 34,741-token request against a 32,768
     row): an HTTP 400 whose body is the nested envelope

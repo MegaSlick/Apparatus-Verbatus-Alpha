@@ -520,8 +520,7 @@ def test_a_whole_pass_may_not_skip_an_ordinal_over_any_seat(tmp_path):
 def test_an_operation_this_stage_does_not_implement_is_refused(tmp_path):
     """`--operation` carries no argparse `choices` — the same parser serves every
     stage — so an unrecognized one would fall through to the whole pass and exit 0
-    over an instruction it never carried out. Witnesses read whole pages, so a
-    reread of one act is refused by name."""
+    over an instruction it never carried out."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
         invoke_stage(run_root, "retention", "happy", "pipeline/3_attestatores/run.py").returncode
@@ -539,23 +538,11 @@ def test_an_operation_this_stage_does_not_implement_is_refused(tmp_path):
     )
     assert result.returncode == 2
     assert "has no 'reraed' operation" in result.stderr
-
-    reread = invoke_stage(
-        run_root,
-        "retention",
-        "happy",
-        "pipeline/3_attestatores/run.py",
-        operation="reread",
-        act=_act_id_for(tree, "a1"),
-        chair="attestator_2",
-    )
-    assert reread.returncode == 2
-    assert "No operation exists to re-ask a page witness" in reread.stderr
     assert len(_testimonia(tree)) == before
 
 
 def test_a_whole_pass_refuses_to_narrow_to_one_act_or_chair(tmp_path):
-    """A whole pass reads every chair on every act; an `--act` or `--chair` beside it
+    """A whole pass reads every chair on every page; an `--act` or `--chair` beside it
     would be an instruction the operator gave and the stage did not carry out."""
     run_root, tree = run_to_designator(tmp_path, "happy")
     assert (
@@ -582,7 +569,7 @@ def test_a_whole_pass_refuses_to_narrow_to_one_act_or_chair(tmp_path):
         chair="attestator_3",
     )
     assert chair.returncode == 2
-    assert "cannot narrow to it" in chair.stderr
+    assert "does not accept it" in chair.stderr
 
     assert len(_testimonia(tree)) == before
 

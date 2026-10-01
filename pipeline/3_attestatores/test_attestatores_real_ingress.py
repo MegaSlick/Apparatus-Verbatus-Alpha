@@ -222,7 +222,7 @@ def _argv(run_root: Path, catalogue: Path, *extra: str) -> list[str]:
 
 
 def _open(run_root: Path, catalogue: Path, stage: str, *extra: str) -> StageContext:
-    parser = attestatores.stage_parser("real-ingress stage context", accepts_chair=True)
+    parser = attestatores.stage_parser("real-ingress stage context")
     return open_stage_context(parser.parse_args(_argv(run_root, catalogue, *extra)), stage)
 
 

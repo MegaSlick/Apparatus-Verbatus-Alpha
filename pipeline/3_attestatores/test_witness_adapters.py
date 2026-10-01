@@ -663,9 +663,9 @@ def test_the_default_is_resolved_and_recorded_even_when_the_roster_names_none():
 def test_a_witness_chair_scoped_anything_but_page_is_refused_before_the_run_opens():
     adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     config = _roster()
-    act_scoped = dataclasses.replace(config.chairs["attestator_2"], witness_scope="act")
-    roster = dataclasses.replace(config, chairs={**config.chairs, "attestator_2": act_scoped})
-    with pytest.raises(SchemaRefusal, match="scoped 'act'; every witness reads whole pages"):
+    region_scoped = dataclasses.replace(config.chairs["attestator_2"], witness_scope="region")
+    roster = dataclasses.replace(config, chairs={**config.chairs, "attestator_2": region_scoped})
+    with pytest.raises(SchemaRefusal, match="scoped 'region'; every witness reads whole pages"):
         adapters.validate_runnable_adapter_bindings(roster)
 
 

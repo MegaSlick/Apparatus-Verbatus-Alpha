@@ -212,12 +212,11 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
         )
     if witness_adapter is not None:
         witness_adapter = _text(role, "witness_adapter", witness_adapter)
-        if witness_scope not in ("page", "act"):
+        if witness_scope != "page":
             raise ConfigurationRefusal(
                 role,
-                f"declares invalid witness_scope {witness_scope!r}. The adapter cannot determine "
-                "whether it runs once per page or once per act. Set witness_scope to exactly "
-                "'page' or 'act'",
+                f"declares invalid witness_scope {witness_scope!r}. Every witness reads whole "
+                "pages. Set witness_scope to exactly 'page'",
             )
 
     return ChairIdentity(
