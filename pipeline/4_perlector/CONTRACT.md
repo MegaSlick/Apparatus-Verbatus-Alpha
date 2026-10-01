@@ -70,9 +70,9 @@ read by `audit.load`). Every `page-reading` carries
 - Each page's current `page-testimonium` per chair (`latest_per_chair`), every one
   validated (`validate_page_testimonium_record`, and the native capture's blob and
   adapter). Every chair the sealed roster scopes `page`
-  must have one; a chair it does not scope `page` must not. Act-scoped witnesses
-  have no page Testimonium and are not shown. A page with no page Testimonium at all
-  (the Attestatores serve only pages with a proposed Designator act) is not refused:
+  must have one; a chair it does not scope `page` must not. A page with no page
+  Testimonium at all (the sealed roster seats no page witness, or the Attestatores
+  recorded none for it) is not refused:
   it is fed with `witness_testimony: "none"` and no witness row, and held by name
   (`no-witness-testimony`). A roster chair missing beside others that testified is a
   shortened roster and refuses.

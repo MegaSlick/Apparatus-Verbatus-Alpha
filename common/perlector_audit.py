@@ -1,8 +1,9 @@
 """The Perlector audit declaration's schemas, the truncation verdict and a call-record decoder.
 
 `pipeline/4_perlector/audit.py` loads the sealed audit declaration under `SCHEMA`;
-every `page-reading` records it as not run. `common/truncation.py` classifies a
-reading with the truncation rule below, and the page accounting reads its verdicts.
+every `page-reading` records it as not run (`audit_not_run`). `common/truncation.py`
+classifies a reading with the truncation rule below, and the page accounting reads
+its verdicts.
 `decode_recorded_generation` restores a retained call record's generation so the
 sent request can be rebuilt.
 """
@@ -26,6 +27,21 @@ RETIRED_SCHEMAS: Final = frozenset({"perlector-audit.v1"})
 TRUNCATION_COMPLETE: Final = "complete"
 TRUNCATION_TRUNCATED: Final = "truncated"
 TRUNCATION_UNKNOWN: Final = "unknown"
+
+
+def audit_not_run(audit_policy: dict[str, Any], audit_sha256: str) -> dict[str, Any]:
+    """What every `page-reading` says about the sealed Pass-C audit: it did not run.
+
+    Stage 4 writes it and the page-read denominator requires it, so a reading can
+    claim no other audit state.
+    """
+    return {
+        "state": "not-run",
+        "round_cap": audit_policy["round_cap"],
+        "policy_sha256": audit_sha256,
+        "reason": "Pass C flags and re-proves spans of a reading; a whole-page reading does "
+        "not run it",
+    }
 
 
 def length_judged(*, smallest_page_pixels: int, legible_page_pixels: int) -> bool:

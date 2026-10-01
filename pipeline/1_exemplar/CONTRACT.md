@@ -84,9 +84,8 @@ comparison has no counterpart on the real route and the name-by-name recheck of
 the sealed map takes its place. Without these three names that recheck would
 cover neither the model roster (only inside `config_digest`, via
 `models.to_record()`), nor the Armarium's format projection, nor the run-level
-reading knobs — the witness-context regime and its declaration, the Lectio nuda
-rate and approval reference, the Perlector instrument rate and approval
-reference, and `blind_read`, which `real_run_policy_digest` closes under one
+reading knobs — the witness-context regime, its declaration's sha256 and
+`mechanics_qualification`, which `real_run_policy_digest` closes under one
 name. A real run resumed with a different `--models-config` would otherwise
 publish stage-3 testimony naming one model and stage-4 dossiers naming another,
 every check green, which is provenance broken silently on the one path that

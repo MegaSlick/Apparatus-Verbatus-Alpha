@@ -258,7 +258,7 @@ class ReadOnlyRun:
                 # delivered result, and `export` says so.
                 pages = _sealed_pages(tree, stage_records, budget)
                 acts = _progressive_acts(tree, stage_records, budget)
-                acts_denominator_note = _PRE_EXPORT_ACTS_NOTE if acts else _NO_READING_NOTE
+                acts_denominator_note = _pre_export_acts_note(stage_records, acts)
                 review_items = None
                 review_items_total = None
                 export = {
@@ -736,13 +736,6 @@ def _progressive_crops(
     ]
 
 
-def _projected_audit(audit: Any) -> Any:
-    """The two audit facts this screen reads, or the value as the record holds it."""
-    if audit is None or not isinstance(audit, dict):
-        return audit
-    return {"unresolved": audit.get("unresolved"), "examination": audit.get("examination")}
-
-
 def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, Any] | None:
     """The Perlector's current reading of one act, or none, in one vocabulary.
 
@@ -766,25 +759,13 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
         return None
     reading_row = rows[0]
     payload = _payload_of(reading_row, "the Perlectio record")
-    truncation = payload.get("truncation")
-    audit = payload.get("audit")
     return {
         "outcome": reading_row["outcome"],
         "text": payload.get("text"),
-        "reason": payload.get("reason"),
         "uncertainty_assessment": payload.get("uncertainty_assessment"),
         "uncertain_spans": payload.get("uncertain_spans"),
         "gaps": payload.get("gaps"),
-        # Kept as the producer's own field name, not the canonical layer's
-        # `self_revisions`, to avoid a second copy of that rename free to
-        # drift from it.
-        "self_revision": payload.get("self_revision"),
-        "lectio_kind": payload.get("lectio_kind"),
-        "truncation": truncation,
-        # Absent stays absent; an object is projected to the two fields read
-        # here; anything else is carried through exactly as the record holds
-        # it, so a malformed audit is never mistaken for no audit.
-        "audit": _projected_audit(audit),
+        "truncation": payload.get("truncation"),
         "record_ref": reading_row["record_ref"],
     }
 
@@ -845,8 +826,6 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
         review = {
             "outcome": review_row["outcome"],
             "reason": payload.get("reason"),
-            "audit_unresolved": payload.get("audit_unresolved"),
-            "audit_examination": payload.get("audit_examination"),
             "record_ref": review_row["record_ref"],
         }
     established_rows = _records_of(stage_records, ARCHETYPUS, "archetypus", act_id)
@@ -886,7 +865,7 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
         reason = review["reason"]
     elif reading is not None:
         category = f"read: {reading['outcome']}, awaiting the Recensor"
-        reason = reading["reason"] or (
+        reason = (
             f"the Perlector's latest reading of this act is {reading['outcome']!r}; the "
             "Recensor has not reviewed it"
         )
@@ -915,6 +894,42 @@ _PRE_EXPORT_ACTS_NOTE = (
     "the entries the Perlector read; a page it could not read or found blank is counted "
     "only by the export"
 )
+
+
+def _pages_without_entries(
+    stage_records: list[dict[str, Any]], acts: tuple[dict[str, Any], ...]
+) -> list[str]:
+    """Each page the Perlector's page reading gave no entry, in page order, with why."""
+    with_entries = {act["row"]["page_id"] for act in acts}
+    pages = []
+    for row in _records_of(stage_records, PERLECTOR, "page-reading"):
+        if row["subject_id"] in with_entries:
+            continue
+        payload = _payload_of(row, "the Perlector page-reading record")
+        ordinal = payload.get("page_ordinal")
+        if row["outcome"] == "read":
+            why = "read, no entry"
+        else:
+            codes = [
+                str(problem.get("code"))
+                for problem in payload.get("problems") or []
+                if isinstance(problem, dict)
+            ]
+            why = f"{row['outcome']} ({', '.join(codes) or payload.get('parse_state')})"
+        pages.append((not isinstance(ordinal, int), ordinal or 0, f"page {ordinal} {why}"))
+    return [text for *_order, text in sorted(pages)]
+
+
+def _pre_export_acts_note(
+    stage_records: list[dict[str, Any]], acts: tuple[dict[str, Any], ...]
+) -> str:
+    """Why the pre-export act list is what it is, naming each page read without an entry."""
+    empty = _pages_without_entries(stage_records, acts)
+    if not acts and not empty:
+        return _NO_READING_NOTE
+    if not empty:
+        return _PRE_EXPORT_ACTS_NOTE
+    return f"{_PRE_EXPORT_ACTS_NOTE}; pages read without an entry: {'; '.join(empty)}"
 
 
 def _progressive_acts(
@@ -988,7 +1003,6 @@ def _holds(stage_records: list[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
                 "label": "Recensor review",
                 "outcome": current["outcome"],
                 "reason": payload.get("reason"),
-                "audit_examination": payload.get("audit_examination"),
                 "record_ref": current["record_ref"],
             }
         )

@@ -30,7 +30,12 @@ from typing import Any, Final
 
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
-from common.contracts.outcomes import WITNESS_READING_OUTCOMES, classify, witness_coverage
+from common.contracts.outcomes import (
+    WITNESS_READING_OUTCOMES,
+    classify,
+    witness_coverage,
+    witnessed_count,
+)
 from common.contracts.stages import ATTESTATORES, EXEMPLAR, PERLECTOR, RECENSOR
 from common.page_accounting import NOT_APPLICABLE, PASS
 from common.page_path import PAGE_ACCOUNTING_KIND, refs_by_path
@@ -49,7 +54,7 @@ from common.page_testimonia import (
     declared_page_witness_chairs,
     require_page_roster,
 )
-from common.recensor_receipt import build_recensor_reading_receipt, witnessed_count
+from common.recensor_receipt import build_recensor_reading_receipt
 from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_CLASS,
@@ -121,7 +126,7 @@ def page_witness_coverage(records: list[dict[str, Any]], floor: int, chairs: set
     attached to an act. A roster chair with no Testimonium for the page is
     `not-run`. The floor counts chairs that read the page (`read` or
     `genuinely-empty`) and were not cut off, by the v3 receipt's own formula
-    (`recensor_receipt.witnessed_count`). A reading chair whose Testimonium
+    (`outcomes.witnessed_count`). A reading chair whose Testimonium
     records no truncation state counts toward the floor, and is named in
     `health_unrecorded`; `shortfalls` counts the failed and truncated ones.
     """

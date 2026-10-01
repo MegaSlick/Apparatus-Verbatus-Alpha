@@ -154,7 +154,6 @@ def test_unsorted_items_are_refused_on_direct_validation():
     "review_outcome,expected_class",
     [
         ("accepted", "completed"),
-        ("recovery-requested", "unresolved"),
         ("confirmed-blank", "completed"),
         ("held-for-review", "unresolved"),
         ("failed", "failed"),
@@ -172,6 +171,17 @@ def test_every_recensor_terminal_set_combination_builds_a_matching_receipt_item(
     receipt = _build([item])
     assert receipt["items"][0]["partition_class"] == expected_class
     assert receipt["by_partition_class"][expected_class] == 1
+
+
+def test_a_review_outcome_no_stage_produces_is_refused():
+    """The Recensor asks for no recovery, so a `recovery-requested` review is forged."""
+    item = dict(
+        _item_with_coverage(_valid_coverage()),
+        review_outcome="recovery-requested",
+        partition_class="unresolved",
+    )
+    with pytest.raises(SchemaRefusal, match="unknown Recensor outcome"):
+        _build([item])
 
 
 def test_a_receipt_item_refuses_a_partition_class_its_review_does_not_derive():

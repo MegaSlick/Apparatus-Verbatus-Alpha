@@ -168,9 +168,10 @@ def not_run_problems(
         problems.append(
             {
                 "code": NO_WITNESS_TESTIMONY,
-                "detail": "no witness testified to this page (the Attestatores serve only pages "
-                "with a proposed Designator act); the page is held for a human, not read "
-                "without its witnesses",
+                "detail": "no witness testified to this page: the sealed roster seats no page "
+                "witness, or the Attestatores recorded no page Testimonium for it; the page is "
+                "held for a human, not read without its witnesses. Seat a page witness or "
+                "complete the Attestatores pass, then read the page again",
             }
         )
     if page_feed.shows_nothing(feed):

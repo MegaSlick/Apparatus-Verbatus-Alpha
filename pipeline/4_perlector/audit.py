@@ -1,7 +1,8 @@
 """The sealed Pass-C audit policy, loaded and checked.
 
 Every `page-reading` records the policy it was sealed under, as not run
-(`page_run.audit_not_run`); this is the one reader of that declaration.
+(`common.perlector_audit.audit_not_run`); this checks the declaration's closed
+schema before stage 4 seals it into a reading.
 """
 
 from __future__ import annotations

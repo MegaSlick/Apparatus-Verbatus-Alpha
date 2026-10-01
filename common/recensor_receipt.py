@@ -30,6 +30,7 @@ from common.contracts.outcomes import (
     WITNESS_READING_OUTCOMES,
     OutcomeClass,
     classify,
+    witnessed_count,
 )
 from common.contracts.stages import ATTESTATORES, RECENSOR
 
@@ -263,19 +264,6 @@ def _partition_counts(items: list[dict[str, Any]]) -> dict[str, int]:
 
 def _status(reasons: list[str]) -> str:
     return "complete" if not reasons else "partial"
-
-
-def witnessed_count(coverage: dict[str, Any]) -> int:
-    """The count a unit's `under_witnessed` flag is judged from.
-
-    Every witness reads the whole page, so it is the reading outcomes less the
-    truncated ones: reading outcomes, not the COMPLETED class, because that
-    class also holds approval exclusions that never looked at the ink.
-    """
-    reading_chairs = sum(
-        coverage["by_outcome"].get(outcome, 0) for outcome in WITNESS_READING_OUTCOMES
-    )
-    return reading_chairs - coverage["shortfalls"]["truncated"]
 
 
 def _validate_item(item: Any) -> None:

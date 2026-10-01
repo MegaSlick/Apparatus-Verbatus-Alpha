@@ -449,7 +449,7 @@ def _stray_link(context, reviews) -> None:
             lambda tree, context, reviews: context.publish(
                 kind="recovery-request",
                 subject_id=reviews["p1:1"]["subject_id"],
-                outcome="recovery-requested",
+                outcome="held-for-review",
                 attempt=page_review.attempt_id(reviews["p1:1"]["subject_id"], "recover", 1),
                 payload={},
             ),

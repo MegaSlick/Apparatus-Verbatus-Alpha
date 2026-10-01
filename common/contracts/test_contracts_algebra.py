@@ -16,7 +16,7 @@ from common.contracts import outcomes
 from common.contracts.errors import ApprovalRefusal, FatalAccounting, SchemaRefusal
 from common.contracts.outcomes import (
     NO_ATTRIBUTION_REASON,
-    SILENT_PAGE_REASON,
+    PAGE_READ_SILENT_PAGE_REASON,
     ArmariumCategory,
     OutcomeClass,
     check_algebra_is_total,
@@ -36,10 +36,10 @@ EXPECTED_VOCABULARY_SIZES = {
     "door": 4,
     "exemplar": 3,
     "ink-map": 5,
-    "designator": 6,
+    "designator": 4,
     "attestatores": 8,
     "perlector": 8,
-    "recensor": 7,
+    "recensor": 6,
     "archetypus": 4,
     "armarium": 7,
 }
@@ -193,13 +193,13 @@ def test_excluded_without_an_approval_record_is_refused():
     """Only the project lead approves an exclusion. A claimed approval with no
     artifact is no approval."""
     with pytest.raises(ApprovalRefusal):
-        require_approval(DESIGNATOR, "excluded", None)
+        require_approval(ATTESTATORES, "excluded", None)
     with pytest.raises(ApprovalRefusal):
-        require_approval(DESIGNATOR, "excluded", "")
+        require_approval(ATTESTATORES, "excluded", "")
 
 
 def test_excluded_with_an_approval_reference_passes():
-    require_approval(DESIGNATOR, "excluded", "art_0123456789abcdef")
+    require_approval(ATTESTATORES, "excluded", "art_0123456789abcdef")
 
 
 def test_unbound_outcomes_need_no_approval():
@@ -268,6 +268,20 @@ def test_an_unknown_chair_outcome_is_fatal():
 # --- The run aggregate ---------------------------------------------------------
 
 
+def _page_coverage(chair_outcomes, floor):
+    """A page review's coverage of these outcomes, none of them truncated."""
+    coverage = witness_coverage(chair_outcomes, floor)
+    return {
+        **coverage,
+        "health_unrecorded": 0,
+        "shortfalls": {
+            "failed": coverage["by_outcome"].get("failed", 0),
+            "truncated": 0,
+            "unaligned": 0,
+        },
+    }
+
+
 def test_a_fully_delivered_well_witnessed_run_is_complete():
     aggregate = run_aggregate(
         {"act_a": ArmariumCategory.DELIVERED, "act_b": ArmariumCategory.CONFIRMED_BLANK},
@@ -297,14 +311,13 @@ def test_a_run_that_accounted_for_nothing_is_not_complete():
 
 
 def test_a_sealed_page_carrying_no_acts_is_unresolved_not_inferred_blank():
-    """A zero-act signal cannot distinguish a blank page from a Designator miss.
+    """A page no reading accounts for cannot be told from a page nobody read.
 
-    A future Recensor may diagnose and seal `confirmed-blank` with evidence. Until
-    then, found-nothing is silence rather than proof and cannot complete a run.
+    Found-nothing is silence rather than proof and cannot complete a run.
     """
     aggregate = run_aggregate({}, None, {1: {"outcome": "sealed"}})
     assert aggregate["status"] == "partial"
-    assert aggregate["reasons"] == [SILENT_PAGE_REASON.format(ordinal=1)]
+    assert aggregate["reasons"] == [PAGE_READ_SILENT_PAGE_REASON.format(ordinal=1)]
 
 
 def test_one_silent_page_beside_a_busy_one_still_forces_partial():
@@ -314,7 +327,7 @@ def test_one_silent_page_beside_a_busy_one_still_forces_partial():
     silent page among busy ones had its proof obligation discharged by its
     neighbours. At ten thousand pages that is the only shape the defect can take:
     nobody ships a run where every page is blank, and the one page whose faint ink
-    the Designator missed is exactly the page that reconciled to `complete`.
+    nothing read is exactly the page that reconciled to `complete`.
     """
     aggregate = run_aggregate(
         {"act_a": ArmariumCategory.DELIVERED},
@@ -324,7 +337,7 @@ def test_one_silent_page_beside_a_busy_one_still_forces_partial():
         act_text_status={"act_a": "established"},
     )
     assert aggregate["status"] == "partial"
-    assert aggregate["reasons"] == [SILENT_PAGE_REASON.format(ordinal=2)]
+    assert aggregate["reasons"] == [PAGE_READ_SILENT_PAGE_REASON.format(ordinal=2)]
     assert aggregate["by_page_outcome"] == {"sealed": 2}
 
 
@@ -381,7 +394,7 @@ def test_attribution_naming_an_act_or_a_page_the_run_never_had_is_fatal():
 def test_an_edge_hold_forces_partial_and_names_the_page_once():
     """A page is never lost silently, even when held: a held page counted as one page.
 
-    A page whose edge ink no Designator crop claimed keeps the run partial even
+    A page whose edge ink no reading region claimed keeps the run partial even
     when every act cut from it was delivered, because no act can own that ink
     yet. The ordinals are counted as a set: a repeated ordinal is still one held
     page, and naming it twice would report one page as two to the person reading
@@ -396,8 +409,8 @@ def test_an_edge_hold_forces_partial_and_names_the_page_once():
     )
     assert aggregate["status"] == "partial"
     assert [reason for reason in aggregate["reasons"] if "unclaimed-edge-ink" in reason] == [
-        "page 1 carries unreleased unclaimed-edge-ink: ink at its edge that no Designator "
-        "crop on the page claims, so its coverage is not reconciled"
+        "page 1 carries unreleased unclaimed-edge-ink: ink at its edge that no reading "
+        "region on the page claims, so its coverage is not reconciled"
     ]
 
 
@@ -502,8 +515,8 @@ def test_aggregate_reason_order_does_not_depend_on_mapping_insertion_order():
         "act_a": ArmariumCategory.REFUSED_WITH_REASON,
     }
     coverage = {
-        "act_b": witness_coverage({"s1": "not-run"}, 1),
-        "act_a": witness_coverage({"s1": "dead"}, 1),
+        "act_b": _page_coverage({"s1": "not-run"}, 1),
+        "act_a": _page_coverage({"s1": "dead"}, 1),
     }
     pages = {1: {"outcome": "sealed"}}
     act_pages = {"act_b": [1], "act_a": [1]}
@@ -526,7 +539,7 @@ def test_under_witnessed_coverage_forces_partial_even_when_every_act_delivered()
     untouched — witness coverage never demotes text."""
     aggregate = run_aggregate(
         {"act_a": ArmariumCategory.DELIVERED},
-        {"act_a": witness_coverage({"s1": "read", "s2": "dead", "s3": "dead"}, 3)},
+        {"act_a": _page_coverage({"s1": "read", "s2": "dead", "s3": "dead"}, 3)},
         {1: {"outcome": "sealed"}},
         act_pages={"act_a": [1]},
         act_text_status={"act_a": "established"},
@@ -539,7 +552,7 @@ def test_under_witnessed_coverage_forces_partial_even_when_every_act_delivered()
 def test_a_chair_with_no_outcome_yet_forces_partial():
     aggregate = run_aggregate(
         {"act_a": ArmariumCategory.DELIVERED},
-        {"act_a": witness_coverage({"s1": "read", "s2": "read", "s3": "not-run"}, 3)},
+        {"act_a": _page_coverage({"s1": "read", "s2": "read", "s3": "not-run"}, 3)},
         {1: {"outcome": "sealed"}},
         act_pages={"act_a": [1]},
     )
@@ -671,34 +684,20 @@ def test_armarium_categories_and_vocabulary_cannot_drift_apart():
     }
 
 
-def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class():
-    """F-G2, pinned. `under_witnessed` is decided from the attached-reading
-    count; `by_class["completed"]` is the wider ATTESTATORES COMPLETED class,
-    which also holds `excluded` and -- since R4's per-act alignment -- a page
-    witness that read its page and did not align into this act. Printing the
-    wider number put a floor-satisfying count next to an under-witnessed
-    verdict: "act act_a is under-witnessed (3 of a floor of 3)", a sentence
-    that refutes itself, which is exactly the contradiction that visible partial
-    results and honest measurement rule out.
-
-    Written on this audit: the repair landed with no named test holding it, and
-    the fixture cannot produce the divergence today.
+def test_the_under_witnessed_count_is_the_page_reads_never_the_wider_class():
+    """`under_witnessed` is decided from the page reads less the truncated ones;
+    `by_class["completed"]` is the wider ATTESTATORES COMPLETED class, which also
+    holds `excluded`. Printing the wider number put a floor-satisfying count next
+    to an under-witnessed verdict, a sentence that refutes itself.
     """
-    # Stated in full rather than through the boolean shorthand: what this test
-    # needs is two chairs that attached *and* compared, and the shorthand says
-    # nothing about comparability.
-    coverage = witness_coverage(
-        {"s1": "read", "s2": "read", "s3": "read"},
-        3,
-        attachments={
-            "s1": {"attached": True, "comparable": True},
-            "s2": {"attached": True, "comparable": True},
-            "s3": {"attached": False, "comparable": False},
-        },
-    )
-    assert coverage["under_witnessed"] is True
+    coverage = {
+        **witness_coverage({"s1": "read", "s2": "read", "s3": "excluded"}, 3),
+        "health_unrecorded": 0,
+        "shortfalls": {"failed": 0, "truncated": 1, "unaligned": 0},
+        "under_witnessed": True,
+    }
     assert coverage["by_class"]["completed"] == 3, "the wider class still counts all three"
-    assert coverage["page_granularity_only"] == 1
+    assert outcomes.witnessed_count(coverage) == 1
 
     aggregate = run_aggregate(
         {"act_a": ArmariumCategory.DELIVERED},
@@ -707,160 +706,21 @@ def test_the_under_witnessed_count_is_the_attached_reads_never_the_wider_class()
         act_pages={"act_a": [1]},
         act_text_status={"act_a": "established"},
     )
-    assert aggregate["reasons"] == ["act act_a is under-witnessed (2 of a floor of 3)"]
+    assert aggregate["reasons"] == ["act act_a is under-witnessed (1 of a floor of 3)"]
 
 
-def test_the_legacy_under_witnessed_message_prints_the_count_that_raised_the_flag():
-    """On the legacy path (`attachments=None`) `under_witnessed` is decided from
-    the COMPLETED class, which also holds `excluded` -- and the record still
-    carries `page_granularity_only`, so branching on that key's presence
-    rederived the message count from reading outcomes instead: {read, excluded,
-    dead} against a floor of 3 flagged at 2 and reported 1, a number no rule in
-    `witness_coverage` produced. The branch is keyed on the recorded
-    `granularity_basis`, so the message quotes the same arithmetic that decided
-    the flag.
-    """
-    coverage = witness_coverage(
-        {"s1": "read", "s2": "excluded", "s3": "dead"},
-        3,
-    )
-    assert coverage["granularity_basis"] == outcomes.LEGACY_GRANULARITY_BASIS
-    assert coverage["under_witnessed"] is True, "decided from the class count of 2"
-    assert coverage["by_class"]["completed"] == 2
-    assert coverage["page_granularity_only"] == 0, "the legacy record still carries the key"
-
-    aggregate = run_aggregate(
-        {"act_a": ArmariumCategory.DELIVERED},
-        {"act_a": coverage},
-        {1: {"outcome": "sealed"}},
-        act_pages={"act_a": [1]},
-        act_text_status={"act_a": "established"},
-    )
-    assert aggregate["reasons"] == ["act act_a is under-witnessed (2 of a floor of 3)"]
-
-
-def test_an_unknown_granularity_basis_is_refused_never_guessed_from():
-    """The closed vocabulary, closed at the consumer: a basis this module never
-    produced is malformed evidence. A default here would guess the message
-    count from the wrong arithmetic -- the exact defect the basis branch
-    exists to repair."""
-    coverage = witness_coverage(
-        {"s1": "read", "s2": "read", "s3": "read"},
-        3,
-        attachments={"s1": True, "s2": True, "s3": False},
-    )
-    forged = {**coverage, "granularity_basis": "a-basis-nothing-produces"}
-    with pytest.raises(FatalAccounting, match="unknown granularity basis"):
+def test_an_under_witnessed_flag_without_its_shortfalls_is_refused_never_guessed_from():
+    """A flag with no truncation count is malformed evidence: the message count
+    is never rederived from the wider class."""
+    coverage = witness_coverage({"s1": "read", "s2": "excluded", "s3": "dead"}, 3)
+    assert coverage["under_witnessed"] is True
+    with pytest.raises(KeyError):
         run_aggregate(
             {"act_a": ArmariumCategory.DELIVERED},
-            {"act_a": forged},
+            {"act_a": coverage},
             {1: {"outcome": "sealed"}},
             act_pages={"act_a": [1]},
         )
-
-
-def _fact(attached, basis):
-    # `comparable` is required of every mapping fact since the retained-native
-    # seam: an attachment that cannot be compared is not evidence of coverage.
-    # A fact reached geometrically is comparable exactly when it attached.
-    return {"attached": attached, "comparable": attached, "attachment_basis": basis}
-
-
-def test_a_bare_boolean_attachment_claims_no_comparability_either():
-    """The shorthand states attachment, and attachment is not comparability.
-
-    Copying `attached` into `comparable` gave a caller that measured no
-    comparison one toward the witness floor for free -- the same unearned claim
-    the granularity basis refuses it just below. A caller holding comparability
-    evidence says so in the mapping form.
-    """
-    coverage = witness_coverage(
-        {"s1": "read", "s2": "read"},
-        2,
-        attachments={"s1": True, "s2": True},
-    )
-
-    assert coverage["page_granularity_only"] == 2
-    assert coverage["under_witnessed"] is True
-
-
-def test_a_bare_boolean_attachment_earns_no_native_measurement_claim():
-    """The shorthand carries no geometry, so it cannot claim the geometric basis.
-
-    `granularity_basis` says *how* the count was reached and travels in the
-    receipt. Derived from the mere presence of the argument, the booleans below
-    would have reported a native-overlap measurement nothing performed.
-    """
-    coverage = witness_coverage(
-        {"s1": "read", "s2": "read", "s3": "genuinely-empty"},
-        3,
-        attachments={"s1": True, "s2": False, "s3": True},
-    )
-
-    assert coverage["granularity_basis"] == outcomes.INTERIM_GRANULARITY_BASIS
-
-
-def test_one_fact_without_a_basis_withdraws_the_native_claim_for_the_whole_act():
-    """The claim is about the act's count, so any undecided chair unmakes it."""
-    coverage = witness_coverage(
-        {"s1": "read", "s2": "read"},
-        2,
-        attachments={
-            "s1": _fact(True, "geometric-overlap"),
-            # A well-formed fact that simply names no basis: the shape is
-            # complete, so what withdraws the native claim is the missing
-            # basis alone and not a malformed attachment.
-            "s2": {"attached": True, "comparable": True},
-        },
-    )
-
-    assert coverage["granularity_basis"] == outcomes.INTERIM_GRANULARITY_BASIS
-
-
-def test_granularity_identity_is_executable_for_interim_and_native_bases():
-    """The reading chairs minus the page-only count equals the writer's attachments."""
-    coverage = witness_coverage(
-        {"s1": "read", "s2": "read", "s3": "genuinely-empty"},
-        3,
-        attachments={
-            "s1": _fact(True, "geometric-overlap"),
-            "s2": _fact(False, "unattached"),
-            "s3": _fact(True, "presented-region"),
-        },
-    )
-    assert coverage["granularity_basis"] == outcomes.NATIVE_GRANULARITY_BASIS
-    assert (
-        sum(coverage["by_outcome"].get(outcome, 0) for outcome in outcomes.WITNESS_READING_OUTCOMES)
-        - coverage["page_granularity_only"]
-        == 2
-    )
-
-
-def test_an_attached_but_incomparable_witness_is_page_only_and_cannot_meet_the_floor():
-    """Attachment and comparability must remain independent floor predicates.
-
-    Attachment records geometry; comparability records whether retained derived
-    testimony supplies this act's text.  A native box can establish the first
-    while the report is structured, but it must land in the existing unaligned
-    shortfall and in `page_granularity_only`, never satisfy the floor.
-    """
-    coverage = witness_coverage(
-        {"s1": "read", "s2": "read", "s3": "read"},
-        3,
-        attachments={
-            "s1": {"attached": True, "comparable": True},
-            "s2": {"attached": True, "comparable": True},
-            "s3": {"attached": True, "comparable": False},
-        },
-    )
-    assert coverage["under_witnessed"] is True
-    assert coverage["page_granularity_only"] == 1
-    assert coverage["shortfalls"]["unaligned"] == 1
-    assert (
-        sum(coverage["by_outcome"].get(outcome, 0) for outcome in outcomes.WITNESS_READING_OUTCOMES)
-        - coverage["page_granularity_only"]
-        == 2
-    )
 
 
 # --- The established text's own status: damage the category cannot express ------
@@ -1051,7 +911,6 @@ def test_a_page_read_aggregate_names_its_pages_in_the_page_path_s_words() -> Non
         act_pages={"p1:1": [1]},
         act_text_status={"p1:1": "established"},
         edge_hold_pages=[1],
-        page_read=True,
         other_categories_by_page={2: ["held-for-review"], 3: ["delivered"]},
         unpaired_continuations=[("p1:1", "continues_to_next_page")],
     )
@@ -1076,7 +935,6 @@ def test_a_held_other_reading_on_a_page_of_acts_keeps_the_aggregate_partial() ->
             {1: sealed},
             act_pages={"p1:1": [1]},
             act_text_status={"p1:1": "established"},
-            page_read=True,
             other_categories_by_page={1: others},
         )
 

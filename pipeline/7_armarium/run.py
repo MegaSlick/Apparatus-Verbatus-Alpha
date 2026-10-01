@@ -1181,7 +1181,6 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
         act_text_status=act_text_status,
         edge_hold_pages=edge_hold_pages_from_rows(ink_map_pages),
         continuation_joins=joins,
-        page_read=True,
         other_categories_by_page=other_categories_by_page,
         unpaired_continuations=unpaired_continuations(
             continuation_flags,

@@ -477,14 +477,25 @@ def test_inputs_are_stored_in_a_stable_order():
 # --- The approval binding travels with the envelope ---------------------------
 
 
+def _excluded_testimonium(**overrides):
+    return sound_envelope(
+        artifact_id=artifact_id("attestatores", "testimonium", "pg_0123456789abcdef"),
+        stage="attestatores",
+        kind="testimonium",
+        outcome="excluded",
+        producer={"stage": "attestatores", "adapter_revision": "fake-witness-v0"},
+        **overrides,
+    )
+
+
 def test_an_excluded_artifact_without_an_approval_reference_is_refused():
     with pytest.raises(ApprovalRefusal):
-        validate_envelope(sound_envelope(outcome="excluded"))
+        validate_envelope(_excluded_testimonium())
 
 
 def test_an_excluded_artifact_with_an_approval_reference_validates():
-    envelope = sound_envelope(outcome="excluded")
-    envelope["approval_ref"] = artifact_id("designator", "approval", "pg_0123456789abcdef")
+    envelope = _excluded_testimonium()
+    envelope["approval_ref"] = artifact_id("attestatores", "approval", "pg_0123456789abcdef")
     envelope["self_hash"] = self_hash(envelope)
     assert validate_envelope(envelope)
 

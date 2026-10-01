@@ -131,7 +131,6 @@ _NOT_ASSESSED = {
 
 def run_aggregate(*args, **kwargs):
     """The run aggregate of a run whose Perlector read whole pages, as the export derives it."""
-    kwargs.setdefault("page_read", True)
     kwargs.setdefault("other_categories_by_page", {})
     return _run_aggregate(*args, **kwargs)
 

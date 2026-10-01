@@ -313,8 +313,9 @@ def test_an_observed_box_cannot_claim_pixels_outside_the_exact_presented_image()
         validate_native_witness_geometry(value, page_size=(100, 80))
 
 
-def _page_witness_act_view():
-    """A page chair's act view: one crop presented, page-level geometry restated."""
+def test_a_page_witness_flag_does_not_exempt_a_crop_from_containment():
+    """No record is exempt from crop containment: a `page_witness` flag on a
+    cropped presentation still refuses a box outside the crop it presents."""
     value = payload()
     value["page_witness"] = True
     value["presented"]["kind"] = "region"
@@ -322,16 +323,6 @@ def _page_witness_act_view():
     value["presented"]["transform"].update(
         {"operation": "crop", "bounds": {"x": 10, "y": 10, "w": 20, "h": 20}}
     )
-    return value
-
-
-def test_a_page_witnesss_act_view_may_restate_geometry_outside_its_one_crop():
-    """The chair saw the whole page; this record presents only one of its crops.
-
-    Holding it to crop containment would refuse the honest page-space geometry
-    the chair actually reported, which is what Unit 10C's coverage consumes.
-    """
-    value = _page_witness_act_view()
     value["observed"] = [
         {
             "ordinal": 0,
@@ -341,22 +332,7 @@ def test_a_page_witnesss_act_view_may_restate_geometry_outside_its_one_crop():
         }
     ]
 
-    assert validate_native_witness_geometry(value, page_size=(100, 80)) is value
-
-
-def test_a_page_witnesss_act_view_is_still_bounded_by_the_sealed_page():
-    """The relaxed wall is crop containment, never the sealed page itself."""
-    value = _page_witness_act_view()
-    value["observed"] = [
-        {
-            "ordinal": 0,
-            "bounds": {"x": 0, "y": 0, "w": 101, "h": 5},
-            "bounds_source": "native",
-            "span": None,
-        }
-    ]
-
-    with pytest.raises(SchemaRefusal, match="outside the sealed source page"):
+    with pytest.raises(SchemaRefusal, match="outside the exact image presentation"):
         validate_native_witness_geometry(value, page_size=(100, 80))
 
 

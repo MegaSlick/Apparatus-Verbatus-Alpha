@@ -249,9 +249,9 @@ def test_the_shipped_gate_judges_a_72_dpi_letter_page_and_not_the_fixture():
 
 
 def test_an_honest_act_at_the_calibrated_median_low_tail_is_not_flagged():
-    """The 0.5th percentile of honest RecordGold acts over padded regions reads 727
-    characters per page-equivalent (unclamped); a floor above that flags honest
-    acts. 720 is just under it."""
+    """The 0.5th percentile of honest RecordGold acts over their bare boxes reads
+    1,146 characters per page-equivalent; a floor near it flags honest acts. 720,
+    well under it, is not flagged."""
     region = LEAF_PAGE // 10
     at_the_tail = "a" * 72
     assert 72 * LEAF_PAGE // region == 720

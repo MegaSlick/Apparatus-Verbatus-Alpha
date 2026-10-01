@@ -378,7 +378,6 @@ def validate_observed(
     presented: dict[str, Any],
     page_size: tuple[int, int] | None = None,
     retained_text: Any = None,
-    presentation_is_witness_view: bool = True,
     unit_presentations: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Validate dense witness order, source-page boxes, and non-overlapping text spans.
@@ -412,10 +411,7 @@ def validate_observed(
                 "a presented-source observed box differs from the presented transform"
             )
         bounds = _bounds(item["bounds"], "a Testimonium observed box", page_size=page_size)
-        # A page witness's act view restates page-level geometry, so its boxes
-        # may exceed this record's crop; they stay bounded by the sealed page.
-        presented_bounds = shown["transform"]["bounds"]
-        if presentation_is_witness_view and not _contains(presented_bounds, bounds):
+        if not _contains(shown["transform"]["bounds"], bounds):
             raise SchemaRefusal(
                 "a Testimonium observed box falls outside the exact image presentation. "
                 "The record would attribute unseen page pixels to this witness. Correct the "
@@ -494,8 +490,8 @@ def validate_native_witness_geometry(
 ) -> dict[str, Any]:
     """Validate the two derived blocks and recursively refuse preference claims.
 
-    An empty pair records that the chair was never shown an image (held acts,
-    refused pages, absent chairs).
+    An empty pair records that the chair was never shown an image (refused
+    pages, absent chairs).
     """
     if not isinstance(payload, dict):
         raise SchemaRefusal("a Testimonium payload is not an object")
@@ -517,13 +513,6 @@ def validate_native_witness_geometry(
         presented=presented,
         page_size=page_size,
         retained_text=payload.get("payload"),
-        # The one record that does not present the witness's own view is a page
-        # witness's act view (`page_witness: True`, scope != "page"); consumers
-        # reconcile the flag against the sealed declaration, so an act chair
-        # cannot forge it.
-        presentation_is_witness_view=(
-            payload.get("scope") == "page" or payload.get("page_witness") is not True
-        ),
         unit_presentations=unit_presentations,
     )
     return payload

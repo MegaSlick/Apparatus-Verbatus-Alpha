@@ -192,6 +192,36 @@ def test_a_run_stopped_after_the_perlector_shows_each_entry_it_read_with_its_cro
     assert "(attempt 1)" in text
 
 
+@pytest.mark.parametrize(
+    ("scenario", "page_two"),
+    [("page-unread", "page 2 held (not-json)"), ("page-blank", "page 2 read, no entry")],
+)
+def test_a_page_read_without_an_entry_is_named_before_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str, page_two: str
+):
+    """A held or blank page reading is named, so a partial result never reads as not started."""
+    run_root = tmp_path / "runs"
+    completed = _orchestrate(run_root, "--from", "door", "--to", "perlector", scenario=scenario)
+    assert completed.returncode in (0, 3), completed.stderr
+
+    projected = _projection(run_root)
+    assert {act["row"]["page_ordinal"] for act in projected.acts} == {1}
+    note = projected.acts_denominator_note
+    assert note.startswith(review._PRE_EXPORT_ACTS_NOTE)
+    assert page_two in note and "page 1" not in note
+
+    # Every page read, none with an entry: the note still names each page.
+    monkeypatch.setattr(review, "_progressive_acts", lambda *_args: ())
+    projected = _projection(run_root)
+    assert projected.acts == ()
+    note = projected.acts_denominator_note
+    assert note != review._NO_READING_NOTE
+    assert "page 1 read, no entry" in note and page_two in note
+    text = "\n".join(review_text.render(dataclasses.asdict(projected)))
+    assert "the Perlector has not read the pages" not in text
+    assert "pages read without an entry: page 1" in text
+
+
 def test_opening_an_unfinished_run_changes_no_path_bytes_size_or_mtime(witnessed_run: Path):
     before = _census(witnessed_run / RUN_ID)
     projected = _projection(witnessed_run)
@@ -302,7 +332,6 @@ def test_a_held_review_is_one_labelled_record_and_one_held_act():
             "act_key": "a1",
             "reason": "the witnesses disagree",
             "attempt_ordinal": 1,
-            "audit_examination": "complete",
         },
     )
     holds = review._holds([recensor_review])
@@ -620,7 +649,6 @@ def test_the_plain_rendering_keeps_hostile_text_inert():
                 "source": "recensor",
                 "outcome": "held",
                 "reason": "adversarial\x1b escape",
-                "audit_examination": None,
             }
         ],
         "pages": [],
@@ -756,10 +784,6 @@ def test_a_projection_list_entry_that_is_not_an_object_is_refused_by_field_and_i
         ({"holds": [{"act_id": "a", "record_ref": "somewhere"}]}, "holds[].record_ref"),
         ({"acts": [{"act_id": "a", "row": "a row"}]}, "acts[].row"),
         (
-            {"acts": [{"act_id": "a", "row": {"reading": {"audit": 3}}}]},
-            "acts[].row.reading.audit",
-        ),
-        (
             {"acts": [{"act_id": "a", "row": {"reading": {"truncation": "length"}}}]},
             "acts[].row.reading.truncation",
         ),
@@ -773,8 +797,8 @@ def test_an_object_valued_projection_field_of_the_wrong_type_is_refused_by_name(
 
     The list fields were shape-checked from the first candidate and the object
     fields were not, so `export`, `next_action`, a hold's `record_ref`, a
-    reading's `audit` and an act's `row` each crashed the renderer instead of
-    refusing.
+    reading's `truncation` and an act's `row` each crashed the renderer instead
+    of refusing.
     """
     with pytest.raises(review_text.ProjectionShapeError) as refused:
         review_text.render({"run_id": "r", **projection})
@@ -801,7 +825,7 @@ def _delivered_act(uncertainty: dict, text: str = "alpha beta") -> dict:
 
 
 def test_a_published_span_is_shown_beside_the_state_that_says_who_did_not_report_it():
-    """The exhausted-cap projection mints spans on acts whose reader has no channel."""
+    """Spans published under a `not-assessed` state are not credited to the reader."""
     lines = review_text.render(
         _delivered_act(
             {
@@ -851,65 +875,37 @@ def test_a_doubt_layer_entry_that_is_not_an_object_is_refused_by_field_and_index
     assert "entry -1" not in str(gaps.value)
 
 
-def test_an_audited_reading_does_not_credit_the_reader_with_the_audits_own_spans():
-    """The union is not attributable on this surface, so it is not attributed.
-
-    Under a sealed cap of 0 the audit mints exhausted-cap spans, and a reader
-    that also assesses adds its own; the published layer holds both and nothing
-    in it says which is which. Saying "assessed by the reader; 3 span(s)" would
-    credit a person's reading of the screen to an instrument that reported one
-    of them.
-    """
-    projected = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
-    reader = {"start": 6, "end": 10, "alternatives": ["beta"], "confidence": "high"}
-    audited = "\n".join(
+def test_an_assessed_layer_is_credited_to_the_reader():
+    """No audit runs, so every published span of an assessed layer is the reader's own."""
+    first = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
+    second = {"start": 6, "end": 10, "alternatives": ["beta"], "confidence": "high"}
+    delivered = "\n".join(
         review_text.render(
             _delivered_act(
                 {
                     "assessment": {"state": "assessed", "problem": None},
-                    "uncertain_spans": [projected, reader],
+                    "uncertain_spans": [first, second],
                     "gaps": [],
                 }
             )
         )
     )
+    assert "doubts: assessed by the reader; 2 uncertain span(s), 0 gap(s)" in delivered
 
-    assert "assessed by the reader; this view cannot tell which of the span(s) below are" in (
-        audited
-    )
-    assert "its report and which the audit's; 2 uncertain span(s), 0 gap(s)" in audited
-
-    # A record with no audit behind it publishes only the reader's own spans, and
-    # there the attribution is provable. Every Perlectio carries an audit, so
-    # this form is reserved for a record kind that does not -- the instrument
-    # readings, which no projection puts on this screen today. Kept as the
-    # rule's other half rather than left to a reader to assume.
-    instrument = "\n".join(
+    read = "\n".join(
         review_text.render(
-            {
-                "run_id": "r",
-                "acts": [
-                    {
-                        "act_id": "a",
-                        "act_key": "a1",
-                        "category": "read: read, awaiting the Recensor",
-                        "crops": [],
-                        "row": {
-                            "reading": {
-                                "outcome": "read",
-                                "text": "alpha beta",
-                                "audit": None,
-                                "uncertainty_assessment": {"state": "assessed", "problem": None},
-                                "uncertain_spans": [reader],
-                                "gaps": [],
-                            }
-                        },
-                    }
-                ],
-            }
+            _reading_act(
+                {
+                    "outcome": "read",
+                    "text": "alpha beta",
+                    "uncertainty_assessment": {"state": "assessed", "problem": None},
+                    "uncertain_spans": [second],
+                    "gaps": [],
+                }
+            )
         )
     )
-    assert "doubts: assessed by the reader; 1 uncertain span(s), 0 gap(s)" in instrument
+    assert "doubts: assessed by the reader; 1 uncertain span(s), 0 gap(s)" in read
 
 
 def test_an_identical_pair_is_one_line_with_the_count_and_no_claim_about_its_source():
@@ -917,10 +913,7 @@ def test_an_identical_pair_is_one_line_with_the_count_and_no_claim_about_its_sou
 
     Dropping the repeat in the producer would have erased that the layer carried
     it twice, and printing it twice would say two doubts were found where one
-    entry appears twice. Naming the two instruments would say a third thing no
-    artifact records: nothing in the run names the instrument behind any one
-    span, and two audit flags of different classes may share one location, so a
-    fold is evidence of a repeat and of nothing else.
+    entry appears twice. A fold is evidence of a repeat and of nothing else.
     """
     span = {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
     for state, assessment in (
@@ -1166,7 +1159,7 @@ def test_an_unrecognised_state_is_named_as_one_rather_than_echoed():
     assert "doubts: no state recorded —" in stateless
 
 
-def test_a_gap_names_the_chairs_that_corroborate_it_and_the_layer_its_revisions():
+def test_a_gap_names_the_chairs_that_corroborate_it():
     """The record holds more than position and offset, and a person reviewing a
     gap against the ink should see what it holds, not take it on faith. Naming the chairs an
     absence rests on is not a selection among them: nothing here chooses, and no
@@ -1187,16 +1180,12 @@ def test_a_gap_names_the_chairs_that_corroborate_it_and_the_layer_its_revisions(
                         ],
                     }
                 ],
-                "self_revisions": [
-                    {"reading_span": {"start": 0, "end": 1}, "prior_span": {"start": 0, "end": 1}}
-                ],
             }
         )
     )
     text = "\n".join(lines)
 
-    assert "1 uncertain span(s), 1 gap(s), 1 self-revision(s)" not in text
-    assert "0 uncertain span(s), 1 gap(s), 1 self-revision(s)" in text
+    assert "0 uncertain span(s), 1 gap(s)" in text
     assert "gap (internal) at 6; corroborated by attestator_1, attestator_2" in text
 
 
@@ -1240,18 +1229,15 @@ def test_the_pre_export_reading_path_prints_every_state_the_same_way():
     its own cases: it is the path a person meets while a run is still stopped,
     which is what this screen is for.
     """
-    absent = "\n".join(
-        review_text.render(_reading_act({"outcome": "read", "text": "alpha beta", "audit": {}}))
-    )
+    absent = "\n".join(review_text.render(_reading_act({"outcome": "read", "text": "alpha beta"})))
     assert "doubts: not recorded — this reading was sealed before" in absent
 
-    audited = "\n".join(
+    assessed = "\n".join(
         review_text.render(
             _reading_act(
                 {
                     "outcome": "read",
                     "text": "alpha beta",
-                    "audit": {"unresolved": False, "examination": "complete"},
                     "uncertainty_assessment": {"state": "assessed", "problem": None},
                     "uncertain_spans": [
                         {"start": 0, "end": 5, "alternatives": [], "confidence": "low"}
@@ -1261,7 +1247,7 @@ def test_the_pre_export_reading_path_prints_every_state_the_same_way():
             )
         )
     )
-    assert "assessed by the reader; this view cannot tell which of the span(s) below are" in audited
+    assert "doubts: assessed by the reader; 1 uncertain span(s), 0 gap(s)" in assessed
 
     with pytest.raises(review_text.ProjectionShapeError) as refused:
         review_text.render(
@@ -1269,7 +1255,6 @@ def test_the_pre_export_reading_path_prints_every_state_the_same_way():
                 {
                     "outcome": "read",
                     "text": "alpha beta",
-                    "audit": {},
                     "uncertainty_assessment": "assessed",
                 }
             )
@@ -1360,16 +1345,6 @@ def test_a_falsey_witness_evidence_value_is_refused_rather_than_read_as_none():
         assert refused.value.index is None
 
 
-def test_a_malformed_audit_on_a_reading_is_refused_rather_than_read_as_absent():
-    """Mapped to `None` at the projection, a fault printed as an ordinary absence."""
-    with pytest.raises(review_text.ProjectionShapeError) as refused:
-        review_text.render(
-            _reading_act({"outcome": "read", "text": "alpha beta", "audit": "complete"})
-        )
-    assert refused.value.field == "acts[].row.reading.audit"
-    assert refused.value.index is None
-
-
 def test_a_delivered_export_row_without_a_witness_basis_is_refused_not_recovered():
     """Recovery is for the rows the Armarium deliberately writes thin.
 
@@ -1404,9 +1379,7 @@ def test_an_act_that_was_never_read_is_not_told_its_reading_predates_a_contract(
     )
     assert "doubts: not recorded — this act was not read" in not_run
 
-    sealed = "\n".join(
-        review_text.render(_reading_act({"outcome": "read", "text": "alpha beta", "audit": {}}))
-    )
+    sealed = "\n".join(review_text.render(_reading_act({"outcome": "read", "text": "alpha beta"})))
     assert "doubts: not recorded — this reading was sealed before" in sealed
 
     # A reading that ran and carries no text is a damaged record, not an act
