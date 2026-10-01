@@ -450,6 +450,11 @@ def _validate_coverage(coverage: Any) -> None:
         raise SchemaRefusal(
             "Recensor partition receipt counts more granularity facts than configured chairs"
         )
+    if shortfalls["unaligned"] != 0:
+        raise SchemaRefusal(
+            "Recensor partition receipt claims an unaligned shortfall; a page reading "
+            "aligns no witness to acts, so it is always 0"
+        )
     if shortfalls["failed"] != by_outcome.get("failed", 0):
         raise SchemaRefusal(
             "Recensor partition receipt's failed shortfall does not derive from "
