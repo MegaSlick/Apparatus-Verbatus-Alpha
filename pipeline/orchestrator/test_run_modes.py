@@ -294,7 +294,7 @@ def test_an_attestatores_prework_hold_leaves_a_boundary_the_next_stage_refuses(t
     assert (
         drive(root, "r", "page-unbroken", "--from", "door", "--to", "attestatores").returncode == 0
     )
-    testimonium = next((root / "r" / "3_attestatores" / "artifacts" / "testimonium").iterdir())
+    testimonium = next((root / "r" / "3_attestatores" / "artifacts" / "page-testimonium").iterdir())
     testimonium.unlink()
 
     held = drive(root, "r", "page-unbroken", "--stage", "attestatores")

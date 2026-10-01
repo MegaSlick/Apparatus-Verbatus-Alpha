@@ -1,18 +1,14 @@
-"""Bounded, loss-accounted text alignment for page testimony.
+"""Loss-accounted comparison views of witness text, and the sealed alignment limits.
 
-The anchor is Chandra's retained text-plus-geometry view.  This module never
-chooses a reading: it only says which bytes of a witness report can be attached
-to which anchor characters, or records that it cannot say so.
+Each view strips what a witness wrapped around its reading and maps every kept
+character back to its raw offset, so nothing is lost silently.
 """
 
 from __future__ import annotations
 
 import html
-import signal
-import threading
 import unicodedata
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Final
 
@@ -30,10 +26,6 @@ class AlignmentLimits:
     timeout_seconds: int
 
 
-class _TimedOut(Exception):
-    pass
-
-
 # The longest HTML5 named entity is `&CounterClockwiseContourIntegral;` at 33
 # characters; numeric references are shorter still. The bound matters because
 # the terminator is searched for, not assumed: without it a literal ampersand
@@ -41,52 +33,6 @@ class _TimedOut(Exception):
 # semicolon anywhere later in the document -- tags included -- and handed them
 # back as "stripped" text. See `markup_text_view`.
 _MAX_ENTITY_CHARACTERS: Final = 40
-
-
-def _alarm(signum: int, frame: Any) -> None:
-    raise _TimedOut()
-
-
-# Named so a reader of a retained record cannot mistake the instrument giving up
-# for a measurement of the witness. `timeout` alone read as a property of the
-# chair ("the witness timed out"); what actually happened is that this module's
-# own wall-clock backstop fired before it could say anything about coverage, and
-# the difference decides whether a shortfall is evidence or an absent
-# measurement.
-DEADLINE_REASON: Final = "alignment-deadline-exceeded"
-
-
-def _matching_blocks(witness_text: str, anchor_text: str) -> list[tuple[int, int, int]]:
-    """Return `(witness_start, anchor_start, size)` for every matched run.
-
-    `difflib.SequenceMatcher`'s Ratcliff-Obershelp blocks, longest common
-    contiguous block first then recursively to its left and right, with the
-    terminating zero-size block dropped. Blocks are strictly ordered and
-    non-overlapping on both sides, which is what lets a page alignment be
-    clipped to one act's anchor range.
-
-    `autojunk=False` is deliberate: its heuristic treats any element in over
-    1% of the sequence as junk, which in French register prose is most of the
-    alphabet. This is also what makes the matcher slow on degenerate input,
-    hence the wall-clock backstop below.
-
-    RapidFuzz's LCS opcodes were tried and refused: they are far faster but
-    maximize matched characters, which on two acts opening with the same
-    formula can attribute a witness's second-act reading to the first act
-    instead -- a coverage-maximizing objective is the wrong one for attaching a
-    reading to an anchor. "Longest verbatim agreement wins" is the one that is
-    load-bearing here, and `common/test_alignment.py` pins that case by name.
-
-    No normalization of its own: the comparison is over the codepoints
-    `markup_text_view` produced, so the returned offsets index that same text.
-    """
-    return [
-        (block.a, block.b, block.size)
-        for block in SequenceMatcher(
-            a=witness_text, b=anchor_text, autojunk=False
-        ).get_matching_blocks()
-        if block.size
-    ]
 
 
 def markup_text_view(raw: str) -> dict[str, Any]:
@@ -272,115 +218,3 @@ def load_alignment_limits(
     ):
         raise ContractError("alignment limits must be positive integers")
     return AlignmentLimits(**values), digest
-
-
-def align_to_anchor(witness_raw: str, anchor_raw: str, limits: AlignmentLimits) -> dict[str, Any]:
-    """Align a witness comparison view to an anchor, or explicitly `unaligned`.
-
-    The character and pair bounds always apply before the matcher runs. The
-    wall-clock deadline applies only where this call owns the process
-    real-time timer (main thread, POSIX `SIGALRM`, no timer already armed);
-    elsewhere the comparison runs unbounded under the caller's own deadline.
-    The pair bound does not refuse every pathologically slow input -- some
-    low-entropy pairs sitting exactly at `max_character_pairs` are still slow
-    -- which is what the deadline is for. No input is clipped: a limit or a
-    fired deadline produces a retained unaligned result with its reason.
-
-    `deadline_in_force` is `True` only when this call actually armed the
-    SIGALRM backstop. Without it a caller cannot tell a genuinely bounded
-    alignment from one that ran unbounded and happened to finish, both of
-    which otherwise return the same `{"status": "aligned", ...}`.
-
-    A fired deadline (`DEADLINE_REASON`) is a non-verdict: this module made no
-    measurement of coverage, and it is `unaligned` rather than a partial map,
-    since publishing spans a timed-out comparison never finished would be
-    worse than saying nothing.
-
-    The deadline is sized from the legitimate ceiling, not the pathological
-    one, and does not clear the pathological one: closing that gap needs a
-    different matcher, recorded as a design question in
-    `pipeline/3_attestatores/CONTRACT.md` rather than solved here.
-    """
-    witness = markup_text_view(witness_raw)
-    anchor = markup_text_view(anchor_raw)
-    witness_text, anchor_text = witness["text"], anchor["text"]
-    if len(witness_text) > limits.max_characters or len(anchor_text) > limits.max_characters:
-        return {
-            "status": "unaligned",
-            "reason": "character-limit",
-            "witness": witness,
-            "anchor": anchor,
-            # Refused before the matcher ever ran; no timer question arises.
-            "deadline_in_force": False,
-        }
-    if len(witness_text) * len(anchor_text) > limits.max_character_pairs:
-        return {
-            "status": "unaligned",
-            "reason": "character-pair-limit",
-            "witness": witness,
-            "anchor": anchor,
-            "deadline_in_force": False,
-        }
-    previous = None
-    alarm_armed = False
-    try:
-        if (
-            hasattr(signal, "SIGALRM")
-            and hasattr(signal, "ITIMER_REAL")
-            and threading.current_thread() is threading.main_thread()
-            and signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
-        ):
-            previous = signal.signal(signal.SIGALRM, _alarm)
-            try:
-                signal.alarm(limits.timeout_seconds)
-            except BaseException:
-                signal.signal(signal.SIGALRM, previous)
-                raise
-            alarm_armed = True
-        blocks = _matching_blocks(witness_text, anchor_text)
-        # Cancelled inside the `try`, not only `finally`: an alarm firing after
-        # `_matching_blocks` returns but before `finally` runs would otherwise
-        # raise `_TimedOut` past the `except` above, propagating an internal
-        # exception from a function whose contract is to return `unaligned`
-        # instead. A firing in the remaining instructions is still caught and
-        # recorded as the deadline reason -- understating a finished alignment,
-        # the safe direction of the two possible mistakes.
-        if alarm_armed:
-            signal.alarm(0)
-    except _TimedOut:
-        return {
-            "status": "unaligned",
-            "reason": DEADLINE_REASON,
-            "witness": witness,
-            "anchor": anchor,
-            # A fired deadline is only reachable with the alarm armed; recorded
-            # explicitly rather than left implied by the reason code, so every
-            # record in this module answers the same question the same way.
-            "deadline_in_force": True,
-        }
-    finally:
-        if alarm_armed:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, previous)
-    spans = [
-        {
-            "witness": {"start": witness_start, "end": witness_start + size},
-            "anchor": {"start": anchor_start, "end": anchor_start + size},
-        }
-        for witness_start, anchor_start, size in blocks
-    ]
-    if not spans:
-        return {
-            "status": "unaligned",
-            "reason": "no-common-anchor-text",
-            "witness": witness,
-            "anchor": anchor,
-            "deadline_in_force": alarm_armed,
-        }
-    return {
-        "status": "aligned",
-        "witness": witness,
-        "anchor": anchor,
-        "spans": spans,
-        "deadline_in_force": alarm_armed,
-    }

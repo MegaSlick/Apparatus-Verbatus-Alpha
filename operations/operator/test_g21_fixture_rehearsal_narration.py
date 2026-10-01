@@ -43,7 +43,7 @@ def _rehearsal_messages(tmp_path: Path, *, scenario: str) -> list[str]:
     synthetic fixture), not a stub, because the defect is in what `_declared_work`
     prints against the *real* export a run produces -- a stubbed child never
     writes the artifacts the closing narration reads. A held scenario (e.g.
-    `review`) raises `OperatorError(RUN_HELD)` *after* every narration line
+    `page-review`) raises `OperatorError(RUN_HELD)` *after* every narration line
     below is already printed and captured, so that outcome is not itself a
     test failure here -- only what was said before it is.
     """
@@ -81,11 +81,11 @@ def test_happy_scenario_narration_never_names_a_page_it_never_touched(
 def test_review_scenario_narration_never_names_a_page_it_never_touched(
     tmp_path: Path,
 ) -> None:
-    """`review` is a two-page scenario (a1 recovered, a2 held) like `happy`;
-    page 3 is equally absent from it and must stay off its narration too.
+    """`page-review` is a two-page scenario held for review, like `happy` in its
+    pages; page 3 is equally absent from it and must stay off its narration too.
     """
 
-    messages = _rehearsal_messages(tmp_path, scenario="review")
+    messages = _rehearsal_messages(tmp_path, scenario="page-review")
 
     assert messages, "the rehearsal produced no narration at all"
     assert not any("page 3" in line for line in messages), (

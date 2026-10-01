@@ -77,19 +77,14 @@ def test_healthy_canary_is_silent_and_dai_failure_names_training_page(monkeypatc
     )
     monkeypatch.setattr(
         canary,
-        "attachment_index",
-        lambda *_args, **_kwargs: {
-            "act": {
-                chair: [{"attachment": {"page_witness": False}, "testimonium": {"chair": chair}}]
-                for chair in canary.CHAIRS
-            }
-        },
+        "page_witness_index",
+        lambda *_args, **_kwargs: {2: {chair: {"chair": chair} for chair in canary.CHAIRS}},
     )
     bad_chair = set()
     monkeypatch.setattr(
         canary,
         "witness_reading",
-        lambda _attachment, testimony: (
+        lambda testimony: (
             OutputStatus.COMPLETE,
             "unrelated symbols" if testimony["chair"] in bad_chair else reference_text,
             None,

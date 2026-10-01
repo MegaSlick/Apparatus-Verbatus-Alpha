@@ -81,8 +81,8 @@ def test_context_refuses_a_publish_after_its_completion_seal(tmp_path):
 
     with pytest.raises(SchemaRefusal, match="completion boundary"):
         context.publish(
-            kind="testimonium",
-            subject_id="act-after-seal",
+            kind="page-testimonium",
+            subject_id="page-after-seal",
             outcome="read",
             payload={},
         )

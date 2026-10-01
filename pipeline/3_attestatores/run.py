@@ -1477,16 +1477,10 @@ def page_testimonium_payload(
     unit_captures: list[dict[str, Any] | None] | None = None,
     unit_call_refs: list[dict[str, str] | None] | None = None,
 ) -> dict[str, Any]:
-    """One chair's closed page record, validated before it is published.
-
-    Every page is witnessed as its own unit: it names no act, its role is
-    `primary` and no act attempt is left unjoined.
-    """
+    """One chair's closed page record, validated before it is published."""
     record: dict[str, Any] = {
         "chair": chair,
-        "act_key": f"page-{page_ordinal}",
         "attempt_ordinal": ordinal,
-        "regions": [],
         "provenance": provenance,
         "format_capabilities": attempt.format_capabilities,
         "payload": attempt.native_payload,
@@ -1497,8 +1491,6 @@ def page_testimonium_payload(
         "unpresented_regions": unpresented_regions,
         "scope": "page",
         "page_ordinal": page_ordinal,
-        "page_role": "primary",
-        "unjoined_act_attempts": [],
     }
     if raw_response_refs:
         record["raw_response_refs"] = raw_response_refs
@@ -1512,6 +1504,7 @@ def page_testimonium_payload(
         presentations=presentations,
         unit_captures=unit_captures,
         unit_call_refs=unit_call_refs,
+        serving_call_ref=attempt.serving_call_ref,
     )
     validate_page_testimonium_payload(record, testimonium_id=testimonium_id)
     validate_page_record_facts(record, attempt.outcome)
@@ -1611,6 +1604,7 @@ def publish_page_testimonium(
     )
     inputs = [context.input_ref(presented["image_path"])] if presented else []
     validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
+    verify_page_call_sampling(context, payload, chair)
     context.publish(
         kind="page-testimonium",
         subject_id=page_subject_id,
@@ -1628,6 +1622,7 @@ def publish_page_testimonium(
                 else []
             )
             + _chandra_trace_inputs(attempt.native_inference)
+            + ([attempt.serving_call_ref] if attempt.serving_call_ref is not None else [])
         ),
         payload=payload,
     )
@@ -1864,7 +1859,7 @@ def attempt_tally(
                     record,
                     payload["native_capture"],
                 )
-            verify_unit_call_sampling(context, payload, chair)
+            verify_page_call_sampling(context, payload, chair)
             by_pair.setdefault((record["subject_id"], chair), []).append(record)
         if pages is not None:
             expected = {(page_id, chair) for _ordinal, page_id in pages for chair in roster}
@@ -2439,7 +2434,7 @@ def publish_detector_page_testimonium(
             + raw_refs
             + [reference for reference in unit_call_refs if reference is not None]
         )
-        verify_unit_call_sampling(context, payload, chair)
+        verify_page_call_sampling(context, payload, chair)
     validate_testimonium_presentation(
         context, {"outcome": attempt.outcome, "payload": payload, "inputs": inputs}
     )
@@ -2568,25 +2563,75 @@ def detector_pages_to_read(
     return recorded, to_read
 
 
-def verify_unit_call_sampling(context, payload: dict[str, Any], chair: str) -> None:
-    """Hold every unit call a DAI page record retains to its chair's sealed sampling row
-    and its receipt's seed."""
+def _retained_call(context, reference: Any, field: str) -> dict[str, Any]:
+    validate_retained_response_blob(context.tree, reference, field)
+    try:
+        call = json.loads(context.tree.read_bytes(reference["relative_path"]))
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise SchemaRefusal(f"a page Testimonium's {field} record is not JSON") from error
+    if not isinstance(call, dict):
+        raise SchemaRefusal(f"a page Testimonium's {field} record is not an object")
+    return call
+
+
+def _served_live(context, payload: dict[str, Any]) -> bool:
+    """Whether the record's receipt is a live serving moment, not the fixture's declaration."""
+    receipt_ref = payload["provenance"].get("receipt_ref")
+    if receipt_ref is None:
+        return False
+    endpoint = context.tree.read_run_receipt(dict(receipt_ref)).get("endpoint")
+    return not (isinstance(endpoint, str) and endpoint.startswith("fixture://"))
+
+
+def verify_page_call_sampling(context, payload: dict[str, Any], chair: str) -> None:
+    """Hold every call a page record retains to its chair's sealed sampling row.
+
+    DAI names one call per record it was shown; a whole-page chair names the one
+    request it was sent, and a live record that retains a response must name it.
+    A Chandra native page sends no seed and samples at its returned attempt's
+    ordinal.
+    """
     for reference in payload.get("unit_call_refs", []):
         if reference is None:
             continue
-        validate_retained_response_blob(context.tree, reference, "unit_call_refs")
-        try:
-            call = json.loads(context.tree.read_bytes(reference["relative_path"]))
-        except (UnicodeDecodeError, ValueError, RecursionError) as error:
-            raise SchemaRefusal("a page Testimonium's unit call record is not JSON") from error
-        if not isinstance(call, dict):
-            raise SchemaRefusal("a page Testimonium's unit call record is not an object")
+        call = _retained_call(context, reference, "unit call")
         try:
             verify_retained_call_sampling(context, call, chair)
         except ContractError as error:
             raise SchemaRefusal(
                 f"a page Testimonium's unit call record is not its sealed request: {error}"
             ) from error
+    if "unit_call_refs" in payload:
+        return
+    reference = payload.get("serving_call_ref")
+    if reference is None:
+        retains_response = payload.get("native_capture") is not None or bool(
+            payload.get("raw_response_refs")
+        )
+        if retains_response and _served_live(context, payload):
+            raise SchemaRefusal(
+                f"chair {chair!r}'s live page Testimonium retains a response and names no "
+                "serving call, so the request that produced it cannot be held to its sealed "
+                "sampling row"
+            )
+        return
+    call = _retained_call(context, reference, "serving call")
+    inference = payload.get("native_inference")
+    try:
+        if inference is not None:
+            verify_retained_call_sampling(
+                context,
+                call,
+                chair,
+                attempt_ordinal=inference["returned_attempt_ordinal"],
+                sends_seed=False,
+            )
+        else:
+            verify_retained_call_sampling(context, call, chair)
+    except ContractError as error:
+        raise SchemaRefusal(
+            f"a page Testimonium's serving call record is not its sealed request: {error}"
+        ) from error
 
 
 def _chandra_native_subject(page_subject_id: str, chair: str, witness_attempt_ordinal: int) -> str:

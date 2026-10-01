@@ -25,9 +25,7 @@ attestatores = load_stage("3_attestatores")
 def _base():
     return {
         "chair": "attestator_1",
-        "act_key": "page-1",
         "attempt_ordinal": 1,
-        "regions": [],
         "provenance": {},
         "format_capabilities": {},
         "payload": "native bytes remain elsewhere",
@@ -57,8 +55,6 @@ def _base():
         ],
         "scope": "page",
         "page_ordinal": 1,
-        "page_role": "primary",
-        "unjoined_act_attempts": [],
     }
 
 

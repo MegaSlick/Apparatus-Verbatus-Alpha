@@ -128,18 +128,21 @@ def _reseal(tree: RunTree, record: dict, changed: dict, *, manifest: bool = True
         tree.write_manifest(ATTESTATORES)
 
 
-def test_page_testimonium_role_with_an_unhashable_value_is_a_named_refusal():
+@pytest.mark.parametrize("page_ordinal", (0, True, [], "1"))
+def test_a_page_testimonium_with_no_page_ordinal_is_a_named_refusal(page_ordinal):
     payload = {field: None for field in PAGE_TESTIMONIUM_REQUIRED_FIELDS}
-    payload.update(
-        {
-            "scope": "page",
-            "page_ordinal": 1,
-            "page_role": [],
-            "unjoined_act_attempts": [],
-        }
-    )
+    payload.update({"scope": "page", "page_ordinal": page_ordinal})
 
     with pytest.raises(SchemaRefusal, match="invalid page scope facts"):
+        attestatores.validate_page_testimonium_payload(payload)
+
+
+@pytest.mark.parametrize("field", ("act_key", "regions", "page_role", "unjoined_act_attempts"))
+def test_a_page_testimonium_naming_an_act_field_is_not_its_closed_schema(field):
+    payload = {field: None for field in PAGE_TESTIMONIUM_REQUIRED_FIELDS}
+    payload.update({"scope": "page", "page_ordinal": 1, field: []})
+
+    with pytest.raises(SchemaRefusal, match="not its closed schema"):
         attestatores.validate_page_testimonium_payload(payload)
 
 

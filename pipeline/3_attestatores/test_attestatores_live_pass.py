@@ -1403,6 +1403,14 @@ def test_a_live_roster_reads_each_chair_once_through_its_own_scope(live_run, tmp
     assert {record["outcome"] for record in records.values()} == {"read"}
     kinds = {entry["kind"] for entry in tree.build_manifest(ATTESTATORES)["artifacts"]}
     assert "testimonium" not in kinds and "act-attachment" not in kinds
+    # A whole-page chair names its one request; DAI names one per record.
+    for (_page, chair), record in records.items():
+        payload = record["payload"]
+        if chair == "attestator_2":
+            assert "serving_call_ref" not in payload
+            assert all(payload["unit_call_refs"])
+        else:
+            assert payload["serving_call_ref"] in record["inputs"]
 
 
 def test_chandra_trace_is_restricted_to_its_declared_chair_and_page_scope(live_run, tmp_path):
@@ -1922,25 +1930,39 @@ def test_the_retired_envelope_still_reads_and_says_it_is_history(live_run, tmp_p
     assert payload["native_capture"]["findings"] == [{"kind": "retired-output-envelope"}]
 
 
-def _unit_call_world(generation_sent: dict[str, Any], *, schema: str = CHAIR_CALL_RECORD_SCHEMA):
-    """A page record naming one retained unit call, and a context that reads it."""
+def _call_world(
+    generation_sent: dict[str, Any],
+    *,
+    field: str = "unit_call_refs",
+    schema: str = CHAIR_CALL_RECORD_SCHEMA,
+    endpoint: str = "http://127.0.0.1:8100",
+):
+    """A page record naming one retained call, and a context that reads it."""
     from common.decoding import DEFAULT_DECODING_CONFIG_PATH
 
     receipt_ref = {"relative_path": "receipts/sha256/r.json", "sha256": "a" * 64}
     call = {"schema": schema, "receipt_ref": receipt_ref, "generation_sent": generation_sent}
     blobs: dict[str, bytes] = {}
 
-    def retained(value: dict[str, Any]) -> dict[str, Any]:
+    def retained(value: dict[str, Any] | None) -> dict[str, Any]:
+        record: dict[str, Any] = {"provenance": {"receipt_ref": receipt_ref}}
+        if value is None:
+            record["native_capture"] = {"raw_response_ref": receipt_ref}
+            return record
         data = json.dumps(value).encode()
         digest = hashlib.sha256(data).hexdigest()
         path = f"3_attestatores/blobs/sha256/{digest}"
         blobs[path] = data
-        return {"unit_call_refs": [{"relative_path": path, "sha256": digest}]}
+        reference = {"relative_path": path, "sha256": digest}
+        record[field] = [reference] if field == "unit_call_refs" else reference
+        return record
 
     context = SimpleNamespace(
         tree=SimpleNamespace(
             read_bytes=lambda path: blobs[path],
-            read_run_receipt=lambda reference: {"seed": 7} if reference == receipt_ref else {},
+            read_run_receipt=lambda reference: (
+                {"seed": 7, "endpoint": endpoint} if reference == receipt_ref else {}
+            ),
         ),
         args=SimpleNamespace(decoding_config=DEFAULT_DECODING_CONFIG_PATH),
         require_sealed_config=lambda _name, _digest: None,
@@ -1948,17 +1970,21 @@ def _unit_call_world(generation_sent: dict[str, Any], *, schema: str = CHAIR_CAL
     return context, call, retained
 
 
-def test_a_tallied_unit_call_is_held_to_its_chair_s_row_and_seed():
-    """The tally re-reads every unit call a record reader's page names, not only its digest."""
+@pytest.mark.parametrize(
+    ("chair", "field"),
+    (("attestator_2", "unit_call_refs"), ("attestator_3", "serving_call_ref")),
+)
+def test_a_tallied_call_is_held_to_its_chair_s_row_and_seed(chair, field):
+    """The tally re-reads every call a page record names, not only its digest: each
+    DAI record's call, and a whole-page chair's one request."""
     from common.decoding import chair_decoding, engine_effective_sampling, recorded_sampling
 
-    chair = "attestator_2"
     policy, _digest = load_decoding_policy()
     sampling = chair_decoding(policy, chair)
     sent = {**recorded_sampling(sampling), "max_tokens": 64, "seed": 7}
-    context, call, retained = _unit_call_world(sent)
+    context, call, retained = _call_world(sent, field=field)
     call["sampling_effective"] = recorded_sampling(engine_effective_sampling(sampling))
-    attestatores.verify_unit_call_sampling(context, retained(call), chair)
+    attestatores.verify_page_call_sampling(context, retained(call), chair)
 
     for moved, message in (
         ({**sent, "seed": 8}, "sent seed 8, not 7"),
@@ -1966,10 +1992,21 @@ def test_a_tallied_unit_call_is_held_to_its_chair_s_row_and_seed():
         ({**sent, "n": 2}, r"generation field\(s\) \['n'\]"),
     ):
         with pytest.raises(SchemaRefusal, match=message):
-            attestatores.verify_unit_call_sampling(
+            attestatores.verify_page_call_sampling(
                 context, retained({**call, "generation_sent": moved}), chair
             )
     with pytest.raises(SchemaRefusal, match="written as chair-call-record.v2"):
-        attestatores.verify_unit_call_sampling(
+        attestatores.verify_page_call_sampling(
             context, retained({**call, "schema": "chair-call-record.v2"}), chair
         )
+
+
+def test_a_live_whole_page_record_that_names_no_serving_call_is_refused():
+    """A live response with no call record could have been sampled any way at all."""
+    context, _call, retained = _call_world({}, field="serving_call_ref")
+    with pytest.raises(SchemaRefusal, match="names no serving call"):
+        attestatores.verify_page_call_sampling(context, retained(None), "attestator_3")
+    fixture, _call, retained = _call_world(
+        {}, field="serving_call_ref", endpoint="fixture://offline-chair-runner"
+    )
+    attestatores.verify_page_call_sampling(fixture, retained(None), "attestator_3")

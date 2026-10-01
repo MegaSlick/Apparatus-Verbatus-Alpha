@@ -23,11 +23,11 @@ from operations.corpus.test_evaluate import (
 )
 from operations.corpus.witness_evaluate import (
     CHAIRS,
-    attachment_index,
     evaluate_page,
     evaluate_run,
     main,
     page_health_counts,
+    page_witness_index,
     sealed_page_bindings,
     witness_reading,
     write_report,
@@ -92,56 +92,36 @@ def _relabel_page_two_pixels_as_page_one(records: list[dict]) -> tuple[str, dict
     return chair_records[1]["artifact_id"], forged
 
 
-def test_act_scoped_dai_uses_its_sealed_full_crop_span():
-    status, text, reason = witness_reading(
-        {
-            "attached": True,
-            "comparable": True,
-            "span": {"start": 0, "end": 4},
-            "content_health": _health(truncated=False),
-        },
-        _testimonium("test"),
-    )
-    assert (status, text, reason) == (OutputStatus.COMPLETE, "test", None)
+def test_a_completed_page_reading_is_scored_whole():
+    status, text, reason = witness_reading(_testimonium("page text"))
+    assert (status, text, reason) == (OutputStatus.COMPLETE, "page text", None)
 
 
-def test_page_witness_without_alignment_span_is_named_unavailable():
-    status, text, reason = witness_reading(
-        {
-            "attached": True,
-            "comparable": False,
-            "span": None,
-            "content_health": _health(truncated=False),
-        },
-        _testimonium("page extra text"),
-    )
-    assert (status, text, reason) == (OutputStatus.UNAVAILABLE, None, "not-comparable")
+def test_a_non_reading_page_testimonium_is_named_unavailable():
+    record = {"outcome": "failed", "payload": {"payload": None, "content_health": {}}}
+    assert witness_reading(record) == (OutputStatus.UNAVAILABLE, None, "non-reading-'failed'")
 
 
-def test_truncated_sealed_excerpt_retains_its_partial_text():
-    status, text, reason = witness_reading(
-        {
-            "attached": True,
-            "comparable": True,
-            "span": {"start": 1, "end": 3},
-            # This is act-attempt currency, not the page response's completion.
-            "content_health": _health(truncated=False),
-        },
-        _testimonium("abcd", truncated=True),
-    )
-    assert (status, text, reason) == (OutputStatus.TRUNCATED, "bc", None)
+def test_a_truncated_page_reading_retains_its_partial_text():
+    status, text, reason = witness_reading(_testimonium("abcd", truncated=True))
+    assert (status, text, reason) == (OutputStatus.TRUNCATED, "abcd", None)
 
 
 def test_unknown_completion_is_unavailable_instead_of_silently_complete():
-    status, text, reason = witness_reading(
-        {"attached": True, "comparable": True, "span": {"start": 0, "end": 4}},
-        _testimonium("test", truncated=None),
-    )
+    status, text, reason = witness_reading(_testimonium("test", truncated=None))
     assert (status, text, reason) == (
         OutputStatus.UNAVAILABLE,
         None,
         "unknown-truncation",
     )
+
+
+def test_a_structured_page_reading_is_unavailable_rather_than_coerced_to_text():
+    record = {
+        "outcome": "read",
+        "payload": {"payload": {"lines": ["a"]}, "content_health": _health(truncated=False)},
+    }
+    assert witness_reading(record) == (OutputStatus.UNAVAILABLE, None, "structured-payload")
 
 
 def test_page_health_joins_valid_transformed_presentations_to_exact_exemplar(
@@ -190,7 +170,7 @@ def test_page_health_refuses_self_consistent_page_relabelled_to_another_ordinal(
         )
 
 
-def test_attachment_index_refuses_self_consistent_page_relabelled_to_another_ordinal(
+def test_page_witness_index_refuses_self_consistent_page_relabelled_to_another_ordinal(
     sealed_run: RunTree,
 ):
     read_only = ReadOnlyRunTree(sealed_run)
@@ -201,15 +181,11 @@ def test_attachment_index_refuses_self_consistent_page_relabelled_to_another_ord
             record = read_only.read_artifact(stage, kind, candidate)
             return copy.deepcopy(forged) if candidate == artifact_id else record
 
-        def read_artifact_reference(self, reference, **kwargs):  # type: ignore[no-untyped-def]
-            record = read_only.read_artifact_reference(reference, **kwargs)
-            return copy.deepcopy(forged) if record.get("artifact_id") == artifact_id else record
-
         def __getattr__(self, name):  # type: ignore[no-untyped-def]
             return getattr(read_only, name)
 
     with pytest.raises(CorpusRefusal, match="ordinal disagrees with the sealed page"):
-        attachment_index(ForgedReadTree())  # type: ignore[arg-type]
+        page_witness_index(ForgedReadTree())  # type: ignore[arg-type]
 
 
 @pytest.fixture(scope="module")
@@ -220,7 +196,25 @@ def sealed_run(tmp_path_factory) -> RunTree:
     return RunTree(run_root, "r")
 
 
-def test_cli_scores_all_three_chairs_from_current_sealed_attachments_without_mutating_run(
+def _page_one_report(sealed_run: RunTree, reference: dict, witnesses=None) -> dict:
+    read_only = ReadOnlyRunTree(sealed_run)
+    proposals = [
+        proposal
+        for proposal in load_pipeline_proposal_acts(read_only)
+        if proposal["page_sha256"] == reference["page"]["sha256"]
+    ]
+    if witnesses is None:
+        witnesses = page_witness_index(read_only)[1]
+    return evaluate_page(
+        reference_page=reference,
+        source_page_ordinal=1,
+        proposals=proposals,
+        witnesses=witnesses,
+        chairs=CHAIRS,
+    )
+
+
+def test_cli_scores_all_three_chairs_from_current_sealed_page_testimonia_without_mutating_run(
     sealed_run: RunTree, tmp_path: Path
 ):
     reference = _fixture_reference_for_page_one(sealed_run)
@@ -253,79 +247,26 @@ def test_cli_scores_all_three_chairs_from_current_sealed_attachments_without_mut
     assert before == _inventory(sealed_run)
     assert report["reference_records"] == len(reference["acts"])
     assert set(report["totals"]) == set(CHAIRS)
+    # Every chair read the whole page, DAI included, so each is scored on it.
     for chair in CHAIRS:
         total = report["totals"][chair]
-        assert total["references"] == len(reference["acts"])
+        assert total["references"] == 1
+        assert total["statuses"]["complete"] == 1
         assert total["cer_units"] > 0 and total["wer_units"] > 0
-
-    # The two page chairs supply aligned slices of their page Testimonia. The
-    # page-scoped DAI chair (attestator_2) attaches to no act, so each of its
-    # rows is unavailable and counted as a whole deletion, never dropped.
-    assert report["totals"]["attestator_1"]["statuses"]["complete"] == 2
-    assert report["totals"]["attestator_3"]["statuses"]["complete"] == 2
-    assert report["totals"]["attestator_2"]["statuses"]["unavailable"] == 2
-    assert (
-        report["totals"]["attestator_2"]["cer_errors"]
-        == report["totals"]["attestator_2"]["cer_units"]
-    )
-    for chair in CHAIRS:
         assert report["page_health"][chair]["truncated_false"] == 1
 
 
-def test_two_page_act_selects_primary_source_attachment_not_transformed_image_digest(
-    sealed_run: RunTree,
-):
+def test_every_chair_is_scored_on_its_page_against_every_reference_act(sealed_run: RunTree):
     reference = _fixture_reference_for_page_one(sealed_run)
-    read_only = ReadOnlyRunTree(sealed_run)
-    source_sha = load_exemplar_page_shas(read_only)[1]
-    attachments = attachment_index(read_only)
-    proposals = load_pipeline_proposal_acts(read_only)
-    spanning = next(
-        (act_id, by_chair)
-        for act_id, by_chair in attachments.items()
-        if any(
-            len(
-                {
-                    item["attachment"]["page_ordinal"]
-                    for item in rows
-                    if item["attachment"]["page_witness"]
-                }
-            )
-            > 1
-            for rows in by_chair.values()
-        )
+    report = _page_one_report(sealed_run, reference)
+    expected = [act["record_id"] for act in reference["acts"]]
+    assert {row["chair"]: row["status"] for row in report["rows"]} == dict.fromkeys(
+        CHAIRS, "complete"
     )
-    act_id, by_chair = spanning
-    for chair in ("attestator_1", "attestator_3"):
-        page_one = next(item for item in by_chair[chair] if item["attachment"]["page_ordinal"] == 1)
-        assert page_one["testimonium"]["payload"]["presented"]["image_sha256"] != source_sha
-        span = page_one["attachment"]["span"]
-        page_text = page_one["testimonium"]["payload"]["payload"]
-        assert 0 <= span["start"] < span["end"] <= len(page_text)
-        assert span["end"] - span["start"] < len(page_text)
-
-    for candidate in attachments.values():
-        assert all(
-            item["attachment"]["page_witness"] and not item["attachment"]["attached"]
-            for item in candidate["attestator_2"]
-        )
-
-    report = evaluate_page(
-        reference_page=reference,
-        source_page_ordinal=1,
-        proposals=[proposal for proposal in proposals if proposal["page_sha256"] == source_sha],
-        attachments=attachments,
-        chairs=CHAIRS,
-    )
-    rows = [row for row in report["rows"] if row["pipeline_act_id"] == act_id]
-    assert {row["chair"]: row["status"] for row in rows} == {
-        "attestator_1": "complete",
-        "attestator_2": "unavailable",
-        "attestator_3": "complete",
-    }
+    assert all(row["record_ids"] == expected for row in report["rows"])
 
 
-def test_missing_proposal_is_a_full_deletion_in_every_chair_aggregate(
+def test_missing_proposal_is_counted_and_its_ink_stays_in_every_chair_s_reference(
     sealed_run: RunTree, tmp_path: Path
 ):
     extra_text = "synthetic unmatched reference"
@@ -348,54 +289,30 @@ def test_missing_proposal_is_a_full_deletion_in_every_chair_aggregate(
         reference_pages_path=pages_path,
         page_ids=[reference["designation"]],
     )
+    baseline = _page_one_report(sealed_run, _fixture_reference_for_page_one(sealed_run))
     assert report["reference_records"] == 3
     for chair in CHAIRS:
-        assert report["totals"][chair]["references"] == 3
         assert report["totals"][chair]["missing_proposals"] == 1
-        missing = next(
-            row
-            for row in report["pages"][0]["rows"]
-            if row["chair"] == chair and row["reason"] == "missing-proposal"
-        )
-        assert missing["status"] == "missing"
-        assert missing["cer"] == missing["cer_units"]
-        assert missing["wer"] == missing["wer_units"]
+        # No witness read the unmatched text, so it costs every chair deletions.
+        assert report["totals"][chair]["cer_errors"] > baseline["totals"][chair]["cer_errors"]
 
 
 def test_missing_unavailable_and_truncated_readings_all_remain_in_totals(
     sealed_run: RunTree,
 ):
     reference = _fixture_reference_for_page_one(sealed_run)
-    read_only = ReadOnlyRunTree(sealed_run)
-    proposals = [
-        proposal
-        for proposal in load_pipeline_proposal_acts(read_only)
-        if proposal["page_sha256"] == reference["page"]["sha256"]
-    ]
-    attachments = json.loads(json.dumps(attachment_index(read_only)))
-    for by_chair in attachments.values():
-        by_chair.pop("attestator_2", None)
-        for item in by_chair.get("attestator_1", []):
-            if item["attachment"]["page_ordinal"] == 1:
-                item["attachment"]["comparable"] = False
-        for item in by_chair.get("attestator_3", []):
-            if item["attachment"]["page_ordinal"] == 1:
-                item["testimonium"]["payload"]["content_health"]["truncated"] = True
+    witnesses = json.loads(json.dumps(page_witness_index(ReadOnlyRunTree(sealed_run))[1]))
+    witnesses.pop("attestator_2")
+    witnesses["attestator_1"]["outcome"] = "failed"
+    witnesses["attestator_3"]["payload"]["content_health"]["truncated"] = True
 
-    report = evaluate_page(
-        reference_page=reference,
-        source_page_ordinal=1,
-        proposals=proposals,
-        attachments=attachments,
-        chairs=CHAIRS,
-    )
-    count = len(reference["acts"])
+    report = _page_one_report(sealed_run, reference, witnesses)
     for chair in CHAIRS:
-        assert report["totals"][chair]["references"] == count
+        assert report["totals"][chair]["references"] == 1
         assert report["totals"][chair]["cer_units"] > 0
-    assert report["totals"]["attestator_1"]["statuses"]["unavailable"] == count
-    assert report["totals"]["attestator_2"]["statuses"]["missing"] == count
-    assert report["totals"]["attestator_3"]["statuses"]["truncated"] == count
+    assert report["totals"]["attestator_1"]["statuses"]["unavailable"] == 1
+    assert report["totals"]["attestator_2"]["statuses"]["missing"] == 1
+    assert report["totals"]["attestator_3"]["statuses"]["truncated"] == 1
 
 
 def test_reference_text_cannot_change_the_geometry_assignment(sealed_run: RunTree):
@@ -417,27 +334,8 @@ def test_reference_text_cannot_change_the_geometry_assignment(sealed_run: RunTre
             for act in first["acts"]
         ],
     )
-    read_only = ReadOnlyRunTree(sealed_run)
-    proposals = [
-        proposal
-        for proposal in load_pipeline_proposal_acts(read_only)
-        if proposal["page_sha256"] == first["page"]["sha256"]
-    ]
-    attachments = attachment_index(read_only)
-    original = evaluate_page(
-        reference_page=first,
-        source_page_ordinal=1,
-        proposals=proposals,
-        attachments=attachments,
-        chairs=CHAIRS,
-    )
-    altered = evaluate_page(
-        reference_page=changed,
-        source_page_ordinal=1,
-        proposals=proposals,
-        attachments=attachments,
-        chairs=CHAIRS,
-    )
+    original = _page_one_report(sealed_run, first)
+    altered = _page_one_report(sealed_run, changed)
 
     def pairing(report):
         return [
@@ -451,20 +349,7 @@ def test_reference_text_cannot_change_the_geometry_assignment(sealed_run: RunTre
 def test_witness_report_retains_only_geometry_facts_from_placeholder_comparison(
     sealed_run: RunTree,
 ):
-    reference = _fixture_reference_for_page_one(sealed_run)
-    read_only = ReadOnlyRunTree(sealed_run)
-    proposals = [
-        proposal
-        for proposal in load_pipeline_proposal_acts(read_only)
-        if proposal["page_sha256"] == reference["page"]["sha256"]
-    ]
-    report = evaluate_page(
-        reference_page=reference,
-        source_page_ordinal=1,
-        proposals=proposals,
-        attachments=attachment_index(read_only),
-        chairs=CHAIRS,
-    )
+    report = _page_one_report(sealed_run, _fixture_reference_for_page_one(sealed_run))
 
     expected = {
         "pipeline_act_id",
@@ -477,29 +362,6 @@ def test_witness_report_retains_only_geometry_facts_from_placeholder_comparison(
     assert all(set(pair) == expected for pair in report["geometry"]["matched_pairs"])
     assert "normalization_profile_id" not in report["geometry"]
     assert "self_hash" not in report["geometry"]
-
-
-def test_duplicate_attachment_for_the_matched_source_page_is_refused(sealed_run: RunTree):
-    reference = _fixture_reference_for_page_one(sealed_run)
-    read_only = ReadOnlyRunTree(sealed_run)
-    proposals = load_pipeline_proposal_acts(read_only)
-    attachments = attachment_index(read_only)
-    act_id = proposals[0]["act_id"]
-    duplicate = dict(attachments)
-    duplicate[act_id] = dict(attachments[act_id])
-    duplicate[act_id]["attestator_2"] = list(attachments[act_id]["attestator_2"]) * 2
-    with pytest.raises(CorpusRefusal, match="^malformed-record: duplicate attachments"):
-        evaluate_page(
-            reference_page=reference,
-            source_page_ordinal=1,
-            proposals=[
-                proposal
-                for proposal in proposals
-                if proposal["page_sha256"] == reference["page"]["sha256"]
-            ],
-            attachments=duplicate,
-            chairs=CHAIRS,
-        )
 
 
 def test_duplicate_selected_page_and_output_inside_run_tree_are_refused(

@@ -17,9 +17,7 @@ from pathlib import Path
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import ARMARIUM, ATTESTATORES
-from common.fixture_identity import act_identity
 from common.runtree.store import RunTree
-from common.stage import act_by_key, load_fixture
 from conftest import file_bytes_snapshot as snapshot
 from conftest import programs_through
 
@@ -80,11 +78,6 @@ def through_attestatores(run_root: Path, run_id: str, scenario: str) -> RunTree:
     return RunTree(run_root, run_id)
 
 
-def act_id_for(key: str) -> str:
-    fixture = load_fixture(str(FIXTURE_ROOT))
-    return act_identity(fixture, act_by_key(fixture, key))
-
-
 def artifacts(tree: RunTree, stage: str, kind: str, subject: str | None = None) -> list[dict]:
     return [
         tree.read_artifact(stage, kind, entry["artifact_id"])
@@ -103,16 +96,19 @@ def reseal(path: Path, record: dict) -> None:
 def test_a_whole_second_pass_appends_every_configured_chairs_next_attempt(tmp_path):
     """A second attempt is an expensive instrument, and it stays available."""
     root = tmp_path / "runs"
-    tree = through_attestatores(root, "r", "reread-failure")
+    tree = through_attestatores(root, "r", "happy")
 
-    result = invoke(root, "r", "reread-failure", ATTESTATORES_PROGRAM, "--attempt-ordinal", "2")
+    result = invoke(root, "r", "happy", ATTESTATORES_PROGRAM, "--attempt-ordinal", "2")
 
     assert result.returncode == 0, result.stderr
-    ordinals = {
-        record["payload"]["attempt_ordinal"]
-        for record in artifacts(tree, ATTESTATORES, "testimonium", act_id_for("a1"))
-    }
-    assert ordinals == {1, 2}
+    by_pair: dict[tuple[int, str], set[int]] = {}
+    for record in artifacts(tree, ATTESTATORES, "page-testimonium"):
+        payload = record["payload"]
+        by_pair.setdefault((payload["page_ordinal"], payload["chair"]), set()).add(
+            payload["attempt_ordinal"]
+        )
+    assert len(by_pair) == 6
+    assert all(ordinals == {1, 2} for ordinals in by_pair.values()), by_pair
 
 
 def _supersede_a_page_witness(tree: RunTree, page_ordinal: int, chair: str) -> None:

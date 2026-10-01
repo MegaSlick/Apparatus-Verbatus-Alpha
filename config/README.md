@@ -16,7 +16,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `serving_recipes_real.toml` | unproven, locked real-chair vLLM profiles plus explicit non-launchable rows where no honest engine exists; selected only with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
 | `formats.toml` | which Armarium product projections are written and whether verified pixels are embedded |
 | `perlector_protocol.toml` | the sealed prior-draft protocol: Pass-B neutral fragment, page-shared-prefix policy, and control selection-rule name; and, since 2026-09-14, `[truncation]`, the truncation instrument's length floor in characters per page-equivalent |
-| `alignment.toml` | sealed character, pair, and wall-clock ceilings for witness-to-Chandra alignment |
+| `alignment.toml` | sealed alignment limits; the Door still seals them, and no stage reads them |
 | `corpus_frame.toml` | R0's sealed shard boundary: how many pages one bounded failure and accounting unit may hold |
 | `designator_geometry.toml` | the sealed tiling and crop-policy geometry the Designator's proposal adapters are built against |
 | `designator_grouping.toml` | which marks the Designator joins into one act, and how many residual components one page may enumerate before the page itself is held |

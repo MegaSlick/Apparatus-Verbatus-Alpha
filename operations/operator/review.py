@@ -817,10 +817,24 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
     }
 
 
-def _testimonia_rows(stage_records: list[dict[str, Any]], act_id: str) -> list[dict[str, Any]]:
-    """Every Testimonium sealed for one act, in the order the stage wrote them.
+def _act_page_id(stage_records: list[dict[str, Any]], act_id: str) -> str | None:
+    """The page the proposal seal places one act on, or none without a seal."""
+    for row in _records_of(stage_records, DESIGNATOR, "proposal-seal"):
+        if row["artifact_id"] != PROPOSAL_SEAL_ID:
+            continue
+        for act in _payload_of(row, "the proposal seal").get("expected_acts", []):
+            if isinstance(act, dict) and act.get("act_id") == act_id:
+                return act.get("page_id")
+    return None
 
-    Every attempt stays listed and each names its attempt ordinal, since two
+
+def _testimonia_rows(
+    stage_records: list[dict[str, Any]], page_id: str | None
+) -> list[dict[str, Any]]:
+    """Every page Testimonium sealed for one act's page, in the order the stage wrote them.
+
+    Witnesses read whole pages, so an act's witnesses are its page's. Every
+    attempt stays listed and each names its attempt ordinal, since two
     contradictory rows for one chair with no ordinal between them would leave
     the current reading indistinguishable from a superseded one.
 
@@ -829,9 +843,11 @@ def _testimonia_rows(stage_records: list[dict[str, Any]], act_id: str) -> list[d
     witness basis only for a delivered act, and a held act's witnesses live
     only in the run tree.
     """
+    if page_id is None:
+        return []
     rows = []
-    for row in _records_of(stage_records, ATTESTATORES, "testimonium", act_id):
-        payload = _payload_of(row, "the Testimonium record")
+    for row in _records_of(stage_records, ATTESTATORES, "page-testimonium", page_id):
+        payload = _payload_of(row, "the page Testimonium record")
         rows.append(
             {
                 "chair": payload.get("chair"),
@@ -864,7 +880,7 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
                 "record_ref": row["record_ref"],
             }
         )
-    testimonia = _testimonia_rows(stage_records, act_id)
+    testimonia = _testimonia_rows(stage_records, act.get("page_id"))
     reading = _reading_row(stage_records, act_id)
     review_row = _latest(stage_records, RECENSOR, "review", act_id, operation="recense")
     review = None
@@ -942,8 +958,8 @@ def _act_summary(stage_records: list[dict[str, Any]], act: dict[str, Any]) -> di
     elif testimonia:
         category = "witnessed, awaiting the Perlector"
         reason = (
-            f"{len(testimonia)} Testimonium record(s) are sealed for this act; the Perlector "
-            "has not read it"
+            f"{len(testimonia)} page Testimonium record(s) are sealed for this act's page; "
+            "the Perlector has not read it"
         )
     elif designator_holds:
         category = "held by the Designator"
@@ -1538,7 +1554,7 @@ def _normalised_act_row(
         )
     if witnesses is None and stage_records is not None and isinstance(row.get("act_id"), str):
         attached: dict[str, Any] = {}
-        testimonia = _testimonia_rows(stage_records, row["act_id"])
+        testimonia = _testimonia_rows(stage_records, _act_page_id(stage_records, row["act_id"]))
         if testimonia:
             attached["testimonia"] = testimonia
         # Same asymmetry for the reading: the Armarium writes no text or
