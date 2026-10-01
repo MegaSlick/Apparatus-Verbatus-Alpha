@@ -187,6 +187,38 @@ def test_a_render_failure_writes_no_prepared_page(tmp_path: Path, capsys, monkey
     assert not list(dirs["output"].iterdir())
 
 
+@pytest.mark.parametrize("fail_at", [3, 5, 6], ids=["prepared-page", "binding", "manifest"])
+def test_a_write_failure_removes_every_file_the_run_wrote(
+    tmp_path: Path, capsys, monkeypatch, fail_at
+):
+    dirs = _layout(tmp_path, {"one": (40, 20), "two": (30, 20)})
+    pages = ["one:0", "two:0"]
+    geometry = _import(dirs, pages)
+    real = pilot.atomic_create
+    calls = []
+
+    def fail_late(path, data):
+        calls.append(path)
+        if len(calls) == fail_at:
+            raise OSError("synthetic write failure")
+        real(path, data)
+
+    monkeypatch.setattr(pilot, "atomic_create", fail_late)
+    argv = _args(
+        dirs,
+        pages,
+        "--geometry-document",
+        str(geometry),
+        "--prepared-source-dir",
+        str(dirs["prepared"]),
+    )
+    _refused(argv, capsys, "synthetic write failure")
+    assert not list(dirs["prepared"].iterdir())
+    assert not list(dirs["output"].iterdir())
+    monkeypatch.setattr(pilot, "atomic_create", real)
+    assert pilot.main(argv) == 0
+
+
 def test_two_page_ids_naming_one_source_are_refused(tmp_path: Path, capsys):
     dirs = _layout(tmp_path, {"one": (40, 20)})
     argv = _args(dirs, ["one:0", "./one:180"], "--project-dir", str(dirs["base"]))

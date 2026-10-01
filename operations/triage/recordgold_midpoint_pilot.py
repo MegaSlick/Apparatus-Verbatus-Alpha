@@ -48,11 +48,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    created: list[Path] = []
+
     def write(path: Path, data: bytes) -> None:
+        # A failed write removes every file this run created, so the
+        # directories are as they were and the command can be rerun.
         try:
             atomic_create(path, data)
         except OSError as error:
-            parser.error(f"could not write {path}: {error}")
+            left = []
+            for done in reversed(created):
+                try:
+                    done.unlink()
+                except OSError:
+                    left.append(str(done))
+            detail = f"; could not remove {', '.join(left)}" if left else ""
+            parser.error(f"could not write {path}: {error}{detail}")
+        created.append(path)
 
     if not args.output_dir.is_dir():
         parser.error("--output-dir must already exist")
