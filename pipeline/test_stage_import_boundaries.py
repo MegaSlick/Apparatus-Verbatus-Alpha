@@ -60,8 +60,6 @@ STAGE_DIRECTORIES = (
     "orchestrator",
 )
 
-EXCLUDED_PREFIXES = ("cleanroom/",)
-
 
 def repository_python_files() -> list[str]:
     """Every `.py` path that belongs to this repository, from its root.
@@ -84,7 +82,7 @@ def repository_python_files() -> list[str]:
             f"stage import boundary was not checked at all: {error}"
         )
     paths = [path for path in result.stdout.split("\0") if path]
-    return sorted(path for path in paths if not path.startswith(EXCLUDED_PREFIXES))
+    return sorted(paths)
 
 
 def _stage_of(path: str) -> str | None:
