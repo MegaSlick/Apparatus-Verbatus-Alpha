@@ -356,6 +356,55 @@ def test_a_topic_file_sends_one_notification_when_the_guard_deletes(pod, tmp_pat
     assert lines(tmp_path / "curl-configs.txt") == [f'url = "{topic_url}"']
 
 
+def test_a_released_run_s_outcome_is_in_the_delete_notice(pod, tmp_path):
+    """pod_run --no-hold names the run and its outcome; the phone ping must carry it."""
+
+    env, calls, state = pod
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    (state / "deadline-testpod").write_text(f"{int(time.time())}\n")
+    # Read as text, never run: anything outside a plain name is dropped.
+    (state / "released-testpod").write_text("run proof-1 ended complete $(id)`id`\n")
+    curl_calls = tmp_path / "curl-calls.txt"
+    run_until(["sh", str(GUARD), "5", "30"], env, lambda: bool(lines(curl_calls)))
+    [notification] = lines(curl_calls)
+    assert (
+        "its guard requested deletion (approved time is up; pod_run reported: "
+        "run proof-1 ended complete idid)." in notification
+    )
+    assert "pod_run reported: run proof-1 ended complete" in log_of(state)
+
+
+def test_without_a_release_the_notice_names_only_the_guard_s_reason(pod, tmp_path):
+    env, calls, state = pod
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    (state / "deadline-testpod").write_text(f"{int(time.time())}\n")
+    curl_calls = tmp_path / "curl-calls.txt"
+    run_until(["sh", str(GUARD), "5", "30"], env, lambda: bool(lines(curl_calls)))
+    [notification] = lines(curl_calls)
+    assert "its guard requested deletion (approved time is up)." in notification
+    assert "pod_run reported" not in log_of(state)
+
+
+def test_the_guard_touches_its_heartbeat_every_tick(pod):
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    heartbeat = state / "heartbeat-testpod"
+    seen: list[int] = []
+
+    def two_beats():
+        if heartbeat.exists():
+            mtime = heartbeat.stat().st_mtime_ns
+            if not seen or seen[-1] != mtime:
+                seen.append(mtime)
+        return len(seen) >= 2
+
+    run_until(["sh", str(GUARD), "5", "30"], env, two_beats)
+    assert len(seen) >= 2
+    assert not lines(calls)
+
+
 def test_a_deadline_more_than_a_week_out_is_ignored(pod):
     env, calls, state = pod
     state.mkdir()

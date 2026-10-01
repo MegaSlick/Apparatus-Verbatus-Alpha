@@ -10,7 +10,10 @@
 # /workspace/private/.pod_guard, on the network volume at the pod's mount path). To extend
 # the deadline, write the new epoch second to a temporary file and move it over
 # deadline-<pod id>. Touching keepalive-<pod id> counts as work at that moment: the idle
-# limit then runs from the touch.
+# limit then runs from the touch. The guard touches heartbeat-<pod id> on every tick, so
+# a reader can tell a live guard from a deadline file nobody watches; a released-<pod id>
+# file (pod_run --no-hold writes the run and its outcome there) is quoted in the delete
+# notice, so a finished run's notice differs from one whose time ran out mid-run.
 set -u
 
 max_hours=${1:?usage: pod_guard.sh <max_hours> [idle_minutes]}
@@ -79,17 +82,23 @@ notify() {
 # The delete ends this container, so the loop only ever ends that way: a request that
 # reports success while the pod lives on is simply repeated, and stopping is the fallback.
 shut_down() {
-  say "deleting pod $pod: $1"
+  reason=$1
+  released="$dir/released-$pod"
+  if [ -r "$released" ]; then
+    ended=$(tr -cd 'A-Za-z0-9 ._-' <"$released" | cut -c 1-160)
+    [ -z "$ended" ] || reason="$reason; pod_run reported: $ended"
+  fi
+  say "deleting pod $pod: $reason"
   attempt=0
   stopped=""
   while :; do
     attempt=$((attempt + 1))
     if delete_pod; then
       say "delete requested (attempt $attempt)"
-      [ "$attempt" -eq 1 ] && notify "Pod $pod: its guard requested deletion ($1)."
+      [ "$attempt" -eq 1 ] && notify "Pod $pod: its guard requested deletion ($reason)."
     else
       say "delete attempt $attempt failed"
-      [ "$attempt" -eq 1 ] && notify "Pod $pod: its guard could not delete it ($1) and keeps trying."
+      [ "$attempt" -eq 1 ] && notify "Pod $pod: its guard could not delete it ($reason) and keeps trying."
     fi
     if [ "$attempt" -ge 3 ] && [ -z "$stopped" ] && stop_pod; then
       stopped=yes
@@ -169,6 +178,7 @@ keepalive_age() {
 
 idle_for=0
 while :; do
+  touch "$dir/heartbeat-$pod" 2>/dev/null
   latest=$(cat "$deadline_file" 2>/dev/null)
   if [ "$latest" != "$deadline" ] && [ "$latest" != "${ignored-}" ]; then
     if sane_deadline "$latest"; then

@@ -286,8 +286,10 @@ bootstrap checked and measured, and `--data-gate-policy` inside the repository. 
 
 It refuses by name: no `--`; a `--hold-only` plan; a report path that is the bootstrap's or
 lacks the launch token; a run root or submission outside the volume or missing; a policy
-outside the repository; a `--perlector-protocol-config` outside the repository or not a
-file; `--no-hold` under a launch token; a bad run id.
+outside the repository; a `--perlector-protocol-config` outside the repository, not a
+file, or not one the seal reader parses; a resume whose Perlector protocol or (on a real
+run) run policy differs from what `run.json` sealed; `--no-hold` under a launch token, or
+with a shell pod id that is not the container's; a bad run id.
 
 **The data gate is asked first**, before a model is fetched on a billing card.
 `config/data_handling_policy.json` lists the pod volume's mount path (the
@@ -319,15 +321,30 @@ selection is the auto mode, which carries a held Recensor through to the Armariu
   orchestrator, which seals its bytes into the run's config digest, so every later
   selection or resume of that run must name the same file; the report records it
   (`plan.perlector_protocol_config`, `null` for the orchestrator's default). Its
-  `reading_unit` picks the Perlector's act or page path. pod_run checks only that it is a
-  file; the orchestrator parses it, after the bootstrap.
+  `reading_unit` picks the Perlector's act or page path. pod_run parses it with the same
+  seal reader the run binding uses before the bootstrap; the Perlector stage validates its
+  schema when it opens.
+- **A resume is checked against its seal before the bootstrap.** When the run already has
+  a `run.json`, the protocol this launch hands the orchestrator (the named file, or the
+  checkout's default) must have the `perlector-protocol` digest the run sealed, and on a
+  real run `--blind-read` and `--mechanics-qualification` must give the sealed
+  `run-policy` digest (recomputed under the orchestrator's defaults for the knobs pod_run
+  never forwards). A fixture run seals those two only inside its `config_digest`, so its
+  stages still catch that mismatch, after the bootstrap.
 - **`--no-hold`** is for a run started by hand, outside the pod timer
   ([the hand route](#the-hand-route-a-proof-run-started-by-hand)). After the final report
   of any run past a green bootstrap, whatever its outcome, it returns instead of holding
   and moves this pod's guard deadline (`<volume>/.pod_guard/deadline-$RUNPOD_POD_ID`) to
   now, so the guard deletes the pod on its next one-minute tick instead of after 30 idle
-  minutes. It only moves a deadline file the guard already wrote; with none, or no pod
-  id, `guard_release.released` is false and says why. The report records the flag
+  minutes. The pod id is read from the container's first process (`/proc/1/environ`)
+  when that is readable, else from the shell; a shell exporting a different id than the
+  container's is refused before the bootstrap, because every pod's deadline sits on the
+  shared volume. Before the deadline it writes `released-<pod id>` (run id and outcome),
+  which the guard quotes in its ping. It only moves a deadline file the guard already
+  wrote; with none, or no usable pod id, `guard_release.released` is false and says why.
+  `released` means the deadline was written; `guard_alive` says whether the guard's
+  heartbeat was touched in the last five minutes, and when it was not, the detail says to
+  delete the pod by hand. The report records the flag
   (`plan.no_hold`) and the release (`guard_release`). A refusal or a red bootstrap leaves
   the guard alone, so the pod stays through the idle window for a fix and a rerun. It is
   refused under a launch token: the pod timer reads the early exit as `completed-early`.
@@ -493,7 +510,14 @@ is fetched from an older commit.
   when the lead approves more time.
 - **Records:** `/workspace/private/.pod_guard/guard.log`; with a topic in
   `/workspace/private/.pod_guard/ntfy_topic` it pings when it deletes, fails to delete, or
-  has to stop the pod instead. The ping is also the completion notice of a `--no-hold` run.
+  has to stop the pod instead. Before `pod_run --no-hold` moves the deadline it writes
+  `released-<pod id>` there with the run id and its outcome, and the guard quotes it:
+  `... requested deletion (approved time is up; pod_run reported: run <id> ended complete)`.
+  A ping without `pod_run reported` means the pod ended without `pod_run` finishing: the
+  window ran out or the run was lost mid-stage. Either way the run's own state is in
+  `pod-run-report-<run id>.json` on the volume.
+- **Heartbeat:** the guard touches `/workspace/private/.pod_guard/heartbeat-<pod id>` on
+  every tick, so a reader can tell a running guard from a deadline file nobody watches.
 - **Arming the ping.** The topic is the bearer secret `operations/notify/README.md`
   describes; it never enters git, a command line or a note. Send it over SSH's standard
   input from the laptop's ignored `private/ntfy.conf`:
@@ -508,7 +532,8 @@ is fetched from an older commit.
   on the volume for later pods; delete it with the volume, or by hand when the topic is
   rotated. `ssh.runpod.io`'s proxied SSH may not carry standard input; use the pod's
   public-IP SSH (TCP port 22 exposed) for this.
-- **Not yet observed on a live pod:** how RunPod passes `--args` to the container, the
+- **Not yet observed on a live pod:** how RunPod passes `--docker-args` (the start
+  command) to the container, whether `RUNPOD_POD_ID` is in PID 1's environment, the
   image's `/start.sh`, whether the pod-scoped key may delete its own pod, and the cgroup
   and `nvidia-smi` readings inside the container. The first pod after this change is
   created on the smallest card with a one-hour window, and its guard log and deletion are
@@ -592,7 +617,9 @@ UV_CACHE_DIR=/tmp/verbatus-uv-cache uv sync --frozen
 **No "armed for pod" line for this pod, or no deadline file: stop.** Only the backstop is
 watching, an hour after the window. Delete the pod now (`runpodctl pod delete <pod id>`),
 confirm it is gone, and find out why before renting again. If `RUNPOD_POD_ID` is empty in
-the SSH shell, `export RUNPOD_POD_ID=<pod id>` before these checks.
+the SSH shell, `export RUNPOD_POD_ID=<pod id>` before these checks. `pod_run` itself reads
+the pod id from the container's first process (`/proc/1/environ`) when it can, and refuses
+`--no-hold` before the bootstrap if the shell exports a different one.
 Arm the guard's completion ping now if wanted ("Arming the ping" above).
 
 Then launch detached, so a dropped SSH session or a sleeping laptop cannot kill it. The
@@ -673,8 +700,11 @@ halted: every stage refuses to start while the cap is breached.
 
 ### When it ends, and how results come home
 
-With `--no-hold`, `pod_run` writes its final report, then moves the guard's deadline to
-now; the guard deletes the pod within about a minute (and pings, if armed). Confirm it is
+With `--no-hold`, `pod_run` writes its final report, leaves the run's outcome for the
+guard's ping, then moves the guard's deadline to now; the guard deletes the pod within
+about a minute (and pings, if armed). `guard_release.guard_alive: false` in the report
+means the guard's heartbeat was stale: nothing is known to be acting on the deadline, so
+delete the pod by hand. Confirm it is
 gone with `runpodctl pod list` and `runpodctl pod get <pod id>`, and check the billing in
 RunPod's console: a shutdown is verified, never assumed. The volume and everything on it
 remain.
