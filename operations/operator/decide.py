@@ -40,7 +40,6 @@ from common.review_decisions import CURRENT, published_basis, review_decision
 from common.runtree.store import RunTree
 from common.stage import latest_attempt
 
-MAX_DECISION_REASON_CHARACTERS: Final = 4_000
 # What each decision asks of the run after it, in words.
 NEXT_STEP: Final = {
     "release": "the Recensor clears the unit's own holds",
@@ -52,11 +51,11 @@ NEXT_STEP: Final = {
 }
 RERUN_MISSING: Final = (
     "the Recensor records the request in its review-decisions `requests`, and holds the "
-    "subject until it is read again. Nothing can start that re-read yet: the Perlector reads "
-    "a page as attempt 1 and its one re-ask as attempt 2 and refuses any other "
+    "subject until it is read again. This tool does not start that re-read: the Perlector "
+    "reads a page as attempt 1 and its one re-ask as attempt 2 and refuses any other "
     "(`common.page_path.page_reading_attempt`), and the reading denominator has no rule for "
-    "which of two first readings of a page is current, so a re-run is a new run of the "
-    "submission until those exist"
+    "which of two first readings of a page is current, so a re-read is a new run of the "
+    "submission"
 )
 
 
@@ -146,18 +145,16 @@ def prepare_decision(
 ) -> PreparedDecision:
     """Build one decision about the unit keyed `unit` (`p1:2`) or page ordinal `page`.
 
-    It binds to that subject's basis in the Recensor's latest reviews and is
-    checked current there before it is returned, so nothing stale or unknown
-    is ever written.
+    It binds to that subject's basis in the Recensor's latest reviews, so
+    nothing unknown is ever written; `record_decision` checks it current again
+    just before it writes. The reason is bounded by the approval contract
+    (`common.contracts.approval.MAX_APPROVAL_REASON_BYTES`), which the record's
+    builder enforces.
     """
     if (unit is None) == (page is None):
         raise ApprovalRefusal("a decision names exactly one unit (by its key) or one page")
     if not isinstance(reason, str) or not reason.strip():
         raise ApprovalRefusal("a decision with no reason is unreviewable later; give --reason")
-    if len(reason) > MAX_DECISION_REASON_CHARACTERS:
-        raise ApprovalRefusal(
-            f"a decision reason is bounded to {MAX_DECISION_REASON_CHARACTERS} characters"
-        )
     scope = UNIT_SCOPE if unit is not None else PAGE_SCOPE
     if decision not in REVIEW_DECISIONS[scope]:
         raise ApprovalRefusal(
@@ -209,12 +206,6 @@ def prepare_decision(
         reason=reason,
         timestamp=timestamp or _now(),
     )
-    summary = review_decision(record, basis)
-    if summary["state"] != CURRENT:
-        raise ApprovalRefusal(
-            f"a decision about {what} would be stale ({summary['stale_because']}); read the "
-            "run's review again"
-        )
     return PreparedDecision(
         record=record, subject=what, basis_digest=digest, held_codes=tuple(sorted(held))
     )
@@ -232,7 +223,24 @@ def _row(units: list[dict[str, Any]], act_id: str, entry: dict[str, Any]) -> dic
 
 
 def record_decision(tree: RunTree, prepared: PreparedDecision) -> ApprovalRecordReference:
-    """Store the prepared decision where the Recensor reads every decision of the run."""
+    """Store the prepared decision where the Recensor reads every decision of the run.
+
+    The run may have moved on while the person confirmed it: a stage after the
+    Recensor ran, or another decision changed the subject's basis (an exclusion
+    changes its page's). Both are checked again here, just before the write,
+    so a decision that is no longer current or could reach nothing is refused
+    and nothing is written.
+    """
+    _require_open(tree)
+    stored = [record for _reference, record in tree.review_decision_records()]
+    summary = review_decision(
+        prepared.record, published_basis(tree.run_id, published_units(tree), stored)
+    )
+    if summary["state"] != CURRENT:
+        raise ApprovalRefusal(
+            f"the decision about {prepared.subject} is stale ({summary['stale_because']}); "
+            "read the run's review again"
+        )
     reference, _ = tree.write_approval_record(prepared.record)
     return reference
 

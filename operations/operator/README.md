@@ -131,15 +131,17 @@ item:
   everything, the Archetypus establishes the model's reading exactly as read and the
   export labels it "released by operator" with who, when, why and the codes cleared. A
   reading the export cannot carry (unplaced, with unreadable doubt marks, or with no text)
-  is refused here, before anything is written.
+  cannot be released this way: `decide` refuses to record its release, and a release
+  stored by any other means leaves it held under `review-reading-held`, with nothing
+  reported as cleared.
 - **Keep it out.** `exclude` a unit as not an act; the export lists it as
   `excluded-with-approval`, citing the decision.
 - **Keep it held.** `hold` a unit or page with a `--finding`, or `missed-act` on a page.
 - **Send it through the stage again.** `re-ask` a page (or a unit) asks for it to be read
   again; `re-shoot` a page asks for a new image. The Recensor records the request in its
-  `review-decisions` record and keeps the subject held. Nothing starts a re-read yet: the
-  Perlector reads a page as its first reading and at most one re-ask, and nothing decides
-  which of two first readings of a page is current. Until that exists, a re-read is a new
+  `review-decisions` record and keeps the subject held. This tool does not start the
+  re-read: the Perlector reads a page as its first reading and at most one re-ask, and
+  nothing decides which of two first readings of a page is current, so a re-read is a new
   run of the submission, and the command says so.
 
 The command reads the review the decision binds to from the run tree: the Recensor's
@@ -151,9 +153,9 @@ run's `receipts/sha256/`, prints what it recorded, and names the next step: resu
 run from the Recensor (`--from recensor --to armarium`), which applies every decision
 stored.
 
-Correcting a reading's text is not a decision yet: the lead's ruling allows an edit,
-exported beside the model's original, but how an edit meets the Coniector's
-reconstruction and the act counts is still the lead's to decide.
+No decision corrects a reading's text. What is built: a reading goes to export as read,
+is kept out, or is kept held; a re-run request is recorded and holds its page or unit;
+and this tool does not start the re-read.
 
 ## `review` on a run that has not finished
 

@@ -15,8 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from common.contracts.approval import validate_approval_record
+from common.contracts.approval import MAX_APPROVAL_REASON_BYTES, validate_approval_record
 from common.runtree.store import RunTree
+from common.stage import EXIT_HELD
 from conftest import build_page_tree, programs_through, run_stage
 
 from . import cli
@@ -105,7 +106,8 @@ def test_each_decision_is_recorded_current_and_the_recensor_applies_it(
     assert record["review"]["scope"] == scope
     assert (record["review"]["decision"], record["review"]["finding"]) == (decision, finding)
 
-    assert run_stage(root, RUN_ID, SCENARIO, RECENSOR, **options).returncode in (0, 3)
+    # Every decision here leaves something on page 2 held.
+    assert run_stage(root, RUN_ID, SCENARIO, RECENSOR, **options).returncode == EXIT_HELD
     applied = _decisions_record(root)
     assert [summary["decision_hash"] for summary in applied["applied"]] == [record["self_hash"]]
     assert applied["stale"] == []
@@ -117,7 +119,7 @@ def test_a_page_rerun_request_is_recorded_and_says_what_is_missing(
     root, options = _copy(recensed, tmp_path)
     assert _decide(root, tmp_path, monkeypatch, "re-ask", "--page", "2", "--reason", "re-read") == 0
     out = capsys.readouterr().out
-    assert "Nothing can start that re-read yet" in out
+    assert "This tool does not start that re-read" in out
     assert run_stage(root, RUN_ID, SCENARIO, RECENSOR, **options).returncode == 3
     [request] = _decisions_record(root)["requests"]
     assert (request["scope"], request["page_ordinal"], request["decision"]) == ("page", 2, "re-ask")
@@ -159,10 +161,19 @@ def test_a_mistyped_confirmation_writes_nothing(recensed, tmp_path, monkeypatch,
     assert _stored(root) == []
 
 
-def test_a_run_that_published_its_export_is_refused(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize(
+    "through, refusal",
+    [
+        ("archetypus", "the Archetypus has established a reading"),
+        ("armarium", "the Armarium has published its export"),
+    ],
+)
+def test_a_run_past_the_recensor_is_refused(tmp_path, monkeypatch, capsys, through, refusal):
     root = tmp_path / "runs"
-    for program in programs_through("armarium"):
-        assert run_stage(root, RUN_ID, "happy", program).returncode in (0, 3), program
+    for program in programs_through(through):
+        # The happy export is partial on its own reason: an unjoined page break.
+        expected = EXIT_HELD if program == programs_through("armarium")[-1] else 0
+        assert run_stage(root, RUN_ID, "happy", program).returncode == expected, program
     assert (
         _decide(
             root,
@@ -178,5 +189,95 @@ def test_a_run_that_published_its_export_is_refused(tmp_path, monkeypatch, capsy
         )
         == 2
     )
-    assert "the Armarium has published its export" in capsys.readouterr().out
+    assert refusal in capsys.readouterr().out
     assert _stored(root) == []
+
+
+def test_a_decision_gone_stale_while_it_was_confirmed_is_refused(
+    recensed, tmp_path, monkeypatch, capsys
+):
+    """An exclusion recorded while the person confirms changes the page's basis."""
+    from .decide import prepare_decision, record_decision
+
+    root, _options = _copy(recensed, tmp_path)
+    tree = RunTree(root, RUN_ID)
+
+    def typed(phrase: str) -> str:
+        record_decision(
+            tree, prepare_decision(tree, decision="exclude", unit="p2:1", reason="not an act")
+        )
+        return phrase
+
+    monkeypatch.setattr(cli, "_typed_decide_confirmation", typed)
+    code = cli.main(
+        [
+            "--workspace",
+            str(tmp_path),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "decide",
+            "--run-root",
+            str(root),
+            "--run-id",
+            RUN_ID,
+            "no-missed-act",
+            "--page",
+            "2",
+            "--reason",
+            "nothing missed",
+        ]
+    )
+    assert code == 2
+    assert "is stale" in capsys.readouterr().out
+    [record] = _stored(root)
+    assert record["review"]["decision"] == "exclude"
+
+
+def test_a_stage_run_while_a_decision_was_confirmed_refuses_it(tmp_path, monkeypatch, capsys):
+    """The Archetypus establishing a reading between prepare and record leaves nothing to reach."""
+    root = tmp_path / "runs"
+    for program in programs_through("recensor"):
+        assert run_stage(root, RUN_ID, "happy", program).returncode == 0, program
+
+    def typed(phrase: str) -> str:
+        [archetypus] = [p for p in programs_through("archetypus") if "6_archetypus" in p]
+        assert run_stage(root, RUN_ID, "happy", archetypus).returncode == 0
+        return phrase
+
+    monkeypatch.setattr(cli, "_typed_decide_confirmation", typed)
+    code = cli.main(
+        [
+            "--workspace",
+            str(tmp_path),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "decide",
+            "--run-root",
+            str(root),
+            "--run-id",
+            RUN_ID,
+            "hold",
+            "--unit",
+            "p1:1",
+            "--finding",
+            "other",
+            "--reason",
+            "seen late",
+        ]
+    )
+    assert code == 2
+    assert "the Archetypus has established a reading" in capsys.readouterr().out
+    assert _stored(root) == []
+
+
+def test_the_reason_is_bounded_by_the_approval_contract(recensed, tmp_path, monkeypatch, capsys):
+    root, _options = _copy(recensed, tmp_path)
+    words = ("exclude", "--unit", "p2:1", "--reason")
+    too_long = "x" * (MAX_APPROVAL_REASON_BYTES + 1)
+    assert _decide(root, tmp_path, monkeypatch, *words, too_long) == 2
+    assert f"{MAX_APPROVAL_REASON_BYTES} UTF-8 bytes" in capsys.readouterr().out
+    assert _stored(root) == []
+    # A long reason within the contract's bound is kept whole.
+    assert _decide(root, tmp_path, monkeypatch, *words, "y" * 5_000) == 0
+    [record] = _stored(root)
+    assert record["reason"] == "y" * 5_000
