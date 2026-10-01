@@ -850,3 +850,60 @@ def test_a_re_asked_page_exports_its_recovered_act_with_the_rest(tmp_path):
         "p1:2": "held-for-review",
         "p2:1": "delivered",
     }
+
+
+def _released_review(record_sha256: str, decision_hash: str) -> tuple[dict, dict]:
+    """A row and its accepted review, cleared by one current release of the unit."""
+    from common.review_decisions import REVIEW_FIELD
+
+    row = {"act_id": "act-1", "act_key": "p1:1", "page_id": "pg-1", "kind": "act"}
+    summary = {
+        "state": "current",
+        "decision_hash": decision_hash,
+        "record_sha256": record_sha256,
+        "scope": "unit",
+        "subject_id": "act-1",
+        "decision": "release",
+    }
+    block = {"cleared": {"unit": ["duplicate-region"], "page": []}, "decisions": [summary]}
+    return row, {"outcome": "accepted", "payload": {REVIEW_FIELD: block}}
+
+
+@pytest.mark.parametrize(
+    "approvals, refusal",
+    [
+        ({}, "whose stored approval s is not in the run"),
+        (
+            {
+                "s": (
+                    SimpleNamespace(relative_path="receipts/sha256/s.json"),
+                    {
+                        "self_hash": "h",
+                        "subject_ids": ["act-1"],
+                        "review": {"decision": "exclude", "scope": "unit"},
+                    },
+                )
+            },
+            "receipts/sha256/s.json records another decision",
+        ),
+        (
+            {
+                "s": (
+                    SimpleNamespace(relative_path="receipts/sha256/s.json"),
+                    {
+                        "self_hash": "h",
+                        "subject_ids": ["act-2"],
+                        "review": {"decision": "release", "scope": "unit"},
+                    },
+                )
+            },
+            "records another decision",
+        ),
+    ],
+    ids=["missing", "other-decision", "other-subject"],
+)
+def test_a_label_needs_the_stored_decision_its_review_names(approvals, refusal):
+    armarium = load_stage("7_armarium", isolate_path=True)
+    row, review = _released_review("s", "h")
+    with pytest.raises(FatalAccounting, match=refusal):
+        armarium.operator_action(row, review, frozenset({"h"}), approvals)

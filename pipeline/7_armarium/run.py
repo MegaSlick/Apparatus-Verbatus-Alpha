@@ -1103,7 +1103,7 @@ def operator_action(
             or (summary["scope"], summary["subject_id"], summary["decision"]) not in clearing
         ):
             continue
-        reference, record = approvals[summary["record_sha256"]]
+        reference, record = _stored_decision(row, summary, approvals)
         decisions.append(
             {
                 "decision": summary["decision"],
@@ -1123,6 +1123,36 @@ def operator_action(
         )
     override = require_establishable(row, review, applied)
     return released_row(row, override, cleared, decisions)
+
+
+def _stored_decision(row: dict, summary: dict, approvals: dict[str, tuple]) -> tuple:
+    """The stored approval a decision summary names, refused unless it records that decision.
+
+    The label names who decided, when and why from this record, so it must be
+    in the run and be the decision the review says was applied: same hash,
+    decision, scope and subject.
+    """
+    stored = approvals.get(summary["record_sha256"])
+    if stored is None:
+        raise FatalAccounting(
+            f"{row['act_key']} was cleared by decision {summary['decision_hash']}, whose stored "
+            f"approval {summary['record_sha256']} is not in the run; the export cannot say who "
+            "released it"
+        )
+    reference, record = stored
+    review = record.get("review") if isinstance(record, dict) else None
+    if (
+        not isinstance(review, dict)
+        or record.get("self_hash") != summary["decision_hash"]
+        or (review.get("decision"), review.get("scope"), record.get("subject_ids"))
+        != (summary["decision"], summary["scope"], [summary["subject_id"]])
+    ):
+        raise FatalAccounting(
+            f"{row['act_key']}'s review names a {summary['scope']} {summary['decision']} of "
+            f"{summary['subject_id']}, but its stored approval {reference.relative_path} records "
+            "another decision; the export cannot say who released it"
+        )
+    return reference, record
 
 
 def review_decisions_basis(decisions: dict | None, canaries: set[int]) -> dict[str, list] | None:
