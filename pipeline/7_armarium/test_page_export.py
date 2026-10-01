@@ -180,7 +180,7 @@ def _unit_types(manifest: dict) -> dict:
 def test_a_page_read_run_exports_its_acts_and_other_readings_complete(complete):
     manifest, members = complete["manifest"], complete["members"]
     claims = manifest["claims"]
-    assert manifest["schema"] == "armarium-export-manifest.v10"
+    assert manifest["schema"] == "armarium-export-manifest.v11"
     assert claims["status"] == "complete" and manifest["aggregate"]["status"] == "complete"
     partition = claims["act_partition"]
     assert partition["denominator"] == "page-read reading acts"

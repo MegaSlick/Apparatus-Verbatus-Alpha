@@ -1982,11 +1982,17 @@ def _act_readings(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
         {
             "act_id": act["act_id"],
             "act_key": act["act_key"],
-            "page_ordinal": act["page_ordinal"],
+            "page_ordinal": _key_page(act["act_key"]),
             "reading": act["reading"],
         }
         for act in sorted(acts, key=lambda item: item["act_id"])
     ]
+
+
+def _key_page(act_key: Any) -> int | None:
+    """The page an act key names (`p<page>:...`), or `None` for a key of no page."""
+    match = _PAGE_ACT_KEY.fullmatch(act_key) if isinstance(act_key, str) else None
+    return None if match is None else int(match[1])
 
 
 def _validate_act_readings(rows: Any, sealed: set[int], subject: str) -> dict[str, str | None]:

@@ -874,7 +874,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v10"
+                or manifest.get("schema") != "armarium-export-manifest.v11"
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -1459,7 +1459,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v10",
+        "schema": "armarium-export-manifest.v11",
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())
@@ -1600,7 +1600,7 @@ def export_of(tree: RunTree) -> dict:
 def happy_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("happy")
     result = orchestrate(root, "r", "happy")
-    # Partial by design: the act across the page break is a labelled reconstruction.
+    # Partial by design: an act may cross the page break, and code never joins it.
     assert result.returncode == 3, result.stderr
     return root, RunTree(root, "r")
 
@@ -1619,7 +1619,8 @@ def test_the_happy_path_delivers_every_reading_and_is_partial_only_for_its_recon
     assert export["other_readings"] == []
     assert export["aggregate"]["status"] == "partial"
     [reason] = export["aggregate"]["reasons"]
-    assert reason.startswith("continuation join join-1-2-0 (reconstructed)")
+    assert reason.startswith("continuation join join-1-2-0 (not-reconstructed)")
+    assert "(no-code-join)" in reason
 
 
 def test_every_input_reference_in_the_run_resolves_and_matches_its_digest(happy_run):
@@ -1718,7 +1719,7 @@ def test_the_run_used_no_network_and_no_model(happy_run):
     assert run["witness_chairs"] == list(config.witness_chairs)
     assert run["adapter_recipes"] == dict(config.adapter_recipes)
     recipes = run["adapter_recipes"]
-    assert len(recipes) == 9
+    assert len(recipes) == 10
     assert recipes[INK_MAP] == "deterministic-residual-ink-v1"
     assert all(
         revision.startswith("fake-") for stage, revision in recipes.items() if stage != INK_MAP
