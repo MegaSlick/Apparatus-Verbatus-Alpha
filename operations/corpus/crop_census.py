@@ -62,8 +62,9 @@ ROUND_TWO: Final = (
     "context (the most the engine lets that reply run), two more chat turns (the "
     "carried reply and the new request), and k crops at their image tokens plus the "
     "chat template's tokens per image; answered within the page's answer reserve. k "
-    "never takes the request past the protocol's max_images. Wording that asks for the "
-    "crops is not charged beyond the turns"
+    "is at most the census's own max_crops; the context the row leaves bounds it, "
+    "since the protocol seals no image ceiling. Wording that asks for the crops is not "
+    "charged beyond the turns"
 )
 ESTIMATE: Final = (
     "estimates only: gold text stands in for the witnesses, and round two has never "
@@ -242,7 +243,7 @@ def census_page(
             "qualifies": False,
         }
     capacity = request["capacity"]
-    cap = max(0, min(options["max_crops"], sealed["max_images"] - len(capacity["images"])))
+    cap = max(0, options["max_crops"])
     k = admitted_crops(row, request, crop, cap)
     return {
         **entry,
@@ -288,7 +289,6 @@ def census(pages: list[dict[str, Any]], options: dict[str, int], manifest_sha256
             "estimate": ESTIMATE,
             "chat_turn_tokens": CHAT_TURN_TOKENS,
             "chat_image_tokens": CHAT_IMAGE_TOKENS,
-            "max_images": sealed["max_images"],
             "recipe": row.recipe,
             "max_model_len": row.max_model_len,
             "min_pixels": geometry.min_pixels,

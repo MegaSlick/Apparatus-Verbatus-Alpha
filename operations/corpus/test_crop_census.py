@@ -325,20 +325,12 @@ def test_a_render_rule_that_drifts_from_the_page_request_is_refused(monkeypatch)
         census_page(perlector_row(), sealed_protocol(), _page("a", 4000, 5500), OPTIONS)
 
 
-def test_k_never_takes_the_request_past_the_protocol_image_limit():
-    sealed = {**sealed_protocol(), "max_images": 3}
-    entry = census_page(perlector_row(), sealed, _page("big", 4000, 5500), OPTIONS)
-    assert entry["k_cap"] == 2 and entry["k"] == 2 and entry["k_capped"] is True
-
-
-def test_a_page_request_that_uses_every_image_has_no_crops_and_no_cap_reached():
-    sealed = sealed_protocol()
-    feed = page_feed_for(sealed, page_shape(_page("big", 4000, 5500)), {})
-    used = len(page_request(perlector_row(), feed)["capacity"]["images"])
+def test_k_never_passes_the_census_s_own_crop_limit():
+    """The protocol seals no image ceiling for a page request; `max_crops` bounds k."""
     entry = census_page(
-        perlector_row(), {**sealed, "max_images": used}, _page("big", 4000, 5500), OPTIONS
+        perlector_row(), sealed_protocol(), _page("big", 4000, 5500), {**OPTIONS, "max_crops": 2}
     )
-    assert entry["k_cap"] == 0 and entry["k"] == 0 and entry["k_capped"] is False
+    assert entry["k_cap"] == 2 and entry["k"] == 2 and entry["k_capped"] is True
 
 
 def test_a_crop_gain_needs_both_sizes():
