@@ -94,11 +94,12 @@ FIXTURE = "synthetic-two-page-v0"
 #     (`builder_sha256`) is sealed into every page feed's prompt record;
 #   - any string sealed into a record or the export manifest.
 #
-# The review pins are the page-read `page-review` scenario's tree.
-HAPPY_SNAPSHOT_FILES = 131
-REVIEW_SNAPSHOT_FILES = 129
-HAPPY_RUN_TREE_DIGEST = "070b50da4ec1c5333d582c9ca4d5f525b7de9bc6c404ad946a10e94fee13d3fa"
-REVIEW_RUN_TREE_DIGEST = "ad67f573a5b6f4c6cb22147b4d01154880ce10af89882fab2601d7f52cc4a092"
+# The review pins are the page-read `page-review` scenario's tree, whose page 2
+# the committed re-ask budget asks once more.
+HAPPY_SNAPSHOT_FILES = 135
+REVIEW_SNAPSHOT_FILES = 140
+HAPPY_RUN_TREE_DIGEST = "3b02e28fc7a541256cd9ad142b0fbb0becc5e235f0772ef0495efde4c04610c7"
+REVIEW_RUN_TREE_DIGEST = "8c8fffbcef0bc1174764da7b396524a575fe04f26182cfe6c657006be3e1aa9e"
 
 
 def orchestrate(
