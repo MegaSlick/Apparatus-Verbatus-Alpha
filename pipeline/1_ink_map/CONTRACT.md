@@ -123,9 +123,9 @@ act is read, so it cannot know whether an act claims that ink. What decides
 the run is the Armarium's re-measure against the verified act-region bounds —
 see the Unit 14B ledger below. `run_aggregate`
 (`common/contracts/outcomes.py`) takes `edge_hold_pages` and appends a named
-partial reason for every page whose edge ink no crop released, so a run
-carrying one cannot report `complete`. A page whose ink the crops did claim is
-released and adds no reason.
+partial reason for every page whose edge ink no reading region released, so a
+run carrying one cannot report `complete`. A page whose ink the reading regions
+did claim is released and adds no reason.
 
 ## The fixture's current edge measure is quiet
 
@@ -139,14 +139,13 @@ Selectivity is measured on real material or not claimed.
 
 ## Unit 14B reconciliation ledger — release is by the same ink, not by exemption
 
-The fixture's apparent degeneracy was measured against the actual declared
-crop rectangles before changing it. On page 1 (200x260), the 64-pixel initial
-edge band contains 8,328 of 11,520 ink pixels (72.2917%); the two declared act
-crops leave 0 outside pixels. On page 2, it contains 3,384 of 3,840 pixels
-(88.125%); its declared continuation crop likewise leaves 0. Thus the ink is
-genuinely *claimed*; the semantic defect was treating a pre-proposal finding
-as unreleased after the Designator had supplied coverage, not a specimen with
-unclaimed edge ink.
+The fixture's apparent degeneracy was measured against the fixture's declared
+act rectangles. On page 1 (200x260), the 64-pixel initial edge band contains
+8,328 of 11,520 ink pixels (72.2917%); the two declared acts leave 0 outside
+pixels. On page 2, it contains 3,384 of 3,840 pixels (88.125%); its declared
+continuation likewise leaves 0. Thus the ink is genuinely *claimed*; the defect
+would be treating a pre-reading finding as unreleased after the reading had
+supplied coverage, not a specimen with unclaimed edge ink.
 
 Unit 14B originally retained the fixture and fixed band.
 **The band was re-derived**: at the sealed `edge_band_bp` the same

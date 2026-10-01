@@ -569,10 +569,8 @@ def round_half_up_bp(dimension: int, bp: int) -> int:
     Pure integer arithmetic, never a float, so the amount actually applied is
     deterministic and independent of Python's float rounding rules.
 
-    This is the project's one basis-point rounding rule.
-    `pipeline/2_designator/geometry._pad_amount` was that rule until this module
-    existed and now delegates here, so a page's band and a page's padding cannot
-    come to round differently.
+    This is the project's one basis-point rounding rule, so no two fractions
+    of a page can come to round differently.
     """
     return (dimension * bp + BASIS_POINTS // 2) // BASIS_POINTS
 

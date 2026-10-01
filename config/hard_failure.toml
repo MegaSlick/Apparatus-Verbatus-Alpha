@@ -1,5 +1,5 @@
-# The run-level hard-failure cap. Distinct from `recovery.toml`'s per-act
-# recovery budget: that file bounds how often ONE act may ask for rework; this
+# The run-level hard-failure cap. Distinct from `recovery.toml`'s per-page
+# re-ask budget: that file bounds how often ONE page may be asked again; this
 # one bounds how many accounted hard failures ONE RUN may carry before it needs
 # the project lead rather than another automatic stage invocation.
 #
@@ -84,9 +84,8 @@ threshold = 2
 # failure today, so counting it would double-count exactly the `(door,
 # refused, reason=...)` incidents above.
 #
-# (recensor, held-for-review) and (recensor, recovery-requested) are
-# UNRESOLVED, not FAILED, and are the ordinary, expected shape of a run that is
-# working correctly -- holding for a human or asking for bounded rework is the
+# (recensor, held-for-review) is UNRESOLVED, not FAILED, and is the ordinary,
+# expected shape of a run that is working correctly -- holding for a human is the
 # system succeeding at its job, not failing at it. Witness (attestatores)
 # outcomes are deliberately left out even though `failed`/`dead` classify FAILED:
 # no witness outcome ever terminates an act on its own (the transition table
@@ -97,7 +96,7 @@ threshold = 2
 # turns out to be a real early-warning signal in alpha.
 #
 # (designator, failed) and (archetypus, refused) are named even though neither
-# stage emits them today (the Designator emits only `proposed`/`held`, the
+# stage emits them today (the Designator emits only `proposed`, the
 # Archetypus only `established`) -- the outcome algebra already reserves both as
 # FAILED-classified members of their stage's closed vocabulary, and this policy
 # is ready for the day a stage actually uses them without needing a second edit.

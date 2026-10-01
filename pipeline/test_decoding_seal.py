@@ -1,7 +1,7 @@
 """Unit 2: a run's decoding posture is sealed at creation and named if it moves.
 
-`config/decoding.toml` is every reading chair's sampling values and the
-labelled variance experiment's seed and pass count. It joins the sealing family: its
+`config/decoding.toml` is every reading chair's sampling values, the
+Perlector's whole-page output cap and Chandra's native recipe. It joins the sealing family: its
 exact bytes are digested into `config_digest`, filed under `decoding` in
 `sealed_config_digests`, and re-read at each point of use.
 

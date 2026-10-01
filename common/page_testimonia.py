@@ -171,8 +171,8 @@ def validate_page_testimonium_record(
                 "detector's census for the page, the one input its testimony rests on"
             )
     if not attempted:
-        # As in the act-scoped check: before the image-evidence refusal, which a
-        # stripped record that kept its response would pass.
+        # Before the image-evidence refusal, which a stripped record that kept its
+        # response would pass.
         if (
             payload.get("native_capture") is not None
             or payload.get("raw_response_refs")

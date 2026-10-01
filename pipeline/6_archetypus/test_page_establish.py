@@ -2,7 +2,7 @@
 
 The trees are the fixture's `happy`, `page-review`, `page-other` and
 `page-no-act-unbroken` (`page-no-act` with nothing running across the page
-break) scenarios read with `reading_unit = "page"` and reviewed by the real
+break) scenarios, read page by page and reviewed by the real
 Recensor. Two tests forge a review the
 Recensor does not write on the fixture (`conftest.forge_page_review`), each
 saying why.

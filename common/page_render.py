@@ -2,8 +2,8 @@
 
 The render is deterministic for a sealed page and a transform, so the image
 shown is reproducible from the Exemplar plus the recorded transform: the
-Perlector's act dossier and its page feed show it, and a later stage checking a
-page feed derives it again from the same sealed page.
+Perlector's page feed shows it, and a later stage checking a page feed derives it
+again from the same sealed page.
 """
 
 from __future__ import annotations

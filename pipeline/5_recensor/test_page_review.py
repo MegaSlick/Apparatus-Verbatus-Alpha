@@ -1,7 +1,7 @@
 """The Recensor's page path: one review per unit a page-read run counts.
 
 The trees are the synthetic fixture's `happy`, `page-review` and `page-no-act`
-scenarios read with `reading_unit = "page"`. The fixture seals three page
+scenarios, read page by page. The fixture seals three page
 witnesses (Chandra, DAI and Churro) on the page-read roster, against a floor
 of 3; a floor of 4 is the shortfall case. DAI reads the records of the
 fixture's record detector, so page accounting rule (i) is measured on every

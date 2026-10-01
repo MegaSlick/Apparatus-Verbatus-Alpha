@@ -136,7 +136,7 @@ def markup_text_view(raw: str) -> dict[str, Any]:
 def bracket_marker_view(raw: str) -> dict[str, Any]:
     """Return `raw` with exactly the RecordGold bracket markers removed.
 
-    Act-scoped chairs that can express uncertainty (DAI) embed
+    Chairs that can express uncertainty (DAI) embed
     `[UNCERTAIN]`/`[CROSSED_OUT]` inline in otherwise plain reported text --
     not as tag-shaped markup, so `markup_text_view` does not touch them and
     would count each marker's characters as witness disagreement if the raw

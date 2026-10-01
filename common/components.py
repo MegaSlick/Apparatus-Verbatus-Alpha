@@ -1,17 +1,10 @@
-"""Connected-component labelling over an ink pixel set, shared by three readers.
+"""Connected-component labelling over an ink pixel set.
 
-This is the Designator's own labeller, moved to `common/` because a second
-stage needs it: `common/residual_ink.py`'s outside-coverage audit has to name
-this page's page-spanning component (the one the Designator withholds from
-detected grouping while keeping its pixels in conservation), so it does not
-report that pixel population as ordinary outside-coverage ink.
-
-The audit re-derives that component rather than reading the Designator's
-record: it labels the same page at the same derived margin under the same
-sealed `gap_tolerance_px` and `page_spanning_area_bp`, so it reaches the
-identical component from the identical bytes without trusting the stage it
-audits. What stays the audit's
-own is the contrast it *counts* ink at, which is the half of the instrument
+`common/residual_ink.py`'s outside-coverage audit uses it to name a page's
+page-spanning component, so it does not report that pixel population as
+ordinary outside-coverage ink. It labels the page at its own derived margin
+under the sealed `gap_tolerance_px` and `page_spanning_area_bp`. What stays
+the audit's own is the contrast it *counts* ink at, which is the half of the instrument
 that makes it a second opinion rather than a restatement -- measured on 44 real
 pages, using the audit's own looser ink set for the margin instead merges the
 writing into the page-spanning component and hides outside-coverage ink on 41
@@ -86,8 +79,7 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
 
     The component geometry alone; `label_component_runs` below keeps each
     component's own runs, for the one caller that needs pixels back rather
-    than a rectangle. `scan_ink_components` labels every ink pixel through
-    here.
+    than a rectangle.
 
     A row-run substitution over the retired per-pixel union-find
     (kept in `common/test_background_components.py` as this one's oracle), made on
@@ -123,8 +115,7 @@ def label_component_runs(
     The input is runs rather than a pixel set because the caller that needs the
     runs back (`common/residual_ink.py`) already holds the page as translated
     scanlines and would otherwise materialise one Python tuple per ink pixel to
-    hand them over -- the memory `structure.py`'s own docstring names as the
-    remaining cost of `ink_pixels`.
+    hand them over.
     """
     if gap_tolerance_px < 0:
         raise ContractError(f"gap tolerance {gap_tolerance_px} is negative")

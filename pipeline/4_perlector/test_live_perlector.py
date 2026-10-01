@@ -522,7 +522,7 @@ def test_two_digests_for_one_input_path_are_refused():
 def _engine_call_world(tree, *, seed: int, schema: str = "chair-call-record.v3"):
     """A retained Perlector call record at its sealed row, and a context that reads it.
 
-    The serving receipt's seed is 7; the variance arms' are the sealed policy's.
+    The serving receipt's seed is 7.
     """
     from common.decoding import (
         DEFAULT_DECODING_CONFIG_PATH,

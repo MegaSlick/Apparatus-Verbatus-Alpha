@@ -124,7 +124,7 @@ def _straightforward_counts(
     here.** The audited counts are this page's ink with its page-spanning
     component taken out of both; finding that component is
     `common.components`' labelling, proved against its own per-pixel oracle in
-    `pipeline/2_designator/test_structure.py`. The background is
+    `common/test_background_components.py`. The background is
     `common.background.infer_background_evidence`'s, proved elsewhere -- a
     duplicate inference here would let the two agree by making the same
     mistake instead of catching it. What this reference exists to check is

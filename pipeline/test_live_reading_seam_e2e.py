@@ -94,8 +94,8 @@ TAIL_FROM_RECENSOR = (
 # (`common/chandra_layout.py`) -- top-level divs carrying a `data-bbox`
 # normalized 0-1000, which convert, on this fixture's 200x260 pages, to the
 # sealed proposal rectangles of `a1`, `a2` and a2's page-2 continuation; Churro
-# speaks its `<output>` envelope once per page; DAI is act-scoped and answers
-# plain text once per act. Churro answers its own closed contract on page 1 and
+# speaks its `<output>` envelope once per page; DAI answers plain text once per
+# record its detector found. Churro answers its own closed contract on page 1 and
 # the retired `<output>` envelope on page 2, so two of its three legal shapes
 # cross this seam.
 CHANDRA_PAGE_ONE = (

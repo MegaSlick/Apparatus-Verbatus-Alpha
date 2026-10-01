@@ -638,7 +638,7 @@ def main() -> int:
     parser.add_argument(
         "--decoding-config",
         default=str(DEFAULT_DECODING_CONFIG_PATH),
-        help="the sealed decoding posture for record readings and variance experiments",
+        help="the sealed decoding posture of every reading chair",
     )
     # The roster's other half, forwarded with `--models-config`: without it the
     # real roster would resolve against the fixture-only catalogue. Declared here
@@ -652,8 +652,8 @@ def main() -> int:
     parser.add_argument(
         "--perlector-protocol-config",
         default=str(DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH),
-        help="the sealed Perlector prior-draft protocol; its exact bytes enter every "
-        "run's config digest",
+        help="the sealed Perlector protocol (page feed, page render, truncation); its "
+        "exact bytes enter every run's config digest",
     )
     parser.add_argument(
         "--perlector-audit-config", default=str(DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH)
@@ -663,7 +663,7 @@ def main() -> int:
         type=_positive_int,
         default=None,
         help="Perlector reader calls kept in flight at once on a live chair; absent means "
-        "the served row's max_num_seqs, and 1 reads one act at a time",
+        "the served row's max_num_seqs, and 1 reads one page at a time",
     )
     parser.add_argument(
         "--pdf-render-config",

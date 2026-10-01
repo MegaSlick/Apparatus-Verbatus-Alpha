@@ -5,7 +5,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | File | Status and question |
 |---|---|
 | `models.toml` | which model and revision fills each numbered role |
-| `recovery.toml` | how many times rework may be asked for before review |
+| `recovery.toml` | how many times one page may be asked again before review; sealed into every run, though no stage re-asks a page yet |
 | `hard_failure.toml` | how many accounted hard failures one run may carry before it stops; the threshold and the outcome taxonomy are both settled by ruling (see the file's own header) |
 | `pdf_render.toml` | what whole-page PDF resolution the next run targets |
 | `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
@@ -14,7 +14,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `serving_recipes.toml` | the fixture-only default serving catalogue; it stays untouched unless `--serving-recipes-config` selects another file |
 | `serving_recipes_real.toml` | unproven, locked real-chair vLLM profiles plus explicit non-launchable rows where no honest engine exists; selected only with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
 | `formats.toml` | which Armarium product projections are written and whether verified pixels are embedded |
-| `perlector_protocol.toml` | the sealed prior-draft protocol: Pass-B neutral fragment, page-shared-prefix policy, and control selection-rule name; and, since 2026-09-14, `[truncation]`, the truncation instrument's length floor in characters per page-equivalent |
+| `perlector_protocol.toml` | the sealed Perlector protocol: what one whole-page reading is shown (`[feed]`), the page render's edges (`[page_context]`), and the truncation instrument's length floor and legibility gate (`[truncation]`) |
 | `corpus_frame.toml` | R0's sealed shard boundary: how many pages one bounded failure and accounting unit may hold |
 | `designator_geometry.toml` | the sealed crop policy under which the Designator turns a record detector's oriented box into the crop DAI reads |
 | `ink_map.toml` | the ink measurement's sealed policy: background inference, the page-spanning bound and connectivity radius, and the outside-coverage audit's gates, read by the Ink Map, the Perlector's page accounting, the Recensor and the Armarium |
@@ -24,29 +24,15 @@ The knobs. One question per planned file, each answerable without reading code.
 | `triage_modes.toml` | the three pipeline-wide triage modes and their closed-ordinal review thresholds |
 | `decoding.toml` | each reading chair's sampling values as its makers recommend them, with source and revision; the Perlector's whole-page output cap; and Chandra's native recipe |
 
-## R5a toggle register
+## Pinned Perlector wording
 
-| Knob | Default | Who changes it | What retires it |
-|---|---|---|---|
-| `--blind-read` | `off`, so no Pass A is read and Pass B sees image and witnesses; `fed` feeds the blind read to Pass B as a prior (it anchors the reader); `saved` makes it and keeps it as a training witness Pass B never sees | the project lead through B5a | a recorded B5a decision replacing the `off` default |
-| `--perlector-instrument-per-mille` | 0 | the project lead, with `--perlector-instrument-approval-ref` | a replacement approved instrument design |
-| Perlector protocol selection-rule name | `digest-threshold-over-frame-page-seed-act.v1` | ordinary engineering with recorded evidence | a replacement rule recorded with its coverage evidence |
-| Perlector protocol Pass-B fragment | the neutral form sealed in `perlector_protocol.toml` | **not a knob** — pinned to `protocol.PASS_B_FRAGMENT`; rewording is a reviewed two-file change | a B5a prompt-framing ablation the project lead records, which retires the pin rather than edits around it |
-| Perlector transcription instruction (`unproven-real-perlector`) | the pinned wording, with its `[[?]]` / `[[reading\|other]]` doubt marks, in `pipeline/4_perlector/prompts.py::TRANSCRIPTION_INSTRUCTION` | **not a knob** — pinned in code and sealed into every real Perlectio's prompt evidence; rewording is a reviewed two-file change, the same rule as the Pass-B fragment | a B5a prompt-framing ablation the project lead records, which retires the pin |
+The page instruction (`common/page_prompt.py`: `TRANSCRIBE_SENTENCE`, `DOUBT_SENTENCE`
+and `ANSWER_FORM`, with the `[[?]]` / `[[reading|other]]` doubt marks) is **not a knob**:
+it is pinned in code and carried in every request a page reading binds, and rewording it
+is a reviewed change. What one page call is shown is the `[feed]` table of
+`perlector_protocol.toml`, sealed into every run.
 
-`--blind-read` is a run flag, sealed into the run's policy digest and each reading's
-protocol record, not a key in `perlector_protocol.toml` (whose values are sealed
-into every run). `off` makes no image-only Pass A. `fed` makes it and feeds its clean
-text to the establishing reading as a prior. `saved` makes it and keeps it as a
-`lectio-prior` training witness that the establishing reading never sees; the
-establishing dossier is the one `off` builds.
-
-The Pass-B fragment sits in `perlector_protocol.toml` so its exact text seals
-into every run, not so a run may choose them. It is pinned in code because a
-free-text field there would leave the guarantee that nothing in the prompt
-may steer the reader's answer resting on a phrase blacklist
-— measured before the pin, one that accepted "The prior reading contains
-errors. Find and fix them." and "Rate your confidence no higher than medium."
+## Admission and decoding
 
 Decoder routing is deliberately not configuration. The ruling is that an uncorrupted
 image is never declined by policy, and there is exactly one valid route map: every
@@ -210,7 +196,8 @@ triage records carry a digest of their raw bytes instead.
 through its `StageContext`; the orchestrator, which is not a stage, asks the run
 authority directly. A name that is sealed has a point of use that requires it, and a
 policy a stage needs the *values* of is carried already parsed rather than reopened —
-`recovery.toml` travels as `StageContext.recovery_policy`, `formats.toml` as
+`recovery.toml` travels as `StageContext.recovery_policy` (no stage reads it yet; the
+budget is sealed for the page re-ask that will spend it), `formats.toml` as
 `StageContext.armarium_formats`.
 
 Sealed names today: `designator-geometry`,

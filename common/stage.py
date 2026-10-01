@@ -1233,7 +1233,7 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument(
         "--decoding-config",
         default=str(DEFAULT_DECODING_CONFIG_PATH),
-        help="the sealed decoding posture for record readings and variance experiments",
+        help="the sealed decoding posture of every reading chair",
     )
     parser.add_argument(
         "--serving-recipes-config",
@@ -1260,7 +1260,7 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument(
         "--perlector-protocol-config",
         default=str(DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH),
-        help="the sealed Perlector prior-draft protocol declaration",
+        help="the sealed Perlector protocol: page feed, page render and truncation",
     )
     parser.add_argument(
         "--perlector-audit-config",

@@ -365,8 +365,7 @@ sends them unchanged.
    `ChairResponse`, never an exception, because a malformed witness body is evidence, not a
    stage abort. Write one `chair-call-record.v3` (fields in
    `common/contracts/serving.CHAIR_CALL_RECORD_FIELDS`) and return. Every stage reader of a
-   call record (the Designator's structure attempts and minted acts, every Testimonium's
-   serving call, every Perlector page reading) holds its
+   call record (every Testimonium's serving call, every Perlector page reading) holds its
    generation fields, sampling and seed to the sealed row through one check,
    `common.decoding.verify_call_sampling`; a reader holding only the stage context calls it
    through `common.stage.verify_retained_call_sampling`. A call record written under a
@@ -426,7 +425,7 @@ the other tiers hold. A tier with no row is re-raised as
 
 `fakes.py` holds a fake endpoint and builders for stage tests against `ChairClient`
 (`ScriptedAnswer`, `FakeEndpoint`, `FakeLauncher`, `FakeProcess`, `FakePackages`,
-`FakeRegistry`, `FakeBlobStore`, `fake_serving_factory`, and the structure-chair builders).
+`FakeRegistry`, `FakeBlobStore` and `fake_serving_factory`).
 They mirror `test_manager.py`'s own fakes rather than sharing them.
 
 - `ScriptedAnswer.finish_reason` distinguishes `None` (a JSON `null`) from the `ABSENT`
@@ -442,27 +441,6 @@ They mirror `test_manager.py`'s own fakes rather than sharing them.
 - `sticky_after_stop` keeps `/health` answering after the process is told to exit, for tests
   that need `handle.stop()` to fail.
 
-The structure-chair builders (`structure_box_1000`, `structure_layout_block`,
-`structure_answer_body`, `structure_blank_page_body`, `scripted_structure_answer`,
-`scripted_structure_refusal`, `scripted_structure_cut_off`) take rectangles in the sealed
-page's pixels and return **Chandra's layout HTML**, whose `data-bbox` values are found by
-search over the 0–1000 grid and checked through `common.chandra_layout.to_page_bounds`
-itself, so the builder cannot agree with a converter that changed. Each builder reads its
-body back through `common/chandra_layout.py::parse_layout_html` and checks the rectangles,
-so a drifted builder fails in the builder, not three stages later.
-
-- `structure_layout_block` writes one top-level `<div>`, for answers rectangles cannot
-  express: a bad or missing `data-bbox`, a label outside the vendor's nineteen,
-  `Blank-Page`.
-- `structure_blank_page_body` is a page the chair reports blank; this grammar has no
-  empty-list shape, and a body with no `<div>` is a refusal.
-- `scripted_structure_refusal` is keyed by `PARSE_OUTCOMES` code and covers the two
-  outcomes a body's shape can reach; the other four are wire-byte properties tested in
-  `common/test_chandra_layout.py`.
-- `scripted_structure_cut_off` truncates an answer before its first block closes and sets
-  the `length` stop word, as an overrun of `max_model_len` looks. The truncated body still
-  parses (with an `unclosed-block` finding), so the page is held on the stop word alone.
-
 ## End to end
 
 `pipeline/test_live_reading_seam_e2e.py` runs the whole seam: the real stage programs carry
@@ -472,11 +450,9 @@ live the same way it would be on a card — a temporary catalogue with `kind = "
 all four chairs at all three tiers — so the selector under test is the sealed one.
 
 - **A live run reaches a sealed terminal export**, with every reading naming the exact bytes
-  its engine sent. The export is **held for review**, and that is the rules working: Churro
-  reads its vendor's `HistoricalDocument` grammar, which has no coordinates, so it does not
-  attach and two witnesses fall short of the floor of three. Attaching a witness without
-  geometry is the Perlector's `anchor-line` basis, not yet built. Even then, one scripted run
-  over a fixture is not a proven pipeline.
+  its engine sent. The export is **held for review**, and that is the rules working: the
+  fixture's pages carry an act across their break, so the run is partial for that labelled
+  reconstruction. One scripted run over a fixture is not a proven pipeline.
 - **Two independent drivers reach the same fixture tree byte for byte**: the orchestrator's
   subprocess chain, and this suite's driver pointed at the committed fixture catalogue with
   `--placement-tier` and in-process stage `main`s. Whether the fixture tree itself moved is
