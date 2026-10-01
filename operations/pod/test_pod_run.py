@@ -40,6 +40,7 @@ from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.records import SCHEMA as RECEIPT_SCHEMA
 from operations.operator.volume_s3 import VolumeSpec
 from pipeline.orchestrator import run as orchestrator
+from pipeline.orchestrator.run import STOP_RECORD_SCHEMA
 
 from . import launch as launch_module
 from . import pod_run
@@ -136,6 +137,10 @@ class RecordedRunner:
     transcript_failure: str | None = None
     dropped_bytes: int = 0
     tick_liveness: bool = True
+    # The stop record the orchestrator leaves at its `--stop-record`: None
+    # leaves none, a bool says whether this invocation reached its export, and
+    # text is written as it stands.
+    stop: bool | str | None = None
     calls: list[tuple[list[str], Path, dict[str, str]]] = field(default_factory=list)
     supervision: list[dict[str, object]] = field(default_factory=list)
 
@@ -166,6 +171,20 @@ class RecordedRunner:
                     )
                     + "\n"
                     for _ in range(self.journal_entries)
+                ),
+                encoding="utf-8",
+            )
+        if self.stop is not None:
+            Path(argv[argv.index("--stop-record") + 1]).write_text(
+                self.stop
+                if isinstance(self.stop, str)
+                else json.dumps(
+                    {
+                        "schema": STOP_RECORD_SCHEMA,
+                        "run_id": argv[argv.index("--run-id") + 1],
+                        "exit_code": self.returncode,
+                        "exported": self.stop,
+                    }
                 ),
                 encoding="utf-8",
             )
@@ -303,6 +322,9 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
     [(command, cwd, env)] = runner.calls
     assert cwd == ws.repository
     assert command[1:3] == ["-I", str(ws.repository / "pipeline" / "orchestrator" / "run.py")]
+    stop = Path(command[command.index("--stop-record") + 1])
+    assert stop.name == "stop.json" and stop.parent.name.startswith("pod-run-stop-")
+    assert not stop.parent.exists()
     assert command[3:] == [
         "--fixture",
         "synthetic-two-page-v0",
@@ -324,6 +346,9 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
         str(real_context),
         "--stage-timing-journal",
         str(ws.volume / "pod-run-report-timings.json"),
+        # A private path made for this invocation, removed once read.
+        "--stop-record",
+        str(stop),
         # The commit the bootstrap checked out and verified, not one the
         # orchestrator re-derives: REPOSITORY already read the checkout back
         # and refused a tip that was not this pin.
@@ -1114,9 +1139,51 @@ def test_a_full_run_held_before_its_export_closes_without_paid_idle_time(tmp_pat
     assert not (ws.volume / "pod-run-report-hold.json").exists()
 
 
-def test_reached_export_reads_only_a_sealed_armarium_export(tmp_path: Path) -> None:
-    """No run tree, or a tree with no Armarium seal, is a run that stopped before its export."""
-    assert pod_run.reached_export(tmp_path / "runs", "absent") is False
+def test_only_this_invocations_stop_record_saying_exported_reads_as_reached(
+    tmp_path: Path,
+) -> None:
+    """The stop record decides, never an export the run tree already holds."""
+    path = tmp_path / "stop.json"
+
+    def stop(**fields: object) -> bool:
+        record = {"schema": STOP_RECORD_SCHEMA, "run_id": "r", "exit_code": 3, **fields}
+        path.write_text(json.dumps(record), encoding="utf-8")
+        return pod_run.exported_this_invocation(path, "r")
+
+    assert pod_run.exported_this_invocation(path, "r") is False  # no record
+    assert stop(exported=True) is True  # its sealed export
+    assert stop(exported=False) is False  # held at the Recensor, whatever the tree holds
+    assert stop(exported=True, run_id="another") is False
+    assert stop(exported=True, schema="another.v1") is False
+    for unreadable in ("[]", "{", "\udcff", "null"):
+        path.write_text(unreadable, encoding="utf-8", errors="surrogateescape")
+        assert pod_run.exported_this_invocation(path, "r") is False, unreadable
+
+
+@pytest.mark.parametrize(
+    ("stop", "holding"),
+    [(True, True), (False, False), (None, False), ("[1]", False)],
+    ids=["exported", "held-before-export", "no-record", "unreadable"],
+)
+def test_a_full_held_run_holds_only_on_its_own_stop_record(
+    tmp_path: Path, stop: bool | str | None, holding: bool
+) -> None:
+    """Whatever the stop record says, or fails to, the final report is written."""
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(returncode=orchestrator.EXIT_HELD, stop=stop),
+    )
+    assert code == EXIT_HELD
+    report = _report(ws)
+    assert report["state"] == "held" and report["finished_at"] is not None
+    assert report["held_to_hard_deadline"] is holding
+    assert clock.seconds == (4.0 if holding else 0)
 
 
 def test_a_held_selection_closes_without_paid_idle_time(tmp_path: Path, monkeypatch) -> None:
@@ -1385,9 +1452,8 @@ def test_a_partial_run_never_exits_zero_and_the_report_names_its_state(
 ) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
-    runner = RecordedRunner(returncode=orchestrator_exit)
     # A held run that reached its sealed export: the terminal hold.
-    monkeypatch.setattr(pod_run, "reached_export", lambda run_root, run_id: True)
+    runner = RecordedRunner(returncode=orchestrator_exit, stop=True)
 
     exit_code = main(
         _run_argv(ws),

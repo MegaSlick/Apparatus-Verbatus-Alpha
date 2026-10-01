@@ -56,6 +56,7 @@ from common.contracts.stages import (  # noqa: E402
     RECENSOR,
 )
 from common.credentials import looks_like_credential_env  # noqa: E402
+from common.durability import atomic_create  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
     load_hard_failure_policy,
@@ -132,6 +133,8 @@ _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_
 # monotonic reading names no instant a reader could compare across records.
 _clock = time.monotonic
 STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v4"
+# How one invocation ended, for the caller that named `--stop-record`.
+STOP_RECORD_SCHEMA = "orchestrator-stop.v1"
 
 GPU_QUERY = (
     "nvidia-smi",
@@ -633,6 +636,14 @@ def main() -> int:
         "Absent means no journal is written, and the run tree is unchanged either way",
     )
     parser.add_argument(
+        "--stop-record",
+        default=None,
+        help="a new file outside the run tree that this invocation writes as it ends, "
+        "saying whether it reached a sealed Armarium export; `pod_run` names a fresh one "
+        "for each invocation and keeps the pod toward its deadline only on its word. "
+        "Absent means none is written",
+    )
+    parser.add_argument(
         "--corpus-register",
         default=None,
         help="the append-only corpus register this run is snapshotted against",
@@ -792,6 +803,7 @@ def main() -> int:
     # carry a malformed revision through every stage and record it nowhere.
     repository_commit(args)
     _require_journal_outside_run_tree(args)
+    _require_fresh_stop_record(args)
     # A stage added later without a class or a terminal decision should fail at
     # the first run, not at the first unusual page.
     check_algebra_is_total()
@@ -826,6 +838,48 @@ def _require_journal_outside_run_tree(args: argparse.Namespace) -> None:
             f"{run_directory}; the journal is mutable and the tree is not, so it is "
             "written outside the tree or not at all"
         )
+
+
+def _require_fresh_stop_record(args: argparse.Namespace) -> None:
+    """The stop record is this invocation's alone: new, and outside the immutable run tree."""
+    record = getattr(args, "stop_record", None)
+    if record is None:
+        return
+    record_path = Path(record).resolve()
+    run_directory = (Path(args.run_root) / args.run_id).resolve()
+    if record_path == run_directory or record_path.is_relative_to(run_directory):
+        raise ContractError(
+            f"--stop-record {record_path} is inside this run's own tree at {run_directory}; "
+            "it is written outside the tree"
+        )
+    if record_path.exists() or record_path.is_symlink():
+        raise ContractError(
+            f"--stop-record {record_path} already exists; it must be new, so no earlier "
+            "invocation's stop can be read as this one's"
+        )
+
+
+def _record_stop(args: argparse.Namespace, exit_code: int, *, exported: bool) -> None:
+    """Write `--stop-record`, when one was named, saying how this invocation ended.
+
+    `exported` is true only when this invocation ran the Armarium and proved its
+    sealed export; a stop before it is false whatever export the tree already
+    holds. A record that cannot be written is said on stderr and leaves the run
+    as it is: its caller reads no record as no export.
+    """
+    record = getattr(args, "stop_record", None)
+    if record is None:
+        return
+    payload = {
+        "schema": STOP_RECORD_SCHEMA,
+        "run_id": args.run_id,
+        "exit_code": exit_code,
+        "exported": exported,
+    }
+    try:
+        atomic_create(Path(record), json.dumps(payload, sort_keys=True).encode("utf-8"))
+    except OSError as error:
+        print(f"run {args.run_id}: the stop record could not be written: {error}", file=sys.stderr)
 
 
 def _require_declared_fixture(args: argparse.Namespace) -> None:
@@ -875,7 +929,21 @@ def run_sequence(
     mode: str,
     hard_failure_policy: dict,
 ) -> int:
+    """Run one contiguous selection (`_drive`), and record how it ended (`_record_stop`)."""
+    exit_code, exported = _drive(args, names, mode, hard_failure_policy)
+    _record_stop(args, exit_code, exported=exported)
+    return exit_code
+
+
+def _drive(
+    args: argparse.Namespace,
+    names: tuple[str, ...],
+    mode: str,
+    hard_failure_policy: dict,
+) -> tuple[int, bool]:
     """Run one contiguous selection without persisting its driver mode.
+
+    Returns the exit and whether this invocation reached a sealed Armarium export.
 
     In every mode, a Recensor that holds anything stops the run before the
     first of the Archetypus and the Armarium it selects, so nothing is
@@ -903,33 +971,33 @@ def run_sequence(
         if held_recensor is not None:
             ran_after_hold.append(name)
         if result == EXIT_RUN_HALTED:
-            return _halt(args, _entry_halt(args, name, hard_failure_policy))
+            return _halt(args, _entry_halt(args, name, hard_failure_policy)), False
         if name == "door" and result in (EXIT_COMPLETE, EXIT_HELD):
             _require_sealed_hard_failure_policy(_run_tree(args).read_run(), hard_failure_policy)
         # The cap and its exact-threshold warning take precedence over every
         # held exit, including an Attestatores hold whose outcome is not counted.
         halted = checkpoint(args, name, hard_failure_policy)
         if halted is not None:
-            return _halt(args, halted)
+            return _halt(args, halted), False
         # An Attestatores hold means its attempt tally is unestablished, so no
         # later member may advance even when the stage already sealed evidence.
         if name == ATTESTATORES and result == EXIT_HELD:
             print(f"run {args.run_id}: held; its reason is on stderr above")
-            return EXIT_HELD
+            return EXIT_HELD, False
         # A range that ends at the Armarium runs through held boundaries as auto mode
         # does, so its export names every hold; the Armarium is terminal either way.
         if mode in ("semi", "manual") and result == EXIT_HELD and names[-1] != "armarium":
             print(f"run {args.run_id}: {mode} mode stopped at held {name}")
             if name == RECENSOR:
                 report_held_recensor(args, held_by_recensor(_run_tree(args)), ran_after_hold)
-            return EXIT_HELD
+            return EXIT_HELD, False
 
     if held_recensor is not None:
         print(f"run {args.run_id}: stopped at a held recensor, before the {first_after_recensor}")
         report_held_recensor(args, held_recensor, ran_after_hold)
-        return EXIT_HELD
+        return EXIT_HELD, False
     if names[-1] != "armarium":
-        return EXIT_COMPLETE
+        return EXIT_COMPLETE, False
     # Armarium has no successor, so its own seal is proved here. The export comes
     # from the one manifest snapshot `verify_final_seal` checked: reopening it by
     # path afterwards would leave a check/use window at the last boundary.
@@ -938,7 +1006,7 @@ def run_sequence(
     print(f"run {args.run_id}: {status}")
     for line in lines:
         print(f"  - {line}")
-    return EXIT_COMPLETE if status == "complete" else EXIT_HELD
+    return (EXIT_COMPLETE if status == "complete" else EXIT_HELD), True
 
 
 def recensor_holds(args) -> list[dict]:
