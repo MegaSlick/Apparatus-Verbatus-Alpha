@@ -21,11 +21,9 @@ from .residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 
 _REPOSITORY = Path(__file__).resolve().parents[2]
 
-# Every production caller that serves a chair on the one card a pod rents. The
-# pod preflight and the three pipeline stages had disjoint lock paths: the
-# preflight on container-local disk, the stages inside their own run trees, so
-# preflight and run never contended, and two stages resumed under different run
-# ids each acquired their own lease and co-resided on one GPU.
+# Every production caller that serves a chair on the one card a pod rents;
+# each must open the same lease file, so the preflight and every stage, under
+# any run id, contend for the one GPU.
 _SERVING_CALLERS = (
     "operations/pod/bootstrap_main.py",
     "operations/serving/assembly.py",
@@ -39,7 +37,7 @@ def test_the_pod_lease_path_is_container_local_and_not_a_run_tree_path() -> None
 
     A lock under `<volume>/runs/<id>/` is both scoped to the wrong thing and
     asked of a network mount whose honouring of advisory locks is unknown -- and
-    it put an object inside the run tree that `fetch-run` then refused the whole
+    it is an object inside the run tree, which `fetch-run` refuses the whole
     tree for.
     """
 
@@ -52,7 +50,7 @@ def test_every_serving_caller_takes_the_one_pod_wide_lease_path() -> None:
     """Read from source, so a fifth caller added later with its own literal fails here.
 
     The lease is only a boundary if every manager on the card opens the same
-    file; three call-site literals and a fourth default were four boundaries.
+    file; a caller with its own literal is a second boundary.
     """
 
     for relative in _SERVING_CALLERS:
@@ -96,8 +94,8 @@ def test_a_symlink_at_the_lease_path_is_refused_rather_than_followed(tmp_path: P
     """The one pod-wide lease is a fixed name in a world-writable directory.
 
     Inside the single-tenant pod container that is exactly right. On a shared
-    developer machine -- which is new, because three pipeline stages now take
-    the same fixed path -- another user's symlink at that name would otherwise
+    developer machine, where every serving caller takes the same fixed path,
+    another user's symlink at that name would otherwise
     be followed, and the lock taken on whatever it pointed at while the lease
     reported itself held. `O_NOFOLLOW` makes that a named refusal instead. Two
     unrelated local runs still serialize on the shared path; that is the lease

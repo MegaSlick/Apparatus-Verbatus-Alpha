@@ -438,19 +438,15 @@ def test_this_module_pins_equality_only_and_takes_no_similarity_parameter():
     )
 
 
-# --- P2 review: the two halves of comparison_loss answer the same question ---
+# --- both halves of comparison_loss count the same thing ---
 
 
 def test_a_decomposed_witness_report_is_not_charged_a_character_per_accent():
-    """`comparison_view`'s docstring settles what `dropped_characters` counts:
-    "NFC discards nothing -- it re-encodes a character, it does not remove
-    one", and charging composition to the loss account "would put a wrong
-    number on every diacritic-heavy act in the corpus this project exists to
-    read". The witness half of `comparison_loss` must answer that same
-    question: summing every `markup_text_view` loss field folded in its
-    `unicode_reencoded_characters`, so a witness reporting decomposed French
-    was recorded as losing one character per accent while the
-    identically-composed reading was recorded as losing none.
+    """NFC re-encoding is not counted as a loss on either side.
+
+    NFC discards nothing -- it re-encodes a character, it does not remove one --
+    so a witness reporting decomposed French and the identically composed
+    reading both record no loss for it.
     """
     precomposed = unicodedata.normalize("NFC", "baptisé et présenté")
     decomposed = unicodedata.normalize("NFD", precomposed)

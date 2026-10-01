@@ -28,20 +28,15 @@ for _directory in (PIPELINE, ATTESTATORES_DIR):
 
 # Two suites' helpers, reused rather than copied.
 #
-# `test_attestatores_real_ingress` owns the real-submission builder and the
-# hand-built Designator layer; `RUN_ID` and `ACTS` come with them, and the
-# witness scripts are sized by that same act table, so the two cannot drift
-# apart. `test_live_reading_seam_e2e` owns the serving world: the catalogue
-# writer that makes every chair live at every tier, the scripted witness and
-# reader worlds, the tree snapshotter, and the two stage programs loaded for
-# in-process invocation — so a change in how a fake chair is stood up is made
-# once for both seams.
+# `test_attestatores_real_ingress` owns the real-submission builder and its
+# `RUN_ID`. `test_live_reading_seam_e2e` owns the catalogue writer that makes
+# every chair live at every tier and the tree snapshotter, so a change in how a
+# fake chair is stood up is made once for both seams.
 from test_attestatores_real_ingress import (  # noqa: E402
     RUN_ID,
     _real_submission,
 )
 from test_live_reading_seam_e2e import (  # noqa: E402
-    TIER,
     snapshot,
     write_live_catalogue,
 )
@@ -85,22 +80,6 @@ def invoke_stage(program: Path, run_root: Path, catalogue: Path, *extra: str):
         capture_output=True,
         text=True,
     )
-
-
-def run_in_process(module, run_root: Path, catalogue: Path, *, serving_factory):
-    """Call one stage's own `main` here, with the serving seam injected.
-
-    `main(serving_factory=…)` is the sanctioned in-process injection point and
-    is not what makes a run live: the sealed row kind decides that.
-    `sys.argv[0]` is the stage's own program path, as it would be under the
-    orchestrator, so a refusal names a file that exists.
-    """
-    argv = [module.__file__, *stage_argv(run_root, catalogue, "--placement-tier", TIER)]
-    original, sys.argv = sys.argv, argv
-    try:
-        return module.main(serving_factory=serving_factory)
-    finally:
-        sys.argv = original
 
 
 # ========================= what a real run cannot do =========================

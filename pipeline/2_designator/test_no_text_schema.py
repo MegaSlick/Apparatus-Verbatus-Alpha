@@ -1,4 +1,4 @@
-"""The Designator's records carry no text, at the schema boundary (spec 06 test 6).
+"""The Designator's records carry no text, at the schema boundary.
 
 A Surya detection or a detector record is geometry-shaped JSON; a payload
 carrying a `text` or `reported` field would still be that, so nothing but an

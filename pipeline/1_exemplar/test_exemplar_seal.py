@@ -1,10 +1,9 @@
 """The Exemplar's corpus seal, and the reconciliation it rests on.
 
-Spec 03's test 3 lives here: a byte-identical rerun reproduces an identical seal,
-and a run whose evidence changed underneath it refuses. So does the claim the seal
-is worth anything at all — that every submitted source has exactly one page outcome
-before the seal is written, and that a source cannot disappear between submission
-and sealing.
+A byte-identical rerun reproduces an identical seal, and a run whose evidence
+changed underneath it refuses. So does the claim the seal is worth anything at
+all — that every submitted source has exactly one page outcome before the seal is
+written, and that a source cannot disappear between submission and sealing.
 
 The run trees here are built by driving the real door over synthetic bytes and then
 running the real Exemplar, so what is under test is the handoff rather than a
@@ -693,8 +692,8 @@ def test_an_admitted_blob_that_is_gone_refuses_by_name_rather_than_crashing(
 
 
 def test_a_door_refusal_carrying_a_free_text_reason_is_refused(tmp_path, rebind_stage_seal):
-    """The closed reason set is the actual work of this spec. A consumer that took a
-    free-text reason because it happened to be a string would have replaced nothing."""
+    """A door refusal must carry a code from the closed reason set, not a free-text
+    reason that merely happens to be a string."""
     tree, _ = build_door_run(tmp_path / "runs")
     identity = artifact_id(DOOR, "admission", "source-3")
     path = tree.resolve(tree.artifact_path(DOOR, "admission", identity))

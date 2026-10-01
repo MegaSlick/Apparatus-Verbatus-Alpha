@@ -112,9 +112,6 @@ from common.imaging import Bounds
 
 VENDOR_REPOSITORY: Final = "github.com/datalab-to/chandra"
 VENDOR_COMMIT: Final = "d4f7467435aa4137d9539f000ddf0b7ced3eb43f"
-VENDOR_LICENCE: Final = "Apache-2.0"
-VENDOR_PROMPT_SOURCE: Final = "chandra/prompts.py"
-VENDOR_PARSER_SOURCE: Final = "chandra/output.py::parse_layout"
 
 # `chandra/prompts.py::ALLOWED_TAGS` and `ALLOWED_ATTRIBUTES`, in the vendor's
 # own order. Order is load-bearing, not cosmetic: both lists are interpolated
@@ -252,7 +249,7 @@ BLANK_PAGE_LABEL: Final = "Blank-Page"
 UNLABELLED_BLOCK_LABEL: Final = "block"
 
 # SHA-256 of the two carried strings as rendered, against
-# `{VENDOR_REPOSITORY} @ {VENDOR_COMMIT}` `{VENDOR_PROMPT_SOURCE}`. Checked by
+# `{VENDOR_REPOSITORY} @ {VENDOR_COMMIT}` `chandra/prompts.py`. Checked by
 # `common/test_chandra_layout.py`, and against the vendor by
 # `common/test_vendor_parity.py`.
 PROMPT_ENDING_SHA256: Final = "f5d1ed0fb0ead54db6271c3e5dba9d581dcd8f9aa1709ab3b029761c00cb2233"

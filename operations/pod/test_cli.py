@@ -3,10 +3,9 @@
 `cli.main`'s gate, preview and exit statuses are drilled in
 `test_pod_runtime.py`, which owns the whole launch. This file covers one
 boundary: the untracked factory that supplies the two-controller handshake.
-Until this branch there was no tracked implementation that could pass through
-it -- `arming.FailClosedControllerArmer` refuses every launch by design -- so
-"the real armer satisfies the seam it is loaded through" was a claim nothing
-checked.
+These tests pin that the tracked `ChannelControllerArmer` satisfies the seam it
+is loaded through (`arming.FailClosedControllerArmer` refuses every launch by
+design).
 
 The factories below are module-level on purpose: `cli._controller_armer`
 imports a module by name and calls an attribute of it, which is exactly what an

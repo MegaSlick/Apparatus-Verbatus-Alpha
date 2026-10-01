@@ -3345,12 +3345,11 @@ def test_real_bindings_seal_designator_geometry_alongside_the_shard_knob(monkeyp
     assert "corpus-frame-shard" in sealed, (
         "the pre-existing corpus-frame-shard entry must survive, not be replaced"
     )
-    # The sealing family. Each of these has a point
-    # of use on the real route: the door renders with the PDF policy it parsed, the
-    # storage-root gate ran under the data-handling policy it loaded, and the
-    # Recensor and the orchestrator's dispatch both work from the recovery budget.
-    # A real run whose door sealed none of them would refuse at the point of use
-    # with "sealed no digest".
+    # The sealing family: the door renders with the PDF policy it parsed, the
+    # storage-root gate runs under the data-handling policy it loaded, and the
+    # recovery budget is sealed so a page re-ask spends the run's own budget. A
+    # real run whose door sealed the PDF or data-handling digest would refuse at
+    # the point of use with "sealed no digest".
     assert sealed.get("pdf-render") == supplied["pdf_render_config_sha256"], (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
         "'pdf-render' entry bound to the digest of the bytes the settings were parsed "
@@ -3358,8 +3357,8 @@ def test_real_bindings_seal_designator_geometry_alongside_the_shard_knob(monkeyp
     )
     assert sealed.get("recovery") == recovery["config_sha256"], (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'recovery' entry; the Recensor and the orchestrator require this name at "
-        "their point of use"
+        "'recovery' entry; the budget is sealed so a page re-ask spends the run's own "
+        "budget"
     )
     assert sealed.get("data-handling") == supplied["data_handling_config_sha256"], (
         f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "

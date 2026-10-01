@@ -773,9 +773,16 @@ def test_loader_refused_target_is_a_named_refusal_before_journalling(tmp_path: P
     assert target.read_bytes() == stood
 
 
-@pytest.mark.parametrize("edit", ["wrong-corpus", "foreign-members", "unsorted-members"])
+@pytest.mark.parametrize(
+    ("edit", "producer_refusal"),
+    [
+        ("wrong-corpus", "wrong-corpus: confirmation corpus does not match"),
+        ("foreign-members", "cluster-member-not-submitted"),
+        ("unsorted-members", "page members must be sorted unique"),
+    ],
+)
 def test_producer_refused_candidate_bindings_are_refused_before_journalling(
-    tmp_path: Path, edit: str
+    tmp_path: Path, edit: str, producer_refusal: str
 ):
     """The queue already holds enough evidence to reject these producer failures."""
     batch = _Batch(tmp_path)
@@ -793,7 +800,7 @@ def test_producer_refused_candidate_bindings_are_refused_before_journalling(
             **draft,
             "clusters": [{**draft["clusters"][0], "pages": [page]}],
         }
-    with pytest.raises(ProducerRefusal):
+    with pytest.raises(ProducerRefusal, match=producer_refusal):
         produce(
             batch.frames,
             corpus_id="c",
@@ -963,14 +970,28 @@ def test_a_console_acceptance_is_committable_and_edits_to_it_are_refused(tmp_pat
         return {**written, "clusters": [cluster]}
 
     refused = [
-        _edited(evidence_pairs=[["e" * 64, "f" * 64]]),
-        {**written, "evidence_manifest_sha256": "a" * 64},
-        _edited(
-            pages=[{**written["clusters"][0]["pages"][0], "member_frame_sha256": ["e" * 64] * 2}]
+        (
+            _edited(evidence_pairs=[["e" * 64, "f" * 64]]),
+            "evidence pairs must be distinct cluster-member pairs",
+        ),
+        (
+            {**written, "evidence_manifest_sha256": "a" * 64},
+            "evidence-not-instrumented",
+        ),
+        (
+            _edited(
+                pages=[
+                    {
+                        **written["clusters"][0]["pages"][0],
+                        "member_frame_sha256": ["e" * 64, "f" * 64],
+                    }
+                ]
+            ),
+            "cluster-member-not-submitted",
         ),
     ]
-    for edited in refused:
-        with pytest.raises(ProducerRefusal):
+    for edited, producer_refusal in refused:
+        with pytest.raises(ProducerRefusal, match=producer_refusal):
             produce(
                 batch.frames,
                 corpus_id="c",

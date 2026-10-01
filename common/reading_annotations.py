@@ -190,46 +190,6 @@ def validate_gaps(gaps: Any, text: str) -> list[dict]:
     return validated
 
 
-def validate_whole_act_consistency(*, outcome: str, text: str, gaps: list[dict]) -> None:
-    """The whole-act gap and the `no-readable-text` outcome must imply each other.
-
-    One direction alone is not enough: requiring `no-readable-text` to carry a
-    whole-act gap but not requiring the converse would let an outcome of
-    `read` carry an empty `text` plus a whole-act gap and flow onward as though
-    something had been established -- an empty text delivered as the one text,
-    a partial result appearing complete exactly as a missing gap would be.
-    """
-    has_whole_act_gap = any(gap["position"] == "whole-act" for gap in gaps)
-    if outcome == "no-readable-text" and not (text == "" and has_whole_act_gap):
-        raise SchemaRefusal(
-            "a 'no-readable-text' outcome must carry an empty text and exactly one "
-            "whole-act gap; silence is proved, never merely declared by outcome alone"
-        )
-    if has_whole_act_gap and outcome != "no-readable-text":
-        raise SchemaRefusal(
-            f"a whole-act gap was recorded but the outcome is {outcome!r}, not "
-            "'no-readable-text'; a reading cannot be wholly illegible and something "
-            "other than unreadable at the same time"
-        )
-
-
-def validate_annotations(payload: dict[str, Any], *, outcome: str | None = None) -> None:
-    """Validate both annotation layers together against the one `text` they sit over."""
-    text = payload.get("text")
-    if not isinstance(text, str):
-        raise SchemaRefusal("a reading's annotations cannot be validated with no text field")
-    for field in ("uncertain_spans", "gaps"):
-        if field not in payload:
-            raise SchemaRefusal(
-                f"a reading carries no {field} record; an absent annotation layer is not "
-                "the same claim as an empty one"
-            )
-    validate_uncertain_spans(payload["uncertain_spans"], text)
-    gaps = validate_gaps(payload["gaps"], text)
-    if outcome is not None:
-        validate_whole_act_consistency(outcome=outcome, text=text, gaps=gaps)
-
-
 # The reader's own doubt report. `assessed`: the reader was asked and its spans and
 # gaps anchor to the text. `not-assessed`: the reader had no way to report doubt, so
 # empty layers are an absence, not confidence. `malformed`: a report that could not

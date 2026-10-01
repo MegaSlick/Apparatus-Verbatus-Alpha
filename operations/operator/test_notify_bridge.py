@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from . import notify_bridge
-from .errors import OperatorError
+from .errors import ErrorCode, OperatorError
 from .fakes import OperatorFakeProvider
 from .test_surface import START, _launch, _manifest, _spend_policy, _surface
 
@@ -72,7 +72,7 @@ def test_the_default_surface_notifier_sends_nothing_and_says_nothing(tmp_path: P
     assert notify_bridge.silent("milestone", "anything").attempted is False
 
 
-def test_run_and_export_completion_are_milestones_and_a_hold_is_a_decision(
+def test_run_and_export_completion_are_milestones(
     tmp_path: Path,
 ) -> None:
     sent: list[tuple[str, str]] = []
@@ -101,9 +101,10 @@ def test_a_held_run_sends_a_decision_when_it_stops_not_afterwards(tmp_path: Path
     surface = _surface(tmp_path)
     surface.notifier = notifier
 
-    with pytest.raises(OperatorError):
+    with pytest.raises(OperatorError) as raised:
         surface.run(run_id="held-run", scenario="page-review")
 
+    assert raised.value.code is ErrorCode.RUN_HELD
     assert [event for event, _ in sent] == ["decision"]
     assert "needs a decision" in sent[0][1]
 

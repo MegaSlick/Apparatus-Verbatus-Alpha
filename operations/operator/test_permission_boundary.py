@@ -3244,7 +3244,9 @@ def test_review_refuses_a_compressed_bundle_member_before_decompressing_it(tmp_p
     assert "is compressed, not stored" in excinfo.value.detail
 
 
-@pytest.mark.parametrize("missing", ["pages", "delivered", "non_delivered", "bundle-reference"])
+@pytest.mark.parametrize(
+    "missing", ["pages", "delivered", "non_delivered", "other_readings", "bundle-reference"]
+)
 def test_review_refuses_a_missing_required_armarium_projection_field(tmp_path: Path, missing: str):
     """Absent export evidence is not an empty successful review projection."""
     run_root, run_id = _make_run(tmp_path)

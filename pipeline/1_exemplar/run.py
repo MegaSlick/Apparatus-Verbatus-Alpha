@@ -11,22 +11,21 @@ the handoff being real: if the door refused a page, this stage sees a refusal an
 seals nothing for it, instead of quietly going back to the source and sealing it
 anyway.
 
-**Spec 03 makes the handoff checked rather than merely read.** Before anything is
-published, the door's census is reconciled against `run.json`'s submitted source
-manifest — every submitted ordinal has exactly one door outcome and no door outcome
+**The handoff is checked, not merely read.** Before anything is published, the
+door's census is reconciled against `run.json`'s submitted source manifest — every submitted ordinal has exactly one door outcome and no door outcome
 names an ordinal nobody submitted — and every admitted blob is verified against the
 digest its admission claims. A source cannot disappear between submission and
 sealing, and a page cannot be sealed over bytes that are no longer the bytes the
 door inspected.
 
-**Spec 03 adds the corpus seal**, one `kind="seal"` artifact per run, written once
-every page has been accounted for. It is self-hashed the same way `run.json` is —
+**The corpus seal** is one `kind="seal"` artifact per run, written once every
+page has been accounted for. It is self-hashed the same way `run.json` is —
 `self_hash`/`verify_self_hash` from `common/contracts/canonical.py` — so an edit
 after sealing is detectable rather than merely undocumented, and a rerun over a
-tampered seal refuses before it writes. It needs no new file shape: it is an
-artifact like any other, published through the same `context.publish` every page
-uses, and both downstream readers filter the Exemplar's manifest to `kind == "page"`,
-so a third kind sitting beside them disturbs nothing.
+tampered seal refuses before it writes. It is an artifact like any other,
+published through the same `context.publish` every page uses, and both
+downstream readers filter the Exemplar's manifest to `kind == "page"`, so a third
+kind sitting beside them disturbs nothing.
 
     python pipeline/1_exemplar/run.py --run-root <dir> --run-id <id>
 """
@@ -211,10 +210,9 @@ def _page_payload(
         sealed["rendered_from"] = payload["rendered_from"]
         resolution = _render_resolution_record(payload["rendered_from"])
         if resolution is not None:
-            # The memory-bounded renderer's interpretation is provisional. Until
-            # settled, a page whose effective DPI is below the run target must not
-            # hide that reduction inside a nested renderer recipe: the sealed
-            # Exemplar page says so plainly.
+            # A page whose effective DPI is below the run target must not hide
+            # that reduction inside a nested renderer recipe: the sealed Exemplar
+            # page says so plainly.
             sealed["render_resolution"] = resolution
     members = submission_rows or [{**source, "ordinal": ordinal}]
     sealed["submission_rows"] = [

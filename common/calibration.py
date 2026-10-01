@@ -37,9 +37,7 @@ TYPED_PROVENANCE_FIELDS: Final = frozenset({"sample_count", "calibrated_for_this
 STRING_PROVENANCE_FIELDS: Final = tuple(sorted(PROVENANCE_FIELDS - TYPED_PROVENANCE_FIELDS))
 
 
-def validate_provenance_block(
-    provenance: Any, *, where: str, owner: str = "the grouping configuration"
-) -> dict[str, Any]:
+def validate_provenance_block(provenance: Any, *, where: str, owner: str) -> dict[str, Any]:
     """One declared provenance block, held to the closed schema.
 
     Every field is required and checked for shape, so a block that is present

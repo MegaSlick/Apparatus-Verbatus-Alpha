@@ -913,8 +913,8 @@ def test_backup_refuses_a_snapshot_name_taken_by_a_symlink(tmp_path: Path) -> No
 
     The bytes behind a symlink can change after the tool has called the backup
     current, so the name is refused rather than followed -- including a dangling
-    link, which `Path.exists` answers False for and which therefore used to
-    reach `os.link` and escape as a bare `FileNotFoundError`.
+    link, which `Path.exists` answers False for, refused by name before
+    `os.link` rather than escaping as a bare `FileNotFoundError`.
     """
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"

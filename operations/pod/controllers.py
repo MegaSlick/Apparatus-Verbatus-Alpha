@@ -230,9 +230,9 @@ class LaptopSupervisor:
             )
         except Exception as error:
             return ControllerResult(ControllerState.LEASE_RECORD_FAILURE, str(error), lease=claimed)
-        # Not an assert. `assert` disappears under `python -O`, and this one sat inside
-        # the try below — so a missing recovery intent was reported as the *provider*
-        # having failed to prove a pod, which is a different fact about a money path.
+        # An explicit check, not an assert: it must survive `python -O`, and it must
+        # report a missing recovery intent as itself, not as the provider having
+        # failed to prove a pod.
         if attempted.pending_create is None:
             return ControllerResult(
                 ControllerState.PENDING_CREATE_REVIEW,

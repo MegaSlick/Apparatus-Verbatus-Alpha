@@ -26,13 +26,8 @@ MODELS_CONFIG = ROOT / "config" / "models.toml"
 
 
 def test_run_config_bindings_refuses_a_witness_context_missing_a_configured_chair(tmp_path):
-    """Audit finding: an incomplete `witness_context.toml` used to refuse only at
-    the Perlector, after the Exemplar, Designator and the entire Attestatores leg
-    had already run against every witness model on every act -- the expensive
-    part of a live pod run, spent on what is usually a config typo.
-    `run_config_bindings` already holds `models.witness_chairs` and already reads
-    this file's bytes for the digest, so the coverage refusal belongs here, at
-    run creation, before any of that work starts."""
+    """`run_config_bindings` refuses an incomplete `witness_context.toml` at run
+    creation, before any stage runs, so a config typo does not cost a pod run."""
     registry = ChairRegistry.from_toml(MODELS_CONFIG)
     incomplete = tmp_path / "witness_context.toml"
     incomplete.write_text('[attestator_1]\ntraining_domain = "only one witness declared"\n')

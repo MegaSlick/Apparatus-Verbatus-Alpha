@@ -689,7 +689,7 @@ def test_the_shown_digest_is_the_digest_of_the_bytes_the_ceilings_came_from(
 
 
 def test_a_policy_that_is_not_utf_8_refuses_by_name(tmp_path: Path) -> None:
-    """The byte-oriented loader owns the decode that `tomllib.load` used to do."""
+    """The byte-oriented loader decodes UTF-8 itself and refuses bad bytes by name."""
 
     source = tmp_path / "spend.toml"
     source.write_bytes(b'schema = "pod-spend.v3"\nstate = "\xff\xfe"\n')

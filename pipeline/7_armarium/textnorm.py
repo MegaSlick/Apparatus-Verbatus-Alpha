@@ -28,9 +28,9 @@ Unicode:
   d'Argenteuil), not a word separator, so "damours" must hit "d'Amours" as
   one token. The grave accent stands in for cursive transcription.
 
-Decomposing before substituting (the old file did the reverse) is what makes
+Decomposing before substituting makes
 ``search_fold(search_fold(s)) == search_fold(s)`` hold: ``ǣ`` (U+01E3) isn't
-in the table, so substituting first left a second pass needed to turn its
+in the table, so substituting first would leave a second pass needed to turn its
 NFD-decomposed ``æ`` + combining macron into ``ae``.
 """
 

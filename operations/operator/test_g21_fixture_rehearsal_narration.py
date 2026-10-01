@@ -1,35 +1,19 @@
-"""Regression coverage for G21 (F001/F030/F106): fixture-rehearsal narration
-must never name a page or act the running scenario did not actually touch,
-and never disagree with the total printed beside it.
+"""Fixture-rehearsal narration names only what the running scenario touched.
 
-`_declared_work` (operations/operator/surface.py) used to read every
-`[[page]]` row out of the single fixed fixture declaration file
-(`proof/skeleton_fixture.toml`) regardless of which `--scenario` was actually
-running. Two problems followed from that, and both are fixed now:
-
-1. The opening "Checking ..." line named a page a scenario-gated fixture
-   row never activates for this scenario (e.g.
-   page 3, gated to `ink-free-page`). Fixed by filtering `_declared_work`
-   through `pipeline/1_exemplar/door.py::fixture_pages_for_scenario` -- the
-   same question a real door application answers.
-2. The closing "Pages/Acts accounted for: ..." line named the *same* static,
-   pre-run declaration beside a *real*, post-run total -- so it disagreed
-   with its own total whenever a run minted an act the fixture cannot
-   declare (`ink-free-page`'s fallback act) or a page was refused after being
-   declared (`refused-page`). A static declaration can never answer for a
-   real outcome. Fixed by reading `_exported_work` from the completed run's
-   own Armarium export record instead, once one exists.
-
-This module is intentionally standalone (not appended to test_surface.py)
-because `operations/operator/surface.py` was, at the time this test was
-written, owned by another seat -- the fix landed later, in this diff.
+The opening "Checking ..." line names only the pages the running scenario
+activates (page 3 of the synthetic fixture is gated to other scenarios), and
+the closing "accounted for" line names the pages and acts the run's own export
+record carries, with a total that matches the names beside it.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
-from .errors import OperatorError
+import pytest
+
+from .errors import ErrorCode, OperatorError
 from .surface import OperatorSurface
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,12 +24,11 @@ def _rehearsal_messages(tmp_path: Path, *, scenario: str) -> list[str]:
     return every line the operator surface printed.
 
     Uses the real runner (the actual orchestrator subprocess over the tiny
-    synthetic fixture), not a stub, because the defect is in what `_declared_work`
-    prints against the *real* export a run produces -- a stubbed child never
-    writes the artifacts the closing narration reads. A held scenario (e.g.
-    `page-review`) raises `OperatorError(RUN_HELD)` *after* every narration line
-    below is already printed and captured, so that outcome is not itself a
-    test failure here -- only what was said before it is.
+    synthetic fixture), not a stub, because the closing narration reads the
+    export a real run writes. Both scenarios used here end held for review
+    (a continuation join across the page break, and for `page-review` a held
+    act too), so the run must raise exactly `RUN_HELD`, after every narration
+    line is printed; any other refusal fails the test.
     """
 
     messages: list[str] = []
@@ -54,41 +37,36 @@ def _rehearsal_messages(tmp_path: Path, *, scenario: str) -> list[str]:
         tmp_path / "operator-state",
         present=messages.append,
     )
-    try:
+    with pytest.raises(OperatorError) as raised:
         surface.run(run_id=f"g21-{scenario}", scenario=scenario)
-    except OperatorError:
-        pass
+    assert raised.value.code is ErrorCode.RUN_HELD, messages
     return messages
 
 
-def test_happy_scenario_narration_never_names_a_page_it_never_touched(
-    tmp_path: Path,
+def _assert_totals_match_names(messages: list[str]) -> None:
+    """Every "X accounted for: a, b (N total)" clause names exactly N things."""
+    closing = [line for line in messages if line.startswith("Pages accounted for: ")]
+    assert len(closing) == 1, messages
+    clauses = re.findall(r"(\w+) accounted for: ([^()]*) \((\d+) total\)", closing[0])
+    assert [what for what, _names, _total in clauses] == ["Pages", "Acts"], closing
+    for _what, names, total in clauses:
+        assert len(names.split(", ")) == int(total), closing
+
+
+@pytest.mark.parametrize("scenario", ["happy", "page-review"])
+def test_narration_names_only_the_two_pages_the_scenario_touches(
+    tmp_path: Path, scenario: str
 ) -> None:
-    """The default `happy` scenario touches pages 1 and 2 only; page 3 exists
-    solely for other scenarios (`ink-free-page`, `ink-free-page-unwitnessed`).
-    None of the three narration lines may name it.
+    """Both scenarios touch pages 1 and 2 only; page 3 exists solely for other
+    scenarios (`ink-free-page`, `ink-free-page-unwitnessed`). The opening and
+    closing lines name exactly pages 1 and 2, and no line names page 3.
     """
 
-    messages = _rehearsal_messages(tmp_path, scenario="happy")
+    messages = _rehearsal_messages(tmp_path, scenario=scenario)
 
-    assert messages, "the rehearsal produced no narration at all"
-    assert not any("page 3" in line for line in messages), (
-        "the happy scenario's narration named page 3, which this scenario never "
-        f"touches: {messages!r}"
-    )
-
-
-def test_review_scenario_narration_never_names_a_page_it_never_touched(
-    tmp_path: Path,
-) -> None:
-    """`page-review` is a two-page scenario held for review, like `happy` in its
-    pages; page 3 is equally absent from it and must stay off its narration too.
-    """
-
-    messages = _rehearsal_messages(tmp_path, scenario="page-review")
-
-    assert messages, "the rehearsal produced no narration at all"
-    assert not any("page 3" in line for line in messages), (
-        "the review scenario's narration named page 3, which this scenario "
-        f"never touches: {messages!r}"
-    )
+    assert "Run started. Checking page 1, page 2." in messages, messages
+    assert any(
+        line.startswith("Pages accounted for: page 1, page 2 (2 total).") for line in messages
+    ), messages
+    _assert_totals_match_names(messages)
+    assert not any("page 3" in line for line in messages), messages

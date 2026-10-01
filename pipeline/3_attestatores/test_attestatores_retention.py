@@ -1,4 +1,4 @@
-"""Spec 07 retention and native page-Testimonium tests over the real stage program."""
+"""Retention and native page-Testimonium tests over the real stage program."""
 
 import ast
 import copy
@@ -469,7 +469,7 @@ def test_the_closing_tally_holds_when_the_folder_no_longer_accounts_for_every_pa
 
 
 def test_a_confident_self_report_is_retained_verbatim_and_grades_nothing(tmp_path):
-    """Spec 07's reason for `format_capabilities`.
+    """A self-report the format cannot back is retained and grades nothing.
 
     The Chandra chair's format cannot express uncertainty and claims high
     confidence anyway. The claim is retained exactly as made and reaches
@@ -524,7 +524,7 @@ def test_a_witness_declaration_without_a_scenario_names_its_table_and_row(fixtur
 
 
 def test_an_excluded_testimonium_without_an_approval_reference_is_refused_at_the_schema():
-    """Spec 07 test 2: `excluded` exists only as a reference to a project-lead
+    """`excluded` exists only as a reference to a project-lead
     approval-record artifact; the word alone buys nothing."""
     subject = "page_0123456789abcdef"
     envelope = dict(
@@ -701,7 +701,7 @@ def test_a_crop_broken_after_the_designator_sealed_it_stops_at_that_boundary(tmp
 def test_malformed_one_witness_response_is_a_failed_attempt_that_does_not_hold_the_folder(
     tmp_path,
 ):
-    """Spec 07's isolation bullet: one malformed response never kills the folder.
+    """One malformed response never kills the folder.
 
     The response is refused without repair, as one `failed` attempt with its
     reason; it is counted, so the tally stays KNOWN and the other chairs'

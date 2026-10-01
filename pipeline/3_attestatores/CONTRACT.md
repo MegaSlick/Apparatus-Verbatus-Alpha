@@ -197,8 +197,7 @@ capture, but it does not schedule a request and is not the vendor trigger.
 **The placeholder is offline only.** `proof/skeleton_fixture.toml`'s Chandra
 rows still declare `fixture-chandra-response.v1`, a JSON placeholder this
 repository invented for a fixture that asks nothing of anybody, and their bytes
-are pinned into the fixture's own digests until U16 re-declares those rows in
-the vendor grammar. It keeps its own parser name, `json`, and its own reader
+are pinned into the fixture's own digests. It keeps its own parser name, `json`, and its own reader
 (`chandra.parse_fixture_placeholder`) -- retained as history, never parsed as
 the live grammar. The refusal that keeps the two apart is at the retention seam
 rather than inside the parser: `feeding.retain_model_view` takes a `served`
