@@ -96,8 +96,8 @@ FIXTURE = "synthetic-two-page-v0"
 # The review pins are the page-read `page-review` scenario's tree.
 HAPPY_SNAPSHOT_FILES = 131
 REVIEW_SNAPSHOT_FILES = 129
-HAPPY_RUN_TREE_DIGEST = "c1798a505b3907bb3de9a49e6d4835e874f4720e156d4a0d55c1facba8dd62a3"
-REVIEW_RUN_TREE_DIGEST = "a5dd60edccdbc0f1167ebf7fc05180a48beab6be2b2a87b8299df3d091ab8f17"
+HAPPY_RUN_TREE_DIGEST = "070b50da4ec1c5333d582c9ca4d5f525b7de9bc6c404ad946a10e94fee13d3fa"
+REVIEW_RUN_TREE_DIGEST = "ad67f573a5b6f4c6cb22147b4d01154880ce10af89882fab2601d7f52cc4a092"
 
 
 def orchestrate(
