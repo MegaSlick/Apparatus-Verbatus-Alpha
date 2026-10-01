@@ -25,13 +25,15 @@ threshold = 2
 # ordinary in parish registers, not a broken run. A capacity refusal does not
 # count either: it is a page too large for the sealed row.
 #
-# `(door, refused)` with reason `corrupt` or `unreadable`: real bytes that fail
-# structural decode, or a PDF or TIFF page that fails to render, refused page by
-# page in `pipeline/1_exemplar/door.py`. The Door's other refusal reasons do not
-# count: `empty` and `too-large` are policy bounds, `unrecognized-format` is a
-# file that should never have been submitted, `unsupported-variant` is a decoder
-# gap, and `digest-mismatch` is a copy whose bytes changed after their digest
-# was declared: the submission is sent again, not the page run again.
+# `(door, refused)` with reason `corrupt` or `unreadable`, refused page by page
+# in `pipeline/1_exemplar/door.py`: real bytes that fail structural decode, a PDF
+# or TIFF page that fails to render, or a triage-split frame whose decoded size
+# does not match its triage row, so cutting it could omit or shift pixels. The
+# Door's other refusal reasons do not count: `empty` and `too-large` are policy
+# bounds, `unrecognized-format` is a file that should never have been submitted,
+# `unsupported-variant` is a decoder gap, and `digest-mismatch` (bytes that do not
+# match their declared digest, or a triage row that fails its manifest schema)
+# is a submission error the operator corrects, not a damaged page.
 #
 # `(exemplar, refused)` does not count: the Exemplar refuses a page only by
 # passing on the Door's refusal of it, so counting it would count that page twice.
@@ -41,8 +43,9 @@ threshold = 2
 # an act on its own, a coverage shortfall already marks the run `partial`, and
 # one dead chair is a different question from a broken reading pipeline.
 #
-# `(designator, failed)` and `(archetypus, refused)` are failure members of
-# their stages' closed outcome vocabularies that no stage emits yet; they are
+# `(designator, failed)`, `(recensor, failed)` and `(archetypus, refused)` are
+# the failure members of their stages' closed outcome vocabularies: a stage that
+# could not do its work on a subject at all. No stage emits them yet; they are
 # listed so the cap counts them the day a stage does.
 
 [[kind]]

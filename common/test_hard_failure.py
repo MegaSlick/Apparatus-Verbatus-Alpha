@@ -304,7 +304,8 @@ def test_a_record_only_tally_leaves_stale_lineage_to_its_consumer_boundary(tmp_p
 
 
 def test_the_ruled_cap_is_tallied_per_shard_run_not_across_run_trees(tmp_path):
-    """The ruling says "within a 1000 page run"; a shard is that run."""
+    """Each shard is its own run with its own tally: two failures in each of three
+    shards is two per run, not six, and none breaches the cap."""
     policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
     tallies = []
     for run_id in ("shard-one", "shard-two", "shard-three"):

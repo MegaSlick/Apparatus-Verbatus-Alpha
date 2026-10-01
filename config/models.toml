@@ -227,9 +227,9 @@ license_note = "fixture identity only; no model weights or model license apply"
 # serving_recipe = "<serving-recipe>"
 # license_note = "Apache-2.0, read from the repository card 2026-08-20; accepted under the research track (2026-08-20)"
 #
-# No annotation layer is defined in ARCHITECTURE.md yet, so the annotator role is
-# listed and stays commented out with the rest of the roster until one is.
+# No semantic annotation layer is defined in ARCHITECTURE.md yet, so the annotator
+# role is listed and stays commented out with the rest of the roster until one is.
 #
 # [chairs.annotator]
 # state = "absent"
-# reason = "no annotation layer is defined in ARCHITECTURE.md yet"
+# reason = "no semantic annotation layer is defined in ARCHITECTURE.md yet"

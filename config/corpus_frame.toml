@@ -1,8 +1,9 @@
-# R0's sealed shard boundary. A shard is a bounded failure/accounting unit, not
-# a selection mechanism: every supplied page remains in its recorded frame.
+# The corpus frame's sealed shard boundary: how many pages one run may hold. A
+# shard is a bounded failure/accounting unit, not a selection mechanism: every
+# supplied page remains in its recorded frame.
 #
-# The hard-failure ruling measures "more than 2 failures within a 1000 page
-# run". A shard is exactly that capped run, so the hard-failure
+# The hard-failure cap (`hard_failure.toml`) counts failures within one run of
+# at most this many pages. A shard is exactly that capped run, so the hard-failure
 # tally is deliberately per shard: each independently sealed run retains its
 # own warning/stop boundary, never a corpus-wide counter. Nothing links a
 # continuation that crosses a shard boundary: each run sees only its own pages.

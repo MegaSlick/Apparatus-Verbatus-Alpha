@@ -23,7 +23,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `perlector_audit.toml` | the sealed Perlector audit policy: the round cap the audit refuses to exceed |
 | `witness_context.toml` | the factual per-witness context declaration a run seals beside its witness regime: identity, provenance, training domain, and nothing evaluative; sealed and roster-checked, and not shown to the Perlector on the page path |
 | `witness_context-real.toml` | the same declaration for the real roster's three chairs, each training domain stated as far as this repository can cite it and named as unknown where it cannot; selected with the full trio `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml --witness-context-config config/witness_context-real.toml`; published witness identities paired with a known fixture declaration are refused |
-| `page_accounting.toml` | the sealed page-accounting policy: when a box counts as inside the reading regions, and how much of a witness unit's text a page reading may leave unaccounted for or set aside; sealed as `page-accounting` |
+| `page_accounting.toml` | the sealed page-accounting policy: when a box counts as inside the reading regions (`[inside]`), how much of a witness unit's text a page reading may leave unaccounted for or set aside (`[witness_text]`), the anchors and step bounds of the text alignment (`[alignment]`), what makes a unit's text distinctive enough to name it (`[identity]`), and when two entries claim one region or a unit's box is too large for its text (`[region]`); sealed as `page-accounting` |
 | `reconstruction.toml` | whether the Coniector runs, whether the submitted pages are consecutive leaves of one register, and the bounds past which a departure is not applied; sealed as `reconstruction` |
 | `triage_modes.toml` | the three pipeline-wide triage modes and their closed-ordinal review thresholds |
 | `decoding.toml` | each reading chair's sampling values as its makers recommend them, with source and revision; the Perlector's whole-page output cap; and Chandra's native recipe |
@@ -222,9 +222,9 @@ policy a stage needs the *values* of is carried already parsed rather than reope
 
 Sealed names today: `designator-geometry`, `alignment`,
 `ink-map`, `page-accounting`, `reconstruction`, `decoding`, `corpus-frame-shard`, `perlector-protocol`, `perlector-audit`,
-`pdf-render`, `recovery`, `hard-failure` and `triage-modes` on every run (the pre-door
-triage producer and the Door must call `require_triage_modes` before using its
-vocabulary). Real ingress adds `data-handling`, `serving-recipes`, `pod-placement`,
+`pdf-render`, `recovery`, `hard-failure` and `triage-modes` on every run (the Door calls
+`require_triage_modes` before using its vocabulary; the pre-door triage producer
+reads `triage_modes.toml` itself and refuses one outside its closed schema). Real ingress adds `data-handling`, `serving-recipes`, `pod-placement`,
 `models`, `armarium-formats` and `run-policy`: the fixture route rechecks those facts
 through `config_digest`, which a later stage can recompute, and the real one cannot.
 
