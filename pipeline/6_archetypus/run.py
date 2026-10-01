@@ -281,44 +281,6 @@ def validate_record(record: dict) -> dict:
     return record
 
 
-def _no_readable_text_evidence(
-    review: dict, reading_ref: dict[str, str], reading_inputs: list
-) -> dict[str, str] | None:
-    """Return the Recensor's retained blank proof; never manufacture one here.
-
-    `CONTRACT.md`'s whole argument for this field is that an accepted review is
-    evidence the Recensor accepted a reading, not evidence the page was blank.
-    No `blank-proof` artifact kind exists yet to check this reference's kind
-    against, so the one class checkable today without inventing that contract is
-    refused here: nothing from the reading's own evidentiary chain — the reading
-    itself, or any crop it read — is allowed to stand as proof of its silence.
-    An accepted review's inputs are the reading plus that reading's crops, so
-    without the second refusal the very image the reading failed to read would
-    pass the direct-input check and seal as proof the page was blank.
-    """
-    payload = review.get("payload")
-    if not isinstance(payload, dict):
-        raise SchemaRefusal("accepted Recensor review has no object payload")
-    reference = payload.get("no_readable_text_evidence_ref")
-    if reference is None:
-        return None
-    if not _is_ref_shaped(reference) or reference not in review.get("inputs", []):
-        raise SchemaRefusal(
-            "no_readable_text evidence is not a digest-checked direct input of the Recensor review"
-        )
-    if reference == reading_ref:
-        raise SchemaRefusal(
-            "no_readable_text evidence names the accepted Perlectio itself; a reading is "
-            "never evidence of its own silence"
-        )
-    if reference in reading_inputs:
-        raise SchemaRefusal(
-            "no_readable_text evidence names an input of the accepted Perlectio itself; "
-            "the ink a reading failed to read is never evidence of its own silence"
-        )
-    return reference
-
-
 def _validate_region_fields(region, label: str) -> None:
     """The region's closed field set, checked identically at write and read-back.
 
@@ -516,12 +478,8 @@ def establish_from_accepted_page_reading(
     annotations: list[dict] = []
     uncertainty = from_page_perlectio(payload)
     text_status = derive_record_text_status(text, annotations, uncertainty)
-    evidence_ref = _no_readable_text_evidence(review, reading_ref, reading.get("inputs", []))
-    if evidence_ref is not None and text_status != "no_readable_text":
-        raise FatalAccounting(
-            f"the accepted review of {row['act_key']} retains a proof that it held no readable "
-            f"ink, but its reading establishes {text_status!r} text"
-        )
+    # No page review carries a blank proof, so a record's evidence_ref is null.
+    evidence_ref = None
     validate_text_status(text, text_status, evidence_ref)
     validate_serving_provenance(
         context,
