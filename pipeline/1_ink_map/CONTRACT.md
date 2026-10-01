@@ -129,20 +129,17 @@ calls it: this stage, the Perlector's page accounting and the Recensor's audit.
 The 127-page measurements below were taken through an ink scan running this same
 inference; where they say "this stage" they mean that scan.
 
-**Every stage's paper value comes from one inference.** The Ink Map's and the
-Recensor's used to be the raw histogram mode: `common/residual_ink.py::_background_level` returned the page's
-single most common pixel and `residual_ink` then called a pixel ink only if it
-was `MINIMUM_CONTRAST_BELOW_BACKGROUND = 40` levels below it, so on a
-photographed opening — whose most common value is the bezel, 0 or near it on
-every one of the 127 calibration pages that reaches the surround branch — the
-residual of a page full of writing computed to approximately zero and the
-independent coverage proof passed by construction.
+**Every stage's paper value comes from one inference, never the raw histogram
+mode.** The most common pixel of a photographed opening is the bezel, 0 or near it
+on every one of the 127 calibration pages that reaches the interior-mode branch. A
+pixel counted as ink only when it is `MINIMUM_CONTRAST_BELOW_BACKGROUND = 40`
+levels below that value leaves a page full of writing with a residual of
+approximately zero, and the independent coverage proof would pass by construction.
 
 The inference lives in `common/background.py` and every stage that reads paper
 calls it on the same page bytes: `pipeline/1_ink_map/run.py` and
-`pipeline/5_recensor/run.py` reach it through `common/residual_ink.py`. The decision the contract left open was whether the
-audit should share this inference and lose its independence, or grow its own on
-the same real material. **It shares the background and keeps its own contrast.**
+`pipeline/5_recensor/run.py` reach it through `common/residual_ink.py`. **The audit
+shares the background and keeps its own contrast.**
 Paper is a property of the page, not of the stage looking at it — two stages
 inferring two different paper values for one page is a disagreement about the
 specimen, and there is no second opinion to be had about it. Sensitivity is a
@@ -159,35 +156,32 @@ against the run's own `ink-map` seal, so each record names the policy it ran
 under.
 
 A page this inference refuses is refused by name: the Ink Map publishes `outcome="ink-not-measurable"` with no counts, and the Recensor's
-audit carries the page in `page_coverage.unmeasurable_pages` on every act that
-touches it rather than in `checked_pages`.
+audit carries the page in `page_coverage.unmeasurable_pages` rather than in `checked_pages`.
 
 ### Neutral dark-distribution evidence
 
-The interior-mode branch still uses the same sealed band, interior-dark, whole-page-ink, and derived-margin arithmetic. Its published block is now `dark_distribution`, not `surround`: the branch can be reached by a real photographed frame, but the retained counts alone do not establish a frame, bezel, paper region, or pixels to exclude. They are the exact sampled border-band and page-wide dark populations at the recorded level, and every sampled pixel remains in the scan's denominator. Historical passages below describing known photographed frames remain observations of those material pages; they are not a classifier guarantee for every page this admission rule accepts.
+The interior-mode branch uses the sealed band, interior-dark, whole-page-ink, and derived-margin arithmetic, and publishes its block as `dark_distribution`: the branch can be reached by a real photographed frame, but the retained counts alone do not establish a frame, bezel, paper region, or pixels to exclude. They are the exact sampled border-band and page-wide dark populations at the recorded level, and every sampled pixel remains in the scan's denominator. The photographed frames described below are observations of those material pages; they are not a classifier guarantee for every page this admission rule accepts.
 
 **`infer_background_evidence`'s majority-paper assumption is checked from both sides,
 and it also knows a photographed page from a dark one.** The premise is
 that a scanned register page is overwhelmingly paper, so its modal pixel is the
-paper colour. Two shapes break it and both are refusals now. A page where ink is
+paper colour. Two shapes break it, and both are refused. A page where ink is
 the numeric majority — heavy staining, bleed-through, an inverted or
 under-exposed scan — has a mode *darker than its own mean*, caught by
 `mode * count >= total`. A uniformly dark page has `mode == mean`, so that
 comparison passes exactly; it is caught instead by requiring the mode to be
 light enough to express an ink threshold at all (`mode >= PRIMARY_MARGIN`),
 because below that no 8-bit sample could ever be counted as ink and "zero ink"
-would be arithmetic rather than a measurement. Solid black used to infer a
-background of 0, threshold -20, and reconcile to zero ink on a visibly black
-page — and on a page with no declared act, nothing caught it and the run exited
-`EXIT_COMPLETE`.
+would be arithmetic rather than a measurement. Without it, solid black would infer
+a background of 0 and a threshold of -20, and reconcile to zero ink on a visibly
+black page.
 
 **The third shape, measured on real material, is a photograph rather than a
 scan.** A photographed register opening carries a black surround around the
 paper — 18 to 26% of the frame on the seven real proxies measured — and pure
 black is then by a wide margin the single most common value, because the paper
 itself is spread across dozens of tones in the 180-240 band. So the modal pixel
-was 0 on all seven, the majority-ink branch refused all seven, and the live
-path cut every one into blind fallback slabs and reconciled none of their ink.
+is 0 on all seven, and the majority-ink check alone refuses all seven.
 The premise "the modal pixel is paper" is sound for a flatbed scan and false
 for a photograph.
 
