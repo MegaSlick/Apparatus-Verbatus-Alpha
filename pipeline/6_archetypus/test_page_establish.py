@@ -328,6 +328,31 @@ def test_every_sealed_perlectio_holds_exactly_the_closed_field_set(happy):
     assert all(set(payload) == page_path.PERLECTIO_FIELDS for payload in payloads)
 
 
+def test_the_constructor_establishes_a_reading_the_re_ask_recovered(happy, tmp_path):
+    context, _rows, establish = _constructor(happy, tmp_path)
+    context.tree = _FeedTree(
+        context.tree,
+        lambda payload: payload.update(reading_attempt=page_path.REASK_READING, reading_n=1),
+        kind=page_path.PERLECTIO_KIND,
+    )
+    record, _inputs = establish("p1:2")
+    assert record["status"] == "established"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"reading_n": 1}, {"reading_attempt": 2}, {"reading_attempt": 1, "reading_n": 1}],
+    ids=["number-alone", "attempt-alone", "first-reading-attempt"],
+)
+def test_the_constructor_refuses_a_partial_or_first_reading_recovery_mark(happy, tmp_path, extra):
+    context, _rows, establish = _constructor(happy, tmp_path)
+    context.tree = _FeedTree(
+        context.tree, lambda payload: payload.update(extra), kind=page_path.PERLECTIO_KIND
+    )
+    with pytest.raises(archetypus.SchemaRefusal, match="other than the closed Perlectio schema"):
+        establish("p1:2")
+
+
 @pytest.mark.parametrize(
     "extra",
     [{"tier": "salvage"}, {"annotations": []}],

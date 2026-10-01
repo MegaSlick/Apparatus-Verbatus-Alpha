@@ -442,7 +442,7 @@ def establish_from_accepted_page_reading(
         )
     # The closed Perlectio schema has no tier, salvage or annotation field, so
     # anything carrying one is refused here rather than read past.
-    if set(payload) != page_path.PERLECTIO_FIELDS:
+    if not page_path.is_perlectio_field_set(payload):
         raise SchemaRefusal(
             f"the page reading of {row['act_key']} carries fields other than the closed "
             "Perlectio schema"

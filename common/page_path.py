@@ -1094,6 +1094,22 @@ def expected_perlectio(
     }
 
 
+# What a Perlectio of an entry the re-ask recovered holds beyond `PERLECTIO_FIELDS`.
+RECOVERED_FIELDS: Final = frozenset({"reading_attempt", "reading_n"})
+
+
+def is_perlectio_field_set(payload: Mapping[str, Any]) -> bool:
+    """True when `payload` holds exactly a first reading's Perlectio fields, or those
+    and `RECOVERED_FIELDS` with the re-ask's `reading_attempt`."""
+    fields = set(payload)
+    if fields == PERLECTIO_FIELDS:
+        return True
+    return (
+        fields == PERLECTIO_FIELDS | RECOVERED_FIELDS
+        and payload["reading_attempt"] == REASK_READING
+    )
+
+
 def recovered_fields(plan: Mapping[str, Any]) -> dict[str, int]:
     """What an entry the re-ask recovered adds to its act-region and Perlectio, else nothing.
 

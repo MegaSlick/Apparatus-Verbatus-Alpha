@@ -245,6 +245,7 @@ def test_a_labelled_other_reading_is_listed_apart_from_the_acts_before_and_after
 
     before, after = views["before"], views["after"]
     assert after.export["present"] is True and before.export["present"] is False
+    assert len(before.acts) == len(after.acts) == 2
     assert [act["act_key"] for act in before.acts] == [act["act_key"] for act in after.acts]
     others = [(other["act_id"], other["act_key"]) for other in before.other_readings]
     assert len(others) == 1
