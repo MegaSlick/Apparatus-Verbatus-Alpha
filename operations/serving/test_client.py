@@ -35,7 +35,6 @@ from common.decoding import (
     engine_effective_sampling,
     load_decoding_policy,
     recorded_sampling,
-    variance_arm_seed,
 )
 from common.sealed_config import table_seal
 
@@ -549,29 +548,6 @@ def test_a_structure_attempt_past_the_sealed_ceiling_is_refused(tmp_path: Path) 
     )
     with client, pytest.raises(ChairRequestRefusal, match="no attempt 4"):
         client.read(_request(structure_attempt_ordinal=4))
-    assert endpoint.requests == []
-
-
-@pytest.mark.parametrize("arm", ["lectio-prior", "lectio-nuda"])
-def test_a_variance_arm_sends_its_own_sealed_seed(tmp_path: Path, arm: str) -> None:
-    client, endpoint, blob_store, _ = _built(tmp_path, chair=_identity(role="perlector"))
-    with client:
-        endpoint.script(ScriptedAnswer(content="lectio", finish_reason="stop"))
-        response = client.read(_request(variance_arm=arm))
-    record = json.loads(next(data for data in blob_store.written if data != response.raw_response))
-    expected = variance_arm_seed(SHIPPED_POLICY, arm)
-    assert endpoint.requests[0]["seed"] == record["generation_sent"]["seed"] == expected
-    assert variance_arm_seed(SHIPPED_POLICY, "lectio-prior") != variance_arm_seed(
-        SHIPPED_POLICY, "lectio-nuda"
-    )
-
-
-def test_only_the_perlector_reads_a_variance_arm(tmp_path: Path) -> None:
-    client, endpoint, _blob_store, _ = _built(tmp_path)
-    with client, pytest.raises(ChairRequestRefusal, match="only the Perlector"):
-        client.read(_request(variance_arm="lectio-nuda"))
-    with pytest.raises(ChairRequestRefusal, match="not one of"):
-        _request(variance_arm="perlectio")
     assert endpoint.requests == []
 
 

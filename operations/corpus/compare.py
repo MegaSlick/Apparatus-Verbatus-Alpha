@@ -358,9 +358,8 @@ def load_exemplar_page_shas(tree: RunTree) -> dict[int, str]:
 def load_pipeline_proposal_acts(tree: RunTree) -> list[dict[str, Any]]:
     """Every sealed Designator proposal region, read-only, grouped with its page sha256.
 
-    Only `origin: "proposal"` regions -- a recovery crop's bounds are a Recensor
-    request, not a detected act, and the matrix runs over sealed proposal
-    regions only. Returns
+    Only `origin: "proposal"` regions: the matrix runs over sealed proposal
+    regions, and a region of any other origin is not a detected act. Returns
     `[{"act_id", "bounds", "page_sha256"}, ...]`.
 
     This reads a tree it did not produce, so a proposal region's shape is
@@ -481,9 +480,9 @@ def count_excluded_designator_artifacts(tree: RunTree) -> dict[str, dict[str, in
     """Counts of Designator artifacts `load_pipeline_proposal_acts`'s filter dropped.
 
     Two lenses on the same manifest: `by_kind` counts every artifact whose kind is
-    not `region` at all (e.g. a secondary-proposer `rescue-crop`), and `by_origin`
-    counts every sealed region whose `origin` is not `"proposal"` (e.g.
-    `"recovery"`). Read-only, and applies the identical filter
+    not `region` at all (e.g. a `raw-proposal` or a `structure-status`), and
+    `by_origin` counts every sealed region whose `origin` is not `"proposal"`.
+    Read-only, and applies the identical filter
     `load_pipeline_proposal_acts` applies, so the excluded and included counts are
     always counting the same manifest -- this exists so a `reference-comparison.v1`
     record can say how much of the run it declined to look at, rather than
