@@ -351,7 +351,9 @@ def test_the_rest_api_deletes_the_pod_when_both_runpodctl_forms_fail(pod, tmp_pa
     env["FAKE_RUNPODCTL_FAIL"] = ""  # the empty prefix matches every runpodctl call
     env["RUNPOD_API_KEY"] = "test-key-not-real"
     curl_calls = tmp_path / "curl-calls.txt"
-    run_until(["sh", str(GUARD), "5", "30"], env, lambda: "DELETE" in "".join(lines(curl_calls)))
+    # Waits on the guard's own log line, which it writes only after the delete call
+    # returns; the curl record alone appears before that and would race the kill.
+    run_until(["sh", str(GUARD), "5", "30"], env, lambda: "delete requested" in log_of(state))
     delete = next(line for line in lines(curl_calls) if "DELETE" in line)
     assert delete.endswith("-X DELETE https://api.runpod.io/v2/pods/testpod")
     assert "test-key-not-real" not in "".join(lines(curl_calls))
