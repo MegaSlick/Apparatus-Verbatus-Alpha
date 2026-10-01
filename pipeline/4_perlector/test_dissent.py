@@ -13,8 +13,8 @@ import pytest
 from common import dissent
 from common.alignment import (
     DEFAULT_ALIGNMENT_CONFIG_PATH,
-    bracket_marker_view,
     StepCountedMatcher,
+    bracket_marker_view,
     load_dissent_limits,
 )
 from common.contracts.errors import ContractError, SchemaRefusal
