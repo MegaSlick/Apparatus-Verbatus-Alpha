@@ -43,8 +43,7 @@ FORBIDDEN_MODULES = {
     "subprocess",
     # The clients a list of the obvious four leaves out. `urllib3` and `httpcore`
     # are the transports under `requests` and `httpx` and can be imported
-    # directly; `websockets` and `grpc` are neither. Naming only the famous
-    # names let this guard report a clean package while a dossier left it.
+    # directly; `websockets` and `grpc` are neither.
     "urllib3",
     "httpcore",
     "h11",
@@ -94,9 +93,8 @@ def _offending_imports(source: str) -> set[str]:
     (
         "import http.client",
         "from http.client import HTTPConnection",
-        # The spelling that escaped: `node.module` alone is `http`, and the
-        # blocklist names `http.client`, so neither the exact nor the
-        # first-segment test matched and the scan reported a clean file.
+        # `from http import client` records only `http` as `node.module`; the
+        # qualified name `http.client` is checked too.
         "from http import client",
     ),
 )
@@ -120,9 +118,7 @@ def test_no_file_in_this_package_imports_a_networking_module():
     offenders: dict[str, set[str]] = {}
     for path in paths:
         # The same helper the spelling tests above exercise, not a second copy
-        # of the rule. A duplicated filter meant those tests could go green on a
-        # rule this scan never used, while the import they were taught to catch
-        # sat in a shipped module.
+        # of the rule, so those tests cover the filter this scan uses.
         hit = _offending_imports(path.read_text(encoding="utf-8"))
         if hit:
             # Relative to the package, not the bare filename: the scan recurses,
