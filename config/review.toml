@@ -1,0 +1,17 @@
+# How much of a run may stay held after the Recensor before the run itself is
+# treated as having a problem. `common/review_policy.py` reads and bounds it; the
+# Door seals it into every run as `review`, and the orchestrator checks the seal
+# where it uses it.
+#
+# The project lead's ruling (2026-10-01): a held file can be overridden, edited
+# or sent through the stage again, "but if it is more then a few pages being held
+# then there are issues", and "a few" means 1 in 50 of the run's pages. So a held
+# share above 1/50 still stops the run before export, as any hold does, and its
+# report and the operator's notification say the share points to a systemic
+# problem in the run rather than a few hard pages. At or below 1/50 the holds are
+# a person's to decide one by one.
+#
+# `max_held_page_share`: a fraction "N/D" with 0 < N <= D, compared exactly.
+
+[review]
+max_held_page_share = "1/50"

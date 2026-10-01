@@ -82,6 +82,19 @@ that applies new decisions re-seals, so an advance given before it passes nothin
 The Recensor is in `common.stage.ALWAYS_HELD_BOUNDARIES` for this reason, beside the
 Attestatores and the Armarium, and `advance` accepts it in every mode.
 
+**More held than a few pages is a problem with the run.** At that stop the orchestrator
+counts the run's held pages (`common/page_review.py::held_pages_after_review`: a page
+with any held unit, or still held by the `review-decisions` record, of the pages the
+Recensor reviewed, which are all the run's sealed pages). When their share is more
+than the run's sealed `[review] max_held_page_share` (`config/review.toml`, 1/50 by the
+lead's ruling, read by `common/review_policy.py` and checked against the run's
+`review` seal), the report opens with one line, `run <id>: systemic: <held> of <pages>
+page(s) are held after the recensor, more than the sealed limit of <share> ...`,
+naming the held pages. The run stops all the same: the alarm adds a reason, never a
+pass. `verbatus run` notifies that line as a `decision` through `operations/notify`
+when notifications are on. A run sealed before the policy existed says the check was
+not made.
+
 ## Mode is an invocation choice, never durable bytes
 
 No selection reaches a manifest, a seal, an artifact, a receipt, or any other file. `invoke`

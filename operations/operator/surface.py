@@ -1513,6 +1513,11 @@ class OperatorSurface:
             )
             if stopped is None:
                 report = []
+            # More of the run held than its sealed review policy allows: the
+            # orchestrator's alarm line, which the notification leads with.
+            systemic = next(
+                (line for line in report if line.startswith(f"run {run_id}: systemic: ")), None
+            )
             reason = (
                 stopped
                 or _last_line(completed.stderr)
@@ -1542,9 +1547,16 @@ class OperatorSurface:
                 if line != stopped:
                     self.present(line)
             self._present_review_command(run_root, run_id)
-            self._notify(
-                "decision", f"Verbatus run {run_id} is held and needs a decision: {reason}"
-            )
+            if systemic is not None:
+                self._notify(
+                    "decision",
+                    f"Verbatus run {run_id} has a systemic problem and needs a decision: "
+                    f"{systemic.removeprefix(f'run {run_id}: systemic: ')}",
+                )
+            else:
+                self._notify(
+                    "decision", f"Verbatus run {run_id} is held and needs a decision: {reason}"
+                )
             return OperatorError(
                 ErrorCode.RUN_HELD, detail=f"{reason} Saved run receipt: {receipt}"
             )

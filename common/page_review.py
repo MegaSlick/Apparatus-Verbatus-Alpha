@@ -483,6 +483,42 @@ def held_by_recensor(tree) -> list[dict[str, Any]]:
     return held + sorted(links, key=lambda link: link["subject_id"])
 
 
+def held_pages_after_review(tree) -> tuple[list[int], int]:
+    """The pages the Recensor's current records hold, and how many pages it reviewed.
+
+    Every sealed page has at least one reviewed unit (a page with no reading
+    has its page row), so the reviewed pages are the run's pages. A page is
+    held when any unit on it is held, or when the current `review-decisions`
+    record still holds it (a page whose every unit was excluded keeps its
+    page holds). Read from the run tree alone, like `held_by_recensor`.
+    """
+    reviews: dict[str, list[dict[str, Any]]] = {}
+    decisions: list[dict[str, Any]] = []
+    for entry in tree.build_manifest(RECENSOR, verify_inputs=False)["artifacts"]:
+        if entry["kind"] == REVIEW_KIND:
+            reviews.setdefault(entry["subject_id"], []).append(
+                tree.read_artifact(RECENSOR, REVIEW_KIND, entry["artifact_id"])
+            )
+        elif entry["kind"] == REVIEW_DECISIONS_KIND:
+            decisions.append(
+                tree.read_artifact(RECENSOR, REVIEW_DECISIONS_KIND, entry["artifact_id"])
+            )
+    pages: set[int] = set()
+    held: set[int] = set()
+    for subject_id, records in reviews.items():
+        review = latest_attempt(records, f"review of {subject_id}", operation=REVIEW_OPERATION)
+        ordinal = _payload(review)["page_ordinal"]
+        pages.add(ordinal)
+        if review.get("outcome") == HELD:
+            held.add(ordinal)
+    if decisions:
+        record = latest_attempt(
+            decisions, "Recensor review-decisions record", operation=REVIEW_DECISIONS_OPERATION
+        )
+        held |= {row["page_ordinal"] for row in _payload(record)["page_holds"]}
+    return sorted(held), len(pages)
+
+
 def review_coverage(review: Mapping[str, Any]) -> dict[str, Any]:
     """The witness-coverage record the Recensor measured for the unit's page."""
     coverage = _payload(review).get("coverage")

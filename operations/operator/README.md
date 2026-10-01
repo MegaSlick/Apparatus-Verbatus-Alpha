@@ -107,6 +107,12 @@ sealed source is the other way. A run whose Recensor holds anything stops there,
 the Archetypus, in every mode; it exports with holds remaining only after `advance`
 passes the Recensor's current seal. `review` shows what each stored decision did.
 
+**More than a few pages held is a problem with the run.** When more than 1 in 50 of a
+run's pages are held after the Recensor (`config/review.toml`, sealed into the run), the
+run stops as any hold does, its report says the held share points to a systemic problem,
+and with `--notify` the held notification says so. Look for the cause in the run before
+deciding pages one by one.
+
 ## Recording a review decision
 
 ```sh
@@ -356,7 +362,8 @@ counted as closed.
 ## Phone notifications
 
 Off unless you add `--notify`. Then it sends one line when a `run` or `export` finishes and
-one when a run is **held** for a decision, and nothing else. The terminal always says
+one when a run is **held** for a decision, and nothing else. A run held on more than its
+sealed share of pages says in that line that it has a systemic problem. The terminal always says
 whether the message arrived.
 
 ## Where it keeps its own records

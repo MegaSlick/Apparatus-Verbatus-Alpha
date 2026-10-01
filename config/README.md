@@ -7,6 +7,7 @@ The knobs. One question per planned file, each answerable without reading code.
 | `models.toml` | which model and revision fills each numbered role |
 | `recovery.toml` | how many times one page may be asked again before review; sealed into every run and spent by the Perlector's page re-ask |
 | `hard_failure.toml` | how many accounted hard failures one run may carry before it stops; the threshold and the outcome taxonomy are both settled by ruling (see the file's own header) |
+| `review.toml` | what share of a run's pages may stay held after the Recensor before the run itself is called systemic (`max_held_page_share`, 1/50 by the lead's ruling); sealed into every run as `review`, and the orchestrator's held-Recensor stop and the operator's held notification say so when the share is above it |
 | `pdf_render.toml` | what whole-page PDF resolution the next run targets |
 | `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
 | `spend.toml` | the project lead's pod-plus-attached-volume money caps; both paid paths refuse it unless configured, and configuring it is not permission to launch |

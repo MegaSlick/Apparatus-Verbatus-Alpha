@@ -97,6 +97,7 @@ def test_store_root_reaches_a_stage_registry(tmp_path, monkeypatch) -> None:
         "formats_config",
         "recovery_config",
         "hard_failure_config",
+        "review_config",
         "pdf_target_dpi",
         "placement_tier",
         "witness_context",

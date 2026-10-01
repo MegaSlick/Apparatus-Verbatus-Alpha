@@ -103,8 +103,8 @@ FIXTURE = "synthetic-two-page-v0"
 # a reconstruction per act, and the reconstructor's receipt.
 HAPPY_SNAPSHOT_FILES = 141
 REVIEW_SNAPSHOT_FILES = 132
-HAPPY_RUN_TREE_DIGEST = "9cf4ff1aae37bf4b362f779c7abce23a537cad7176f5bd91446e67b0c71997bf"
-REVIEW_RUN_TREE_DIGEST = "3e5acf4e005e66d7aeca6aa682450b152f708db8eb8313e5f4576fee9b098c0f"
+HAPPY_RUN_TREE_DIGEST = "2fb989378547ce7e0d857e898fc9476fa60568d567610790cbff1970f0246446"
+REVIEW_RUN_TREE_DIGEST = "c92f10679f1f6f34c8831a1f9050fb429a49c2f2957f152915acb54c189808d1"
 
 
 def orchestrate_to_export(
@@ -320,6 +320,7 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         formats_config=ROOT / "config" / "formats.toml",
         recovery_config=ROOT / "config" / "recovery.toml",
         hard_failure_config=ROOT / "config" / "hard_failure.toml",
+        review_config=ROOT / "config" / "review.toml",
         pdf_target_dpi=None,
         # `invoke` reads this by name like every sibling flag; a stand-in that
         # omits it is not the argv surface it mirrors (U7p; pr/14 broke CI by
