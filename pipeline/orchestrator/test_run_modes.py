@@ -85,10 +85,6 @@ def test_store_root_reaches_a_stage_registry(tmp_path, monkeypatch) -> None:
         "placement_tier",
         "witness_context",
         "witness_context_config",
-        "nuda_per_mille",
-        "nuda_approval_ref",
-        "perlector_instrument_per_mille",
-        "perlector_instrument_approval_ref",
         "perlector_protocol_config",
         "perlector_audit_config",
     )
@@ -98,7 +94,6 @@ def test_store_root_reaches_a_stage_registry(tmp_path, monkeypatch) -> None:
     args.scenario = "page-unbroken"
     args.models_config = str(tmp_path / "models.toml")
     args.store_root = tmp_path / "store"
-    args.blind_read = "off"
     commands = []
     monkeypatch.setattr(
         orchestrator.subprocess,
@@ -213,6 +208,32 @@ def test_semi_mode_stops_at_a_named_hold(tmp_path):
 
     assert result.returncode == EXIT_HELD
     assert "semi mode stopped at held recensor" in result.stdout
+
+
+def test_a_range_ending_at_the_armarium_runs_through_a_held_recensor(tmp_path):
+    """A held boundary inside a range that ends at the export does not stop it,
+    as in auto mode, so the export names the hold instead of never being written."""
+    root = tmp_path / "runs"
+    result = drive(root, "r", "page-review", "--from", "door", "--to", "armarium")
+
+    assert result.returncode == EXIT_HELD, result.stdout + result.stderr
+    assert "stopped at held" not in result.stdout
+    assert "run r: partial" in result.stdout
+    assert "act p2:1 is held-for-review" in result.stdout
+    assert (root / "r" / "7_armarium" / "artifacts").is_dir()
+
+
+def test_the_big_models_range_writes_the_export_over_a_held_recensor(tmp_path):
+    """`pod_run --models big` runs perlector..armarium after the witnesses' own range."""
+    root = tmp_path / "runs"
+    first = drive(root, "r", "page-review", "--from", "door", "--to", "attestatores")
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    result = drive(root, "r", "page-review", "--from", "perlector", "--to", "armarium")
+
+    assert result.returncode == EXIT_HELD, result.stdout + result.stderr
+    assert "stopped at held" not in result.stdout
+    assert "act p2:1 is held-for-review" in result.stdout
 
 
 def test_a_held_armarium_reports_its_terminal_reasons_under_every_mode(tmp_path):

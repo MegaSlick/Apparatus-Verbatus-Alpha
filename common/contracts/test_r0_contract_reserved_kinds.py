@@ -6,7 +6,6 @@ The refusals have since landed -- `_RESERVED_KINDS`, `ReservedKindRefusal`, and 
 closed-ordinal confidence check -- and the file now guards them.
 
 Kind table (R0_CONTRACT_NOTE.md "Kind-by-kind table"):
-    lectio-prior, primed-without-prior         ACCEPTED by R5a (R0 transfer closed)
     audit-draft, audit-finding                 ACCEPTED by R5b (R0 transfer closed)
     raw-proposal, occlusion (U7 kinds)         ACCEPTED by R2 (R0 transfer closed)
     Closed-ordinal confidence rule             EXERCISED narrowly (R0 owns it)

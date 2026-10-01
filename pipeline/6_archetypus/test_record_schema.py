@@ -52,9 +52,9 @@ def _uncertainty(**overrides) -> dict:
     return {
         "uncertain_spans": [],
         "gaps": [],
-        "self_revisions": [],
+        "self_revisions": None,
         "assessment": _ASSESSED,
-        "lectio_kind": "primed-with-prior",
+        "lectio_kind": "page-read",
         **overrides,
     }
 
@@ -282,19 +282,10 @@ def test_record_validation_refuses_a_gap_whose_position_label_lies_about_its_own
         archetypus.validate_record(seal_record(uncertainty=_uncertainty(gaps=[gap])))
 
 
-def test_record_validation_refuses_a_self_revision_with_a_negative_prior_offset():
-    """A prior-draft offset can never be negative, whatever draft it indexes.
-
-    `prior_span` anchors into the Perlector's prior draft, a string this layer
-    never sees, so it cannot bound-check the offset against that draft's
-    length -- but a negative offset is nonsensical regardless of which string
-    it indexes.
-    """
-    revision = {
-        "reading_span": {"start": 0, "end": 0},
-        "prior_span": {"start": -5, "end": -1},
-    }
-    with pytest.raises(SchemaRefusal, match="negative offset"):
+def test_record_validation_refuses_a_page_reading_that_claims_self_revisions():
+    """A page reading had no prior draft, so it has no self-revisions to record."""
+    revision = {"reading_span": {"start": 0, "end": 0}, "prior_span": {"start": 0, "end": 0}}
+    with pytest.raises(SchemaRefusal, match="self-revisions are not measured"):
         archetypus.validate_record(seal_record(uncertainty=_uncertainty(self_revisions=[revision])))
 
 
@@ -373,16 +364,6 @@ def test_record_validation_refuses_gap_evidence_with_a_non_digest_reference():
     gap = {"position": "internal", "start": 2, "end": 2, "witness_evidence": [evidence]}
     with pytest.raises(SchemaRefusal, match="sha256 is not a lowercase sha256"):
         archetypus.validate_record(seal_record(uncertainty=_uncertainty(gaps=[gap])))
-
-
-def test_record_validation_refuses_an_open_self_revision_bound():
-    """A nested offset object cannot smuggle an unvalidated field through reseal."""
-    revision = {
-        "reading_span": {"start": 0, "end": 0, "unit": "bytes"},
-        "prior_span": {"start": 0, "end": 0},
-    }
-    with pytest.raises(SchemaRefusal, match="reading_span has no exact offset range"):
-        archetypus.validate_record(seal_record(uncertainty=_uncertainty(self_revisions=[revision])))
 
 
 def test_record_validation_refuses_an_annotation_short_of_its_validated_form():

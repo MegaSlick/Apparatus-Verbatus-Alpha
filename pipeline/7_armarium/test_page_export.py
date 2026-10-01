@@ -1,7 +1,7 @@
 """The Armarium on a page-read run: acts, the other layer, page rows and page accounting.
 
 The trees are the fixture's `happy`, `page-review`, `page-other` and
-`page-no-act` scenarios read with `reading_unit = "page"` and reviewed by the
+`page-no-act` scenarios read by page and reviewed by the
 real Recensor. A reader that answered a page otherwise
 is a scenario of its own (`proof/build_fixture.py`, `PAGE_ANSWER_VARIANTS`),
 since every later stage reads the answer again from what the reader said. A

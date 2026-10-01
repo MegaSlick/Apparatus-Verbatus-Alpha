@@ -312,13 +312,8 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         placement_tier=None,
         witness_context="named",
         witness_context_config=ROOT / "config" / "witness_context.toml",
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-        perlector_instrument_per_mille=0,
-        perlector_instrument_approval_ref="",
         perlector_protocol_config=ROOT / "config" / "perlector_protocol.toml",
         perlector_audit_config=ROOT / "config" / "perlector_audit.toml",
-        blind_read="off",
         # The corpus-register argv surface, which `invoke` reads by name on every
         # stage. A stand-in that omits it is not the surface it claims to mirror.
         corpus_register=None,

@@ -42,14 +42,9 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         corpus_register=None,
         witness_context="named",
         witness_context_config="config/witness_context.toml",
-        nuda_per_mille=0,
-        nuda_approval_ref="",
-        perlector_instrument_per_mille=0,
-        perlector_instrument_approval_ref="",
         perlector_protocol_config="config/perlector_protocol.toml",
         decoding_config="config/decoding.toml",
         perlector_audit_config="config/perlector_audit.toml",
-        blind_read="fed",
         # The real-submission argv surface. `require_coherent_ingress_options`
         # reads these three by name on every `invoke`, so a stand-in Namespace
         # that omits them is not the surface it claims to mirror.

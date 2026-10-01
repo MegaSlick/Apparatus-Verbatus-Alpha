@@ -437,7 +437,7 @@ def establish_from_accepted_page_reading(
 
     `page_testimonia` is the row's page's entry in `current_page_testimonia`.
 
-    The reading is the `perlectio.v2` the row and the review both name; its one
+    The reading is the `perlectio.v3` the row and the review both name; its one
     region is the `act-region` that reading names, proven from the Exemplar by
     `verify_reading_region_lineage`. `other` readings are established exactly
     like acts, so every export shows the same established text for them.

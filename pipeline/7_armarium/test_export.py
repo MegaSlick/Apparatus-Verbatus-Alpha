@@ -202,7 +202,7 @@ def _page_record_case():
         "region_ref": region_ref,
     }
     reading_payload = {
-        "schema": "perlectio.v2",
+        "schema": "perlectio.v3",
         "kind": "act",
         "text": "Maria",
         "provenance": {"chair": "perlector"},

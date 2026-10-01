@@ -34,7 +34,6 @@ from armarium_export import (  # noqa: E402
     ARMARIUM_ARCHIVE_NAME,
     NOT_MEASURED_BASIS_SCHEMA,
     NOT_MEASURED_INSTRUMENTS,
-    READING_UNIT_PAGE,
     ArmariumProjection,
     act_key_sort_key,
     build_armarium_bundle,
@@ -1237,7 +1236,6 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                 projected_acts,
             ),
             continuation_joins=joins,
-            reading_unit=READING_UNIT_PAGE,
             other_readings=tuple(projected_others),
             page_accounting=tuple(page_accounting_rows(context, pages, real_sealed)),
         ),
@@ -1258,7 +1256,6 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
         payload={
             **run_identity,
             "scenario": context.scenario,
-            "reading_unit": READING_UNIT_PAGE,
             "aggregate": aggregate,
             "expected_acts": len(projected_acts),
             "delivered": sorted((item for item in delivered if item["kind"] == "act"), key=by_key),

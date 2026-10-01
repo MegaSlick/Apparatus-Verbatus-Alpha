@@ -60,7 +60,7 @@ from common.contracts.outcomes import (
     run_aggregate,
 )
 from common.contracts.stages import ARMARIUM
-from common.contracts.uncertainty import PAGE_READ_LECTIO, utf8_round_trip
+from common.contracts.uncertainty import utf8_round_trip
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import dimensions
 from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
@@ -77,7 +77,6 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # whole (`common.stage.reading_acts`), and carries its `other` readings, a
 # labelled layer beside the acts, and each page's accounting.
 EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v10"
-READING_UNIT_PAGE: Final = "page"
 # The act row and SQLite ids move with the row shape, so a consumer keying on the
 # id never reads an old shape out of a new row.
 ACT_RECORD_SCHEMA: Final = "armarium-act.v4"
@@ -315,10 +314,9 @@ class ArmariumProjection:
     # `_validate_projection` refuses it.
     not_measured_basis: dict[str, Any] | None = None
     continuation_joins: tuple[dict[str, Any], ...] = ()
-    # The Perlector reads whole pages. The `other` readings are a separate layer,
-    # shaped as acts plus `page_ordinal`, never in `acts`; the page accounting
-    # rows are text-free, one per real sealed page.
-    reading_unit: str = READING_UNIT_PAGE
+    # The `other` readings are a separate layer, shaped as acts plus
+    # `page_ordinal`, never in `acts`; the page accounting rows are text-free,
+    # one per real sealed page.
     other_readings: tuple[dict[str, Any], ...] = ()
     page_accounting: tuple[dict[str, Any], ...] = ()
 
@@ -451,11 +449,8 @@ def _doubt(layer: Any) -> dict[str, int | str | None]:
     result = {
         "uncertain_spans": len(layer.get("uncertain_spans") or []),
         "gaps": len(layer.get("gaps") or []),
-        "self_revisions": (
-            None
-            if layer.get("lectio_kind") in ("primed-draft-withheld", PAGE_READ_LECTIO)
-            else len(layer.get("self_revisions") or [])
-        ),
+        # A page reading's self-revisions are not measured.
+        "self_revisions": None,
         "assessment": assessment.get("state") if isinstance(assessment, dict) else None,
     }
     result["lectio_kind"] = layer["lectio_kind"]
@@ -1820,8 +1815,6 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         raise SchemaRefusal(
             "an Armarium projection does not contain one record for every expected act"
         )
-    if projection.reading_unit != READING_UNIT_PAGE:
-        raise SchemaRefusal(f"an Armarium projection reads {projection.reading_unit!r}")
     _validate_witness_accounting(
         projection.witness_chairs,
         projection.witness_floor,

@@ -1,7 +1,6 @@
 """The page-read denominator: what a run read page by page counts, proven from its records.
 
-The trees are the synthetic fixture's `happy` and `page-review` scenarios read with
-`reading_unit = "page"`: happy places and reads every entry; page-review leaves page
+The trees are the synthetic fixture's `happy` and `page-review` scenarios: happy places and reads every entry; page-review leaves page
 2's entry unplaced, so the page accounting holds it. Each forgery rewrites one
 Perlector record and rewitnesses the stage's boundary, so the only thing left
 to catch it is the denominator's own recomputation. A forgery that changes what
@@ -56,10 +55,8 @@ ROOT = Path(__file__).resolve().parents[1]
 RUN_ID = "r"
 
 
-def _protocol(directory: Path, unit: str, lines: dict[str, str]) -> Path:
+def _protocol(directory: Path, lines: dict[str, str]) -> Path:
     text = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
-    assert 'reading_unit = "page"' in text
-    text = text.replace('reading_unit = "page"', f'reading_unit = "{unit}"')
     for line, replacement in lines.items():
         assert text.count(line) == 1
         text = text.replace(line, replacement)
@@ -70,12 +67,12 @@ def _protocol(directory: Path, unit: str, lines: dict[str, str]) -> Path:
 
 
 def _tree(
-    base: Path, scenario: str, unit: str = "page", lines: dict[str, str] | None = None
+    base: Path, scenario: str, lines: dict[str, str] | None = None
 ) -> tuple[Path, dict[str, Path], str]:
-    """A tree read by `unit` on the committed roster."""
+    """A tree read page by page on the committed roster."""
     options = {}
-    if unit != "page" or lines:
-        options["perlector_protocol_config"] = _protocol(base / "config", unit, lines or {})
+    if lines:
+        options["perlector_protocol_config"] = _protocol(base / "config", lines)
     root = base / "runs"
     for program in programs_through("perlector"):
         result = run_stage(root, RUN_ID, scenario, program, **options)
@@ -325,7 +322,7 @@ def _second_attempt(root: Path, ordinal: int, keep: bool) -> None:
 def test_a_happy_page_tree_counts_every_entry_it_read(happy_tree):
     context = _context(happy_tree)
     denominator = reading_denominator(context)
-    assert denominator["reading_unit"] == "page"
+    assert set(denominator) == {"pages", "acts"}
     pages, acts = denominator["pages"], denominator["acts"]
     assert pages == page_readings(context) and acts == reading_acts(context)
     assert sorted(pages) == [1, 2]

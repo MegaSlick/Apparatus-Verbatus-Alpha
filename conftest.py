@@ -25,13 +25,6 @@ ROOT = Path(__file__).resolve().parent
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    # The act path is off the committed default; its tests run only when a `-m`
-    # expression names `act_path`.
-    if "act_path" not in (config.getoption("markexpr") or ""):
-        act_path = [item for item in items if item.get_closest_marker("act_path")]
-        if act_path:
-            config.hook.pytest_deselected(items=act_path)
-            items[:] = [item for item in items if not item.get_closest_marker("act_path")]
     if "CI" in os.environ:
         return
     skip_local = pytest.mark.skip(reason="hostile_local runs in CI only")
