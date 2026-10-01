@@ -41,7 +41,7 @@ from common.chairs.models import AbsentChair
 from common.chairs.registry import ChairRegistry
 from common.contracts.approval import real_ingress_record
 from common.contracts.errors import ContractError
-from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR, SEAL_PREDECESSORS
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR, SEAL_PREDECESSORS
 from common.stage import EXIT_FATAL, REAL_SCENARIO, StageContext
 from conftest import load_stage
 from operations.serving.assembly import SERVING_READER
@@ -64,6 +64,7 @@ RUN_ID = "real-ingress-stages"
 PERLECTOR_RUN = load_stage("4_perlector", isolate_path=True)
 RECENSOR_RUN = load_stage("5_recensor", isolate_path=True)
 ARCHETYPUS_RUN = load_stage("6_archetypus", isolate_path=True)
+ARMARIUM_RUN = load_stage("7_armarium", isolate_path=True)
 
 
 class _Opened(Exception):
@@ -107,8 +108,9 @@ def _fixture_context(stage: str, fixture: dict, scenario: str) -> StageContext:
         (PERLECTOR_RUN, PERLECTOR),
         (RECENSOR_RUN, RECENSOR),
         (ARCHETYPUS_RUN, ARCHETYPUS),
+        (ARMARIUM_RUN, ARMARIUM),
     ],
-    ids=[PERLECTOR, RECENSOR, ARCHETYPUS],
+    ids=[PERLECTOR, RECENSOR, ARCHETYPUS, ARMARIUM],
 )
 def test_each_stage_opens_through_the_shared_constructor_and_owns_no_opener(
     module, stage, monkeypatch

@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from common import dissent, page_accounting, page_answer, page_render, truncation
 from common import reading_annotations as annotations
@@ -54,6 +54,9 @@ from common.residual_ink import (
     reconcile_edge_finding_with_runs,
     resolve_coverage_audit_policy,
 )
+
+if TYPE_CHECKING:
+    from common.stage import ServingReader
 
 READING_UNIT: Final = "page"
 
@@ -301,7 +304,9 @@ def page_sampling(decoding_policy: Mapping[str, Any], role: str) -> dict[str, An
     }
 
 
-def retained_reply(read_bytes, engine_call: Mapping[str, Any], reader: Any) -> dict[str, Any]:
+def retained_reply(
+    read_bytes, engine_call: Mapping[str, Any], reader: ServingReader
+) -> dict[str, Any]:
     """What the engine answered a live page call, read again from its retained bytes.
 
     `engine_call` is the `page-reading`'s: the raw response and the call record
