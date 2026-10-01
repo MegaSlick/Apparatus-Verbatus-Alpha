@@ -16,14 +16,16 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any, Final
 
-FIRST_READING_ATTEMPT: Final = 1
+# The attempts a page reading is: the first reading, and at most one re-ask.
+FIRST_READING: Final = 1
+REASK_READING: Final = 2
 
 Entry = Mapping[str, Any]
 
 
 def first_attempt_entries(entries: Iterable[Entry]) -> list[Entry]:
     """The entries of each page's first reading attempt: the reading a page's edges are of."""
-    return [entry for entry in entries if entry["reading_attempt"] == FIRST_READING_ATTEMPT]
+    return [entry for entry in entries if entry["reading_attempt"] == FIRST_READING]
 
 
 def act_entries_by_page(entries: Iterable[Entry]) -> dict[int, list[Entry]]:

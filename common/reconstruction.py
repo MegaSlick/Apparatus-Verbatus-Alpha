@@ -38,7 +38,7 @@ from typing import Any, Final
 from common.contracts.errors import ContractError
 from common.page_accounting import normalized_text
 from common.page_edges import (
-    FIRST_READING_ATTEMPT,
+    FIRST_READING,
     act_entries_by_page,
     break_chains,
     first_attempt_entries,
@@ -161,7 +161,7 @@ def reconstruction_plan(
         return []
     entries = list(entries)
     for entry in entries:
-        if entry["reading_attempt"] != FIRST_READING_ATTEMPT and (
+        if entry["reading_attempt"] != FIRST_READING and (
             entry["continues_from_previous_page"] is True or entry["continues_to_next_page"] is True
         ):
             raise ContractError(
