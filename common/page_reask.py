@@ -30,6 +30,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from common.contracts.errors import ContractError
+from common.recovery import RULED_ABSOLUTE_CAP
 from common.page_accounting import (
     ANSWER_BASIS_FIRST,
     HOLD_CODES,
@@ -52,8 +53,8 @@ from common.page_accounting import (
 # The findings a re-ask is asked about, and every other finding code.
 RE_ASKABLE: Final = frozenset({UNACCOUNTED_WITNESS_UNIT, UNREAD_LINE, RECORD_NOT_READ})
 NEVER: Final = (HOLD_CODES | NOT_MEASURED_CODES) - RE_ASKABLE
-# The most re-asks a page may have: one, additive. A sealed budget above it is refused.
-MAX_REASKS: Final = 1
+# The most re-asks a page may have: the recovery loader's ruled ceiling.
+MAX_REASKS: Final = RULED_ABSOLUTE_CAP
 
 
 def reask_budget(recovery_policy: Mapping[str, Any]) -> int:
@@ -62,15 +63,7 @@ def reask_budget(recovery_policy: Mapping[str, Any]) -> int:
     `recovery_policy` is `common.recovery.load_recovery_policy`'s record, which has
     already refused a value that is not a non-negative integer within the ruled cap.
     """
-    budget = recovery_policy["page_level_reread"]
-    if budget > MAX_REASKS:
-        raise ContractError(
-            f"the sealed page_level_reread is {budget}, but a page is re-asked at most "
-            f"{MAX_REASKS} time: the re-ask adds to the first reading, and a further draw "
-            "would only be another chance at a reading that looks better. Seal "
-            "page_level_reread = 0 or 1"
-        )
-    return budget
+    return recovery_policy["page_level_reread"]
 
 
 def reask_plan(

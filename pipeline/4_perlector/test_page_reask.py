@@ -361,19 +361,11 @@ def test_with_the_re_ask_off_a_page_stands_on_its_first_reading(tmp_path):
         _chain(tmp_path / "on" / "runs", protocol, through_perlector=True, scenario="reask-off")
 
 
-def test_a_budget_above_one_is_refused_by_name(tmp_path):
+def test_a_budget_above_one_is_refused_at_the_door(tmp_path):
     protocol = _page_protocol(tmp_path / "config")
     recovery = reask_recovery_config(tmp_path / "config", 2)
-    _chain(tmp_path / "runs", protocol, "--recovery-config", str(recovery))
-    with pytest.raises(AssertionError, match="sealed page_level_reread is 2"):
-        _chain(
-            tmp_path / "runs",
-            protocol,
-            "--recovery-config",
-            str(recovery),
-            programs=(),
-            through_perlector=True,
-        )
+    with pytest.raises(AssertionError, match=r"door\.py: .*page_level_reread 2, above the ruled"):
+        _chain(tmp_path / "runs", protocol, "--recovery-config", str(recovery))
 
 
 def test_a_fixture_re_ask_answer_is_required_for_a_planned_page_and_refused_for_another():
