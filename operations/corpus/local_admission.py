@@ -536,8 +536,7 @@ def admit_local_set(
         detail = str(error)
         refused_by_reason[reason] = refused_by_reason.get(reason, 0) + 1
         # The two identity fields are held to `str | None` by the ledger's own
-        # validator; a raw number here refused one record and then aborted the
-        # whole ledger. The detail string keeps the original value verbatim.
+        # validator; the detail string keeps the original value verbatim.
         ledger_rows.append(
             {
                 "record_id": _identity(row.get("record_id")),
@@ -894,8 +893,7 @@ def validate_local_admission_ledger(ledger: Any) -> dict[str, Any]:
     Closed at every level, self-hashed, and reconciled against itself: the row
     count against the record count, the decisions against the rows, the reason
     histogram against the refused count, and every listed page against exactly
-    one outcome. Every sibling record in this package carries a validator and a
-    loader; this one was the exception.
+    one outcome.
     """
     ledger = _closed(ledger, _TOP_FIELDS, "admission ledger")
     if ledger["schema"] != SCHEMA:

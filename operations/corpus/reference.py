@@ -18,26 +18,18 @@ therefore a lower bound on what is on the page, never a claim that every act was
 found: an unmatched pipeline act is not automatically a false positive, and
 `compare.py` must never score it as one on that basis alone.
 
-**No `act_*` identity is ever minted here.** `common/contracts/identities.py:180-
-211` binds an act's *originally minted* bounds; the Designator's own structure
-pass mints its own rectangle, which will never equal an expert box. Minting
-`act_id` from a RecordGold box would be well-formed, would verify against its own
-bindings, and would mean nothing — a forgery that passes silently forever. This
+**No `act_*` identity is ever minted here.** An `act_*` identity binds a page
+reading's entry and its union box (`identities.act_bindings`); no expert box is
+ever one of those, so minting `act_id` from a RecordGold box would be
+well-formed, would verify against its own bindings, and would mean nothing — a forgery that passes silently forever. This
 module instead mints the ladder built for exactly this join:
 `physical_act_id(physical_page_id(corpus_id, "<source>/<volume>", designation),
 record_id)` — a `pac_` identity, disjoint from `act_*` by prefix, stable across
 re-fetch and re-shard, and never accepted where an `act_` identity is expected.
 
-**Each act carries the expert `text`, and a `text_sha256` beside it.** The unit
-brief's shorthand for an act -- `{record_id, physical_act_id, region}` -- names
-the fields this module's identities section introduces; it is not a claim that
-`compare.py` can score CER/WER against a checked reference with no text to check
-against. compare.py scores every matched act
-with the existing `normalization.py`/`scoring.py` instruments, and a reference
-record with no text cannot supply that reference string. Carrying `text_sha256`
-alongside `text` mirrors `rows.py`'s own convention and lets a reader verify the
-text travelled unmodified from the row snapshot to this record -- an engineering
-decision recorded here.
+**Each act carries the expert `text`, and a `text_sha256` beside it.** The `text`
+is `compare.py`'s reference string, and `text_sha256` lets a reader verify the
+text travelled unmodified from the row snapshot to this record.
 """
 
 from __future__ import annotations

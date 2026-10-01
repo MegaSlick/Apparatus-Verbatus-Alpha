@@ -37,8 +37,8 @@ identifier path is a page. The identifier's last `/`-segment is the page's own
 filename (`designation`); everything before it is the volume path. Those two,
 joined with the row's `source`, feed `common.contracts.identities.physical_page_id`
 — the `pac_`-ladder anchor, because a RecordGold box
-must never be minted as an `act_*` identity (those bind *originally minted*
-bounds; the Designator will never mint this exact rectangle). `source` is joined
+must never be minted as an `act_*` identity (those bind a page reading's own
+entry, which never equals an expert box). `source` is joined
 into the volume string as `f"{source}/{volume}"`, so a `source` carrying its own
 `/` would collide with a different `source`/`volume` split that flattens to the
 same string — this module refuses a row whose `source` is not a safe single path
@@ -163,8 +163,8 @@ def parse_record_url(
     """Parse one `record_url`, refusing anything this parser does not recognise.
 
     `rotations` names the IIIF rotation values the caller can honestly carry;
-    every other value is refused by name as before. The default admits only
-    `"0"`, so the fetch plan and the hold-out ledger are unchanged. A caller
+    every other value is refused by name. The default admits only `"0"`, which
+    the fetch plan and the hold-out ledger use. A caller
     passing `SUPPORTED_ROTATIONS` receives the rotation on the result and owns
     the frame conversion; a value outside `SUPPORTED_ROTATIONS` is refused even
     when asked for, because no conversion for it exists here.
@@ -284,7 +284,7 @@ def build_fetch_plan(
 
     Refuses a row's `record_url` by name and records the refusal rather than
     stopping the whole plan — one malformed row must not hide every other page's
-    plan (rule 7: nothing is lost silently, refusals are recorded, not escalated
+    plan (nothing is lost silently: refusals are recorded, not escalated
     into a blanket failure). Minting a row's physical identity is refused the same
     way: `physical_page_id`/`physical_act_id` raise `IdentityRefusal`, not
     `CorpusRefusal`, so that is caught here too and recorded under

@@ -18,7 +18,8 @@ live; a request record and a response file are written only after a fetch has
 retried, not silently treated as answered: an interrupt loses at most one
 in-flight body.
 
-Both writes are atomic creates, never overwrites: `_write_new_file` hard-links a
+Both writes are atomic creates, never overwrites: `write_new_file` (via
+`common.durability.atomic_create`) hard-links a
 completed temp file onto its destination, which raises `FileExistsError`
 atomically if the destination is already there — the one race a sequential,
 single-connection fetcher still has to guard against is its own crash-and-resume,

@@ -12,8 +12,8 @@ what makes "never carries an ordinal" a property this package enforces rather th
 a habit a future edit could quietly break.
 
 This sidecar carries no `physical_act_id` and no comparator-facing identity — that
-ladder (`pac_` identities) belongs to U4's `reference.py`, which reads the
-fetch plan for it. This file only records what a submission actually sealed: the
+ladder (`pac_` identities) belongs to `reference.py` (and `plan.py`'s records),
+which mint it from the page's source/volume/designation and record_id. This file only records what a submission actually sealed: the
 fetched bytes' own facts, and each record's split, region, and expert text.
 """
 
