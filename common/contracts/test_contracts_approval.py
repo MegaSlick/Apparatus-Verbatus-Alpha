@@ -14,7 +14,9 @@ from common.contracts.approval import (
     ACTIONS,
     FINDINGS,
     MAX_APPROVAL_REASON_BYTES,
+    MAX_APPROVAL_SUBJECT_BYTES,
     MAX_APPROVAL_SUBJECTS,
+    MAX_APPROVAL_TIMESTAMP_BYTES,
     PAGE_DECISIONS,
     REAL_INGRESS,
     SYNTHETIC_FIXTURE_INGRESS,
@@ -26,8 +28,9 @@ from common.contracts.approval import (
     synthetic_fixture_ingress_record,
     validate_approval_record,
 )
-from common.contracts.canonical import self_hash
+from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal
+from common.runtree.store import MAX_RECORD_READ_BYTES
 
 
 def approval(*, action="exclusion", target=None, timestamp="2026-08-04T12:00:00Z"):
@@ -126,6 +129,23 @@ def test_the_builder_bounds_subject_count_before_sorting_or_hashing_it():
             target_version_hash="a" * 64,
             timestamp="2026-08-04T12:00:00Z",
         )
+
+
+def test_the_largest_valid_approval_fully_escaped_stays_within_the_record_read_bound():
+    """Every field at its bound, padded with a control character JSON writes as six
+    bytes, is still a record the run tree reads back rather than refuses."""
+    escaped = "\x01"
+    record = build_approval_record(
+        subject_ids=[
+            f"{index:04d}" + escaped * (MAX_APPROVAL_SUBJECT_BYTES - 4)
+            for index in range(MAX_APPROVAL_SUBJECTS)
+        ],
+        action="exclusion",
+        reason="r" + escaped * (MAX_APPROVAL_REASON_BYTES - 1),
+        target_version_hash="a" * 64,
+        timestamp="t" + escaped * (MAX_APPROVAL_TIMESTAMP_BYTES - 1),
+    )
+    assert len(canonical_bytes(record)) < MAX_RECORD_READ_BYTES
 
 
 def test_the_builder_bounds_reason_bytes_before_hashing_them():

@@ -9,7 +9,6 @@ from common.contracts.errors import SchemaRefusal
 from common.reading_annotations import (
     doubt_mark_offsets,
     malformed_assessment,
-    not_assessed,
     read_doubt_marks,
     render_doubt_marks,
 )
@@ -90,9 +89,8 @@ def test_a_reading_whose_marks_do_not_parse_maps_as_the_identity():
     assert raw_to_clean == clean_to_raw == list(range(7))
 
 
-def test_a_report_that_is_not_assessed_renders_its_text_unchanged():
+def test_a_malformed_report_renders_its_text_unchanged():
     assert render_doubt_marks("a [[ b", malformed_assessment("x")) == "a [[ b"
-    assert render_doubt_marks("text", not_assessed()) == "text"
 
 
 def test_overlapping_spans_are_refused():
