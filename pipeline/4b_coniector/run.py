@@ -326,7 +326,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     """Plan, ask each call once, publish each reconstruction, then seal.
 
     Both parameters are test seams. A live chair this pass started is stopped
-    before the seal, and in `finally` when the pass raises first.
+    in `finally`, before the seal.
     """
     args = stage_parser(DESCRIPTION).parse_args()
     context = open_stage_context(args, CONIECTOR, registry_factory=registry_factory)
@@ -372,8 +372,6 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
                     inputs=[call_ref],
                     payload=derived,
                 )
-        if chair is not None:
-            chair.close()
     except ChairResponseRefusal as refusal:
         raise ContractError(f"{type(refusal).__name__}: {refusal}") from refusal
     finally:

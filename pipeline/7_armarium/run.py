@@ -2072,10 +2072,11 @@ def page_continuation_joins(
     """Each Recensor continuation link as a join row over the delivered literals.
 
     Every flagged page break is a join, so each keeps the run partial with its
-    reason: an agreed link with both sides delivered is reconstructed; a side
-    with no `act` entry names no act (`side-names-no-act`); a link whose two
-    readings' flags disagree reconstructs nothing (`flags-disagree`). Each
-    link is one `page_review.continuation_links` proved to join `act` edges.
+    reason: an agreed link with both sides delivered is `no-code-join`
+    (recorded, never joined by code); a side with no `act` entry names no act
+    (`side-names-no-act`); a link whose two readings' flags disagree is
+    `flags-disagree`. Each link is one `page_review.continuation_links` proved
+    to join `act` edges.
     """
     delivered_texts = {
         act["act_id"]: act["canonical_clean_text"]

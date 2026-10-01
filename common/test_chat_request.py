@@ -15,9 +15,8 @@ from common.chat_request import (
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes
 
-# The digest of the request `send_page_request` built for these inputs while it
-# lived in pipeline/4_perlector/live_reader.py, measured on that code before the
-# move: the Perlector's page request must stay exactly the request it was.
+# The digest of the Perlector's page request for these inputs; a change to it
+# changes what the Perlector sends.
 PAGE_REQUEST_SHA256 = "ebd30a691335a9b7e3eebc3761284bc754e4006a093b1dd926e58b788e8ea64b"
 PAGE_REQUEST_INPUTS = {
     "images": [b"\x89PNG page", b"\x89PNG overlay"],
@@ -67,7 +66,7 @@ def _request_bytes(request) -> bytes:
     )
 
 
-def test_the_perlector_page_request_is_the_request_it_was_before_the_move():
+def test_the_perlector_page_request_is_pinned_byte_for_byte():
     client = _Client()
     send_page_request(client, **PAGE_REQUEST_INPUTS)
     (request,) = client.requests

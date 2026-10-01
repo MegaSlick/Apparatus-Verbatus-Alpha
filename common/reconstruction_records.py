@@ -53,6 +53,7 @@ from common.reconstruction_prompt import (
 )
 from common.stage import (
     RECONSTRUCTOR_CHAIR,
+    canary_ordinals,
     sealed_decoding_policy,
     verify_retained_call_sampling,
 )
@@ -177,12 +178,17 @@ def diplomatic_entries(
     read through its Perlectio, and its diplomatic text is that reading with its
     doubt marks rendered back (`render_doubt_marks`), exactly what the Perlector
     returned. A plan entry carries what `reconstruction_plan` reads; a shown
-    entry carries what the prompt shows, with the entry's `act_id`.
+    entry carries what the prompt shows, with the entry's `act_id`. A canary
+    page's readings are never entries: no reconstruction is made over one, and
+    none is shown as another page's context or chain piece.
     """
+    canaries = canary_ordinals(context.run)
     plan_entries: list[dict[str, Any]] = []
     shown: dict[str, dict[str, Any]] = {}
     for row in rows:
         if row["class"] not in (page_path.READING_CLASS, page_path.UNPLACED_CLASS):
+            continue
+        if row["page_ordinal"] in canaries:
             continue
         if row["act_key"] in shown:
             raise FatalAccounting(f"two readings of this run are keyed {row['act_key']}")
@@ -492,9 +498,7 @@ def _closed(payload: Any, fields: frozenset[str], schema: str, what: str) -> Map
     return payload
 
 
-def _live_request_is_this_prompt(
-    context, payload: Mapping[str, Any], call: Mapping[str, Any], text: str, what: str
-) -> None:
+def _live_request_is_this_prompt(context, payload: Mapping[str, Any], text: str, what: str) -> None:
     """The retained call record must be the reconstructor's text-only request for this prompt.
 
     Its wire body is rendered again as the serving client renders it, from this
@@ -532,7 +536,7 @@ def _live_request_is_this_prompt(
         raise FatalAccounting(f"{what} was answered for a request other than this prompt")
 
 
-def _reply_as_given(context, payload: Mapping[str, Any], call, text: str, what: str) -> None:
+def _reply_as_given(context, payload: Mapping[str, Any], text: str, what: str) -> None:
     """The reply the record holds must be the fixture's declared one or the retained one."""
     if payload["reply_text"] is None:
         return
@@ -557,7 +561,7 @@ def _reply_as_given(context, payload: Mapping[str, Any], call, text: str, what: 
         payload["stop_reason"],
     ):
         raise FatalAccounting(f"{what} holds a reply other than the one its engine returned")
-    _live_request_is_this_prompt(context, payload, call, text, what)
+    _live_request_is_this_prompt(context, payload, text, what)
 
 
 def _sealed_policy(context) -> ReconstructionPolicy:
@@ -712,7 +716,7 @@ def verified_reconstructions(
             raise FatalAccounting(f"{what} is not the call its plan and readings give")
         _require_maker(context, payload, what)
         _require_not_asked_evidence(context, payload, what)
-        _reply_as_given(context, payload, call, text, what)
+        _reply_as_given(context, payload, text, what)
         state, answer, problems = reply_state(payload["reply_text"], payload["stop_reason"], call)
         if payload["reply_text"] is not None and (
             state != payload["parse_state"] or problems != payload["problems"]

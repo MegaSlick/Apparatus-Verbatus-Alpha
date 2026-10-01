@@ -565,9 +565,13 @@ def build_armarium_bundle(
         sources_record["continuation_joins"] = _mark_retained_references(
             list(projection.continuation_joins)
         )
+    coniector_rows = tuple(_mark_retained_references(row) for row in projection.reconstructions)
+    if coniector_rows:
+        # Which reconstructions the package shows, so a verifier can tell one
+        # dropped from a format from one never made.
+        sources_record["reconstructions"] = [list(row["act_ids"]) for row in coniector_rows]
     members["sources.json"] = canonical_bytes(sources_record)
 
-    coniector_rows = tuple(_mark_retained_references(row) for row in projection.reconstructions)
     if "text-bundle" in formats.formats:
         members.update(
             _text_bundle_members(
@@ -1570,14 +1574,14 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
     ):
         raise SchemaRefusal("the package's act page attribution is not lists of page ordinals")
     literal_formats = _literal_formats_in(formats.formats)
-    literals = (
+    delivered_texts = (
         {
-            act_id: (record[0], record[3], record[2])
+            act_id: record[0]
             for act_id, record in _literal_projection(root, literal_formats[0]).items()
         }
         if literal_formats and joins
         else {
-            act_id: ("", None, None)
+            act_id: ""
             for act_id, outcome in outcomes.items()
             if outcome["category"] == ArmariumCategory.DELIVERED.value
         }
@@ -1619,7 +1623,7 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
             tail_page_ordinal=pages[1],
             head_act_ids=sides[0],
             tail_act_ids=sides[1],
-            delivered_texts={act_id: literal[0] for act_id, literal in literals.items()},
+            delivered_texts=delivered_texts,
             selected_formats=formats.formats,
             flags_disagree=sources["reading_unit"] == READING_UNIT_PAGE
             and join["not_reconstructed_reason"] == _FLAGS_DISAGREE,
@@ -1641,8 +1645,8 @@ def _verify_coniector_layer(
     act by that act's own key and, when made, be its own departures applied to
     its own diplomatic pieces. In the text bundle each row must sit beneath its
     own act's section (a join in its own section) in every folder that sections
-    the act. The JSONL member and the text bundle, when both are selected, show
-    the same rows.
+    the act. Every format that shows reconstructions shows exactly the rows
+    `sources.json` records, so a row dropped from one is refused.
     """
     shown: list[list[dict[str, Any]]] = []
     if CONIECTOR_MEMBER in actual_names:
@@ -1684,9 +1688,14 @@ def _verify_coniector_layer(
                         "exactly once in every folder that shows the act"
                     )
         shown.append(rows)
+    recorded = sorted(tuple(act_ids) for act_ids in sources.get("reconstructions") or [])
     for rows in shown:
         if len({tuple(row["act_ids"]) for row in rows}) != len(rows):
             raise SchemaRefusal("a package shows one reconstruction twice")
+        if sorted(tuple(row["act_ids"]) for row in rows) != recorded:
+            raise SchemaRefusal(
+                "a package format shows other reconstructions than its sources record"
+            )
         for row in rows:
             _verify_retained_references(row)
     keyed = [sorted(rows, key=lambda row: row["act_ids"]) for rows in shown]
@@ -4459,7 +4468,10 @@ def _load_sources(root) -> dict[str, Any]:
         raise SchemaRefusal("the package sources citation has no recognized schema")
     page_path = record["schema"] == SOURCES_PAGE_SCHEMA
     fields = (*_SOURCES_FIELDS, *(_SOURCES_PAGE_FIELDS if page_path else ()))
-    if set(record) - {"logical_accounting", "continuation_joins"} != {"schema", *fields}:
+    if set(record) - {"logical_accounting", "continuation_joins", "reconstructions"} != {
+        "schema",
+        *fields,
+    }:
         raise SchemaRefusal("the package sources citation has an unrecognized field set")
     sources = {field: record[field] for field in fields}
     sources["reading_unit"] = READING_UNIT_PAGE if page_path else READING_UNIT_ACT
@@ -4478,6 +4490,16 @@ def _load_sources(root) -> dict[str, Any]:
         isinstance(sources["continuation_joins"], list) and sources["continuation_joins"]
     ):
         raise SchemaRefusal("the package sources citation carries an empty continuation-join list")
+    sources["reconstructions"] = record.get("reconstructions")
+    if "reconstructions" in record and not (
+        isinstance(sources["reconstructions"], list)
+        and sources["reconstructions"]
+        and all(
+            isinstance(act_ids, list) and act_ids and all(isinstance(a, str) for a in act_ids)
+            for act_ids in sources["reconstructions"]
+        )
+    ):
+        raise SchemaRefusal("the package sources citation names its reconstructions malformed")
     return sources
 
 
@@ -4569,7 +4591,9 @@ def _verify_exact_product_members(
         expected.add(OTHER_READINGS_MEMBER)
     # Written only when a delivered act carries a reconstruction; its rows are
     # verified whole (`_verify_coniector_layer`).
-    if "jsonl" in formats.formats and CONIECTOR_MEMBER in actual_names:
+    if "jsonl" in formats.formats and (
+        CONIECTOR_MEMBER in actual_names or sources.get("reconstructions")
+    ):
         expected.add(CONIECTOR_MEMBER)
     expected.update(_embedded_member_paths(sources))
     if actual_names != expected:

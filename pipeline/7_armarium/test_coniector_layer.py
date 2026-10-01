@@ -129,6 +129,12 @@ def _swap_blocks(members: dict) -> None:
     members[name] = "\n".join(lines).encode("utf-8")
 
 
+def _drop_from_sources(members: dict) -> None:
+    sources = json.loads(members["sources.json"])
+    sources["reconstructions"] = sources["reconstructions"][1:]
+    members["sources.json"] = canonical_bytes(sources)
+
+
 def _first(rows):
     return next(row for row in rows if row["act_keys"] == ["p1:1"])
 
@@ -159,7 +165,12 @@ def _first(rows):
             ),
             "does not say who made it",
         ),
-        (lambda members: members.pop(CONIECTOR_MEMBER), "show different reconstructions"),
+        (lambda members: members.pop(CONIECTOR_MEMBER), r"missing=\['coniector.jsonl'\]"),
+        (
+            lambda members: _change_row(members, lambda rows: rows.remove(_first(rows))),
+            "other reconstructions than its sources record",
+        ),
+        (_drop_from_sources, "other reconstructions than its sources record"),
         (
             lambda members: _change_text_bundle(
                 members,
@@ -186,6 +197,8 @@ def _first(rows):
         "label",
         "maker",
         "member-dropped",
+        "row-dropped",
+        "sources-row-dropped",
         "text-bundle-line",
         "moved-block",
         "act-key",

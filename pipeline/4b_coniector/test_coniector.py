@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -212,9 +213,14 @@ def test_a_run_whose_chair_is_absent_makes_nothing_and_names_the_absence(tmp_pat
     for program in (*programs_through("perlector"), *AFTER_PERLECTOR):
         result = run_stage(root, RUN_ID, "happy", program, **options)
         assert result.returncode in (0, 3), f"{program}: {result.stderr}"
-    for record in _records(root, RECONSTRUCTION_KIND):
+    by_keys = _by_keys(root)
+    assert sorted(by_keys) == [("p1:1",), ("p1:2",), ("p2:1",)]
+    for record in by_keys.values():
         assert [reason["code"] for reason in record["payload"]["not_made"]] == [CHAIR_ABSENT]
         assert record["payload"]["maker"]["chair_state"] == "absent"
+    calls = _records(root, CALL_KIND)
+    assert sorted(call["payload"]["page_ordinal"] for call in calls) == [1, 2]
+    assert {call["payload"]["parse_state"] for call in calls} == {"not-asked"}
 
 
 def test_a_resumed_stage_republishes_the_same_records(unconsecutive, tmp_path):
@@ -415,21 +421,385 @@ def test_the_recompute_refuses_a_forged_record(unconsecutive, tmp_path, kind, ke
         _verified(root, options)
 
 
-def test_a_call_refused_for_capacity_is_verified_with_the_record_it_was_refused_on():
+def _roster_context(*, present: bool):
     from common.chairs.models import ChairIdentity
+
+    # Only the chair's type is read; the retained bytes are on disk as named.
+    identity = ChairIdentity.__new__(ChairIdentity) if present else object()
+    return SimpleNamespace(
+        registry=SimpleNamespace(resolve=lambda _role: identity),
+        input_ref=lambda path: {
+            "relative_path": path,
+            "sha256": {"raw": "a", "call": "b"}[path] * 64,
+        },
+    )
+
+
+def _asked_payload(asked: dict) -> dict:
+    return {**{name: asked[name] for name in asked}, "call": CALL}
+
+
+def _refused_for_capacity():
+    stage = load_stage("4b_coniector", "run")
+    chair = _live_chair(_Client(reply="unused"))
+    small = SimpleNamespace(**{**vars(chair.row()), "max_model_len": 64})
+    chair.row = lambda: small
+    asked = stage._ask(chair, CALL, "the prompt", load_reconstruction_policy(), 8192, "page 1")
+    assert chair.client.requests == []
+    return asked
+
+
+def _failed_call():
+    from common.chat_request import EngineSignalRefusal
+
+    stage = load_stage("4b_coniector", "run")
+    refusal = EngineSignalRefusal(
+        "NO_CHOICES",
+        "no choices",
+        raw_response_ref={"relative_path": "raw", "sha256": "a" * 64},
+        call_record_ref={"relative_path": "call", "sha256": "b" * 64},
+        request_sha256="c" * 64,
+        receipt_ref={"relative_path": "receipt", "sha256": "d" * 64},
+        served_model_id="m",
+    )
+    return stage._ask(
+        _live_chair(_Client(error=refusal)),
+        CALL,
+        "the prompt",
+        load_reconstruction_policy(),
+        8192,
+        "page 1",
+    )
+
+
+def test_what_the_stage_records_for_a_call_not_asked_is_what_the_verifier_accepts():
     from common.reconstruction_records import REQUEST_OVER_CAPACITY, _require_not_asked_evidence
 
-    # The roster's chair is configured; only its type is read here.
-    present = ChairIdentity.__new__(ChairIdentity)
-    context = SimpleNamespace(registry=SimpleNamespace(resolve=lambda _role: present))
-    payload = {
-        "reply_text": None,
-        "finish_reason": None,
-        "stop_reason": None,
-        "engine_call": None,
-        "failure": None,
-        # The shape the stage records a refusal in.
-        "capacity": {"capacity": {"fits": False}, "answer_reserve": None, "max_tokens": None},
-        "problems": [{"code": REQUEST_OVER_CAPACITY, "detail": "too large"}],
+    over = _refused_for_capacity()
+    assert [problem["code"] for problem in over["problems"]] == [REQUEST_OVER_CAPACITY]
+    assert over["capacity"]["capacity"]["fits"] is False
+    failed = _failed_call()
+    assert [problem["code"] for problem in failed["problems"]] == [CALL_FAILED]
+    context = _roster_context(present=True)
+    for asked in (over, failed):
+        _require_not_asked_evidence(context, _asked_payload(asked), "page 1")
+
+
+def test_a_row_that_cannot_measure_a_request_stops_the_stage_rather_than_recording_it():
+    from common.request_capacity import RequestCapacityRefusal
+
+    stage = load_stage("4b_coniector", "run")
+    chair = _live_chair(_Client(reply="unused"))
+    unmeasurable = SimpleNamespace(**{**vars(chair.row()), "max_model_len": None})
+    chair.row = lambda: unmeasurable
+    with pytest.raises(RequestCapacityRefusal, match="no positive max_model_len"):
+        stage._ask(chair, CALL, "the prompt", load_reconstruction_policy(), 8192, "page 1")
+
+
+@pytest.mark.parametrize(
+    "asked, change, present, refusal",
+    [
+        (
+            _refused_for_capacity,
+            {"capacity": None},
+            True,
+            "refused for capacity with no record that it did not fit",
+        ),
+        (_failed_call, {"failure": None}, True, "failed with no failure or admission recorded"),
+        (
+            _failed_call,
+            {
+                "failure": None,
+                "capacity": None,
+                "problems": [{"code": CHAIR_ABSENT, "detail": "x"}],
+            },
+            True,
+            "says whether its chair is absent against the roster",
+        ),
+        (
+            _failed_call,
+            {"failure": {"raw_response_ref": {"relative_path": "raw", "sha256": "e" * 64}}},
+            True,
+            "retained bytes that are not on disk as named",
+        ),
+        (_failed_call, {}, False, "says whether its chair is absent against the roster"),
+    ],
+    ids=["capacity-unrecorded", "failure-unrecorded", "absent-against-roster", "bytes", "roster"],
+)
+def test_a_call_not_asked_without_its_evidence_is_refused(asked, change, present, refusal):
+    from common.contracts.errors import FatalAccounting
+    from common.reconstruction_records import _require_not_asked_evidence
+
+    payload = {**_asked_payload(asked()), **change}
+    with pytest.raises(FatalAccounting, match=refusal):
+        _require_not_asked_evidence(_roster_context(present=present), payload, "page 1")
+
+
+# --- a retained call asked otherwise is not adopted ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda payload: payload["call"].update(context=["p2:1"]),
+        lambda payload: payload.update(prompt_sha256="0" * 64),
+        lambda payload: payload.update(serving_mode="live"),
+        lambda payload: payload["maker"]["resolved_revision"].update(value="0" * 64),
+    ],
+    ids=["call", "prompt", "serving-mode", "maker"],
+)
+def test_a_retained_call_asked_otherwise_is_not_adopted(unconsecutive, tmp_path, change):
+    from conftest import _stage_records, _write_record
+
+    source, options = unconsecutive
+    root = tmp_path / "runs"
+    shutil.copytree(source, root)
+    stage = root / RUN_ID / "4b_coniector"
+    # The stage is resumed after its calls were sealed and before anything else
+    # was: its reconstructions and seal are gone, its calls retained.
+    for kind in (RECONSTRUCTION_KIND, "stage-seal"):
+        shutil.rmtree(stage / "artifacts" / kind)
+    (stage / "manifest.json").unlink()
+    [(path, record)] = [
+        (path, record)
+        for path, record in _stage_records(root, RUN_ID, "4b_coniector", CALL_KIND)
+        if record["payload"]["page_ordinal"] == 1
+    ]
+    change(record["payload"])
+    _write_record(path, record)
+    result = run_stage(root, RUN_ID, "happy", CONIECTOR_PROGRAM, **options)
+    assert result.returncode != 0
+    assert "retained reconstruction call was asked from another plan" in result.stderr, (
+        result.stderr
+    )
+    assert "is not adopted" in result.stderr
+
+
+# --- a live chair, end to end over the fake served chair -----------------------------------
+
+TIER = "generic-48gb"
+
+
+def _vllm_row(identity, tier: str) -> dict:
+    """A proven `kind = "vllm"` row for the reconstructor, in the live seam's shape
+    (`pipeline/test_live_reading_seam_e2e.py`); every figure is a test value."""
+    from operations.serving.config import chair_preflight_identity_digest, profile_preflight_digest
+
+    row = {
+        "kind": "vllm",
+        "recipe": identity.serving_recipe,
+        "chair": "reconstructor",
+        "tier": tier,
+        "host": "127.0.0.1",
+        "port": 8310,
+        "served_model_id": "served-reconstructor",
+        "dtype": "bfloat16",
+        "seed": 7,
+        "required_packages": {"vllm": "0.test"},
+        "max_model_len": 16384,
+        "max_num_seqs": 1,
+        "max_num_batched_tokens": 256,
+        "gpu_memory_utilization": "0.85",
+        "min_pixels": 1,
+        "max_pixels": 1806336,
+        "patch_size": 16,
+        "merge_size": 2,
+        "enable_prefix_caching": True,
+        "enforce_eager": False,
+        "trust_remote_code": False,
+        "enable_tower_connector_lora": False,
+        "max_lora_rank": 16,
+        "generation_config": "vllm",
+        "preflight_state": "proven",
+        "startup_timeout_seconds": 3,
+        "poll_interval_seconds": 1,
+        "request_timeout_seconds": 30,
+        "readiness_probe": {
+            "kind": "chat-completions",
+            "request_json": '{"messages":[{"role":"user","content":"READY"}],"max_tokens":4}',
+        },
+        "preflight_identity_digest": chair_preflight_identity_digest(identity),
     }
-    _require_not_asked_evidence(context, payload, "page 1")
+    row["preflight_digest"] = profile_preflight_digest(row)
+    return row
+
+
+def _toml_profile(row: dict) -> str:
+    def value(item):
+        if isinstance(item, bool):
+            return "true" if item else "false"
+        if isinstance(item, int):
+            return str(item)
+        return f"'{item}'" if '"' in item else f'"{item}"'
+
+    lines = ["[[profiles]]"]
+    lines += [f"{key} = {value(item)}" for key, item in row.items() if not isinstance(item, dict)]
+    for name, table in ((key, item) for key, item in row.items() if isinstance(item, dict)):
+        lines.append(f"[profiles.{name}]")
+        lines += [f"{key} = {value(item)}" for key, item in table.items()]
+    return "\n".join(lines) + "\n"
+
+
+def _live_reconstructor_catalogue(catalogue: Path, models: Path) -> None:
+    """The page roster's catalogue with the reconstructor's fixture rows served live."""
+    from common.chairs.registry import ChairRegistry
+    from operations.serving.config import load_serving_recipes
+
+    identity = ChairRegistry.from_toml(str(models)).resolve("reconstructor")
+    text = catalogue.read_text(encoding="utf-8")
+    for tier in ("generic-24gb", "generic-48gb", "generic-80gb-plus"):
+        fixture = (
+            '[[profiles]]\nkind = "fixture"\nrecipe = "fake-reconstructor-v0"\n'
+            f'chair = "reconstructor"\ntier = "{tier}"\n'
+            "description = \"offline walking-skeleton fixture for the Coniector's reconstructor "
+            'chair"\n'
+        )
+        assert text.count(fixture) == 1, tier
+        text = text.replace(fixture, _toml_profile(_vllm_row(identity, tier)))
+    catalogue.write_text(text, encoding="utf-8")
+    load_serving_recipes(catalogue)
+
+
+def _declared_answers() -> list[str]:
+    import tomllib
+
+    rows = tomllib.loads(Path("proof/skeleton_fixture.toml").read_text(encoding="utf-8"))[
+        "reconstruction_answer"
+    ]
+    return [
+        row["answer"]
+        for ordinal in (1, 2)
+        for row in rows
+        if row["scenario"] == "happy"
+        and row["page_ordinal"] == ordinal
+        and row["pages_are_consecutive"] is False
+    ]
+
+
+@pytest.fixture(scope="module")
+def live(tmp_path_factory):
+    """The `unconsecutive` run with its reconstructor served live: a real ChairClient and
+    ServingManager over a scripted endpoint, the stage's own `main` in process."""
+    from conftest import page_roster_options
+    from operations.serving.assembly import retain_chair_bytes
+    from operations.serving.client import ChairClient
+    from operations.serving.config import ServingConfigInputs, load_serving_recipes
+    from operations.serving.fakes import FakeEndpoint, FakeLauncher, FakePackages, ScriptedAnswer
+    from operations.serving.manager import ServingManager, StageContextReceiptPublisher
+    from operations.serving.residency import FileResidencyLease
+
+    base = tmp_path_factory.mktemp("live")
+    roster = page_roster_options(base / "live-models")
+    _live_reconstructor_catalogue(roster["serving_recipes_config"], roster["models_config"])
+    root, options = build_page_tree(
+        base, "happy", reconstruction_config=_config(base / "config-r"), **roster
+    )
+    for program in AFTER_PERLECTOR[:2]:
+        result = run_stage(root, RUN_ID, "happy", program, **options)
+        assert result.returncode in (0, 3), f"{program}: {result.stderr}"
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    endpoint.script(
+        *(ScriptedAnswer(content=answer, finish_reason="stop") for answer in _declared_answers())
+    )
+
+    def factory(context, identity, tier, *, decoding_policy, decoding_config_sha256):
+        manager = ServingManager(
+            registry=context.registry,
+            recipes=load_serving_recipes(context.args.serving_recipes_config),
+            config_inputs=ServingConfigInputs.from_record(dict(context.serving_config_inputs)),
+            launcher=FakeLauncher(endpoint),
+            http=endpoint,
+            receipt_publisher=StageContextReceiptPublisher(context),
+            log_root=base / "serving-logs",
+            package_inspector=FakePackages({"vllm": "0.test"}),
+            residency_lease=FileResidencyLease(base / "pod-gpu.lock"),
+            producer=CONIECTOR_PROGRAM,
+        )
+        return ChairClient(
+            manager=manager,
+            identity=identity,
+            tier=tier,
+            retain=lambda data: retain_chair_bytes(context, data),
+            decoding_config_sha256=decoding_config_sha256,
+            decoding_policy=decoding_policy,
+            read_receipt=context.tree.read_run_receipt,
+        )
+
+    stage = load_stage("4b_coniector", "run")
+    argv = [CONIECTOR_PROGRAM, "--run-root", str(root), "--run-id", RUN_ID, "--scenario", "happy"]
+    for name, value in {**options, "placement_tier": TIER}.items():
+        argv += [f"--{name.replace('_', '-')}", str(value)]
+    original = sys.argv
+    sys.argv = argv
+    try:
+        assert stage.main(serving_factory=factory) == EXIT_COMPLETE
+    finally:
+        sys.argv = original
+    assert len(endpoint.requests) == 2
+    return root, options
+
+
+def test_a_live_reconstruction_is_verified_against_the_request_its_engine_was_sent(live):
+    root, options = live
+    verified = _verified(root, options)
+    assert {call["serving_mode"] for call in verified["calls"].values()} == {"live"}
+    assert all(call["engine_call"] is not None for call in verified["calls"].values())
+    assert sorted(record["act_keys"][0] for record in verified["acts"].values()) == [
+        "p1:1",
+        "p1:2",
+        "p2:1",
+    ]
+    assert all(record["made"] for record in verified["acts"].values())
+
+
+def _forge_retained_request(payload: dict, root: Path) -> None:
+    """Rewrite the retained call record to name another request, as a forger would."""
+    from common.contracts.canonical import digest_bytes
+
+    reference = payload["engine_call"]["call_record_ref"]
+    record = json.loads((root / RUN_ID / reference["relative_path"]).read_bytes())
+    record["request_sha256"] = "0" * 64
+    data = json.dumps(record).encode("utf-8")
+    digest = digest_bytes(data)
+    path = root / RUN_ID / reference["relative_path"].replace(reference["sha256"], digest)
+    path.write_bytes(data)
+    payload["engine_call"]["call_record_ref"] = {
+        "relative_path": reference["relative_path"].replace(reference["sha256"], digest),
+        "sha256": digest,
+    }
+
+
+@pytest.mark.parametrize(
+    "change, refusal",
+    [
+        (_forge_retained_request, "answered for a request other than this prompt"),
+        (
+            lambda payload, _root: payload["capacity"].update(
+                max_tokens=payload["capacity"]["max_tokens"] - 1
+            ),
+            "answered for a request other than this prompt",
+        ),
+        (
+            lambda payload, _root: payload.update(
+                reply_text=payload["reply_text"].replace(
+                    '"reconstruction":"gamma"', '"reconstruction":"delta"'
+                )
+            ),
+            "holds a reply other than the one its engine returned",
+        ),
+        (
+            lambda payload, _root: payload.update(serving_mode="fixture"),
+            "is a fixture reply carrying live call evidence",
+        ),
+    ],
+    ids=["request-sha256", "request-cap", "reply", "fixture-with-engine-call"],
+)
+def test_the_recompute_refuses_a_forged_live_call(live, tmp_path, change, refusal):
+    from common.contracts.errors import FatalAccounting
+
+    source, options = live
+    root = tmp_path / "runs"
+    shutil.copytree(source, root)
+    _tamper(root, CALL_KIND, 1, lambda payload: change(payload, root))
+    with pytest.raises(FatalAccounting, match=refusal):
+        _verified(root, options)

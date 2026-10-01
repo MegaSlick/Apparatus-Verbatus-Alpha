@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -193,3 +194,59 @@ def test_a_join_applies_to_its_pieces_joined_by_one_newline_or_says_it_does_not_
     (join,) = _derive(JOIN_CALL, apart)
     assert join["made"] is False and join["continues"] is False
     assert [reason["code"] for reason in join["not_made"]] == [DOES_NOT_CONTINUE]
+
+
+def test_a_canary_page_is_never_an_entry_so_never_a_subject_context_or_chain_piece():
+    from types import SimpleNamespace
+
+    from common.reconstruction_records import diplomatic_entries, plan_payload
+
+    canary, real = "a" * 64, "b" * 64
+
+    def row(ordinal, n, *, from_previous=False, to_next=False):
+        return {
+            "class": "reading",
+            "act_key": f"p{ordinal}:{n}",
+            "act_id": f"act_{ordinal}_{n}",
+            "page_id": f"page_{ordinal}",
+            "page_ordinal": ordinal,
+            "n": n,
+            "kind": "act",
+            "continues_from_previous_page": from_previous,
+            "continues_to_next_page": to_next,
+            "perlectio_ref": {"relative_path": f"perlectio-{ordinal}-{n}", "sha256": "c" * 64},
+        }
+
+    def read(reference, **_named):
+        assert "perlectio-2-" not in reference["relative_path"], "a canary reading was read"
+        assessment = {"state": "not-assessed"}
+        return {"payload": {"text": "a reading", "uncertainty_assessment": assessment}}
+
+    context = SimpleNamespace(
+        run={
+            "sealed_config_digests": {"canary-ledger": canary},
+            "source_manifest": [
+                {"ordinal": 1, "ledger_sha256": real},
+                {"ordinal": 2, "ledger_sha256": canary},
+                {"ordinal": 3, "ledger_sha256": real},
+            ],
+        },
+        tree=SimpleNamespace(read_artifact_reference=read),
+    )
+    rows = [
+        row(1, 1, to_next=True),
+        row(2, 1, from_previous=True, to_next=True),
+        row(3, 1, from_previous=True),
+    ]
+    entries, shown = diplomatic_entries(context, rows)
+    assert sorted(shown) == ["p1:1", "p3:1"]
+    assert [entry["page_ordinal"] for entry in entries] == [1, 3]
+    policy = replace(load_reconstruction_policy(), mode="on", pages_are_consecutive=True)
+    plan = plan_payload(policy, "page", entries)
+    assert [call["page_ordinal"] for call in plan["calls"]] == [1, 3]
+    named = {
+        key
+        for call in plan["calls"]
+        for key in [*call["subjects"], *call["context"], *sum(call["chains"], [])]
+    }
+    assert named == {"p1:1", "p3:1"}

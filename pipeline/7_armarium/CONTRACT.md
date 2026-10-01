@@ -209,7 +209,10 @@ projection configuration. The bundle may contain these plainly specified formats
   reconstruction or flag enters the act count, the ledger, review items, the
   database, a category or the aggregate. The clean verifier re-applies every made
   row's departures to its pieces, holds each piece to its act's literal in the same
-  format, and requires both formats, when selected, to show the same rows. In the
+  format, and requires every selected format that shows reconstructions to show
+  exactly the rows `sources.json` names under `reconstructions` (each row's
+  `act_ids`; the key is absent when none is shown), so a row dropped from one format
+  is refused. In the
   text bundle each row must sit beneath its own act's section (a join in its own
   section) in every folder that sections that act. A reconstruction whose act is not
   delivered, or a join with a piece not delivered, is not shown at all: the
