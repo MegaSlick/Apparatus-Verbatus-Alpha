@@ -126,14 +126,16 @@ def _render_rows(width: int, height: int, acts: tuple[Act, ...]) -> list[bytearr
 
     Each act is filled with alternating ink/background pixel runs rather than
     a solid block, so a crop of the act is distinguishable pixel-by-pixel
-    from a crop of flat fill of the same ink value — this is the "simple
-    pixel run standing in for a line of writing" called for by the spec.
+    from a crop of flat fill of the same ink value: a simple pixel run
+    standing in for a line of writing.
     """
     rows = [bytearray([_BACKGROUND]) * width for _ in range(height)]
     for act in acts:
         bounds = act["bounds"]
         ink = act["ink"]
         x0, y0, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
+        if w <= 0 or h <= 0:
+            raise ValueError(f"act bounds {bounds} have no area")
         if x0 < 0 or y0 < 0 or x0 + w > width or y0 + h > height:
             raise ValueError(f"act bounds {bounds} fall outside page {width}x{height}")
         for row_offset in range(h):

@@ -45,8 +45,8 @@ retained *catalog*, but by `validate-corpus` rather than here — see Custody.
 that selection unchanged; it does not choose a replacement page.  The persisted
 sample's `set` is always the page-derived partition — calibration/locked-acceptance
 disjointness is enforced by construction, never by policing a human's claim — but
-B1 picks are made in week one, before the R0 frame or its seed exist, so the stated
-set can honestly disagree with it. That disagreement is never silently resolved
+a manual pick may predate the R0 frame and its seed, so the stated set can honestly
+disagree with it. That disagreement is never silently resolved
 either way: it is carried unchanged as `claimed_set` alongside the true `set`, so a
 predates-the-seed pick is ingested, not refused and sent back for a re-pick.
 Automatically sampled records carry `claimed_set: null` (no human claim was made).
@@ -54,9 +54,9 @@ Before publishing a manual pick, the CLI reconciles it with the gold records
 already beside its output path. One hand-picked page is picked once: a second pick
 of the same page is refused before it can be counted twice, whether it restates the
 stratum or only the wording of `selection_basis`.  A pick of a page the seed also
-drew is *not* refused — the seed can honestly land on a page he chose in week one,
-and refusing that would strand a real corpus with no remedy short of discarding his
-recorded provenance — but that page is still one act's worth of custody, not two.
+drew is *not* refused — the seed can honestly land on a page picked by hand before
+it existed, and refusing that would strand a real corpus with no remedy short of
+discarding the picker's recorded provenance — but that page is still one act's worth of custody, not two.
 The collection rule is symmetric: one page has at most one distinct sample record
 under each method, including a legacy seeded corpus whose draw record is absent;
 the manual and seeded records may coexist because they preserve different true
@@ -66,9 +66,9 @@ selection provenance.
 carrying a sample digest, an R0 act identity, and a protocol digest.
 
 Every act identity in this module — instrument membership, transcription, and
-adjudication — is checked for shape only (well-formed and `act_`-prefixed); R7a has
-no act-producing stage before it in the build order, so it cannot check that the
-act actually exists or rederive its page binding. Collection validation can prove
+adjudication — is checked for shape only (well-formed and `act_`-prefixed): gold
+consumes no Designator output, so it cannot check that the act actually exists or
+rederive its page binding. Collection validation can prove
 the narrower fact available here: every use of one act identity resolves through
 its sample to the same `{ordinal, sha256}` page. It cannot prove that the first such
 page is the page a later Designator authority would bind.
@@ -118,7 +118,7 @@ make the measurement circular.
 third-party expert-annotated corpus and gives it its own `reference.py` record
 family — one unnamed expert reading, no adjudication, `provenance:
 "third-party-expert-annotation"` — because it cannot satisfy this module's
-two-reading custody shape.  `_person` (`gold/core.py:795-811`) catches a
+two-reading custody shape.  `_person` in `gold/core.py` catches a
 pipeline identity, but it would not catch an invented Teklia annotator name —
 nothing here can, which is why the boundary has to be the record family
 rather than a name check.  `adjudicate` derives `outcome` from two
@@ -132,9 +132,8 @@ neither directory is the right home for the other's.
 
 Whether RecordGold stands in for, or beside, the Quebec gold corpus for the
 honestly-measured acceptance claim is a separate question, and it is the project
-lead's, not this module's (`operations/corpus/README.md`'s "The acceptance
-corpus is the project lead's call" gets this right; a direction on
-RecordGold reads the other way and is not yet reconciled with it).  If
+lead's, not this module's; `operations/corpus/README.md` sets out who chooses the
+acceptance corpus and why RecordGold is built so that choice needs no migration.  If
 RecordGold is ruled in for that claim, the route is a named substitution
 recorded where the acceptance corpus is chosen, never a forged entry through
 this module's custody chain.
@@ -145,11 +144,14 @@ The layout schema embeds its source `gold-page-sample.v2`, whose page carries
 positive pixel `width` and `height`, and has closed
 `act`, `non-act-text`, `occlusion`, and `true-blank` rectangle kinds.  The padding
 schema also embeds its source sample and carries only rectangles plus the required
-`calibrated_for_this_corpus` flag.  `validate` checks all schemas and self-hashes;
+`calibrated_for_this_corpus` flag.  `validate` checks all gold record schemas and
+self-hashes;
 for a sample, layout, or padding record, pass `--run` to prove the derived page and
 frame facts against the R0 authority again (an embedded sample is otherwise only
 checked for internal self-consistency, not that it names a real run).
-`bind-instrument` accepts the same optional `--run`.
+`bind-instrument` accepts the same optional `--run`. A transcription, adjudication, or
+instrument membership names its sample only by digest, so `validate --run` refuses
+it; `validate-corpus --run` resolves it through its corpus instead.
 
 The dimension-bearing sample, draw, manual-pick, layout, and padding schemas are
 version 2. Version 1 did not carry a page size and therefore cannot honestly mean
@@ -202,7 +204,11 @@ two transcription records by one transcriber or two adjudications establishing d
 for one act are refused instead of leaving a consumer to choose by file order. An
 act with any stored transcription must have its adjudication too, so deleting the
 established record leaves a named partial chain rather than a corpus that still
-passes. Conflicting page-layout or padding annotations for one ordinal/digest pair
+passes. An act has at most two transcribers, because an adjudication reconciles exactly
+two and records are immutable: a third transcription is refused before it is
+published, since it would leave the act unclosable. Transcriber and adjudicator names
+must be in Unicode NFC and are compared ignoring case, so one person spelled two ways
+is never counted as two independent readers. Conflicting page-layout or padding annotations for one ordinal/digest pair
 are likewise refused; the same annotation facts may be carried through both a
 manual and a seeded sample because both provenance records are true.
 Custody is counted **per act**, not per act per sample record: an act identity binds

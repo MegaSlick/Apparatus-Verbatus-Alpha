@@ -371,3 +371,73 @@ def read_doubt_marks(raw: str) -> tuple[str, dict[str, Any]]:
         "gaps": gaps,
         "problem": None,
     }
+
+
+def render_doubt_marks(clean_text: str, uncertainty: dict[str, Any]) -> str:
+    """The marked reading `read_doubt_marks` splits into `clean_text` and `uncertainty`.
+
+    Each uncertain span becomes `[[reading|other|...]]` and each gap `[[?]]`; a gap at
+    the offset where a span starts is written before it. A report that is not
+    `assessed` carries the reading exactly as returned, so its text is the marked
+    reading. A gap in a reading with no text is not recorded by `read_doubt_marks`,
+    so there is nothing to render back for it.
+    """
+    if uncertainty["state"] != ASSESSMENT_ASSESSED:
+        return clean_text
+    validate_assessment(uncertainty, clean_text)
+    # (offset, 0 for a gap or 1 for a span, tiebreak, mark): gaps first at a shared offset.
+    inserts: list[tuple[int, int, int, str]] = [
+        (gap["start"], 0, index, ILLEGIBLE_MARK) for index, gap in enumerate(uncertainty["gaps"])
+    ]
+    for span in uncertainty["uncertain_spans"]:
+        readings = [clean_text[span["start"] : span["end"]], *span["alternatives"]]
+        inserts.append((span["start"], 1, span["end"], "[[" + "|".join(readings) + "]]"))
+    pieces: list[str] = []
+    cursor = 0
+    for start, kind, end, mark in sorted(inserts):
+        if start < cursor:
+            raise SchemaRefusal("the doubt report's marks overlap, so no marked reading holds them")
+        pieces.append(clean_text[cursor:start])
+        pieces.append(mark)
+        cursor = end if kind else start
+    pieces.append(clean_text[cursor:])
+    rendered = "".join(pieces)
+    if read_doubt_marks(rendered) != (clean_text, uncertainty):
+        raise SchemaRefusal("the doubt report cannot be written as marks that read back to it")
+    return rendered
+
+
+def doubt_mark_offsets(raw: str) -> tuple[list[int | None], list[int | None]]:
+    """`(raw_to_clean, clean_to_raw)`: where each offset of a marked reading lands.
+
+    `raw_to_clean[i]` is the offset in the text `read_doubt_marks(raw)` returns that
+    raw offset `i` stands at, and `None` strictly inside a mark, where no clean offset
+    corresponds exactly. A mark's two ends map to the ends of its reading, so `[[?]]`
+    maps to one zero-width offset. `clean_to_raw[c]` is the first raw offset that maps
+    to `c`, `None` inside the reading of a mark. A reading whose marks do not parse is
+    published as returned, so both maps are the identity.
+    """
+    text, assessment = read_doubt_marks(raw)
+    if assessment["state"] != ASSESSMENT_ASSESSED:
+        identity: list[int | None] = list(range(len(raw) + 1))
+        return identity, list(identity)
+    raw_to_clean: list[int | None] = []
+    length = cursor = 0
+    for match in _MARK.finditer(raw):
+        for _offset in range(cursor, match.start()):
+            raw_to_clean.append(length)
+            length += 1
+        raw_to_clean.append(length)
+        raw_to_clean.extend([None] * (match.end() - match.start() - 1))
+        body = match.group(1)
+        length += 0 if body == "?" else len(body.split("|")[0])
+        cursor = match.end()
+    for _offset in range(cursor, len(raw)):
+        raw_to_clean.append(length)
+        length += 1
+    raw_to_clean.append(length)
+    clean_to_raw: list[int | None] = [None] * (len(text) + 1)
+    for index in reversed(range(len(raw_to_clean))):
+        if (clean := raw_to_clean[index]) is not None:
+            clean_to_raw[clean] = index
+    return raw_to_clean, clean_to_raw

@@ -45,8 +45,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "pipeline"
 
-# Every directory pipeline/README.md's rule binds: the seven numbered stages,
-# plus the orchestrator, which is stage-neutral but held to the identical
+# Every directory pipeline/README.md's rule binds: the numbered stages, the
+# Coniector's side branch among them, plus the orchestrator, which is stage-neutral but held to the identical
 # "imports only common/ and its own files" rule.
 STAGE_DIRECTORIES = (
     "1_exemplar",
@@ -54,6 +54,7 @@ STAGE_DIRECTORIES = (
     "2_designator",
     "3_attestatores",
     "4_perlector",
+    "4b_coniector",
     "5_recensor",
     "6_archetypus",
     "7_armarium",

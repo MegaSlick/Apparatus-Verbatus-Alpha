@@ -43,9 +43,6 @@ class FakeCandidate:
             text=reply.text,
             elapsed_ms=reply.elapsed_ms,
             cost_usd=reply.cost_usd,
-            # `is None`, not `or`: an override of `""` is falsy, so `or` handed
-            # back the correct digest and a test written to prove the runner
-            # refuses a blank observed receipt was proving the opposite.
             observed_prompt_sha256=(
                 request.prompt_format_sha256
                 if reply.prompt_digest_override is None

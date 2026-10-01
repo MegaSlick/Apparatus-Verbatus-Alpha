@@ -11,7 +11,9 @@ It establishes nothing and reads nothing except the outcome bookkeeping it needs
 sequence and to checkpoint. Its three jobs:
 
   Sequence.   Door, Exemplar, Ink Map, Designator, Attestatores, Perlector,
-              Recensor, Archetypus, Armarium, in that order.
+              Recensor, Archetypus, Coniector, Armarium, in that order. The
+              Coniector reads the Perlector's readings; only the Armarium reads
+              what it writes.
   Checkpoint. After every stage invocation, the run-level
               hard-failure cap (`common/hard_failure.py`, which owns the tally and
               the reasoning behind it) is recomputed. Two hard failures is an early
@@ -45,7 +47,7 @@ from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa
 from common.background import DEFAULT_INK_MAP_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
-from common.contracts.stages import ATTESTATORES, INK_MAP  # noqa: E402
+from common.contracts.stages import ATTESTATORES, CONIECTOR, INK_MAP  # noqa: E402
 from common.credentials import looks_like_credential_env  # noqa: E402
 from common.hard_failure import (  # noqa: E402
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
@@ -53,6 +55,7 @@ from common.hard_failure import (  # noqa: E402
     tally_hard_failures,
 )
 from common.page_accounting import DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH  # noqa: E402
+from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH  # noqa: E402
 from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -91,6 +94,7 @@ SEQUENCE = (
     ("perlector", "pipeline/4_perlector/run.py"),
     ("recensor", "pipeline/5_recensor/run.py"),
     ("archetypus", "pipeline/6_archetypus/run.py"),
+    (CONIECTOR, "pipeline/4b_coniector/run.py"),
     ("armarium", "pipeline/7_armarium/run.py"),
 )
 
@@ -375,6 +379,7 @@ def invoke(program: str, args: argparse.Namespace) -> int:
                 ("--designator-geometry-config", args.designator_geometry_config),
                 ("--alignment-config", args.alignment_config),
                 ("--page-accounting-config", args.page_accounting_config),
+                ("--reconstruction-config", args.reconstruction_config),
                 ("--ink-map-config", args.ink_map_config),
                 ("--formats-config", args.formats_config),
                 ("--recovery-config", args.recovery_config),
@@ -691,6 +696,12 @@ def main() -> int:
         "--page-accounting-config",
         default=str(DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH),
         help="the sealed thresholds of the check that a page reading missed nothing",
+    )
+    parser.add_argument(
+        "--reconstruction-config",
+        default=str(DEFAULT_RECONSTRUCTION_CONFIG_PATH),
+        help="the sealed Coniector switches: whether its chair runs, and whether the pages "
+        "are consecutive leaves of one register",
     )
     parser.add_argument(
         "--formats-config",

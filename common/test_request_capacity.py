@@ -27,6 +27,7 @@ from common.request_capacity import (
     PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS,
     PERLECTOR_MEASURED_TOKENIZER,
     PROMPT_TOKENS_ADMITTING_BASES,
+    PROMPT_TOKENS_ALL_TEXT_PER_BYTE,
     PROMPT_TOKENS_MEASURED_CONSTANT,
     PROMPT_TOKENS_MEASURED_FLOOR,
     PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
@@ -515,9 +516,11 @@ def test_the_sealed_rate_is_above_the_maximum_ratio_that_was_measured():
 
 
 def test_only_a_count_or_an_upper_bound_admits():
+    # One token per byte bounds the Coniector's all-text request from above.
     assert PROMPT_TOKENS_ADMITTING_BASES == {
         PROMPT_TOKENS_MEASURED_CONSTANT,
         PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED,
+        PROMPT_TOKENS_ALL_TEXT_PER_BYTE,
     }
     assert PROMPT_TOKENS_MEASURED_FLOOR not in PROMPT_TOKENS_ADMITTING_BASES
 
@@ -588,7 +591,13 @@ def test_every_configured_real_chair_that_sends_a_request_carries_a_measurement(
     configured = {
         chair for chair, identity in roster.items() if isinstance(identity, ChairIdentity)
     }
-    measured = set(MEASURED_PROMPT_TOKENS) | {"perlector", "secondary_proposer", "designator_surya"}
+    # The reconstructor's text-only prompt is charged per byte, never measured.
+    measured = set(MEASURED_PROMPT_TOKENS) | {
+        "perlector",
+        "reconstructor",
+        "secondary_proposer",
+        "designator_surya",
+    }
     assert configured == measured
 
 
@@ -643,3 +652,64 @@ def test_an_exact_half_rounds_to_even_exactly_as_the_library_does(
         )
         == expected_tokens
     )
+
+
+# --- the Coniector's text-only request ---------------------------------------------------
+
+
+def test_a_text_only_prompt_is_charged_every_byte_and_one_turn():
+    from common.request_capacity import (
+        PROMPT_TOKENS_ALL_TEXT_PER_BYTE,
+        TEXT_TURN_OVERHEAD_TOKENS,
+        all_text_prompt_bound,
+    )
+
+    assert all_text_prompt_bound("été") == (
+        TEXT_TURN_OVERHEAD_TOKENS + len("été".encode("utf-8")),
+        PROMPT_TOKENS_ALL_TEXT_PER_BYTE,
+    )
+
+
+def test_the_reconstruction_answer_reserve_grows_with_the_acts_and_stops_at_the_cap():
+    from common.request_capacity import reconstruction_answer_bound
+
+    bounds = dict(max_departures_per_act=5, max_departure_characters=40, max_reason_characters=160)
+    one, clamped = reconstruction_answer_bound(acts=1, joins=0, answer_max_tokens=10**6, **bounds)
+    two, _ = reconstruction_answer_bound(acts=2, joins=0, answer_max_tokens=10**6, **bounds)
+    assert not clamped and two > one
+    assert reconstruction_answer_bound(acts=40, joins=2, answer_max_tokens=8192, **bounds) == (
+        8192,
+        True,
+    )
+
+
+def test_a_reconstruction_request_is_admitted_with_the_context_it_leaves_or_refused_whole():
+    from types import SimpleNamespace
+
+    from common.reconstruction import load_reconstruction_policy
+    from common.request_capacity import (
+        RequestCapacityRefusal,
+        reconstruction_request_capacity,
+    )
+
+    row = SimpleNamespace(
+        recipe="r",
+        chair="reconstructor",
+        tier="t",
+        max_model_len=10_000,
+        min_pixels=65536,
+        max_pixels=5299200,
+        patch_size=16,
+        merge_size=2,
+    )
+    policy = load_reconstruction_policy()
+    admitted = reconstruction_request_capacity(
+        row, prompt_text="x" * 1000, acts=1, joins=0, policy=policy, answer_max_tokens=8192
+    )
+    assert admitted["capacity"]["image_prompt_tokens"] == 0
+    assert admitted["max_tokens"] == min(8192, 10_000 - admitted["capacity"]["prompt_tokens"])
+    with pytest.raises(RequestCapacityRefusal) as refused:
+        reconstruction_request_capacity(
+            row, prompt_text="x" * 9_999, acts=1, joins=0, policy=policy, answer_max_tokens=8192
+        )
+    assert refused.value.capacity["fits"] is False

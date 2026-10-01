@@ -243,9 +243,18 @@ class _BoundServingReader:
             raise ContractError(str(error)) from error
         return result.outputs[0], result.finish_reasons[0]
 
-    def request_bytes(self, payload: Mapping[str, Any], *, model_id: str, seed: Any) -> bytes:
+    def request_bytes(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        model_id: str,
+        seed: Any,
+        sampling: Mapping[str, Any] | None = None,
+    ) -> bytes:
         try:
-            return request_body(payload, model_id=model_id, seed=seed, deterministic=False)
+            return request_body(
+                payload, model_id=model_id, seed=seed, deterministic=False, sampling=sampling
+            )
         except ServingError as error:
             raise ContractError(str(error)) from error
 

@@ -22,6 +22,7 @@ makes `import 4_perlector` invalid — a dynamic import would still cross.
 | `credentials.py` | one reading of "this looks like a secret": the name markers, provider prefixes and the value shape test every credential screen shares, operational and pipeline alike |
 | `armarium_formats.py` | the sealed Armarium projection choices — the door binds them into the run, the Armarium reads them back |
 | `page_path.py` | the Perlector's page path as derived data: each page's feed (`page_feed_of`), an answer's problems, each entry's plan and holds, and every input the page accounting measures. Stage 4 publishes from it; the page-read denominator recomputes stage 4's records with it |
+| `page_reask.py` | the one plan of a page's re-ask: which ids a page reading left unaccounted for that it may be asked about once more, and what the re-ask shows beyond the first request. Stage 4 plans from it, and any reader that counts a page can derive the same plan from the sealed records |
 | `dissent.py` | where a reading departs from each witness that reported, aligned under a clock or, for a reader checking a sealed record, to its end |
 | `page_feed.py`, `page_prompt.py`, `page_overlay.py`, `page_render.py` | what one whole-page reading is shown: the feed and its sealed `[feed]` switches, the prompt rendered from it, the id overlay drawn on the page render, and the page render itself. Stage 4 builds them; the page-read denominator builds a feed again to prove the sealed one |
 | `page_witness_units.py` | each witness's page broken into its own units, re-derived from the Testimonium's retained bytes: what the page feed shows and the page accounting measures |
@@ -47,36 +48,50 @@ verified stage seal.
 
 `page_readings` has one row per sealed Exemplar page, by ordinal
 (`PAGE_READING_ROW_FIELDS`): `{page_id, page_ordinal, parse_state, disposition,
-finish_reason, reading_ref, feed_ref, accounting_ref, entry_count}`. Each sealed
-page must have exactly one `page-reading`, at attempt `page-read:1`, and its
-`page-accounting`; a sealed page with none is `FatalAccounting`, never zero acts.
-A later attempt is refused until its place is designed. `entry_count` is the
-answer's entries, `act` and `other` alike, `None` when the answer was not read.
-Every submitted ordinal must have an Exemplar page.
+finish_reason, reading_ref, feed_ref, accounting_ref, reask_ref,
+trigger_accounting_ref, entry_count}`. Each sealed page must have its first
+`page-reading` (attempt `page-read:1`) and that reading's `page-accounting`; a
+sealed page with none is `FatalAccounting`, never zero acts. The page's re-ask
+(`page-read:2`, `pipeline/4_perlector/CONTRACT.md`, "The re-ask") and the
+accounting of both readings exist exactly when `page_reask.reask_plan`, run
+again over the verified first reading and accounting under the sealed
+`page_level_reread`, names ids. Each kind's attempts must run 1..N without a
+gap (`attempt_ordinals`, the check `latest_attempt` makes), and nothing
+chooses the latest: a stray, missing or third attempt is `FatalAccounting`.
+`parse_state`, `disposition`, `finish_reason` and `reading_ref` are the first
+reading's; `accounting_ref` is the page's last accounting (the re-ask's on a
+re-asked page); `reask_ref` and `trigger_accounting_ref` name the re-ask and
+the first accounting that planned it, both `None` on a page not re-asked.
+`entry_count` is the entries the last accounting counts, `act` and `other`
+alike, `None` when the first answer was not read. Every submitted ordinal
+must have an Exemplar page.
 
 `reading_acts` has one closed row (`READING_ACT_FIELDS`) per unit, in page order:
 
 | field | value |
 |---|---|
 | `act_id` | the act identity (`contracts/identities.py`); `None` for `page-refused` |
-| `act_key` | `p<ordinal>:<n>`, or `p<ordinal>:unread` / `:blank` / `:refused` |
+| `act_key` | `p<ordinal>:<n>` with the accounting's `n`, or `p<ordinal>:unread` / `:blank` / `:refused` |
 | `page_id`, `page_ordinal` | the page |
-| `n` | the entry's number in the answer; `None` for a page row |
+| `n` | the entry's number in the page's last accounting: its number in the first answer, or `k + j` for the re-ask's entry `j` after the first answer's `k`; `None` for a page row |
+| `reading_attempt`, `reading_n` | the reading the entry came from (1, or 2 for the re-ask) and its number there; `None` for a page row |
 | `kind` | `act` or `other` as the answer gave it; `act` for `page-unread` and `page-blank`, `None` for `page-refused` |
 | `class` | `reading`, `reading-unplaced`, `page-unread`, `page-blank` or `page-refused` |
 | `disposition` | `read` only when nothing holds the unit, else `held`; `refused` for `page-refused` |
 | `region_ref` | the entry's `act-region`; `None` for a page row |
-| `reading_ref` | the page's `page-reading` (a refused page's `not-run` reading) |
-| `accounting_ref` | the page's `page-accounting`; `None` for `page-refused` |
+| `reading_ref` | the entry's own `page-reading` (the re-ask's for a recovered entry); for a page row the first reading (a refused page's `not-run` reading) |
+| `accounting_ref` | the page's last `page-accounting`; `None` for `page-refused` |
 | `perlectio_ref` | the entry's `perlectio.v3`; `None` for a page row |
 | `hold_codes` | sorted: the recomputed page accounting's `holds`, the entry's own holds, and the page row's hold |
 | `continues_from_previous_page`, `continues_to_next_page` | the answer's flags; `None` for a page row |
 
-Every submitted page contributes at least one row. A page whose reading is not a
-parsed, valid answer is one `page-unread` row (held: `page-unread`, the reading's
-problem codes and the page's holds). A read answer with no entry is one
-`page-blank` row, held (`page-blank-unconfirmed`) until the Recensor confirms the
-page blank. Both bind the sealed page rectangle. A read
+Every submitted page contributes at least one row. A page whose first reading is
+not a parsed, valid answer is one `page-unread` row (held: `page-unread`, the
+reading's problem codes and the page's holds); the re-ask never changes that,
+since only a read first answer is re-asked. A read first answer whose readings
+count no entry -- none of its own and none from a re-ask the accounting counts
+-- is one `page-blank` row, held (`page-blank-unconfirmed`) until the Recensor
+confirms the page blank. Both bind the sealed page rectangle. A read
 answer whose entries are all `other` keeps one row per entry, each also held
 (`no-act-on-page-unconfirmed`) until the Recensor confirms the page holds no
 act. A page the Exemplar refused is one `page-refused` row: the Door's refusal
@@ -85,7 +100,9 @@ the classes that are), proven from its one `not-run` reading (attempt
 `page-read:1`, problem `page-not-sealed`, the Exemplar's refused page its only
 input), with no accounting or act record naming the page.
 
-The Recensor's v4 receipt (`recensor_receipt.py`) counts these units. A held
+The Recensor's v5 receipt (`recensor_receipt.py`; v4 is still read) counts
+these units, and binds each page's first reading, re-ask and last accounting
+with what the re-ask did. A held
 unit whose review is completed with a named `release_reason` is resolved and
 adds no reason; a held unit with no completed review keeps the receipt
 `partial`. A run whose genuinely blank page the Recensor confirmed can
@@ -110,19 +127,32 @@ writer and the counter cannot read a page two ways:
   only that, with no call and no answer. The disposition is `read` exactly when
   the answer parsed and nothing holds it; a problem without a non-empty string
   code is refused;
+- the re-ask: its `reask` must be `page_path.reask_record` over the recomputed
+  plan, the first reading's entries (`page_reask.render_reask`) and the re-ask
+  prompt builder, bound to the first reading and accounting; its reply is read
+  again against the named ids (a fixture run's from its `[[page_reask_answer]]`
+  row), and its request digest, capacity (`page_path.reask_request_capacity`)
+  and engine call are the re-ask's;
 - the accounting: measured again by `page_accounting.page_accounting` from the
   same sealed inputs stage 4 measured it from (`page_path.accounting_inputs`:
   the feed, every current page Testimonium of the page shown or hidden, the
   Designator's Surya and detector records, the Ink Map's runs, the entries'
   truncations, under the sealed policy); its payload and inputs must be the
   sealed ones exactly, and every hold code and disposition the rows carry is
-  this recomputed verdict;
-- each entry (`page_path.entry_plans`): cited ids re-expanded, its region
+  this recomputed verdict. A re-asked page's two accountings are both
+  measured again, the combined one restating the first one's entries
+  exactly, and its entries must be exactly the ones the rows count
+  (`page_path.reask_act_plans`): the first reading's, then the re-ask's
+  only when the accounting counts it;
+- each entry (`page_path.entry_plans`, a re-ask's against its named ids and
+  numbered on after the first reading's): cited ids re-expanded, its region
   (`region_boxes_px`, the boxes every rule measures), union box and act id
   re-derived, text and doubt marks re-read, truncation re-classified,
   and its own holds recomputed. Its `act-region` and `perlectio` must match
-  the entry, name this reading, accounting and feed, carry the page's holds,
-  and number the entries `1..k` with no record beyond them; every field of the
+  the entry, name its own reading and the page's last accounting and feed,
+  carry the page's holds (a recovered entry's also `reading_attempt: 2` and
+  `reading_n`), and number the entries `1..k` with no record beyond them;
+  every field of the
   Perlectio but its dissent must be `page_path.expected_perlectio`'s, the
   function stage 4 publishes and adopts it by, and its dissent is computed
   again (`page_path.dissent_holds`) under the run's sealed `[dissent]
@@ -156,7 +186,9 @@ class, kind, page and records, held exactly when it names a hold code),
 `reviewed_rows` (every counted row, so not a refused page's),
 `require_establishable` (an accepted review stands over a `read` row, or over a
 row whose only hold is `no-act-on-page-unconfirmed` and whose review names it
-in its `release`), `continuation_links` (one per break, each inputting its named
+in its `release`), `page_breaks` and `continuation_links` over each page's
+first-reading `act` entries only, since a recovered entry's place in page order
+is not established (one per break, each inputting its named
 sides' readings), and the review's reason, coverage and notes.
 
 `page_testimonia.py` reads the page witnesses: the sealed page roster and its

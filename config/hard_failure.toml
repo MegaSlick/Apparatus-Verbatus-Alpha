@@ -52,8 +52,11 @@ threshold = 2
 # the read path": a page whose engine call failed (transport failure, endpoint
 # unavailable, an engine refusal or an unrecognised stop) is published as a
 # `page-reading` with outcome `failed` and parse state `call-failed`, its page
-# held for review as `page-unread`. A capacity refusal is not counted: like a
-# truncation, it is a page too large for the sealed row, not a broken run.
+# held for review as `page-unread`. A failed re-ask call is also a `failed`
+# `page-reading` and counts toward the cap, since a failing engine is the same
+# run trouble on either call; its page is not `page-unread` but stands on its
+# first reading, held under `reask-unread`. A capacity refusal is not counted:
+# like a truncation, it is a page too large for the sealed row, not a broken run.
 #
 # `(door, refused, reason="corrupt")` and `(door, refused, reason="unreadable")`
 # are ADDED. `pipeline/1_exemplar/admission.py`'s closed `RefusalReason`

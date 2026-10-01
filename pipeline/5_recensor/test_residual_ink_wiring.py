@@ -45,7 +45,7 @@ def _built_through_designator(tmp_path, scenario="happy"):
 @pytest.fixture(scope="module")
 def page_tree(tmp_path_factory) -> Path:
     """A `happy` run read by page through the Perlector; copy it before running a stage."""
-    root, options = build_page_tree(tmp_path_factory.mktemp("happy"), "happy")
+    root, options = build_page_tree(tmp_path_factory.mktemp("happy"), "happy", reask=None)
     assert not options
     return root
 

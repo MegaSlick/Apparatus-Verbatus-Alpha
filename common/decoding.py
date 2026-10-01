@@ -22,6 +22,8 @@ from common.contracts.serving import (
 from common.sealed_config import read_sealed_toml
 
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
+_PERLECTOR_BOUNDS = ("page_max_tokens",)
+_RECONSTRUCTOR_BOUNDS = ("answer_max_tokens",)
 # Every sampling field a chair's row may carry, each a top-level field of the
 # pinned vLLM 0.30.0 `ChatCompletionRequest`. Only the sealed table puts them on
 # the wire; a caller's request may not name them.
@@ -79,7 +81,9 @@ _VLLM_MAX_TEMP = 1e-2
 _VLLM_SAMPLING_EPS = 1e-5
 _VLLM_GREEDY_OVERRIDES: dict[str, int | float] = {"top_p": 1.0, "top_k": 0, "min_p": 0.0}
 _PROVENANCE_FIELDS = frozenset({"source", "revision", "verification"})
-READING_CHAIRS = frozenset({"attestator_1", "attestator_2", "attestator_3", "perlector"})
+READING_CHAIRS = frozenset(
+    {"attestator_1", "attestator_2", "attestator_3", "perlector", "reconstructor"}
+)
 # The chair Chandra fills. Chandra's own pipeline sends the pinned recipe's
 # temperature and top_p to a vLLM server and nothing else, so its row must be
 # the recipe's first request over vLLM's defaults, and cannot drift from it.
@@ -107,7 +111,7 @@ def _validate_decoding_policy(policy: Any) -> None:
     The exact, closed Chandra native inference recipe is required for Attestator 1.
     `chair_decoding` holds one row per reading chair with its makers' sampling
     values and where they were read. `perlector_generation` caps one whole-page
-    reading's output.
+    reading's output, and `reconstructor_generation` one Coniector answer.
     """
     if not isinstance(policy, dict):
         raise ContractError("decoding configuration is not a table")
@@ -118,35 +122,49 @@ def _validate_decoding_policy(policy: Any) -> None:
         "decoding.v3",
         "decoding.v4",
         "decoding.v5",
+        "decoding.v6",
     }:
         raise ContractError(f"sealed under {schema}, which this build no longer reads; re-run")
-    if schema != "decoding.v6":
+    if schema != "decoding.v7":
         raise ContractError("decoding configuration has an unsupported schema")
     expected_sections = {
         "schema",
         "chair_decoding",
         "perlector_generation",
+        "reconstructor_generation",
         "chandra_native_inference",
     }
     if set(policy) != expected_sections:
         raise ContractError("decoding configuration has the wrong closed schema")
-    generation = policy["perlector_generation"]
-    if (
-        not isinstance(generation, dict)
-        or set(generation) != {"page_max_tokens"}
-        or not isinstance(generation["page_max_tokens"], int)
-        or isinstance(generation["page_max_tokens"], bool)
-        or generation["page_max_tokens"] < 1
-    ):
-        raise ContractError(
-            "decoding perlector_generation must declare a positive integer output bound "
-            "for a whole-page reading"
-        )
+    _require_output_bounds(
+        policy["perlector_generation"],
+        _PERLECTOR_BOUNDS,
+        "decoding perlector_generation must declare a positive integer output bound "
+        "for a whole-page reading",
+    )
+    _require_output_bounds(
+        policy["reconstructor_generation"],
+        _RECONSTRUCTOR_BOUNDS,
+        "decoding reconstructor_generation must declare a positive integer output bound for "
+        "one reconstruction answer",
+    )
     try:
         validate_policy_record(policy["chandra_native_inference"])
     except ContractError as error:
         raise ContractError(str(error)) from error
     _validate_chair_decoding(policy["chair_decoding"])
+
+
+def _require_output_bounds(generation: Any, names: tuple[str, ...], refusal: str) -> None:
+    if (
+        not isinstance(generation, dict)
+        or set(generation) != set(names)
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 1
+            for value in generation.values()
+        )
+    ):
+        raise ContractError(refusal)
 
 
 def _validate_chair_decoding(table: Any) -> None:
@@ -373,6 +391,12 @@ def verify_call_sampling(
             f"a {chair} call record's sampling_effective is not what {VLLM_ENGINE} samples "
             "under for the sealed values"
         )
+
+
+def reconstructor_max_tokens(policy: Mapping[str, Any]) -> int:
+    """Return the sealed output cap of one Coniector reconstruction answer."""
+    _validate_decoding_policy(policy)
+    return policy["reconstructor_generation"]["answer_max_tokens"]
 
 
 def perlector_page_max_tokens(policy: Mapping[str, Any]) -> int:

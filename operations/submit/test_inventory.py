@@ -336,6 +336,35 @@ def test_a_name_replacement_still_passes_when_the_bytes_match_the_ledger(tmp_pat
 
 
 @pytest.mark.hostile_local
+def test_a_name_replacement_without_a_ledgered_digest_is_refused(tmp_path):
+    """With no digest to compare, a lost name cannot be told apart from a disguised rewrite."""
+    folder = tmp_path / "batch"
+    folder.mkdir()
+    source = folder / "page.png"
+    source.write_bytes(b"original bytes")
+    os.link(source, folder / "second-name.png")
+
+    with inventory.open_submission_source(folder, "page.png") as opened:
+        assert opened.handle.read() == b"original bytes"
+        os.unlink(folder / "second-name.png")
+        with pytest.raises(SubmissionInputError, match="no ledgered digest") as refused:
+            opened.assert_unchanged(expected_sha256=None)
+    assert refused.value.entry == "page.png"
+
+
+def test_a_directory_with_too_many_entries_is_a_named_refusal(tmp_path, monkeypatch):
+    folder = tmp_path / "batch"
+    (folder / "crowded").mkdir(parents=True)
+    for index in range(3):
+        (folder / "crowded" / f"page-{index}.png").write_bytes(b"page")
+    monkeypatch.setattr(inventory, "MAX_DIRECTORY_ENTRIES", 2)
+
+    with pytest.raises(SubmissionInputError, match="more than 2 entries") as refused:
+        read_submission(folder, max_bytes=LIMIT)
+    assert refused.value.entry == "crowded"
+
+
+@pytest.mark.hostile_local
 def test_a_source_rewritten_in_place_under_the_reader_is_a_named_refusal(tmp_path):
     """The other half: the same inode, different bytes, while it is being read."""
     folder = tmp_path / "batch"

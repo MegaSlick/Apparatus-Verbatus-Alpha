@@ -10,8 +10,8 @@ testimony.
 Four declared signals. Three are genuinely computed, over the actual reading
 text and the actual region area. The fourth -- the serving engine's own
 stop-reason -- is observed, not computed: the reader
-(`pipeline/4_perlector/live_reader.py::send_page_request`) passes on the engine's own answer, and a
-fixture run's declared stand-in is named as one rather than disguised as a
+(`operations/serving/chat_request.py::send_page_request`) passes on the engine's own
+answer, and a fixture run's declared stand-in is named as one rather than disguised as a
 computed signal.
 
 **A reading whose engine reported nothing is never `complete`.** The three
@@ -124,7 +124,7 @@ def _stop_reason_signal(stop_reason: str | None) -> str | None:
     """The one declared signal. `None` means nothing was declared.
 
     This module only ever sees `"stop"` or `"length"`: the fixture reader
-    declares them directly, and `live_reader.py::_mapped_stop_reason` maps a
+    declares them directly, and `operations/serving/chat_request.py::mapped_stop_reason` maps a
     real engine's own finish-reason word into the same two before it reaches
     here, refusing anything it does not recognize rather than letting an
     unmapped word through.

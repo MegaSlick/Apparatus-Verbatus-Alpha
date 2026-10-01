@@ -399,6 +399,45 @@ def test_a_fifo_at_the_stamp_path_does_not_suppress_a_start(notify_repo):
     assert "not a regular file" in result.stderr
 
 
+def test_a_fresh_stamp_suppresses_a_start(notify_repo):
+    script, env = notify_repo
+    seed_stamp(script, seconds_ago=1)
+    result = run(script, env, "start")
+    assert result.returncode == 0, result.stderr
+    assert not curl_ran(env), "a start inside the window was sent again"
+    assert "suppressed" in result.stderr
+
+
+@pytest.mark.parametrize("seconds_ago", [900, 3600])
+def test_a_stamp_at_or_past_the_window_lets_a_start_through(notify_repo, seconds_ago):
+    script, env = notify_repo
+    seed_stamp(script, seconds_ago=seconds_ago)
+    result = run(script, env, "start")
+    assert result.returncode == 0, result.stderr
+    assert curl_ran(env), f"a stamp {seconds_ago}s old suppressed the start"
+    rewritten = int(stamp_path(script).read_text(encoding="utf-8"))
+    assert time.time() - rewritten < 60
+
+
+def test_a_future_dated_stamp_does_not_suppress_a_start(notify_repo):
+    script, env = notify_repo
+    seed_stamp(script, seconds_ago=-3600)
+    result = run(script, env, "start")
+    assert result.returncode == 0, result.stderr
+    assert curl_ran(env), "a future-dated stamp swallowed the ping"
+    assert "dated in the future" in result.stderr
+
+
+@pytest.mark.parametrize("content", ["", "\n", "yesterday\n", "12ab\n", "-5\n"])
+def test_an_unreadable_stamp_does_not_suppress_a_start(notify_repo, content):
+    script, env = notify_repo
+    stamp_path(script).write_text(content, encoding="utf-8")
+    result = run(script, env, "start")
+    assert result.returncode == 0, result.stderr
+    assert curl_ran(env), f"a stamp holding {content!r} swallowed the ping"
+    assert "no readable timestamp" in result.stderr
+
+
 def test_the_stamp_never_carries_the_topic(notify_repo):
     # The one file this script writes, beside the config: where the topic would leak.
     script, env = notify_repo
@@ -493,7 +532,7 @@ def test_the_client_lets_a_keyboard_interrupt_through():
         client.send("milestone", "finished", runner=_raises(KeyboardInterrupt()))
 
 
-@pytest.mark.parametrize("message", ["two\nlines", "", "   ", "nul\x00byte"])
+@pytest.mark.parametrize("message", ["two\nlines", "carriage\rreturn", "", "   ", "nul\x00byte"])
 def test_the_client_never_runs_the_script_for_a_malformed_message(message):
     outcome = client.send("milestone", message, runner=_raises(AssertionError("ran")))
 

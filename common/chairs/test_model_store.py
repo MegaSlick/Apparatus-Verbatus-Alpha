@@ -691,7 +691,7 @@ def test_a_store_whose_surya_bundle_has_not_landed_verifies_and_says_so(tmp_path
     assert inventory["complete"] is False
     assert inventory["pending"] == ["surya2-detection"]
     rows = {row["chair"]: row for row in inventory["artifacts"]}
-    assert len(rows) == 6
+    assert len(rows) == 7
     assert rows["designator_surya"]["state"] == "pending-fetch"
     assert rows["designator_surya"]["reason"] == "s3 bundle not yet fetched by the host"
     assert "snapshot" not in rows["designator_surya"]

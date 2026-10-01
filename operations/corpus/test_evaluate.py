@@ -25,6 +25,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 from common.contracts.canonical import self_hash as _self_hash
 from common.runtree.store import RunTree
 from common.sealed_config import SEAL_METHOD
+from conftest import reask_recovery_config
 from operations.corpus import CorpusRefusal
 from operations.corpus.compare import compare_page, load_exemplar_page_shas
 from operations.corpus.evaluate import (
@@ -277,7 +278,7 @@ def test_the_fixture_label_is_read_from_the_runs_own_sealed_identity_not_from_a_
     assert run_is_fixture({"fixture_id": "f", "submission_id": ""}) is True
 
 
-def _orchestrate(run_root: Path, scenario: str) -> subprocess.CompletedProcess[str]:
+def _orchestrate(run_root: Path, scenario: str, *extra: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
@@ -290,6 +291,7 @@ def _orchestrate(run_root: Path, scenario: str) -> subprocess.CompletedProcess[s
             "r",
             "--run-root",
             str(run_root),
+            *extra,
         ],
         cwd=ROOT,
         capture_output=True,
@@ -446,9 +448,14 @@ def _page_never_sealed() -> dict:
 
 @pytest.fixture(scope="module")
 def sealed_run(tmp_path_factory):
-    """One orchestrated fixture run, shared by every integration case below."""
+    """One orchestrated fixture run, shared by every integration case below.
+
+    The page re-ask is sealed off: `page-review` re-asks page 2 about a2 again,
+    and these cases score the first readings the export carries.
+    """
     run_root = tmp_path_factory.mktemp("runs")
-    completed = _orchestrate(run_root, "page-review")
+    recovery = reask_recovery_config(tmp_path_factory.mktemp("config"), 0)
+    completed = _orchestrate(run_root, "page-review", "--recovery-config", str(recovery))
     assert completed.returncode == 3, completed.stderr
     return RunTree(run_root, "r")
 

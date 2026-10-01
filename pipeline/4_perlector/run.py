@@ -31,7 +31,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audit  # noqa: E402
 import page_run  # noqa: E402
 import protocol  # noqa: E402
-from live_reader import EngineSignalRefusal  # noqa: E402
 
 import operations.serving.errors as serving_errors  # noqa: E402
 from common.alignment import load_dissent_limits  # noqa: E402
@@ -65,6 +64,7 @@ from operations.serving.assembly import (  # noqa: E402
     bound_serving_recipes,
     stage_chair_client,
 )
+from operations.serving.chat_request import EngineSignalRefusal  # noqa: E402
 from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
 from operations.serving.errors import ChairResponseRefusal  # noqa: E402
 from operations.serving.http import EndpointUnavailable  # noqa: E402
