@@ -22,7 +22,6 @@ from conftest import file_bytes_snapshot as snapshot
 from conftest import programs_through
 
 ROOT = Path(__file__).resolve().parents[2]
-ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
 FIXTURE_ROOT = ROOT / "proof"
 FIXTURE = "synthetic-two-page-v0"
 
@@ -44,26 +43,6 @@ def invoke(run_root: Path, run_id: str, scenario: str, program: str, *extra: str
             "--scenario",
             scenario,
             *extra,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-
-
-def orchestrate(run_root: Path, run_id: str, scenario: str):
-    return subprocess.run(
-        [
-            sys.executable,
-            str(ORCHESTRATOR),
-            "--fixture",
-            FIXTURE,
-            "--scenario",
-            scenario,
-            "--run-id",
-            run_id,
-            "--run-root",
-            str(run_root),
         ],
         cwd=ROOT,
         capture_output=True,
@@ -141,7 +120,9 @@ def _supersede_a_page_witness(tree: RunTree, page_ordinal: int, chair: str) -> N
     tree.write_manifest(ATTESTATORES)
 
 
-def test_no_later_stage_completes_over_a_page_witness_superseded_after_the_reading(tmp_path):
+def test_no_later_stage_completes_over_a_page_witness_superseded_after_the_reading(
+    orchestrated_run, tmp_path
+):
     """A green run, a page witness appended after it, then stages 5 to 7 by hand.
 
     Each stage rebuilds the page feed from the current page Testimonia and finds
@@ -149,7 +130,7 @@ def test_no_later_stage_completes_over_a_page_witness_superseded_after_the_readi
     a reading whose witnesses have since changed; each refuses without writing.
     """
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "page-unbroken").returncode == 0
+    orchestrated_run(root, "r", "page-unbroken")
     tree = RunTree(root, "r")
     [export] = artifacts(tree, ARMARIUM, "export")
     assert export["outcome"] == "delivered", "the run must be green before it is contradicted"

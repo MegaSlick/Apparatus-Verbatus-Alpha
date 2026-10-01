@@ -1918,11 +1918,11 @@ def test_repeating_the_identical_command_leaves_every_byte_unchanged(tmp_path):
     assert semantic_snapshot_digest(root) == HAPPY_RUN_TREE_DIGEST
 
 
-def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
+def test_repeating_the_review_scenario_also_changes_nothing(orchestrated_run, tmp_path):
     """The page-read review scenario holds an entry, so it is the one that could
     most easily append on every run."""
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "page-review").returncode == 3
+    orchestrated_run(root, "r", "page-review", 3)
     before = snapshot(root)
 
     assert len(before) == REVIEW_SNAPSHOT_FILES
@@ -1935,9 +1935,11 @@ def test_repeating_the_review_scenario_also_changes_nothing(tmp_path):
 # --- 3. An incompatible run id fails before writing ----------------------------
 
 
-def test_reusing_a_run_id_with_a_changed_configuration_fails_before_writing(tmp_path):
+def test_reusing_a_run_id_with_a_changed_configuration_fails_before_writing(
+    orchestrated_run, tmp_path
+):
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "page-unbroken").returncode == 0
+    orchestrated_run(root, "r", "page-unbroken")
     before = snapshot(root)
 
     # The scenario is part of the run's configuration digest, so the same run id
@@ -1962,11 +1964,11 @@ def test_reusing_a_run_id_with_a_changed_configuration_fails_before_writing(tmp_
 # --- 4. Resume reuses valid artifacts without rewriting them -------------------
 
 
-def test_an_interrupted_run_resumes_without_rewriting_what_survived(tmp_path):
+def test_an_interrupted_run_resumes_without_rewriting_what_survived(orchestrated_run, tmp_path):
     """Interrupt for real: delete everything from the Perlector onward, as though
     the process died mid-run, then run the same command again."""
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "page-unbroken").returncode == 0
+    orchestrated_run(root, "r", "page-unbroken")
     complete = snapshot(root)
 
     for stage_directory in ("4_perlector", "5_recensor", "6_archetypus", "7_armarium"):
@@ -2002,12 +2004,14 @@ def test_an_interrupted_run_resumes_without_rewriting_what_survived(tmp_path):
     assert resumed == complete
 
 
-def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(tmp_path):
+def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
+    orchestrated_run, tmp_path
+):
     """Resume must preserve held work and incident-based tallying."""
     policy = load_hard_failure_policy(ROOT / "config" / "hard_failure.toml")
 
     reference_root = tmp_path / "reference"
-    assert orchestrate(reference_root, "r", "page-review").returncode == 3
+    orchestrated_run(reference_root, "r", "page-review", 3)
     reference = snapshot(reference_root)
     reference_tally = tally_hard_failures(RunTree(reference_root, "r"), policy)
 
@@ -2169,10 +2173,10 @@ def test_the_recensor_refuses_a_page_testimonium_from_a_chair_the_run_never_seal
     assert not (root / "r" / "5_recensor").exists()
 
 
-def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(tmp_path):
+def test_an_unknown_attestatores_tally_holds_an_orchestrated_rerun(orchestrated_run, tmp_path):
     """A damaged independent count cannot hide behind an old complete export."""
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "page-unbroken").returncode == 0
+    orchestrated_run(root, "r", "page-unbroken")
     tree = RunTree(root, "r")
     tree.resolve(tree.manifest_path(ATTESTATORES)).write_bytes(b"{")
     before = snapshot(root)
@@ -2684,7 +2688,7 @@ def test_no_fixture_page_holds_for_edge_ink_now_that_the_band_is_a_fraction(tmp_
 # --- The export boundary rechecks each sealed page -------------------------------
 
 
-def test_armarium_rechecks_the_filename_a_page_was_sealed_under(tmp_path):
+def test_armarium_rechecks_the_filename_a_page_was_sealed_under(orchestrated_run, tmp_path):
     """The last boundary compares each page against `run.json`'s ledger row itself.
 
     Distinct from the pixel recheck above, and from the corpus-seal recheck: those
@@ -2696,7 +2700,7 @@ def test_armarium_rechecks_the_filename_a_page_was_sealed_under(tmp_path):
     would catch: they carry no pixels for the pixel boundary to check.
     """
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "page-unbroken").returncode == 0
+    orchestrated_run(root, "r", "page-unbroken")
     tree = RunTree(root, "r")
     entry = next(
         entry for entry in tree.build_manifest(EXEMPLAR)["artifacts"] if entry["kind"] == "page"
@@ -2743,10 +2747,10 @@ def test_armarium_rechecks_the_filename_a_page_was_sealed_under(tmp_path):
     assert snapshot(root) == before
 
 
-def test_armarium_rechecks_sealed_pixels_tampered_after_designator(tmp_path):
+def test_armarium_rechecks_sealed_pixels_tampered_after_designator(orchestrated_run, tmp_path):
     """The final export has its own pixel boundary, not only a census boundary."""
     root = tmp_path / "runs"
-    assert orchestrate(root, "r", "page-unbroken").returncode == 0
+    orchestrated_run(root, "r", "page-unbroken")
     tree = RunTree(root, "r")
     page = next(
         tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
