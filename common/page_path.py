@@ -113,7 +113,8 @@ DOUBT_MARKS_MALFORMED: Final = "doubt-marks-malformed"
 ENTRY_NO_READABLE_TEXT: Final = "entry-no-readable-text"
 NO_AUTOPSIA: Final = "no-autopsia"
 
-# The act classes an entry mints: placed on the page, or citing no boxed id.
+# The act classes an entry mints: placed on the page, or citing no placing id
+# (`page_accounting.placement_boxes`).
 READING_CLASS: Final = "reading"
 UNPLACED_CLASS: Final = "reading-unplaced"
 
@@ -759,20 +760,7 @@ def page_dissent(
         reported = _comparison_text(
             "\n".join(unit["text"] for unit in units), capabilities[witness["witness_label"]]
         )
-        compared = dissent.dissent_against(
-            text,
-            [
-                {
-                    "outcome": READ_OUTCOME,
-                    "payload": {"chair": witness["letter"], "comparison_reported": reported},
-                }
-            ],
-            max_comparison_steps=max_comparison_steps,
-        )
-        if len(compared) != 1:
-            raise ContractError(f"dissent gave {len(compared)} rows for one witness, not one")
-        row = dict(compared[0])
-        row.pop("chair")
+        row = dissent.dissent_against(text, reported, max_comparison_steps=max_comparison_steps)
         rows.append({**head, "cited_units": [unit["id"] for unit in units], **row})
     validate_page_dissent(
         rows, text=text, feed=feed, cited_ids=cited_ids, max_comparison_steps=max_comparison_steps
@@ -795,8 +783,8 @@ def validate_page_dissent(
 
     One row per shown witness, in the feed's order. A witness with no reading or
     no unit this entry cites was not compared, and says so; every other row is
-    an act-path dissent row under the witness's letter and goes through
-    `dissent.validate_dissent`, the run's sealed budget included.
+    a dissent row (`dissent.validate_dissent`) under the witness's letter, the
+    run's sealed budget included.
     """
     if not isinstance(rows, list) or len(rows) != len(feed["witnesses"]):
         raise SchemaRefusal("a page-path dissent record does not have one row per shown witness")

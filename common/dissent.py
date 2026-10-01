@@ -4,8 +4,8 @@ picked to make a witness look right or wrong.
 Recording where the established reading departs from a witness is structural,
 not evaluative, and not a quality signal on its own. The comparison runs on
 loss-accounted normalizations built beside the verbatim payloads, which are
-never coerced; where a witness format cannot be compared, dissent for that
-witness is recorded `unknown`, never guessed.
+never coerced; where a comparison cannot run, it is recorded `unknown`, never
+guessed.
 
 Two things here would be a picker with extra steps: choosing which view "wins"
 (there is no winning -- a view is compared to the already-fixed reading and
@@ -129,140 +129,57 @@ def _departure_spans(opcodes: list) -> list[dict[str, dict[str, int]]]:
     ]
 
 
-def is_comparable(record: dict[str, Any]) -> bool:
-    """Whether a Testimonium's own declared format admits a plain comparison view.
+def dissent_against(reading: str, reported: str, *, max_comparison_steps: int) -> dict:
+    """Where the reading departed from one witness's comparison text.
 
-    A witness whose format can express uncertainty
-    (`format_capabilities.can_express_uncertainty`) may embed alternative-
-    reading markup inline in `reported` -- diffing that raw string against
-    clean established text would count markup characters as disagreement,
-    which is not what dissent means. Such a chair stays unmeasurable UNLESS a
-    derived comparison view already exists for it (`comparison_reported`,
-    never the raw `reported`): the text of the units an entry cites with its
-    doubt markers removed (`common/alignment.py::bracket_marker_view`). A
-    chair with one rejoins the instrument through that safe view; one without
-    stays honestly unknown with its reason recorded rather than folded into a
-    coverage count. A chair given the bracket view whose notation is not
-    brackets would rejoin as comparable anyway, its own markers surviving as
-    false disagreement; nothing here reads a notation field to catch that.
-    """
-    payload = record.get("payload", {})
-    capabilities = payload.get("format_capabilities", {})
-    if not bool(capabilities.get("can_express_uncertainty", False)):
-        return True
-    return isinstance(payload.get("comparison_reported"), str)
-
-
-def dissent_against(
-    reading: str, testimonia: list[dict], *, max_comparison_steps: int
-) -> list[dict]:
-    """Where the reading departed from each witness that actually reported.
-
-    Computed after the reading is fixed. A chair that failed or never ran has
-    no opinion to depart from, and is recorded as having none rather than as
-    agreeing -- silence is not assent. `compared: "unknown"` is what a chair that
-    did report but could not be compared receives, and it has four causes:
-    retained testimony that is not text, a declared format that cannot be reduced
-    to a comparison view, a report large enough to refuse outright
-    (`MAX_COMPARISON_CHARACTER_PAIRS`), and an alignment that would pass
+    Computed after the reading is fixed. `compared: "unknown"` is what a
+    comparison that cannot run receives: a report large enough to refuse
+    outright (`MAX_COMPARISON_CHARACTER_PAIRS`), or an alignment that would pass
     `max_comparison_steps`, the sealed dissent budget, which that row records
-    beside its reason. The same texts always give the same rows. Never guessed
-    at, and never silently dropped from the record either.
+    beside its reason. The same texts always give the same row.
     """
+    pairs = len(reading) * len(reported)
+    if pairs > MAX_COMPARISON_CHARACTER_PAIRS:
+        return {
+            "compared": "unknown",
+            "reason": (
+                f"a {len(reading)}-character reading against a {len(reported)}-"
+                f"character report is {pairs} character pairs to align, past this "
+                f"module's {MAX_COMPARISON_CHARACTER_PAIRS} bound; neither text is "
+                "clipped and neither is changed, the alignment simply did not run"
+            ),
+        }
+    spans = departures(reading, reported, max_comparison_steps)
+    if not isinstance(spans, list):
+        return unaligned_row(reading, reported, max_comparison_steps)
     reading_view = comparison_view(reading)
-    rows = []
-    for record in testimonia:
-        chair = record["payload"]["chair"]
-        if record["outcome"] not in WITNESS_READING_OUTCOMES:
-            rows.append({"chair": chair, "compared": False, "reason": record["outcome"]})
-            continue
-        # A derived comparison view (`comparison_reported`) is compared first;
-        # otherwise the retained `payload`, or `reported` where a record names
-        # its text so.
-        reported = record["payload"].get(
-            "comparison_reported",
-            record["payload"].get("payload", record["payload"].get("reported")),
-        )
-        if not isinstance(reported, str):
-            # A structured report remains visible as incomparable; coercing it
-            # would invent text, while the witness floor requires comparability.
-            rows.append(
-                {
-                    "chair": chair,
-                    "compared": "unknown",
-                    "reason": (
-                        "no comparable text for this act: retained derived testimony is not text"
-                    ),
-                }
-            )
-            continue
-        if not is_comparable(record):
-            rows.append(
-                {
-                    "chair": chair,
-                    "compared": "unknown",
-                    "reason": (
-                        "this witness's declared format cannot be reduced to a plain "
-                        "comparison view"
-                    ),
-                }
-            )
-            continue
-        pairs = len(reading) * len(reported)
-        if pairs > MAX_COMPARISON_CHARACTER_PAIRS:
-            rows.append(
-                {
-                    "chair": chair,
-                    "compared": "unknown",
-                    "reason": (
-                        f"a {len(reading)}-character reading against a {len(reported)}-"
-                        f"character report is {pairs} character pairs to align, past this "
-                        f"module's {MAX_COMPARISON_CHARACTER_PAIRS} bound; neither text is "
-                        "clipped and neither is changed, the alignment simply did not run"
-                    ),
-                }
-            )
-            continue
-        spans = departures(reading, reported, max_comparison_steps)
-        if not isinstance(spans, list):
-            rows.append(unaligned_row(chair, reading, reported, max_comparison_steps))
-            continue
-        markup_view = markup_text_view(reported)
-        witness_view = comparison_view(markup_view["text"])
-        rows.append(
-            {
-                "chair": chair,
-                "compared": True,
-                "departed": witness_view["normalized"] != reading_view["normalized"],
-                "departed_raw": reported != reading,
-                # Spans over the raw strings, so `reading_span` indexes the
-                # Perlectio's own `text`. A whitespace-only difference therefore
-                # shows departures here while `departed` above stays False:
-                # those are two honest answers to two different questions, and
-                # collapsing them would lose the one the instrument needs.
-                "departures": spans,
-                "comparison_loss": {
-                    # `reading_dropped_characters` charges collapsed whitespace
-                    # only; `witness_dropped_characters` below additionally
-                    # charges markup and entity spelling removed from the
-                    # report. Removal only, never re-encoding: NFC
-                    # composition is not a loss (see `comparison_view`).
-                    "reading_dropped_characters": reading_view["dropped_characters"],
-                    "witness_dropped_characters": witness_view["dropped_characters"]
-                    + markup_view["loss"]["markup_characters"]
-                    + markup_view["loss"]["whitespace_characters"],
-                },
-            }
-        )
-    return rows
+    markup_view = markup_text_view(reported)
+    witness_view = comparison_view(markup_view["text"])
+    return {
+        "compared": True,
+        "departed": witness_view["normalized"] != reading_view["normalized"],
+        "departed_raw": reported != reading,
+        # Spans over the raw strings, so `reading_span` indexes the Perlectio's
+        # own `text`. A whitespace-only difference therefore shows departures
+        # here while `departed` above stays False: two honest answers to two
+        # different questions.
+        "departures": spans,
+        "comparison_loss": {
+            # `reading_dropped_characters` charges collapsed whitespace only;
+            # `witness_dropped_characters` also charges markup and entity
+            # spelling removed from the report. Removal only, never
+            # re-encoding: NFC composition is not a loss (see `comparison_view`).
+            "reading_dropped_characters": reading_view["dropped_characters"],
+            "witness_dropped_characters": witness_view["dropped_characters"]
+            + markup_view["loss"]["markup_characters"]
+            + markup_view["loss"]["whitespace_characters"],
+        },
+    }
 
 
-def unaligned_row(
-    chair: str, reading: str, reported: str, max_comparison_steps: int
-) -> dict[str, Any]:
+def unaligned_row(reading: str, reported: str, max_comparison_steps: int) -> dict[str, Any]:
     """The row of a comparison the sealed dissent budget stopped before it finished."""
     return {
-        "chair": chair,
         "compared": "unknown",
         "reason": (
             f"a {len(reading)}-character reading against a {len(reported)}-"

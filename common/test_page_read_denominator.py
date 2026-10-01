@@ -898,8 +898,7 @@ def test_a_sealed_not_compared_row_where_the_alignment_fits_its_budget_is_refuse
     [witness] = [w for w in feed["witnesses"] if w["letter"] == row["letter"]]
     reported = "\n".join(u["text"] for u in witness["units"] if u["id"] in row["cited_units"])
     budget = load_dissent_limits()[0].max_comparison_steps
-    unaligned = dissent.unaligned_row(row["letter"], perlectio["payload"]["text"], reported, budget)
-    unaligned.pop("chair")
+    unaligned = dissent.unaligned_row(perlectio["payload"]["text"], reported, budget)
 
     def not_compared(record):
         sealed = _compared_row(record)
