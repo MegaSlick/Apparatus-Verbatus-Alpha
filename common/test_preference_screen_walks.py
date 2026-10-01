@@ -7,20 +7,11 @@ docstring: the value is untrusted or model-derived, so depth must cost the walk
 its own list rather than the interpreter stack, and a `RecursionError` is a
 crash naming neither the record nor the field.
 
-The conversions were tracked as prose, and prose miscounted. A round of that
-work reported "four preference screens, enumeration complete"; there were six.
-`cross_capture_dissent._refuse_scalar_claim_keys` had already been converted and
-was simply not listed, and `dossier.assert_no_order_bearing_field` was still
-recursing -- missed because it lives in dossier assembly and is not *called* a
-preference screen, while doing the same forbidden-vocabulary walk over a
-structure carrying every Testimonium verbatim, on the production path, before
-the digest is taken.
-
-`physical_act_partition._refuse_textual` is listed below as a seventh entry. It
-screens textual evidence rather than preference, so it is not one of the six --
-but it is the same walk over the same untrusted payloads, it was converted in
-the same round for the same reason, and a guard that watched its siblings and
-not it would be drawing a line the defect does not respect.
+The conversions were tracked as prose, and prose miscounted:
+`dossier.assert_no_order_bearing_field` was still recursing -- missed because it
+lives in dossier assembly and is not *called* a preference screen, while doing
+the same forbidden-vocabulary walk over a structure carrying every Testimonium
+verbatim, on the production path, before the digest is taken.
 
 So the list is here and it is mechanical. A screen added to the family and not
 added below is not guarded by this file, which nothing can fix from inside a
@@ -38,7 +29,6 @@ from pathlib import Path
 
 import pytest
 
-from common import cross_capture_autopsia, cross_capture_dissent, physical_act_partition
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.corpus_register import refuse_capture_preference
 from conftest import load_stage
@@ -55,7 +45,7 @@ PATHOLOGICAL_DEPTH = 1_000_000
 # configured recursion limit, and 20 times the deepest C-encoder allowance this
 # repository has measured (`common/contracts/test_contracts_records.py` records
 # roughly 9,997 levels), so a screen that reached the bottom of this is not
-# spending the stack. A fifth of PATHOLOGICAL_DEPTH, because seven screens
+# spending the stack. A fifth of PATHOLOGICAL_DEPTH, because each screen
 # driven twice each at a million levels is a minute of gate time to re-prove
 # what the first hundred thousand already proved; the reference screen keeps its
 # million-level case above.
@@ -77,10 +67,6 @@ PREFERENCE_SCREENS = (
     # The reference implementation. Iterative from the start; the others were
     # converted to match it or delegate to it.
     ("common/corpus_register.py", "refuse_capture_preference"),
-    ("common/physical_act_partition.py", "_refuse_preference"),
-    ("common/physical_act_partition.py", "_refuse_textual"),
-    ("common/cross_capture_autopsia.py", "_reject_preference"),
-    ("common/cross_capture_dissent.py", "_refuse_scalar_claim_keys"),
     ("operations/operator/triage.py", "_refuse_preference_named"),
     # The one the prose enumeration missed.
     ("pipeline/4_perlector/dossier.py", "assert_no_order_bearing_field"),
@@ -138,7 +124,7 @@ def test_the_reference_screen_walks_a_pathological_payload_to_the_bottom():
     1,000,000-level case, and it reads like this one, but it is a pin on the
     *JSON parser*: `validate_register_bytes` refusing a register file whose
     brackets defeat `json.loads` before any walk begins. The walk itself --
-    `refuse_capture_preference`, called on already-parsed values from six other
+    `refuse_capture_preference`, called on already-parsed values from other
     modules -- was only ever exercised on shallow fixtures.
     """
     nested: object = {"leaf": 1}
@@ -171,42 +157,6 @@ DRIVEN_SCREENS = (
         "may not express capture preference",
         SchemaRefusal,
         "corpus register contains itself",
-    ),
-    (
-        "physical_act_partition._refuse_preference",
-        physical_act_partition._refuse_preference,
-        {"preferred": "one of them"},
-        SchemaRefusal,
-        "physical-act partition may not express capture preference",
-        SchemaRefusal,
-        "physical-act partition contains itself",
-    ),
-    (
-        "physical_act_partition._refuse_textual",
-        physical_act_partition._refuse_textual,
-        {"text": "L'an mil sept cent"},
-        SchemaRefusal,
-        "textual evidence cannot match physical acts",
-        SchemaRefusal,
-        "correspondence proposal: a proposal contains itself",
-    ),
-    (
-        "cross_capture_autopsia._reject_preference",
-        cross_capture_autopsia._reject_preference,
-        {"witness_rank": 1},
-        SchemaRefusal,
-        "forbidden preference field",
-        SchemaRefusal,
-        "cross-capture autopsia: a presentation contains itself",
-    ),
-    (
-        "cross_capture_dissent._refuse_scalar_claim_keys",
-        cross_capture_dissent._refuse_scalar_claim_keys,
-        {"confidence": 0.9},
-        SchemaRefusal,
-        "forbidden scalar-claim field",
-        SchemaRefusal,
-        "cross-capture dissent: the record contains itself",
     ),
     (
         "triage._refuse_preference_named",
@@ -297,7 +247,7 @@ def test_every_preference_screen_walks_a_pathological_payload_to_the_bottom(
     quietly giving up. Neither may raise `RecursionError`, which is why the clean
     half is run bare -- a `RecursionError` there fails the test as itself.
 
-    Only the reference screen was exercised at depth before. The other six were
+    Only the reference screen was exercised at depth before. The others were
     covered by the static guard alone, which cannot tell an explicit worklist
     that walks everything from one that stops early.
     """
@@ -332,10 +282,9 @@ def test_every_preference_screen_names_a_payload_that_contains_itself(
     The round that converted the others recorded that as a live property rather
     than fixing it, on the argument that every remaining screen is fed values
     parsed from JSON bytes and JSON cannot be cyclic. That argument does not
-    hold: `build_autopsia`, `build_cross_capture_dissent`, the partition
-    builders, `native_witness` and `perlector_audit` are all called with
-    in-memory structures the caller assembled, and each screen runs before any
-    shape check closes what it walks. So all seven carry the same enter/exit
+    hold: `native_witness` and `perlector_audit` are called with in-memory
+    structures the caller assembled, and each screen runs before any shape
+    check closes what it walks. So every screen carries the same enter/exit
     bookkeeping now, and each is tested here through the same entry point the
     depth case uses -- under a wall-clock guard, because the failure this
     closes is a hang and a test that hangs is worse than no test.
@@ -401,30 +350,3 @@ def test_a_forbidden_field_wrapped_in_a_tuple_is_not_hidden_from_any_screen(
     """
     with pytest.raises(refusal, match=re.escape(match)):
         screen({"nested": (dict(forbidden),)})
-
-
-def test_the_supported_autopsia_path_names_a_cyclic_views_mapping():
-    """The thread's own case, through the public entry point rather than the screen.
-
-    `_reject_preference` is private; `build_autopsia` is what callers have, and
-    it hands the screen `views` *before* `_view` proves any of it is a view --
-    which is the whole reason the screen sees arbitrary caller input. The
-    argument that saved the six screens from needing this was that their input
-    is parsed JSON; `build_autopsia`'s callers pass in-memory lists, so the
-    cyclic case reaches the walk through the supported path and not only through
-    a test poking at a private name.
-
-    Under the wall-clock guard for the same reason as the family case above: on
-    the pre-fix screen this call does not raise, it never returns.
-    """
-    views: list = []
-    views.append({"view_id": "v_1", "page_ids": views})
-
-    with _within(CYCLE_TIME_LIMIT_SECONDS, "build_autopsia"):
-        with pytest.raises(SchemaRefusal, match="a presentation contains itself"):
-            cross_capture_autopsia.build_autopsia(
-                logical_act_id="la_cyclic",
-                partition_ref={"artifact_id": "pa_1", "sha256": "0" * 64},
-                required_capture_sha256s=["a" * 64],
-                views=views,
-            )

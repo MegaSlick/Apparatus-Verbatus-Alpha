@@ -25,10 +25,7 @@ TRIAGE_MANIFEST = ROOT / "pipeline" / "0_triage" / "manifest.py"
 
 # The condition may be declared, consumed, and derived only at these seams; a
 # producer that computes it elsewhere would bypass the Unit 5 reconciliation.
-_CONDITION_AUTHORS = {
-    Path("common/cross_capture_dissent.py"),
-    Path("common/capture_comparability.py"),
-}
+_CONDITION_AUTHORS = {Path("common/capture_comparability.py")}
 _CONDITION_NAMES = {"capture_condition", "comparably_captured"}
 _SKIP_DIRECTORIES = {
     ".git",
@@ -208,7 +205,7 @@ def test_no_production_module_outside_the_derivation_names_the_capture_condition
 def test_the_entitled_modules_still_exist_so_the_scan_cannot_pass_vacuously():
     """A scan whose allow-list has rotted away would pass by finding nothing."""
     scanned = _production_sources()
-    assert Path("common/physical_act_partition.py") in scanned
+    assert Path("common/capture_comparability.py") in scanned
     for relative in _CONDITION_AUTHORS:
         assert (ROOT / relative).is_file(), relative
     assert any(
