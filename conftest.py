@@ -400,7 +400,7 @@ def orchestrated_run(tmp_path_factory):
     as it stood when the fixture was set up, so a test that changed it before asking for a
     copy cannot change the run every later caller shares.
     """
-    built: dict[tuple[str, str], tuple[Path, subprocess.CompletedProcess[str]]] = {}
+    built: dict[tuple[str, str, bool], tuple[Path, subprocess.CompletedProcess[str]]] = {}
     environment = dict(os.environ)
 
     def copy(
