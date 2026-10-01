@@ -120,8 +120,8 @@ read by `audit.load`). Every `page-reading` carries
   A run with censuses but none for a page refuses. A layout Surya failed on is refused
   in stage 2, so every census has its blocks. The feed carries how they were
   sequenced as `block_sequence` (`surya-order-head`, or `raster-fallback` with
-  `block_sequence_reason`; named so because the preference sweep refuses any key naming
-  an order), and for a raster fallback the prompt says the blocks are in raster
+  `block_sequence_reason`; named so because the feed's preference test refuses any key
+  naming an order), and for a raster fallback the prompt says the blocks are in raster
   order, not a reading order. Each line's and block's `confidence_bp` is recorded on the feed and never
   rendered into the prompt.
 - The page image at the sealed `[feed] page_image`: `legible` is
@@ -371,7 +371,7 @@ retains the raw response before it parses, so nothing is lost.
 decides the route from one read of the run authority and, on a real submission, carries
 the registry, the sealed digest map and the serving configuration inputs this stage
 requires before its first line of work (`decoding`, `perlector-protocol`,
-`perlector-audit`, and `bound_serving_recipes`). `fixture_reader_for` refuses a real
+`perlector-audit`, and `bound_serving_recipes`). `refuse_unlive_real_reading` refuses a real
 submission whose sealed serving-recipe row for a configured Perlector chair is not live,
 before anything is published: a declared answer cannot stand in for a reading of real
 ink, and the catalogue is sealed at the Door, so the repair is a new run. An absent chair

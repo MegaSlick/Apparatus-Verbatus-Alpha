@@ -25,19 +25,19 @@ from operations.serving.client import ChairClient, ChairRequest
 
 
 class EngineSignalRefusal(ContractError):
-    """The engine's response cannot be turned into an honest ``LectioResult``.
+    """The engine's response cannot be turned into an honest page answer.
 
     Two distinct causes share this refusal, because both leave a Perlector
     reading with no honest text to publish: a ``finish_reason`` this seam does
     not recognize (neither in ``ENGINE_STOP_COMPLETE`` nor
     ``ENGINE_STOP_CUT_OFF``, nor absent), or a response
     :class:`~operations.serving.client.ChairClient` could not parse at all
-    (``parse_problem``). The stage publishes such an act as a failed Perlectio
-    (``run.py``) rather than a reading, so a body that is not a reading never
-    becomes text. Nothing is
-    lost: the raw bytes are already retained (``ChairClient.read`` retains
-    before it parses), named here by ``raw_response_ref`` so the stopped act
-    can be traced back to exactly the evidence that stopped it.
+    (``parse_problem``). The stage records the page's reading as a failed call
+    with these facts (``run.py``), so a body that is not a reading never becomes
+    text. Nothing is lost: the raw bytes are already retained
+    (``ChairClient.read`` retains before it parses), named here by
+    ``raw_response_ref`` so the held page can be traced back to exactly the
+    evidence that stopped it.
     """
 
     def __init__(
@@ -69,17 +69,16 @@ def _image_content_blocks(images: list[bytes]) -> list[dict[str, Any]]:
     return [{"type": "image_url", "image_url": {"url": _data_uri(image)}} for image in images]
 
 
-def _mapped_stop_reason(finish_reason: str | None, *, act_key: object, response: Any) -> str | None:
-    """The engine's own word, translated into the reader-protocol's closed
-    vocabulary (``common/truncation.py``'s own ``"stop"``/``"length"``/``None``), or
-    a named refusal for anything else."""
+def _mapped_stop_reason(finish_reason: str | None, *, what: str, response: Any) -> str | None:
+    """The engine's own word, translated into ``common/truncation.py``'s closed
+    vocabulary (``"stop"``/``"length"``/``None``), or a named refusal for anything else."""
     try:
         return reading_stop_reason(finish_reason)
     except ValueError:
         pass
     raise EngineSignalRefusal(
         "ENGINE_FINISH_REASON_UNRECOGNIZED",
-        f"act {act_key!r} received an engine stop reason {finish_reason!r} this seam does "
+        f"{what} received an engine stop reason {finish_reason!r} this seam does "
         "not recognize (neither a completion nor a length cutoff); the raw response bytes "
         f"are retained at {dict(response.raw_response_ref)!r}",
         raw_response_ref=response.raw_response_ref,
@@ -107,14 +106,13 @@ def send_page_request(
     (`common.request_capacity.page_request_capacity`), copied onto the retained
     call record; `max_tokens` is the admitted output cap. The caller's
     generation is the one a reading sends, thinking off and the cap; the client
-    adds the Perlector's sealed sampling row and the serving receipt's seed, as
-    for an act reading (attempt 1, no variance arm).
+    adds the Perlector's sealed sampling row and the serving receipt's seed
+    (attempt 1, no variance arm).
 
     Returns `{content, stop_reason, finish_reason, request_sha256, engine_call}`:
     `stop_reason` is the engine's word mapped as a reading's (`"stop"`,
     `"length"` or `None`), and an unrecognized word or an unparsed body is
-    refused as `EngineSignalRefusal` with the retained bytes named, as a
-    reading's is.
+    refused as `EngineSignalRefusal` with the retained bytes named.
     """
     content: list[dict[str, Any]] = _image_content_blocks(images)
     content.append({"type": "text", "text": text})
@@ -143,7 +141,7 @@ def send_page_request(
         )
     return {
         "content": response.content,
-        "stop_reason": _mapped_stop_reason(response.finish_reason, act_key=what, response=response),
+        "stop_reason": _mapped_stop_reason(response.finish_reason, what=what, response=response),
         "finish_reason": response.finish_reason,
         "request_sha256": response.request_sha256,
         "engine_call": {
