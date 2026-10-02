@@ -50,6 +50,7 @@ from coniector_layer import export_rows  # noqa: E402
 from operator_layer import corrected_row, released_row  # noqa: E402
 
 from common import page_edges, page_path  # noqa: E402
+from common.alignment import sealed_dissent_budget  # noqa: E402
 from common.background import (  # noqa: E402
     validate_ink_not_measurable_payload,
     validate_measured_ink_map_payload,
@@ -84,6 +85,7 @@ from common.correction import (  # noqa: E402
     model_provenance,
     stored_edits,
 )
+from common.dissent import MAX_COMPARISON_CHARACTER_PAIRS  # noqa: E402
 from common.exemplar_boundary import (  # noqa: E402
     verify_exemplar_corpus_seal,
     verify_reading_region_lineage,
@@ -1059,6 +1061,22 @@ def page_accounting_rows(context, pages: dict[int, dict], real: set[int]) -> lis
     return rows
 
 
+def unmeasured_comparison(context, act: dict) -> bool:
+    """Whether a delivered act's dissent stopped short of comparing it with some witness.
+
+    A comparison past the sealed step budget, or past the character-pair bound,
+    is recorded `compared: "unknown"`: the act was delivered without that
+    witness's departures being measured.
+    """
+    reading = context.tree.read_artifact_reference(
+        act["dissent_ref"], stage=PERLECTOR, kind="perlectio", subject_id=act["act_id"]
+    )
+    rows = reading["payload"].get("dissent")
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise FatalAccounting(f"the reading of {act['act_key']} records no dissent rows")
+    return any(row.get("compared") == "unknown" for row in rows)
+
+
 def page_not_measured_basis(context, pages: dict[int, dict], projected_acts: list[dict]) -> dict:
     """What a page-read run did not measure, from its own records and sealed configurations."""
     policy = require_page_accounting_policy(context, context.page_accounting_config_path)
@@ -1114,6 +1132,14 @@ def page_not_measured_basis(context, pages: dict[int, dict], projected_acts: lis
             "pages_read": len(audits),
             "pages_audit_not_run": audits.count("not-run"),
             "sealed_audit_round_cap": sealed_audit_round_cap(context),
+        },
+        "comparison-bounds": {
+            "sealed_max_comparison_steps": sealed_dissent_budget(context),
+            "max_comparison_character_pairs": MAX_COMPARISON_CHARACTER_PAIRS,
+            "acts_delivered": len(delivered),
+            "acts_with_unmeasured_comparison": sum(
+                unmeasured_comparison(context, act) for act in delivered
+            ),
         },
     }
     missing = [name for name in NOT_MEASURED_INSTRUMENTS if name not in basis]

@@ -195,6 +195,12 @@ def _test_not_measured_basis(**overrides):
             "pages_audit_not_run": 1,
             "sealed_audit_round_cap": 1,
         },
+        "comparison-bounds": {
+            "sealed_max_comparison_steps": 1_000,
+            "max_comparison_character_pairs": 100_000_000,
+            "acts_delivered": 1,
+            "acts_with_unmeasured_comparison": 0,
+        },
     }
     basis.update(overrides)
     return basis
@@ -228,6 +234,7 @@ def _basis_for_acts(acts, *, sealed_pages=1):
         # rather than the partition rule one step earlier.
         "acts_not_assessed": len(delivered) - assessed,
     }
+    basis["comparison-bounds"]["acts_delivered"] = len(delivered)
     return basis
 
 
@@ -3526,6 +3533,48 @@ def test_pass_c_is_declared_unproduced_and_measured_when_it_runs():
     assert status(2) == "declared-unproduced"
     assert status(0) == "measured"
     assert status(1) == "not-measured"
+
+
+def test_comparison_bounds_are_measured_only_when_no_delivered_comparison_stopped():
+    """A delivered act whose dissent stopped on the step budget or the pair bound
+    was delivered without that witness's departures measured; one such act makes
+    the instrument `not-measured`."""
+
+    def status(unmeasured: int) -> str:
+        detail = {
+            "sealed_max_comparison_steps": 1_000,
+            "max_comparison_character_pairs": 100_000_000,
+            "acts_delivered": 2,
+            "acts_with_unmeasured_comparison": unmeasured,
+        }
+        return _not_measured_status("comparison-bounds", detail)
+
+    assert _entry(_block(_projection()), "comparison-bounds")["status"] == "measured"
+    assert status(0) == "measured"
+    assert status(1) == "not-measured"
+    assert status(2) == "not-measured"
+
+
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    [
+        (
+            {"acts_with_unmeasured_comparison": 2},
+            "names more unmeasured acts than delivered acts",
+        ),
+        ({"acts_delivered": 2}, "comparison-bounds basis does not count exactly"),
+    ],
+)
+def test_projection_refuses_a_comparison_bounds_basis_that_misstates_its_acts(change, refusal):
+    projection = _projection()
+    basis = _basis_for_acts(projection.acts)
+    basis["comparison-bounds"].update(change)
+    with pytest.raises(SchemaRefusal, match=refusal):
+        build_armarium_bundle(
+            replace(projection, not_measured_basis=basis),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
 
 
 def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_asked():

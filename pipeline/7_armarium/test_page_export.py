@@ -229,6 +229,36 @@ def test_the_page_accounting_and_what_was_not_measured_are_claimed(complete):
     assert entries["page-accounting-thresholds"]["detail"]["calibrated_for_this_corpus"] is False
     assert entries["perlector-pass-c"]["status"] == "declared-unproduced"
     assert entries["perlector-pass-c"]["detail"]["pages_audit_not_run"] == 2
+    assert entries["comparison-bounds"]["status"] == "measured"
+    assert entries["comparison-bounds"]["detail"]["acts_with_unmeasured_comparison"] == 0
+
+
+def test_a_delivered_act_whose_dissent_stopped_on_its_budget_is_disclosed(tmp_path):
+    """A run sealed with a one-step dissent budget delivers acts whose comparisons
+    stopped (`compared: "unknown"`); the export names each such act and does not
+    call the comparison measured."""
+    shipped = Path("config/alignment.toml").read_text(encoding="utf-8")
+    sealed_line = "max_comparison_steps = 100000000\n"
+    assert shipped.count(sealed_line) == 1
+    alignment = tmp_path / "config" / "alignment.toml"
+    alignment.parent.mkdir()
+    alignment.write_text(shipped.replace(sealed_line, "max_comparison_steps = 1\n"))
+    root, options = build_page_tree(
+        tmp_path / "tree", "page-other-unbroken", alignment_config=alignment
+    )
+    result = _export(root, options, "page-other-unbroken")
+    assert result.returncode == 0, result.stderr
+    manifest = _bundle(root, tmp_path / "clean")["manifest"]
+
+    entries = {row["instrument"]: row for row in manifest["claims"]["not_measured"]["entries"]}
+    bounds = entries["comparison-bounds"]
+    assert bounds["status"] == "not-measured"
+    assert bounds["detail"] == {
+        "sealed_max_comparison_steps": 1,
+        "max_comparison_character_pairs": 100_000_000,
+        "acts_delivered": 2,
+        "acts_with_unmeasured_comparison": 2,
+    }
 
 
 def test_the_same_established_reading_appears_identically_in_every_format(complete):

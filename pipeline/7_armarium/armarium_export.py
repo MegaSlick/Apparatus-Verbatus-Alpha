@@ -947,8 +947,8 @@ def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -
 # A run can be `DELIVERED` and `complete` over instruments that never measured.
 # Every bundle names them, with each status derived from the run's
 # own records so a run that measured reads differently from one that did not.
-NOT_MEASURED_SCHEMA: Final = "armarium-not-measured.v1"
-NOT_MEASURED_BASIS_SCHEMA: Final = "armarium-not-measured-basis.v1"
+NOT_MEASURED_SCHEMA: Final = "armarium-not-measured.v2"
+NOT_MEASURED_BASIS_SCHEMA: Final = "armarium-not-measured-basis.v2"
 # Every instrument is emitted on every bundle, so an absent row never reads as a
 # measured one.
 _PERLECTOR_UNCERTAIN_SPANS: Final = "perlector-uncertain-spans"
@@ -956,11 +956,15 @@ _GEOMETRY_CALIBRATION: Final = "designator-geometry-calibration"
 # The page accounting's own thresholds, and Pass C over each page reading.
 _PAGE_ACCOUNTING_THRESHOLDS: Final = "page-accounting-thresholds"
 _PASS_C: Final = "perlector-pass-c"
+# Each delivered act's dissent against its witnesses, which a comparison past the
+# sealed step budget or the character-pair bound records as `compared: "unknown"`.
+_COMPARISON_BOUNDS: Final = "comparison-bounds"
 NOT_MEASURED_INSTRUMENTS: Final = (
     _PERLECTOR_UNCERTAIN_SPANS,
     _GEOMETRY_CALIBRATION,
     _PAGE_ACCOUNTING_THRESHOLDS,
     _PASS_C,
+    _COMPARISON_BOUNDS,
 )
 
 
@@ -985,6 +989,14 @@ _NOT_MEASURED_DETAIL_FIELDS: Final = {
         {"policy_sha256", "thresholds", "calibrated_for_this_corpus", "sample_count"}
     ),
     _PASS_C: frozenset({"pages_read", "pages_audit_not_run", "sealed_audit_round_cap"}),
+    _COMPARISON_BOUNDS: frozenset(
+        {
+            "sealed_max_comparison_steps",
+            "max_comparison_character_pairs",
+            "acts_delivered",
+            "acts_with_unmeasured_comparison",
+        }
+    ),
 }
 _GEOMETRY_CALIBRATION_ROW_FIELDS: Final = frozenset(
     {"configuration", "calibrated_for_this_corpus", "sample_count"}
@@ -1007,6 +1019,11 @@ _NOT_MEASURED_RECORDED_IN: Final = {
     _PASS_C: (
         "each page's `page-reading` record, field `audit`, and the sealed Perlector audit "
         "policy's `round_cap`, in the retained run"
+    ),
+    _COMPARISON_BOUNDS: (
+        'each delivered act\'s `perlectio` record, field `dissent`, rows `compared: "unknown"`, '
+        "and the sealed alignment configuration's `[dissent] max_comparison_steps`, in the "
+        "retained run"
     ),
 }
 # In canonical order. `perlector-protocol` is not Designator geometry, but its
@@ -1188,6 +1205,11 @@ def _validate_not_measured_detail(
             _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
         if detail["pages_audit_not_run"] > detail["pages_read"]:
             raise SchemaRefusal(f"{subject} names more unaudited pages than pages read")
+    elif instrument == _COMPARISON_BOUNDS:
+        for field in _NOT_MEASURED_DETAIL_FIELDS[_COMPARISON_BOUNDS]:
+            _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
+        if detail["acts_with_unmeasured_comparison"] > detail["acts_delivered"]:
+            raise SchemaRefusal(f"{subject} names more unmeasured acts than delivered acts")
     elif instrument == _GEOMETRY_CALIBRATION:
         configurations = detail["configurations"]
         if not isinstance(configurations, list) or len(configurations) != len(
@@ -2197,6 +2219,8 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
         if detail["pages_audit_not_run"] == detail["pages_read"]:
             return "declared-unproduced"
         return "not-measured"
+    if instrument == _COMPARISON_BOUNDS:
+        return "measured" if detail["acts_with_unmeasured_comparison"] == 0 else "not-measured"
     raise SchemaRefusal(f"no not-measured status rule exists for {instrument!r}")
 
 
@@ -2300,6 +2324,14 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         raise SchemaRefusal(
             "an Armarium projection's Perlector uncertainty basis does not exactly reconcile "
             "with its delivered act projection"
+        )
+    if (
+        not_measured_basis[_COMPARISON_BOUNDS]["acts_delivered"]
+        != delivered_counts["acts_delivered"]
+    ):
+        raise SchemaRefusal(
+            "an Armarium projection's comparison-bounds basis does not count exactly its "
+            "delivered acts"
         )
     # The run's verdict is computed from the basis, so its damage record must
     # match the delivered acts key for key.
@@ -5327,10 +5359,20 @@ def _verify_page_layers(
         raise SchemaRefusal("the exported re-ask claim does not follow from the act readings")
     held_codes = {row["ordinal"]: row["hold_codes"] for row in page_rows if row["hold_codes"]}
     held = set(held_codes) - _operator_released_pages(sources, manifest, held_codes)
-    pass_c = {entry["instrument"]: entry["detail"] for entry in claims["not_measured"]["entries"]}
-    if pass_c[_PASS_C]["pages_read"] != len(sealed):
+    not_measured = {
+        entry["instrument"]: entry["detail"] for entry in claims["not_measured"]["entries"]
+    }
+    if not_measured[_PASS_C]["pages_read"] != len(sealed):
         raise SchemaRefusal(
             "the Pass C claim does not count exactly the package's real sealed pages as read"
+        )
+    delivered_count = sum(
+        category == ArmariumCategory.DELIVERED.value
+        for category in _manifest_act_categories(manifest).values()
+    )
+    if not_measured[_COMPARISON_BOUNDS]["acts_delivered"] != delivered_count:
+        raise SchemaRefusal(
+            "the comparison-bounds claim does not count exactly the package's delivered acts"
         )
     # Each delivered act's pages are where its cited regions were cut, and the
     # aggregate's page attribution must name every one of them.
