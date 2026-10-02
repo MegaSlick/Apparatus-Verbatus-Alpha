@@ -548,7 +548,7 @@ def build_armarium_bundle(
             _text_bundle_members(
                 projection.acts,
                 source_rows,
-                ledger["status"],
+                ledger,
                 projection.continuation_joins,
                 projection.other_readings,
                 coniector_rows,
@@ -693,8 +693,6 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     search_fold_verification, operator_labels = _verify_product_accounting(
         root, manifest, formats, sources
     )
-    if "text-bundle" in formats.formats:
-        _verify_text_bundle_status(root, manifest, sources)
     _verify_page_layers(root, manifest, formats, sources)
     _verify_continuation_joins(root, formats, sources)
     # The operator rows and the model readings beside corrected ones, read once
@@ -705,6 +703,9 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_operator_layer(
         root, manifest, formats, sources, actual_names, recorded, operator_labels
     )
+    # Last, so every input the writer is fed has been checked on its own.
+    if "text-bundle" in formats.formats:
+        _verify_text_bundle_rendering(root, manifest, sources)
     verification = {}
     if search_fold_verification is not None:
         verification["search_fold"] = search_fold_verification
@@ -1436,8 +1437,6 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
             raise SchemaRefusal(
                 f"continuation join {join['join_id']} does not recompute from its acts' literals"
             )
-    if "text-bundle" in formats.formats:
-        _verify_text_bundle_joins(root, sources, joins, act_keys)
 
 
 def _verify_coniector_layer(
@@ -1893,28 +1892,6 @@ def _operator_released_pages(
             for act_id in on_page.get(ordinal, [])
         )
     }
-
-
-def _verify_text_bundle_joins(root, sources, joins, act_keys) -> None:
-    """Each act section's continuation notes mirror its join rows, and no section joins text."""
-    expected_notes = _join_notes(joins, act_keys)
-    folders = {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
-    for folder in sorted(folders):
-        lines = [*_package_lines(root / _text_member_path(folder), "text bundle"), ""]
-        act_id, act_notes = None, None
-        for line in lines:
-            if act_notes is not None and (not line or line.startswith("## ")):
-                if act_notes != expected_notes.get(act_id, []):
-                    raise SchemaRefusal(
-                        "the text bundle's continuation notes do not mirror its join rows"
-                    )
-                act_notes = None
-            if line.startswith("act-id: "):
-                act_id, act_notes = line.removeprefix("act-id: "), []
-            elif line.startswith("possible-continuation-"):
-                if act_notes is None:
-                    raise SchemaRefusal("a text-bundle continuation line sits outside its section")
-                act_notes.append(line)
 
 
 INK_MAP_DENOMINATOR: Final = "ink-map sealed pages"
@@ -2996,7 +2973,7 @@ def _image_reference(
 def _text_bundle_members(
     acts: tuple[dict[str, Any]],
     source_rows: list[dict[str, Any]],
-    status: str,
+    ledger: dict[str, Any],
     joins: tuple[dict[str, Any], ...] = (),
     others: tuple[dict[str, Any], ...] = (),
     coniector_rows: tuple[dict[str, Any], ...] = (),
@@ -3005,10 +2982,12 @@ def _text_bundle_members(
 ) -> dict[str, bytes]:
     """Write one readable file for every cited source folder.
 
-    Each file opens with the run's status (`status`, the terminal ledger's) and
-    how many of its readings were delivered, and ends with a text-free
-    `## NOT DELIVERED` section for every reading on its pages that was not, so
-    a partial run never reads as complete.
+    Each file opens with the run's status (the terminal `ledger`'s) and how many
+    of its readings were delivered, and ends with a text-free `## NOT DELIVERED`
+    section for every unresolved page or unsealed source in the folder and every
+    reading on its pages that was not delivered, so a partial run never reads as
+    complete. The verifier renders every file again with this function and
+    requires the same bytes.
 
     A reading an operator acted on carries its operator lines, and a corrected
     one the model's reading beside the person's (`model_readings`, by id).
@@ -3065,12 +3044,17 @@ def _text_bundle_members(
         ],
         source_rows,
     )
+    unresolved_pages: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in _unresolved_page_rows(ledger["units"]):
+        unresolved_pages[_source_folder_for_declared_path(row["declared_path"])].append(row)
     for folder in sorted(folders):
         records = grouped[folder]
         lines = [
             f"# Armarium text bundle — source folder: {folder or '.'}",
             *_folder_status_lines(
-                status, len(records) + len(other_groups[folder]), len(not_delivered[folder])
+                ledger["status"],
+                len(records) + len(other_groups[folder]),
+                len(not_delivered[folder]),
             ),
             "",
         ]
@@ -3117,10 +3101,51 @@ def _text_bundle_members(
             lines.extend(
                 _other_section(other, released.get(other["act_id"]), models.get(other["act_id"]))
             )
+        for row in unresolved_pages[folder]:
+            lines.extend(_unresolved_page_section(row))
         for row in not_delivered[folder]:
             lines.extend(_not_delivered_section(row))
         members[_text_member_path(folder)] = "\n".join(lines).encode("utf-8")
     return members
+
+
+def _unresolved_page_rows(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every unresolved sealed page, and every unsealed source, from the ledger's units.
+
+    A sealed page's source unit shares its page unit's category, so only the
+    page is named.
+    """
+    rows = []
+    for unit in units:
+        unit_type, ordinal = unit["unit_id"].split(":", 1)
+        if unit["category"] in _COMPLETED_CATEGORIES or not (
+            unit_type == "page"
+            or (
+                unit_type == "source"
+                and unit["category"] == ArmariumCategory.REFUSED_WITH_REASON.value
+            )
+        ):
+            continue
+        rows.append(
+            {
+                "kind": unit_type,
+                "ordinal": int(ordinal),
+                "category": unit["category"],
+                "reason": unit["reason"],
+                "declared_path": unit["declared_path"],
+            }
+        )
+    return sorted(rows, key=lambda row: row["ordinal"])
+
+
+def _unresolved_page_section(row: dict[str, Any]) -> list[str]:
+    """One text-free section for a page or source the run did not resolve."""
+    return [
+        f"{_NOT_DELIVERED_PREFIX}{row['kind']} {row['ordinal']}",
+        f"not-delivered: {row['kind']} {row['category']}",
+        f"not-delivered-reason: {json.dumps(row['reason'], ensure_ascii=False)}",
+        "",
+    ]
 
 
 _NOT_DELIVERED_PREFIX: Final = "## NOT DELIVERED "
@@ -3138,7 +3163,12 @@ def _folder_status_lines(status: str, delivered: int, not_delivered: int) -> lis
 def _not_delivered_row(reading: dict[str, Any], kind: str) -> dict[str, Any]:
     """What a text bundle says of a reading it does not deliver: who, where, and why."""
     page = _key_page(reading["act_key"]) if kind == "act" else reading["page_ordinal"]
-    return {**_row_head(reading), "kind": kind, "page_ordinal": page}
+    return {
+        **_row_head(reading),
+        "kind": kind,
+        "page_ordinal": page,
+        "approval_ref": reading.get("approval_ref"),
+    }
 
 
 def _not_delivered_by_folder(
@@ -3160,56 +3190,103 @@ def _not_delivered_section(row: dict[str, Any]) -> list[str]:
         f"{_NOT_DELIVERED_PREFIX}{row['act_key']} ({row['act_id']})",
         f"not-delivered: {row['kind']} {row['category']}",
         f"not-delivered-reason: {json.dumps(row['reason'], ensure_ascii=False)}",
+        *(
+            [f"not-delivered-approval: {json.dumps(row['approval_ref'], ensure_ascii=False)}"]
+            if row["approval_ref"] is not None
+            else []
+        ),
         "",
     ]
 
 
-def _verify_text_bundle_status(
+def _verify_text_bundle_rendering(
     root: Path, manifest: dict[str, Any], sources: dict[str, Any]
 ) -> None:
-    """Every text-bundle file states the run's status, its folder's count and its undelivered readings.
+    """Every text-bundle file is exactly what this build's writer renders for the package.
 
-    All three are rebuilt from the package's own accounting with the writer's
-    functions and must be exactly what each file says.
+    The writer is fed only what verification has already checked: the
+    accounting, citations, readings, joins, operator rows and model readings of
+    `sources.json`, the manifest's ledger, and each delivered reading's literal,
+    uncertainty layer and status as the text bundle carries them (hash- and
+    damage-checked by the parsers) with the reconstruction rows it shows (each
+    recomputed). Any other line, a changed title, or a moved section is refused.
     """
-    delivered: dict[str, int] = Counter()
-    for field in ("act_citations", "other_citations"):
-        for citation in _act_citation_sources(sources, field).values():
-            for folder in {
-                _source_folder_for_declared_path(region["declared_path"])
-                for region in citation["source_regions"]
-            }:
-                delivered[folder] += 1
-    rows = [
-        _not_delivered_row(outcome, "act")
-        for outcome in _act_outcome_sources(sources).values()
-        if outcome["category"] != ArmariumCategory.DELIVERED.value
-    ] + [
-        _not_delivered_row(outcome, "other")
-        for outcome in _other_outcome_sources(sources).values()
-        if outcome["category"] != ArmariumCategory.DELIVERED.value
-    ]
-    not_delivered = _not_delivered_by_folder(rows, sources["pages"])
-    folders = {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
-    for folder in sorted(folders):
-        lines = _package_lines(root / _text_member_path(folder), "text bundle")
-        expected = _folder_status_lines(
-            manifest["claims"]["status"], delivered[folder], len(not_delivered[folder])
-        )
-        if lines[1 : 1 + len(expected)] != expected:
-            raise SchemaRefusal(
-                f"the text bundle for folder {folder or '.'!r} does not state the run's status "
-                "and its readings as the package accounts for them"
+    act_texts = _text_bundle_records(root, sources["pages"])
+    other_texts = _text_bundle_other_records(root, sources["pages"])
+    readings = {row["act_id"]: row["reading"] for row in sources["act_readings"]}
+
+    def projected(outcome: dict[str, Any], citations: dict[str, Any], text: Any) -> dict[str, Any]:
+        reading = {**outcome, CANONICAL_TEXT_FIELD: None}
+        if outcome["category"] == ArmariumCategory.DELIVERED.value:
+            literal, uncertainty, status = text
+            reading.update(
+                {
+                    CANONICAL_TEXT_FIELD: literal,
+                    "uncertainty": uncertainty,
+                    "text_status": status,
+                    "source_regions": citations[outcome["act_id"]]["source_regions"],
+                }
             )
-        shown: list[str] = []
-        for index, line in enumerate(lines):
-            if line.startswith(_NOT_DELIVERED_PREFIX):
-                end = lines.index("", index) if "" in lines[index:] else len(lines)
-                shown.extend(lines[index : end + 1])
-        if shown != [line for row in not_delivered[folder] for line in _not_delivered_section(row)]:
+        return reading
+
+    act_citations = _act_citation_sources(sources)
+    acts = tuple(
+        {
+            **projected(
+                outcome,
+                act_citations,
+                (record.literal, record.uncertainty, record.text_status)
+                if (record := act_texts.get(act_id)) is not None
+                else None,
+            ),
+            "reading": readings.get(act_id),
+        }
+        for act_id, outcome in _act_outcome_sources(sources).items()
+    )
+    other_citations = _act_citation_sources(sources, "other_citations")
+    others = tuple(
+        projected(
+            outcome,
+            other_citations,
+            (record[1], record[4], record[5])
+            if (record := other_texts.get(act_id)) is not None
+            else None,
+        )
+        for act_id, outcome in _other_outcome_sources(sources).items()
+    )
+    folders = sorted(
+        {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
+    )
+    files = {
+        folder: _package_lines(root / _text_member_path(folder), "text bundle")
+        for folder in folders
+    }
+    shown = {
+        tuple(row["act_ids"]): row
+        for lines in files.values()
+        for _place, row in text_bundle_placements(lines)[1]
+    }
+    try:
+        expected = _text_bundle_members(
+            acts,
+            sources["pages"],
+            manifest["claims"]["terminal_ledger"],
+            tuple(sources["continuation_joins"] or ()),
+            others,
+            tuple(shown[tuple(act_ids)] for act_ids in sources["reconstructions"] or ()),
+            tuple(sources[OPERATOR_SOURCES_FIELD] or ()),
+            {model["act_id"]: model for model in sources[MODEL_READINGS_FIELD] or ()},
+        )
+    except (KeyError, TypeError) as error:
+        raise SchemaRefusal(
+            "the text bundle cannot be rendered again from the package's own accounting"
+        ) from error
+    for folder in folders:
+        path = _text_member_path(folder)
+        if "\n".join(files[folder]).encode("utf-8") != expected.get(path):
             raise SchemaRefusal(
-                f"the text bundle for folder {folder or '.'!r} does not name exactly the readings "
-                "on its pages that the package does not deliver"
+                f"the text bundle for folder {folder or '.'!r} is not exactly what this build "
+                "writes for the package's own accounting"
             )
 
 
@@ -4994,6 +5071,7 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
             "category",
             "reason",
             "text_status",
+            "approval_ref",
         }:
             raise SchemaRefusal("a source act-outcome record has an unrecognized field set")
         act_id, act_key, category, reason, text_status = (
@@ -5021,6 +5099,15 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
             )
         if category in _REVIEW_CATEGORIES and not reason:
             raise SchemaRefusal("a source review outcome has no explicit reason")
+        # An exclusion names the approval it rests on, and nothing else names one.
+        approval = record["approval_ref"]
+        if (category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value) != (
+            _is_nonempty_str(approval)
+        ) or not isinstance(approval, str | None):
+            raise SchemaRefusal(
+                "a source act-outcome record names an approval exactly when it is not an "
+                "exclusion, or an exclusion without one"
+            )
         records[act_id] = record
     return records
 
@@ -5338,6 +5425,7 @@ def _jsonl_act_records(
             "reason": reason,
             "text_status": record.get("text_status"),
             "reading": record.get("reading"),
+            "approval_ref": record.get("approval_ref"),
         }
     return records
 
@@ -5403,7 +5491,8 @@ def _database_act_records(
         path,
         "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
         "provenance_json, source_regions_json, evidence_json, reason, "
-        "uncertainty_json, uncertainty_status, text_status, reading, operator_label FROM acts",
+        "uncertainty_json, uncertainty_status, text_status, reading, operator_label, "
+        "approval_ref FROM acts",
         "the acts database cannot be read for product accounting",
     )
     records: dict[str, dict[str, Any]] = {}
@@ -5423,6 +5512,7 @@ def _database_act_records(
         text_status,
         reading,
         operator_label,
+        approval_ref,
     ) in rows:
         if (
             not _is_nonempty_str(act_id)
@@ -5475,6 +5565,7 @@ def _database_act_records(
             "text_status": text_status,
             "reading": reading,
             "operator_label": operator_label,
+            "approval_ref": approval_ref,
         }
     return records, literals
 
@@ -5536,6 +5627,7 @@ def _verify_exact_product_outcomes(
             or record["category"] != outcome["category"]
             or record.get("reason") != outcome["reason"]
             or record.get("text_status") != outcome["text_status"]
+            or record.get("approval_ref") != outcome.get("approval_ref")
         ):
             raise SchemaRefusal(f"the {subject} does not retain its exact terminal reason")
 
@@ -5972,7 +6064,11 @@ def _act_outcomes(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     every format is checked against it.
     """
     return [
-        {**_row_head(act), "text_status": act.get("text_status")}
+        {
+            **_row_head(act),
+            "text_status": act.get("text_status"),
+            "approval_ref": act.get("approval_ref"),
+        }
         for act in sorted(acts, key=lambda item: item["act_id"])
     ]
 

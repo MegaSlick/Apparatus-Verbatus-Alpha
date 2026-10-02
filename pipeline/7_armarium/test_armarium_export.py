@@ -553,6 +553,14 @@ def _edited_text_bundle(data: bytes, edit) -> bytes:
     return _zip_bytes(members)
 
 
+def _stub_first(lines: list[str]) -> None:
+    """The NOT DELIVERED section moved ahead of the delivered act's, content intact."""
+    stub = lines.index("## NOT DELIVERED p1:2 (act-2)")
+    section = lines[stub : stub + 4]
+    del lines[stub : stub + 4]
+    lines[4:4] = section
+
+
 def _drop_stub(lines: list[str]) -> None:
     stub = lines.index("## NOT DELIVERED p1:2 (act-2)")
     del lines[stub : stub + 4]
@@ -563,15 +571,28 @@ def _drop_stub(lines: list[str]) -> None:
     [
         (
             lambda lines: lines.__setitem__(1, "run-status: complete"),
-            "does not state the run's status",
+            "is not exactly what this build writes",
         ),
         (
             lambda lines: lines.__setitem__(2, "folder-readings: 1 delivered, 0 not delivered"),
-            "does not state the run's status",
+            "is not exactly what this build writes",
         ),
-        (_drop_stub, "does not name exactly the readings"),
+        (_drop_stub, "is not exactly what this build writes"),
+        (lambda lines: lines.insert(4, "a line no writer wrote"), "is not exactly what"),
+        (
+            lambda lines: lines.__setitem__(0, "# Armarium text bundle — source folder: other"),
+            "is not exactly what",
+        ),
+        (_stub_first, "is not exactly what"),
     ],
-    ids=["status-made-complete", "count-edited", "stub-dropped"],
+    ids=[
+        "status-made-complete",
+        "count-edited",
+        "stub-dropped",
+        "free-line-inserted",
+        "title-edited",
+        "section-reordered",
+    ],
 )
 def test_a_text_bundle_that_hides_a_partial_run_is_refused(tmp_path, edit, refusal):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
@@ -2580,6 +2601,12 @@ def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles
     assert bundle.manifest["claims"]["partial_reasons"] == [
         "page 1 delivered no act; its acts are confirmed-blank, excluded-with-approval"
     ]
+    text = _members(bundle.data)[TEXT_REGISTER].decode("utf-8")
+    assert "## NOT DELIVERED page 1\nnot-delivered: page held-for-review\n" in text
+    assert (
+        "## NOT DELIVERED p1:2 (act-2)\nnot-delivered: act excluded-with-approval\n"
+        'not-delivered-reason: null\nnot-delivered-approval: "approvals/exclusion-1"\n'
+    ) in text
     # Another fact about the same page (a person's clearance of it) does not
     # stand in for this one: each fact is its own string, named once.
     cleared = run_aggregate(
@@ -2694,6 +2721,14 @@ def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
     assert "counts no reading of it" in units["page:3"]["reason"]
     assert ledger["by_unit_type"] == {"source": 3, "page": 2, "act": 2, "other": 0}
     assert sum(ledger["by_category"].values()) == ledger["unit_count"] == 7
+    # The readable text names the refused source and the silent page as well.
+    text = _members(bundle.data)[TEXT_REGISTER].decode("utf-8")
+    assert (
+        "## NOT DELIVERED source 2\nnot-delivered: source refused-with-reason\n"
+        'not-delivered-reason: "the submitted bytes were not a readable image"\n'
+    ) in text
+    assert "## NOT DELIVERED page 3\nnot-delivered: page held-for-review\n" in text
+    verify_export_bundle(bundle.data, tmp_path / "clean")
     # Five unresolved units, three facts: each named once, by the act's key or
     # the page's ordinal, never again as the source or page unit beside it.
     assert ledger["unresolved_reasons"] == [
@@ -3825,7 +3860,7 @@ def test_a_note_moved_to_another_act_is_refused(tmp_path):
     anchor = "act-id: act-4\nreading: first reading\n"
     members[name] = text.replace(anchor, anchor + note, 1).encode("utf-8")
     _refresh_manifest_member(members, name)
-    with pytest.raises(SchemaRefusal, match="notes do not mirror"):
+    with pytest.raises(SchemaRefusal, match="is not exactly what this build writes"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "moved")
 
 
@@ -3920,8 +3955,14 @@ _NOTE = "possible-continuation-on: p2:1 (page 2) [join-1-2-0]\n"
 @pytest.mark.parametrize(
     ("place", "refusal"),
     [
-        (lambda text: text.replace(_NOTE, _NOTE + _NOTE, 1), "notes do not mirror"),
-        (lambda text: text.replace("\n\n", "\n" + _NOTE + "\n", 1), "outside its section"),
+        (
+            lambda text: text.replace(_NOTE, _NOTE + _NOTE, 1),
+            "is not exactly what this build writes",
+        ),
+        (
+            lambda text: text.replace("\n\n", "\n" + _NOTE + "\n", 1),
+            "is not exactly what this build writes",
+        ),
     ],
 )
 def test_a_duplicated_or_stray_note_is_refused(tmp_path, place, refusal):

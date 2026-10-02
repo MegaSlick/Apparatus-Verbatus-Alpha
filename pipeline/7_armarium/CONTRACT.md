@@ -174,7 +174,7 @@ compared for identity (`text-bundle`, `acts-database`, `jsonl`; empty below two)
 The text-free source graph every package carries, whatever its formats: `pages`,
 `regions` (every cited crop), `act_citations` (each delivered act's provenance, source
 regions and evidence), `act_outcomes` (`{act_id, act_key, category, reason,
-text_status}` per act), `aggregate_basis`, `witness_chairs`, `witness_floor`,
+text_status, approval_ref}` per act, `approval_ref` exactly for an exclusion), `aggregate_basis`, `witness_chairs`, `witness_floor`,
 `ink_map_pages`, `other_outcomes` and `other_citations` (the same for other readings,
 with `page_ordinal`), `page_accounting` and `act_readings`. When present:
 `continuation_joins`, `reconstructions` (the act ids of each shown reconstruction),
@@ -213,12 +213,18 @@ the acts come join reconstructions, then each delivered other reading as its own
 `## OTHER <act_key> (not an act)` section with fields named apart from an act's
 (`other-id:`, `other-source-page:`, `other_text:`, `other_uncertainty:`,
 `other_text_status:`), so no act reader reads one as an act. The file ends with one
-text-free section for every act or other reading on its pages that was not delivered:
+text-free section for every unresolved sealed page and every unsealed source in the
+folder, and then for every act or other reading on its pages that was not delivered:
 
 ```text
+## NOT DELIVERED page | source <ordinal>
+not-delivered: page | source <category>
+not-delivered-reason: <the reason, as one JSON string>
+
 ## NOT DELIVERED <act_key> (<act_id>)
 not-delivered: act | other <category>
 not-delivered-reason: <the reason, as one JSON string, or null>
+not-delivered-approval: <the approval_ref, as one JSON string>   (an exclusion only)
 ```
 
 A folder whose readings were all held still gets its file. Every value a model or a
@@ -394,7 +400,9 @@ root, or aliased by case or Unicode normalization), a member that does not match
 manifest digest and byte count, and any member or field outside its closed shape. It
 recomputes the ledger, the aggregate, every claim and each format's rows from
 `sources.json`, and requires every format to carry the same text, uncertainty layer,
-status, reason, provenance and labelled layers for each reading. The search fold is
+status, reason, provenance and labelled layers for each reading. Each `readings.txt`
+is rendered again by the writer from what has already been checked and must be the
+same bytes, so no line, title or section can be added, edited or moved. The search fold is
 recomputed only under the Unicode database it was made with; `bundle.py` refuses to
 publish when it could not be, so publish under the same Python as the build.
 
