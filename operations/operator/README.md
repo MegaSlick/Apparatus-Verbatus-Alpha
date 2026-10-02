@@ -71,9 +71,10 @@ candidate evidence, triage documents and a final `ingest-ready.json`.
 - **A confirmed re-shoot cluster cannot go to the Door.** The Door refuses, whole, any
   submission whose triage names a re-shoot cluster, since no later stage links two
   captures of one leaf (`pipeline/1_exemplar/CONTRACT.md`). Submit one capture per leaf.
-- **The write is pinned to the preview.** The write reads everything again. If any source file, the confirmation, the instrument settings, the policy or
-  the output folder changes in between, the write refuses rather than commit something
-  other than what you approved.
+- **What is written is what was shown.** The plan and the write come from one
+  preparation; the write first checks that the output folder is the one prepared and
+  still empty. The work runs in a separate process that holds no credential, since it
+  decodes the submitted images.
 - **The output folder goes beside the submitted folder, never inside it.** Anything
   written inside would count as a submitted file, and the Door would refuse the
   submission.

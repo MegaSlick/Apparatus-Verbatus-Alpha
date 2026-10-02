@@ -2,20 +2,23 @@
 
 The ingest reads the submitted folder through the data gate, builds the
 submission ledger and the triage instrument's evidence, and plans every file
-it will write. It prints that plan, and only then makes the immutable files in
-the one empty approved output folder the person selected.
+it will write. It prints that plan, then makes exactly those immutable files in
+the one empty approved output folder the person selected, from the same
+prepared result; the write first checks again that the folder is the one
+prepared and still empty.
 
-The preview and the commit each read the source folder, confirmation file,
-triage instrument configuration and data-handling policy fresh from disk. The
-commit carries the digests and output-folder identity its preview showed and
-refuses to write unless all five still match, so what is written is what was
-shown. The pin is an equality test and nothing more: it can only refuse, and no
-matching digest skips a check that would otherwise run.
+The submitted masters are untrusted images, so the work runs in a child Python
+process (`main`) whose environment holds no credential
+(`surface.credential_free_environment`). The parent only validates the
+request, starts the child and relays what it prints.
 """
 
 from __future__ import annotations
 
+import json
 import stat
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,16 +43,13 @@ MAX_INGEST_CANDIDATE_PAIRS: Final = 20_000
 # identifier and prevents one command-line value from multiplying across a full
 # corpus manifest.
 MAX_CORPUS_ID_CHARACTERS: Final = 256
-
-EXPECTED_DIGEST_FIELDS: Final = (
-    "expected_submission_manifest_sha256",
-    "expected_confirmation_sha256",
-    "expected_instrument_config_sha256",
-    "expected_data_handling_policy_sha256",
-)
-EXPECTED_OUTPUT_IDENTITY_FIELDS: Final = ("expected_output_device", "expected_output_inode")
-# What a preparation may refuse on: nothing is written by then.
+# What a preparation or a write may refuse on.
 _REFUSALS: Final = (ContractError, OSError, TypeError, ValueError, UnicodeError)
+# The child's exit statuses: refused before anything was written, or a write
+# that did not finish, which may have left records behind.
+REFUSED_EXIT: Final = 2
+UNRESOLVED_EXIT: Final = 3
+_CHECKOUT: Final = Path(__file__).resolve().parents[2]
 
 
 def ingest(
@@ -63,17 +63,16 @@ def ingest(
     workspace: Path,
     printer: Callable[[str], None],
 ) -> None:
-    """Show the whole plan, then write exactly it, pinned to what was shown."""
+    """Prepare, show and write the ready folder in a credential-free child process."""
 
-    source_path = _absolute_path(source, workspace)
-    output_path = _absolute_path(output_dir, workspace)
+    from .surface import credential_free_environment
+
     request = {
-        "operation": "preview",
         # Do not resolve operator-selected paths here. `resolve()` follows a
         # symlink before the data gate can reject that redirection, converting
         # the gate's deliberate no-symlink rule into an invisible bypass.
-        "source": str(source_path),
-        "output_dir": str(output_path),
+        "source": str(_absolute_path(source, workspace)),
+        "output_dir": str(_absolute_path(output_dir, workspace)),
         "policy": str(
             _absolute_path(
                 policy_path or workspace / "config" / "data_handling_policy.json", workspace
@@ -84,36 +83,48 @@ def ingest(
         "confirmation_file": None
         if confirmation_file is None
         else str(_absolute_path(confirmation_file, workspace)),
-        **{name: None for name in (*EXPECTED_DIGEST_FIELDS, *EXPECTED_OUTPUT_IDENTITY_FIELDS)},
     }
     try:
-        previewed = _prepare(_request(request))
-    except _REFUSALS as error:
+        _request(request)
+    except ValueError as error:
         raise OperatorError(ErrorCode.INGEST_REFUSED, detail=str(error)) from error
-    shown = _summary(previewed)
-    _print_preview(shown, printer)
-    commit_request = {
-        **request,
-        "operation": "commit",
-        "expected_submission_manifest_sha256": shown["submission_manifest_sha256"],
-        "expected_confirmation_sha256": shown["confirmation_sha256"],
-        "expected_instrument_config_sha256": shown["instrument_config_sha256"],
-        "expected_data_handling_policy_sha256": shown["data_handling_policy_sha256"],
-        "expected_output_device": previewed.output_identity[0],
-        "expected_output_inode": previewed.output_identity[1],
-    }
+    completed = subprocess.run(
+        [sys.executable, "-m", "operations.operator.ingest"],
+        cwd=_CHECKOUT,
+        env=credential_free_environment(),
+        input=json.dumps(request),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for line in completed.stdout.splitlines():
+        printer(line)
+    detail = completed.stderr.strip() or f"the ingest child exited {completed.returncode}"
+    if completed.returncode == REFUSED_EXIT:
+        raise OperatorError(ErrorCode.INGEST_REFUSED, detail=detail)
+    if completed.returncode != 0:
+        raise OperatorError(ErrorCode.INGEST_UNRESOLVED, detail=detail)
+
+
+def main() -> int:
+    """The child: prepare once, print the plan, write it, and say what the Door will see."""
+
     try:
-        prepared = _prepare(_request(commit_request))
+        prepared = _prepare(_request(json.loads(sys.stdin.read())))
     except _REFUSALS as error:
-        raise OperatorError(ErrorCode.INGEST_REFUSED, detail=str(error)) from error
+        print(str(error), file=sys.stderr)
+        return REFUSED_EXIT
+    _print_preview(_summary(prepared), print)
+    sys.stdout.flush()
     try:
         _commit(prepared)
     except _REFUSALS as error:
-        raise OperatorError(ErrorCode.INGEST_UNRESOLVED, detail=str(error)) from error
+        print(str(error), file=sys.stderr)
+        return UNRESOLVED_EXIT
     summary = _summary(prepared)
-    printer(
+    print(
         "Ready-to-submit folder: "
-        f"{strip_control_bytes(str(output_path))}\n"
+        f"{strip_control_bytes(str(prepared.output_dir))}\n"
         "What the Door will see: "
         f"{summary['submission_files']} submitted file(s), ledger self-hash "
         f"{summary['submission_ledger_self_hash']}, "
@@ -121,6 +132,7 @@ def ingest(
         f"{summary['confirmed_cluster_count']} confirmed cluster(s).\n"
         "No pod was started, confirmed, or billed. The observation-based full-run exit remains the project lead's."
     )
+    return 0
 
 
 def _absolute_path(path: Path, workspace: Path) -> Path:
@@ -175,14 +187,6 @@ def _prepare(request: Mapping[str, Any]) -> PreparedIngest:
         Path(request["output_dir"]), roots, "ingest output folder"
     )
     output_identity = _directory_identity(output_dir)
-    if request["operation"] == "commit" and output_identity != (
-        request["expected_output_device"],
-        request["expected_output_inode"],
-    ):
-        raise ValueError(
-            "the ingest output folder changed after the preview was shown; nothing was "
-            "written. Choose a new empty approved folder and run ingest again."
-        )
     if gate.same_or_inside(source, output_dir):
         # Filesystem identity, not spelling: a case-variant path on default
         # (case-insensitive) APFS defeats a textual `is_relative_to` here.
@@ -214,38 +218,6 @@ def _prepare(request: Mapping[str, Any]) -> PreparedIngest:
         if request["confirmation_file"] is None
         else producer.load_confirmation(Path(request["confirmation_file"]))
     )
-    # These four reads determine authorization, generated evidence, and written
-    # records. Commit may only compare their freshly derived digests with preview's;
-    # the supplied digests never skip validation or authorize another write. The
-    # output directory's device/inode check above is the fifth pin.
-    if request["operation"] == "commit":
-        for expected, observed, changed in (
-            (
-                request["expected_submission_manifest_sha256"],
-                digest_of(manifest),
-                "the submitted folder",
-            ),
-            (
-                request["expected_confirmation_sha256"],
-                None if confirmation is None else digest_of(confirmation),
-                "the confirmation file",
-            ),
-            (
-                request["expected_instrument_config_sha256"],
-                config.source_sha256,
-                "the triage instrument configuration",
-            ),
-            (
-                request["expected_data_handling_policy_sha256"],
-                policy_binding.config_sha256,
-                "the data-handling policy",
-            ),
-        ):
-            if expected != observed:
-                raise ValueError(
-                    f"{changed} changed after the ingest preview was shown; nothing was "
-                    "written. Run the ingest preview again and commit that exact result."
-                )
     produced = producer.produce(
         frames,
         corpus_id=request["corpus_id"],
@@ -618,14 +590,12 @@ def _print_preview(summary: dict[str, Any], printer: Callable[[str], None]) -> N
             if summary["confirmed_cluster_count"]
             else "no cluster confirmation file was supplied; every cluster field stays null."
         )
-        + "\nThe following immutable files will be written only now:\n"
+        + "\nThe following immutable files are written now, from exactly this plan:\n"
         + "\n".join(planned_lines)
-        + "\nThis exact submission ledger, the data-handling policy"
-        + (
-            ", the triage instrument settings, and this confirmation are"
-            if summary["confirmation_sha256"] is not None
-            else " and the triage instrument settings are"
-        )
-        + " sealed by digest: if any of them changes before commit runs, commit refuses "
-        "rather than write something other than what is shown above."
+        + "\nThe write first checks that the output folder is the one prepared and still "
+        "empty, and refuses rather than write anywhere else."
     )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
