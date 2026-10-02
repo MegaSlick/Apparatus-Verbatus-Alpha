@@ -329,14 +329,16 @@ def _verify_two_folders(monkeypatch, tmp_path, shown_by_folder: dict[str, list[d
             ],
         ),
     )
-    monkeypatch.setattr(armarium_export, "verify_row", lambda row, _literals, _keys: row)
+    monkeypatch.setattr(
+        armarium_export, "verify_row", lambda row, _literals, _keys, _corrected=None: row
+    )
     monkeypatch.setattr(armarium_export, "_verify_retained_references", lambda _row: None)
     sources = {
         "pages": [{"declared_path": f"{folder}/folio.png"} for folder in shown_by_folder],
         "reconstructions": [["act_a"]],
     }
     armarium_export._verify_coniector_layer(
-        tmp_path, ArmariumFormats(("text-bundle",), False), sources, set()
+        tmp_path, {}, ArmariumFormats(("text-bundle",), False), sources, set()
     )
 
 
