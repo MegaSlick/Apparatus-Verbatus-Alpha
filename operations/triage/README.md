@@ -10,7 +10,6 @@ its own output into a link between frames: only a confirmation a person supplies
 | `instrument.py`, `instrument.toml` | Co-visibility candidate evidence for pairs of frames |
 | `producer.py` | Decision-manifest rows, cluster records and corpus-register appends |
 | `paths.py` | Canonical relative-path checks shared by both |
-| `reconcile.py`, `recordgold_midpoint_pilot.py`, `scantailor_bridge.py`, `scantailor_project.py` | One-off measurement and ScanTailor tools, to be retired; no stage or operator command calls them |
 
 ## The instrument
 
