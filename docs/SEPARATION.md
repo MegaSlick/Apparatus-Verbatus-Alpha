@@ -15,8 +15,8 @@ Nothing has moved yet; this page only classifies.
 - **PRIVATE** is local and gitignored; only the folder's README is tracked. Beta keeps
   the folders the product uses (`private/`, `scriptorium/`); `workbench/` is the
   harness's own.
-- **AMBIGUOUS** marks a path whose class is still to be decided. Each one is explained
-  under [Open questions](#open-questions).
+- **AMBIGUOUS** marks a path whose class is still to be decided, with the question
+  under [Decisions](#decisions). None is open today.
 
 ## Inventory
 
@@ -32,7 +32,7 @@ for a script to read.
 | Path | Class | Note |
 |---|---|---|
 | `.claude/` | HARNESS | AI agent roles, skills and permissions |
-| `.coderabbit.yaml` | AMBIGUOUS | AI review app configuration |
+| `.coderabbit.yaml` | HARNESS | AI review app configuration |
 | `.gitattributes` | PRODUCT | |
 | `.githooks/check-all.sh` | PRODUCT | full gate, run by CI |
 | `.githooks/check-documents.sh` | PRODUCT | drop the separation check at the copy |
@@ -82,13 +82,13 @@ for a script to read.
 | `operations/pod/HANDOFF.md` | HISTORY | |
 | `operations/pod/V2_MIGRATION.md` | HISTORY | |
 | `operations/pod/session_end_pod_check.sh` | HARNESS | Claude Code session-end hook |
-| `operations/review/` | AMBIGUOUS | review-candidate receipts |
+| `operations/review/` | HARNESS | review-candidate receipts |
 | `operations/serving/` | PRODUCT | |
-| `operations/spike_perlector/` | AMBIGUOUS | Perlector spike |
+| `operations/spike_perlector/` | HARNESS | Perlector spike |
 | `operations/submit/` | PRODUCT | |
 | `operations/test_http_deadline.py` | PRODUCT | |
 | `operations/triage/` | PRODUCT | |
-| `operations/triage/measured/` | AMBIGUOUS | results of one measured pass |
+| `operations/triage/measured/` | HISTORY | results of one measured pass |
 | `pipeline/` | PRODUCT | |
 | `private/` | PRIVATE | |
 | `proof/` | PRODUCT | synthetic fixtures and their tests |
@@ -98,23 +98,21 @@ for a script to read.
 | `uv.lock` | PRODUCT | |
 | `workbench/` | PRIVATE | the harness's notes; stays in alpha |
 
-## Open questions
+## Decisions
 
-Each has a recommendation; the lead decides.
+- **`.coderabbit.yaml` is HARNESS.** Its instructions speak to the lead and to the
+  AI-written workflow. If beta wants the app, it gets a fresh, short configuration.
+- **`operations/review/` is HARNESS.** It pins a review to one commit for the
+  multi-reviewer process in `AGENTS.md`, which beta does not carry.
+- **`operations/spike_perlector/` is HARNESS.** `operations/corpus/` imports its scoring,
+  so a copy taken today would have to move those parts into product code first.
+- **`operations/triage/measured/` is HISTORY.** It records one measured pass on seven
+  real register frames. No code reads it, and beta starts without it.
 
-- **`.coderabbit.yaml`.** Is an AI review app part of beta's plain developer tools? Its
-  instructions speak to the lead and the AI-written workflow. Recommendation: HARNESS.
-  If beta wants the app, write a fresh, short configuration there.
-- **`operations/review/`.** Is pinning a review to one commit a plain developer tool or
-  part of the AI review workflow? It exists for the multi-reviewer process in
-  `AGENTS.md`. Recommendation: HARNESS.
-- **`operations/spike_perlector/`.** The spike is harness, but `operations/corpus/`
-  imports its scoring, normalization and output status. Recommendation: before the copy,
-  move those shared parts into product code (beside the corpus scoring), then leave the
-  spike in alpha as HARNESS.
-- **`operations/triage/measured/`.** Facts about one measured pass on seven real register
-  frames, kept as a record; no code reads them. Recommendation: HISTORY, and leave it
-  out of beta, since it describes real register pages.
+The cleanup train deletes several of these paths (the spike, the corpus, the bench and
+the metrics in its PR 8; the review-candidate code in its PR 6). When a deletion lands,
+the check fails on the row that no longer matches anything, and that row goes. The
+inventory is final only once it is taken against the `main` that beta is copied from.
 
 ## Harness ties inside product files
 
