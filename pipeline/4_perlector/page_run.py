@@ -232,6 +232,10 @@ class _Page:
     plans: list[dict[str, Any]] = field(default_factory=list)
     # The page's operator re-reads in attempt order: those already read, then a new one.
     rereads: list[_Request] = field(default_factory=list)
+    # The entry plans the page counts so far: its first reading's with any the re-ask
+    # added, then the last operator re-read's that read anything. An operator re-read
+    # is planned against them.
+    counted: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -492,6 +496,7 @@ def _finish(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | 
         if state.reask_budget and not state.live:
             page_path.fixture_reask_answer(state.context, page.ordinal, planned=False)
         publish_act_records(state, page, reading, plans, accounting)
+        page.counted = plans
         return
     page.reading, page.plans = reading, plans
     page.reask = _prepare_reask(state, page, reading, accounting, named)
@@ -663,12 +668,15 @@ def _finish_reread(
             truncation_policy=state.run.protocol_config["truncation"],
             accounting_policy=state.accounting_policy,
             attempt=request.ordinal,
+            superseded=page.counted,
         )
         if payload["disposition"] == READ
         else []
     )
     accounting = publish_page_accounting(state, page, reading, plans, attempt=request.ordinal)
     publish_act_records(state, page, reading, plans, accounting)
+    if plans:
+        page.counted = plans
 
 
 def _prepare_reask(
@@ -758,6 +766,7 @@ def _finish_reask(state: _PagePass, page: _Page, result: dict[str, Any] | Except
     )[len(page.plans) :]
     publish_act_records(state, page, page.reading, page.plans, accounting)
     publish_act_records(state, page, second, recovered, accounting)
+    page.counted = page.plans + recovered
 
 
 def _reading(state: _PagePass, page: _Page, request: _Request, result) -> dict[str, Any]:

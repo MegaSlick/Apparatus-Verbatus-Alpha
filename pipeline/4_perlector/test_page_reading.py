@@ -2021,3 +2021,39 @@ def test_the_deadline_count_takes_every_operator_re_read_the_window_may_send(mon
     )
     assert page_run._left_to_send(state, [page], page_run._reread_requests) == 2
     assert [args[3] for args in sends] == [3, 4]
+
+
+def _entries(*acts: tuple[str, list[str]]) -> list[dict]:
+    return [{"act": {"kind": kind}, "cited_ids": ids} for kind, ids in acts]
+
+
+@pytest.mark.parametrize(
+    ("reread", "kept"),
+    [
+        # The same acts, read again with other or more ids: kept.
+        ((("act", ["A1"]), ("act", ["A2", "L3"])), True),
+        ((("act", ["A1"]), ("act", ["A2"]), ("other", ["S1"])), True),
+        # Merged into one entry, whatever its text: not kept.
+        ((("act", ["A1", "A2"]),), False),
+        # Read as something other than an act: not kept.
+        ((("act", ["A1"]), ("other", ["A2"])), False),
+        # Left out, or split across two entries: not kept.
+        ((("act", ["A1"]),), False),
+        ((("act", ["A1"]), ("act", ["A2"]), ("act", ["A2"])), False),
+        # Two acts kept, but one entry also reads the other's ink: not kept.
+        ((("act", ["A1", "A2"]), ("act", ["A2"])), False),
+    ],
+)
+def test_a_re_read_keeps_each_act_it_replaces_as_one_act_of_its_own(reread, kept):
+    """The rule reads only cited ids and kinds, so it holds the same with or without a
+    record detector."""
+    replaced = _entries(("act", ["A1"]), ("act", ["A2"]))
+    assert page_path.superseded_acts_kept(replaced, _entries(*reread)) is kept
+
+
+def test_an_act_whose_ids_another_act_also_cites_is_followed_by_the_count():
+    """A replaced reading whose second act also cited the first act's ids: a re-read
+    that reads the two apart keeps both; one that merges them does not."""
+    replaced = _entries(("act", ["A1"]), ("act", ["A1", "A2"]))
+    assert page_path.superseded_acts_kept(replaced, _entries(("act", ["A1"]), ("act", ["A2"])))
+    assert not page_path.superseded_acts_kept(replaced, _entries(("act", ["A1", "A2"])))

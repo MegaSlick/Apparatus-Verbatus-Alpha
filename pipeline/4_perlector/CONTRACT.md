@@ -204,14 +204,17 @@ operator_reread: {decisions: [{decision_hash, approval_ref}], supersedes: [readi
 and inputs both. It has its own accounting and act records, minted from its own
 attempt, and becomes the page's current reading: the page-read denominator counts its
 entries alone. The earlier readings and their records stay as read, marked
-superseded. Nothing compares the re-read's entries with the superseded reading's;
-the re-read is accounted against the page's evidence like any reading. An act the
-superseded reading named and the re-read leaves out or sets aside leaves its ink,
-witness units, lines and detector records unaccounted for, and the page holds. An act
-the re-read merges into another entry, or relabels `other`, holds only through the
-record detector (`merged-detection`, `record-read-as-other`) or, where the merged
-entry's text lacks the act's witness text, rule (e); on a run with no record detector
-and a merged entry carrying both texts, it does not hold.
+superseded.
+
+A re-read is planned against the entries the page counted before it (its first
+reading with any the re-ask added, or the last re-read that read anything). Each
+`act` entry of those is followed by its own ids, the ones no other act of it cites:
+they must all be cited by exactly one `act` entry of the re-read, which cites no other
+replaced act's own ids, and the re-read must name at least as many acts. Otherwise
+every entry of the re-read holds `superseded-act-not-read`, a page-wide hold a page
+decision clears: an act may not leave the count by being left out, set aside, merged
+into another entry, split, or read as `other`, with or without a record detector. The
+re-read is also accounted against the page's evidence like any reading.
 
 ## Resume
 

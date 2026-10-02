@@ -153,6 +153,9 @@ READING_INCOMPLETE: Final = "reading-incomplete"
 DOUBT_MARKS_MALFORMED: Final = "doubt-marks-malformed"
 ENTRY_NO_READABLE_TEXT: Final = "entry-no-readable-text"
 NO_AUTOPSIA: Final = "no-autopsia"
+# Held on every entry of an operator re-read that does not read each act of the
+# reading it replaces as one act of its own (`superseded_acts_kept`).
+SUPERSEDED_ACT_NOT_READ: Final = "superseded-act-not-read"
 
 # The act classes an entry mints: placed on the page, or citing no placing id
 # (`page_accounting.placement_boxes`).
@@ -719,6 +722,7 @@ def entry_plans(
     attempt: int = page_edges.FIRST_READING,
     named: list[str] | None = None,
     first_count: int = 0,
+    superseded: list[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Each entry of a read answer as it is published, from the answer, feed and sealed policies.
 
@@ -740,7 +744,15 @@ def entry_plans(
     reading's (`doubt-marks-malformed`, `reading-incomplete`,
     `entry-no-readable-text`). The page accounting reads the truncations from
     here, before any act record exists.
+
+    An operator re-read is given `superseded`, the entry plans the page counted
+    before it. When it does not read each of their acts as one act of its own
+    (`superseded_acts_kept`), every one of its entries holds
+    `superseded-act-not-read`: an act may not leave the count inside a re-read by
+    being dropped, merged into another or read as something else.
     """
+    if (superseded is not None) != is_operator_reread(attempt):
+        raise ContractError("only an operator re-read is planned against the reading it replaces")
     page_pixels = feed["page_size"]["w"] * feed["page_size"]["h"]
     if (attempt == page_edges.REASK_READING) != (named is not None):
         raise ContractError("a re-ask's entries are planned with its named ids, and only its")
@@ -797,7 +809,42 @@ def entry_plans(
                 "autopsia": autopsia,
             }
         )
+    if superseded is not None and not superseded_acts_kept(superseded, plans):
+        for plan in plans:
+            plan["reading_holds"].append(SUPERSEDED_ACT_NOT_READ)
     return plans
+
+
+def superseded_acts_kept(
+    superseded: list[Mapping[str, Any]], plans: list[Mapping[str, Any]]
+) -> bool:
+    """Whether a re-read reads every act of the reading it replaces as one act of its own.
+
+    An `act` entry of `superseded` is followed by its own ids, those no other
+    superseded act cites: all of them must be cited by exactly one `act` entry of
+    the re-read, and that entry may cite no other superseded act's own ids. An act
+    whose every id another act also cites cannot be followed that way, so the
+    re-read must also name at least as many acts as the reading it replaces. A
+    merge, a relabel as anything but an act, a split, and an act left out or set
+    aside each fail.
+    """
+    acts = [entry for entry in superseded if entry["act"]["kind"] == "act"]
+    readings = [set(plan["cited_ids"]) for plan in plans if plan["act"]["kind"] == "act"]
+    if len(readings) < len(acts):
+        return False
+    owners: dict[str, int] = {}
+    for entry in acts:
+        for cited in set(entry["cited_ids"]):
+            owners[cited] = owners.get(cited, 0) + 1
+    own = [{cited for cited in entry["cited_ids"] if owners[cited] == 1} for entry in acts]
+    for index, ids in enumerate(own):
+        if not ids:
+            continue
+        others = set().union(*(other for at, other in enumerate(own) if at != index))
+        covering = [cited for cited in readings if cited & ids]
+        if len(covering) != 1 or not ids <= covering[0] or covering[0] & others:
+            return False
+    return True
 
 
 def reask_act_plans(
