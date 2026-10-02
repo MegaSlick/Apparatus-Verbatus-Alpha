@@ -102,6 +102,7 @@ from common.stage import (
     PAGE_BLANK_HOLD,
     latest_attempt,
     reading_denominator,
+    real_pages,
 )
 
 # The kind of the Archetypus record that establishes one reading.
@@ -895,8 +896,10 @@ def review_pages(
     decided, decisions = decide_reviews(context, planned)
     ordinal = None if decisions is None else _review_decisions_ordinal(context, decisions)
     by_id = {act["act_id"]: act for act in acts}
+    # A null side's evidence is its page's reading, and a canary page is no side.
+    real = real_pages(context.run, pages)
     links = [
-        (subject, payload, link_inputs(payload, by_id, pages))
+        (subject, payload, link_inputs(payload, by_id, real))
         for subject, payload in run_page_breaks(context, acts)
     ]
 
@@ -1180,7 +1183,9 @@ def write_reading_receipt(
                 "coverage": coverage,
             }
         )
-    links = current_links(context, run_page_breaks(context, acts), by_id, pages)
+    links = current_links(
+        context, run_page_breaks(context, acts), by_id, real_pages(context.run, pages)
+    )
     receipt = build_recensor_reading_receipt(
         run_id=context.tree.run_id,
         config_digest=context.run["config_digest"],

@@ -3881,10 +3881,17 @@ def real_page_entries(run: Mapping[str, Any], entries: Iterable[Mapping[str, Any
     """The entries on the run's real pages: every one not on a canary page.
 
     Canary pages are controls, so an entry on one is never read beside a real
-    page's: never a side of a page break, a reconstruction or its context.
+    page's: never a side of a page break, its evidence, a reconstruction or its
+    context.
     """
     canaries = canary_ordinals(run)
     return [entry for entry in entries if entry["page_ordinal"] not in canaries]
+
+
+def real_pages(run: Mapping[str, Any], pages: Mapping[int, Any]) -> dict[int, Any]:
+    """`pages`, keyed by page ordinal, without the canary pages (`real_page_entries`)."""
+    canaries = canary_ordinals(run)
+    return {ordinal: page for ordinal, page in pages.items() if ordinal not in canaries}
 
 
 def exemplar_page_ids(context) -> dict[int, str]:

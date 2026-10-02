@@ -43,10 +43,10 @@ from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_HOLD,
     boundary_advanced,
-    canary_ordinals,
     exemplar_page_ids,
     latest_attempt,
     real_page_entries,
+    real_pages,
     stage_manifest,
 )
 
@@ -783,12 +783,7 @@ def run_page_breaks(context, acts: Sequence[Mapping[str, Any]]) -> list[tuple[st
     either side of a link (and so from a join in the real export), and keeps a
     real run's breaks the same with or without canaries beside it.
     """
-    canaries = canary_ordinals(context.run)
-    pages = {
-        ordinal: page_id
-        for ordinal, page_id in exemplar_page_ids(context).items()
-        if ordinal not in canaries
-    }
+    pages = real_pages(context.run, exemplar_page_ids(context))
     return page_breaks(pages, real_page_entries(context.run, acts))
 
 

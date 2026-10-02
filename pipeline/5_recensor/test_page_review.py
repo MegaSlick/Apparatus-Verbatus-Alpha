@@ -1024,12 +1024,15 @@ def test_the_recensor_run_links_no_canary_page(happy, tmp_path, monkeypatch):
     running from page 1 links to no canary act, so its break is one-sided and held,
     and the published link, the receipt's recomputation and the link verifier
     agree. Each derives its breaks through `run_page_breaks`; one that took them
-    over every page would join page 1 to the canary or refuse the others."""
+    over every page would join page 1 to the canary or refuse the others. The
+    link's evidence is what a run without the canary records: page 1's act alone,
+    never the canary page's reading for the null side."""
     tree = happy.copy(tmp_path)
     context = tree.context()
     monkeypatch.setattr("common.stage.canary_ordinals", lambda _run: {2})
-    monkeypatch.setattr("common.page_review.canary_ordinals", lambda _run: {2})
-    assert RECENSOR_RUN.review_a_page_read_run(context, reading_denominator(context)) == 3
+    denominator = reading_denominator(context)
+    canary_reading = denominator["pages"][2]["reading_ref"]
+    assert RECENSOR_RUN.review_a_page_read_run(context, denominator) == 3
 
     [link] = tree.records("5_recensor", "continuation-link")
     assert link["subject_id"] == "page-break:1:2" and link["outcome"] == "held-for-review"
@@ -1043,7 +1046,14 @@ def test_the_recensor_run_links_no_canary_page(happy, tmp_path, monkeypatch):
     [verified] = continuation_links(context, reading_acts(context))
     assert (verified["from_page_ordinal"], verified["to_page_ordinal"]) == (1, 2)
     assert verified["tail_act_id"] is None and verified["agreed"] is False
-    assert [row["subject_id"] for row in tree.receipt()["continuation_links"]] == ["page-break:1:2"]
+    # Its evidence is page 1's act alone, as on a run whose last page is page 1:
+    # the canary page's reading is no null side's evidence.
+    rows = {row["act_key"]: row for row in reading_acts(context)}
+    assert link["inputs"] == [rows["p1:2"]["perlectio_ref"]]
+    assert canary_reading not in link["inputs"]
+    [receipt_link] = tree.receipt()["continuation_links"]
+    assert receipt_link["subject_id"] == "page-break:1:2"
+    assert receipt_link["link_ref"] == verified["ref"]
 
 
 def test_a_link_joins_act_entries_past_a_catchword_and_notes_the_catchword_flag():
