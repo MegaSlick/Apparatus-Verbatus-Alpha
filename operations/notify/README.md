@@ -6,7 +6,7 @@ sessions here when a notification is needed.
 ## Sending one
 
 ```sh
-sh operations/notify/notify.sh <start|milestone|decision|done> "<one line>"
+sh operations/notify/notify.sh <milestone|decision|done> "<one line>"
 ```
 
 The message must be a single non-empty line. A newline or carriage return in it is refused
@@ -20,9 +20,8 @@ this file owns the rule.
 
 | Event | Title on the phone | Priority | Sent by |
 |---|---|---|---|
-| `start` | Session started | 2 | the `SessionStart` hook, never a hand |
-| `milestone` | Milestone | 3 | the session |
-| `decision` | Needs a decision | 4 | the session |
+| `milestone` | Milestone | 3 | the session, and the operator tool with `--notify` |
+| `decision` | Needs a decision | 4 | the session, the operator tool with `--notify`, the pod's systemic alarm, and the session-end pod check |
 | `done` | Session complete | 3 | `/session-end` |
 
 Any other event name is refused.
@@ -36,9 +35,8 @@ A caller checking the status must never be told the phone has a message it does 
 milestone is often the only announcement of a long unattended result, which makes it the
 worst one to misreport.
 
-A failing ping cannot kill a session: the `SessionStart` hook is declared `"async": true`
-in `.claude/settings.json`, so it runs detached. Keeping a caller non-blocking is the
-caller's job — never buy it by misreporting delivery.
+Keeping a caller non-blocking is the caller's job — never buy it by misreporting
+delivery.
 
 **If a send fails, say so in the session.** A decision ping nobody hears is a session
 waiting on a message that was never sent.
@@ -113,23 +111,6 @@ defect: inject a fake runner, or use the `silent` notifier.
 `operations/notify/test_notify.py` drives its own copy of the script with a scrubbed
 `NTFY_` environment and a fake `curl`, so the sink never blocks the tests of the script
 itself.
-
-## Why `start` is rate-limited and the others are not
-
-The desktop app can open several sessions in one launch, and each fires the hook. Four
-pings for one sitting is noise, and noise is what teaches him to ignore the next one. So
-`start` is suppressed if another was delivered within fifteen minutes, using a stamp at
-`private/.notify-start-stamp`.
-
-**`milestone`, `decision` and `done` are never suppressed.** A rate limit on those could
-swallow a real result.
-
-The stamp is treated as evidence rather than trusted for existing: it must be a regular
-file, not a symlink, holding a plausible past clock reading, so a directory left by a
-crashed run, a FIFO, a symlink, or a future-dated stamp cannot silence a real
-notification. Every refusal returns "not fresh" and therefore *sends* the ping — the cost of being wrong that way is one duplicate, and the cost of the other way
-is a session start nobody hears about. The stamp records a clock reading and nothing
-else; the topic never enters it.
 
 ## Tests
 

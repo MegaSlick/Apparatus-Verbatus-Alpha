@@ -14,7 +14,6 @@ from typing import Callable, Final, Mapping, Sequence
 NOTIFY_SCRIPT: Final = Path(__file__).with_name("notify.sh")
 NOTIFY_TIMEOUT_SECONDS: Final = 10.0
 SUPPRESSED_MARKER: Final = "NOTIFY_SUPPRESSED"
-# `start` is notify.sh's rate-limited session-hook event; a caller's result must never be.
 EVENTS: Final = frozenset({"milestone", "decision", "done"})
 _DETAIL_LIMIT: Final = 160
 
