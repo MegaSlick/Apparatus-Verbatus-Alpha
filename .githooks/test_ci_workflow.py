@@ -65,12 +65,22 @@ def step_run(name):
     return step["run"]
 
 
+WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+BRANCH_INGRESS = ROOT / ".github" / "workflows" / "ingress.yml"
+
+
+def steps_of(path):
+    document = yaml.safe_load(path.read_text())
+    return [step for job in document["jobs"].values() for step in job.get("steps", [])]
+
+
 def test_every_action_is_pinned_to_a_commit_and_no_checkout_keeps_credentials():
-    actions = [step["uses"] for step in all_steps() if "uses" in step]
+    every_step = [step for path in WORKFLOWS for step in steps_of(path)]
+    actions = [step["uses"] for step in every_step if "uses" in step]
     assert actions
     assert all(re.search(r"@[0-9a-f]{40}$", action) for action in actions), actions
     checkouts = [
-        step for step in all_steps() if step.get("uses", "").startswith("actions/checkout@")
+        step for step in every_step if step.get("uses", "").startswith("actions/checkout@")
     ]
     assert checkouts
     for checkout in checkouts:
@@ -537,3 +547,19 @@ def test_ingress_step_scans_everything_when_the_start_commit_is_unknown(recorded
         )
         assert result.returncode == 0, result.stderr
         assert calls(recorded_ingress) == ["--ref-fields", "--history HEAD"]
+
+
+def test_every_workflow_reads_the_repository_and_nothing_else():
+    for path in WORKFLOWS:
+        assert yaml.safe_load(path.read_text())["permissions"] == {"contents": "read"}, path
+
+
+def test_pushes_to_other_branches_get_the_same_ingress_scan_as_ci():
+    document = yaml.safe_load(BRANCH_INGRESS.read_text())
+    # PyYAML reads the bare key `on` as True.
+    assert document[True] == {"push": {"branches-ignore": ["main"]}}
+    (scan,) = [
+        step for step in steps_of(BRANCH_INGRESS) if step.get("name") == "Repository ingress"
+    ]
+    assert scan["run"] == step_run("Repository ingress")
+    assert "concurrency" not in document, "a cancelled run would leave a push unscanned"
