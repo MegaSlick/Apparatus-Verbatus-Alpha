@@ -1008,39 +1008,59 @@ def test_the_masters_are_decoded_only_in_the_child(tmp_path: Path, monkeypatch: 
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="prctl is Linux-only")
-def test_the_parent_is_not_dumpable_when_the_child_starts():
-    """A non-dumpable parent's /proc entries are closed to the same-user child."""
+def test_the_parent_is_not_dumpable_when_the_child_starts(tmp_path: Path):
+    """A non-dumpable parent's /proc entries are closed to the same-user child.
+
+    Checked in a fresh process at the moment `ingest` starts its child, so the
+    flag is proven to be set by `ingest` itself, not by a direct call.
+    """
+    source, output, policy, _approved = _inputs(tmp_path)
     probe = (
-        "import ctypes\n"
+        "import ctypes, sys\n"
+        "from pathlib import Path\n"
         "from operations.operator import ingest\n"
-        "ingest._deny_same_user_inspection()\n"
-        "print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))\n"  # PR_GET_DUMPABLE
+        "def recorded(*_args):\n"
+        "    print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))\n"  # PR_GET_DUMPABLE
+        "    return 0, '', ''\n"
+        "ingest._run_child = recorded\n"
+        "ingest.ingest(source=Path(sys.argv[1]), output_dir=Path(sys.argv[2]),\n"
+        "    policy_path=Path(sys.argv[3]), corpus_id='synthetic-console', mode='auto',\n"
+        "    confirmation_file=None, workspace=Path.cwd(), printer=print)\n"
     )
     result = ingest.subprocess.run(
-        [sys.executable, "-c", probe], cwd=ROOT, capture_output=True, text=True, check=True
+        [sys.executable, "-c", probe, str(source), str(output), str(policy)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     assert result.stdout.strip() == "0"
 
 
 @pytest.mark.parametrize(
-    ("stdout", "code"),
+    ("returncode", "stdout", "code"),
     [
-        ("Plan line\n", "INGEST_REFUSED"),
-        (f"Plan line\n{ingest.WRITING_MARKER}\n", "INGEST_UNRESOLVED"),
+        # Killed before preparation finished: nothing was written.
+        (-9, "", "INGEST_REFUSED"),
+        # Killed after the marker: the write may have begun.
+        (-9, f"{ingest.WRITING_MARKER}\nPlan line\n", "INGEST_UNRESOLVED"),
+        # The child's own unresolved status stands even when no marker survived.
+        (ingest.UNRESOLVED_EXIT, "Plan line\n", "INGEST_UNRESOLVED"),
+        (ingest.REFUSED_EXIT, "Plan line\n", "INGEST_REFUSED"),
     ],
 )
-def test_a_child_killed_before_it_writes_is_a_refusal_and_after_is_unresolved(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str, code: str
+def test_a_child_that_stops_before_it_writes_is_a_refusal_and_after_is_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str, code: str
 ):
     source, output, policy, _approved = _inputs(tmp_path)
-    monkeypatch.setattr(ingest, "_run_child", lambda *_args: (-9, stdout, ""))
+    monkeypatch.setattr(ingest, "_run_child", lambda *_args: (returncode, stdout, ""))
     printed: list[str] = []
 
     with pytest.raises(OperatorError) as failure:
         _ingest_into(source, output, policy, printed)
 
     assert failure.value.code is getattr(ErrorCode, code)
-    assert printed == ["Plan line"]
+    assert ingest.WRITING_MARKER not in printed
 
 
 def test_the_child_output_kept_by_the_parent_is_bounded(
@@ -1048,8 +1068,21 @@ def test_the_child_output_kept_by_the_parent_is_bounded(
 ):
     source, output, policy, _approved = _inputs(tmp_path)
     monkeypatch.setattr(ingest, "MAX_CHILD_STDOUT_BYTES", 200)
+    real_run_child = ingest._run_child
+    kept_stdout: list[str] = []
+
+    def recording(*args):  # type: ignore[no-untyped-def]
+        result = real_run_child(*args)
+        kept_stdout.append(result[1])
+        return result
+
+    monkeypatch.setattr(ingest, "_run_child", recording)
     printed: list[str] = []
     _ingest_into(source, output, policy, printed)
+
+    # The marker comes first, so the bound never drops it.
+    assert kept_stdout[0].startswith(ingest.WRITING_MARKER + "\n")
+    assert ingest.WRITING_MARKER not in printed
 
     kept = "\n".join(printed)
     assert kept.endswith("[output past 200 bytes was dropped]")

@@ -55,8 +55,10 @@ _REFUSALS: Final = (ContractError, OSError, TypeError, ValueError, UnicodeError)
 # that did not finish, which may have left records behind.
 REFUSED_EXIT: Final = 2
 UNRESOLVED_EXIT: Final = 3
-# The child prints this line, and nothing else, just before it starts writing;
-# a child that dies before it has written nothing. The parent never relays it.
+# The child's first line of output, once preparation (which writes nothing) has
+# succeeded and before the plan it then prints and writes. First, so the stdout
+# bound can never drop it: a child that dies without printing it wrote nothing.
+# The parent never relays it.
 WRITING_MARKER: Final = "verbatus-ingest: writing"
 # What the parent keeps of the child's output. The plan names every file, about
 # a dozen per master, so 1,500 masters stay well inside the stdout bound.
@@ -105,15 +107,17 @@ def ingest(
     _deny_same_user_inspection()
     returncode, stdout, stderr = _run_child(json.dumps(request), credential_free_environment())
     lines = stdout.splitlines()
-    writing = WRITING_MARKER in lines
-    for line in lines:
-        if line != WRITING_MARKER:
-            printer(line)
+    writing = lines[:1] == [WRITING_MARKER]
+    for line in lines[1:] if writing else lines:
+        printer(line)
     detail = stderr.strip() or f"the ingest child exited {returncode}"
-    if returncode == REFUSED_EXIT or (returncode != 0 and not writing):
+    if returncode == 0:
+        return
+    # The child's own statuses decide; a crash or kill is unresolved once the
+    # child may have started writing.
+    if returncode == REFUSED_EXIT or (returncode != UNRESOLVED_EXIT and not writing):
         raise OperatorError(ErrorCode.INGEST_REFUSED, detail=detail)
-    if returncode != 0:
-        raise OperatorError(ErrorCode.INGEST_UNRESOLVED, detail=detail)
+    raise OperatorError(ErrorCode.INGEST_UNRESOLVED, detail=detail)
 
 
 def _deny_same_user_inspection() -> None:
@@ -186,8 +190,9 @@ def main() -> int:
     except _REFUSALS as error:
         print(str(error), file=sys.stderr)
         return REFUSED_EXIT
-    _print_preview(_summary(prepared), print)
     print(WRITING_MARKER, flush=True)
+    _print_preview(_summary(prepared), print)
+    sys.stdout.flush()
     try:
         _commit(prepared)
     except _REFUSALS as error:
