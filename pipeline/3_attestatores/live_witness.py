@@ -765,3 +765,20 @@ def captured_page_attempt(
         # travel the same way as Chandra's).
         observation_payload=response.content.encode("utf-8"),
     )
+
+
+def unmeasured_stop_reason(response: Any, what: str) -> str | None:
+    """Why a response is kept unread, when its engine stop word has no measured meaning.
+
+    Calling such an answer complete or cut off would invent a measurement, so
+    the attempt fails on that request alone, with the response retained, before
+    any adapter reads it. `None` for a recognized word or none at all.
+    """
+    word = response.finish_reason
+    if word is None or word in ENGINE_STOP_COMPLETE | ENGINE_STOP_CUT_OFF:
+        return None
+    return (
+        f"{what} reports transport_stop_reason {word!r}, which this pipeline has never "
+        "measured a meaning for; whether the answer is whole is unknown, so it is retained "
+        "and not read"
+    )

@@ -661,7 +661,7 @@ def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_
     moved_trigger = copy.deepcopy(record)
     moved_trigger["payload"]["returned_condition"] = "inference-error"
     with pytest.raises(SchemaRefusal, match="retry trigger|trigger disagrees"):
-        attestatores._validate_chandra_terminal(
+        attestatores.chandra_native._validate_chandra_terminal(
             context,
             subject_id=entry["subject_id"],
             native_attempt_ordinal=ordinal,
@@ -673,7 +673,7 @@ def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_
         "transport_response_ref"
     ]
     with pytest.raises(SchemaRefusal, match="serving call record"):
-        attestatores._validate_chandra_terminal(
+        attestatores.chandra_native._validate_chandra_terminal(
             context,
             subject_id=entry["subject_id"],
             native_attempt_ordinal=ordinal,
@@ -685,7 +685,7 @@ def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_
         "transport_response_ref"
     ]
     with pytest.raises(SchemaRefusal, match="trigger disagrees|model output"):
-        attestatores._validate_chandra_terminal(
+        attestatores.chandra_native._validate_chandra_terminal(
             context,
             subject_id=entry["subject_id"],
             native_attempt_ordinal=ordinal,
@@ -697,7 +697,7 @@ def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_
         "transport_response_ref"
     ]
     with pytest.raises(SchemaRefusal, match="serving call record moved"):
-        attestatores._validate_chandra_terminal(
+        attestatores.chandra_native._validate_chandra_terminal(
             context,
             subject_id=entry["subject_id"],
             native_attempt_ordinal=ordinal,
@@ -712,7 +712,7 @@ def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_
         context, json.dumps(call, sort_keys=True, separators=(",", ":")).encode("utf-8")
     )
     with pytest.raises(SchemaRefusal, match="serving call record moved"):
-        attestatores._validate_chandra_terminal(
+        attestatores.chandra_native._validate_chandra_terminal(
             context,
             subject_id=entry["subject_id"],
             native_attempt_ordinal=ordinal,
@@ -727,7 +727,9 @@ def test_chandra_orphan_intent_fails_closed_without_reissuing(live_run, tmp_path
     def crash_after_call_record(*_args, **_kwargs):
         raise RuntimeError("simulated crash after response and call record")
 
-    monkeypatch.setattr(attestatores, "_publish_chandra_terminal", crash_after_call_record)
+    monkeypatch.setattr(
+        attestatores.chandra_native, "_publish_chandra_terminal", crash_after_call_record
+    )
     with pytest.raises(RuntimeError, match="after response and call record"):
         run_attestatores(live_run, run_root, factory=world.factory)
     monkeypatch.undo()
@@ -765,13 +767,13 @@ def test_chandra_error_terminal_resume_waits_full_backoff_before_next_request(
     def crash_during_backoff(_seconds):
         raise RuntimeError("simulated crash during native error backoff")
 
-    monkeypatch.setattr(attestatores.time, "sleep", crash_during_backoff)
+    monkeypatch.setattr(attestatores.chandra_native.time, "sleep", crash_during_backoff)
     with pytest.raises(RuntimeError, match="during native error backoff"):
         run_attestatores(live_run, run_root, factory=interrupted.factory)
     assert len(interrupted.requests("attestator_1")) == 1
 
     delays: list[int] = []
-    monkeypatch.setattr(attestatores.time, "sleep", delays.append)
+    monkeypatch.setattr(attestatores.chandra_native.time, "sleep", delays.append)
     resumed_scripts = default_scripts()
     resumed_scripts["attestator_1"] = [
         ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="stop"),
@@ -884,7 +886,7 @@ def test_chandra_error_exhaustion_is_failed_and_records_every_backoff(
         ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
     ]
     delays: list[int] = []
-    monkeypatch.setattr(attestatores.time, "sleep", delays.append)
+    monkeypatch.setattr(attestatores.chandra_native.time, "sleep", delays.append)
     world = LiveWorld(live_run, tmp_path, scripts)
 
     assert run_attestatores(live_run, run_root, factory=world.factory) == 0
@@ -1338,17 +1340,22 @@ def test_the_production_serving_factory_binds_the_run_that_will_record_the_readi
         client._retain(b"{}")
 
 
-@pytest.mark.parametrize("word", [None, "stop", "length", "eos", "max_new_tokens"])
+@pytest.mark.parametrize("word", [None, "stop", "length"])
 def test_a_measured_or_absent_stop_word_leaves_the_response_to_be_read(word):
     response = SimpleNamespace(finish_reason=word)
-    assert attestatores.unmeasured_stop_reason(response, "the response for page 1") is None
-
-
-def test_an_unmeasured_stop_word_is_named_as_the_reason_its_response_is_not_read():
-    reason = attestatores.unmeasured_stop_reason(
-        SimpleNamespace(finish_reason="abort"), "the response for page 1"
+    assert (
+        attestatores.live_witness.unmeasured_stop_reason(response, "the response for page 1")
+        is None
     )
-    assert reason is not None and "'abort'" in reason and "not read" in reason
+
+
+# The fixture transport's own words are not words a served engine has been measured to send.
+@pytest.mark.parametrize("word", ["abort", "eos", "max_new_tokens"])
+def test_an_unmeasured_stop_word_is_named_as_the_reason_its_response_is_not_read(word):
+    reason = attestatores.live_witness.unmeasured_stop_reason(
+        SimpleNamespace(finish_reason=word), "the response for page 1"
+    )
+    assert reason is not None and repr(word) in reason and "not read" in reason
 
 
 def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name(
@@ -1881,11 +1888,11 @@ def test_a_resumed_terminal_refuses_a_capture_read_under_a_retired_text_view():
     def refuse_read(relative_path):
         raise AssertionError(f"a retired capture's bytes must not be reused: {relative_path}")
 
-    evidence = dict.fromkeys(attestatores._CHANDRA_RESULT_FIELDS)
+    evidence = dict.fromkeys(attestatores.chandra_native._CHANDRA_RESULT_FIELDS)
     evidence["native_capture"] = capture
     refusal = "the retired text view chandra-layout-text.v1.*re-run the submission from the Door"
     with pytest.raises(SchemaRefusal, match=refusal):
-        attestatores._attempt_from_evidence_record(
+        attestatores.chandra_native._attempt_from_evidence_record(
             SimpleNamespace(tree=SimpleNamespace(read_bytes=refuse_read)), evidence
         )
 
