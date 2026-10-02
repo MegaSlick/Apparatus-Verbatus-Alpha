@@ -349,10 +349,11 @@ def test_a_narrowed_preflight_qualifies_only_the_chairs_it_smoked(tmp_path: Path
     assert [item["chair"] for item in record["candidates"]] == ["attestator_1"]
 
 
-def test_an_unsupported_chair_is_never_a_candidate_even_if_placed(tmp_path: Path) -> None:
-    # Preflight reports such a placement red; even a report claiming green
-    # cannot turn the unservable chair into a candidate or pass without a
-    # smoke for every served chair it placed.
+def test_an_unsupported_chair_placed_in_a_report_claiming_green_is_refused(
+    tmp_path: Path,
+) -> None:
+    # Preflight reports such a placement red; a report that claims green anyway
+    # names a served chair with no smoke, and nothing is emitted.
     paths = _real_catalogue_paths(tmp_path)
     wrapper = _write_report(paths, "generic-24gb", roles={"attestator_1"})
     preflight = wrapper["bootstrap"]["receipts"]["preflight"]
@@ -365,11 +366,7 @@ def test_an_unsupported_chair_is_never_a_candidate_even_if_placed(tmp_path: Path
         }
     )
     paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
-    assert [item["chair"] for item in _qualify(paths)["candidates"]] == ["attestator_1"]
-
-    preflight["placements"][-1]["state"] = "planned"
-    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
-    with pytest.raises(QualificationRefusal, match="'perlector' was not planned"):
+    with pytest.raises(QualificationRefusal, match="do not cover exactly"):
         _qualify(paths)
 
 

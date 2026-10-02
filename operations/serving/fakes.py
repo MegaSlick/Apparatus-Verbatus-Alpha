@@ -369,10 +369,8 @@ class FakeLauncher:
 class FakePackages:
     def __init__(self, versions: Mapping[str, str]) -> None:
         self.versions = dict(versions)
-        self.calls: list[str] = []
 
     def version(self, package: str) -> str:
-        self.calls.append(package)
         return self.versions[package]
 
 
@@ -385,12 +383,10 @@ class FakeRegistry:
             for role, identity in identities.items()
         }
         self.ensure_calls: list[str] = []
-        self.resolve_calls: list[str] = []
         self.refusals: list[tuple[str, str]] = []
         self.receipts: list[tuple[str, ServingDetails]] = []
 
     def resolve(self, role: str) -> ChairIdentity:
-        self.resolve_calls.append(role)
         return self.identities[role]
 
     def ensure(self, identity: ChairIdentity) -> VerifiedSnapshot:

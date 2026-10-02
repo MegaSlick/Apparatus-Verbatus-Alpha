@@ -41,14 +41,10 @@ unproven row.
 
 SCHEMA = "serving-qualification-candidates.v2"
 QUALIFICATION_PURPOSE = "preflight-qualification"
-# Catalogue row kinds that are never served at a tier, and the placement state
-# preflight records for each: a stage runs Surya as a subprocess and the record
-# detector in-process, and an `unsupported` row cannot be served on that card.
-UNSERVED_PLACEMENT_STATES = {
-    "subprocess": "subprocess",
-    "in-process": "in-process",
-    "unsupported": "unservable-at-tier",
-}
+# Catalogue row kinds a stage runs itself, never served; preflight places each
+# chair under its row's kind. An `unsupported` row placed at a tier makes the
+# preflight red, so a report qualify accepts never holds one.
+UNSERVED_KINDS = frozenset({"subprocess", "in-process"})
 
 
 class QualificationRefusal(ValueError):
@@ -130,15 +126,12 @@ def qualification_candidates(
     }
     # Qualification is per chair: it covers exactly the chairs this preflight
     # placed, which is the whole roster or the narrowed selection an operator
-    # asked for (an `unsupported` row at a small tier is left out that way, since
-    # a preflight that selects it is red). A chair that is never served there has
-    # a placement in its own state and no smoke receipt, and is never a candidate.
+    # asked for. A chair its stage runs itself has a placement in its row's kind
+    # and no smoke receipt, and is never a candidate.
     selected = _placed_chairs(preflight.get("placements"), models.chairs, identities)
     profiles = {role: _profile_at_tier(recipes, identities[role], tier) for role in selected}
     unserved_states = {
-        role: UNSERVED_PLACEMENT_STATES[profile.kind]
-        for role, profile in profiles.items()
-        if profile.kind in UNSERVED_PLACEMENT_STATES
+        role: profile.kind for role, profile in profiles.items() if profile.kind in UNSERVED_KINDS
     }
     served = {role: identities[role] for role in selected if role not in unserved_states}
     if not served:
@@ -159,12 +152,7 @@ def qualification_candidates(
             f"expected={sorted(served)}, observed={sorted(by_chair)}"
         )
     _verify_cache_receipts(
-        preflight.get("cache_receipts"),
-        {
-            role: identities[role]
-            for role in selected
-            if unserved_states.get(role) != "unservable-at-tier"
-        },
+        preflight.get("cache_receipts"), {role: identities[role] for role in selected}
     )
     _verify_placements(
         preflight.get("placements"),

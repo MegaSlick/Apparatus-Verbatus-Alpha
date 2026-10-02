@@ -1137,7 +1137,8 @@ def test_a_watchdog_timeout_over_an_unreadable_log_refuses_to_guess() -> None:
         budget_seconds=300.0,
     )
 
-    assert (error.code, error.diagnosis) == ("VLLM_WATCHDOG_TIMEOUT", "log-unreadable")
+    assert error.code == "VLLM_WATCHDOG_TIMEOUT"
+    assert "log-unreadable:" in error.detail
     assert "denied" in error.detail
 
 
@@ -1185,7 +1186,7 @@ def test_a_long_launch_log_is_carried_as_a_bounded_and_labelled_tail() -> None:
         budget_seconds=300.0,
     )
 
-    assert error.diagnosis == "still-loading"
+    assert "still-loading:" in error.detail
     assert f"[last {_WATCHDOG_TAIL_BYTES} bytes]" in error.detail
     assert len(error.detail) < 2_500
 
@@ -1252,12 +1253,13 @@ def test_an_endpoint_that_timed_out_is_not_reported_as_a_refused_connection() ->
         budget_seconds=1.0,
     )
 
-    assert [error.diagnosis for error in (timed_out, refused, answered, nothing)] == [
-        "unreachable",
-        "refused",
-        "answered-unready",
-        "no-probe",
-    ]
+    for error, code in (
+        (timed_out, "unreachable"),
+        (refused, "refused"),
+        (answered, "answered-unready"),
+        (nothing, "no-probe"),
+    ):
+        assert f" -- {code}: " in error.detail
 
 
 def test_the_watchdog_tail_is_bounded_in_bytes_not_in_characters() -> None:
@@ -4953,7 +4955,7 @@ def test_a_budget_gone_before_the_first_probe_answers_claims_no_observation() ->
         budget_seconds=1.0,
     )
 
-    assert error.diagnosis == "no-probe"
+    assert " -- no-probe: " in error.detail
 
 
 def _nested_json(levels: int) -> dict[str, object]:

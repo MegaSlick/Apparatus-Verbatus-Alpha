@@ -431,11 +431,6 @@ def _finish_reason_facts(response: ChairResponse) -> tuple[str, bool | None, boo
     return finish_reason, None, None
 
 
-def _capabilities(adapter: Any) -> dict[str, Any] | None:
-    declared = witness_adapters.declared_format_capabilities(adapter)
-    return dict(declared) if declared is not None else None
-
-
 def _unconfirmed_blank_reason(kind: str, transport_stop_reason: str, cut_off: bool | None) -> str:
     """Why an empty response is held rather than confirmed as ``genuinely-empty``.
 
@@ -551,7 +546,7 @@ def _live_attempt_from_capture(
     """
     base = {
         "witness_reported": None,
-        "format_capabilities": _capabilities(adapter),
+        "format_capabilities": witness_adapters.declared_format_capabilities(adapter),
         "raw_response_ref": dict(capture["raw_response_ref"]),
         "native_capture": dict(capture),
         "serving_call_ref": dict(response.call_record_ref),
@@ -616,7 +611,7 @@ def unread_response_attempt(response: ChairResponse, *, adapter: Any, reason: st
         outcome="failed",
         native_payload=None,
         witness_reported=None,
-        format_capabilities=_capabilities(adapter),
+        format_capabilities=witness_adapters.declared_format_capabilities(adapter),
         health=unrecordable_health(reason),
         reason=reason,
         raw_response_ref=dict(response.raw_response_ref),

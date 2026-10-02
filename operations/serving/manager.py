@@ -1417,7 +1417,6 @@ def _watchdog_timeout(
             "VLLM_WATCHDOG_TIMEOUT",
             f"{last} -- log-unreadable: the launch log could not be read ({reason}), so "
             "this cannot say whether the engine was loading",
-            diagnosis="log-unreadable",
         )
     if progress is not None and progress_advanced:
         code, sentence = (
@@ -1457,14 +1456,10 @@ def _watchdog_timeout(
     encoded = tail.encode("utf-8")
     excerpt = encoded[-_WATCHDOG_TAIL_BYTES:].decode("utf-8", errors="replace").strip()
     if not excerpt:
-        return ReadinessError(
-            "VLLM_WATCHDOG_TIMEOUT", f"{diagnosis}. The launch log is empty", diagnosis=code
-        )
+        return ReadinessError("VLLM_WATCHDOG_TIMEOUT", f"{diagnosis}. The launch log is empty")
     if len(encoded) > _WATCHDOG_TAIL_BYTES:
         excerpt = f"[last {_WATCHDOG_TAIL_BYTES} bytes] {excerpt}"
-    return ReadinessError(
-        "VLLM_WATCHDOG_TIMEOUT", f"{diagnosis}. Launch log tail:\n{excerpt}", diagnosis=code
-    )
+    return ReadinessError("VLLM_WATCHDOG_TIMEOUT", f"{diagnosis}. Launch log tail:\n{excerpt}")
 
 
 def _is_deterministic_probe_rejection(error: ReadinessError) -> bool:
