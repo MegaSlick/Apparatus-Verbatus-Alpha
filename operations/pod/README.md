@@ -420,9 +420,10 @@ recorded and nothing is sent. `notify.sh` reads its topic only from `NTFY_TOPIC`
 repository's `private/ntfy.conf`, which a pod does not have, so `pod_run` reads the
 guard's topic file (`/workspace/private/.pod_guard/ntfy_topic`, below) and passes it as
 `NTFY_TOPIC` in that one notification command's environment, beside only `PATH` and the
-proxy and CA variables it needs (`notify_hooks.guard_topic`, `notify_environment`). The
+proxy and CA variables it needs (`notify_hooks.guard_topic`, `notify_environment`). Like
+the guard, it removes every space, carriage return and newline before checking the topic. The
 topic is never an argument, a log or report line, or part of the orchestrator's or a
-stage's environment. With no readable topic file, a link or anything but a regular file there, nothing runs at all, so `notify.sh` never falls back to a topic of the checkout's; the report says "not sent (no guard topic)".
+stage's environment. With no readable topic file, a link or anything but a regular file there, nothing runs at all, so `notify.sh` never falls back to a topic of the checkout's; the report says "not sent (no usable guard topic)".
 
 ### `spend.py`: prices, ceilings and the typed phrase
 

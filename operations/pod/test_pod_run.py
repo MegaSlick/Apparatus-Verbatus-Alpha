@@ -1308,7 +1308,10 @@ def test_with_no_guard_topic_the_pod_sends_nothing_and_says_so(tmp_path: Path) -
     )
     assert code == EXIT_HELD
     assert (notify.environments, notify.calls) == ([], [])
-    assert _report(ws)["systemic_notification"] == "Phone notification: not sent (no guard topic)."
+    assert (
+        _report(ws)["systemic_notification"]
+        == "Phone notification: not sent (no usable guard topic)."
+    )
 
 
 def test_a_run_with_no_systemic_alarm_sends_no_decision(tmp_path: Path) -> None:
