@@ -1,4 +1,4 @@
-"""Synthetic contract tests for the Unit 6B producer and confirmation path."""
+"""Synthetic contract tests for the triage producer and its confirmation path."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def frame(
 
 
 def build_evidence(frames: list[SubmittedFrame]) -> tuple[dict, dict, list[dict]]:
-    """Run the real Unit 6A instrument so a confirmation traces to genuine evidence."""
+    """Run the real instrument so a confirmation traces to genuine evidence."""
     config = instrument.load_config()
     proxies = [instrument.build_proxies_from_bytes(item.data, config) for item in frames]
     evidence, manifest = instrument.candidate_evidence(proxies, config)
