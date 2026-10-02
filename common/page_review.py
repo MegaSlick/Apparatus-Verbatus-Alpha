@@ -19,6 +19,7 @@ import json
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any, Final
 
+from common import page_edges
 from common.contracts.approval import EDIT_DECISION
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
@@ -730,23 +731,17 @@ def review_notes(review: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def act_entries_by_page(acts: Sequence[Mapping[str, Any]]) -> dict[int, list[Mapping[str, Any]]]:
-    """Each page's whole-page `act` entries: the only entries a page break can join.
+    """Each page's whole-page `act` entries in answer order: the only entries a page
+    break can join.
 
-    A page's edges are its current whole-page reading's: its first reading's,
-    or an operator re-read's (`page_path.is_whole_page_reading`). An entry the
-    re-ask recovered (`reading_attempt` 2) was asked about ids alone, with no
-    continuation flag allowed, so its place in page order is not established:
-    it never moves a page's act edge and is never a side of a page break.
+    A page's edges are its current whole-page reading's: its first reading's, or
+    an operator re-read's that superseded it (`common.page_edges.first_attempt_entries`).
+    An entry the re-ask recovered (`common.page_edges.REASK_READING`) was asked
+    about ids alone, with no continuation flag allowed, so its place in page order
+    is not established: it never moves a page's act edge and is never a side of a
+    page break.
     """
-    entries: dict[int, list[Mapping[str, Any]]] = {}
-    for act in acts:
-        if (
-            act["n"] is not None
-            and act["kind"] == "act"
-            and is_whole_page_reading(act["reading_attempt"])
-        ):
-            entries.setdefault(act["page_ordinal"], []).append(act)
-    return entries
+    return page_edges.act_entries_by_page(page_edges.first_attempt_entries(acts))
 
 
 def page_breaks(
@@ -755,18 +750,18 @@ def page_breaks(
     """Every page break an answer flags, as `(subject, payload)`, in page order.
 
     The last first-reading `act` entry of page p and the first of page p+1
-    (`act_entries_by_page`) are the break's two sides; either side's flag records the break, `agreed` only when both
-    say so, and a break whose sides disagree is still recorded. A side with no
-    `act` entry (a page not read, blank, of `other` entries only, or outside
-    the run) is null. The link holds no unit and joins nothing.
+    (`common.page_edges.page_edges`) are the break's two sides; either side's
+    flag records the break, `agreed` only when both say so, and a break whose
+    sides disagree is still recorded. A side with no `act` entry (a page not
+    read, blank, of `other` entries only, or outside the run) is null. The link holds no unit and joins nothing.
     """
-    entries = act_entries_by_page(acts)
+    edges = page_edges.page_edges(page_edges.first_attempt_entries(acts))
     ordinals = sorted(pages)
     links = []
     for left in range(ordinals[0] - 1, ordinals[-1] + 1):
         right = left + 1
-        last = max(entries.get(left, []), key=lambda act: act["n"], default=None)
-        first = min(entries.get(right, []), key=lambda act: act["n"], default=None)
+        last = edges[left][1] if left in edges else None
+        first = edges[right][0] if right in edges else None
         to_next = last is not None and last["continues_to_next_page"] is True
         from_previous = first is not None and first["continues_from_previous_page"] is True
         if not (to_next or from_previous):

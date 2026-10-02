@@ -46,6 +46,7 @@ from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.serving import reading_stop_reason
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP
 from common.decoding import chair_decoding, engine_effective_sampling, recorded_wire_decimals
+from common.page_edges import FIRST_READING, OPERATOR_REREAD_FIRST, REASK_READING
 from common.page_witness_units import DAI, READ_OUTCOME, WITNESS_LETTERS, witness_reading
 from common.request_capacity import page_request_capacity
 from common.residual_ink import (
@@ -104,14 +105,11 @@ PAGE_PATH_KINDS: Final = frozenset(
     {PAGE_FEED_KIND, PAGE_READING_KIND, PAGE_ACCOUNTING_KIND, ACT_REGION_KIND}
 )
 
+PAGE_READ_OPERATION: Final = "page-read"
 # The attempts a page reading is: the first reading, at most one re-ask, and
 # then each operator re-read a person's page `re-ask` decision asked for,
 # numbered from `OPERATOR_REREAD_FIRST` on whether or not the page was re-asked.
-PAGE_READ_OPERATION: Final = "page-read"
-FIRST_READING: Final = 1
-REASK_READING: Final = 2
 READING_ORDINALS: Final = (FIRST_READING, REASK_READING)
-OPERATOR_REREAD_FIRST: Final = 3
 # The `page-reading` field only an operator re-read carries (`operator_reread_record`).
 OPERATOR_REREAD_FIELD: Final = "operator_reread"
 ACT_REGION_OPERATION: Final = "reading-region"

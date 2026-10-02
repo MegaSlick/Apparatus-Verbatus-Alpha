@@ -81,9 +81,10 @@ REVIEW_FIELDS: Final = frozenset({"run_id", "scope", "page_id", "decision", "fin
 EDIT_REVIEW_FIELDS: Final = REVIEW_FIELDS | EDIT_FIELDS
 
 # Bounds make a planted object a named refusal, not an unbounded allocation.  Together
-# they keep the largest valid record, fully escaped, far below the run tree's record
-# read bound (`common.runtree.store.MAX_RECORD_READ_BYTES`), so no valid approval is
-# unreadable there.
+# they keep the largest valid record, an edit's text and note included, fully
+# escaped, below the run tree's record read bound
+# (`common.runtree.store.MAX_RECORD_READ_BYTES`), so no valid approval is unreadable
+# there (`common/contracts/test_contracts_approval.py` pins it).
 MAX_APPROVAL_SUBJECTS: Final = 384
 MAX_APPROVAL_SUBJECT_BYTES: Final = 1024
 MAX_APPROVAL_REASON_BYTES: Final = 256 * 1024

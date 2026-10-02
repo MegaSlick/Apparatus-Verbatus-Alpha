@@ -48,12 +48,13 @@ from common.page_accounting import (
     is_inside,
     validate_answer,
 )
+from common.page_edges import REASK_READING
 from common.recovery import REREAD_CEILING
 
 # The findings a re-ask is asked about, and every other finding code.
 RE_ASKABLE: Final = frozenset({UNACCOUNTED_WITNESS_UNIT, UNREAD_LINE, RECORD_NOT_READ})
 NEVER: Final = (HOLD_CODES | NOT_MEASURED_CODES) - RE_ASKABLE
-# The most re-asks a page may have: the recovery loader's ruled ceiling.
+# The most re-asks a page may have: the recovery loader's ceiling (`REREAD_CEILING`).
 MAX_REASKS: Final = REREAD_CEILING
 
 
@@ -61,7 +62,7 @@ def reask_budget(recovery_policy: Mapping[str, Any]) -> int:
     """The sealed `[budget] page_level_reread`: 0 turns the re-ask off, 1 allows one.
 
     `recovery_policy` is `common.recovery.load_recovery_policy`'s record, which has
-    already refused a value that is not a non-negative integer within the ruled cap.
+    already refused a value that is not a non-negative integer within `REREAD_CEILING`.
     """
     return recovery_policy["page_level_reread"]
 
@@ -174,7 +175,7 @@ def reask_outcome(named: Sequence[Mapping[str, Any]], accounting: Mapping[str, A
     standing = {
         entry["n"]
         for entry in accounting["entries"]
-        if entry["reading_attempt"] == 2 and entry["n"] not in held_entries
+        if entry["reading_attempt"] == REASK_READING and entry["n"] not in held_entries
     }
     accounted_by: dict[str, set[int]] = {}
     for row in accounting["units"]:

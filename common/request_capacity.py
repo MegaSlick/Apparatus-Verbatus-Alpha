@@ -493,8 +493,9 @@ PERLECTOR_BOUND_SAFETY_MARGIN: Final = (105, 100)
 # The Perlector chat template's measured cost of one turn, and of each image in it.
 CHAT_TURN_TOKENS: Final = 52
 CHAT_IMAGE_TOKENS: Final = 2
-# Reconciled with `config/models-real.toml`: with no fixed prompt to digest, the
-# pinned revision is what expires the Perlector's measurements.
+# The tokenizer the Perlector's rate and chat-template costs above were measured with.
+# A test reconciles it with `config/models-real.toml`, as it does each
+# `SealedPromptTokens`, so repointing the Perlector fails CI until it is measured again.
 PERLECTOR_MEASURED_TOKENIZER: Final = (
     "Qwen/Qwen3.8-27B",
     "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",

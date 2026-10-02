@@ -466,9 +466,9 @@ PAGE_ANSWERS += tuple(
 # reading left unaccounted for, one per re-asked scenario and page; `answer` is
 # the reply text exactly, and `stop_reason` its finish (`stop` unless given).
 # Page 1's a1 is over A1, B1 and lines L1-L4, a2 over A2, B2 and L5-L9; page 2's
-# a2 over B1 and L1-L3. `reask-duplicate` and `page-review` read again the a2
-# their first reading already read; `reask-off` has no answer, being read with
-# the re-ask off.
+# a2 over B1 and L1-L3. `reask-duplicate`, `page-review` and `page-review-other`
+# read again the a2 their first reading already read; `reask-off` has no answer,
+# being read with the re-ask off.
 _RECOVERED_A1 = _page_entry(
     1,
     "a1",
@@ -895,13 +895,23 @@ def toml_value(value) -> str:
 
 
 def _answer_rows(table: str, rows) -> list[str]:
-    """The fixture lines of fake Perlector answers: one `[[table]]` row per scenario and page."""
+    """The fixture lines of fake model answers: one `[[table]]` row per scenario and page.
+
+    A row's keys beyond scenario, page ordinal, answer and stop reason are written
+    between the page ordinal and the answer.
+    """
     lines = []
     for row in rows:
+        extra = [
+            f"{key} = {toml_value(value)}"
+            for key, value in row.items()
+            if key not in {"scenario", "page_ordinal", "answer", "stop_reason"}
+        ]
         lines += [
             f"[[{table}]]",
             f"scenario = {toml_string(row['scenario'])}",
             f"page_ordinal = {row['page_ordinal']}",
+            *extra,
             "answer = "
             + toml_string(
                 row["answer"]
@@ -1064,20 +1074,7 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         "# mode is on. `answer` is the reply text exactly.",
         "",
     ]
-    for row in RECONSTRUCTION_ANSWERS:
-        lines += [
-            "[[reconstruction_answer]]",
-            f"scenario = {toml_string(row['scenario'])}",
-            f"page_ordinal = {row['page_ordinal']}",
-            f"pages_are_consecutive = {'true' if row['pages_are_consecutive'] else 'false'}",
-            "answer = "
-            + toml_string(
-                row["answer"]
-                if isinstance(row["answer"], str)
-                else json.dumps(row["answer"], separators=(",", ":"))
-            ),
-            "",
-        ]
+    lines += _answer_rows("reconstruction_answer", RECONSTRUCTION_ANSWERS)
     for table, rows in (
         ("witness_empty", WITNESS_EMPTY),
         ("witness_not_run", WITNESS_NOT_RUN),

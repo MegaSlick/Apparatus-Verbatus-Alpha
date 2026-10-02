@@ -1,8 +1,8 @@
 """The run-level hard-failure cap: policy loading and the disk-recomputed tally.
 
-Meta-invariant #86 in spirit: the tally is exercised against a real `RunTree`
-publishing real envelopes, not a hand-built dict standing in for one, so a
-change to what `build_manifest` actually verifies would be visible here too.
+The tally is exercised against a real `RunTree` publishing real envelopes, not
+a hand-built dict standing in for one, so a change to what `build_manifest`
+actually verifies would be visible here too.
 """
 
 from pathlib import Path
@@ -16,8 +16,8 @@ from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, DESIGNATOR, DOOR, PERLECTOR, RECENSOR
 from common.hard_failure import (
     DEFAULT_HARD_FAILURE_CONFIG_PATH,
+    HARD_FAILURE_THRESHOLD,
     MAX_HARD_FAILURE_KINDS,
-    RULED_THRESHOLD,
     load_hard_failure_policy,
     tally_hard_failures,
 )
@@ -83,18 +83,17 @@ def write_policy(tmp_path, text: str) -> Path:
 # --- The shipped default -------------------------------------------------------
 
 
-def test_the_shipped_default_config_loads_at_the_ruled_boundary():
+def test_the_shipped_default_config_loads_at_the_fixed_threshold():
     policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
-    assert policy["threshold"] == RULED_THRESHOLD
+    assert policy["threshold"] == HARD_FAILURE_THRESHOLD
     assert (PERLECTOR, "failed") in policy["kinds"]
     assert (DESIGNATOR, "failed") in policy["kinds"]
     assert (RECENSOR, "failed") in policy["kinds"]
     assert (ARCHETYPUS, "refused") in policy["kinds"]
     assert ("door", "refused", "corrupt") in policy["reason_kinds"]
     assert ("door", "refused", "unreadable") in policy["reason_kinds"]
-    # `truncated` is a dense page, not a damaged one (the old pipeline's own
-    # ruled distinction) -- a bounded-retry matter, never the run-level
-    # systemic-breakage signal. See config/hard_failure.toml's own comment.
+    # `truncated` is a dense page, not a damaged one: a bounded-retry matter,
+    # never the run-level systemic-breakage signal.
     assert (PERLECTOR, "truncated") not in policy["kinds"]
     # The exclusions argued in the config's own comments.
     assert ("door", "refused") not in policy["kinds"]
@@ -107,12 +106,12 @@ def test_the_shipped_default_config_loads_at_the_ruled_boundary():
 
 
 @pytest.mark.parametrize("threshold", [0, 1, 3])
-def test_a_threshold_other_than_the_ruled_value_is_refused(tmp_path, threshold):
+def test_a_threshold_other_than_the_fixed_value_is_refused(tmp_path, threshold):
     path = write_policy(
         tmp_path,
         f'threshold = {threshold}\n[[kind]]\nstage = "perlector"\noutcome = "failed"\n',
     )
-    with pytest.raises(ContractError, match="ruled value is exactly"):
+    with pytest.raises(ContractError, match="but it is fixed at 2"):
         load_hard_failure_policy(path)
 
 
@@ -242,7 +241,7 @@ def test_the_tally_is_zero_over_an_empty_run(tmp_path):
     policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
     tally = tally_hard_failures(tree, policy)
     assert tally == {
-        "threshold": RULED_THRESHOLD,
+        "threshold": HARD_FAILURE_THRESHOLD,
         "count": 0,
         "breached": False,
         "by_kind": {
@@ -303,8 +302,9 @@ def test_a_record_only_tally_leaves_stale_lineage_to_its_consumer_boundary(tmp_p
     assert tally["subjects"] == ["perlector:act_0000000000000001"]
 
 
-def test_the_ruled_cap_is_tallied_per_shard_run_not_across_run_trees(tmp_path):
-    """The ruling says "within a 1000 page run"; a shard is that run."""
+def test_the_cap_is_tallied_per_shard_run_not_across_run_trees(tmp_path):
+    """Each shard is its own run with its own tally: two failures in each of three
+    shards is two per run, not six, and none breaches the cap."""
     policy = load_hard_failure_policy(DEFAULT_HARD_FAILURE_CONFIG_PATH)
     tallies = []
     for run_id in ("shard-one", "shard-two", "shard-three"):
@@ -323,7 +323,7 @@ def test_the_ruled_cap_is_tallied_per_shard_run_not_across_run_trees(tmp_path):
     assert all(tally["breached"] is False for tally in tallies)
 
 
-def test_a_production_perlectio_failure_still_spends_the_ruled_cap(tmp_path):
+def test_a_production_perlectio_failure_still_spends_the_cap(tmp_path):
     tree = make_run(tmp_path)
     publish(
         tree,

@@ -76,7 +76,7 @@ def mapped_stop_reason(finish_reason: str | None, *, what: object, response: Any
         pass
     raise _refusal(
         "ENGINE_FINISH_REASON_UNRECOGNIZED",
-        f"act {what!r} received an engine stop reason {finish_reason!r} this seam does "
+        f"{what} received an engine stop reason {finish_reason!r} this seam does "
         "not recognize (neither a completion nor a length cutoff); the raw response bytes "
         f"are retained at {dict(response.raw_response_ref)!r}",
         response,

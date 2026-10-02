@@ -51,6 +51,7 @@ from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
 from common.imaging import Bounds
 from common.page_answer import grammar_problems
+from common.page_edges import FIRST_READING, OPERATOR_REREAD_FIRST, REASK_READING
 from common.page_witness_units import DETECTION_LETTERS
 from common.perlector_audit import TRUNCATION_COMPLETE
 from common.residual_ink import CoverageAuditPolicy, residual_ink_from_runs
@@ -194,7 +195,7 @@ ANSWER_BASIS_COMBINED: Final = "combined"
 
 def answer_basis(attempt: int) -> str:
     """The `answer_basis` of one whole-page reading's accounting: "attempt-<ordinal>"."""
-    return ANSWER_BASIS_FIRST if attempt == 1 else f"attempt-{attempt}"
+    return ANSWER_BASIS_FIRST if attempt == FIRST_READING else f"attempt-{attempt}"
 
 
 RECORD_DETECTOR_CONFIGURED: Final = "configured"
@@ -725,7 +726,12 @@ def _combined(
     k = len(first["entries"])
     added = (
         [
-            {**entry, "n": k + entry["n"], "reading_attempt": 2, "reading_n": entry["n"]}
+            {
+                **entry,
+                "n": k + entry["n"],
+                "reading_attempt": REASK_READING,
+                "reading_n": entry["n"],
+            }
             for entry in sorted(validated["entries"], key=lambda entry: entry["n"])
         ]
         if stands
@@ -1429,7 +1435,7 @@ def page_accounting(
     feed_ref: Any,
     page_reading_ref: Any,
     reask: Mapping[str, Any] | None = None,
-    attempt: int = 1,
+    attempt: int = FIRST_READING,
 ) -> dict[str, Any]:
     """The `page-accounting.v2` payload for one page reading, or for a reading and its re-ask.
 
@@ -1491,7 +1497,9 @@ def page_accounting(
     holds. The verdict does not depend on the
     order of any input list.
     """
-    if attempt != 1 and (reask is not None or not isinstance(attempt, int) or attempt < 3):
+    if attempt != FIRST_READING and (
+        reask is not None or not isinstance(attempt, int) or attempt < OPERATOR_REREAD_FIRST
+    ):
         raise ContractError(
             "a page accounting is of a first reading (1) or an operator re-read (3 or more), "
             f"never with a re-ask; not attempt {attempt!r}"
@@ -1551,7 +1559,7 @@ def page_accounting(
     for entry in entries:
         classification = (
             reask["entry_truncation"].get(entry["reading_n"])
-            if entry.get("reading_attempt") == 2
+            if entry.get("reading_attempt") == REASK_READING
             else entry_truncation.get(entry["n"])
         )
         if classification is None:
@@ -2012,7 +2020,7 @@ def _reask_rule(
         {"code": REASK_SET_ASIDE, "id": identifier, "reason": combined["set_aside"][identifier]}
         for identifier in sorted(combined["set_aside"], key=id_key)
     ]
-    added = [entry for entry in entries if entry.get("reading_attempt") == 2]
+    added = [entry for entry in entries if entry.get("reading_attempt") == REASK_READING]
     findings += [
         {"code": REASK_UNPLACED, "n": entry["n"], "reading_n": entry["reading_n"]}
         for entry in added
@@ -2023,7 +2031,7 @@ def _reask_rule(
         for entry in added
         if not normalized_text(entry["text"])
     ]
-    first = [entry for entry in entries if entry.get("reading_attempt") != 2]
+    first = [entry for entry in entries if entry.get("reading_attempt") != REASK_READING]
     findings += _reask_duplicates(first, added, units, policy)
     return _rule(findings)
 
@@ -2161,7 +2169,7 @@ def _record(
     page_reading_ref: Any,
     entries: list[dict[str, Any]],
     reask: Mapping[str, Any] | None,
-    attempt: int = 1,
+    attempt: int = FIRST_READING,
 ) -> dict[str, Any]:
     holds = sorted(
         {

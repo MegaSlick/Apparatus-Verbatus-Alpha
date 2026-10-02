@@ -875,6 +875,37 @@ def test_reask_records_are_read_by_schema_and_kept_apart(monkeypatch):
     with pytest.raises(Refusal, match="reading attempt 3"):
         load_page_records(_Tree(third, {}))
 
+    two_reasks = {
+        **records,
+        (PERLECTOR, "page-reading", "r3"): records[(PERLECTOR, "page-reading", "r2")],
+    }
+    with pytest.raises(Refusal, match="two readings at attempt 2"):
+        load_page_records(_Tree(two_reasks, {}))
+
+    no_first = {key: value for key, value in records.items() if key[2] not in {"r1", "p1"}}
+    with pytest.raises(Refusal, match="has a re-ask and no first reading"):
+        load_page_records(_Tree(no_first, {}))
+
+    unknown_basis = dict(records)
+    unknown_basis[(PERLECTOR, "page-accounting", "p2")] = {
+        "subject_id": "page-1",
+        "payload": {
+            **records[(PERLECTOR, "page-accounting", "p2")]["payload"],
+            "answer_basis": "attempt-9",
+        },
+    }
+    with pytest.raises(Refusal, match="answer basis 'attempt-9'"):
+        load_page_records(_Tree(unknown_basis, {}))
+
+    region = (PERLECTOR, "act-region", "act-3")
+    unknown_region_attempt = dict(records)
+    unknown_region_attempt[region] = {
+        "subject_id": "act-3",
+        "payload": {**records[region]["payload"], "reading_attempt": 5},
+    }
+    with pytest.raises(Refusal, match="an act region names reading attempt 5"):
+        load_page_records(_Tree(unknown_region_attempt, {}))
+
 
 def test_the_command_scores_a_selection_and_never_overwrites_or_writes_into_the_tree(tmp_path):
     from common.contracts.canonical import canonical_bytes, self_hash

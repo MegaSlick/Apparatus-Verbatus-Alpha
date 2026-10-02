@@ -1,4 +1,4 @@
-"""Create and validate append-only R7a gold records."""
+"""Create and validate append-only human gold records."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from .core import (
     write_append_only,
 )
 
-DESCRIPTION = "Create and validate append-only R7a gold records."
+DESCRIPTION = "Create and validate append-only human gold records."
 # Records that name their sample by digest; only a corpus resolves them to a page.
 _DIGEST_BOUND_SCHEMAS = frozenset({TRANSCRIPTION_SCHEMA, ADJUDICATION_SCHEMA, MEASUREMENT_SCHEMA})
 
@@ -245,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         record = ingest_manual_pick(args.run, read_json(args.pick))
         output = Path(args.output)
         with _locked_corpus(output.parent) as corpus:
-            # A stratum is a collection fact, not a property R0 can derive from one
+            # A stratum is a collection fact, not a property the run can derive from one
             # pick, so a second spelling of the same hand-picked page -- even one
             # that only restates `selection_basis`, since that field is bound into
             # `sample_digest` -- is refused here rather than counted twice.

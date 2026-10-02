@@ -16,10 +16,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any, Final
 
-FIRST_READING_ATTEMPT: Final = 1
-# The one re-ask of a page (`common.page_path.REASK_READING`): asked about ids
-# alone, so its entries are never a page's edges.
-REASK_ATTEMPT: Final = 2
+# The attempts a page reading is: the first reading, at most one re-ask (asked
+# about ids alone, so its entries are never a page's edges), and from 3 on each
+# operator re-read a person asked for (`common.page_path`).
+FIRST_READING: Final = 1
+REASK_READING: Final = 2
+OPERATOR_REREAD_FIRST: Final = 3
 
 Entry = Mapping[str, Any]
 
@@ -33,7 +35,7 @@ def first_attempt_entries(entries: Iterable[Entry]) -> list[Entry]:
     return [
         entry
         for entry in entries
-        if entry["reading_attempt"] is not None and entry["reading_attempt"] != REASK_ATTEMPT
+        if entry["reading_attempt"] is not None and entry["reading_attempt"] != REASK_READING
     ]
 
 

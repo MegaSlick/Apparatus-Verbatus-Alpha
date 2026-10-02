@@ -246,7 +246,8 @@ Three static assertions keep `proven` from resting on a smoke string alone:
   vendor's declared training pixel range, which no chair's data carries yet. Wiring it to
   the rows' own `min_pixels`/`max_pixels` would only check our own resize arithmetic
   (`common/request_capacity.py`'s `smart_resize` already clamps into them), which measures
-  nothing. Carry the vendor ranges as cited data first (`cleanroom/README.md`).
+  nothing. Carry the vendor ranges as cited data first, beside each chair's row in
+  `config/serving_recipes_real.toml`.
 - `assert_generation_config_key_coverage(...)` — refuses a vendor `generation_config.json`
   key neither sent nor named as withheld with a reason. **Wired only for DAI**
   (`attestator_2`), the one chair whose full vendor file is carried. `repetition_penalty`,
