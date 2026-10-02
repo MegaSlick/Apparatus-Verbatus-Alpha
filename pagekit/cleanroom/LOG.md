@@ -202,3 +202,29 @@ record".
   - no build-side agent may read the bridge files;
   - the bridge must be removed from `main` before pagekit merges.
 - **Lead's decision:** [to be recorded here when the lead answers.]
+
+## 0010 — The independent reader's findings fixed, and two briefs saved
+
+- **Who:** the build-side agent of entry 0002 made the fixes; the host saved the briefs.
+- **Briefs saved now:**
+  - `briefs/0005-anchor-copyright-rule.md` (sha256 e3bebde3984fe6785c58f3edf2dc5414369b29163227227e858ed3cdfc8f1c37), issued 2026-10-02T17:10:58Z. This is the
+    brief behind entry 0005. It had not been saved when 0005 was written.
+  - `briefs/0010-fix-independent-review.md` (sha256 df8f81b1c284c6ce1ad4f436aba2f1bbe326783fde3135c760d95536a7acf703), issued 2026-10-02T17:33:58Z.
+  Both were copied word for word from the session transcript after the agent finished.
+- **What changed:**
+  - Slice 1:
+    - a page with no detectable ink now goes to review;
+    - thin one-pixel pen lines are no longer cleaned away before counting, because only
+      lone specks are removed;
+    - any failure to read the master exits as "cannot check".
+  - Records:
+    - incident notes can never be deleted;
+    - CI replays the HOLD rule over every commit in a pull request;
+    - a test checks every accepted finding's sha256 against this log.
+  - Report check: it now refuses programming-style names and call or assignment shapes,
+    and the maintainer's account name. The 35 accepted findings still pass.
+  - Agent settings: they refuse only download-shaped commands naming the other project.
+  - CLEANROOM.md says what still gets through the checks, that the host's own reading
+    is the real check, that the gate cannot prove who wrote a decision, the full list of
+    old bridge files, and the rewritten rule from entry 0009.
+- **Commits:** 5352b0f0, 1cd3a90a, 379f2373, 00228b9e, 2161b90c.
