@@ -91,6 +91,11 @@ readable by anyone.
     does not cover this personal repository. Then turn off CodeRabbit's chat for this
     repository in CodeRabbit's own settings (app.coderabbit.ai), or accept the risk:
     a stranger's comment can then use review allowance.
+  - CodeRabbit reads `.coderabbit.yaml` from the branch under review, so an outsider's
+    pull request that edits that file may lift the lock for itself. Test this once from
+    a fork. If it works, the label lock is a courtesy, not a control: the cost is only
+    CodeRabbit review allowance, never secrets or CI time, because GitHub's Actions
+    approval above still holds every outside pull request until the lead approves it.
 - **Claude**: keep while AI sessions push branches and open pull requests.
 - Remove any other installed app that nothing in this repository uses.
 
