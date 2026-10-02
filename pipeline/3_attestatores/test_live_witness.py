@@ -10,7 +10,7 @@ hand-typed stand-in response. Adapters, by contrast, are small stubs: what
 each real adapter's `retain`/`parse` does is already proven by
 `test_witness_adapters.py`, `test_churro_native_capture.py`, and
 `test_chandra_adapter.py`; this module is tested for its own logic --
-building a request, and turning one retained response into a `LiveAttempt`
+building a request, and turning one retained response into an `Attempt`
 -- with the real `churro.v1` and `chandra.v1` adapters brought in only where
 a test specifically wants to prove real wiring, not a stub's promise.
 """
@@ -1285,7 +1285,7 @@ def test_format_capabilities_for_refuses_a_malformed_adapter_declaration(bad_dec
 def test_format_capabilities_for_propagates_a_malformed_declaration_through_a_live_attempt(
     tmp_path: Path,
 ):
-    """The same refusal reaches a caller that only asked for a `LiveAttempt`,
+    """The same refusal reaches a caller that only asked for an `Attempt`,
     so a broken adapter cannot slip a bad declaration past this seam merely by
     being read from a different call site."""
 
@@ -1583,7 +1583,7 @@ def test_live_attempt_carries_the_receipt_and_call_record_references(tmp_path: P
     )
 
     assert attempt.receipt_ref == dict(response.receipt_ref)
-    assert attempt.call_record_ref == dict(response.call_record_ref)
+    assert attempt.serving_call_ref == dict(response.call_record_ref)
 
 
 def test_live_attempt_from_response_real_dai_adapter_round_trip(tmp_path: Path):

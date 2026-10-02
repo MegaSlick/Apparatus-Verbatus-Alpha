@@ -14,7 +14,7 @@ import.
 The retained native bytes are ``response.content``, never ``response.raw_response``
 (the whole HTTP/JSON envelope): every adapter's native parser expects the
 model's own output bytes. The envelope is not lost -- it survives through
-``LiveAttempt.call_record_ref`` on a parsed branch, or *is*
+``Attempt.serving_call_ref`` on a parsed branch, or *is*
 ``raw_response_ref`` on the malformed branch -- and ``raw_response_kind``
 names which of the two a given record holds. A wire body that could not be
 parsed at all produces ``native_capture = None``: no adapter ever ran, so
@@ -67,6 +67,7 @@ from typing import Any, Callable, Final, Mapping
 
 import feeding
 import witness_adapters
+from attempt import Attempt, _unrecordable_health, content_health
 
 from common.chair_wire import chandra_wire_fields
 from common.contracts.envelope import read_verified
@@ -89,36 +90,6 @@ from common.request_capacity import (
     sendable_max_tokens,
 )
 from operations.serving.client import ChairRequest, ChairResponse
-
-
-@dataclass(frozen=True, slots=True)
-class LiveAttempt:
-    """One live chair's resolved outcome for one request -- `Attempt`'s live twin.
-
-    Field-for-field compatible with `run.py::Attempt` so converting to it is a
-    rename, not a remap. ``observation_payload`` is populated only on a
-    page-scoped adapter's parsed-and-accepted branch, to feed `adapter.observe`
-    for page geometry; every other branch leaves it ``None``. The three
-    trailing fields are live-only: ``native_capture`` is admitted on every live
-    attempted record whose bytes reached an adapter parser; ``call_record_ref``
-    and ``receipt_ref`` carry the serving call and receipt this record needs.
-    """
-
-    outcome: str
-    native_payload: Any
-    witness_reported: Any
-    format_capabilities: Mapping[str, bool] | None
-    health: dict[str, Any]
-    reason: str | None
-    raw_response_ref: Mapping[str, str] | None
-    native_capture: Mapping[str, Any] | None
-    call_record_ref: Mapping[str, str] | None
-    receipt_ref: Mapping[str, str] | None
-    # Which sort of bytes `raw_response_ref` names: `model-output` wherever an
-    # adapter parsed, `transport-response-body` on the one branch where none
-    # could, `None` only when nothing was retained at all.
-    raw_response_kind: str | None = None
-    observation_payload: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,41 +431,9 @@ def _finish_reason_facts(response: ChairResponse) -> tuple[str, bool | None, boo
     return finish_reason, None, None
 
 
-def _content_health(text: str, *, completed: bool | None) -> dict[str, Any]:
-    """The recordable-text branch of `run.py::content_health`, reproduced.
-
-    Every native payload this module hands here is a decoded ``str``, so only
-    that one branch needs reproducing; importing `run.py` here would be
-    circular, since `run.py` imports this module.
-    """
-
-    return {
-        "native_type": "string",
-        "encoding": "utf-8-json-native",
-        "recordable": True,
-        "empty": text == "",
-        "blank": text.strip() == "",
-        "truncated": None if completed is None else not completed,
-        "characters": len(text),
-        "truncation_basis": (
-            "trusted-response-boundary" if completed is not None else "not-recorded"
-        ),
-    }
-
-
-def _unrecordable_health(reason: str) -> dict[str, Any]:
-    """The shape `validate_content_health` requires for `recordable=False`."""
-
-    return {
-        "native_type": "unrecordable",
-        "encoding": "invalid-or-unrecordable",
-        "recordable": False,
-        "empty": None,
-        "blank": None,
-        "truncated": None,
-        "characters": None,
-        "truncation_basis": reason,
-    }
+def _capabilities(adapter: Any) -> dict[str, Any] | None:
+    declared = witness_adapters.declared_format_capabilities(adapter)
+    return dict(declared) if declared is not None else None
 
 
 def _unconfirmed_blank_reason(kind: str, transport_stop_reason: str, cut_off: bool | None) -> str:
@@ -596,8 +535,8 @@ def _live_attempt_from_capture(
     transport_stop_reason: str,
     parse_failure_reason: Callable[[Mapping[str, Any]], str],
     observation_payload: Any = None,
-) -> LiveAttempt:
-    """Turn one adapter's retained capture into a `LiveAttempt`, record or page alike.
+) -> Attempt:
+    """Turn one adapter's retained capture into an `Attempt`, record or page alike.
 
     Shared by `live_attempt_from_response` and `captured_page_attempt`: both
     mirror `fixture_page_attempt`'s three-way split -- ``read``/``genuinely-empty``
@@ -612,37 +551,37 @@ def _live_attempt_from_capture(
     """
     base = {
         "witness_reported": None,
-        "format_capabilities": witness_adapters.declared_format_capabilities(adapter),
+        "format_capabilities": _capabilities(adapter),
         "raw_response_ref": dict(capture["raw_response_ref"]),
-        "native_capture": capture,
-        "call_record_ref": dict(response.call_record_ref),
+        "native_capture": dict(capture),
+        "serving_call_ref": dict(response.call_record_ref),
         "receipt_ref": dict(response.receipt_ref),
         "raw_response_kind": RAW_RESPONSE_MODEL_OUTPUT,
     }
     parsed = capture["parse"]
     if parsed["state"] == "parsed" and (completed is True or parsed["text"] != ""):
         text = parsed["text"]
-        return LiveAttempt(
+        return Attempt(
             outcome="genuinely-empty" if text == "" else "read",
             native_payload=text,
-            health=_content_health(text, completed=completed),
+            health=content_health(text, completed=completed),
             reason=None,
             observation_payload=observation_payload,
             **base,
         )
     if parsed["state"] == "parsed":
         # An interrupted or unconfirmed empty response is not evidence of a blank.
-        return LiveAttempt(
+        return Attempt(
             outcome="failed",
             native_payload="",
-            health=_content_health("", completed=completed),
+            health=content_health("", completed=completed),
             reason=_unconfirmed_blank_reason(kind, transport_stop_reason, cut_off),
             **base,
         )
     reason_suffix, basis = _failed_parse_composition(
         parse_failure_reason(parsed), transport_stop_reason, cut_off
     )
-    return LiveAttempt(
+    return Attempt(
         outcome="failed",
         native_payload=None,
         health=_unrecordable_health(basis),
@@ -651,7 +590,7 @@ def _live_attempt_from_capture(
     )
 
 
-def _malformed_response_attempt(response: ChairResponse, *, adapter: Any) -> LiveAttempt:
+def _malformed_response_attempt(response: ChairResponse, *, adapter: Any) -> Attempt:
     """A wire response `ChairClient` could not parse into a reading at all.
 
     Retained (the raw bytes are already on disk via ``raw_response_ref``),
@@ -663,16 +602,16 @@ def _malformed_response_attempt(response: ChairResponse, *, adapter: Any) -> Liv
     """
 
     reason = f"the provider response was refused without repair: {response.parse_problem}"
-    return LiveAttempt(
+    return Attempt(
         outcome="failed",
         native_payload=None,
         witness_reported=None,
-        format_capabilities=witness_adapters.declared_format_capabilities(adapter),
+        format_capabilities=_capabilities(adapter),
         health=_unrecordable_health(reason),
         reason=reason,
         raw_response_ref=dict(response.raw_response_ref),
         native_capture=None,
-        call_record_ref=dict(response.call_record_ref),
+        serving_call_ref=dict(response.call_record_ref),
         receipt_ref=dict(response.receipt_ref),
         raw_response_kind=RAW_RESPONSE_TRANSPORT_BODY,
     )
@@ -690,8 +629,8 @@ def live_attempt_from_response(
     generation_declared: Mapping[str, Any],
     parser: str,
     generation_accounting: Mapping[str, Any] | None = None,
-) -> LiveAttempt:
-    """Derive one DAI record reading's `LiveAttempt` from its retained response.
+) -> Attempt:
+    """Derive one DAI record reading's `Attempt` from its retained response.
 
     ``dai.v1`` is the only adapter read one crop at a time; refuses any other
     name rather than guessing at a view shape it does not know.
@@ -748,7 +687,7 @@ def captured_page_attempt(
     adapter: Any,
     response: ChairResponse,
     framing: str | None = None,
-) -> LiveAttempt:
+) -> Attempt:
     """The live twin of `run.py::captured_churro_page_attempt`, generalized.
 
     Takes an already-retained `ChairResponse` instead of a fixture row, and

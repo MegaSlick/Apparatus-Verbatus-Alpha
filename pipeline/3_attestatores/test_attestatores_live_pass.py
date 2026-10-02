@@ -1015,21 +1015,21 @@ def test_a_captured_pages_own_format_capabilities_reaches_its_testimonium(
     """The captured attempt's declared value must reach the sealed page record.
 
     `True`/`True` differs from `run.py`'s `DEFAULT_FORMAT_CAPABILITIES`
-    (`False`/`False`), so `attempt_from_live` is wrapped to hand back the same
-    `Attempt` with that non-default value, exactly as if `captured_page_attempt`
-    had read it off a declaring adapter -- proving the write is not hardcoded.
+    (`False`/`False`), so `captured_page_attempt` is wrapped to hand back the
+    same `Attempt` with that non-default value, exactly as if it had read it off
+    a declaring adapter -- proving the write is not hardcoded.
     """
 
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path, default_scripts())
     declared = {"can_express_uncertainty": True, "can_express_layout": True}
-    real_attempt_from_live = attestatores.attempt_from_live
+    real_captured_page_attempt = attestatores.live_witness.captured_page_attempt
 
-    def relabeled_attempt_from_live(live):
-        attempt = real_attempt_from_live(live)
+    def relabeled(*args, **kwargs):
+        attempt = real_captured_page_attempt(*args, **kwargs)
         return attempt._replace(format_capabilities=declared)
 
-    monkeypatch.setattr(attestatores, "attempt_from_live", relabeled_attempt_from_live)
+    monkeypatch.setattr(attestatores.live_witness, "captured_page_attempt", relabeled)
     assert run_attestatores(live_run, run_root, factory=world.factory) == 0
 
     tree = RunTree(run_root, RUN_ID)

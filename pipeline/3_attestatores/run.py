@@ -20,6 +20,14 @@ import chandra  # noqa: E402
 import feeding  # noqa: E402
 import live_witness  # noqa: E402
 import witness_adapters  # noqa: E402
+from attempt import (  # noqa: E402
+    NO_RESPONSE_HEALTH,
+    Attempt,
+    _native_problem,
+    _unrecordable_health,
+    content_health,
+    no_response_health,
+)
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
@@ -194,12 +202,6 @@ def _confidence_problem(value: Any, path: str = "witness_reported") -> str | Non
             if problem := _confidence_problem(item, f"{path}[{index}]"):
                 return problem
     return None
-
-
-# A witness response is untrusted: deep nesting would raise an uncaught
-# `RecursionError` in `_native_problem` and kill the whole run, not one attempt.
-# Real output nests a few levels, so this is headroom.
-_MAX_NATIVE_DEPTH = 64
 
 
 REGION_PRESENTATION_FIELDS: Final = ("region_id", "image_path", "image_sha256")
@@ -436,122 +438,6 @@ def _scenario_rows(context, rows) -> list[dict[str, Any]]:
         elif declared_scenario == context.scenario:
             scoped.append(row)
     return scoped or base
-
-
-def _native_problem(value: Any, path: str = "payload", *, depth: int = 0) -> str | None:
-    """Return why a native response cannot be retained as canonical JSON.
-
-    Checked here so a bad response becomes a retained ``failed`` attempt rather than
-    a crash in the artifact writer or a silent repair.
-    """
-    if depth > _MAX_NATIVE_DEPTH:
-        return f"{path} nests deeper than {_MAX_NATIVE_DEPTH} levels"
-    if value is None or isinstance(value, (bool, int)):
-        return None
-    if isinstance(value, str):
-        try:
-            value.encode("utf-8", "strict")
-        except UnicodeEncodeError:
-            return f"{path} contains text that is not valid UTF-8"
-        return None
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            if problem := _native_problem(item, f"{path}[{index}]", depth=depth + 1):
-                return problem
-        return None
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                return f"{path} has a non-string object key"
-            try:
-                key.encode("utf-8", "strict")
-            except UnicodeEncodeError:
-                return f"{path} has an object key that is not valid UTF-8"
-            if problem := _native_problem(item, f"{path}.{key}", depth=depth + 1):
-                return problem
-        return None
-    return f"{path} has unsupported native type {type(value).__name__!r}"
-
-
-def _native_type(value: Any) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, int):
-        return "integer"
-    if isinstance(value, str):
-        return "string"
-    if isinstance(value, list):
-        return "array"
-    if isinstance(value, dict):
-        return "object"
-    return type(value).__name__
-
-
-# Shared by the writer and `validate_content_health` so both agree on "no response".
-NO_RESPONSE_HEALTH = {
-    "native_type": None,
-    "encoding": "not-applicable",
-    "recordable": None,
-    "empty": None,
-    "blank": None,
-    "truncated": None,
-    "characters": None,
-}
-
-
-def no_response_health(*, reason: str) -> dict[str, Any]:
-    """Health for a chair with no native response, never an empty reading."""
-    return {**NO_RESPONSE_HEALTH, "truncation_basis": reason}
-
-
-def _unrecordable_health(basis: str, *, native_type: str = "unrecordable") -> dict[str, Any]:
-    return {
-        "native_type": native_type,
-        "encoding": "invalid-or-unrecordable",
-        "recordable": False,
-        "empty": None,
-        "blank": None,
-        "truncated": None,
-        "characters": None,
-        "truncation_basis": basis,
-    }
-
-
-def content_health(native_payload: Any, *, completed: bool | None = None) -> dict[str, Any]:
-    """Compute deterministic channel facts from native output alone.
-
-    ``witness_reported`` is deliberately not an input: a self-report never becomes
-    health. ``completed`` must come from a trusted response boundary, or be None.
-    """
-    if (problem := _native_problem(native_payload)) is not None:
-        return _unrecordable_health(problem, native_type=_native_type(native_payload))
-
-    if isinstance(native_payload, str):
-        empty = native_payload == ""
-        blank = native_payload.strip() == ""
-        characters: int | None = len(native_payload)
-    elif isinstance(native_payload, (dict, list)):
-        empty = len(native_payload) == 0
-        blank = None
-        characters = None
-    else:
-        empty = False
-        blank = None
-        characters = None
-    return {
-        "native_type": _native_type(native_payload),
-        "encoding": "utf-8-json-native",
-        "recordable": True,
-        "empty": empty,
-        "blank": blank,
-        "truncated": None if completed is None else not completed,
-        "characters": characters,
-        "truncation_basis": (
-            "trusted-response-boundary" if completed is not None else "not-recorded"
-        ),
-    }
 
 
 def validate_content_health(native_payload: Any, health: Any) -> None:
@@ -896,34 +782,6 @@ def _positive_ordinal(value: str) -> int:
     if ordinal < 1:
         raise ValueError("attempt ordinal must be positive")
     return ordinal
-
-
-class Attempt(NamedTuple):
-    """One chair's resolved outcome for one page on one attempt.
-
-    Describes one chair only; nothing here compares or ranks witnesses.
-    """
-
-    outcome: str
-    native_payload: Any
-    witness_reported: Any
-    format_capabilities: dict[str, Any] | None
-    health: dict[str, Any]
-    reason: str | None
-    raw_response_ref: dict[str, str] | None = None
-    observation_payload: Any = None
-    # Live-only fields, appended last so positional fixture constructors are
-    # unchanged. `serving_call_ref` names this request's call-record blob.
-    native_capture: dict[str, Any] | None = None
-    serving_call_ref: dict[str, str] | None = None
-    receipt_ref: dict[str, str] | None = None
-    # Which sort of bytes `raw_response_ref` names; `None` on the fixture path.
-    raw_response_kind: str | None = None
-    # Chandra-only provenance over every physical request; not the payload.
-    native_inference: dict[str, Any] | None = None
-    # Fixture responses `(bytes, reference)` the page geometry is derived from,
-    # each named in the page record's `raw_response_refs`.
-    retained_responses: tuple[tuple[bytes, dict[str, str]], ...] = ()
 
 
 _CHURRO_PAGE_RESPONSE_FIELDS: Final = frozenset(
@@ -1912,27 +1770,6 @@ def production_serving_factory(
     )
 
 
-def attempt_from_live(live: live_witness.LiveAttempt) -> Attempt:
-    """Convert one `LiveAttempt` into the `Attempt` every write path shares."""
-    return Attempt(
-        outcome=live.outcome,
-        native_payload=live.native_payload,
-        witness_reported=live.witness_reported,
-        format_capabilities=(
-            dict(live.format_capabilities) if live.format_capabilities is not None else None
-        ),
-        health=dict(live.health),
-        reason=live.reason,
-        raw_response_ref=dict(live.raw_response_ref) if live.raw_response_ref else None,
-        observation_payload=live.observation_payload,
-        native_capture=dict(live.native_capture) if live.native_capture is not None else None,
-        serving_call_ref=dict(live.call_record_ref) if live.call_record_ref else None,
-        receipt_ref=dict(live.receipt_ref) if live.receipt_ref else None,
-        raw_response_kind=live.raw_response_kind,
-        native_inference=None,
-    )
-
-
 # vLLM's `stop` and `length`, the fixture transport's synonyms for them, and the
 # no-stop-reason marker. Any other word has no measured meaning.
 _LIVE_ENGINE_STOP_WORDS: Final = _CHURRO_STOP_REASONS | {STOP_REASON_UNREPORTED}
@@ -2450,7 +2287,7 @@ def _serve_detector_page(
             )
             _refuse_unpublishable_response(response, what.replace("request", "response"))
             presented = built.presented
-            attempt = attempt_from_live(live)
+            attempt = live
         witness_adapters.validate_adapter_presentation(resolved.witness_adapter, source, presented)
         served.append((region, presented, attempt))
     publish_detector_page_testimonium(
@@ -3400,10 +3237,10 @@ def _read_chandra_native_result(
                 response,
                 adapter,
                 application_refusal,
-                attempt_from_live(live) if live is not None else None,
+                live,
             )
             if application_refusal is not None
-            else attempt_from_live(live)
+            else live
         )
         raw = response.content if isinstance(response.content, str) else ""
         inference_error = response.parse_problem is not None
@@ -3565,7 +3402,7 @@ def _serve_page_unit(
             _refuse_unpublishable_response(
                 response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
             )
-            attempt = attempt_from_live(live)
+            attempt = live
     publish_page_testimonium(
         context,
         chair=chair,
