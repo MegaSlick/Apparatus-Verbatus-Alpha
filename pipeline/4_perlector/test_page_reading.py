@@ -2033,6 +2033,7 @@ def _entries(*acts: tuple[str, list[str]]) -> list[dict]:
         # The same acts, read again with other or more ids: kept.
         ((("act", ["A1"]), ("act", ["A2", "L3"])), True),
         ((("act", ["A1"]), ("act", ["A2"]), ("other", ["S1"])), True),
+        ((("act", ["A1"]), ("act", ["A2"]), ("act", [])), True),
         # Merged into one entry, whatever its text: not kept.
         ((("act", ["A1", "A2"]),), False),
         # Read as something other than an act: not kept.
@@ -2069,6 +2070,9 @@ def test_an_act_whose_ids_another_act_also_cites_is_followed_by_the_count():
         ),
         # A cites nothing; a new act Z stands where A was.
         ((("act", []), ("act", ["5"])), (("act", ["5"]), ("act", ["7"]))),
+        # An act entry citing nothing makes up the count for B, or for an A citing nothing.
+        ((("act", ["1", "2"]), ("act", ["2"])), (("act", ["1", "2"]), ("act", []))),
+        ((("act", []), ("act", ["5"])), (("act", ["5"]), ("act", []))),
         # B has no id of its own and is read as `other`; a new act Z makes the count.
         (
             (("act", ["1", "2"]), ("act", ["2"])),

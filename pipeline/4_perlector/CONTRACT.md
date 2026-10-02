@@ -212,7 +212,7 @@ every act it replaced. A re-read that dropped an act never becomes that baseline
 later re-read cannot launder the drop. Each `act` entry of the baseline is followed by
 its own ids, the ones no other act of it cites: they must all be cited by exactly one
 `act` entry of the re-read, which cites no other replaced act's own ids, and the
-re-read must name at least as many acts. While any replaced act has no id of its own,
+re-read must name at least as many acts citing an id. While any replaced act has no id of its own,
 the re-read's acts may cite no id the baseline's acts did not. Otherwise every entry of
 the re-read holds `superseded-act-not-read`, a page-wide hold a page decision clears.
 The rule follows ids, never text, with or without a record detector: an act may not

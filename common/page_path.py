@@ -824,7 +824,7 @@ def superseded_acts_kept(
     of `superseded` is followed by its own ids, those no other superseded act
     cites: all of them must be cited by exactly one `act` entry of the re-read,
     and that entry may cite no other superseded act's own ids. The re-read must
-    name at least as many acts as the reading it replaces. An act with no id of
+    name at least as many acts citing an id as the reading it replaces names acts. An act with no id of
     its own (none at all, or only ids another act shares) cannot be followed; while
     there is one, the re-read's acts may cite no id the superseded acts did not,
     so a new act cannot stand in for it. A merge, a split, a relabel as anything
@@ -834,7 +834,12 @@ def superseded_acts_kept(
     words, or two acts whose texts are swapped between their entries, keeps.
     """
     acts = [entry for entry in superseded if entry["act"]["kind"] == "act"]
-    readings = [set(plan["cited_ids"]) for plan in plans if plan["act"]["kind"] == "act"]
+    # An act entry citing nothing reads no ink, so it cannot stand for a replaced act.
+    readings = [
+        set(plan["cited_ids"])
+        for plan in plans
+        if plan["act"]["kind"] == "act" and plan["cited_ids"]
+    ]
     if len(readings) < len(acts):
         return False
     owners: dict[str, int] = {}
