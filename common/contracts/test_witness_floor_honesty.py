@@ -49,7 +49,7 @@ def test_an_honest_page_read_coverage_is_accepted():
 def test_a_health_unrecorded_count_beyond_the_configured_chairs_is_refused():
     """Unrecorded health is counted per chair; a count above three chairs lies."""
     coverage = _base_coverage(by_outcome={"read": 2, "genuinely-empty": 1}, health_unrecorded=4)
-    with pytest.raises(SchemaRefusal, match="more granularity facts than configured chairs"):
+    with pytest.raises(SchemaRefusal, match="more health or shortfall facts than configured chairs"):
         _validate_coverage(coverage)
 
 
