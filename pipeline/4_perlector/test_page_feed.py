@@ -301,7 +301,6 @@ def test_the_shipped_protocol_shows_every_feed_input():
         "witness_coordinates": True,
         "surya_lines": True,
         "surya_blocks": True,
-        "crops": "off",
         "page_overlay": "off",
     }
 
@@ -317,7 +316,7 @@ def _write(tmp_path, old: str, new: str):
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        ('crops = "off"', 'crops = "on-request"', "crops"),
+        ('page_overlay = "off"', 'page_overlay = "off"\ncrops = "off"', "closed schema"),
         ('page_image = "legible"', 'page_image = "tiny"', "page_image"),
         ('witness_units = "own"', 'witness_units = "lines"', "witness_units"),
         ("surya_lines = true", 'surya_lines = "yes"', "surya_lines"),
