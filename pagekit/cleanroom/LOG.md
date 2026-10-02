@@ -26,9 +26,11 @@ record".
 ## 0002 — The clean-room process built
 
 - **Who:** a build-side agent, Claude Opus 5.5.
-- **Brief:** [HOST TO FILL IN: `briefs/0002-build-cleanroom.md` and its sha256. The
-  brief came as two messages from the host, the task and a later list of added
-  decisions; both belong in the file.]
+- **Brief:** two messages from the host, saved as `briefs/0002a-build-cleanroom-task.md`
+  (sha256 be1a33e72ef5a4060bc286d6b6145d0e93abc80c04559c96f090b8a8b150f5a1) and
+  `briefs/0002b-build-cleanroom-decisions.md` (sha256
+  920d43d780a80ae81678fa6dfda075afc5d540aeb55144d51fa89558a42bf9f9). Both were copied
+  word for word from the session transcript after the agent finished.
 - **Spec:** none. This session built the clean-room process and its checks, not
   page-processing code; the spec step applies to pagekit slices.
 - **Commits:** ab91e2e5 (finding-report check and leak scan), 1f888ec6 (commit gate in
