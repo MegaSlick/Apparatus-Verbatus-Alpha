@@ -517,6 +517,65 @@ def test_a_cpu_counter_that_recovers_resumes_idle_counting(pod, tmp_path):
     assert len(_notices(tmp_path, RESTORED)) == 1
 
 
+def test_a_reading_after_a_dropped_tick_is_judged_over_both_ticks(pod, tmp_path):
+    """0.3 s of CPU per one-second tick is under the busy line (0.5 s). With every other
+    reading dropped, the next good one sees 0.6 s gained over two ticks: still idle, and
+    the pod is deleted rather than held by a one-tick threshold."""
+    env, calls, state = pod
+    stat = tmp_path / "cgroup" / "cpu.stat"
+    on_each_tick(
+        env,
+        tmp_path,
+        f'if [ $(($1 % 2)) = 1 ]; then rm -f "{stat}"; exit 0; fi\n'
+        f'printf "usage_usec %s\\n" $(($1 * 300000)) > "{stat}"\n',
+    )
+    run_guard(env, "5")
+    assert "no GPU, CPU or network work" in log_of(state)
+    assert "idle time unchanged" in log_of(state)
+
+
+def test_a_flapping_cpu_counter_reaches_the_phone_once_an_hour(pod, tmp_path):
+    """Missing for two ticks, back for one, over and over within an hour: every episode is
+    logged, the phone hears one unavailable notice and one recovery."""
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    stat = tmp_path / "cgroup" / "cpu.stat"
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    on_each_tick(
+        env,
+        tmp_path,
+        f'if [ $(($1 % 3)) = 2 ]; then printf "usage_usec 1000\\n" > "{stat}"; '
+        f'else rm -f "{stat}"; fi\n',
+    )
+    run_guard(env, "0.005")
+    assert "approved time is up" in log_of(state)
+    assert log_of(state).count("CPU idle detection unavailable") >= 3
+    assert len(_notices(tmp_path, UNAVAILABLE)) == 1
+    assert len(_notices(tmp_path, RESTORED)) == 1
+
+
+def test_a_flapping_cpu_counter_is_announced_again_an_hour_later(pod, tmp_path):
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    # Each tick is twenty minutes: one episode every hour.
+    env["FAKE_SLEEP_ADVANCE"] = "1200"
+    stat = tmp_path / "cgroup" / "cpu.stat"
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    on_each_tick(
+        env,
+        tmp_path,
+        f'if [ $(($1 % 3)) = 2 ]; then printf "usage_usec 1000\\n" > "{stat}"; '
+        f'else rm -f "{stat}"; fi\n',
+    )
+    run_guard(env, "4")
+    episodes = log_of(state).count("CPU idle detection unavailable")
+    assert episodes >= 2
+    assert len(_notices(tmp_path, UNAVAILABLE)) == episodes
+    assert len(_notices(tmp_path, RESTORED)) >= episodes - 1
+
+
 def _idle_cgroup(env, tmp_path, drop_at: int | None) -> None:
     """The fixture's idle counter, missing for the one tick `drop_at`."""
     stat = tmp_path / "cgroup" / "cpu.stat"
