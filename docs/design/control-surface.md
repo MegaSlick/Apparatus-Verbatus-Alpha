@@ -34,6 +34,9 @@ pod side. Everything below that reads them says so and waits for that phase.
   JSON object. Without it, it prints the same facts in plain English.
 - **Safe to hand to an AI.** An agent that has never seen the project can follow a run from
   start to finish, and can never spend money without the lead's yes.
+- **Local only.** Nothing here is published. The MCP server and every specific (endpoints,
+  keys, provider details) stay on the lead's machine and never enter the public
+  repository; this document describes them only in general terms.
 
 ## Principles the surface keeps
 
@@ -41,15 +44,16 @@ pod side. Everything below that reads them says so and waits for that phase.
    it is asked for. The surface keeps no state file that could disagree with the evidence.
 2. **Reading is free and always allowed.** Anything that only reads never asks for
    confirmation and never contacts a paid service except to read.
-3. **A paid action needs a quote, a yes and a code.** Starting a pod and extending its
-   deadline are the only paid actions. Each is a quote showing the card, the hourly price
-   and the total, then a confirmation bound to that quote and to a short code sent to the
-   lead's phone (see "Quote and confirm").
+3. **A paid action needs a quote, a yes and a code.** Starting a pod and extending it past
+   its soft maximum are the only paid actions. Each is a quote showing the card, the
+   hourly price and the budget, then a confirmation bound to that quote and to a short
+   code sent to the lead's phone (see "Quote and confirm"). Nothing goes past a pod's hard
+   maximum without the lead's new permission (see "Budgets: soft and hard maximum").
 4. **The guard is always on.** No path creates a pod without the pod guard armed in its
    start command, and the surface checks that the guard really armed.
 5. **Register material stays private.** What an AI driver may see is a fixed list of
    fields; page images, transcriptions and anything else not on the list stay on this
-   computer.
+   computer. Driving a run needs only states and counts.
 6. **Every refusal says what to do.** Every non-success result carries a stable code and
    the three plain sentences.
 
@@ -152,16 +156,23 @@ Later, `watch` also follows a local run and reads the event log (see "Events").
 
 - **`start`:** today's `verbatus run`, with the run lock and event log described below,
   `--detach` to return at once, and `--pod` to send the run to a live pod. Until a
-  run-on-start entry exists on the pod, `--pod` answers with the hand-route commands to run
-  over SSH, filled in for this run. Never rents a pod, resumes under other settings, or
-  starts a second writer on a run that has one.
-- **`pause --run-id`:** asks the run to stop at the next stage boundary. The orchestrator
-  checks for a pause request there and exits 9. Never stops a stage half-way.
+  run-on-start entry exists on the pod (phase 4), `--pod` answers with the hand-route
+  commands to run over SSH, filled in for this run. Never rents a pod, resumes under other
+  settings, or starts a second writer on a run that has one.
+- **`pause --run-id`:** a soft pause. The run stops at the next stage boundary so the lead
+  can look at what happened before going on; the orchestrator checks for a pause request
+  there and exits 9. On a pod, the pod stays up (see "Pause and stop on a pod").
+- **`pause --hard --run-id`:** a hard stop. The run stops at the next boundary in the same
+  way, and nothing is left running or planned; on a pod, the idle limit then deletes the
+  pod if no one acts. On a soft-paused run it turns the soft pause into a hard stop.
+  Neither kind of pause stops a stage half-way.
 - **`resume --run-id`:** `start --from <stage>` with the first unsealed stage worked out
   for you, under the run's recorded settings. Never clears a hold (that is `decide` or
-  `advance`). For a pod run it never trusts the liveness age alone, since that compares
-  two clocks: while the pod still exists it refuses and points at `pod stop`, so a skewed
-  clock cannot start a second writer.
+  `advance`). For a soft-paused pod run it writes a resume request to `control/<run id>/`
+  on the volume, and the `pod_run` waiting there carries on, so there is still one
+  writer. Otherwise it never trusts the liveness age alone, since that compares two
+  clocks: it starts a new writer on a live pod only when `pod_run`'s report records that
+  the last one exited, and refuses with `run-already-running` while it does not.
 
 ### `verbatus inspect`
 
@@ -242,7 +253,7 @@ reads as `interrupted`, with the warning.
 | `absent` | No run by this id. | No receipt, no `run.json`. |
 | `never-started` | A pod run was launched and billed, but the orchestrator never wrote `run.json` (the bootstrap failed, or the pod died first). | A pod receipt or `pod_run` report for the id, no `run.json`. |
 | `running` | A writer is active. | Liveness, and some stage not yet sealed. |
-| `paused` | Stopped at a boundary because someone asked. | Last exit 9, no writer, next stage not run. |
+| `paused` | Stopped at a boundary because someone asked; the answer says whether soft or hard. | The orchestrator's last exit 9 and the next stage not run. In a soft pause on a pod, `pod_run` stays alive, waiting. |
 | `interrupted` | Stopped mid-way with no writer: a crash, a closed laptop, a pod that ran out of time. | A stage unsealed, or the next stage not run, with no writer and no pause or hold to explain it. |
 | `held` | Waiting for a person's decision. | Holds with no advance passing their seal; last exit 3. |
 | `halted` | The hard-failure cap was passed; the run stays stopped. | Tally over the cap; last exit 4. |
@@ -264,7 +275,7 @@ never-started run is started again with `start`, since it has nothing to resume.
 | `running` | the hard-failure cap is passed | `halted` |
 | `running` | a stage refuses fatally | `failed` |
 | `running` | the writer dies, the laptop sleeps, the pod is deleted | `interrupted` |
-| `running` | `pause`, at the next boundary | `paused` |
+| `running` | `pause` or `pause --hard`, at the next boundary | `paused` |
 | `running` | the Armarium seals | `complete` or `partial` |
 | `held` | `decide` or `advance`, then `resume` | `running` |
 | `paused`, `interrupted` | `resume` | `running` |
@@ -304,9 +315,9 @@ times only.
 | `run-started`, `run-resumed` | The orchestrator was launched, with the stage range. |
 | `stage-started`, `page-done`, `stage-sealed` | A stage's first record, one more page's record, its seal. |
 | `hard-failure-warning` | The tally reached the warning line. |
-| `pause-seen`, `paused` | The launcher found a pause request; the boundary was reached. |
+| `pause-seen`, `paused` | The launcher found a pause request; the boundary was reached. Both say soft or hard. |
 | `held`, `halted`, `failed`, `interrupted`, `complete`, `partial` | The run stopped; carries the exit. |
-| `estimate`, `deadline-at-risk` | Pod side, after phase 0. |
+| `estimate`, `deadline-at-risk` | Pod side, after phase 0. `deadline-at-risk` names the soft and hard maximum. |
 | `extension-applied`, `extension-refused` | Pod side, once the extension handler exists. |
 
 Each stage's per-page record is named once, in one table, with a test that every stage in
@@ -319,26 +330,54 @@ the orchestrator's sequence has an entry.
 - **RunPod only, through `runpodctl`.** The surface calls `runpodctl` as a child process.
   The RunPod key stays in `runpodctl`'s own configuration; the surface never reads,
   prints or stores it. The storage keys stay in the environment, as `upload` and
-  `fetch-run` use them today.
+  `fetch-run` use them today. Both are the lead's own credentials, kept on the lead's
+  machine or in the provider's secret store, never in the repository or anything
+  published.
 - **The guard is always on.** `pod start` builds the start command only from
-  `operations/pod/pod_start_command.sh` with the approved hours and a commit on `main`.
-  There is no way to pass a start command of your own.
+  `operations/pod/pod_start_command.sh` with the approved hours, the idle limit and a
+  commit on `main`. There is no way to pass a start command of your own.
 - **One live pod at a time.** `pod start` refuses while `runpodctl pod list` shows any pod.
+
+### Budgets: soft and hard maximum
+
+Every pod has a budget with two limits, each in both time and cost:
+
+- **Up to the soft maximum** the run simply proceeds. The guard's deadline is set at the
+  soft maximum's time.
+- **From the soft to the hard maximum** needs an extension (`pod extend`), confirmed with
+  the code that reaches the lead's phone. An AI driver may prepare and request it but
+  cannot complete it without that code.
+- **Past the hard maximum** always needs the lead's new, explicit permission, which sets
+  a new hard maximum. No code, no AI driver and no shortcut on the spot can do it:
+  `pod extend` refuses with `past-hard-max`, whoever asks. The lead sets a new hard
+  maximum with `pod budget`, which asks for the values at an interactive terminal along
+  with a fresh code, refuses `--json`, and is not offered through the API or the MCP
+  server. The interactive check catches accidents; the lead's own words are the
+  permission.
+
+Cost is the quoted price times time, so either limit can be shown as the other; whichever
+is reached first counts. The spend policy (`config/spend.toml`) sets the outer default
+soft and hard values, and the idle limit below; a pod's own budget is fixed at its quote.
 
 ### Quote and confirm
 
 Both paid actions, `pod start` and `pod extend`, work the same way.
 
 1. **The quote** (`pod quote`, or `pod extend --hours N`) is free and exits 5. It shows
-   the card, the price per hour from `config/pod_placement.toml` and the live price, the
-   hours, the total, the spend policy's limits, and a `quote_id`. A live price above the
-   table's is refused. The quote is saved as `<state dir>/quotes/<quote_id>.json`,
-   readable by this user only (0600), and expires after five minutes.
+   the card, the price per hour from `config/pod_placement.toml` and the live price, and
+   the budget. A live price above the table's is refused. For a start, the quote asks
+   whether the budget and timeline are firm or flexible (`--firm`, or `--flexible` with
+   soft and hard values; the spend policy's defaults fill in what is not given). A firm
+   budget has its soft and hard maximum equal. An extension's quote shows the new
+   deadline against the hard maximum and is refused at once if it would pass it. Each
+   quote gets a `quote_id` and is saved as `<state dir>/quotes/<quote_id>.json`, readable
+   by this user only (0600); it expires after five minutes.
 2. **The code.** With the quote, the surface sends a short random code to the lead's
-   phone through `operations/notify/notify.sh decision`. The code never appears in any
-   output: not on the screen, not in JSON, not in a log or event, and the quote file holds
-   only its digest. An AI driver therefore cannot complete a confirmation from its own
-   context; the lead has to read the code off the phone and pass it on.
+   phone through `operations/notify/notify.sh decision`, with the budget it approves. The
+   code never appears in any output: not on the screen, not in JSON, not in a log or
+   event, and the quote file holds only its digest. An AI driver therefore cannot
+   complete a confirmation from its own context; the lead has to read the code off the
+   phone and pass it on.
 3. **The confirm** takes the `quote_id` and the code. It runs under the same paid-launch
    lock whether it comes from the command line, the API or MCP (the existing exclusive
    spend lock in `operations/pod/launch.py`), so two confirms can never race. The first
@@ -346,16 +385,23 @@ Both paid actions, `pod start` and `pod extend`, work the same way.
 
 ### `verbatus pod start`
 
-After a confirm: creates the pod with the guard armed, the volume at `/workspace/private`
-and the quoted card and hours; then reads `.pod_guard/guard.log` and `deadline-<pod id>`
-from the volume until the guard reports armed for this pod. If that does not happen
-within ten minutes, it deletes the pod and answers `guard-not-armed`. It writes a receipt
-naming the pod.
+After a confirm: creates the pod with the guard armed (deadline at the soft maximum, idle
+limit from the spend policy), the volume at `/workspace/private` and the quoted card;
+then reads `.pod_guard/guard.log` and `deadline-<pod id>` from the volume until the guard
+reports armed for this pod. If that does not happen within ten minutes, it deletes the
+pod and answers `guard-not-armed`. It writes a receipt naming the pod and its budget.
 
 - **Exit:** 0 created and guard armed; 2 refused before anything was created; 6 created
   but its state is unknown.
 - **Never:** starts without a used-up quote and the code; starts a second pod; starts
   without the guard; retries a create on its own.
+
+**Starting the run without SSH (phase 4).** A small entry on the pod reads a run request
+from the volume and starts `pod_run`, so the lead never has to log in. The request is
+written by the surface, from the command line, the local interface or an AI driver
+through them, using the lead's own credentials on the lead's machine. It is built only
+after the first hand-route live run has shown the guard working; until then, `start
+--pod` prints the hand-route commands.
 
 ### `verbatus pod stop`
 
@@ -368,41 +414,63 @@ loses whatever the pod is doing, but no code, because it spends nothing.
 ### `verbatus pod status`
 
 Free. The pod list, the pod's card and price, time used, cost so far (price times time),
-the guard deadline, the guard heartbeat age, and the run on it with its state.
+the soft and hard maximum, the guard deadline, the guard heartbeat age, and the run on it
+with its state.
 
-### When the run will outlast the pod (needs phase 0)
+### When the run will outlast the soft maximum (needs phase 0)
 
 When the projected finish plus a margin (20 minutes, to bring results home) passes the
 guard's deadline, the pod side writes a `deadline-at-risk` event and sends one `decision`
-notification: the run, the projected finish, the deadline, the extra hours needed and
-their cost. Nothing else changes; the deadline stays where it is.
+notification: the run, the projected finish, the deadline, the extra hours needed, their
+cost, and whether they fit under the hard maximum. Answers about the run carry the
+warning `past-soft-max`. Nothing else changes; the deadline stays where it is.
 
 ### `verbatus pod extend`
 
 Real enforcement needs two things that do not exist yet:
 
-- **`pod_run` gets a spend-policy input** (today it takes none), and records the policy's
-  digest in its report.
+- **`pod_run` gets a budget input** (today it takes no spend input): the soft and hard
+  maximum from the confirmed quote, with the spend policy's digest, recorded in its
+  report.
 - **A pod-side handler** in `pod_run` reads each confirmed extension request from
-  `control/<run id>/` on the volume, checks it against the policy the pod started with
-  (lifetime and total cost), and only then moves the guard's deadline file the way the
-  guard expects (a new file moved into place). It writes back an acknowledgement and an
+  `control/<run id>/` on the volume, checks it against the hard maximum the pod started
+  with (time and cost), and only then moves the guard's deadline file the way the guard
+  expects (a new file moved into place). It writes back an acknowledgement and an
   `extension-applied` or `extension-refused` event. The surface answers 0 only when the
   guard's deadline file shows the new deadline; otherwise `extension-not-applied`.
 
-The laptop also checks the request against the policy before sending it
-(`extension-over-policy`), but the pod's check is the one that counts.
+The laptop also checks the request against the hard maximum before sending it
+(`past-hard-max`), but the pod's check is the one that counts.
 
 **Until both exist, extension is the manual route:** over SSH, the lead writes the new
 epoch second to a temporary file and moves it over `.pod_guard/deadline-<pod id>`, as
-`pod_guard.sh` describes. Nothing checks that against the spend policy. The guard ignores
-a deadline more than a week away, but that only catches a typo; it is not a policy.
+`pod_guard.sh` describes. That is the lead's own act; nothing checks it against the
+budget. The guard ignores a deadline more than a week away, but that only catches a
+typo; it is not a limit.
 
-### Pause on a pod
+### Pause and stop on a pod
 
-A paused pod run exits 9 at the boundary, and `pod_run` then releases the pod as it does
-at the end of a run, so an idle pod does not keep billing. Resuming needs a new
-`pod start`, with a new quote and code. (Open question 4.)
+The pod guard (`operations/pod/pod_guard.sh`) already deletes a pod that has done no
+work for its idle limit: no GPU, container CPU or network use at any one-minute sample,
+and no touch of the pod's keep-alive file. The limit is a guard argument;
+`pod_start_command.sh` passes a fixed 30 minutes today. The guard watches the machine; it
+cannot tell a pod the lead is looking at from one nobody needs. The two kinds of pause
+tell it:
+
+- **Soft pause:** the orchestrator exits 9 at the boundary and `pod_run` stays up,
+  waiting for a resume request in `control/<run id>/`. While it waits it touches the
+  keep-alive file, so the idle rule does not delete a pod the lead is inspecting. The
+  guard's deadline still applies, so a soft pause never outlasts the soft maximum without
+  an extension. It sends one `decision` notification saying the run is paused and why.
+- **Hard stop:** nothing runs and nothing is planned. `pod_run` exits and stops touching
+  the keep-alive file, so the guard's idle rule deletes the pod once the idle limit
+  passes with no action. A command that plans work on the pod (a resume or a new run)
+  touches the keep-alive file and restarts that clock.
+
+So the hard-stop timer is the guard's existing idle rule, not a second timer. Its length
+becomes a spend-policy value (`idle_shutdown_minutes`, 30 by default) that `pod start`
+passes to `pod_start_command.sh` in place of the fixed 30. A paused local run has no pod,
+so the two kinds of pause differ only on a pod.
 
 ## Driving it with an AI
 
@@ -410,8 +478,10 @@ at the end of a run, so an idle pod does not keep billing. Resuming needs a new
   the person whenever the cost is `paid` or the decision is the lead's, and reports what
   each result says, drives a whole run correctly.
 - **No paid action without the lead.** The code on the lead's phone is what makes the
-  yes the lead's: the agent never sees it unless the lead gives it. The surface also
-  keeps every paid action inside the spend policy and under the guard whatever it is told.
+  yes the lead's: the agent never sees it unless the lead gives it. An agent may quote a
+  start or an extension up to the hard maximum, but never complete one without the code,
+  and never reach past the hard maximum at all. The surface keeps every paid action
+  inside the pod's budget and under the guard whatever it is told.
 - **No automatic spending.** Nothing extends, restarts or retries a paid action by itself.
 - **No secret passes through the surface.** The RunPod key, the storage keys and the
   notification topic are never in a result, an event or a log.
@@ -432,6 +502,14 @@ readings, witness text and images. An answer that lost fields carries the warnin
 `withheld-from-hosted-ai`. Paths are replaced by short handles (`run:demo`) that the
 commands accept.
 
+In this version a hosted AI never sees transcriptions or images; driving a run needs
+only states and counts. An AI that needed an image would have to download it into its
+own session, which is costly and would be a separate permission, not yet given.
+
+Checking that pages were processed correctly is the operator's job, done locally: a
+before-and-after view of each page, planned with pagekit's before/after view. It is a
+feature for a person on this computer, not for an AI driver.
+
 ## Error codes
 
 The existing `ErrorCode` table stays the one home for errors, each with its three
@@ -441,19 +519,21 @@ sentences. The existing `run-held`, `export-partial` and `canary-alarm` become e
 | Code | Plain explanation |
 |---|---|
 | `run-already-running` | Another process is writing this run now. |
-| `pause-pending` | The run will pause at the next stage boundary. |
+| `pause-pending` | The run will pause (soft) or stop (hard) at the next stage boundary. |
 | `nothing-to-resume` | The run is complete, partial, halted or damaged. |
 | `run-never-started` | The pod billed but the run never wrote `run.json`; start it again. |
 | `record-disagrees-with-tree` (warning) | A receipt says something the tree does not show; the tree is believed. |
 | `liveness-stale` (warning) | The pod's liveness file is older than two minutes by this computer's clock. |
 | `estimate-unavailable` (warning) | No estimate yet: phase 0 is not built, or too few pages have run. |
 | `quote-required` (exit 5) | A paid action was asked for without a quote. |
-| `quote-expired` | The quote is more than five minutes old, used up, or prices or limits changed. |
+| `quote-expired` | The quote is more than five minutes old, used up, or prices or budget changed. |
 | `confirm-code-wrong` | The code does not match the one sent to the lead's phone; the quote is used up. |
-| `card-not-allowed` | The card is not in the placement table, or costs more than the policy allows. |
+| `card-not-allowed` | The card is not in the placement table, or costs more per hour than the spend policy allows. |
 | `pod-already-live` | A pod is already running for this account. |
 | `guard-not-armed` | The guard did not report armed in time, so the pod was deleted. |
-| `extension-over-policy` | The extra time would pass the spend policy's lifetime or cost limit. |
+| `past-soft-max` (warning) | The run is projected to pass its soft maximum; going on needs an extension confirmed with the lead's code. |
+| `past-hard-max` | The request would pass the pod's hard maximum in time or cost; only the lead's new permission (`pod budget`) can raise it. |
+| `budget-needs-lead` | `pod budget` was called non-interactively or with `--json`; only the lead sets a new hard maximum, at a terminal. |
 | `extension-not-applied` | The pod has not confirmed the new deadline; it ends at the old one. |
 | `extension-manual-only` | The pod-side extension handler is not built; extend over SSH. |
 | `close-unverified` (exit 6) | The pod looks gone, but billing must be checked in the RunPod console. |
@@ -486,10 +566,12 @@ needed, by the manual route.
 ### Phase 2: the run itself
 
 - The event log, written by the launcher, and `watch` on it, for local runs too.
-- `pause` and `resume`, with exit 9 in the orchestrator and `pod_run`.
+- `pause` (soft) and `pause --hard`, and `resume`, with exit 9 in the orchestrator and
+  `pod_run`; the soft pause's wait and keep-alive in `pod_run`; `idle_shutdown_minutes`
+  in the spend policy, passed through `pod_start_command.sh` to the guard.
 - `inspect`, `help --json`, and `--json` on the remaining commands.
-- `pod extend`, once `pod_run` takes a spend-policy input and runs the handler (and
-  phase 0's request route exists).
+- `pod extend`, once `pod_run` takes a budget input and runs the handler (and phase 0's
+  request route exists).
 
 ### Phase 3: before the pod
 
@@ -498,9 +580,10 @@ needed, by the manual route.
 
 ### Phase 4: pod start and stop from the surface
 
-`pod quote`, `pod start` (with the guard check and the out-of-band code), `pod stop` and
-`pod status`; and, if the lead agrees (question 5), a run-on-start entry on the pod so
-`start --pod` needs no SSH. The local JSON API (`verbatus serve`, `127.0.0.1` only, a
+`pod quote` (with the firm-or-flexible budget), `pod start` (with the guard check and the
+out-of-band code), `pod budget`, `pod stop` and `pod status`; and the run-on-start entry
+on the pod so `start --pod` needs no SSH, built only after the first hand-route live run
+has shown the guard working. The local JSON API (`verbatus serve`, `127.0.0.1` only, a
 fresh token per start, `Host` and `Origin` checked) comes here too.
 
 ### Beta
@@ -520,43 +603,52 @@ Kept short on purpose; each is designed in full when it is built.
 - **Server-sent events** on the API for `watch`.
 - **The web page**, static, over the API, with no logic of its own.
 - **The MCP server** over standard input and output, one tool per command, with the
-  paid confirms as separate tools and the hosted-AI filter on every answer.
+  paid confirms as separate tools and the hosted-AI filter on every answer. It is kept on
+  the lead's machine, with its endpoints, keys and provider details, and never enters
+  the public repository.
 
 ### Deliberately left out
 
 - Any provider other than RunPod, and any second live pod.
-- Reaching the API from another machine, and any login other than the local token.
+- Reaching the API or the web page from another machine, the lead's phone included (a
+  possible later feature), and any login other than the local token.
 - More than one user, and any user id.
-- Stopping a stage half-way, and a pause that keeps a pod billing.
+- Stopping a stage half-way.
 - Automatic extension, restart or retry of anything paid.
+- Publishing anything: the MCP server, an install listing, or any endpoint, key or
+  provider detail.
+- Hosted AI access to transcriptions or images.
 - Native Windows (WSL is supported like Linux).
 
-## Questions for the lead
+## Lead's rulings (2026-10-02)
 
-Each needs the lead's answer because it is about money, privacy or what the project is
-for. Each has a recommendation.
+The lead answered the seven open questions. The body above follows them.
 
-1. **May an AI driver start a pod?** The pod ruling covers extensions told to an AI
-   driver. *Recommendation:* allowed, for starting and extending alike, only with the
-   out-of-band code: the AI can prepare the quote, but the confirm needs the code that
-   reaches only the lead's phone.
-2. **Hosted AI seeing transcriptions.** Should a hosted AI driver ever see transcriptions
-   or images? *Recommendation:* not in this version. They stay off the allowlist; a later
-   per-provider permission, off by default and with a warning, can add them.
-3. **Going over the spend policy for one pod.** When an extension would pass the policy's
-   lifetime or cost limit, should the lead approve it on the spot? *Recommendation:* no.
-   The lead changes `config/spend.toml` (a deliberate, reviewed act); the refusal shows
-   the exact values needed.
-4. **Pause on a pod.** Should pausing release the pod (no idle billing, but a new start and
-   model load to resume), or keep it until the guard's idle limit? *Recommendation:*
-   release it.
-5. **Starting the run without SSH.** A small entry on the pod that reads a run request
-   from the volume and starts `pod_run` brings back a small part of the retired managed
-   route. *Recommendation:* build it in phase 4, only after the first hand-route live run
-   has shown the guard working.
-6. **The web page on a phone.** Should it ever be reachable from the lead's phone?
-   *Recommendation:* not in this version. Phone notifications carry the decisions and the
-   codes.
-7. **Publishing the MCP server.** Should it be listed for others to install at beta?
-   *Recommendation:* no, not until beta is public and the hosted-AI filter has been
-   reviewed by a fresh reader.
+1. **Pod budgets have a soft and a hard maximum, in time and in cost.** At a pod's quote
+   the surface asks whether the budget and timeline are firm or flexible, and records
+   both limits. Up to the soft maximum the run proceeds. Going from the soft to the hard
+   maximum needs the code that reaches the lead's phone; an AI driver may prepare and
+   request that extension but cannot complete it. Going past the hard maximum always
+   needs the lead's new, explicit permission, which sets a new hard maximum; no AI driver
+   and no shortcut on the spot can do it. The spend policy keeps the outer default soft
+   and hard values. Starting a pod keeps its quote and code.
+2. **A hosted AI sees no transcriptions or images in this version.** Driving needs only
+   states and counts. Giving an AI an image would mean downloading it into its session,
+   which costs tokens and would be a separate, later permission. Checking that images
+   were processed correctly is a local feature for a person, planned with pagekit's
+   before/after view.
+3. **Going over budget for one pod** is settled by ruling 1; editing the spend policy is
+   no longer the route.
+4. **There are two kinds of pause.** A soft pause stops the run at a stage boundary so
+   the lead can look at a problem, and the pod stays up. A hard stop leaves nothing
+   running or planned, and the pod is deleted after a spend-policy idle limit (30 minutes
+   by default) with no action; that limit is the existing pod guard's idle rule.
+5. **The pod may start its run without the lead logging in over SSH.** The command line,
+   the local interface or an AI driver through them triggers it with the lead's own
+   credentials, which stay on the lead's machine or in the provider's secret store and
+   never in the repository or anything published. It is built only after the first
+   hand-route live run has shown the guard working.
+6. **A web page on the phone** is a possible future feature, not needed now.
+7. **Nothing is published for now.** The MCP server and every specific, such as
+   endpoints, keys and provider details, stay local and never enter the public
+   repository.
