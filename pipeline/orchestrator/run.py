@@ -77,6 +77,7 @@ from common.stage import (  # noqa: E402
     DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
+    EXIT_FATAL,
     EXIT_HELD,
     EXIT_RUN_HALTED,
     RUN_MODES,
@@ -871,6 +872,12 @@ def _require_fresh_stop_record(args: argparse.Namespace) -> None:
             f"--stop-record {record_path} already exists; it must be new, so no earlier "
             "invocation's stop can be read as this one's"
         )
+    parent = record_path.parent
+    if not parent.is_dir() or not os.access(parent, os.W_OK | os.X_OK):
+        raise ContractError(
+            f"--stop-record {record_path} cannot be written: {parent} is not an existing, "
+            "writable directory"
+        )
 
 
 def _record_stop(args: argparse.Namespace, exit_code: int, *, exported: bool) -> None:
@@ -953,8 +960,20 @@ def run_sequence(
     mode: str,
     hard_failure_policy: dict,
 ) -> int:
-    """Run one contiguous selection (`_drive`), and record how it ended (`_record_stop`)."""
-    exit_code, exported = _drive(args, names, mode, hard_failure_policy)
+    """Run one contiguous selection (`_drive`), and record how it ended (`_record_stop`).
+
+    A refusal raised inside the selection is recorded too, as a fatal stop with
+    no export and whatever systemic alarm was already printed, and then raised
+    as it was.
+    """
+    try:
+        exit_code, exported = _drive(args, names, mode, hard_failure_policy)
+    except ContractError:
+        try:
+            _record_stop(args, EXIT_FATAL, exported=False)
+        except ContractError as lost:
+            print(f"{type(lost).__name__}: {lost}", file=sys.stderr)
+        raise
     _record_stop(args, exit_code, exported=exported)
     return exit_code
 

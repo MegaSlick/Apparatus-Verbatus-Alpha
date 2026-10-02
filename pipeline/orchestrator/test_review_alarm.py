@@ -11,18 +11,22 @@ reason the terminal report names.
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from common.contracts.errors import ContractError
 from common.contracts.outcomes import systemic_reason
 from common.contracts.stages import ARMARIUM
 from common.page_review import held_pages_after_review
 from common.review_policy import alarm_line, load_review_policy
 from common.runtree.store import RunTree
 from common.stage import EXIT_FATAL, EXIT_HELD
-from conftest import HELD_RECENSOR_STOP, advance_held_recensor
+from conftest import HELD_RECENSOR_STOP, advance_held_recensor, load_stage
 
 ROOT = Path(__file__).resolve().parents[2]
 ALARM = "run r: systemic: 1 of 2 page(s) are held after the recensor"
@@ -78,17 +82,55 @@ def test_the_stop_record_names_the_systemic_alarm_for_a_caller_without_the_trans
     assert json.loads(stop.read_text(encoding="utf-8"))["systemic"] == line
 
 
-def test_a_stop_record_that_cannot_be_written_ends_the_run_fatally_and_names_its_alarm(
-    tmp_path,
-):
+def test_a_stop_record_path_that_cannot_be_written_is_refused_before_any_stage(tmp_path):
+    """A bad path fails up front, before any stage spends time a record would describe."""
+    root = tmp_path / "runs"
+    for stop in (tmp_path / "no-such-directory" / "stop.json", tmp_path / "a-file" / "stop.json"):
+        (tmp_path / "a-file").write_text("", encoding="utf-8")
+        result = _orchestrate(root, "--stop-record", str(stop))
+        assert result.returncode == EXIT_FATAL, result.stderr
+        assert "is not an existing, writable directory" in result.stderr
+        assert not (root / "r").exists()
+
+
+def test_a_stop_record_that_cannot_be_written_is_refused_naming_its_alarm(tmp_path, monkeypatch):
     """A caller reading no record cannot tell no alarm from a lost one, so none is not a stop."""
-    stop = tmp_path / "no-such-directory" / "stop.json"
-    result = _orchestrate(tmp_path / "runs", "--stop-record", str(stop))
-    assert result.returncode == EXIT_FATAL, result.stderr
+    orchestrator = load_stage("orchestrator")
+
+    def unwritable(path, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(orchestrator, "atomic_create", unwritable)
+    stop = tmp_path / "stop.json"
+    args = argparse.Namespace(stop_record=str(stop), run_id="r", systemic_line=ALARM)
+    with pytest.raises(ContractError, match="could not be written") as refused:
+        orchestrator._record_stop(args, EXIT_HELD, exported=False)
+    assert f"exit {EXIT_HELD}, exported False, systemic {ALARM!r}" in str(refused.value)
     assert not stop.exists()
-    [line] = [line for line in result.stdout.splitlines() if "systemic:" in line]
-    assert "the stop record" in result.stderr and "could not be written" in result.stderr
-    assert f"exit {EXIT_HELD}, exported False, systemic {line!r}" in result.stderr
+
+
+def test_a_refusal_after_the_alarm_still_leaves_a_stop_record_carrying_it(tmp_path, monkeypatch):
+    """The alarm already printed reaches the stop record, and the refusal is raised as it was."""
+    orchestrator = load_stage("orchestrator")
+    refusal = ContractError("the final seal does not verify")
+
+    def drive(args, names, mode, policy):
+        args.systemic_line = ALARM
+        raise refusal
+
+    monkeypatch.setattr(orchestrator, "_drive", drive)
+    stop = tmp_path / "stop.json"
+    args = argparse.Namespace(stop_record=str(stop), run_id="r")
+    with pytest.raises(ContractError) as raised:
+        orchestrator.run_sequence(args, ("armarium",), "manual", {})
+    assert raised.value is refusal
+    assert json.loads(stop.read_text(encoding="utf-8")) == {
+        "schema": "orchestrator-stop.v2",
+        "run_id": "r",
+        "exit_code": EXIT_FATAL,
+        "exported": False,
+        "systemic": ALARM,
+    }
 
 
 def test_a_held_share_at_the_sealed_limit_raises_no_alarm(tmp_path):

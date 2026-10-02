@@ -112,9 +112,12 @@ is an explicit choice, and the run is not trapped. The alarm never goes silent:
 - the invocation's stop record (`--stop-record`, `orchestrator-stop.v2`: run id, exit code, `exported` and `systemic`) names the line
   as `systemic` (null when none was printed), and `pod_run --notify` sends it from the
   pod as the same `decision` (`operations/pod/notify_hooks.py::notify_systemic`). The
-  record is written on every return. One that cannot be written ends the invocation
-  with `EXIT_FATAL`, and the refusal names the exit, export and alarm it would have held,
-  because a caller cannot tell a missing record from a run with no alarm.
+  record's directory must exist and be writable before any stage runs. Once the
+  selection starts, the record is written on every return. A refusal raised inside the
+  selection is recorded as `EXIT_FATAL` with `exported` false and any alarm already
+  printed, and is then raised unchanged. A record that cannot be written ends the
+  invocation with `EXIT_FATAL`, and the refusal names the exit, export and alarm it would
+  have held, because a caller cannot tell a missing record from a run with no alarm.
 
 ## Mode is an invocation choice, never durable bytes
 
