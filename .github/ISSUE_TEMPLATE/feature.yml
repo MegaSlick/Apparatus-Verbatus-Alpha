@@ -1,0 +1,63 @@
+name: Feature request
+description: Propose a new feature or a change in behaviour.
+title: "Feature: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach images of register pages, transcriptions or any personal data, and
+        never paste credentials or keys. Describe the material in words instead.
+
+        A large change starts here, before any code. It waits for the maintainer, who
+        decides whether it goes ahead. Read `PRINCIPLES.md` first: nothing picks among
+        the witnesses, no act is lost and uncertainty is flagged, never guessed.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: The commit you are working from, from `git rev-parse HEAD`.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: For example Ubuntu 24.04 or macOS 15, and the Python version.
+    validations:
+      required: true
+  - type: textarea
+    id: ran
+    attributes:
+      label: What you ran
+      description: The commands that show the current behaviour.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happens now
+      description: The output or behaviour you see today.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you would like instead
+      description: The behaviour you propose, and the problem it solves.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other ways you considered
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you send
+      options:
+        - label: This issue contains no register images, transcriptions, personal data or credentials.
+          required: true

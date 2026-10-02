@@ -1,0 +1,64 @@
+name: Input quality
+description: A page was cropped, split or prepared badly, or its quality checks look wrong.
+title: "Input quality: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not attach images of register pages, crops or screenshots of them**, and no
+        transcriptions or personal data. Public images of register pages can be misused.
+
+        Send measurements instead: paste the JSON from pagekit's crop check
+        (`python -m pagekit check ... --json`) or the run's preflight report. They hold
+        sizes, thresholds and ink counts, not the page. If a file name in the report
+        names a person or a place, replace it with a neutral name before pasting.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: The exact commit you ran, from `git rev-parse HEAD`.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: For example Ubuntu 24.04 or macOS 15, and the Python version.
+    validations:
+      required: true
+  - type: textarea
+    id: ran
+    attributes:
+      label: What you ran
+      description: The exact commands, in order.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Measurements
+      description: The crop-check JSON or the preflight report, in full. Measurements only.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: What went wrong with the page, in words. For example, a margin note was cut off.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you send
+      options:
+        - label: This issue contains no register images, crops, transcriptions, personal data or credentials.
+          required: true
