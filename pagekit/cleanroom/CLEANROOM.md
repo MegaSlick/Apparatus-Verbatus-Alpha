@@ -125,12 +125,13 @@ document comes in by this path:
    share.
 2. **The lead keeps the chat,** so its transcript can be checked later.
 3. **The document goes straight into quarantine, unread.** It is saved in the local,
-   git-ignored quarantine folder (`workbench/quarantine/`) and is never committed.
+   git-ignored quarantine folder, `workbench/cleanroom-quarantine/`, and is never
+   committed.
 4. **The host logs its arrival:** the time it was received, its size and its sha256.
 5. **The host runs the report check on it** before anyone reads it.
 6. **If it fails,** as working notes usually will, a reading-side agent distils it into
-   finding reports, written into quarantine. Each report is checked before the host
-   opens it, and one that fails is deleted unread, as above.
+   finding reports, written into `workbench/cleanroom-quarantine/reports/`. Each report
+   is checked before the host opens it, and one that fails is deleted unread, as above.
 7. **The host reads each passing report** and accepts it into `findings/`, with its
    sha256 in the log.
 
