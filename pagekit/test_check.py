@@ -219,7 +219,7 @@ def test_cli_exit_codes(tmp_path, capsys):
 
 def test_pagekit_imports_nothing_from_this_repository():
     allowed = set(sys.stdlib_module_names) | {"PIL", "pagekit", "pytest"}
-    for source in sorted(HERE.glob("*.py")):
+    for source in sorted(HERE.rglob("*.py")):
         tree = ast.parse(source.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -229,7 +229,7 @@ def test_pagekit_imports_nothing_from_this_repository():
             else:
                 continue
             for name in names:
-                assert name.split(".")[0] in allowed, f"{source.name} imports {name}"
+                assert name.split(".")[0] in allowed, f"{source} imports {name}"
 
 
 def test_crop_edges_on_or_past_the_page_border_are_not_compared(tmp_path):
