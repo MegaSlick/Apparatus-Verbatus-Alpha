@@ -403,10 +403,11 @@ def _verify_smoke(
             raise QualificationRefusal(
                 f"chair {identity.role!r} page-read evidence disagrees at {field}"
             )
-    for field in ("smoke_service_request_count", "smoke_fixture_request_count"):
-        value = smoke.get(field)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            raise QualificationRefusal(f"chair {identity.role!r} has no valid {field}")
+    count = smoke.get("smoke_fixture_request_count")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} has no valid smoke_fixture_request_count"
+        )
 
     receipt_ref = _object(smoke.get("receipt_reference"), "service receipt reference")
     audit_ref = _object(smoke.get("serving_launch_audit_reference"), "launch audit reference")
@@ -453,7 +454,7 @@ def _verify_smoke(
         raise QualificationRefusal(f"chair {identity.role!r} was not launched for qualification")
     if audit_artifact.get("configuration_inputs") != config_inputs:
         raise QualificationRefusal(f"chair {identity.role!r} launch used different configuration")
-    if audit_artifact.get("primary_identity") != expected_identity:
+    if audit_artifact.get("chair_identity") != expected_identity:
         raise QualificationRefusal(f"chair {identity.role!r} launch used a different identity")
     profile = _object(audit_artifact.get("profile"), "launch audit profile")
     if (

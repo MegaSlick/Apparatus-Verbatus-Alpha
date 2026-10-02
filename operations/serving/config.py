@@ -1001,7 +1001,7 @@ def seal_json_object(value: object, *, label: str) -> tuple[dict[str, object], s
     """Materialize one caller-supplied JSON object, returning both of its forms.
 
     Every request payload this package accepts — a readiness probe from the
-    catalogue, an adapter calibration, a golden-page request — is frozen here
+    catalogue or a golden-page request — is frozen here
     exactly once, and both the validators and the eventual POST read that one
     snapshot.  A stateful ``Mapping`` can otherwise show an image to a validator
     and serialize text-only content afterwards.  The canonical string is

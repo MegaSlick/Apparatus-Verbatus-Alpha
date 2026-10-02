@@ -41,21 +41,17 @@ from operations.pod.preflight import (
 )
 
 from .config import ServingProfile, thawed_json
-from .errors import AdapterActivityError, ServiceStopError, ServingConfigurationError
-from .manager import AdapterCalibration, ServiceHandle, ServingManager
+from .errors import ServiceStopError, ServingConfigurationError
+from .manager import ServiceHandle, ServingManager
 
 SmokeCall = Callable[[ServiceHandle, ChairIdentity, Path, PlacementTier], SmokeResult]
-CalibrationFor = Callable[[ChairIdentity, Path], AdapterCalibration | None]
 
 
 def prepare_log_root(log_root: str | Path) -> Path:
     """Create and verify the exact log filesystem a launch will write into.
 
-    Lives here so both production seams give the same guarantee:
-    ``assemble_serving_preflight_callback`` calls it when its callback runs,
-    and :meth:`ServingSmokeReader.read` calls it before each start — so
-    neither seam can write a run's logs through a symlinked or
-    group-readable root. Construction stays effect-free on both seams either way.
+    :meth:`ServingSmokeReader.read` calls it before each start, so a smoke can
+    never write a run's logs through a symlinked or group-readable root.
     """
 
     prepared = Path(log_root)
@@ -97,45 +93,6 @@ def prepare_log_root(log_root: str | Path) -> Path:
     return prepared
 
 
-def assert_resized_pixels_within_trained_geometry(
-    *,
-    chair: str,
-    resized_width: int,
-    resized_height: int,
-    trained_min_pixels: int,
-    trained_max_pixels: int,
-) -> None:
-    """Refuse a post-resize image outside a chair's own declared trained geometry.
-
-    Checked against the dimensions actually sent -- after
-    ``common/request_capacity.py::smart_resize`` (or a chair's own carried
-    resize port) has run -- never against the source image.  A resize
-    algorithm that silently under- or over-shoots a vendor's own declared
-    training range (Model card "Parameters", ``processor_config.json``) reads
-    a page at the wrong scale with no error anywhere else -- the same
-    silent-drop failure mode as an unrecognised ``mm_processor_kwargs``,
-    the worst-rated kind of failure.
-    """
-
-    if resized_width <= 0 or resized_height <= 0:
-        raise ServingConfigurationError(
-            f"chair {chair!r} resized dimensions must be positive, got "
-            f"{resized_width}x{resized_height}"
-        )
-    if trained_min_pixels <= 0 or trained_max_pixels < trained_min_pixels:
-        raise ServingConfigurationError(
-            f"chair {chair!r} declared trained pixel geometry "
-            f"[{trained_min_pixels}, {trained_max_pixels}] is malformed"
-        )
-    pixels = resized_width * resized_height
-    if not (trained_min_pixels <= pixels <= trained_max_pixels):
-        raise ServingConfigurationError(
-            f"chair {chair!r} post-resize image is {resized_width}x{resized_height} = {pixels} "
-            f"pixels, outside its declared trained geometry "
-            f"[{trained_min_pixels}, {trained_max_pixels}]"
-        )
-
-
 def assert_generation_config_key_coverage(
     *,
     chair: str,
@@ -174,31 +131,21 @@ def assert_generation_config_key_coverage(
 
 
 class ServingSmokeReader:
-    """One lifecycle-backed implementation of the pod ``SmokeReader`` protocol.
-
-    An adapted chair receives its calibration only from the explicit
-    ``calibration_for`` seam.  Returning ``None`` is safe for an unadapted
-    chair; for an adapter it makes :class:`ServingManager` refuse the start
-    before a smoke result can be made.
-    """
+    """One lifecycle-backed implementation of the pod ``SmokeReader`` protocol."""
 
     def __init__(
         self,
         manager: ServingManager,
         smoke_call: SmokeCall,
         *,
-        calibration_for: CalibrationFor | None = None,
         placement_table: PlacementTable | None = None,
         gpu_profile: GpuProfile | None = None,
     ) -> None:
         self.manager = manager
         self.smoke_call = smoke_call
-        self.calibration_for = calibration_for
         self.placement_table = placement_table
         # `operations.pod.preflight.SmokeReader.read` does not carry the measured
         # profile, so it travels bound to the reader instead of per call.
-        # `assemble_serving_preflight_callback` sets this the moment its own
-        # probe measures one, right before `PreflightRunner.run`.
         self.gpu_profile = gpu_profile
 
     def read(
@@ -241,20 +188,10 @@ class ServingSmokeReader:
                 )
             self._assert_profile_within_placement(serving_profile, placement)
         fixture_sha256 = _fixture_digest(fixture)
-        calibration = self.calibration_for(identity, fixture) if self.calibration_for else None
-        self._verify_local_calibration_fixture(calibration, fixture)
-        # The same log-root guarantee the callback seam gives: refuse a
-        # symlinked root and force it owner-only before anything can write a
-        # launch log through it. Idempotent, so once per read is cheap.
-        # (`manager.start`, called next, is what actually refuses a
-        # discoverable env-override file -- the one door every real launch
-        # passes through, not only this smoke lifecycle.)
+        # Refuse a symlinked log root and force it owner-only before anything
+        # can write a launch log through it. Idempotent, so once per read is cheap.
         prepare_log_root(self.manager.log_root)
-        handle = self.manager.start(
-            identity,
-            placement.identifier,
-            adapter_calibration=calibration,
-        )
+        handle = self.manager.start(identity, placement.identifier)
         primary_error: BaseException | None = None
         try:
             fixture_requests_before_smoke = handle.fixture_requests_completed
@@ -267,7 +204,6 @@ class ServingSmokeReader:
             if (
                 handle.fixture_requests_completed <= fixture_requests_before_smoke
                 or handle.last_fixture_request_sha256 != fixture_sha256
-                or not handle.last_request_was_fixture
             ):
                 raise ServingConfigurationError(
                     "golden-page smoke returned without a final completed fixture-bound request "
@@ -296,25 +232,6 @@ class ServingSmokeReader:
                     "golden-page smoke failed and owned serving shutdown was not verified: "
                     f"smoke={primary_error}; stop={stop_error}"
                 ) from primary_error
-
-    @staticmethod
-    def _verify_local_calibration_fixture(
-        calibration: AdapterCalibration | None, fixture: Path
-    ) -> None:
-        """Bind a vision adapter probe to the local bytes preflight actually names."""
-
-        if calibration is None or not calibration.requires_image:
-            return
-        try:
-            observed = hashlib.sha256(fixture.read_bytes()).hexdigest()
-        except OSError as error:
-            raise AdapterActivityError(
-                f"cannot read local adapter calibration fixture {fixture}: {error}"
-            ) from error
-        if observed != calibration.fixture_sha256:
-            raise AdapterActivityError(
-                "adapter calibration data URI does not match the local golden-page fixture bytes"
-            )
 
     @staticmethod
     def _assert_profile_within_placement(profile: ServingProfile, placement: PlacementTier) -> None:
@@ -360,7 +277,6 @@ def _with_service_evidence(
         "supplied_fixture_sha256",
         "smoke_fixture_response_sha256",
         "smoke_fixture_output_sha256",
-        "smoke_service_request_count",
         "smoke_fixture_request_count",
     }
     collision = sorted(reserved & set(receipt))
@@ -385,7 +301,6 @@ def _with_service_evidence(
             "supplied_fixture_sha256": fixture_sha256,
             "smoke_fixture_response_sha256": handle.last_fixture_response_sha256,
             "smoke_fixture_output_sha256": handle.last_fixture_output_sha256,
-            "smoke_service_request_count": handle.requests_completed,
             "smoke_fixture_request_count": handle.fixture_requests_completed,
         }
     )

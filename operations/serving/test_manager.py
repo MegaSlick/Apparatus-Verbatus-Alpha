@@ -23,7 +23,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Callable, Iterable, Mapping
 
 import pytest
@@ -35,7 +35,6 @@ from common.chairs.models import (
     ChairIdentity,
     ModelsConfig,
     ServingDetails,
-    VerifiedSnapshot,
 )
 from common.chairs.receipts import build_receipt
 from common.chairs.registry import ChairRegistry
@@ -56,11 +55,11 @@ from operations.pod.preflight import (
 from . import smoke as smoke_module
 from .assembly import (
     _load_bound_configuration,
-    assemble_serving_preflight_callback,
     assemble_serving_smoke_reader,
 )
 from .client import ServingModeRefusal, serving_mode_for
 from .config import (
+    MAX_JSON_DEPTH,
     FixtureProfile,
     InProcessProfile,
     ServingConfigInputs,
@@ -74,10 +73,10 @@ from .config import (
     parse_serving_recipes,
     profile_preflight_digest,
     seal_json_object,
+    thawed_json,
     verify_recipes_cover_chairs,
 )
 from .errors import (
-    AdapterActivityError,
     EndpointOccupiedError,
     ReadinessError,
     ReceiptPublicationError,
@@ -85,6 +84,7 @@ from .errors import (
     ServiceStopError,
     ServingConfigurationError,
 )
+from .fakes import FakeLauncher, FakePackages, FakeProcess, FakeRegistry
 from .http import (
     EndpointUnavailable,
     HttpResponse,
@@ -101,7 +101,6 @@ from .manager import (
     _WATCHDOG_TAIL_BYTES,
     MECHANICS_QUALIFICATION_PURPOSE,
     PROCESSOR_CONFIG_FILENAMES,
-    AdapterCalibration,
     ReceiptPublication,
     ServiceHandle,
     ServingManager,
@@ -116,7 +115,6 @@ from .manager import (
 from .preflight import (
     ServingSmokeReader,
     assert_generation_config_key_coverage,
-    assert_resized_pixels_within_trained_geometry,
     prepare_log_root,
 )
 from .process import SubprocessLauncher
@@ -146,60 +144,6 @@ class Clock:
 
     def sleep(self, seconds: float) -> None:
         self.seconds += seconds
-
-
-class FakeProcess:
-    def __init__(
-        self,
-        pid: int,
-        *,
-        log_tail: str = "",
-        log_tails: tuple[str, ...] = (),
-        exits_immediately: int | None = None,
-        ignore_terminate: bool = False,
-        ignore_kill: bool = False,
-    ) -> None:
-        self.pid = pid
-        self.exit_code = exits_immediately
-        self.log_tail = log_tail
-        self.log_tails = log_tails
-        self.tail_reads = 0
-        self.terminate_calls = 0
-        self.kill_calls = 0
-        self.wait_calls = 0
-        self.ignore_terminate = ignore_terminate
-        self.ignore_kill = ignore_kill
-
-    def poll(self) -> int | None:
-        return self.exit_code
-
-    def terminate(self) -> None:
-        self.terminate_calls += 1
-        if not self.ignore_terminate and self.exit_code is None:
-            self.exit_code = 0
-
-    def kill(self) -> None:
-        self.kill_calls += 1
-        if not self.ignore_kill and self.exit_code is None:
-            self.exit_code = -9
-
-    def wait(self, timeout_seconds: float) -> int:
-        del timeout_seconds
-        self.wait_calls += 1
-        if self.exit_code is None:
-            raise TimeoutError("fake child is still live")
-        return self.exit_code
-
-    def read_tail(self, maximum_bytes: int = 16_384) -> str:
-        # `log_tails` is a log that grows between reads, which is what a
-        # loading engine's own log does: the readiness loop reads it once per
-        # poll, and whether the progress line *moved* is what tells "still
-        # loading" from "stuck at 43% since the first poll".
-        if self.log_tails:
-            tail = self.log_tails[min(self.tail_reads, len(self.log_tails) - 1)]
-            self.tail_reads += 1
-            return tail[-maximum_bytes:]
-        return self.log_tail[-maximum_bytes:]
 
 
 class FakeHttp:
@@ -298,90 +242,6 @@ class FakeHttp:
         )
 
 
-class FakeLauncher:
-    def __init__(
-        self,
-        http: FakeHttp,
-        *,
-        log_tail: str = "",
-        log_tails: tuple[str, ...] = (),
-        exits_immediately: int | None = None,
-        ignore_terminate: bool = False,
-        ignore_kill: bool = False,
-    ) -> None:
-        self.http = http
-        self.log_tail = log_tail
-        self.log_tails = log_tails
-        self.exits_immediately = exits_immediately
-        self.ignore_terminate = ignore_terminate
-        self.ignore_kill = ignore_kill
-        self.calls: list[tuple[tuple[str, ...], Path]] = []
-        self.inherited_fds: list[tuple[int, ...]] = []
-        self.processes: list[FakeProcess] = []
-
-    def launch(
-        self,
-        argv: tuple[str, ...],
-        log_path: Path,
-        *,
-        inheritable_fds: tuple[int, ...] = (),
-    ) -> FakeProcess:
-        self.calls.append((argv, log_path))
-        self.inherited_fds.append(inheritable_fds)
-        process = FakeProcess(
-            9000 + len(self.processes),
-            log_tail=self.log_tail,
-            log_tails=self.log_tails,
-            exits_immediately=self.exits_immediately,
-            ignore_terminate=self.ignore_terminate,
-            ignore_kill=self.ignore_kill,
-        )
-        self.processes.append(process)
-        self.http.bind(process)
-        return process
-
-
-class FakePackages:
-    def __init__(self, versions: Mapping[str, str]) -> None:
-        self.versions = dict(versions)
-        self.calls: list[str] = []
-
-    def version(self, package: str) -> str:
-        self.calls.append(package)
-        return self.versions[package]
-
-
-class FakeRegistry:
-    def __init__(self, identities: Mapping[str, ChairIdentity], tmp_path: Path) -> None:
-        self.identities = dict(identities)
-        self.config = ModelsConfig(witness_floor=0, chairs=self.identities)
-        self.snapshots = {
-            role: VerifiedSnapshot(identity, tmp_path / role, identity.digest_manifest)
-            for role, identity in identities.items()
-        }
-        self.ensure_calls: list[str] = []
-        self.resolve_calls: list[str] = []
-        self.refusals: list[tuple[str, str]] = []
-        self.receipts: list[tuple[str, ServingDetails]] = []
-
-    def resolve(self, role: str) -> ChairIdentity:
-        self.resolve_calls.append(role)
-        return self.identities[role]
-
-    def ensure(self, identity: ChairIdentity) -> VerifiedSnapshot:
-        assert self.identities[identity.role] == identity
-        self.ensure_calls.append(identity.role)
-        return self.snapshots[identity.role]
-
-    def receipt(self, identity: ChairIdentity, details: ServingDetails):
-        self.receipts.append((identity.role, details))
-        return build_receipt(identity, details)
-
-    def refuse_recipe_start(self, identity: ChairIdentity, difference: str) -> None:
-        self.refusals.append((identity.role, difference))
-        raise ServingRecipeRefusal(identity.role, difference)
-
-
 class FakePublisher:
     def __init__(
         self,
@@ -439,7 +299,6 @@ def profile_row(
     served_model_id: str,
     port: int,
     tier: str = TIER,
-    tower_connector: bool = False,
 ) -> dict[str, object]:
     return {
         "kind": "vllm",
@@ -461,7 +320,7 @@ def profile_row(
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
-        "enable_tower_connector_lora": tower_connector,
+        "enable_tower_connector_lora": False,
         "max_lora_rank": 16,
         "generation_config": "vllm",
         "preflight_state": "proven",
@@ -634,44 +493,27 @@ def test_explicit_mechanics_qualification_launches_unproven_profile_and_records_
     assert launcher.processes[0].terminate_calls == 1
 
 
-def test_start_refuses_a_proven_adapter_over_an_unproven_base_before_any_snapshot(
+def test_an_adapter_chair_is_refused_before_any_snapshot_launch_or_receipt(
     tmp_path: Path,
 ) -> None:
-    """The recipe door covers every participating profile, the base's included.
-
-    A proven adapter over an unproven base must refuse with no registry.ensure
-    work behind it — not verify the adapter snapshot (or the base's) first and
-    refuse afterwards.
-    """
-
-    base = identity("base", "base-v1")
     adapter = identity("adapter", "adapter-v1", adapter_of="base")
-    base_row = profile_row(recipe="base-v1", chair="base", served_model_id="base-api", port=8000)
-    base_row["preflight_state"] = "unproven"
-    profiles = (
-        base_row,
-        profile_row(
-            recipe="adapter-v1",
-            chair="adapter",
-            served_model_id="adapter-api",
-            port=8100,
-            tower_connector=True,
-        ),
-    )
     manager, _, _, launcher, registry, publisher = manager_for(
         tmp_path,
-        identities={base.role: base, adapter.role: adapter},
-        profiles=profiles,
-        model_ids=("base-api", "adapter-api"),
+        identities={adapter.role: adapter},
+        profiles=(
+            profile_row(
+                recipe="adapter-v1", chair="adapter", served_model_id="adapter-api", port=8100
+            ),
+        ),
+        model_ids=("adapter-api",),
     )
 
-    with pytest.raises(ServingRecipeRefusal, match="preflight"):
+    with pytest.raises(ServingRecipeRefusal, match="only full checkpoints are served"):
         manager.start(adapter, TIER)
 
     assert registry.ensure_calls == []
     assert launcher.processes == []
     assert publisher.calls == []
-    assert not (tmp_path / "pod-gpu.lock").exists()
 
 
 def test_a_proven_profile_does_not_carry_over_onto_a_repointed_chair(tmp_path: Path) -> None:
@@ -766,11 +608,7 @@ def measured_gpu(dtype: str = "bfloat16") -> GpuProfile:
 def fixture_image_payload(fixture: Path) -> Mapping[str, object]:
     """A local data-URI request used only by fake golden-page smoke tests."""
 
-    return AdapterCalibration.from_image_fixture(
-        fixture=fixture,
-        prompt="Read the supplied proof page.",
-        mime_type="image/png",
-    ).request_payload()
+    return smoke_module._golden_page_payload(fixture, "Read the supplied proof page.")
 
 
 PAGE_WITNESS = "ABEFGHJMNRTYabdefghijmnqrty23456789ABEFGHJM"
@@ -985,12 +823,6 @@ def test_start_proves_exact_model_answer_then_publishes_and_stops(tmp_path: Path
     assert published_profile["tier"] == TIER
     assert registry.refusals == []
 
-    result = handle.request(
-        "chat-completions",
-        {"messages": [{"role": "user", "content": "read"}]},
-        sampling=SAMPLING,
-    )
-    assert result.model_id == "reader-api"
     handle.stop()
     assert launcher.processes[0].terminate_calls == 1
     with pytest.raises(EndpointUnavailable):
@@ -1179,10 +1011,6 @@ def test_an_endpoint_answering_as_a_different_model_never_becomes_ready(tmp_path
         # What vLLM prints when it rejects an adapter or an architecture
         # loudly rather than ignoring it silently: a model class without LoRA
         # support, and an architecture it does not serve.
-        (
-            "ValueError: Qwen3VLForConditionalGeneration does not support LoRA yet.",
-            "LORA_UNSUPPORTED",
-        ),
         (
             "ValueError: Model architectures ['ExampleForCausalLM'] are not supported for now. "
             "Supported architectures: dict_keys(['Qwen3_5ForConditionalGeneration'])",
@@ -1766,176 +1594,6 @@ def test_receipt_publication_requires_a_durable_launch_audit_reference(tmp_path:
         manager.start(chair, TIER)
     assert len(publisher.calls) == 1
     assert launcher.processes[0].terminate_calls == 1
-
-
-def test_adapter_must_change_deterministic_calibration_and_names_only_its_base(
-    tmp_path: Path,
-) -> None:
-    base = identity("base", "base-v1")
-    adapter = identity("adapter", "adapter-v1", adapter_of="base")
-    unrelated = identity("unrelated", "unrelated-v1")
-    profiles = (
-        profile_row(recipe="base-v1", chair="base", served_model_id="base-api", port=8000),
-        profile_row(
-            recipe="adapter-v1",
-            chair="adapter",
-            served_model_id="adapter-api",
-            port=8100,
-            tower_connector=True,
-        ),
-        profile_row(
-            recipe="unrelated-v1", chair="unrelated", served_model_id="other-api", port=8200
-        ),
-    )
-    calibration_fixture = tmp_path / "adapter-calibration.png"
-    calibration_fixture.write_bytes(b"offline calibration image bytes")
-    calibration = AdapterCalibration.from_image_fixture(
-        fixture=calibration_fixture,
-        prompt="Describe the marked fixture.",
-        mime_type="image/png",
-    )
-
-    unproven, _, _, unproven_launcher, unproven_registry, unproven_publisher = manager_for(
-        tmp_path,
-        identities={base.role: base, adapter.role: adapter, unrelated.role: unrelated},
-        profiles=profiles,
-        model_ids=("base-api", "adapter-api"),
-        outputs={"base-api": "same", "adapter-api": "same"},
-    )
-    with pytest.raises(ServingRecipeRefusal, match="ADAPTER_ACTIVITY_UNPROVEN"):
-        unproven.start(adapter, TIER, adapter_calibration=calibration)
-    assert unproven_registry.ensure_calls == ["adapter", "base"]
-    assert "unrelated" not in unproven_registry.resolve_calls
-    assert unproven_publisher.calls == []
-    assert unproven_launcher.processes[0].terminate_calls == 1
-
-    proven, _, _, proven_launcher, proven_registry, proven_publisher = manager_for(
-        tmp_path,
-        identities={base.role: base, adapter.role: adapter, unrelated.role: unrelated},
-        profiles=profiles,
-        model_ids=("base-api", "adapter-api"),
-        outputs={"base-api": "base answer", "adapter-api": "adapter answer"},
-    )
-    handle = proven.start(adapter, TIER, adapter_calibration=calibration)
-    argv = proven_launcher.calls[0][0]
-    lora = json.loads(_value_after(argv, "--lora-modules"))
-    assert lora == {
-        "base_model_name": "example/base",
-        "name": "adapter-api",
-        "path": str(tmp_path / "adapter"),
-    }
-    assert _value_after(argv, "--max-lora-rank") == "16"
-    assert "--enable-tower-connector-lora" in argv
-    assert handle.receipt.details.adapter_identity == base
-    assert handle.launch_audit["adapter_activation"]["different"] is True  # type: ignore[index]
-    assert proven_registry.ensure_calls == ["adapter", "base"]
-    assert len(proven_publisher.calls) == 1
-    handle.stop()
-
-
-def test_image_calibration_builder_binds_data_uri_bytes_to_its_fixture(tmp_path: Path) -> None:
-    fixture = tmp_path / "calibration.png"
-    fixture.write_bytes(b"synthetic image fixture")
-    calibration = AdapterCalibration.from_image_fixture(
-        fixture=fixture,
-        prompt="Read the fixture.",
-        mime_type="image/png",
-    )
-    url = calibration.payload["messages"][0]["content"][0]["image_url"]["url"]  # type: ignore[index]
-    assert isinstance(url, str) and url.startswith("data:image/png;base64,")
-    assert calibration.fixture_sha256 == hashlib.sha256(fixture.read_bytes()).hexdigest()
-
-    with pytest.raises(ServingConfigurationError, match="do not match fixture_sha256"):
-        AdapterCalibration(
-            kind=calibration.kind,
-            payload=calibration.payload,
-            fixture_sha256="f" * 64,
-            requires_image=True,
-        )
-
-
-def test_image_calibration_seals_nested_payload_against_later_mutation(tmp_path: Path) -> None:
-    fixture = tmp_path / "calibration.png"
-    fixture.write_bytes(b"synthetic image fixture")
-    calibration = AdapterCalibration.from_image_fixture(
-        fixture=fixture,
-        prompt="Read the fixture.",
-        mime_type="image/png",
-    )
-    nested_url = calibration.payload["messages"][0]["content"][0]["image_url"]  # type: ignore[index]
-    nested_url["url"] = "https://example.invalid/replaced.png"  # type: ignore[index]
-
-    sealed_url = calibration.request_payload()["messages"][0]["content"][0]["image_url"][  # type: ignore[index]
-        "url"
-    ]
-    assert isinstance(sealed_url, str) and sealed_url.startswith("data:image/png;base64,")
-
-
-def test_a_text_calibration_fixture_digest_is_its_own_payload_not_a_caller_claim() -> None:
-    payload = {"messages": [{"role": "user", "content": "calibrate"}]}
-    calibration = AdapterCalibration.from_text_payload(kind="completions", payload=payload)
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    assert calibration.fixture_sha256 == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-    with pytest.raises(ServingConfigurationError, match="digest of its canonical payload"):
-        AdapterCalibration(kind="completions", payload=payload, fixture_sha256="c" * 64)
-
-
-def test_tower_connector_adapter_refuses_a_text_only_calibration(tmp_path: Path) -> None:
-    base = identity("base", "base-v1")
-    adapter = identity("adapter", "adapter-v1", adapter_of="base")
-    manager, _, _, launcher, _, publisher = manager_for(
-        tmp_path,
-        identities={base.role: base, adapter.role: adapter},
-        profiles=(
-            profile_row(recipe="base-v1", chair="base", served_model_id="base-api", port=8000),
-            profile_row(
-                recipe="adapter-v1",
-                chair="adapter",
-                served_model_id="adapter-api",
-                port=8100,
-                tower_connector=True,
-            ),
-        ),
-        model_ids=("base-api", "adapter-api"),
-    )
-    calibration = AdapterCalibration.from_text_payload(
-        kind="chat-completions",
-        payload={"messages": [{"role": "user", "content": "text is insufficient"}]},
-    )
-
-    with pytest.raises(ServingRecipeRefusal, match="image-bearing adapter calibration"):
-        manager.start(adapter, TIER, adapter_calibration=calibration)
-    assert len(launcher.calls) == 1
-    assert publisher.calls == []
-
-
-@pytest.mark.parametrize(
-    "image_url",
-    [
-        "",
-        "https://example.invalid/calibration.png",
-        "file:///tmp/calibration.png",
-        "data:image/png;base64,!",
-    ],
-)
-def test_vision_adapter_calibration_rejects_empty_remote_file_and_malformed_images(
-    image_url: str,
-) -> None:
-    with pytest.raises(ServingConfigurationError, match="image|URL|base64"):
-        AdapterCalibration(
-            kind="chat-completions",
-            payload={
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [{"type": "image_url", "image_url": {"url": image_url}}],
-                    }
-                ]
-            },
-            fixture_sha256="c" * 64,
-            requires_image=True,
-        )
 
 
 def test_only_one_chair_can_be_resident_and_the_next_starts_after_stop(tmp_path: Path) -> None:
@@ -2969,29 +2627,6 @@ def test_failing_manager_start_routes_through_the_real_chair_registry(tmp_path: 
     assert publisher.calls == []
 
 
-def test_a_fixture_base_refuses_an_adapter_chair_rather_than_serving_it(tmp_path: Path) -> None:
-    base = identity("base", "fake-base-v0")
-    adapter = identity("adapter", "adapter-v1", adapter_of="base")
-    manager, _, _, launcher, registry, _ = manager_for(
-        tmp_path,
-        identities={base.role: base, adapter.role: adapter},
-        profiles=(
-            profile_row(
-                recipe="adapter-v1", chair="adapter", served_model_id="adapter-api", port=8000
-            ),
-            fixture_row(recipe="fake-base-v0", chair="base"),
-        ),
-        model_ids=("adapter-api", "base-api"),
-    )
-
-    with pytest.raises(ServingRecipeRefusal, match="fixture serving profile"):
-        manager.start(adapter, TIER, adapter_calibration=None)
-
-    assert launcher.processes == []
-    # The chair reported unavailable is the one that was asked for, not its base.
-    assert registry.refusals[0][0] == adapter.role
-
-
 def test_recipe_coverage_names_every_chair_and_tier_a_catalogue_misses() -> None:
     """The gap this closes fails on a rented GPU otherwise, not in a test run."""
 
@@ -3142,56 +2777,6 @@ def test_pod_assembly_factory_builds_the_lifecycle_smoke_reader_without_effects(
     )
     with pytest.raises(ServingConfigurationError, match="run-sealed placement table"):
         reader.read(chair, tmp_path / "unused.png", forged_placement)
-    assert launcher.calls == []
-    assert http.calls == []
-
-
-def test_pod_assembly_builds_bootstrap_preflight_callback_without_running_it(
-    tmp_path: Path,
-) -> None:
-    chair = identity("reader", "reader-v1")
-    registry = FakeRegistry({chair.role: chair}, tmp_path)
-    http = FakeHttp(model_ids=("reader-api",))
-    launcher = FakeLauncher(http)
-    fixture = tmp_path / "golden-page.png"
-    fixture.write_bytes(b"fixture")
-    root = Path(__file__).resolve().parents[2]
-    context = assembly_context(root, registry)
-    publisher = FakePublisher(http, context=context)
-
-    class Cache:
-        def verify(self, supplied_identity):  # type: ignore[no-untyped-def]
-            raise AssertionError(f"preflight construction must not verify {supplied_identity.role}")
-
-    class Probe:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def profile(self, dtype: str) -> GpuProfile:
-            self.calls += 1
-            raise AssertionError(f"preflight construction must not probe {dtype}")
-
-    probe = Probe()
-    callback = assemble_serving_preflight_callback(
-        registry=registry,
-        stage_context=context,
-        cache_verifier=Cache(),
-        receipt_publisher=publisher,
-        smoke_call=lambda *args: pytest.fail("preflight construction must not start a service"),
-        fixture=fixture,
-        dtype="bfloat16",
-        log_root=tmp_path / "logs",
-        residency_lease=FileResidencyLease(tmp_path / "pod-gpu.lock"),
-        recipes_path=root / "config/serving_recipes.toml",
-        placement_path=root / "config/pod_placement.toml",
-        launcher=launcher,
-        http=http,
-        package_inspector=FakePackages({"vllm": "fixture-v0"}),
-        gpu_probe=probe,
-    )
-
-    assert callable(callback)
-    assert probe.calls == 0
     assert launcher.calls == []
     assert http.calls == []
 
@@ -3429,59 +3014,6 @@ def test_stage_context_publisher_preserves_internal_attribute_errors() -> None:
         StageContextReceiptPublisher(Context()).publish(
             build_receipt(chair, details), {"schema": "test-audit"}
         )
-
-
-def test_preflight_assembly_prepares_a_new_log_root_before_default_disk_probe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    chair = identity("reader", "reader-v1")
-    registry = FakeRegistry({chair.role: chair}, tmp_path)
-    http = FakeHttp(model_ids=("reader-api",))
-    launcher = FakeLauncher(http)
-    fixture = tmp_path / "golden-page.png"
-    fixture.write_bytes(b"fixture")
-    root = Path(__file__).resolve().parents[2]
-    context = assembly_context(root, registry)
-    publisher = FakePublisher(http, context=context)
-    new_log_root = tmp_path / "new" / "logs"
-    observed_disk_paths: list[Path] = []
-
-    class ExistingParentProbe:
-        def __init__(self, *, disk_path: Path) -> None:
-            assert disk_path.is_dir(), "default disk probe must receive a prepared log root"
-            observed_disk_paths.append(disk_path)
-
-        def profile(self, dtype: str) -> GpuProfile:
-            return GpuProfile("GPU discovery unavailable", None, None, None, "0", "1", dtype)
-
-    monkeypatch.setattr(
-        sys.modules[assemble_serving_preflight_callback.__module__],
-        "SystemGpuProbe",
-        ExistingParentProbe,
-    )
-
-    callback = assemble_serving_preflight_callback(
-        registry=registry,
-        stage_context=context,
-        cache_verifier=object(),
-        receipt_publisher=publisher,
-        smoke_call=lambda *args: pytest.fail("missing GPU tier must not start a service"),
-        fixture=fixture,
-        dtype="bfloat16",
-        log_root=new_log_root,
-        residency_lease=FileResidencyLease(tmp_path / "pod-gpu.lock"),
-        recipes_path=root / "config/serving_recipes.toml",
-        placement_path=root / "config/pod_placement.toml",
-        launcher=launcher,
-        http=http,
-        package_inspector=FakePackages({"vllm": "fixture-v0"}),
-    )
-
-    report = callback()
-    assert observed_disk_paths == [new_log_root]
-    assert report["color"] == "red"
-    assert new_log_root.is_dir()
-    assert launcher.calls == []
 
 
 def test_prepare_log_root_is_owner_only_regardless_of_umask_or_prior_mode(
@@ -3833,7 +3365,6 @@ def test_serving_smoke_reader_uses_the_owned_service_and_always_stops(tmp_path: 
         result.receipt["supplied_fixture_sha256"]
         == hashlib.sha256(fixture.read_bytes()).hexdigest()
     )
-    assert result.receipt["smoke_service_request_count"] == 1
     assert result.receipt["smoke_fixture_request_count"] == 1
     assert (
         result.receipt["smoke_fixture_response_sha256"] == result.receipt["fixture_response_sha256"]
@@ -4238,7 +3769,7 @@ def test_vision_smoke_refuses_a_chair_without_a_sealed_sampling_row(tmp_path: Pa
     handle = manager.start(chair, TIER)
     with pytest.raises(ServingConfigurationError, match="no sealed sampling values for reader"):
         VisionSmokeCall(PAGE_WITNESS)(handle, chair, fixture, smoke_placement())
-    assert handle.requests_completed == 0
+    assert handle.fixture_requests_completed == 0
     handle.stop()
 
 
@@ -4349,16 +3880,6 @@ def test_vision_smoke_call_refuses_a_prompt_that_carries_its_own_witness() -> No
         LeakedWitnessPrompt(PAGE_WITNESS)
 
 
-def test_vision_smoke_call_refuses_a_prompt_with_a_near_witness() -> None:
-    class LeakedNearWitnessPrompt(VisionSmokeCall):
-        @property
-        def prompt(self) -> str:
-            return f"Reply with PAGE-WITNESS: {self.page_witness[:-1]}"
-
-    with pytest.raises(ServingConfigurationError, match="near read occurs in the smoke prompt"):
-        LeakedNearWitnessPrompt(PAGE_WITNESS)
-
-
 def test_vision_smoke_call_refuses_a_utilization_sampler_that_is_not_callable() -> None:
     with pytest.raises(ServingConfigurationError, match="utilization sampler must be callable"):
         VisionSmokeCall(PAGE_WITNESS, utilization=())  # type: ignore[arg-type]
@@ -4449,27 +3970,19 @@ def test_vision_smoke_call_checks_the_format_of_the_sealed_request_snapshot(
     call = vision_smoke()
     stale_fixture = tmp_path / "before-replacement.png"
     stale_fixture.write_bytes(b"not a PNG")
-    stale_calibration = AdapterCalibration.from_image_fixture(
-        fixture=stale_fixture,
-        prompt=call.prompt,
-        mime_type="image/png",
-    )
+    stale_payload = fixture_image_payload(stale_fixture)
     manager, _, _, launcher, _, _ = reader_manager(
         tmp_path, chair=chair, outputs={"reader-api": f"PAGE-WITNESS: {PAGE_WITNESS}"}
     )
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
     handle = manager.start(chair, TIER)
-    monkeypatch.setattr(
-        AdapterCalibration,
-        "from_image_fixture",
-        staticmethod(lambda **unused: stale_calibration),
-    )
+    monkeypatch.setattr(smoke_module, "_golden_page_payload", lambda *unused: stale_payload)
 
     with pytest.raises(ServingConfigurationError, match="are not a PNG"):
         call(handle, chair, fixture, smoke_placement())
 
-    assert handle.requests_completed == 0
+    assert handle.fixture_requests_completed == 0
     handle.stop()
     assert launcher.processes[0].terminate_calls == 1
 
@@ -4543,39 +4056,6 @@ def test_serving_smoke_reader_refuses_a_nominally_green_result_without_service_r
     assert launcher.processes[0].terminate_calls == 1
 
 
-def test_serving_smoke_reader_refuses_a_text_only_request_as_golden_page_evidence(
-    tmp_path: Path,
-) -> None:
-    chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
-    placement = PlacementTier(
-        identifier=TIER,
-        min_vram_gib="40",
-        max_vram_gib_exclusive=None,
-        residency="single",
-        detector_device="cpu",
-        recipe=PlacementRecipe("0.85", 2048, 1024, 1),
-    )
-    fixture = tmp_path / "golden-page.png"
-    fixture.write_bytes(b"fixture page, no model data")
-
-    def text_only(handle, *unused):  # type: ignore[no-untyped-def]
-        handle.request(
-            "chat-completions",
-            {"messages": [{"role": "user", "content": "not the page"}]},
-            sampling=SAMPLING,
-        )
-        return SmokeResult(True, True, True, {"claimed": "green"}, ())
-
-    with pytest.raises(
-        ServingConfigurationError, match="without a final completed fixture-bound request"
-    ):
-        ServingSmokeReader(manager, text_only, gpu_profile=measured_gpu()).read(
-            chair, fixture, placement
-        )
-    assert launcher.processes[0].terminate_calls == 1
-
-
 def test_the_plain_reader_seam_gives_the_same_log_root_guarantee_as_the_callback(
     tmp_path: Path,
 ) -> None:
@@ -4623,7 +4103,7 @@ def test_fixture_request_refuses_image_bytes_from_another_local_page(tmp_path: P
             fixture=expected_fixture,
             sampling=SAMPLING,
         )
-    assert handle.requests_completed == 0
+    assert handle.fixture_requests_completed == 0
     handle.stop()
 
 
@@ -4649,7 +4129,7 @@ def test_fixture_request_refuses_an_image_hidden_outside_openai_chat_content(
         handle.request_fixture_image(
             "chat-completions", hidden_image_payload, fixture=fixture, sampling=SAMPLING
         )
-    assert handle.requests_completed == 0
+    assert handle.fixture_requests_completed == 0
     handle.stop()
 
 
@@ -4668,7 +4148,7 @@ def test_fixture_request_requires_an_openai_image_object_at_the_active_content_b
         handle.request_fixture_image(
             "chat-completions", malformed, fixture=fixture, sampling=SAMPLING
         )
-    assert handle.requests_completed == 0
+    assert handle.fixture_requests_completed == 0
     handle.stop()
 
 
@@ -4708,48 +4188,6 @@ def test_fixture_request_dispatches_the_same_payload_snapshot_it_validates(tmp_p
     handle.stop()
 
 
-def test_serving_smoke_reader_refuses_green_result_after_a_later_text_request(
-    tmp_path: Path,
-) -> None:
-    chair = identity("reader", "reader-v1")
-    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
-    placement = PlacementTier(
-        identifier=TIER,
-        min_vram_gib="40",
-        max_vram_gib_exclusive=None,
-        residency="single",
-        detector_device="cpu",
-        recipe=PlacementRecipe("0.85", 2048, 1024, 1),
-    )
-    fixture = tmp_path / "golden-page.png"
-    fixture.write_bytes(b"fixture page")
-
-    def discarded_fixture_response(handle, *unused):  # type: ignore[no-untyped-def]
-        answer = handle.request_fixture_image(
-            "chat-completions", fixture_image_payload(fixture), fixture=fixture, sampling=SAMPLING
-        )
-        handle.request(
-            "chat-completions",
-            {"messages": [{"role": "user", "content": "text only"}]},
-            sampling=SAMPLING,
-        )
-        return SmokeResult(
-            True,
-            True,
-            True,
-            {"fixture_response_sha256": answer.response_sha256},
-            (),
-        )
-
-    with pytest.raises(
-        ServingConfigurationError, match="without a final completed fixture-bound request"
-    ):
-        ServingSmokeReader(manager, discarded_fixture_response, gpu_profile=measured_gpu()).read(
-            chair, fixture, placement
-        )
-    assert launcher.processes[0].terminate_calls == 1
-
-
 def test_serving_smoke_reader_requires_the_exact_fixture_response_token(tmp_path: Path) -> None:
     chair = identity("reader", "reader-v1")
     manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
@@ -4775,50 +4213,6 @@ def test_serving_smoke_reader_requires_the_exact_fixture_response_token(tmp_path
             chair, fixture, placement
         )
     assert launcher.processes[0].terminate_calls == 1
-
-
-def test_smoke_reader_refuses_image_calibration_when_local_fixture_bytes_drift(
-    tmp_path: Path,
-) -> None:
-    base = identity("base", "base-v1")
-    adapter = identity("adapter", "adapter-v1", adapter_of="base")
-    manager, _, _, launcher, _, _ = manager_for(
-        tmp_path,
-        identities={base.role: base, adapter.role: adapter},
-        profiles=(
-            profile_row(recipe="base-v1", chair="base", served_model_id="base-api", port=8000),
-            profile_row(
-                recipe="adapter-v1", chair="adapter", served_model_id="adapter-api", port=8100
-            ),
-        ),
-        model_ids=("base-api", "adapter-api"),
-    )
-    placement = PlacementTier(
-        identifier=TIER,
-        min_vram_gib="40",
-        max_vram_gib_exclusive=None,
-        residency="single",
-        detector_device="cpu",
-        recipe=PlacementRecipe("0.85", 2048, 1024, 1),
-    )
-    fixture = tmp_path / "golden-page.png"
-    fixture.write_bytes(b"calibration version one")
-    calibration = AdapterCalibration.from_image_fixture(
-        fixture=fixture,
-        prompt="Read the proof fixture.",
-        mime_type="image/png",
-    )
-    fixture.write_bytes(b"calibration version two")
-
-    reader = ServingSmokeReader(
-        manager,
-        lambda *args: pytest.fail("a drifted calibration must not launch"),
-        calibration_for=lambda supplied_identity, supplied_fixture: calibration,
-        gpu_profile=measured_gpu(),
-    )
-    with pytest.raises(AdapterActivityError, match="does not match the local golden-page"):
-        reader.read(adapter, fixture, placement)
-    assert launcher.calls == []
 
 
 def test_smoke_reader_refuses_a_profile_dtype_not_assessed_by_preflight(tmp_path: Path) -> None:
@@ -5185,32 +4579,6 @@ def test_generation_config_vllm_is_rendered_on_the_launch(tmp_path: Path) -> Non
     assert argv[argv.index("--generation-config") + 1] == "vllm"
 
 
-def test_an_adapter_over_a_hybrid_base_refuses_prefix_caching_on_its_own_row(
-    tmp_path: Path,
-) -> None:
-    """vLLM takes the adapter row's flags over the base's weights, so the base decides."""
-
-    base = replace(identity("base", "base-v1"), repo="Qwen/Qwen3.8-27B")
-    adapter = identity("adapter", "adapter-v1", adapter_of="base")
-    base_row = profile_row(recipe="base-v1", chair="base", served_model_id="base-api", port=8000)
-    base_row["enable_prefix_caching"] = False
-    adapter_row = profile_row(
-        recipe="adapter-v1", chair="adapter", served_model_id="adapter-api", port=8100
-    )
-    assert adapter_row["enable_prefix_caching"] is True
-    manager, _, _, launcher, registry, _ = manager_for(
-        tmp_path,
-        identities={base.role: base, adapter.role: adapter},
-        profiles=(base_row, adapter_row),
-        model_ids=("base-api", "adapter-api"),
-    )
-
-    with pytest.raises(ServingRecipeRefusal, match="hybrid Mamba/attention"):
-        manager.start(adapter, TIER)
-    assert "'adapter'" in registry.refusals[-1][1]
-    assert launcher.processes == []
-
-
 @pytest.mark.parametrize(
     ("role", "repo", "recipe", "served_model_id"),
     [
@@ -5459,40 +4827,6 @@ def test_assert_image_before_text_on_wire_checks_the_rendered_order() -> None:
         assert_image_before_text_on_wire([])
 
 
-def test_assert_resized_pixels_within_trained_geometry_bounds() -> None:
-    assert_resized_pixels_within_trained_geometry(
-        chair="attestator_1",
-        resized_width=2080,
-        resized_height=2976,
-        trained_min_pixels=50_176,
-        trained_max_pixels=6_291_456,
-    )
-    with pytest.raises(ServingConfigurationError, match="outside its declared trained geometry"):
-        assert_resized_pixels_within_trained_geometry(
-            chair="attestator_1",
-            resized_width=100,
-            resized_height=100,
-            trained_min_pixels=50_176,
-            trained_max_pixels=6_291_456,
-        )
-    with pytest.raises(ServingConfigurationError, match="must be positive"):
-        assert_resized_pixels_within_trained_geometry(
-            chair="attestator_1",
-            resized_width=0,
-            resized_height=100,
-            trained_min_pixels=1,
-            trained_max_pixels=10,
-        )
-    with pytest.raises(ServingConfigurationError, match="malformed"):
-        assert_resized_pixels_within_trained_geometry(
-            chair="attestator_1",
-            resized_width=10,
-            resized_height=10,
-            trained_min_pixels=10,
-            trained_max_pixels=5,
-        )
-
-
 def test_assert_generation_config_key_coverage_names_every_unaccounted_key() -> None:
     vendor = {"temperature": 0.0, "top_k": 1, "repetition_penalty": 1.05}
     assert_generation_config_key_coverage(
@@ -5649,3 +4983,32 @@ def test_a_budget_gone_before_the_first_probe_answers_claims_no_observation() ->
     assert "no readiness probe was ever answered" in error.detail
     assert "connection refused" not in error.detail
     assert "answered but never ready" not in error.detail
+
+
+def _nested_json(levels: int) -> dict[str, object]:
+    value: dict[str, object] = {"leaf": "audit value"}
+    for _ in range(levels):
+        value = {"nested": value}
+    return value
+
+
+def test_thawed_json_copies_every_level_into_plain_json_up_to_its_depth_bound() -> None:
+    inner = MappingProxyType({"port": 8000})
+    source = {"outer": {"inner": {"port": 8000}}, "children": ((inner, "plain"),)}
+    copied = thawed_json(source)
+
+    assert copied == {"outer": {"inner": {"port": 8000}}, "children": [[{"port": 8000}, "plain"]]}
+    assert json.dumps(copied)
+    source["outer"]["inner"]["port"] = 9001
+    assert copied["outer"]["inner"]["port"] == 8000
+    at_the_bound = _nested_json(MAX_JSON_DEPTH)
+    assert thawed_json(at_the_bound) == at_the_bound
+
+
+def test_thawed_json_refuses_a_value_nested_past_its_bound_by_name() -> None:
+    chain: object = MappingProxyType({"leaf": "audit value"})
+    for _ in range(MAX_JSON_DEPTH + 1):
+        chain = (chain,)
+    for deep in (_nested_json(MAX_JSON_DEPTH + 1), {"launched": chain}):
+        with pytest.raises(ServingConfigurationError, match=f"deeper than {MAX_JSON_DEPTH} levels"):
+            thawed_json(deep)

@@ -1,7 +1,6 @@
 """Start one configured vLLM chair, prove it answers, then publish its receipt.
 
-It never ranks chairs, retries with another recipe, or falls back from an adapter
-to its base. Pre-launch validation errors (such as a discoverable local environment
+It never ranks chairs or retries with another recipe. Pre-launch validation errors (such as a discoverable local environment
 file) propagate as they are; after that, every start failure becomes a refusal naming
 the requested chair; a refusal the registry raised is re-raised unchanged so its reason
 survives, unless cleanup could not be verified, in which case both reasons travel in one new
@@ -10,7 +9,6 @@ refusal. An interrupt is not a chair refusal, because the operator caused it.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import importlib.metadata
 import json
@@ -26,7 +24,6 @@ from typing import Any, Callable, Final, Mapping, NoReturn, Protocol
 
 from common.chairs.errors import ChairRefusal, UnresolvedChairRefusal
 from common.chairs.models import (
-    AbsentChair,
     ChairIdentity,
     ServingDetails,
     ServingReceipt,
@@ -49,7 +46,6 @@ from .config import (
     seal_json_object,
 )
 from .errors import (
-    AdapterActivityError,
     EndpointOccupiedError,
     ProcessLaunchError,
     ReadinessError,
@@ -133,8 +129,8 @@ class InstalledPackages:
 class ReceiptPublication:
     """Three immutable evidence references for one observed serving moment.
 
-    The launch audit is separate because pid, argv, packages, readiness and
-    adapter proof do not belong in the closed receipt schema.
+    The launch audit is separate because pid, argv, packages and readiness do
+    not belong in the closed receipt schema.
     """
 
     receipt_reference: Mapping[str, str]
@@ -169,146 +165,6 @@ class ReadinessEvidence:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class AdapterCalibration:
-    """A declared deterministic base-versus-adapter activation check.
-
-    A vision adapter must set ``requires_image`` so a text-only probe cannot
-    count as evidence for its visual path. ``fixture_sha256`` names the bytes
-    the probe carried: the image for a vision probe, and the canonical payload
-    itself for a text probe (:meth:`from_text_payload`).
-    """
-
-    kind: str
-    payload: Mapping[str, object]
-    fixture_sha256: str
-    requires_image: bool = False
-    _canonical_payload: str = field(init=False, repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        if self.kind not in {"chat-completions", "completions"}:
-            raise ServingConfigurationError(
-                "adapter calibration kind must be chat-completions or completions"
-            )
-        if not is_sha256(self.fixture_sha256):
-            raise ServingConfigurationError(
-                "adapter calibration fixture_sha256 must be a lowercase SHA-256"
-            )
-        normalized_payload, canonical_payload = seal_json_object(
-            self.payload, label="adapter calibration payload"
-        )
-        # Requests are rebuilt from `_canonical_payload`, so mutating this
-        # projection cannot change the validated request.
-        object.__setattr__(self, "payload", MappingProxyType(normalized_payload))
-        object.__setattr__(self, "_canonical_payload", canonical_payload)
-        if not isinstance(self.requires_image, bool):
-            raise ServingConfigurationError("adapter calibration requires_image must be boolean")
-        if self.requires_image:
-            if self.kind != "chat-completions":
-                raise ServingConfigurationError(
-                    "image adapter calibration must use the chat-completions endpoint"
-                )
-            if _calibration_image_sha256(normalized_payload) != self.fixture_sha256:
-                raise ServingConfigurationError(
-                    "adapter calibration image bytes do not match fixture_sha256"
-                )
-        elif _text_calibration_sha256(canonical_payload) != self.fixture_sha256:
-            raise ServingConfigurationError(
-                "text adapter calibration fixture_sha256 must be the digest of its "
-                "canonical payload"
-            )
-
-    def request_payload(self) -> Mapping[str, object]:
-        """Return a fresh, revalidated request from the sealed calibration bytes."""
-
-        payload = json.loads(self._canonical_payload)
-        if self.requires_image and _calibration_image_sha256(payload) != self.fixture_sha256:
-            raise ServingConfigurationError(
-                "sealed adapter calibration image bytes no longer match fixture_sha256"
-            )
-        return payload
-
-    @classmethod
-    def from_text_payload(cls, *, kind: str, payload: Mapping[str, object]) -> "AdapterCalibration":
-        """Build a text-only probe whose fixture digest is its own canonical payload."""
-
-        _, canonical_payload = seal_json_object(payload, label="adapter calibration payload")
-        return cls(
-            kind=kind,
-            payload=payload,
-            fixture_sha256=_text_calibration_sha256(canonical_payload),
-        )
-
-    @classmethod
-    def from_image_fixture(
-        cls,
-        *,
-        fixture: str | Path,
-        prompt: str,
-        mime_type: str,
-    ) -> "AdapterCalibration":
-        """Build an image chat probe from a local fixture, embedded as a data URI.
-
-        Remote or file URLs are never accepted: vLLM could resolve them
-        differently on the pod.
-        """
-
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise ServingConfigurationError("image calibration prompt must be non-blank")
-        if not isinstance(mime_type, str) or not mime_type.startswith("image/"):
-            raise ServingConfigurationError("image calibration mime_type must begin with 'image/'")
-        data = _local_fixture_bytes(fixture, "adapter calibration fixture")
-        encoded = base64.b64encode(data).decode("ascii")
-        return cls(
-            kind="chat-completions",
-            payload={
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
-                            },
-                            {"type": "text", "text": prompt},
-                        ],
-                    }
-                ]
-            },
-            fixture_sha256=hashlib.sha256(data).hexdigest(),
-            requires_image=True,
-        )
-
-
-def _text_calibration_sha256(canonical_payload: str) -> str:
-    return hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
-
-
-@dataclass(frozen=True, slots=True)
-class AdapterActivationEvidence:
-    """Digest-only proof that the configured adapter affected a deterministic probe."""
-
-    fixture_sha256: str
-    kind: str
-    requires_image: bool
-    base_model_id: str
-    adapter_model_id: str
-    base_output_sha256: str
-    adapter_output_sha256: str
-
-    def to_record(self) -> dict[str, object]:
-        return {
-            "fixture_sha256": self.fixture_sha256,
-            "kind": self.kind,
-            "requires_image": self.requires_image,
-            "base_model_id": self.base_model_id,
-            "adapter_model_id": self.adapter_model_id,
-            "base_output_sha256": self.base_output_sha256,
-            "adapter_output_sha256": self.adapter_output_sha256,
-            "different": self.base_output_sha256 != self.adapter_output_sha256,
-        }
-
-
 @dataclass(slots=True)
 class ServiceHandle:
     """The one live service owned by a :class:`ServingManager` instance."""
@@ -322,48 +178,29 @@ class ServiceHandle:
     launch_audit: Mapping[str, object]
     audit_reference: Mapping[str, str]
     evidence_reference: Mapping[str, str]
-    _requests_completed: int = field(default=0, init=False, repr=False)
     _fixture_requests_completed: int = field(default=0, init=False, repr=False)
     _last_fixture_request_sha256: str | None = field(default=None, init=False, repr=False)
     _last_fixture_response: OpenAIResult | None = field(default=None, init=False, repr=False)
-    _last_request_was_fixture: bool = field(default=False, init=False, repr=False)
 
     @property
     def endpoint(self) -> str:
         return self.profile.endpoint
 
-    def request(
-        self, kind: str, payload: Mapping[str, object], *, sampling: Mapping[str, int | float]
-    ) -> OpenAIResult:
-        """Issue one exact-model, non-streaming OpenAI-compatible request.
-
-        ``sampling`` is the chair's sealed decoding row, sent with the profile seed.
-        """
-
-        return self._manager.request(self, kind, payload, sampling=sampling)
-
     def request_reading(self, kind: str, body_bytes: bytes, timeout_seconds: float) -> HttpResponse:
         """POST one already-built reading request and return the raw response.
 
-        The caller retains and parses the bytes. ``request`` does not fit a
-        reading: it imposes its own payload shape and the probe parser.
+        The caller retains and parses the bytes.
         """
 
         return self._manager.request_reading(self, kind, body_bytes, timeout_seconds)
 
     @property
-    def requests_completed(self) -> int:
-        """Successful answers parsed by :meth:`request` and :meth:`request_fixture_image`.
-
-        Readiness probes are not counted, and neither are readings sent through
-        :meth:`request_reading`, whose responses this manager does not parse.
-        """
-
-        return self._requests_completed
-
-    @property
     def fixture_requests_completed(self) -> int:
-        """Successful requests whose embedded image bytes matched a local fixture."""
+        """Successful requests whose embedded image bytes matched a local fixture.
+
+        Readiness probes and readings sent through :meth:`request_reading` are
+        not counted; nothing else can send a request on this handle.
+        """
 
         return self._fixture_requests_completed
 
@@ -386,12 +223,6 @@ class ServiceHandle:
 
         response = self._last_fixture_response
         return outputs_sha256(response) if response is not None else None
-
-    @property
-    def last_request_was_fixture(self) -> bool:
-        """Whether the final successful page request was the bound image request."""
-
-        return self._last_request_was_fixture
 
     def request_fixture_image(
         self,
@@ -427,13 +258,12 @@ class ServiceHandle:
             raise ServingConfigurationError(
                 "golden-page request image bytes do not match its supplied local fixture"
             )
-        result = self._manager.request(
+        result = self._manager._request(
             self, kind, sealed_payload, sampling=sampling, exchange_observer=exchange_observer
         )
         self._fixture_requests_completed += 1
         self._last_fixture_request_sha256 = fixture_digest
         self._last_fixture_response = result
-        self._last_request_was_fixture = True
         return result
 
     def stop(self) -> None:
@@ -485,8 +315,8 @@ def _object_reference(reference: object, label: str) -> Mapping[str, str]:
 class ServingManager:
     """A sequential vLLM lifecycle manager.
 
-    :meth:`start` verifies the snapshot just before launch, and an adapter's base
-    too, because the base shapes the answer. The base is never a fallback.
+    :meth:`start` verifies the chair's snapshot just before launch. Only full
+    checkpoints are served: a chair configured as an adapter of another is refused.
     """
 
     def __init__(
@@ -570,17 +400,11 @@ class ServingManager:
         self._unready_process: ServerProcess | None = None
         self._unready_endpoint = ""
 
-    def start(
-        self,
-        identity: ChairIdentity,
-        tier: str,
-        *,
-        adapter_calibration: AdapterCalibration | None = None,
-    ) -> ServiceHandle:
+    def start(self, identity: ChairIdentity, tier: str) -> ServiceHandle:
         """Start one configured chair and publish its receipt after a real answer.
 
-        A handle returns only after health, the exact model id, a bounded probe,
-        adapter evidence and receipt publication have all succeeded.
+        A handle returns only after health, the exact model id, a bounded probe
+        and receipt publication have all succeeded.
         """
 
         # An invented value names no chair to refuse, so check it first.
@@ -602,30 +426,23 @@ class ServingManager:
         process: ServerProcess | None = None
         endpoint = ""
         try:
-            # Both the chair's and an adapter base's profiles pass the recipe
-            # check before any snapshot is verified.
+            if identity.adapter_of is not None:
+                raise ServingConfigurationError(
+                    f"chair {identity.role!r} is configured as an adapter of "
+                    f"{identity.adapter_of!r}; only full checkpoints are served"
+                )
+            # The recipe check comes before any snapshot is verified.
             profile = self._launchable_profile(identity, tier)
             self._assert_runtime(profile)
-            base_identity, base_profile = self._base_profile(identity, tier, profile)
-            primary_snapshot = self.registry.ensure(identity)
-            base_snapshot = (
-                primary_snapshot
-                if identity.adapter_of is None
-                else self.registry.ensure(base_identity)
-            )
-            assert_processor_geometry(base_snapshot, profile)
+            snapshot = self.registry.ensure(identity)
+            assert_processor_geometry(snapshot, profile)
             endpoint = profile.endpoint
             # Held from endpoint probing through failed-launch cleanup, or two
             # assemblers can race from an empty endpoint into GPU co-residency.
             self._residency_handle = self.residency_lease.acquire(identity)
             self._assert_endpoint_unoccupied(endpoint)
             argv = render_vllm_argv(
-                command_prefix=self.command_prefix,
-                profile=profile,
-                base_identity=base_identity,
-                base_snapshot=base_snapshot,
-                adapter_snapshot=primary_snapshot if identity.adapter_of is not None else None,
-                base_profile=base_profile,
+                command_prefix=self.command_prefix, profile=profile, snapshot=snapshot
             )
             process = self.launcher.launch(
                 argv,
@@ -635,15 +452,9 @@ class ServingManager:
             started_at = _utc_stamp(self.now())
             readiness = self._wait_until_ready(process, profile)
             observed_packages = self._assert_runtime(profile)
-            activation = self._prove_adapter_active(
-                identity,
-                profile,
-                base_profile,
-                adapter_calibration,
-            )
             self._assert_process_live(process)
             details = ServingDetails(
-                tokenizer_revision=base_identity.receipt_revision,
+                tokenizer_revision=identity.receipt_revision,
                 seed=profile.seed,
                 context_cap=profile.max_model_len,
                 # A total pixel count. `pixel_cap` in config/pod_placement.toml
@@ -652,7 +463,7 @@ class ServingManager:
                 engine="vllm",
                 engine_version=observed_packages["vllm"],
                 dtype=profile.dtype,
-                adapter_identity=base_identity if identity.adapter_of is not None else None,
+                adapter_identity=None,
                 endpoint=endpoint,
                 started_at=started_at,
             )
@@ -663,10 +474,7 @@ class ServingManager:
                 process=process,
                 argv=argv,
                 readiness=readiness,
-                primary_snapshot=primary_snapshot,
-                base_snapshot=base_snapshot,
-                base_profile=base_profile,
-                activation=activation,
+                snapshot=snapshot,
                 runtime_packages=observed_packages,
                 started_at=started_at,
             )
@@ -731,7 +539,7 @@ class ServingManager:
             )
         return publication
 
-    def request(
+    def _request(
         self,
         handle: ServiceHandle,
         kind: str,
@@ -740,8 +548,9 @@ class ServingManager:
         sampling: Mapping[str, int | float],
         exchange_observer: Callable[[bytes, HttpResponse], None] | None = None,
     ) -> OpenAIResult:
-        """Send a regular non-streaming request to the handle's exact served alias,
-        under the chair's sealed sampling values and the profile seed."""
+        """Send a non-streaming request to the handle's exact served alias, under
+        the chair's sealed sampling values and the profile seed. Only the golden-page
+        fixture request comes through here."""
 
         self._require_active(handle)
         self._assert_process_live(handle.process)
@@ -755,12 +564,9 @@ class ServingManager:
         response = self._post(handle.endpoint, kind, body, _INFERENCE_TIMEOUT_SECONDS)
         if exchange_observer is not None:
             exchange_observer(body, response)
-        result = parse_openai_answer(
+        return parse_openai_answer(
             response, kind=kind, expected_model_id=handle.profile.served_model_id
         )
-        handle._requests_completed += 1
-        handle._last_request_was_fixture = False
-        return result
 
     def request_reading(
         self, handle: ServiceHandle, kind: str, body_bytes: bytes, timeout_seconds: float
@@ -809,30 +615,6 @@ class ServingManager:
         error = self._attempt_cleanup(self._unready_process, self._unready_endpoint)
         if error is not None:
             raise error
-
-    def _base_profile(
-        self,
-        identity: ChairIdentity,
-        tier: str,
-        profile: ServingProfile,
-    ) -> tuple[ChairIdentity, ServingProfile]:
-        """Resolve the base chair and check its profile, without touching snapshots."""
-
-        if identity.adapter_of is None:
-            return identity, profile
-        configured_base = self.registry.resolve(identity.adapter_of)
-        if isinstance(configured_base, AbsentChair):
-            raise ServingConfigurationError(
-                f"adapter chair {identity.role!r} names explicitly absent base {identity.adapter_of!r}"
-            )
-        if not isinstance(configured_base, ChairIdentity):
-            raise ServingConfigurationError(
-                f"adapter chair {identity.role!r} has no resolved base identity"
-            )
-        # vLLM is launched with the adapter row's flags over the base's weights,
-        # so the base checkpoint decides whether the adapter row may cache prefixes.
-        _refuse_hybrid_prefix_caching(identity.role, configured_base, profile)
-        return configured_base, self._launchable_profile(configured_base, tier)
 
     def _launchable_profile(self, identity: ChairIdentity, tier: str) -> ServingProfile:
         return _launchable(
@@ -1006,66 +788,6 @@ class ServingManager:
         )
         return parse_openai_answer(response, kind=kind, expected_model_id=model_id)
 
-    def _prove_adapter_active(
-        self,
-        identity: ChairIdentity,
-        profile: ServingProfile,
-        base_profile: ServingProfile,
-        calibration: AdapterCalibration | None,
-    ) -> AdapterActivationEvidence | None:
-        if identity.adapter_of is None:
-            if calibration is not None:
-                raise ServingConfigurationError(
-                    "an unadapted chair cannot carry an adapter calibration"
-                )
-            return None
-        if calibration is None:
-            raise AdapterActivityError(
-                "adapter chair has no calibration; /v1/models registration is not proof an adapter contributed"
-            )
-        if profile.enable_tower_connector_lora and not calibration.requires_image:
-            raise AdapterActivityError(
-                "tower/connector LoRA requires an image-bearing adapter calibration"
-            )
-        calibration_payload = calibration.request_payload()
-        response = self._get(models_url(profile.endpoint), _READINESS_PROBE_TIMEOUT_SECONDS)
-        ids = require_exact_model_id(response, profile.served_model_id)
-        if base_profile.served_model_id not in ids:
-            raise AdapterActivityError(
-                f"adapter endpoint does not advertise configured base id {base_profile.served_model_id!r}"
-            )
-        base = self._post_probe(
-            endpoint=profile.endpoint,
-            kind=calibration.kind,
-            payload=calibration_payload,
-            model_id=base_profile.served_model_id,
-            seed=profile.seed,
-            deterministic=True,
-        )
-        adapted = self._post_probe(
-            endpoint=profile.endpoint,
-            kind=calibration.kind,
-            payload=calibration_payload,
-            model_id=profile.served_model_id,
-            seed=profile.seed,
-            deterministic=True,
-        )
-        base_digest = outputs_sha256(base)
-        adapted_digest = outputs_sha256(adapted)
-        if base_digest == adapted_digest:
-            raise AdapterActivityError(
-                "base and adapter produced identical deterministic calibration output; adapter is unproven"
-            )
-        return AdapterActivationEvidence(
-            fixture_sha256=calibration.fixture_sha256,
-            kind=calibration.kind,
-            requires_image=calibration.requires_image,
-            base_model_id=base_profile.served_model_id,
-            adapter_model_id=profile.served_model_id,
-            base_output_sha256=base_digest,
-            adapter_output_sha256=adapted_digest,
-        )
-
     def _launch_audit(
         self,
         *,
@@ -1074,10 +796,7 @@ class ServingManager:
         process: ServerProcess,
         argv: tuple[str, ...],
         readiness: ReadinessEvidence,
-        primary_snapshot: VerifiedSnapshot,
-        base_snapshot: VerifiedSnapshot,
-        base_profile: ServingProfile,
-        activation: AdapterActivationEvidence | None,
+        snapshot: VerifiedSnapshot,
         runtime_packages: Mapping[str, str],
         started_at: str,
     ) -> Mapping[str, object]:
@@ -1086,11 +805,11 @@ class ServingManager:
         argv_digest = hashlib.sha256(
             json.dumps(list(argv), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        pins = model_and_tokenizer_pins(base_snapshot.identity)
+        pins = model_and_tokenizer_pins(snapshot.identity)
         # A local-repository chair has no commit; `revision_kind` says which pin
         # bound the launch instead of leaving nulls.
         model_revision, tokenizer_revision = (
-            pins if pins is not None else (base_snapshot.identity.receipt_revision,) * 2
+            pins if pins is not None else (snapshot.identity.receipt_revision,) * 2
         )
         return MappingProxyType(
             {
@@ -1139,19 +858,16 @@ class ServingManager:
                     "argv_sha256": argv_digest,
                     "model_revision": model_revision,
                     "tokenizer_revision": tokenizer_revision,
-                    "revision_kind": base_snapshot.identity.receipt_revision_kind,
-                    "served_model_name": base_profile.served_model_id,
+                    "revision_kind": snapshot.identity.receipt_revision_kind,
+                    "served_model_name": profile.served_model_id,
                 },
                 "runtime_packages": {
                     "required": dict(profile.required_packages),
                     "observed": dict(runtime_packages),
                 },
-                "primary_identity": primary_snapshot.identity.to_record(),
-                "base_identity": base_snapshot.identity.to_record(),
-                "primary_manifest_digest": primary_snapshot.manifest_digest,
-                "base_manifest_digest": base_snapshot.manifest_digest,
+                "chair_identity": snapshot.identity.to_record(),
+                "manifest_digest": snapshot.manifest_digest,
                 "readiness": readiness.to_record(),
-                "adapter_activation": activation.to_record() if activation is not None else None,
             }
         )
 
@@ -1468,26 +1184,20 @@ def _launchable(
             f"digests to {observed_identity_digest!r}; the checkpoint changed after this "
             "profile was proven, so it must be preflighted again before launch"
         )
-    _refuse_hybrid_prefix_caching(identity.role, identity, profile)
+    _refuse_hybrid_prefix_caching(identity, profile)
     return profile
 
 
-def _refuse_hybrid_prefix_caching(
-    role: str, weights: ChairIdentity, profile: ServingProfile
-) -> None:
-    """Refuse prefix caching on a row that serves a hybrid Mamba/attention checkpoint.
-
-    ``weights`` is the identity whose checkpoint vLLM loads: the chair itself,
-    or an adapter's base.
-    """
+def _refuse_hybrid_prefix_caching(identity: ChairIdentity, profile: ServingProfile) -> None:
+    """Refuse prefix caching on a row that serves a hybrid Mamba/attention checkpoint."""
 
     if (
-        weights.source == "huggingface"
-        and weights.repo in _HYBRID_ATTENTION_REPOSITORIES
+        identity.source == "huggingface"
+        and identity.repo in _HYBRID_ATTENTION_REPOSITORIES
         and profile.enable_prefix_caching
     ):
         raise ServingConfigurationError(
-            f"chair {role!r} serves {weights.repo!r}, a hybrid Mamba/attention "
+            f"chair {identity.role!r} serves {identity.repo!r}, a hybrid Mamba/attention "
             "(qwen3_5) checkpoint; prefix caching over recurrent state only costs "
             "recurrent-state memory here, and vLLM would enable it by default -- "
             f"enable_prefix_caching must be false for this chair"
@@ -1498,10 +1208,7 @@ def render_vllm_argv(
     *,
     command_prefix: tuple[str, ...],
     profile: ServingProfile,
-    base_identity: ChairIdentity,
-    base_snapshot: VerifiedSnapshot,
-    adapter_snapshot: VerifiedSnapshot | None,
-    base_profile: ServingProfile,
+    snapshot: VerifiedSnapshot,
 ) -> tuple[str, ...]:
     """Render the exact argv from verified identities and one typed profile.
 
@@ -1509,13 +1216,13 @@ def render_vllm_argv(
     decides whether revision flags follow.
     """
 
-    pins = model_and_tokenizer_pins(base_identity)
+    pins = model_and_tokenizer_pins(snapshot.identity)
     argv = [
         *command_prefix,
         "serve",
-        str(base_snapshot.root),
+        str(snapshot.root),
         "--tokenizer",
-        str(base_snapshot.root),
+        str(snapshot.root),
         "--host",
         profile.host,
         "--port",
@@ -1529,11 +1236,9 @@ def render_vllm_argv(
             "--tokenizer-revision",
             tokenizer_revision,
         ]
-    # An adapter registers its alias via `--lora-modules`, so the served name
-    # is the base's.
     argv += [
         "--served-model-name",
-        base_profile.served_model_id if adapter_snapshot is not None else profile.served_model_id,
+        profile.served_model_id,
         "--dtype",
         profile.dtype,
         "--seed",
@@ -1572,32 +1277,6 @@ def render_vllm_argv(
         "--enforce-eager" if profile.enforce_eager else "--no-enforce-eager",
         "--trust-remote-code" if profile.trust_remote_code else "--no-trust-remote-code",
     ]
-    if adapter_snapshot is not None:
-        argv.extend(
-            [
-                "--enable-lora",
-                "--max-loras",
-                "1",
-                "--max-lora-rank",
-                str(profile.max_lora_rank),
-                "--lora-modules",
-                json.dumps(
-                    {
-                        "name": profile.served_model_id,
-                        "path": str(adapter_snapshot.root),
-                        # The configured source ref, not a process-local alias.
-                        "base_model_name": base_identity.source_reference,
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
-            ]
-        )
-        argv.append(
-            "--enable-tower-connector-lora"
-            if profile.enable_tower_connector_lora
-            else "--no-enable-tower-connector-lora"
-        )
     return tuple(argv)
 
 
@@ -1615,8 +1294,6 @@ def _fatal_log_signature(tail: str) -> str | None:
         return "EngineDeadError"
     if "cuda out of memory" in normalized:
         return "CUDA out of memory"
-    if "does not support lora" in normalized:
-        return "LORA_UNSUPPORTED"
     # vLLM's registry refusal for an architecture it cannot serve.
     if "are not supported for now. supported architectures:" in normalized:
         return "UNKNOWN_MODEL"
@@ -1844,11 +1521,6 @@ def _local_fixture_bytes(fixture: str | Path, label: str) -> bytes:
     if not data:
         raise ServingConfigurationError(f"{label} must not be empty")
     return data
-
-
-def _calibration_image_sha256(payload: Mapping[str, object]) -> str:
-    image = _active_chat_image_bytes(payload, label="image adapter calibration")
-    return hashlib.sha256(image).hexdigest()
 
 
 def _utc_stamp(value: datetime) -> str:

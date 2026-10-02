@@ -27,6 +27,7 @@ is red, never a quiet green.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import secrets
@@ -46,7 +47,7 @@ from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSamp
 
 from .errors import ServingConfigurationError, ServingError
 from .http import HttpResponse
-from .manager import AdapterCalibration, ServiceHandle, _active_chat_image_bytes
+from .manager import ServiceHandle, _active_chat_image_bytes
 from .witness import (
     PAGE_WITNESS_ALPHABET,
     PAGE_WITNESS_LENGTH,
@@ -101,30 +102,6 @@ def page_witness_edit_distance(answer: str, witness: str) -> int | None:
             return None
         previous = current
     return previous[-1] if previous[-1] <= PAGE_WITNESS_MAX_EDIT_DISTANCE else None
-
-
-def _prompt_contains_near_witness(prompt: str, witness: str) -> bool:
-    """Reject prompt text a reader could copy as a near page read."""
-
-    shortest = PAGE_WITNESS_LENGTH - PAGE_WITNESS_MAX_EDIT_DISTANCE
-    longest = PAGE_WITNESS_LENGTH + PAGE_WITNESS_MAX_EDIT_DISTANCE
-    for start, first in enumerate(prompt):
-        if not first.isascii() or not first.isalnum():
-            continue
-        code = ""
-        for character in prompt[start:]:
-            if character.isascii() and character.isalnum():
-                code += character
-                if len(code) > longest:
-                    break
-                if (
-                    len(code) >= shortest
-                    and page_witness_edit_distance(_WITNESS_PREFIX + code, witness) is not None
-                ):
-                    return True
-            elif character not in " \t\r\n":
-                break
-    return False
 
 
 class SmokeExchangeRetainedError(ServingError):
@@ -282,6 +259,36 @@ class NvidiaSmiUtilization:
         )
 
 
+def _golden_page_payload(fixture: Path, prompt: str) -> dict[str, object]:
+    """One user turn: the fixture page as a data URI, then the instruction.
+
+    The page is embedded, never referenced by URL, so the engine reads exactly
+    these bytes.
+    """
+
+    try:
+        data = Path(fixture).read_bytes()
+    except OSError as error:
+        raise ServingConfigurationError(
+            f"cannot read golden-page fixture {fixture}: {error}"
+        ) from error
+    encoded = base64.b64encode(data).decode("ascii")
+    return {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{_FIXTURE_MIME_TYPE};base64,{encoded}"},
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class VisionSmokeCall:
     """Read one golden page and verify its page-only witness.
@@ -309,13 +316,10 @@ class VisionSmokeCall:
                 "golden-page witness must be 43 characters from the generator alphabet "
                 "with no adjacent repeats"
             )
-        # A subclass can override `prompt`; keep the page-only claim enforced at
-        # construction even though the base prompt is constant.
-        if self.page_witness in self.prompt or _prompt_contains_near_witness(
-            self.prompt, self.page_witness
-        ):
+        # The witness must reach the reader only through the page image.
+        if self.page_witness in self.prompt:
             raise ServingConfigurationError(
-                "golden-page witness or near read occurs in the smoke prompt, so a text-only answer "
+                "golden-page witness occurs in the smoke prompt, so a text-only answer "
                 "copied from the prompt would satisfy the page-read check"
             )
         if not callable(self.utilization):
@@ -349,11 +353,7 @@ class VisionSmokeCall:
                 "vision smoke handle identity differs from the resolved chair identity"
             )
 
-        payload = AdapterCalibration.from_image_fixture(
-            fixture=fixture,
-            prompt=self.prompt,
-            mime_type=_FIXTURE_MIME_TYPE,
-        ).request_payload()
+        payload = _golden_page_payload(fixture, self.prompt)
         # A checkpoint whose template can open in thinking mode is asked for a
         # direct answer on every run call, so the smoke asks the same way; the
         # witness check below still gates preflight.

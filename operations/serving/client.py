@@ -71,7 +71,7 @@ from .http import (
     parse_openai_reading,
     request_body,
 )
-from .manager import AdapterCalibration, ServiceHandle, ServingManager
+from .manager import ServiceHandle, ServingManager
 
 # One JSON serialization, used for both halves of the generation round-trip
 # check below, so the comparison is between two texts rather than between two
@@ -302,7 +302,6 @@ class ChairClient:
         decoding_config_sha256: str,
         decoding_policy: Mapping[str, object],
         read_receipt: Callable[[Mapping[str, str]], Mapping[str, object]],
-        adapter_calibration: AdapterCalibration | None = None,
     ) -> None:
         if not is_sha256(decoding_config_sha256):
             raise ServingConfigurationError(
@@ -327,7 +326,6 @@ class ChairClient:
         self._decoding_config_sha256 = decoding_config_sha256
         self._decoding_policy = policy
         self._read_receipt = read_receipt
-        self._adapter_calibration = adapter_calibration
         # A native dispatch is a one-use capability minted only after every
         # request and evidence field has been checked.  Holding the object
         # itself in this private registry prevents a caller-created dataclass,
@@ -353,9 +351,7 @@ class ChairClient:
 
     def __enter__(self) -> "ChairClient":
         self._prepared_chandra_dispatches.clear()
-        handle = self._manager.start(
-            self._identity, self._tier, adapter_calibration=self._adapter_calibration
-        )
+        handle = self._manager.start(self._identity, self._tier)
         # Normalized here, at the one seam that knows both sides: a frozen
         # `MappingProxyType` reference is copied to a plain dict, since
         # `RunTree.read_run_receipt` accepts only its own type or a plain dict.

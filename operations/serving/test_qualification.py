@@ -179,7 +179,7 @@ def _write_report(
             "chair": role,
             "launch_purpose": "preflight-qualification",
             "configuration_inputs": config_inputs,
-            "primary_identity": identity.to_record(),
+            "chair_identity": identity.to_record(),
             "profile": {
                 "recipe": identity.serving_recipe,
                 "tier": tier,
@@ -212,7 +212,6 @@ def _write_report(
                 "page_witness_matches": True,
                 "page_witness_edit_distance": 0,
                 "page_witness_reference": witness_ref,
-                "smoke_service_request_count": 1,
                 "smoke_fixture_request_count": 1,
                 "service_receipt": service_receipt,
                 "receipt_reference": receipt_ref,
@@ -877,7 +876,6 @@ def _audit_profile_changed(root: Path, smoke: dict) -> None:
             "malformed utilization samples",
         ),
         (_smoke_field("supplied_fixture_sha256", "f" * 64), "smoked a different golden page"),
-        (_smoke_field("smoke_service_request_count", 0), "no valid smoke_service_request_count"),
         (_smoke_field("smoke_fixture_request_count", True), "no valid smoke_fixture_request_count"),
         (_embedded("service_receipt"), "service receipt artifact disagrees"),
         (_embedded("serving_launch_audit"), "launch audit artifact disagrees"),
@@ -887,7 +885,7 @@ def _audit_profile_changed(root: Path, smoke: dict) -> None:
         (_audit_changed("schema", "serving-launch-audit.v0"), "launch audit has the wrong schema"),
         (_audit_changed("chair", "someone-else"), "launch audit names another chair"),
         (_audit_changed("configuration_inputs", {}), "launch used different configuration"),
-        (_audit_changed("primary_identity", {}), "launch used a different identity"),
+        (_audit_changed("chair_identity", {}), "launch used a different identity"),
         (_audit_profile_changed, "launch audit names another profile"),
     ],
 )

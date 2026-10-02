@@ -1,8 +1,6 @@
-"""A shared fake serving endpoint for stage tests built against :class:`ChairClient`.
-
-Copies :mod:`operations.serving.test_manager`'s own fakes rather than
-importing them, since Attestatores and Perlector stage tests both need one
-scripted endpoint speaking the reading contract.
+"""Fakes for serving tests: a scripted endpoint speaking the reading contract,
+and the process, launcher, package and registry stand-ins a `ServingManager`
+needs. Stage tests and the serving package's own tests share them.
 """
 
 from __future__ import annotations
@@ -14,14 +12,14 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from common.chairs.errors import ServingRecipeRefusal
-from common.chairs.models import ChairIdentity, ServingDetails, VerifiedSnapshot
+from common.chairs.models import ChairIdentity, ModelsConfig, ServingDetails, VerifiedSnapshot
 from common.chairs.receipts import build_receipt
 from common.decoding import load_decoding_policy
 
 from .client import ChairClient, RetainBytes
 from .config import SubprocessProfile
 from .http import EndpointUnavailable, HttpResponse
-from .manager import AdapterCalibration, ReceiptPublication, ServingManager
+from .manager import ReceiptPublication, ServingManager
 from .surya_detector import SuryaRun, contract, declared_page_documents, surya_run
 
 
@@ -90,24 +88,38 @@ class FakeBlobStore:
 class FakeProcess:
     """A loopback-process shape only; no real subprocess is ever created."""
 
-    def __init__(self, pid: int) -> None:
+    def __init__(
+        self,
+        pid: int,
+        *,
+        log_tail: str = "",
+        log_tails: tuple[str, ...] = (),
+        exits_immediately: int | None = None,
+        ignore_terminate: bool = False,
+        ignore_kill: bool = False,
+    ) -> None:
         self.pid = pid
-        self.exit_code: int | None = None
+        self.exit_code = exits_immediately
+        self.log_tail = log_tail
+        self.log_tails = log_tails
+        self.tail_reads = 0
         self.terminate_calls = 0
         self.kill_calls = 0
         self.wait_calls = 0
+        self.ignore_terminate = ignore_terminate
+        self.ignore_kill = ignore_kill
 
     def poll(self) -> int | None:
         return self.exit_code
 
     def terminate(self) -> None:
         self.terminate_calls += 1
-        if self.exit_code is None:
+        if not self.ignore_terminate and self.exit_code is None:
             self.exit_code = 0
 
     def kill(self) -> None:
         self.kill_calls += 1
-        if self.exit_code is None:
+        if not self.ignore_kill and self.exit_code is None:
             self.exit_code = -9
 
     def wait(self, timeout_seconds: float) -> int:
@@ -118,8 +130,15 @@ class FakeProcess:
         return self.exit_code
 
     def read_tail(self, maximum_bytes: int = 16_384) -> str:
-        del maximum_bytes
-        return ""
+        # `log_tails` is a log that grows between reads, which is what a
+        # loading engine's own log does: the readiness loop reads it once per
+        # poll, and whether the progress line *moved* is what tells "still
+        # loading" from "stuck at 43% since the first poll".
+        if self.log_tails:
+            tail = self.log_tails[min(self.tail_reads, len(self.log_tails) - 1)]
+            self.tail_reads += 1
+            return tail[-maximum_bytes:]
+        return self.log_tail[-maximum_bytes:]
 
 
 class FakeEndpoint:
@@ -303,9 +322,26 @@ def scripted_prompt_too_long(
 
 
 class FakeLauncher:
-    def __init__(self, endpoint: FakeEndpoint) -> None:
+    """Launches a `FakeProcess` and binds it to `endpoint` (anything with `bind`)."""
+
+    def __init__(
+        self,
+        endpoint: Any,
+        *,
+        log_tail: str = "",
+        log_tails: tuple[str, ...] = (),
+        exits_immediately: int | None = None,
+        ignore_terminate: bool = False,
+        ignore_kill: bool = False,
+    ) -> None:
         self.endpoint = endpoint
+        self.log_tail = log_tail
+        self.log_tails = log_tails
+        self.exits_immediately = exits_immediately
+        self.ignore_terminate = ignore_terminate
+        self.ignore_kill = ignore_kill
         self.calls: list[tuple[tuple[str, ...], Path]] = []
+        self.inherited_fds: list[tuple[int, ...]] = []
         self.processes: list[FakeProcess] = []
 
     def launch(
@@ -316,7 +352,15 @@ class FakeLauncher:
         inheritable_fds: tuple[int, ...] = (),
     ) -> FakeProcess:
         self.calls.append((argv, log_path))
-        process = FakeProcess(9000 + len(self.processes))
+        self.inherited_fds.append(inheritable_fds)
+        process = FakeProcess(
+            9000 + len(self.processes),
+            log_tail=self.log_tail,
+            log_tails=self.log_tails,
+            exits_immediately=self.exits_immediately,
+            ignore_terminate=self.ignore_terminate,
+            ignore_kill=self.ignore_kill,
+        )
         self.processes.append(process)
         self.endpoint.bind(process)
         return process
@@ -325,29 +369,41 @@ class FakeLauncher:
 class FakePackages:
     def __init__(self, versions: Mapping[str, str]) -> None:
         self.versions = dict(versions)
+        self.calls: list[str] = []
 
     def version(self, package: str) -> str:
+        self.calls.append(package)
         return self.versions[package]
 
 
 class FakeRegistry:
     def __init__(self, identities: Mapping[str, ChairIdentity], tmp_path: Path) -> None:
         self.identities = dict(identities)
+        self.config = ModelsConfig(witness_floor=0, chairs=self.identities)
         self.snapshots = {
-            role: VerifiedSnapshot(chair_identity, tmp_path / role, chair_identity.digest_manifest)
-            for role, chair_identity in identities.items()
+            role: VerifiedSnapshot(identity, tmp_path / role, identity.digest_manifest)
+            for role, identity in identities.items()
         }
+        self.ensure_calls: list[str] = []
+        self.resolve_calls: list[str] = []
+        self.refusals: list[tuple[str, str]] = []
+        self.receipts: list[tuple[str, ServingDetails]] = []
 
     def resolve(self, role: str) -> ChairIdentity:
+        self.resolve_calls.append(role)
         return self.identities[role]
 
     def ensure(self, identity: ChairIdentity) -> VerifiedSnapshot:
+        assert self.identities[identity.role] == identity
+        self.ensure_calls.append(identity.role)
         return self.snapshots[identity.role]
 
     def receipt(self, identity: ChairIdentity, details: ServingDetails):
+        self.receipts.append((identity.role, details))
         return build_receipt(identity, details)
 
     def refuse_recipe_start(self, identity: ChairIdentity, difference: str) -> None:
+        self.refusals.append((identity.role, difference))
         raise ServingRecipeRefusal(identity.role, difference)
 
 
@@ -379,7 +435,6 @@ def fake_serving_factory(
     manager: ServingManager,
     retain: RetainBytes,
     read_receipt: Callable[[Mapping[str, str]], Mapping[str, object]],
-    adapter_calibration: AdapterCalibration | None = None,
 ) -> Callable[[Any, ChairIdentity, str], ChairClient]:
     """Build the ``serving_factory(context, chair, tier) -> ChairClient`` a
     stage's ``main`` calls under live mode, wired to one fake manager.
@@ -401,7 +456,6 @@ def fake_serving_factory(
             decoding_config_sha256=digest,
             decoding_policy=policy,
             read_receipt=read_receipt,
-            adapter_calibration=adapter_calibration,
         )
 
     return factory
