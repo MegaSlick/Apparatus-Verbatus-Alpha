@@ -47,7 +47,7 @@ from common.armarium_formats import ArmariumFormats
 from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal, SchemaRefusal
-from common.contracts.outcomes import ArmariumCategory
+from common.contracts.outcomes import PAGE_READ_SILENT_PAGE_REASON, ArmariumCategory
 from common.contracts.outcomes import run_aggregate as _run_aggregate
 from common.contracts.stages import ARMARIUM
 from common.contracts.uncertainty import validate as validate_uncertainty
@@ -504,7 +504,10 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
 
     manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
     assert manifest["claims"]["status"] == "partial"
-    assert manifest["claims"]["partial_reasons"][0].startswith("act act-2 is held-for-review")
+    # One line for the one unresolved fact, keyed by the act's key, with its reason.
+    assert manifest["claims"]["partial_reasons"] == [
+        "act p1:2 is held-for-review: the review remains unresolved"
+    ]
     assert manifest["claims"]["pixels"]["resolution_claim"].startswith("reference validity")
     assert verify_projection_identity(bundle.data, tmp_path / "identity") == {
         "act-1": "Cǣsar d’Exemple"
@@ -2533,7 +2536,9 @@ def test_the_terminal_ledger_partitions_sources_pages_and_acts_totally(tmp_path)
         "act:act-2": "held-for-review",
     }
     assert ledger["status"] == "partial"
-    assert ledger["unresolved_reasons"][0].startswith("act act-2 is held-for-review")
+    assert ledger["unresolved_reasons"] == [
+        "act p1:2 is held-for-review: the review remains unresolved"
+    ]
     assert "one unit per page or frame" in ledger["granularity_limit"]
 
 
@@ -2698,6 +2703,13 @@ def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
     assert "counts no reading of it" in units["page:3"]["reason"]
     assert ledger["by_unit_type"] == {"source": 3, "page": 2, "act": 2, "other": 0}
     assert sum(ledger["by_category"].values()) == ledger["unit_count"] == 7
+    # Five unresolved units, three facts: each named once, by the act's key or
+    # the page's ordinal, never again as the source or page unit beside it.
+    assert ledger["unresolved_reasons"] == [
+        "act p1:2 is held-for-review: the review remains unresolved",
+        "page 2 was refused: the submitted bytes were not a readable image",
+        PAGE_READ_SILENT_PAGE_REASON.format(ordinal=3),
+    ]
 
 
 def test_a_display_that_does_not_strip_back_to_the_canonical_field_is_refused(tmp_path):
