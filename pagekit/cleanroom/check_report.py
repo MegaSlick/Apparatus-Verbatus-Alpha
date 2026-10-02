@@ -46,17 +46,36 @@ LINE_RULES: dict[str, re.Pattern[str]] = {
     "file_path": re.compile(r"(?:[\w.-]+/){2,}|\w\\\w"),
     "link": re.compile(r"\w+://"),
     "line_number": re.compile(r"\blines?\s+\d|\bL\d+\b|#L\d|\b\w+\.\w+:\d"),
+    # The account that holds ScanTailor Advanced's source, as the leak scan has it.
+    "owner_account": re.compile(r"4lex[4]", re.IGNORECASE),
+}
+# Shapes of code names and code statements. A citation may hold names like these, so
+# a "Source:" paragraph (the Source line and the lines wrapped under it) is exempt.
+SHAPE_RULES: dict[str, re.Pattern[str]] = {
+    "identifier_shape": re.compile(
+        r"\b[a-z]+[A-Z][A-Za-z0-9]*\b"  # an internal capital: estimateSkew
+        r"|\b[A-Za-z0-9]+_[A-Za-z0-9_]*[A-Za-z0-9]\b"  # an internal underscore, CONST_CASE
+    ),
+    "call_or_assignment": re.compile(
+        r"\b[A-Za-z_]\w*\((?!s\))"  # a word and an opening bracket, but not "page(s)"
+        r"|\b[A-Za-z_]\w*\s*=\s*[A-Za-z_]"  # word = word
+        r"|\b[A-Za-z_]\w*\.[A-Za-z_]\w*\("  # word.word(
+    ),
 }
 
 
 def check(text: str, hashes: frozenset[str]) -> list[tuple[str, int]]:
     """Each broken rule with the report line it was found on (0 for the whole report)."""
     problems: list[tuple[str, int]] = []
+    in_source = False
     for number, raw in enumerate(text.splitlines(), 1):
         line = DOI.sub("doi", raw)
-        problems.extend(
-            (rule, number) for rule, pattern in LINE_RULES.items() if pattern.search(line)
-        )
+        if line.startswith("Source:"):
+            in_source = True
+        elif not line.strip() or line.startswith("#"):
+            in_source = False
+        rules = LINE_RULES if in_source else LINE_RULES | SHAPE_RULES
+        problems.extend((rule, number) for rule, pattern in rules.items() if pattern.search(line))
     problems.extend(("denied_word", number) for number in denied_lines(text, hashes))
     problems.extend(_structure(text))
     return sorted(problems, key=lambda item: (item[1], item[0]))

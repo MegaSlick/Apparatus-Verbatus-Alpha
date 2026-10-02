@@ -11,6 +11,7 @@ from pagekit.cleanroom import check_report
 from pagekit.cleanroom.check_report import REQUIRED_SECTIONS, check
 
 TEMPLATE = Path(__file__).with_name("templates") / "finding-report.md"
+FINDINGS = Path(__file__).with_name("findings")
 NONE: frozenset[str] = frozenset()
 
 CLEAN = """# Finding: a margin note written sideways near the gutter
@@ -77,6 +78,13 @@ def test_the_template_and_the_checker_name_the_same_sections():
         ("The loop starts at line" + " 120 of the file.", "line_number"),
         ("Around L" + "212 the margin is set.", "line_number"),
         ("Around margins" + ".cpp:" + "40 the value is set.", "line_number"),
+        ("It calls estimate" + "Skew on each page.", "identifier_shape"),
+        ("The value is kept in page" + "_box for later.", "identifier_shape"),
+        ("A limit named MAX" + "_SKEW applies.", "identifier_shape"),
+        ("Then rotate" + "(page) is applied.", "call_or_assignment"),
+        ("It sets angle" + " = limit first.", "call_or_assignment"),
+        ("It runs page" + ".rotate" + "(angle).", "call_or_assignment"),
+        ("Their maintainer 4lex" + "4 changed this.", "owner_account"),
     ],
 )
 def test_each_rule_refuses_its_content(inserted, rule):
@@ -89,6 +97,35 @@ def test_each_rule_refuses_its_content(inserted, rule):
 def test_ordinary_english_class_and_a_doi_link_are_not_code():
     text = CLEAN.replace("Text written", "A class of pages with text written")
     assert check(text, NONE) == []
+
+
+def test_a_source_paragraph_may_hold_code_like_names_but_not_other_code():
+    citation = (
+        "Source: DeMenthon and Davis, model-based pose in twenty" + "Five lines of code,\n"
+        "IJCV 15:123-141, 1995, and the open" + "CV function warp" + "Affine(src, M).\n"
+    )
+    text = CLEAN.replace("Source: projection profiles", citation + "Also: projection profiles")
+    assert rules(text) == set()
+    assert "brace" in rules(text.replace("1995,", "1995, " + "{" + "x" + "}"))
+
+
+def test_plain_english_plurals_pass_the_call_rule():
+    assert check(CLEAN.replace("A short note", "One or more page(s) with a short note"), NONE) == []
+
+
+def test_every_accepted_finding_still_passes():
+    """The index is a list, not a report, and fails only the template's structure (LOG)."""
+    findings = sorted(FINDINGS.glob("*.md"))
+    assert findings
+    for path in findings:
+        problems = check(path.read_text(encoding="utf-8"), NONE)
+        if path.name == "0000-index.md":
+            assert {rule for rule, _line in problems} <= {
+                "sections_missing_repeated_or_out_of_order",
+                "unexpected_section",
+            }
+        else:
+            assert problems == [], (path.name, problems)
 
 
 def test_a_word_on_the_deny_list_is_refused_by_its_hash_alone():
