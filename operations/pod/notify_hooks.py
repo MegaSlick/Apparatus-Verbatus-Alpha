@@ -35,8 +35,9 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
-from collections.abc import Callable, Mapping, Sequence
+import stat
+from collections.abc import Callable, Mapping
+from functools import partial
 from pathlib import Path
 from typing import Final
 
@@ -44,6 +45,7 @@ from common.credentials import notification_carries_credential
 from common.review_policy import systemic_notice
 from operations.notify import client
 from operations.notify.client import NotifyOutcome, Runner
+from operations.pod.models import POD_GUARD_DIRECTORY
 
 NOTIFY_EVENT: Final = "milestone"
 """Every hook here reports a fact, not a question -- `operations/notify/README.md`'s
@@ -142,10 +144,13 @@ def notify_systemic(*, run_id: str, alarm_line: str, runner: Runner = client.run
     return _send(systemic_notice(run_id, alarm_line), runner=runner, event="decision")
 
 
-# Where the pod guard keeps the notification topic on the volume
-# (`operations/pod/README.md`, "Arming the ping"); relative to the volume mount.
-GUARD_TOPIC_FILE: Final = Path("private/.pod_guard/ntfy_topic")
+# The file under the pod guard's directory on the volume holding the topic it
+# pings (`operations/pod/README.md`, "Arming the ping").
+GUARD_TOPIC_NAME: Final = "ntfy_topic"
 _TOPIC: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# A topic is at most 64 characters and a line ending; a file larger than that is
+# not one, and nothing more is read.
+_TOPIC_READ_BYTES: Final = 65
 # What the notification command needs from the pod's environment to reach the
 # service; nothing else of it is passed on.
 _PASSED_ENVIRONMENT: Final = (
@@ -155,39 +160,66 @@ _PASSED_ENVIRONMENT: Final = (
     "SSL_CERT_FILE",
     "CURL_CA_BUNDLE",
 )
+NO_GUARD_TOPIC: Final = "no guard topic"
+
+
+def guard_topic_path(volume_mount: Path) -> Path:
+    """Where the pod guard keeps its topic: its directory on the volume mount."""
+    return Path(volume_mount) / POD_GUARD_DIRECTORY / GUARD_TOPIC_NAME
 
 
 def guard_topic(volume_mount: Path) -> str | None:
-    """The topic the pod guard pings, read from its file on the volume; None when absent or bad."""
+    """The topic the pod guard pings, read from its file on the volume; None when absent or bad.
+
+    Only a regular file, never followed through a link, and at most
+    `_TOPIC_READ_BYTES` of it, so a FIFO, a device or a huge file cannot hold
+    the run.
+    """
+    path = guard_topic_path(volume_mount)
     try:
-        topic = (Path(volume_mount) / GUARD_TOPIC_FILE).read_text(encoding="utf-8").strip()
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                return None
+            data = os.read(descriptor, _TOPIC_READ_BYTES + 1)
+        finally:
+            os.close(descriptor)
+        topic = (
+            data[:_TOPIC_READ_BYTES].decode("utf-8").strip()
+            if len(data) <= _TOPIC_READ_BYTES
+            else ""
+        )
     except (OSError, UnicodeDecodeError):
         return None
     return topic if _TOPIC.fullmatch(topic) else None
 
 
-def notify_environment(topic: str | None) -> dict[str, str]:
+def notify_environment(topic: str) -> dict[str, str]:
     """The one environment the notification command runs in: the topic and what it needs."""
     environment = {name: os.environ[name] for name in _PASSED_ENVIRONMENT if name in os.environ}
-    if topic is not None:
-        environment["NTFY_TOPIC"] = topic
+    environment["NTFY_TOPIC"] = topic
     return environment
 
 
 def environment_runner(environment: Mapping[str, str]) -> Runner:
-    """A notification runner whose subprocess, and only it, gets `environment`."""
-
-    def run(argv: Sequence[str]) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            list(argv),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=client.NOTIFY_TIMEOUT_SECONDS,
-            env=dict(environment),
-        )
-
-    return run
+    """`client.run` bound to `environment`: the notification command's, and only its."""
+    return partial(client.run, env=dict(environment))
 
 
 RunnerFactory = Callable[[Mapping[str, str]], Runner]
+
+
+def notify_systemic_from_guard(
+    *, run_id: str, alarm_line: str, volume_mount: Path, runner_factory: RunnerFactory
+) -> NotifyOutcome:
+    """The systemic alarm sent with the pod guard's topic, in the notification command's own
+    environment; with no guard topic nothing runs, so the command never falls back to a
+    topic of the checkout's."""
+    topic = guard_topic(volume_mount)
+    if topic is None:
+        return NotifyOutcome(False, False, NO_GUARD_TOPIC)
+    return notify_systemic(
+        run_id=run_id, alarm_line=alarm_line, runner=runner_factory(notify_environment(topic))
+    )

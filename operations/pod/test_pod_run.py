@@ -1213,6 +1213,9 @@ def test_a_systemic_run_on_the_pod_sends_the_alarm_as_a_decision(
     from common.review_policy import systemic_notice
 
     ws = _prepared(tmp_path)
+    topic = ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic"
+    topic.parent.mkdir(parents=True, exist_ok=True)
+    topic.write_text("guard-topic-for-the-test\n", encoding="utf-8")
     clock = Clock()
     argv = _run_argv(ws, extra=("--notify",))
     run_id = argv[argv.index("--run-id") + 1]
@@ -1240,7 +1243,7 @@ def test_the_guard_topic_reaches_only_the_notification_command(tmp_path: Path) -
     never an argument, the orchestrator's environment, or the run report."""
     ws = _prepared(tmp_path)
     topic = "guard-topic-for-the-test"
-    path = ws.volume / "private" / ".pod_guard" / "ntfy_topic"
+    path = ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(topic + "\n", encoding="utf-8")
     clock = Clock()
@@ -1286,6 +1289,26 @@ def test_without_notify_the_pod_records_the_alarm_and_pages_no_phone(tmp_path: P
     report = _report(ws)
     assert report["systemic"] == line
     assert report["systemic_notification"] == "Phone notification: not sent (no --notify)."
+
+
+def test_with_no_guard_topic_the_pod_sends_nothing_and_says_so(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    notify = NotifyRecorder()
+    code = main(
+        _run_argv(ws, extra=("--notify",)),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(
+            returncode=orchestrator.EXIT_HELD, stop=False, systemic="run first-real-run: x"
+        ),
+        notify_runner=notify.factory,
+    )
+    assert code == EXIT_HELD
+    assert (notify.environments, notify.calls) == ([], [])
+    assert _report(ws)["systemic_notification"] == "Phone notification: not sent (no guard topic)."
 
 
 def test_a_run_with_no_systemic_alarm_sends_no_decision(tmp_path: Path) -> None:

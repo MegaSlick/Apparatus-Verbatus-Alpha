@@ -157,9 +157,7 @@ from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
 from operations.pod.notify_hooks import (
     RunnerFactory,
     environment_runner,
-    guard_topic,
-    notify_environment,
-    notify_systemic,
+    notify_systemic_from_guard,
 )
 from operations.serving.config import ServingConfigInputs
 from operations.serving.errors import ServingConfigurationError
@@ -183,7 +181,7 @@ from .bootstrap_main import (
     refuse_credential_looking_argv,
 )
 from .durable import atomic_write, canonical_json
-from .models import run_report_paths, utc_now
+from .models import POD_GUARD_DIRECTORY, run_report_paths, utc_now
 from .provider_runpod import POD_ID_ENVIRONMENT
 from .run_exits import (
     EXIT_BOOTSTRAP_RED,
@@ -200,9 +198,6 @@ RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
 RUN_LIVENESS_SCHEMA = "pod-run-liveness.v1"
 DEFAULT_RUNS_DIRECTORY = "runs"
-# The pod guard's state directory on the volume (`pod_start_command.sh`); its
-# deadline file is keyed by the pod id the provider sets in the environment.
-POD_GUARD_DIRECTORY = ".pod_guard"
 # The container's first process, where the provider sets the pod id. A login
 # shell need not inherit it, and a value exported there by hand can be another
 # pod's: every pod's guard keeps its deadline on the same shared volume.
@@ -1872,14 +1867,11 @@ def main(
         # review policy allows: a person must decide. With --notify the phone
         # hears of it whatever happens to the pod next; a failed ping changes nothing.
         notice = (
-            notify_systemic(
+            notify_systemic_from_guard(
                 run_id=plan.run_id,
                 alarm_line=systemic,
-                # The guard's topic goes to the notification command's own
-                # environment only: never an argument, a log line or a stage's.
-                runner=notify_runner(
-                    notify_environment(guard_topic(plan.bootstrap.volume_mount_path))
-                ),
+                volume_mount=plan.bootstrap.volume_mount_path,
+                runner_factory=notify_runner,
             ).line()
             if args.notify
             else "Phone notification: not sent (no --notify)."

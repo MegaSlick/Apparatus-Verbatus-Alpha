@@ -422,7 +422,7 @@ guard's topic file (`/workspace/private/.pod_guard/ntfy_topic`, below) and passe
 `NTFY_TOPIC` in that one notification command's environment, beside only `PATH` and the
 proxy and CA variables it needs (`notify_hooks.guard_topic`, `notify_environment`). The
 topic is never an argument, a log or report line, or part of the orchestrator's or a
-stage's environment. With no readable topic file the line is recorded as not delivered.
+stage's environment. With no readable topic file, a link or anything but a regular file there, nothing runs at all, so `notify.sh` never falls back to a topic of the checkout's; the report says "not sent (no guard topic)".
 
 ### `spend.py`: prices, ceilings and the typed phrase
 

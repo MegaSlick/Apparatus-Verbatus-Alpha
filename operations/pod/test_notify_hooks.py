@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
@@ -268,16 +269,63 @@ def test_a_lowercase_hex_identifier_is_not_mistaken_for_a_credential() -> None:
     assert outcome.delivered
 
 
+def test_the_topic_is_read_where_the_pod_guard_keeps_it() -> None:
+    """The guard keeps its records in `<volume mount>/.pod_guard` (`pod_start_command.sh`,
+    pinned by test_pod_guard); its topic is `ntfy_topic` there."""
+    from operations.pod.models import POD_VOLUME_MOUNT_PATH
+
+    from .notify_hooks import guard_topic_path
+
+    guard = (Path(__file__).parent / "pod_guard.sh").read_text(encoding="utf-8")
+    assert "topic=$(tr -d ' \\r\\n' <\"$dir/ntfy_topic\"" in guard
+    assert guard_topic_path(Path(POD_VOLUME_MOUNT_PATH)) == Path(
+        f"{POD_VOLUME_MOUNT_PATH}/.pod_guard/ntfy_topic"
+    )
+
+
 def test_the_guard_topic_is_read_from_its_file_and_refused_when_malformed(tmp_path) -> None:
-    from .notify_hooks import GUARD_TOPIC_FILE, guard_topic, notify_environment
+    from .models import POD_GUARD_DIRECTORY
+    from .notify_hooks import guard_topic, notify_environment
 
     assert guard_topic(tmp_path) is None
-    path = tmp_path / GUARD_TOPIC_FILE
+    path = tmp_path / POD_GUARD_DIRECTORY / "ntfy_topic"
     path.parent.mkdir(parents=True)
     path.write_text("a-topic_1\n", encoding="utf-8")
     assert guard_topic(tmp_path) == "a-topic_1"
     assert notify_environment("a-topic_1")["NTFY_TOPIC"] == "a-topic_1"
-    assert "NTFY_TOPIC" not in notify_environment(None)
-    for bad in ("two words", "x" * 65, "a/slash"):
+    for bad in ("two words", "x" * 65, "a/slash", "x" * 4096):
         path.write_text(bad, encoding="utf-8")
         assert guard_topic(tmp_path) is None
+
+
+def test_the_guard_topic_is_read_only_from_a_regular_file_never_a_link_or_fifo(tmp_path) -> None:
+    """A link is not followed, and a FIFO is never opened for a read that could block."""
+    import os
+
+    from .models import POD_GUARD_DIRECTORY
+    from .notify_hooks import guard_topic
+
+    guard = tmp_path / POD_GUARD_DIRECTORY
+    guard.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_text("a-topic_1", encoding="utf-8")
+    (guard / "ntfy_topic").symlink_to(elsewhere)
+    assert guard_topic(tmp_path) is None
+    (guard / "ntfy_topic").unlink()
+    os.mkfifo(guard / "ntfy_topic")
+    assert guard_topic(tmp_path) is None
+
+
+def test_with_no_guard_topic_nothing_is_run(tmp_path) -> None:
+    """notify.sh never runs, so it never falls back to a topic of the checkout's."""
+    from .notify_hooks import NO_GUARD_TOPIC, notify_systemic_from_guard
+
+    factories = []
+    outcome = notify_systemic_from_guard(
+        run_id="r1",
+        alarm_line="run r1: systemic: 2 of 3 page(s) are held after the recensor",
+        volume_mount=tmp_path,
+        runner_factory=lambda environment: factories.append(environment) or FakeRunner(),
+    )
+    assert outcome == NotifyOutcome(False, False, NO_GUARD_TOPIC)
+    assert factories == []
