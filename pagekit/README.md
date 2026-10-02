@@ -15,15 +15,20 @@ python -m pagekit check --master scan.tif --crop 120,90,2480,3400 [--crop ...] \
 
 Crop boxes are `x0,y0,x1,y1` in the master's stored pixel grid (no EXIF rotation),
 right and bottom exclusive. Exit status is 0 when nothing is flagged, 1 when the page
-should go to review and 2 when the inputs cannot be checked. Without `--json` the
+should go to review and 2 when the inputs cannot be checked. Any failure to read the
+master is exit 2, including an image mode pagekit does not handle: a 16-bit greyscale
+(`I;16`) master is refused loudly rather than reduced to 8 bits unseen. Without `--json` the
 command prints the verdict and the reasons; with it, the full report.
 
 ## What it checks
 
 The master is reduced to grey and split into ink and paper with Otsu's threshold
 (Otsu, 1979), after border rows and columns that are nearly all dark (scanner backdrop)
-are trimmed off as outside the page. A 3x3 median filter removes isolated specks from
-the ink map before anything is counted.
+are trimmed off as outside the page. Ink pixels with no ink among their eight
+neighbours (lone specks) are cleared before anything is counted; a pen stroke one pixel
+thick is kept, since each of its pixels touches the next. If the page shows no ink at
+all (its dark and light levels too close together), the checks cannot run and the page
+is sent to review with that reason; it is never passed as `no_flags`.
 
 1. **Ink discarded.** Ink inside the page but outside every crop: pixel count, share of
    the page's ink and bounding box. A margin note or catchword left outside the crop
@@ -62,7 +67,8 @@ is not proof the crop is right.
   is counted as page, and its ink as discarded.
 - The ink threshold is global. Uneven lighting, faded ink or show-through can move
   writing to the paper side, or stains to the ink side.
-- The despeckle filter also removes strokes about one pixel thick.
+- Specks of two or more touching pixels count as ink, and a lone speck on the image's
+  outermost row or column is kept.
 - The gutter is the lowest-ink run of columns near the middle; a dark gutter shadow
   that reads as ink, a skewed spread or a page with no blank gutter can mislead it.
 - Crops are axis-aligned boxes; rotation and deskew are not checked.

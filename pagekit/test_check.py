@@ -70,8 +70,8 @@ def test_margin_note_outside_the_crop_is_flagged_as_discarded(tmp_path):
     report = check(_page(tmp_path, extra=note), [(100, 150, 900, 1250)], overrides=SMALL)
     discarded = report["checks"]["ink_discarded"]
     assert _checks(report) == {"ink_discarded"}
-    # The 3x3 median despeckle takes one pixel off each of the note's four corners.
-    assert discarded["discarded_ink_pixels"] == 60 * 100 - 4
+    # Every pixel of the note touches another, so none is cleared as a lone speck.
+    assert discarded["discarded_ink_pixels"] == 60 * 100
     assert discarded["discarded_ink_bbox"] == [920, 600, 980, 700]
     assert 0 < discarded["discarded_ink_share"] < 1
     # The note does not reach the crop edge, so no edge is reported as cutting it.
@@ -132,12 +132,64 @@ def test_dark_scanner_backdrop_is_outside_the_page(tmp_path):
     assert report["flags"] == []
 
 
-def test_blank_page_has_no_ink_and_no_crop_flags(tmp_path):
+def test_a_page_with_no_ink_detected_goes_to_review_not_no_flags(tmp_path):
     path = tmp_path / "blank.png"
     Image.new("L", (800, 1000), 240).save(path, dpi=(300, 300))
     report = check(path, [(50, 50, 750, 950)], overrides=SMALL)
     assert report["page"]["ink_detected"] is False
+    assert _checks(report) == {"ink_detection"}
+    assert report["verdict"] == "review"
+    assert main(["check", "--master", str(path), "--crop", "50,50,750,950"]) == 1
+
+
+def test_thin_pen_lines_outside_the_crop_are_counted_and_lone_specks_are_not(tmp_path):
+    def note(draw):
+        for y in range(300, 600, 10):
+            draw.line((920, y, 990, y + 3), fill=20, width=1)
+
+    report = check(_page(tmp_path, extra=note), [(100, 150, 900, 1250)], overrides=SMALL)
+    assert report["checks"]["ink_discarded"]["discarded_ink_pixels"] >= 30 * 70
+    assert "ink_discarded" in _checks(report)
+
+    def specks(draw):
+        for y in range(300, 1300, 20):
+            draw.point((950, y), fill=20)
+
+    report = check(_page(tmp_path, extra=specks), [(100, 150, 900, 1250)], overrides=SMALL)
+    assert report["checks"]["ink_discarded"]["discarded_ink_pixels"] == 0
     assert report["flags"] == []
+
+
+def test_a_sixteen_bit_master_is_refused_loudly(tmp_path, capsys):
+    path = tmp_path / "deep.png"
+    Image.new("I;16", (800, 1000), 40000).save(path)
+    assert main(["check", "--master", str(path), "--crop", "50,50,750,950"]) == 2
+    assert "not supported" in capsys.readouterr().err
+
+
+def test_any_failure_while_reading_the_master_is_cannot_check(tmp_path, monkeypatch, capsys):
+    path = _page(tmp_path)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("decoder fell over")
+
+    monkeypatch.setattr("pagekit.check.Image.open", broken)
+    assert main(["check", "--master", str(path), "--crop", "100,150,900,1250"]) == 2
+    assert "decoder fell over" in capsys.readouterr().err
+
+
+def test_the_digest_names_the_bytes_that_were_measured(tmp_path, monkeypatch):
+    path = _page(tmp_path)
+    opened = []
+    real_open = Image.open
+
+    def spy(source, *args, **kwargs):
+        opened.append(source)
+        return real_open(source, *args, **kwargs)
+
+    monkeypatch.setattr("pagekit.check.Image.open", spy)
+    check(path, [(100, 150, 900, 1250)], overrides=SMALL)
+    assert len(opened) == 1 and opened[0].getvalue() == path.read_bytes()
 
 
 def test_otsu_splits_a_two_level_histogram_between_the_levels():

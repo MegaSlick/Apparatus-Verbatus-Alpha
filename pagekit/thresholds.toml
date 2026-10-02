@@ -2,10 +2,10 @@
 # carries status = "UNMEASURED" and the report says thresholds_measured = false until
 # every one is measured and its status changed to "MEASURED".
 
-[despeckle_size]
-value = 3
+[remove_isolated_ink]
+value = 1
 status = "UNMEASURED"
-meaning = "Side of the median filter applied to the ink map before counting; 1 turns it off. Must be odd."
+meaning = "1 clears ink pixels with no ink among their eight neighbours (lone specks) before anything is counted; 0 keeps them."
 
 [min_ink_contrast]
 value = 48

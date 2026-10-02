@@ -13,6 +13,7 @@ walks histograms and one-pixel-thick profiles.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import tomllib
 from dataclasses import dataclass
@@ -30,6 +31,10 @@ INK = 255
 EDGES = ("left", "top", "right", "bottom")
 
 Box = tuple[int, int, int, int]
+NO_INK_REASON = (
+    "No ink detected (the page's dark and light levels are closer than min_ink_contrast); "
+    "the crop checks could not run, so the page goes to review."
+)
 
 
 class CheckError(ValueError):
@@ -51,9 +56,8 @@ def load_thresholds(overrides: dict[str, Any] | None = None) -> dict[str, dict[s
         if isinstance(value, bool) or not isinstance(value, type(default) | int):
             raise CheckError(f"threshold {name!r} must be a number like {default!r}")
         thresholds[name] = {"value": value, "status": "UNMEASURED", "source": "override"}
-    size = thresholds["despeckle_size"]["value"]
-    if size < 1 or size % 2 == 0:
-        raise CheckError("despeckle_size must be an odd number of at least 1")
+    if thresholds["remove_isolated_ink"]["value"] not in (0, 1):
+        raise CheckError("remove_isolated_ink must be 0 or 1")
     if thresholds["edge_band_px"]["value"] < 1:
         raise CheckError("edge_band_px must be at least 1")
     return thresholds
@@ -115,6 +119,13 @@ def _median_level(histogram: list[int], levels: range) -> int | None:
 
 def _ink_map(grey: Image.Image, threshold: int) -> Image.Image:
     return grey.point(lambda level: INK if level <= threshold else 0)
+
+
+def _remove_isolated(ink: Image.Image) -> Image.Image:
+    """Clear ink pixels with no ink among their eight neighbours; a stroke one pixel
+    thick keeps its pixels, since each touches the next."""
+    neighbours = ink.filter(ImageFilter.Kernel((3, 3), (1, 1, 1, 1, 0, 1, 1, 1, 1), scale=1))
+    return ImageChops.multiply(ink, neighbours)
 
 
 def _ink_count(ink: Image.Image, box: Box) -> int:
@@ -194,8 +205,8 @@ def _measure_page(grey: Image.Image, thresholds: dict[str, dict[str, Any]]) -> t
     contrast = None if dark_mean is None or light_mean is None else light_mean - dark_mean
     has_ink = contrast is not None and contrast >= value["min_ink_contrast"]
     ink = _ink_map(grey, threshold if has_ink else -1)
-    if value["despeckle_size"] > 1:
-        ink = ink.filter(ImageFilter.MedianFilter(value["despeckle_size"]))
+    if value["remove_isolated_ink"]:
+        ink = _remove_isolated(ink)
     background = _median_level(histogram, range(threshold + 1, 256) if has_ink else range(256))
     measurements = {
         "page_area": list(area),
@@ -422,7 +433,8 @@ def check(
     path = Path(master)
     data = path.read_bytes()
     try:
-        with Image.open(path) as image:
+        # Decode the bytes that were hashed, so the digest names what was measured.
+        with Image.open(io.BytesIO(data)) as image:
             if getattr(image, "n_frames", 1) != 1:
                 raise CheckError("the master has more than one frame; check one page at a time")
             if image.mode not in SUPPORTED_MODES:
@@ -430,7 +442,9 @@ def check(
             image.load()
             resolution = _check_resolution(image, value)
             grey = image.convert("L")
-    except (OSError, Image.DecompressionBombError) as error:
+    except CheckError:
+        raise
+    except Exception as error:  # any decoder failure means the page cannot be checked
         raise CheckError(f"the master cannot be read as an image: {error}") from error
     crops = [tuple(box) for box in crops]
     for index, box in enumerate(crops):
@@ -453,7 +467,10 @@ def check(
     else:
         split = None
 
-    flags = [{"check": "ink_discarded", "reason": reason} for reason in discarded["reasons"]]
+    flags = []
+    if not page.has_ink:
+        flags.append({"check": "ink_detection", "reason": NO_INK_REASON})
+    flags += [{"check": "ink_discarded", "reason": reason} for reason in discarded["reasons"]]
     for edge in edges:
         flags += [{"check": "ink_cut_at_edge", "reason": reason} for reason in edge["reasons"]]
     if split is not None:

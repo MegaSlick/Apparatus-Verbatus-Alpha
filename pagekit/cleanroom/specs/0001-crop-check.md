@@ -6,6 +6,12 @@ commit it, and only then brief a build-side agent on it. Sources for this spec:
 pagekit's README, its tests, and Otsu (1979). Nothing in it comes from ScanTailor or
 any other GPL program.
 
+It was revised when an independent review of the branch changed three behaviours: a
+page with no ink detected now goes to review, lone specks are cleared instead of
+median-filtering the ink map (which had erased thin pen lines), and any failure to read
+the master is exit status 2. The review's points were about pagekit's own behaviour;
+none came from another program.
+
 ## Purpose
 
 A scanned master is cropped (and sometimes split into two pages) before anything
@@ -40,7 +46,10 @@ nothing is measured.
    scanner backdrop and trimmed off; what is left is the page.
 4. The threshold is computed again from the page alone. If the dark and light sides
    differ by less than a set contrast, the page is treated as carrying no ink.
-5. Isolated specks are removed from the ink map with a small median filter.
+5. Ink pixels with no ink among their eight neighbours (lone specks) are cleared from
+   the ink map. A stroke one pixel thick is kept.
+6. If no ink is detected, the page is sent to review with the reason that the checks
+   could not run; it is never passed without flags.
 
 ## The four checks
 
@@ -86,7 +95,9 @@ this page" and no flag is not proof the crop is right.
   flagged.
 - A master without DPI, or with a short side below the minimum, is flagged.
 - A dark scanner backdrop around the page is not counted as page or as ink.
-- A blank page has no ink and no crop flags.
+- A blank page has no ink detected and goes to review for that reason alone.
+- Thin pen lines outside the crop are counted as discarded ink; lone specks are not.
+- A 16-bit greyscale master, or any master that cannot be read, is exit status 2.
 - Two runs on the same input give byte-identical reports and leave the master
   untouched.
 - The command line's JSON round-trips and its exit statuses are 0, 1 and 2 as above.
@@ -94,6 +105,6 @@ this page" and no flag is not proof the crop is right.
 ## Known limits
 
 The page is found only by trimming dark borders; the ink threshold is global; the
-speck filter also removes strokes about one pixel thick; the gutter search can be
+speck clearing keeps specks of two or more touching pixels; the gutter search can be
 misled by a dark gutter shadow, a skewed spread or a page with no blank gutter; crops
 are axis-aligned boxes; nothing proposes or corrects a crop.

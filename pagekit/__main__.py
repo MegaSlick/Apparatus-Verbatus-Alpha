@@ -43,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     except (CheckError, OSError) as error:
         print(f"pagekit: {error}", file=sys.stderr)
         return 2
+    except Exception as error:  # an unexpected failure is "cannot check", never a verdict
+        print(f"pagekit: cannot check: {type(error).__name__}: {error}", file=sys.stderr)
+        return 2
     if arguments.json:
         sys.stdout.write(report_json(report))
     else:
