@@ -591,3 +591,26 @@ def test_sealed_page_bytes_refuses_bytes_that_no_longer_match_the_seal():
     with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         sealed_page_bytes(swapped, page)
     assert sealed_page_bytes(SimpleNamespace(read_bytes=lambda _path: original), page) == original
+
+
+def test_a_remembered_re_derivation_still_refuses_pixels_that_differ(monkeypatch):
+    """The render is remembered by the master's digest; the sealed page is still
+    compared every time, so a second check of altered pixels is refused, not waved
+    through by the first check's success."""
+    import common.exemplar_boundary as boundary
+
+    renders = []
+    real_render = boundary.render_triage_derivative
+    monkeypatch.setattr(
+        boundary,
+        "render_triage_derivative",
+        lambda *args, **kwargs: renders.append(1) or real_render(*args, **kwargs),
+    )
+    monkeypatch.setattr(boundary, "_derivations", {})
+    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
+
+    boundary.verify_triage_derivative(contract, master, parent, sealed)
+    boundary.verify_triage_derivative(contract, master, parent, sealed)
+    with pytest.raises(ContractError, match="not reproducible"):
+        boundary.verify_triage_derivative(contract, master, parent, sealed + b"x")
+    assert len(renders) == 1

@@ -147,7 +147,7 @@ def verify_sealed_page_pixels(
         admission = validate_envelope(json.loads(admission_data.decode("utf-8")))
     except (SchemaRefusal, UnicodeDecodeError, ValueError, TypeError) as error:
         raise ContractError("the sealed page's Door admission is not a valid artifact") from error
-    _verify_admission(admission, run, source, ordinal, blob_ref, tree, rendered)
+    _verify_admission(admission, run, source, ordinal, blob_ref, page_bytes, tree, rendered)
     return page_bytes
 
 
@@ -512,14 +512,11 @@ def _sealed_source_page(
     page = tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", source_page_id))
     if page.get("subject_id") != source_page_id:
         raise ContractError(f"a {what}'s page id does not name its Exemplar page")
-    verify_sealed_page_pixels(tree, run, sources[0], page)
+    page_pixels = verify_sealed_page_pixels(tree, run, sources[0], page)
     page_ref = {
         "relative_path": page["payload"]["image_path"],
         "sha256": page["payload"]["source_sha256"],
     }
-    page_pixels = read_verified(
-        tree.read_bytes, page_ref, "the sealed Exemplar page", ContractError
-    )
     page_width, page_height = dimensions(page_pixels)
     if (
         bounds["x"] < 0
@@ -750,9 +747,11 @@ def _verify_admission(
     source: dict[str, Any],
     ordinal: int,
     blob_ref: dict[str, str],
+    page_bytes: bytes,
     tree: RunTree,
     page_rendered: Any,
 ) -> None:
+    """Check one Door admission against its page; ``page_bytes`` were read against ``blob_ref``."""
     if (
         admission.get("run_id") != run.get("run_id")
         or admission.get("stage") != DOOR
@@ -821,10 +820,13 @@ def _verify_admission(
     parent_bytes = read_verified(
         tree.read_bytes, parent_ref, "the derivative page's submitted master", ContractError
     )
-    sealed_bytes = read_verified(
-        tree.read_bytes, blob_ref, "the sealed derivative page", ContractError
+    _verify_triage_derivative(
+        rendered["render_contract"],
+        parent_bytes,
+        parent_digest,
+        parent,
+        blob_ref["sha256"],
     )
-    verify_triage_derivative(rendered["render_contract"], parent_bytes, parent, sealed_bytes)
 
 
 def _verify_rendered_source_link(
@@ -975,6 +977,50 @@ def verify_triage_derivative(
     sealed_bytes: bytes,
 ) -> None:
     """A split page is valid only when its closed decision re-derives its bytes."""
+    _verify_triage_derivative(
+        contract, parent_bytes, digest_bytes(parent_bytes), parent, digest_bytes(sealed_bytes)
+    )
+
+
+# Re-rendering a split page from its master takes seconds for a full-size scan, and
+# every stage re-checks a page once per act on it. The render is a pure function of
+# the master's bytes, the frame index and the part, so its result is kept per process,
+# keyed by the master's digest, and the sealed page is compared by digest. Every
+# check around it, and every read and hash of the master and page, still runs.
+_MAX_REMEMBERED_DERIVATIONS: Final = 4096
+_derivations: dict[tuple[str, int, str], tuple[str, dict[str, Any]]] = {}
+
+
+def _rederived(
+    parent_bytes: bytes, parent_digest: str, page_index: int, part: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """The digest and geometry of ``part`` rendered from a master whose bytes have ``parent_digest``."""
+    key = (parent_digest, page_index, digest_of(part))
+    remembered = _derivations.get(key)
+    if remembered is None:
+        try:
+            expected_bytes, geometry = render_triage_derivative(
+                parent_bytes, page_index=page_index, part=part
+            )
+        except ValueError as error:
+            raise ContractError(
+                "the sealed derivative page cannot be re-derived from its master"
+            ) from error
+        remembered = (digest_bytes(expected_bytes), geometry)
+        if len(_derivations) >= _MAX_REMEMBERED_DERIVATIONS:
+            del _derivations[next(iter(_derivations))]
+        _derivations[key] = remembered
+    return remembered
+
+
+def _verify_triage_derivative(
+    contract: dict[str, Any],
+    parent_bytes: bytes,
+    parent_digest: str,
+    parent: dict[str, Any],
+    sealed_digest: str,
+) -> None:
+    """`verify_triage_derivative`, given the digests of the master and sealed page bytes."""
     contract_fields = {
         "renderer",
         "renderer_version",
@@ -1070,14 +1116,11 @@ def verify_triage_derivative(
         raise ContractError(
             "a sealed derivative page's transform vocabulary does not match its manifest part"
         )
-    try:
-        expected_bytes, geometry = render_triage_derivative(
-            parent_bytes, page_index=parent["source_frame_index"], part=part
-        )
-    except ValueError as error:
-        raise ContractError(
-            "the sealed derivative page cannot be re-derived from its master"
-        ) from error
+    if parent_digest != parent["sha256"]:
+        raise ContractError("a sealed derivative page's master bytes are not its parent frame")
+    expected_digest, geometry = _rederived(
+        parent_bytes, parent_digest, parent["source_frame_index"], part
+    )
     expected_mode_transform = (
         "triage-region-crop-rotate-convert"
         if geometry["source_mode"] == geometry["color_mode"]
@@ -1108,7 +1151,7 @@ def verify_triage_derivative(
             "a sealed derivative page's manifest row declares a frame that is not the size "
             "of the master it was cut from, so the row's parts do not account for that master"
         )
-    if expected_bytes != sealed_bytes:
+    if expected_digest != sealed_digest:
         raise ContractError(
             "a sealed derivative page's pixels are not reproducible from its master and apply "
             f"recipe{_renderer_drift(contract)}"
@@ -1116,14 +1159,13 @@ def verify_triage_derivative(
 
 
 def _renderer_drift(contract: dict[str, Any]) -> str:
-    """Name a library upgrade when one is the likelier cause of a pixel mismatch.
+    """Name a library difference when one is the likelier cause of a pixel mismatch.
 
-    The apply recipe is verified as a *record*, not against the running host: a
-    run sealed under an older Pillow stays verifiable, which refusing on version
-    drift would destroy for every archived run on the next routine upgrade. The
-    byte comparison above is the real property. But its message on its own points
-    an operator at forgery, and an upgraded decoder is the ordinary explanation —
-    so when the versions differ, say which ones.
+    The recorded library versions are not compared against the running host; the
+    byte comparison is the property. A host whose imaging libraries render the
+    part differently (an upgrade, or another platform's arithmetic) therefore
+    refuses the page, and since that message alone points an operator at forgery,
+    it names the versions that differ.
     """
     fields = ("renderer_version", "pillow_heif_version", "libheif_version")
     try:

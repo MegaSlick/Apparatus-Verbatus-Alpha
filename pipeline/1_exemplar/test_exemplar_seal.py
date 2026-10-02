@@ -243,9 +243,8 @@ def build_refused_real_door_run(
     return tree, files
 
 
-def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineage(tmp_path):
-    """Every split part must seal independently while retaining one shared master."""
-
+def _sealed_spread_run(tmp_path):
+    """A JPEG spread split into two sealed derivative pages: tree, run, master and pages."""
     output = BytesIO()
     image = Image.new("RGB", (10, 4), (255, 0, 0))
     for x in range(5, 10):
@@ -297,12 +296,15 @@ def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineag
         for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
         if entry["kind"] == "page"
     ]
+    return tree, run, master, sorted(pages, key=lambda page: page["payload"]["ordinal"])
+
+
+def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineage(tmp_path):
+    """Every split part must seal independently while retaining one shared master."""
+    tree, run, master, pages = _sealed_spread_run(tmp_path)
+    digest = digest_bytes(master)
     assert len(pages) == 2
-    for source, page in zip(
-        run["source_manifest"],
-        sorted(pages, key=lambda page: page["payload"]["ordinal"]),
-        strict=True,
-    ):
+    for source, page in zip(run["source_manifest"], pages, strict=True):
         verify_sealed_page_pixels(tree, run, source, page)
         rendered = page["payload"]["rendered_from"]["render_contract"]
         derivative = rendered["derivative_page"]
@@ -318,6 +320,39 @@ def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineag
         tree.read_bytes(admission["payload"]["parent_frame"]["stored_at"]) == master
         for admission in admissions
     )
+
+
+def test_a_split_page_is_re_rendered_once_per_process_however_often_it_is_checked(
+    tmp_path, monkeypatch
+):
+    """Every stage re-checks a page once per act on it, and re-rendering a full-size
+    master takes seconds. The render is remembered by the master's digest, so repeated
+    checks render once, while every check still reads and hashes the sealed bytes.
+    """
+    import common.exemplar_boundary as boundary
+
+    tree, run, _master, pages = _sealed_spread_run(tmp_path)
+    renders = []
+    real_render = boundary.render_triage_derivative
+
+    def counted(*args, **kwargs):
+        renders.append(kwargs.get("part"))
+        return real_render(*args, **kwargs)
+
+    monkeypatch.setattr(boundary, "render_triage_derivative", counted)
+    monkeypatch.setattr(boundary, "_derivations", {})
+    for _ in range(5):
+        for source, page in zip(run["source_manifest"], pages, strict=True):
+            verify_sealed_page_pixels(tree, run, source, page)
+    assert len(renders) == 2  # one per split part
+
+    # A remembered render does not stand in for the sealed bytes: altered pixels
+    # on disk are still refused.
+    blob = tree.root / pages[0]["payload"]["image_path"]
+    blob.write_bytes(blob.read_bytes() + b"\0")
+    with pytest.raises(ContractError):
+        verify_sealed_page_pixels(tree, run, run["source_manifest"][0], pages[0])
+    assert len(renders) == 2
 
 
 def test_a_noop_derivative_and_its_master_share_one_content_address(tmp_path):
